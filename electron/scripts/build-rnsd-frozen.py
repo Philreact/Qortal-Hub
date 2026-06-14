@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ RETICULUM_PIP_PACKAGE = os.environ.get(
     "QORTAL_RETICULUM_PIP_PACKAGE",
     "git+https://github.com/Philreact/Reticulum.git@master",
 )
+LXMF_PIP_PACKAGE = os.environ.get("QORTAL_LXMF_PIP_PACKAGE", "lxmf==0.9.4")
 PIP_ENV = {
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
     "PIP_BREAK_SYSTEM_PACKAGES": "1",
@@ -122,6 +124,56 @@ def pip_install(
         except subprocess.CalledProcessError:
             continue
     sys.exit(f"Failed to install {' '.join(packages)} with pip.")
+
+
+def reticulum_install_source(pyexe: str) -> str:
+    proc = subprocess.run(
+        [
+            pyexe,
+            "-c",
+            "\n".join(
+                [
+                    "import importlib.metadata as md, json, pathlib",
+                    "dist = md.distribution('rns')",
+                    "direct_url = pathlib.Path(dist._path) / 'direct_url.json'",
+                    "source = ''",
+                    "if direct_url.exists():",
+                    "    data = json.loads(direct_url.read_text())",
+                    "    source = data.get('url', '')",
+                    "    vcs = data.get('vcs_info') or {}",
+                    "    if vcs.get('commit_id'):",
+                    "        source += '@' + vcs.get('commit_id')",
+                    "print(json.dumps({'version': dist.version, 'source': source}))",
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **PIP_ENV},
+    )
+    if proc.returncode != 0:
+        sys.exit(f"Failed to inspect installed Reticulum package: {proc.stderr.strip()}")
+    try:
+        return proc.stdout.strip()
+    except Exception:
+        sys.exit(f"Failed to parse installed Reticulum package metadata: {proc.stdout!r}")
+
+
+def verify_reticulum_source(pyexe: str) -> str:
+    metadata_json = reticulum_install_source(pyexe)
+    try:
+        metadata = json.loads(metadata_json)
+    except json.JSONDecodeError:
+        sys.exit(f"Failed to parse installed Reticulum package metadata: {metadata_json!r}")
+    source = str(metadata.get("source") or "")
+    expected_source = "github.com/Philreact/Reticulum"
+    if expected_source not in source:
+        sys.exit(
+            "Bundled Reticulum is not Philreact's build. "
+            f"Expected source containing {expected_source!r}, got {metadata_json}"
+        )
+    print(f"Verified Reticulum package source: {metadata_json}")
+    return metadata_json
 
 
 def venv_python(venv_dir: Path) -> Path:
@@ -261,11 +313,19 @@ def main() -> None:
 
     pyexe, use_user_install = create_build_python(sys.executable, build_root)
     ensure_pip(pyexe, user=use_user_install)
-    pip_install(pyexe, [RETICULUM_PIP_PACKAGE], upgrade=True, user=use_user_install)
-    if not has_module(pyexe, "LXMF"):
-        pip_install(pyexe, ["lxmf"], user=use_user_install)
+    if not has_module(pyexe, "wheel"):
+        pip_install(pyexe, ["wheel"], user=use_user_install)
+    pip_install(pyexe, [LXMF_PIP_PACKAGE], user=use_user_install)
     if not has_module(pyexe, "PyInstaller"):
         pip_install(pyexe, ["pyinstaller"], user=use_user_install)
+    pip_install(
+        pyexe,
+        [RETICULUM_PIP_PACKAGE],
+        upgrade=True,
+        force_reinstall=True,
+        user=use_user_install,
+    )
+    reticulum_metadata = verify_reticulum_source(pyexe)
     for target in BUILD_TARGETS:
         entry_script = target["entry_resolver"](pyexe, electron_root)
         freeze_target(
@@ -280,7 +340,7 @@ def main() -> None:
 
     marker = args.output_dir / "BUNDLE_READY"
     marker.write_text(
-        f"frozen_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\npython={pyexe}\nreticulum={RETICULUM_PIP_PACKAGE}\n",
+        f"frozen_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\npython={pyexe}\nreticulum={RETICULUM_PIP_PACKAGE}\nlxmf={LXMF_PIP_PACKAGE}\nreticulum_metadata={reticulum_metadata}\n",
         encoding="utf-8",
     )
     print(f"Wrote {marker}")
