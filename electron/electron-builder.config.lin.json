@@ -20,7 +20,14 @@
     },
     {
       "from": "resources/reticulum",
-      "to": "reticulum"
+      "to": "reticulum",
+      "filter": [
+        "**/*",
+        "!presence_bridge.py",
+        "!mesh-network.identity",
+        "!mesh-network.passphrase",
+        "!test-darwin-*"
+      ]
     }
   ],
   "files": [
