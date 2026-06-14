@@ -71,8 +71,10 @@ export const AppsLibraryDesktop = ({
   const [sortOption, setSortOption] = useAtom(appSortAtom);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilterOption>('all');
+  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const theme = useTheme();
   const isSearchActive = searchValue.trim().length > 0;
+  const showLibraryScrollbar = currentTab === 'community' && !isSearchActive;
   const { t } = useTranslation([
     'auth',
     'core',
@@ -168,6 +170,7 @@ export const AppsLibraryDesktop = ({
             sortValue={sortOption}
             categoryValue={categoryFilter}
             statusValue={statusFilter}
+            scrollParent={scrollParent}
           />
         );
       case 'categories':
@@ -366,6 +369,7 @@ export const AppsLibraryDesktop = ({
         }}
       >
         <AppsDesktopLibraryBody
+          ref={setScrollParent}
           sx={{
             alignItems: 'center',
             flex: 1,
@@ -373,10 +377,10 @@ export const AppsLibraryDesktop = ({
             minHeight: 0,
             msOverflowStyle: 'none',
             overflow: 'auto',
-            scrollbarWidth: 'none',
+            scrollbarWidth: showLibraryScrollbar ? 'auto' : 'none',
             width: '90%',
             '&::-webkit-scrollbar': {
-              display: 'none',
+              display: showLibraryScrollbar ? 'initial' : 'none',
             },
           }}
         >
