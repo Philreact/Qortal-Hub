@@ -64,9 +64,17 @@ class Statement {
           .slice(0, limit);
       }
       if (this.sql.includes('timestamp < ?')) {
-        const [groupId, timestamp, limit] = args;
+        const hasCursor = this.sql.includes('event_id < ?');
+        const [groupId, timestamp, _sameTimestampOrLimit, eventIdOrUndefined, maybeLimit] = args;
+        const eventId = hasCursor ? String(eventIdOrUndefined) : '';
+        const limit = hasCursor ? maybeLimit : _sameTimestampOrLimit;
         return this.store.reticulumChatEvents
-          .filter((row) => row.group_id === groupId && row.timestamp < timestamp)
+          .filter((row) => {
+            if (row.group_id !== groupId) return false;
+            if (!hasCursor) return row.timestamp < timestamp;
+            if (row.timestamp < timestamp) return true;
+            return row.timestamp === timestamp && String(row.event_id) < eventId;
+          })
           .sort(
             (a, b) =>
               b.timestamp - a.timestamp ||

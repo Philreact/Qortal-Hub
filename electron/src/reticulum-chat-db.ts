@@ -59,6 +59,7 @@ export class ReticulumChatDatabase {
   private stmtGetEventsAfter: Statement;
   private stmtGetEventsAfterCursor: Statement;
   private stmtGetEventsBefore: Statement;
+  private stmtGetEventsBeforeCursor: Statement;
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
   private stmtMarkServed: Statement;
@@ -117,6 +118,15 @@ export class ReticulumChatDatabase {
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
         WHERE group_id = ? AND timestamp < ?
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY timestamp ASC, event_id ASC
+    `);
+    this.stmtGetEventsBeforeCursor = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ? AND (timestamp < ? OR (timestamp = ? AND event_id < ?))
         ORDER BY timestamp DESC, event_id DESC
         LIMIT ?
       )
@@ -243,11 +253,30 @@ export class ReticulumChatDatabase {
     );
   }
 
-  getEventsBefore(groupId: number, beforeTimestamp: number, limit: number): ReticulumChatEvent[] {
+  getEventsBefore(
+    groupId: number,
+    beforeTimestamp: number,
+    limit: number,
+    beforeEventId?: string
+  ): ReticulumChatEvent[] {
+    const sqliteRows = beforeEventId
+      ? (this.stmtGetEventsBeforeCursor.all(
+          groupId,
+          beforeTimestamp,
+          beforeTimestamp,
+          beforeEventId,
+          limit
+        ) as EventRow[])
+      : (this.stmtGetEventsBefore.all(groupId, beforeTimestamp, limit) as EventRow[]);
     return this.mergeWindowEvents(
-      (this.stmtGetEventsBefore.all(groupId, beforeTimestamp, limit) as EventRow[]).map(rowToEvent),
+      sqliteRows.map(rowToEvent),
       [...this.memoryEvents.values()]
-        .filter((event) => event.groupId === groupId && event.timestamp < beforeTimestamp)
+        .filter((event) => {
+          if (event.groupId !== groupId) return false;
+          if (!beforeEventId) return event.timestamp < beforeTimestamp;
+          return event.timestamp < beforeTimestamp ||
+            (event.timestamp === beforeTimestamp && event.eventId < beforeEventId);
+        })
         .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
         .slice(0, limit),
       limit

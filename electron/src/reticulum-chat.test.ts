@@ -172,6 +172,10 @@ describe('reticulum chat database', () => {
       'event-window-2',
       'event-window-3',
     ]);
+    expect(db.getEventsBefore(47, 1_300, 10, 'event-window-3').map((item) => item.eventId)).toEqual([
+      'event-window-1',
+      'event-window-2',
+    ]);
   });
 });
 
@@ -405,7 +409,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('continues bounded sync windows until catch-up is complete', async () => {
+  it('continues bounded sync windows forward until catch-up is complete', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -435,7 +439,7 @@ describe('reticulum chat manager', () => {
     direct.length = 0;
 
     manager.handleWire(
-      { t: 'RCHAT', k: 'sync_req', g: 51, mode: 'latest', limit: 2 },
+      { t: 'RCHAT', k: 'sync_req', g: 51, mode: 'after', ts: 20_001, id: 'event-page-1', limit: 1 },
       'peer'
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -448,7 +452,7 @@ describe('reticulum chat manager', () => {
       more: true,
       nextTs: 20_002,
       nextId: 'event-page-2',
-      hints: expect.arrayContaining([expect.objectContaining({ id: 'event-page-2' })]),
+      hints: [expect.objectContaining({ id: 'event-page-2' })],
     });
 
     manager.handleWire(continuationFrame as Record<string, unknown>, 'peer');
@@ -462,6 +466,108 @@ describe('reticulum chat manager', () => {
       ts: 20_002,
       id: 'event-page-2',
       limit: 100,
+    });
+    manager.close();
+  });
+
+  it('continues latest sync backward to recover older history', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([53]);
+    manager.subscribeGroup(53);
+    const events = [1, 2, 3].map((seq) =>
+      signedEvent({
+        eventId: `event-history-${seq}`,
+        groupId: 53,
+        authorSeq: seq,
+        timestamp: 30_000 + seq,
+      })
+    );
+    for (const event of events) await manager.publishEvent(event);
+    direct.length = 0;
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'sync_req', g: 53, mode: 'latest', limit: 2 },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const continuationFrame = direct.find((wire) => wire.k === 'sync_hints' && wire.moreBefore === true);
+    expect(continuationFrame).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_hints',
+      g: 53,
+      moreBefore: true,
+      prevTs: 30_002,
+      prevId: 'event-history-2',
+      hints: expect.arrayContaining([expect.objectContaining({ id: 'event-history-2' })]),
+    });
+
+    manager.handleWire(continuationFrame as Record<string, unknown>, 'peer');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct.find((wire) => wire.k === 'sync_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_req',
+      g: 53,
+      mode: 'before',
+      ts: 30_002,
+      id: 'event-history-2',
+      limit: 100,
+    });
+    manager.close();
+  });
+
+  it('serves cached group history even when the group is not currently open', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([54]);
+    const event = signedEvent({
+      eventId: 'event-archived-openless',
+      groupId: 54,
+      timestamp: 50_000,
+    });
+    await manager.publishEvent(event);
+    manager.setLocalGroupMemberships([]);
+    direct.length = 0;
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'sync_req', g: 54, mode: 'latest', limit: 10 },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct.find((wire) => wire.k === 'sync_hints')).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_hints',
+      g: 54,
+      hints: [expect.objectContaining({ id: event.eventId })],
     });
     manager.close();
   });
