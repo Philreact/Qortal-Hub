@@ -37,15 +37,63 @@ class Statement {
           seq,
         }));
       }
+      if (this.sql.includes('timestamp > ? OR (timestamp = ? AND event_id > ?)')) {
+        const [groupId, timestamp, _sameTimestamp, eventId, limit] = args;
+        return this.store.reticulumChatEvents
+          .filter((row) => {
+            if (row.group_id !== groupId) return false;
+            if (row.timestamp > timestamp) return true;
+            return row.timestamp === timestamp && String(row.event_id) > String(eventId);
+          })
+          .sort(
+            (a, b) =>
+              a.timestamp - b.timestamp ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          )
+          .slice(0, limit);
+      }
+      if (this.sql.includes('timestamp >= ?')) {
+        const [groupId, timestamp, limit] = args;
+        return this.store.reticulumChatEvents
+          .filter((row) => row.group_id === groupId && row.timestamp >= timestamp)
+          .sort(
+            (a, b) =>
+              a.timestamp - b.timestamp ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          )
+          .slice(0, limit);
+      }
+      if (this.sql.includes('timestamp < ?')) {
+        const [groupId, timestamp, limit] = args;
+        return this.store.reticulumChatEvents
+          .filter((row) => row.group_id === groupId && row.timestamp < timestamp)
+          .sort(
+            (a, b) =>
+              b.timestamp - a.timestamp ||
+              String(b.event_id).localeCompare(String(a.event_id))
+          )
+          .slice(0, limit)
+          .sort(
+            (a, b) =>
+              a.timestamp - b.timestamp ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          );
+      }
       if (this.sql.includes('WHERE group_id = ?')) {
         const [groupId, limit] = args;
         return this.store.reticulumChatEvents
           .filter((row) => row.group_id === groupId)
           .sort(
             (a, b) =>
-              a.timestamp - b.timestamp || a.author_seq - b.author_seq
+              b.timestamp - a.timestamp ||
+              String(b.event_id).localeCompare(String(a.event_id))
           )
-          .slice(0, limit);
+          .slice(0, limit)
+          .sort(
+            (a, b) =>
+              a.timestamp - b.timestamp ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          );
       }
     }
     return [];

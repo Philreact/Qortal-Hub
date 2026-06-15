@@ -56,6 +56,9 @@ export class ReticulumChatDatabase {
   private stmtGetEvent: Statement;
   private stmtHasEvent: Statement;
   private stmtGetRecentEvents: Statement;
+  private stmtGetEventsAfter: Statement;
+  private stmtGetEventsAfterCursor: Statement;
+  private stmtGetEventsBefore: Statement;
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
   private stmtMarkServed: Statement;
@@ -90,10 +93,34 @@ export class ReticulumChatDatabase {
       'SELECT 1 FROM reticulum_chat_events WHERE event_id = ? LIMIT 1'
     );
     this.stmtGetRecentEvents = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ?
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY timestamp ASC, event_id ASC
+    `);
+    this.stmtGetEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ?
-      ORDER BY timestamp ASC, author_seq ASC
+      WHERE group_id = ? AND timestamp >= ?
+      ORDER BY timestamp ASC, event_id ASC
       LIMIT ?
+    `);
+    this.stmtGetEventsAfterCursor = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?))
+      ORDER BY timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtGetEventsBefore = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ? AND timestamp < ?
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY timestamp ASC, event_id ASC
     `);
     this.stmtGetMissingByAuthor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
@@ -176,13 +203,70 @@ export class ReticulumChatDatabase {
   }
 
   getRecentEvents(groupId: number, limit: number): ReticulumChatEvent[] {
-    const rows = (this.stmtGetRecentEvents.all(groupId, limit) as EventRow[]).map(
-      rowToEvent
+    return this.mergeWindowEvents(
+      (this.stmtGetRecentEvents.all(groupId, limit) as EventRow[]).map(rowToEvent),
+      [...this.memoryEvents.values()]
+        .filter((event) => event.groupId === groupId)
+        .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
+        .slice(0, limit),
+      limit
     );
-    if (rows.length > 0) return rows;
-    return [...this.memoryEvents.values()]
-      .filter((event) => event.groupId === groupId)
-      .sort((a, b) => a.timestamp - b.timestamp || a.authorSeq - b.authorSeq)
+  }
+
+  getEventsAfter(
+    groupId: number,
+    afterTimestamp: number,
+    limit: number,
+    afterEventId?: string
+  ): ReticulumChatEvent[] {
+    const sqliteRows = afterEventId
+      ? (this.stmtGetEventsAfterCursor.all(
+          groupId,
+          afterTimestamp,
+          afterTimestamp,
+          afterEventId,
+          limit
+        ) as EventRow[])
+      : (this.stmtGetEventsAfter.all(groupId, afterTimestamp, limit) as EventRow[]);
+    return this.mergeWindowEvents(
+      sqliteRows.map(rowToEvent),
+      [...this.memoryEvents.values()]
+        .filter((event) => {
+          if (event.groupId !== groupId) return false;
+          if (!afterEventId) return event.timestamp >= afterTimestamp;
+          return event.timestamp > afterTimestamp ||
+            (event.timestamp === afterTimestamp && event.eventId > afterEventId);
+        })
+        .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId))
+        .slice(0, limit),
+      limit
+    );
+  }
+
+  getEventsBefore(groupId: number, beforeTimestamp: number, limit: number): ReticulumChatEvent[] {
+    return this.mergeWindowEvents(
+      (this.stmtGetEventsBefore.all(groupId, beforeTimestamp, limit) as EventRow[]).map(rowToEvent),
+      [...this.memoryEvents.values()]
+        .filter((event) => event.groupId === groupId && event.timestamp < beforeTimestamp)
+        .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
+        .slice(0, limit),
+      limit
+    );
+  }
+
+  private mergeWindowEvents(
+    primary: ReticulumChatEvent[],
+    secondary: ReticulumChatEvent[],
+    limit: number
+  ): ReticulumChatEvent[] {
+    const seen = new Set<string>();
+    return [...primary, ...secondary]
+      .filter((event) => {
+        if (seen.has(event.eventId)) return false;
+        seen.add(event.eventId);
+        return true;
+      })
+      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId))
       .slice(0, limit);
   }
 
@@ -208,24 +292,30 @@ export class ReticulumChatDatabase {
     knownAuthorSeqs: Record<string, number>,
     limit: number
   ): ReticulumChatEvent[] {
+    const maxLimit = Math.max(1, limit);
+    const recent = this.getRecentEvents(groupId, maxLimit);
     const out: ReticulumChatEvent[] = [];
-    for (const [author, seq] of Object.entries(knownAuthorSeqs)) {
-      const rows = this.stmtGetMissingByAuthor.all(
-        groupId,
-        author,
-        Number.isFinite(seq) ? seq : 0,
-        Math.max(1, limit - out.length)
-      ) as EventRow[];
-      out.push(...rows.map(rowToEvent));
-      if (out.length >= limit) break;
+    const seen = new Set<string>();
+
+    for (const event of recent) {
+      const knownSeq = Number(knownAuthorSeqs[event.authorAddress] ?? 0);
+      if (event.authorSeq <= (Number.isFinite(knownSeq) ? knownSeq : 0)) continue;
+      if (seen.has(event.eventId)) continue;
+      seen.add(event.eventId);
+      out.push(event);
+      if (out.length >= maxLimit) break;
     }
-    if (out.length > 0) return out;
+
     for (const event of this.memoryEvents.values()) {
       if (event.groupId !== groupId) continue;
-      if (event.authorSeq <= (knownAuthorSeqs[event.authorAddress] ?? 0)) continue;
+      const knownSeq = Number(knownAuthorSeqs[event.authorAddress] ?? 0);
+      if (event.authorSeq <= (Number.isFinite(knownSeq) ? knownSeq : 0)) continue;
+      if (seen.has(event.eventId)) continue;
+      seen.add(event.eventId);
       out.push(event);
-      if (out.length >= limit) break;
+      if (out.length >= maxLimit) break;
     }
+
     return out.sort((a, b) => a.timestamp - b.timestamp || a.authorSeq - b.authorSeq);
   }
 

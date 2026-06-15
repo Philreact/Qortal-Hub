@@ -79,6 +79,8 @@ export interface ReticulumChatEventOfferWire {
   s: number;
 }
 
+export type ReticulumChatSyncMode = 'latest' | 'after' | 'before';
+
 export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'sub'; g: number }
   | { t: 'RCHAT'; k: 'unsub'; g: number }
@@ -86,8 +88,25 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'event_req'; g: number; id: string }
   | { t: 'RCHAT'; k: 'event_offer'; g: number; o: ReticulumChatEventOfferWire }
   | { t: 'RCHAT'; k: 'hint'; g: number; ids?: string[]; seqs?: Record<string, number> }
-  | { t: 'RCHAT'; k: 'sync_req'; g: number; seqs: Record<string, number> }
-  | { t: 'RCHAT'; k: 'sync_hints'; g: number; hints: ReticulumChatEventHintWire[] }
+  | {
+      t: 'RCHAT';
+      k: 'sync_req';
+      g: number;
+      mode?: ReticulumChatSyncMode;
+      ts?: number;
+      id?: string;
+      limit?: number;
+      seqs?: Record<string, number>;
+    }
+  | {
+      t: 'RCHAT';
+      k: 'sync_hints';
+      g: number;
+      hints: ReticulumChatEventHintWire[];
+      more?: boolean;
+      nextTs?: number;
+      nextId?: string;
+    }
   | { t: 'RCHAT'; k: 'typing'; g: number; a: string; ts: number; active: boolean };
 
 export interface ReticulumChatManagerOptions {
@@ -102,6 +121,8 @@ const RETICULUM_CHAT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const RETICULUM_CHAT_TYPING_TTL_MS = 8_000;
 const RETICULUM_CHAT_TYPING_REFRESH_MS = 3_000;
 const RETICULUM_CHAT_SYNC_LIMIT = 200;
+const RETICULUM_CHAT_DEFAULT_SYNC_WINDOW = 100;
+const RETICULUM_CHAT_SYNC_OVERLAP_MS = 5_000;
 const RETICULUM_CHAT_PULL_THROTTLE_MS = 15_000;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
@@ -354,7 +375,15 @@ export class ReticulumChatManager extends EventEmitter {
     if (!accepted) {
       return { ok: false, reason: 'send-command-failed', error: 'Invalid event' };
     }
-    return this.fanout(this.buildEventHintWire(event));
+    const fanoutResult = await this.fanout(this.buildEventHintWire(event));
+    if (!fanoutResult.ok) {
+      const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[ReticulumChat] Stored event ${event.eventId} locally, but live hint fanout failed:`,
+        failed.error ?? failed.reason
+      );
+    }
+    return { ok: true };
   }
 
   sendTyping(groupId: number, authorAddress: string, active: boolean): void {
@@ -414,18 +443,43 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       case 'sync_req': {
         if (!this.subscribedGroups.has(groupId) && !this.localGroupIds.has(groupId)) return;
-        const seqs = typeof wire.seqs === 'object' && wire.seqs ? (wire.seqs as Record<string, number>) : {};
-        const events = this.db.getMissingEvents(groupId, seqs, RETICULUM_CHAT_SYNC_LIMIT);
+        const syncLimit = this.normalizeSyncLimit(wire.limit);
+        const events = this.getEventsForSyncRequest(
+          groupId,
+          wire,
+          Math.min(RETICULUM_CHAT_SYNC_LIMIT + 1, syncLimit + 1)
+        );
         if (events.length) this.db.markServed(events.map((e) => e.eventId));
-        for (const event of events) {
-          void this.sendToPeer(peerPresenceHash || senderDestinationHash, this.buildEventHintWire(event));
-        }
+        void this.sendSyncHintsToPeer(
+          peerPresenceHash || senderDestinationHash,
+          groupId,
+          events,
+          syncLimit
+        );
         return;
       }
       case 'sync_hints':
         if (!Array.isArray(wire.hints)) return;
         for (const hint of wire.hints) {
           this.handleEventHint(eventHintFromWire(groupId, hint), peerPresenceHash || senderDestinationHash);
+        }
+        if (
+          wire.more === true &&
+          this.subscribedGroups.has(groupId) &&
+          typeof wire.nextTs === 'number' &&
+          Number.isFinite(wire.nextTs) &&
+          typeof wire.nextId === 'string' &&
+          wire.nextId
+        ) {
+          void this.sendToPeer(peerPresenceHash || senderDestinationHash, {
+            t: 'RCHAT',
+            k: 'sync_req',
+            g: groupId,
+            mode: 'after',
+            ts: wire.nextTs,
+            id: wire.nextId,
+            limit: RETICULUM_CHAT_DEFAULT_SYNC_WINDOW,
+          });
         }
         return;
       case 'typing':
@@ -573,15 +627,141 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private buildSyncReqWire(groupId: number): ReticulumChatWire {
-    const seqs: Record<string, number> = {};
-    const base: ReticulumChatWire = { t: 'RCHAT', k: 'sync_req', g: groupId, seqs };
-    for (const [author, seq] of Object.entries(this.db.getSyncState(groupId))) {
-      const nextSeqs = { ...seqs, [author]: seq };
-      const next: ReticulumChatWire = { t: 'RCHAT', k: 'sync_req', g: groupId, seqs: nextSeqs };
-      if (!wireFitsReticulum(next)) break;
-      seqs[author] = seq;
+    const history = this.db.getRecentEvents(groupId, 1);
+    if (history.length === 0) {
+      return {
+        t: 'RCHAT',
+        k: 'sync_req',
+        g: groupId,
+        mode: 'latest',
+        limit: RETICULUM_CHAT_DEFAULT_SYNC_WINDOW,
+      };
     }
-    return base;
+    const latest = history[history.length - 1];
+    return {
+      t: 'RCHAT',
+      k: 'sync_req',
+      g: groupId,
+      mode: 'after',
+      ts: Math.max(0, latest.timestamp - RETICULUM_CHAT_SYNC_OVERLAP_MS),
+      limit: RETICULUM_CHAT_DEFAULT_SYNC_WINDOW,
+    };
+  }
+
+  private getEventsForSyncRequest(
+    groupId: number,
+    wire: Record<string, unknown>,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const mode = typeof wire.mode === 'string' ? wire.mode : '';
+    if (mode === 'latest') {
+      return this.db.getRecentEvents(groupId, limit);
+    }
+    if (mode === 'after') {
+      const afterEventId = typeof wire.id === 'string' && wire.id ? wire.id : undefined;
+      return this.db.getEventsAfter(groupId, this.normalizeTimestamp(wire.ts), limit, afterEventId);
+    }
+    if (mode === 'before') {
+      return this.db.getEventsBefore(groupId, this.normalizeTimestamp(wire.ts, this.now()), limit);
+    }
+
+    const seqs =
+      typeof wire.seqs === 'object' && wire.seqs
+        ? (wire.seqs as Record<string, number>)
+        : {};
+    if (Object.keys(seqs).length > 0) {
+      return this.db.getMissingEvents(groupId, seqs, limit);
+    }
+    return this.db.getRecentEvents(groupId, limit);
+  }
+
+  private normalizeSyncLimit(value: unknown): number {
+    const limit = Number(value);
+    if (!Number.isFinite(limit)) return RETICULUM_CHAT_DEFAULT_SYNC_WINDOW;
+    return Math.max(1, Math.min(RETICULUM_CHAT_SYNC_LIMIT, Math.floor(limit)));
+  }
+
+  private normalizeTimestamp(value: unknown, fallback = 0): number {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp) || timestamp < 0) return fallback;
+    return timestamp;
+  }
+
+  private async sendSyncHintsToPeer(
+    peerHash: string,
+    groupId: number,
+    events: ReticulumChatEvent[],
+    pageSize = RETICULUM_CHAT_DEFAULT_SYNC_WINDOW
+  ): Promise<void> {
+    const visibleEvents = events.slice(0, Math.max(1, pageSize));
+    const hasMore = events.length > visibleEvents.length;
+    const continuation = visibleEvents[visibleEvents.length - 1];
+    const hints = visibleEvents.map((event) => eventHintToWire(buildReticulumChatEventHint(event)));
+    let batch: ReticulumChatEventHintWire[] = [];
+    let sentContinuation = false;
+    for (const hint of hints) {
+      const next = [...batch, hint];
+      const isFinalHint = hint === hints[hints.length - 1];
+      const wire: ReticulumChatWire = this.buildSyncHintsWire(
+        groupId,
+        next,
+        hasMore && isFinalHint ? continuation : undefined
+      );
+      if (wireFitsReticulum(wire)) {
+        batch = next;
+        continue;
+      }
+      if (batch.length > 0) {
+        await this.sendToPeer(peerHash, this.buildSyncHintsWire(groupId, batch));
+      }
+      batch = [hint];
+      const single = this.buildSyncHintsWire(
+        groupId,
+        batch,
+        hasMore && isFinalHint ? continuation : undefined
+      );
+      if (!wireFitsReticulum(single)) {
+        await this.sendToPeer(peerHash, { t: 'RCHAT', k: 'event_hint', g: groupId, h: hint });
+        if (hasMore && isFinalHint && continuation) {
+          await this.sendToPeer(peerHash, {
+            t: 'RCHAT',
+            k: 'sync_hints',
+            g: groupId,
+            hints: [],
+            more: true,
+            nextTs: continuation.timestamp,
+            nextId: continuation.eventId,
+          });
+          sentContinuation = true;
+        }
+        batch = [];
+      }
+    }
+    if (batch.length > 0) {
+      const finalHint = hints[hints.length - 1];
+      const finalHasContinuation = hasMore && !sentContinuation && batch.includes(finalHint);
+      await this.sendToPeer(
+        peerHash,
+        this.buildSyncHintsWire(groupId, batch, finalHasContinuation ? continuation : undefined)
+      );
+    }
+  }
+
+  private buildSyncHintsWire(
+    groupId: number,
+    hints: ReticulumChatEventHintWire[],
+    continuation?: ReticulumChatEvent
+  ): ReticulumChatWire {
+    if (!continuation) return { t: 'RCHAT', k: 'sync_hints', g: groupId, hints };
+    return {
+      t: 'RCHAT',
+      k: 'sync_hints',
+      g: groupId,
+      hints,
+      more: true,
+      nextTs: continuation.timestamp,
+      nextId: continuation.eventId,
+    };
   }
 
   private handleEventHint(candidate: unknown, peerHash: string): void {

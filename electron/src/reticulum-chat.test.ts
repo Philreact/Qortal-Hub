@@ -117,6 +117,62 @@ describe('reticulum chat database', () => {
       event.eventId
     );
   });
+
+  it('returns recent group events when requester has empty sync state', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({ groupId: 45, authorSeq: 1 });
+    db.insertEvent(event, true);
+    expect(db.getMissingEvents(45, {}, 10).map((item) => item.eventId)).toEqual([
+      event.eventId,
+    ]);
+  });
+
+  it('includes authors missing from requester sync state', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const first = signedEvent({ groupId: 46, authorSeq: 2 });
+    const second = signedEvent({ groupId: 46, authorSeq: 1 });
+    db.insertEvent(first, true);
+    db.insertEvent(second, true);
+    const missing = db.getMissingEvents(
+      46,
+      { [first.authorAddress]: 2 },
+      10
+    );
+    expect(missing.map((item) => item.eventId)).toEqual([second.eventId]);
+  });
+
+  it('returns bounded timestamp windows for scalable sync', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const events = [1, 2, 3, 4].map((seq) =>
+      signedEvent({
+        eventId: `event-window-${seq}`,
+        groupId: 47,
+        authorSeq: seq,
+        timestamp: 1_000 + seq * 100,
+      })
+    );
+    for (const event of events) db.insertEvent(event, true);
+
+    expect(db.getRecentEvents(47, 2).map((item) => item.eventId)).toEqual([
+      'event-window-3',
+      'event-window-4',
+    ]);
+    expect(db.getEventsAfter(47, 1_250, 10).map((item) => item.eventId)).toEqual([
+      'event-window-3',
+      'event-window-4',
+    ]);
+    expect(db.getEventsAfter(47, 1_300, 10, 'event-window-3').map((item) => item.eventId)).toEqual([
+      'event-window-4',
+    ]);
+    expect(db.getEventsBefore(47, 1_350, 10).map((item) => item.eventId)).toEqual([
+      'event-window-1',
+      'event-window-2',
+      'event-window-3',
+    ]);
+  });
 });
 
 describe('reticulum chat manager', () => {
@@ -167,6 +223,31 @@ describe('reticulum chat manager', () => {
     expect(JSON.stringify(sent[0])).not.toContain('encryptedPayload');
     expect(byteLengthUtf8JsonWithBridgeSender(sent[0])).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
+  it('treats local persistence as send success when live fanout has no route', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({
+          ok: false as const,
+          reason: 'no-route' as const,
+          error: 'No overlay route',
+        }),
+      } as any,
+    });
+    const event = signedEvent({ groupId: 52 });
+    manager.setLocalGroupMemberships([52]);
+
+    const result = await manager.publishEvent(event);
+
+    expect(result).toEqual({ ok: true });
+    expect(manager.getHistory(52, 10).map((item) => item.eventId)).toContain(
+      event.eventId
     );
     manager.close();
   });
@@ -223,6 +304,165 @@ describe('reticulum chat manager', () => {
       'peer'
     );
     expect(direct.filter((wire) => wire.k === 'event_req')).toHaveLength(1);
+    manager.close();
+  });
+
+  it('subscribes with a latest sync window when no local history exists', () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+    });
+    manager.subscribeGroup(48);
+    expect(sent).toContainEqual({ t: 'RCHAT', k: 'sub', g: 48 });
+    expect(sent.find((wire) => wire.k === 'sync_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_req',
+      g: 48,
+      mode: 'latest',
+      limit: 100,
+    });
+    manager.close();
+  });
+
+  it('subscribes with an after cursor when local history exists', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([49]);
+    const event = signedEvent({ groupId: 49, timestamp: 50_000 });
+    await manager.publishEvent(event);
+    sent.length = 0;
+
+    manager.subscribeGroup(49);
+    expect(sent.find((wire) => wire.k === 'sync_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_req',
+      g: 49,
+      mode: 'after',
+      ts: 45_000,
+      limit: 100,
+    });
+    manager.close();
+  });
+
+  it('responds to sync requests with compact hint batches', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([50]);
+    const event = signedEvent({ groupId: 50, timestamp: 10_000 });
+    await manager.publishEvent(event);
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'sync_req', g: 50, mode: 'latest', limit: 10 },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct).toHaveLength(1);
+    expect(direct[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_hints',
+      g: 50,
+      hints: [{ id: event.eventId, ph: event.payloadHash }],
+    });
+    expect(JSON.stringify(direct[0])).not.toContain('encryptedPayload');
+    expect(byteLengthUtf8JsonWithBridgeSender(direct[0])).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
+  it('continues bounded sync windows until catch-up is complete', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([51]);
+    manager.subscribeGroup(51);
+    const events = [1, 2, 3].map((seq) =>
+      signedEvent({
+        eventId: `event-page-${seq}`,
+        groupId: 51,
+        authorSeq: seq,
+        timestamp: 20_000 + seq,
+      })
+    );
+    for (const event of events) await manager.publishEvent(event);
+    direct.length = 0;
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'sync_req', g: 51, mode: 'latest', limit: 2 },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const continuationFrame = direct.find((wire) => wire.k === 'sync_hints' && wire.more === true);
+    expect(continuationFrame).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_hints',
+      g: 51,
+      more: true,
+      nextTs: 20_002,
+      nextId: 'event-page-2',
+      hints: expect.arrayContaining([expect.objectContaining({ id: 'event-page-2' })]),
+    });
+
+    manager.handleWire(continuationFrame as Record<string, unknown>, 'peer');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct.find((wire) => wire.k === 'sync_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'sync_req',
+      g: 51,
+      mode: 'after',
+      ts: 20_002,
+      id: 'event-page-2',
+      limit: 100,
+    });
     manager.close();
   });
 
