@@ -22,6 +22,46 @@ class Statement {
           .sort((a, b) => a.author_seq - b.author_seq)
           .slice(0, limit);
       }
+      if (this.sql.includes('e.author_seq AS max_seq')) {
+        const [groupId, _sameGroupId, limit] = args;
+        const byAuthor = new Map<string, any>();
+        for (const row of this.store.reticulumChatEvents) {
+          if (row.group_id !== groupId) continue;
+          const existing = byAuthor.get(row.author_address);
+          if (existing && existing.author_seq >= row.author_seq) continue;
+          byAuthor.set(row.author_address, row);
+        }
+        return [...byAuthor.values()]
+          .sort(
+            (a, b) =>
+              b.timestamp - a.timestamp ||
+              String(b.event_id).localeCompare(String(a.event_id))
+          )
+          .slice(0, limit)
+          .map((row) => ({
+            author_address: row.author_address,
+            max_seq: row.author_seq,
+            event_id: row.event_id,
+            timestamp: row.timestamp,
+          }));
+      }
+      if (this.sql.includes('author_seq > ?')) {
+        const [groupId, authorAddress, afterSeq, limit] = args;
+        return this.store.reticulumChatEvents
+          .filter(
+            (row) =>
+              row.group_id === groupId &&
+              row.author_address === authorAddress &&
+              row.author_seq > afterSeq
+          )
+          .sort(
+            (a, b) =>
+              a.author_seq - b.author_seq ||
+              a.timestamp - b.timestamp ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          )
+          .slice(0, limit);
+      }
       if (this.sql.includes('GROUP BY author_address')) {
         const [groupId] = args;
         const byAuthor = new Map<string, number>();
@@ -116,6 +156,16 @@ class Statement {
         );
         if (!row) return undefined;
         return this.sql.includes('SELECT 1') ? { 1: 1 } : row;
+      }
+      if (this.sql.includes('MAX(author_seq) AS seq')) {
+        const [groupId, authorAddress] = args;
+        let seq = 0;
+        for (const row of this.store.reticulumChatEvents) {
+          if (row.group_id === groupId && row.author_address === authorAddress) {
+            seq = Math.max(seq, Number(row.author_seq) || 0);
+          }
+        }
+        return { seq };
       }
       if (this.sql.includes('SUM(wire_bytes)')) {
         return {

@@ -5,6 +5,13 @@ import type { ReticulumChatEvent } from './reticulum-chat';
 
 export const RETICULUM_CHAT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
 
+export type ReticulumChatAuthorHead = {
+  authorAddress: string;
+  maxSeq: number;
+  eventId: string;
+  timestamp: number;
+};
+
 type EventRow = {
   event_id: string;
   group_id: number;
@@ -60,6 +67,9 @@ export class ReticulumChatDatabase {
   private stmtGetEventsAfterCursor: Statement;
   private stmtGetEventsBefore: Statement;
   private stmtGetEventsBeforeCursor: Statement;
+  private stmtGetAuthorMaxSeq: Statement;
+  private stmtGetAuthorEventsAfter: Statement;
+  private stmtGetAuthorHeads: Statement;
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
   private stmtMarkServed: Statement;
@@ -131,6 +141,31 @@ export class ReticulumChatDatabase {
         LIMIT ?
       )
       ORDER BY timestamp ASC, event_id ASC
+    `);
+    this.stmtGetAuthorMaxSeq = this.db.prepare(`
+      SELECT MAX(author_seq) AS seq
+      FROM reticulum_chat_events
+      WHERE group_id = ? AND author_address = ?
+    `);
+    this.stmtGetAuthorEventsAfter = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ? AND author_address = ? AND author_seq > ?
+      ORDER BY author_seq ASC, timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtGetAuthorHeads = this.db.prepare(`
+      SELECT e.author_address, e.author_seq AS max_seq, e.event_id, e.timestamp
+      FROM reticulum_chat_events e
+      JOIN (
+        SELECT author_address, MAX(author_seq) AS max_seq
+        FROM reticulum_chat_events
+        WHERE group_id = ?
+        GROUP BY author_address
+      ) h ON h.author_address = e.author_address AND h.max_seq = e.author_seq
+      WHERE e.group_id = ?
+      ORDER BY e.timestamp DESC, e.event_id DESC
+      LIMIT ?
+      OFFSET ?
     `);
     this.stmtGetMissingByAuthor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
@@ -281,6 +316,80 @@ export class ReticulumChatDatabase {
         .slice(0, limit),
       limit
     );
+  }
+
+  getAuthorMaxSeq(groupId: number, authorAddress: string): number {
+    const row = this.stmtGetAuthorMaxSeq.get(groupId, authorAddress) as
+      | { seq?: number }
+      | undefined;
+    let maxSeq = typeof row?.seq === 'number' && Number.isFinite(row.seq) ? row.seq : 0;
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== groupId || event.authorAddress !== authorAddress) continue;
+      maxSeq = Math.max(maxSeq, event.authorSeq);
+    }
+    return maxSeq;
+  }
+
+  getAuthorEventsAfter(
+    groupId: number,
+    authorAddress: string,
+    afterSeq: number,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const maxLimit = Math.max(1, limit);
+    return this.mergeWindowEvents(
+      (this.stmtGetAuthorEventsAfter.all(
+        groupId,
+        authorAddress,
+        Math.max(0, afterSeq),
+        maxLimit
+      ) as EventRow[]).map(rowToEvent),
+      [...this.memoryEvents.values()]
+        .filter(
+          (event) =>
+            event.groupId === groupId &&
+            event.authorAddress === authorAddress &&
+            event.authorSeq > afterSeq
+        )
+        .sort((a, b) => a.authorSeq - b.authorSeq || a.timestamp - b.timestamp)
+        .slice(0, maxLimit),
+      maxLimit
+    ).sort((a, b) => a.authorSeq - b.authorSeq || a.timestamp - b.timestamp);
+  }
+
+  getAuthorHeads(groupId: number, limit: number, offset = 0): ReticulumChatAuthorHead[] {
+    const maxLimit = Math.max(1, limit);
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const heads = new Map<string, ReticulumChatAuthorHead>();
+    const rows = this.stmtGetAuthorHeads.all(groupId, groupId, maxLimit + safeOffset, 0) as Array<{
+      author_address: string;
+      max_seq: number;
+      event_id: string;
+      timestamp: number;
+    }>;
+    for (const row of rows) {
+      heads.set(row.author_address, {
+        authorAddress: row.author_address,
+        maxSeq: row.max_seq,
+        eventId: row.event_id,
+        timestamp: row.timestamp,
+      });
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== groupId) continue;
+      const existing = heads.get(event.authorAddress);
+      if (existing && existing.maxSeq >= event.authorSeq) continue;
+      heads.set(event.authorAddress, {
+        authorAddress: event.authorAddress,
+        maxSeq: event.authorSeq,
+        eventId: event.eventId,
+        timestamp: event.timestamp,
+      });
+    }
+    return [...heads.values()]
+      .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
+      .slice(safeOffset)
+      .slice(0, maxLimit);
   }
 
   private mergeWindowEvents(

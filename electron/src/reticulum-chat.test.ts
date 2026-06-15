@@ -53,6 +53,37 @@ function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChat
   return event;
 }
 
+function signedAuthorEvents(
+  events: Array<Partial<ReticulumChatEvent>>
+): ReticulumChatEvent[] {
+  const kp = nacl.sign.keyPair();
+  const publicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(publicKey);
+  return events.map((overrides) => {
+    const encryptedPayload = overrides.encryptedPayload ?? 'ciphertext';
+    const event: ReticulumChatEvent = {
+      eventId: overrides.eventId ?? `event-${Math.random().toString(16).slice(2)}`,
+      groupId: overrides.groupId ?? 7,
+      authorAddress,
+      authorPublicKey: publicKey,
+      authorSeq: overrides.authorSeq ?? 1,
+      timestamp: overrides.timestamp ?? Date.now(),
+      eventType: overrides.eventType ?? 'message',
+      ...(overrides.targetEventId ? { targetEventId: overrides.targetEventId } : {}),
+      ...(overrides.replyToEventId ? { replyToEventId: overrides.replyToEventId } : {}),
+      encryptedPayload,
+      payloadHash: overrides.payloadHash ?? hashReticulumChatPayload(encryptedPayload),
+      signature: '',
+    };
+    const sig = nacl.sign.detached(
+      new Uint8Array(canonicalizeForSigning(buildReticulumChatSignedFields(event))),
+      kp.secretKey
+    );
+    event.signature = overrides.signature ?? base58Encode(sig);
+    return event;
+  });
+}
+
 function tempDbPath(): string {
   return path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-chat-test-')),
@@ -177,6 +208,51 @@ describe('reticulum chat database', () => {
       'event-window-2',
     ]);
   });
+
+  it('returns author heads and author ranges for gap repair', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const [first, second] = signedAuthorEvents([
+      { eventId: 'event-author-1', groupId: 57, authorSeq: 1, timestamp: 1_000 },
+      { eventId: 'event-author-2', groupId: 57, authorSeq: 2, timestamp: 2_000 },
+    ]);
+    db.insertEvent(first, true);
+    db.insertEvent(second, true);
+
+    expect(db.getAuthorMaxSeq(57, first.authorAddress)).toBe(2);
+    expect(db.getAuthorEventsAfter(57, first.authorAddress, 0, 10).map((event) => event.eventId)).toEqual([
+      'event-author-1',
+      'event-author-2',
+    ]);
+    expect(db.getAuthorHeads(57, 10)).toEqual([
+      {
+        authorAddress: first.authorAddress,
+        maxSeq: 2,
+        eventId: 'event-author-2',
+        timestamp: 2_000,
+      },
+    ]);
+  });
+
+  it('paginates author heads', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const [firstAuthor] = signedAuthorEvents([
+      { eventId: 'event-head-page-1', groupId: 61, authorSeq: 1, timestamp: 1_000 },
+    ]);
+    const [secondAuthor] = signedAuthorEvents([
+      { eventId: 'event-head-page-2', groupId: 61, authorSeq: 1, timestamp: 2_000 },
+    ]);
+    db.insertEvent(firstAuthor, true);
+    db.insertEvent(secondAuthor, true);
+
+    expect(db.getAuthorHeads(61, 1, 0).map((head) => head.eventId)).toEqual([
+      'event-head-page-2',
+    ]);
+    expect(db.getAuthorHeads(61, 1, 1).map((head) => head.eventId)).toEqual([
+      'event-head-page-1',
+    ]);
+  });
 });
 
 describe('reticulum chat manager', () => {
@@ -256,7 +332,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('requests a missing hinted event once per throttle window', () => {
+  it('requests a missing hinted event once per throttle window', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -307,7 +383,200 @@ describe('reticulum chat manager', () => {
       },
       'peer'
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(direct.filter((wire) => wire.k === 'event_req')).toHaveLength(1);
+    manager.close();
+  });
+
+  it('requests an author gap when a live hint skips an author sequence', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([58]);
+    manager.subscribeGroup(58);
+    const [_missed, received] = signedAuthorEvents([
+      { eventId: 'event-live-gap-1', groupId: 58, authorSeq: 1 },
+      { eventId: 'event-live-gap-2', groupId: 58, authorSeq: 2 },
+    ]);
+    const hint = buildReticulumChatEventHint(received);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_hint',
+        g: 58,
+        h: {
+          id: hint.eventId,
+          a: hint.authorAddress,
+          n: hint.authorSeq,
+          ts: hint.timestamp,
+          et: hint.eventType,
+          ph: hint.payloadHash,
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'author_gap_req',
+        g: 58,
+        a: received.authorAddress,
+        after: 0,
+      })
+    );
+    manager.close();
+  });
+
+  it('uses author heads to request missing author ranges', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const [remoteHead] = signedAuthorEvents([
+      { eventId: 'event-head-remote-3', groupId: 59, authorSeq: 3, timestamp: 50_000 },
+    ]);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'author_heads',
+        g: 59,
+        heads: [
+          {
+            a: remoteHead.authorAddress,
+            n: 3,
+            id: remoteHead.eventId,
+            ts: remoteHead.timestamp,
+          },
+        ],
+      },
+      'peer'
+    );
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'author_gap_req',
+        g: 59,
+        a: remoteHead.authorAddress,
+        after: 0,
+      })
+    );
+    manager.close();
+  });
+
+  it('continues paged author head exchange', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([62]);
+    manager.subscribeGroup(62);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'author_heads',
+        g: 62,
+        heads: [],
+        more: true,
+        nextOffset: 100,
+      },
+      'peer'
+    );
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'author_heads_req',
+        g: 62,
+        offset: 100,
+      })
+    );
+    manager.close();
+  });
+
+  it('paces event pull requests instead of bursting all history hints at once', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([55]);
+    manager.subscribeGroup(55);
+
+    for (const seq of [1, 2, 3, 4, 5]) {
+      const event = signedEvent({
+        eventId: `event-pull-queue-${seq}`,
+        groupId: 55,
+        authorSeq: seq,
+      });
+      const hint = buildReticulumChatEventHint(event);
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'event_hint',
+          g: 55,
+          h: {
+            id: hint.eventId,
+            a: hint.authorAddress,
+            n: hint.authorSeq,
+            ts: hint.timestamp,
+            et: hint.eventType,
+            ph: hint.payloadHash,
+          },
+        },
+        'peer'
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(direct.filter((wire) => wire.k === 'event_req')).toHaveLength(3);
     manager.close();
   });
 
@@ -369,6 +638,60 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('subscribes with a before cursor when local history may be partial', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 80_000,
+    });
+    manager.setLocalGroupMemberships([56]);
+    const firstLocal = signedEvent({
+      eventId: 'event-partial-local-1',
+      groupId: 56,
+      authorSeq: 1,
+      timestamp: 50_000,
+    });
+    const secondLocal = signedEvent({
+      eventId: 'event-partial-local-2',
+      groupId: 56,
+      authorSeq: 2,
+      timestamp: 60_000,
+    });
+    await manager.publishEvent(firstLocal);
+    await manager.publishEvent(secondLocal);
+    sent.length = 0;
+
+    manager.subscribeGroup(56);
+
+    expect(sent.filter((wire) => wire.k === 'sync_req')).toEqual([
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'sync_req',
+        g: 56,
+        mode: 'after',
+        ts: 55_000,
+      }),
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'sync_req',
+        g: 56,
+        mode: 'before',
+        ts: 50_000,
+        id: firstLocal.eventId,
+      }),
+    ]);
+    manager.close();
+  });
+
   it('responds to sync requests with compact hint batches', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -405,6 +728,56 @@ describe('reticulum chat manager', () => {
     expect(JSON.stringify(direct[0])).not.toContain('encryptedPayload');
     expect(byteLengthUtf8JsonWithBridgeSender(direct[0])).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
+  it('responds to author gap requests with compact hints for that author', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([60]);
+    const [first, second] = signedAuthorEvents([
+      { eventId: 'event-gap-response-1', groupId: 60, authorSeq: 1, timestamp: 40_000 },
+      { eventId: 'event-gap-response-2', groupId: 60, authorSeq: 2, timestamp: 41_000 },
+    ]);
+    await manager.publishEvent(first);
+    await manager.publishEvent(second);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'author_gap_req',
+        g: 60,
+        a: first.authorAddress,
+        after: 0,
+        limit: 10,
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const returnedHints = direct
+      .filter((wire) => wire.k === 'sync_hints' && Array.isArray(wire.hints))
+      .flatMap((wire) => wire.hints as Array<Record<string, unknown>>);
+    expect(returnedHints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: first.eventId, n: 1 }),
+        expect.objectContaining({ id: second.eventId, n: 2 }),
+      ])
     );
     manager.close();
   });
