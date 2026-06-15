@@ -76,6 +76,7 @@ import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
+import { getGroupMembers } from '../Group/groupApi';
 
 const uid = new ShortUniqueId({ length: 5 });
 const uidImages = new ShortUniqueId({ length: 12 });
@@ -128,6 +129,14 @@ const normalizeChatHtmlContent = (raw: unknown): string => {
   return '<p></p>';
 };
 
+const mentionTextFromHtml = (html: string): string =>
+  html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 export const ChatGroup = ({
   selectedGroup,
   secretKey,
@@ -169,6 +178,9 @@ export const ChatGroup = ({
   const [isFocusedParent, setIsFocusedParent] = useState(false);
   const [replyMessage, setReplyMessage] = useState(null);
   const [onEditMessage, setOnEditMessage] = useState(null);
+  const [groupMentionMembers, setGroupMentionMembers] = useState<
+    { name: string; address: string }[]
+  >([]);
   const [isOpenQManager, setIsOpenQManager] = useState(null);
   const [isDeleteImage, setIsDeleteImage] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
@@ -375,9 +387,83 @@ export const ChatGroup = ({
     getTimestampEnterChat(selectedGroup);
   }, [selectedGroup, isActive]);
 
+  useEffect(() => {
+    const groupId = Number(selectedGroup);
+    if (!Number.isInteger(groupId) || groupId <= 0) {
+      setGroupMentionMembers([]);
+      return;
+    }
+    let cancelled = false;
+    void getGroupMembers(groupId)
+      .then((data) => {
+        if (cancelled) return;
+        const membersWithNames = Array.isArray(data?.members)
+          ? data.members
+              .map((member: any) => ({
+                address:
+                  typeof member?.member === 'string'
+                    ? member.member.trim()
+                    : '',
+                name:
+                  typeof member?.primaryName === 'string'
+                    ? member.primaryName.trim()
+                    : '',
+              }))
+              .filter((member) => member.address && member.name)
+          : [];
+        setGroupMentionMembers(membersWithNames);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('Failed to load group members for mentions:', error);
+          setGroupMentionMembers([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedGroup]);
+
+  const mentionNameToAddress = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of groupMentionMembers) {
+      if (member.name && member.address) {
+        map.set(member.name.toLowerCase(), member.address);
+      }
+    }
+    if (myName && myAddress) map.set(myName.toLowerCase(), myAddress);
+    for (const message of messages) {
+      if (message?.senderName && message?.sender) {
+        map.set(String(message.senderName).toLowerCase(), message.sender);
+      }
+    }
+    return map;
+  }, [groupMentionMembers, messages, myAddress, myName]);
+
+  const resolveMentionedAddresses = useCallback(
+    (html: string): string[] => {
+      const rawText = mentionTextFromHtml(html);
+      const text = rawText.toLowerCase();
+      if (!rawText) return [];
+      const mentioned = new Set<string>();
+      for (const [name, address] of mentionNameToAddress.entries()) {
+        if (!name || !address) continue;
+        if (text.includes(`@${name}`)) mentioned.add(address);
+      }
+      const addressMatches = rawText.match(/@Q[1-9A-HJ-NP-Za-km-z]{20,}/g) || [];
+      for (const match of addressMatches) {
+        mentioned.add(match.slice(1));
+      }
+      return [...mentioned];
+    },
+    [mentionNameToAddress]
+  );
+
   const members = useMemo(() => {
     const uniqueMembers = new Set();
-
+    groupMentionMembers.forEach((member) => {
+      if (member.name) uniqueMembers.add(member.name);
+    });
     messages.forEach((message) => {
       if (message?.senderName) {
         uniqueMembers.add(message?.senderName);
@@ -385,7 +471,7 @@ export const ChatGroup = ({
     });
 
     return Array.from(uniqueMembers);
-  }, [messages]);
+  }, [groupMentionMembers, messages]);
 
   const setEditorRef = (editorInstance) => {
     editorRef.current = editorInstance;
@@ -1089,7 +1175,25 @@ export const ChatGroup = ({
     const processed = processWithNewMessages([item], selectedGroup);
     const nextItem = processed?.[0] || item;
     const targetReference = nextItem.chatReference;
-    const itemType = nextItem?.decryptedData?.type || nextItem?.type;
+    const itemType =
+      nextItem?.eventType || nextItem?.decryptedData?.type || nextItem?.type;
+
+    if (targetReference && itemType === 'delete') {
+      setMessages((prev) =>
+        prev.filter(
+          (message) =>
+            message?.signature !== targetReference &&
+            message?.tempSignature !== targetReference
+        )
+      );
+      setChatReferences((prev) => {
+        if (!prev?.[targetReference]) return prev;
+        const organized = { ...prev };
+        delete organized[targetReference];
+        return organized;
+      });
+      return;
+    }
 
     if (
       targetReference &&
@@ -1155,6 +1259,7 @@ export const ChatGroup = ({
         timestamp: event.timestamp,
         data: event.encryptedPayload,
         chatReference: event.targetEventId || undefined,
+        eventType: event.eventType,
         repliedTo: event.replyToEventId || undefined,
         reticulumChat: true,
       };
@@ -1177,6 +1282,36 @@ export const ChatGroup = ({
       const normalizedText = normalizeChatHtmlContent(
         decryptedData.message || decryptedData.messageText
       );
+      if (event.eventType === 'delete' && event.targetEventId) {
+        void window.reticulumChat?.deleteSearchText?.(event.targetEventId);
+        void window.reticulumChat?.deleteMentions?.(event.targetEventId);
+      } else if (
+        event.eventType === 'edit' &&
+        event.targetEventId &&
+        normalizedText
+      ) {
+        void window.reticulumChat?.indexSearchText?.(
+          event.targetEventId,
+          normalizedText
+        );
+        void window.reticulumChat?.replaceMentions?.(
+          event.targetEventId,
+          resolveMentionedAddresses(normalizedText)
+        );
+      } else if (
+        (event.eventType === 'message' ||
+          event.eventType === 'attachment_manifest') &&
+        normalizedText
+      ) {
+        void window.reticulumChat?.indexSearchText?.(
+          event.eventId,
+          normalizedText
+        );
+        void window.reticulumChat?.replaceMentions?.(
+          event.eventId,
+          resolveMentionedAddresses(normalizedText)
+        );
+      }
       const normalizedDecryptedData = {
         ...decryptedData,
         ...(decryptedData.message !== undefined ? { message: normalizedText } : {}),
@@ -1187,11 +1322,12 @@ export const ChatGroup = ({
         ...normalizedDecryptedData,
         decryptedData: normalizedDecryptedData,
         text: normalizedText,
+        eventType: event.eventType,
         isNotEncrypted: isPrivate === false,
         unread: event.authorAddress === myAddress ? false : true,
       };
     },
-    [isPrivate, myAddress, myName, selectedGroup]
+    [isPrivate, myAddress, myName, resolveMentionedAddresses, selectedGroup]
   );
 
   useEffect(() => {
@@ -1230,10 +1366,14 @@ export const ChatGroup = ({
       return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
     }, 0);
     if (latestTimestamp <= 0) return;
-    void window.reticulumChat?.markRead?.(groupId, latestTimestamp).then(() => {
+    void window.reticulumChat?.markRead?.(
+      groupId,
+      latestTimestamp,
+      myAddress
+    ).then(() => {
       executeEvent('reticulum-chat-summaries-refresh', {});
     });
-  }, [isActive, reticulumChatEnabled, reticulumChatEvents, selectedGroup]);
+  }, [isActive, myAddress, reticulumChatEnabled, reticulumChatEvents, selectedGroup]);
 
   const clearEditorContent = () => {
     if (editorRef.current) {
@@ -1662,6 +1802,7 @@ export const ChatGroup = ({
         onEdit={onEdit}
         onReply={onReply}
         openQManager={openQManager}
+        reticulumChatEnabled={reticulumChatEnabled}
         selectedGroup={selectedGroup}
         tempChatReferences={tempChatReferences}
         tempMessages={tempMessages}

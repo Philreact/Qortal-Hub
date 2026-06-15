@@ -1,4 +1,5 @@
 import CampaignRoundedIcon from '@mui/icons-material/CampaignRounded';
+import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import GroupAddRoundedIcon from '@mui/icons-material/GroupAddRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
@@ -83,6 +84,7 @@ type GroupNotificationItem = {
   isEncryptedLike: boolean;
   isGenericMessage: boolean;
   isUnread: boolean;
+  hasUnreadMention: boolean;
   openedAt: number;
   senderLabel: string;
   snippet: string;
@@ -837,7 +839,11 @@ export const GroupsWidget = ({
         const isPublicGroup =
           group?.isOpen === true || groupsProperties[groupId]?.isOpen === true;
         const isEncryptedLike = isLikelyEncryptedSnippet(group.data);
+        const hasUnreadMention =
+          group?.reticulumChatSummary?.hasUnreadMention === true ||
+          (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
         const isUnread =
+          hasUnreadMention ||
           (group?.reticulumChatSummary?.unreadCount ?? 0) > 0 ||
           (!!group.data &&
             !!groupChatTimestamps[groupId] &&
@@ -855,6 +861,7 @@ export const GroupsWidget = ({
           isEncryptedLike: !isPublicGroup && isEncryptedLike,
           isGenericMessage: isPublicGroup && isEncryptedLike,
           isUnread,
+          hasUnreadMention,
           openedAt: timestampEnterData[groupId] ?? 0,
           senderLabel,
           snippet,
@@ -2055,7 +2062,15 @@ export const GroupsWidget = ({
                     >
                       {item.groupName}
                     </Typography>
-                    {item.isUnread ? (
+                    {item.hasUnreadMention ? (
+                      <AlternateEmailRoundedIcon
+                        sx={{
+                          color: theme.palette.warning.main,
+                          flexShrink: 0,
+                          fontSize: '0.95rem',
+                        }}
+                      />
+                    ) : item.isUnread ? (
                       <MarkChatUnreadRoundedIcon
                         sx={{
                           color: theme.palette.primary.main,

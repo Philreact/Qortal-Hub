@@ -142,6 +142,59 @@ export {
 export type { GroupProps } from './groupTypes';
 export { validateSecretKey } from './groupValidation';
 
+type ReticulumBackgroundEvent = {
+  authorAddress?: string;
+  encryptedPayload?: string;
+  eventId?: string;
+  eventType?: string;
+  groupId?: number;
+  targetEventId?: string;
+};
+
+const collectReticulumPlainText = (value: unknown, out: string[]): void => {
+  if (typeof value === 'string') {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectReticulumPlainText(item, out);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, next] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'type' || key === 'isEdited') continue;
+    collectReticulumPlainText(next, out);
+  }
+};
+
+const reticulumTextFromPayload = (payload: unknown): string => {
+  const strings: string[] = [];
+  collectReticulumPlainText(payload, strings);
+  return strings
+    .join(' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const resolveReticulumMentionAddresses = (
+  text: string,
+  nameToAddress: Map<string, string>
+): string[] => {
+  const rawText = String(text || '');
+  const lowerText = rawText.toLowerCase();
+  const mentioned = new Set<string>();
+  for (const [name, address] of nameToAddress.entries()) {
+    if (!name || !address) continue;
+    if (lowerText.includes(`@${name}`)) mentioned.add(address);
+  }
+  const addressMatches = rawText.match(/@Q[1-9A-HJ-NP-Za-km-z]{20,}/g) || [];
+  for (const match of addressMatches) {
+    mentioned.add(match.slice(1));
+  }
+  return [...mentioned];
+};
+
 /** Subscribes to memberGroupsAtom and runs effects (Group does not subscribe). */
 function MemberGroupsEffects({
   getGroupsWhereIAmAMember,
@@ -269,6 +322,10 @@ export const Group = ({
   );
   const setReticulumChatSummaries = useSetAtom(reticulumChatSummariesAtom);
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
+  const reticulumBackgroundProcessedEventIdsRef = useRef<Set<string>>(new Set());
+  const reticulumGroupMentionNameCacheRef = useRef<
+    Map<number, Map<string, string>>
+  >(new Map());
   const reticulumSummariesRefreshTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
   const setIsEnabledDevMode = useSetAtom(enabledDevModeAtom);
@@ -1068,6 +1125,183 @@ export const Group = ({
     },
     []
   );
+
+  const getReticulumMentionNameMap = useCallback(
+    async (groupId: number): Promise<Map<string, string>> => {
+      const cached = reticulumGroupMentionNameCacheRef.current.get(groupId);
+      if (cached) return cached;
+      const map = new Map<string, string>();
+      let loadedMembers = false;
+      try {
+        const data = await getGroupMembers(groupId);
+        loadedMembers = true;
+        if (Array.isArray(data?.members)) {
+          for (const member of data.members) {
+            const address =
+              typeof member?.member === 'string' ? member.member.trim() : '';
+            const name =
+              typeof member?.primaryName === 'string'
+                ? member.primaryName.trim()
+                : '';
+            if (address && name) map.set(name.toLowerCase(), address);
+          }
+        }
+      } catch (error) {
+        console.error(
+          '[ReticulumChat] Failed to load members for background mentions:',
+          error
+        );
+      }
+      if (myAddress && userInfo?.name) {
+        map.set(String(userInfo.name).toLowerCase(), myAddress);
+      }
+      if (loadedMembers) {
+        reticulumGroupMentionNameCacheRef.current.set(groupId, map);
+      }
+      return map;
+    },
+    [myAddress, userInfo?.name]
+  );
+
+  useEffect(() => {
+    reticulumGroupMentionNameCacheRef.current.clear();
+  }, [memberGroupsForReticulum, myAddress, userInfo?.name]);
+
+  const processReticulumBackgroundEvent = useCallback(
+    async (event: ReticulumBackgroundEvent) => {
+      if (!event?.eventId || !event?.groupId || !event?.eventType) return;
+      if (reticulumBackgroundProcessedEventIdsRef.current.has(event.eventId)) {
+        return;
+      }
+
+      if (event.eventType === 'delete') {
+        if (event.targetEventId) {
+          await window.reticulumChat?.deleteSearchText?.(event.targetEventId);
+          await window.reticulumChat?.deleteMentions?.(event.targetEventId);
+          reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
+          scheduleReticulumChatSummariesRefresh();
+        }
+        return;
+      }
+
+      if (
+        event.eventType !== 'message' &&
+        event.eventType !== 'edit' &&
+        event.eventType !== 'attachment_manifest'
+      ) {
+        return;
+      }
+
+      const groupId = Number(event.groupId);
+      if (!Number.isInteger(groupId) || groupId <= 0) return;
+      const groupProperty = groupsPropertiesRef.current?.[String(groupId)] as
+        | { isOpen?: boolean }
+        | undefined;
+      const isPublicGroup = groupProperty?.isOpen === true;
+
+      let payload: unknown = null;
+      if (isPublicGroup) {
+        try {
+          payload = JSON.parse(String(event.encryptedPayload || ''));
+        } catch {
+          payload = event.encryptedPayload || '';
+        }
+      } else {
+        const group = (memberGroupsRef.current || []).find(
+          (item: any) => Number(item?.groupId) === groupId
+        );
+        const secretKeyObject = await getSecretKeyForGroup(
+          group ? { groupId: String(groupId) } : null
+        );
+        if (!secretKeyObject) return;
+        const decrypted = await window.sendMessage('decryptSingle', {
+          data: [
+            {
+              data: event.encryptedPayload,
+              signature: event.eventId,
+              sender: event.authorAddress,
+            },
+          ],
+          secretKeyObject,
+        });
+        payload = decrypted?.[0]?.decryptedData;
+      }
+
+      const text = reticulumTextFromPayload(payload);
+      const targetEventId =
+        event.eventType === 'edit' && event.targetEventId
+          ? event.targetEventId
+          : event.eventId;
+      if (!targetEventId || !text) return;
+
+      await window.reticulumChat?.indexSearchText?.(targetEventId, text);
+      const mentionMap = await getReticulumMentionNameMap(groupId);
+      await window.reticulumChat?.replaceMentions?.(
+        targetEventId,
+        resolveReticulumMentionAddresses(text, mentionMap)
+      );
+      reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
+      scheduleReticulumChatSummariesRefresh();
+    },
+    [
+      getReticulumMentionNameMap,
+      getSecretKeyForGroup,
+      scheduleReticulumChatSummariesRefresh,
+    ]
+  );
+
+  useEffect(() => {
+    if (!myAddress) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    void window.reticulumChat?.isEnabled?.().then((enabled) => {
+      if (cancelled || enabled !== true) return;
+      unsubscribe = window.reticulumChat?.onEvent?.((payload) => {
+        const event = payload?.event as ReticulumBackgroundEvent | undefined;
+        if (!event?.eventId) return;
+        void processReticulumBackgroundEvent(event).catch((error) => {
+          console.error(
+            '[ReticulumChat] Background event processing failed:',
+            error
+          );
+        });
+      });
+      if (cancelled) unsubscribe?.();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [myAddress, processReticulumBackgroundEvent]);
+
+  useEffect(() => {
+    if (!myAddress) return;
+    const groupIds = (memberGroupsForReticulum || [])
+      .map((group: any) => Number(group?.groupId))
+      .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+    if (groupIds.length === 0) return;
+    let cancelled = false;
+    void window.reticulumChat?.isEnabled?.().then(async (enabled) => {
+      if (cancelled || enabled !== true) return;
+      for (const groupId of groupIds) {
+        if (cancelled) return;
+        const history = await window.reticulumChat?.getHistory?.(groupId, 50);
+        if (cancelled || !Array.isArray(history)) continue;
+        for (const event of history as ReticulumBackgroundEvent[]) {
+          if (cancelled) return;
+          await processReticulumBackgroundEvent(event);
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    groupsProperties,
+    memberGroupsForReticulum,
+    myAddress,
+    processReticulumBackgroundEvent,
+  ]);
 
   const getAdminsForPublic = useCallback(async (selectedGroup) => {
     try {
@@ -2081,10 +2315,10 @@ export const Group = ({
         0
     );
     if (!Number.isInteger(groupId) || groupId <= 0 || timestamp <= 0) return;
-    void window.reticulumChat?.markRead?.(groupId, timestamp).then(() => {
+    void window.reticulumChat?.markRead?.(groupId, timestamp, myAddress).then(() => {
       executeEvent('reticulum-chat-summaries-refresh', {});
     });
-  }, []);
+  }, [myAddress]);
 
   const selectGroupFunc = useCallback((group) => {
     markReticulumGroupRead(group);

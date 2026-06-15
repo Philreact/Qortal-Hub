@@ -12,6 +12,7 @@ import {
 import {
   ReticulumChatDatabase,
   type ReticulumChatAuthorHead,
+  type ReticulumChatSearchResult,
   type ReticulumChatSummary,
 } from './reticulum-chat-db';
 import type { ReticulumBridge, ReticulumSendResult } from './reticulum-bridge';
@@ -500,9 +501,41 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getChatSummaries(myAddress);
   }
 
-  markRead(groupId: number, upToTimestamp: number): void {
+  searchEvents(
+    query: string,
+    options: { groupIds?: number[]; limit?: number } = {}
+  ): ReticulumChatSearchResult[] {
+    return this.db.searchEvents(query, options);
+  }
+
+  indexSearchText(eventId: string, text: string): boolean {
+    return this.db.indexSearchText(eventId, text);
+  }
+
+  deleteSearchText(eventId: string): boolean {
+    return this.db.deleteSearchText(eventId);
+  }
+
+  replaceMentionsForEvent(
+    eventId: string,
+    mentionedAddresses: string[]
+  ): boolean {
+    const event = this.db.getEvent(eventId);
+    const replaced = this.db.replaceMentionsForEvent(eventId, mentionedAddresses);
+    if (replaced && event) this.emitSummaryChanged(event.groupId, event);
+    return replaced;
+  }
+
+  deleteMentionsForEvent(eventId: string): boolean {
+    const event = this.db.getEvent(eventId);
+    const deleted = this.db.deleteMentionsForEvent(eventId);
+    if (deleted && event) this.emitSummaryChanged(event.groupId, event);
+    return deleted;
+  }
+
+  markRead(groupId: number, upToTimestamp: number, myAddress = ''): void {
     this.assertGroupId(groupId);
-    this.db.markRead(groupId, upToTimestamp);
+    this.db.markRead(groupId, upToTimestamp, myAddress);
     this.emitSummaryChanged(groupId);
   }
 
@@ -1560,12 +1593,67 @@ export function readReticulumChatSyncStateFromDb(
 
 export function markReticulumChatReadInDb(
   groupId: number,
-  upToTimestamp: number
+  upToTimestamp: number,
+  myAddress = ''
 ): void {
   const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
   try {
     if (!Number.isInteger(groupId) || groupId <= 0) return;
-    db.markRead(groupId, upToTimestamp);
+    db.markRead(groupId, upToTimestamp, myAddress);
+  } finally {
+    db.close();
+  }
+}
+
+export function searchReticulumChatFromDb(
+  query: string,
+  options: { groupIds?: number[]; limit?: number } = {}
+): ReticulumChatSearchResult[] {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    return db.searchEvents(query, options);
+  } finally {
+    db.close();
+  }
+}
+
+export function indexReticulumChatSearchTextInDb(
+  eventId: string,
+  text: string
+): boolean {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    return db.indexSearchText(eventId, text);
+  } finally {
+    db.close();
+  }
+}
+
+export function deleteReticulumChatSearchTextInDb(eventId: string): boolean {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    return db.deleteSearchText(eventId);
+  } finally {
+    db.close();
+  }
+}
+
+export function replaceReticulumChatMentionsInDb(
+  eventId: string,
+  mentionedAddresses: string[]
+): boolean {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    return db.replaceMentionsForEvent(eventId, mentionedAddresses);
+  } finally {
+    db.close();
+  }
+}
+
+export function deleteReticulumChatMentionsInDb(eventId: string): boolean {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    return db.deleteMentionsForEvent(eventId);
   } finally {
     db.close();
   }

@@ -1310,11 +1310,47 @@ try {
         ipcRenderer.invoke('reticulumChat:getSummaries', myAddress) as Promise<
           unknown[]
         >,
-      markRead: async (groupId: number, upToTimestamp: number) =>
+      search: async (
+        query: string,
+        options?: { groupIds?: number[]; limit?: number }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:search',
+          query,
+          options
+        ) as Promise<unknown[]>,
+      indexSearchText: async (eventId: string, text: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:indexSearchText',
+          eventId,
+          text
+        ) as Promise<{ success: boolean }>,
+      deleteSearchText: async (eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteSearchText',
+          eventId
+        ) as Promise<{ success: boolean }>,
+      replaceMentions: async (eventId: string, mentionedAddresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:replaceMentions',
+          eventId,
+          mentionedAddresses
+        ) as Promise<{ success: boolean }>,
+      deleteMentions: async (eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteMentions',
+          eventId
+        ) as Promise<{ success: boolean }>,
+      markRead: async (
+        groupId: number,
+        upToTimestamp: number,
+        myAddress?: string
+      ) =>
         ipcRenderer.invoke(
           'reticulumChat:markRead',
           groupId,
-          upToTimestamp
+          upToTimestamp,
+          myAddress
         ) as Promise<{ success: boolean }>,
       getSubscriptions: async () =>
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
@@ -1429,11 +1465,47 @@ try {
         ipcRenderer.invoke('reticulumChat:getSummaries', myAddress) as Promise<
           unknown[]
         >,
-      markRead: async (groupId: number, upToTimestamp: number) =>
+      search: async (
+        query: string,
+        options?: { groupIds?: number[]; limit?: number }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:search',
+          query,
+          options
+        ) as Promise<unknown[]>,
+      indexSearchText: async (eventId: string, text: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:indexSearchText',
+          eventId,
+          text
+        ) as Promise<{ success: boolean }>,
+      deleteSearchText: async (eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteSearchText',
+          eventId
+        ) as Promise<{ success: boolean }>,
+      replaceMentions: async (eventId: string, mentionedAddresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:replaceMentions',
+          eventId,
+          mentionedAddresses
+        ) as Promise<{ success: boolean }>,
+      deleteMentions: async (eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteMentions',
+          eventId
+        ) as Promise<{ success: boolean }>,
+      markRead: async (
+        groupId: number,
+        upToTimestamp: number,
+        myAddress?: string
+      ) =>
         ipcRenderer.invoke(
           'reticulumChat:markRead',
           groupId,
-          upToTimestamp
+          upToTimestamp,
+          myAddress
         ) as Promise<{ success: boolean }>,
       getSubscriptions: async () =>
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<

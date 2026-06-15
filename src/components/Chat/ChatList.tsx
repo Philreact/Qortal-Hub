@@ -37,6 +37,7 @@ type ChatListProps = {
   qchatCompletedTransfers?: Record<string, any>;
   hasSecretKey?: any;
   isPrivate?: any;
+  reticulumChatEnabled?: boolean;
   compactScrollButton?: boolean;
   chatId?: any;
 };
@@ -60,6 +61,7 @@ export const ChatList = ({
   qchatCompletedTransfers,
   hasSecretKey,
   isPrivate,
+  reticulumChatEnabled = false,
   compactScrollButton = false,
   chatId,
 }: ChatListProps) => {
@@ -704,6 +706,7 @@ export const ChatList = ({
           messages={messages}
           myName={myName}
           openQManager={openQManager}
+          reticulumChatEnabled={reticulumChatEnabled}
           selectedGroup={selectedGroup}
         />
       )}

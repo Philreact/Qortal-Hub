@@ -547,9 +547,28 @@ declare global {
       getHistory: (groupId: number, limit?: number) => Promise<unknown[]>;
       getSyncState: (groupId: number) => Promise<Record<string, number>>;
       getSummaries: (myAddress?: string) => Promise<unknown[]>;
+      search: (
+        query: string,
+        options?: { groupIds?: number[]; limit?: number }
+      ) => Promise<unknown[]>;
+      indexSearchText: (
+        eventId: string,
+        text: string
+      ) => Promise<{ success: boolean }>;
+      deleteSearchText: (
+        eventId: string
+      ) => Promise<{ success: boolean }>;
+      replaceMentions: (
+        eventId: string,
+        mentionedAddresses: string[]
+      ) => Promise<{ success: boolean }>;
+      deleteMentions: (
+        eventId: string
+      ) => Promise<{ success: boolean }>;
       markRead: (
         groupId: number,
-        upToTimestamp: number
+        upToTimestamp: number,
+        myAddress?: string
       ) => Promise<{ success: boolean }>;
       getSubscriptions: () => Promise<number[]>;
       onEvent: (cb: (payload: { event: unknown }) => void) => () => void;

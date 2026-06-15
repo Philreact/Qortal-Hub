@@ -780,6 +780,12 @@ export const groupChatHasUnreadAtom = atom((get) => {
   if (!groups?.length || !myAddress) return false;
   return groups.some((group: any) => {
     if (group?.groupId === '0') return false;
+    if (
+      group?.reticulumChatSummary?.hasUnreadMention === true ||
+      (group?.reticulumChatSummary?.mentionCount ?? 0) > 0
+    ) {
+      return true;
+    }
     if ((group?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
     return (
       group?.data &&
@@ -819,6 +825,12 @@ export const isUnreadChatAtomFamily = atomFamily((selectedGroupId: string) =>
     const groupChatTimestamps = get(groupChatTimestampsAtom);
     const timestampEnterData = get(timestampEnterDataAtom) || {};
     const findGroup = groups?.find((g: any) => g?.groupId === selectedGroupId);
+    if (
+      findGroup?.reticulumChatSummary?.hasUnreadMention === true ||
+      (findGroup?.reticulumChatSummary?.mentionCount ?? 0) > 0
+    ) {
+      return true;
+    }
     if ((findGroup?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
     if (!findGroup?.data || !findGroup?.timestamp) return false;
     if (findGroup?.sender === myAddress) return false;

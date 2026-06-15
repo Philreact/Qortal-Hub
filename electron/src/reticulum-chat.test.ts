@@ -149,6 +149,122 @@ describe('reticulum chat database', () => {
     );
   });
 
+  it('searches indexed public event payloads by group', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const matching = signedEvent({
+      eventId: 'event-search-match',
+      groupId: 42,
+      encryptedPayload: JSON.stringify({
+        messageText: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'alpha searchable phrase' }],
+            },
+          ],
+        },
+      }),
+    });
+    const otherGroup = signedEvent({
+      eventId: 'event-search-other-group',
+      groupId: 43,
+      encryptedPayload: JSON.stringify({ messageText: 'alpha searchable phrase' }),
+    });
+    db.insertEvent(matching, true);
+    db.insertEvent(otherGroup, true);
+
+    expect(db.searchEvents('searchable', { groupIds: [42] }).map((item) => item.event.eventId)).toEqual([
+      matching.eventId,
+    ]);
+    expect(db.searchEvents('alpha phrase', { groupIds: [99] })).toEqual([]);
+  });
+
+  it('indexes decrypted search text for encrypted/private events', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'event-private-search',
+      groupId: 51,
+      encryptedPayload: 'opaque-ciphertext',
+    });
+    db.insertEvent(event, true);
+    expect(db.searchEvents('private needle')).toEqual([]);
+
+    expect(db.indexSearchText(event.eventId, 'private needle after decrypt')).toBe(
+      true
+    );
+    expect(db.searchEvents('needle', { groupIds: [51] })[0]?.event.eventId).toBe(
+      event.eventId
+    );
+  });
+
+  it('replaces and deletes search text for edit and delete events', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'event-search-delete-target',
+      groupId: 62,
+      encryptedPayload: JSON.stringify({ messageText: 'original searchable text' }),
+    });
+    db.insertEvent(event, true);
+
+    expect(db.indexSearchText(event.eventId, 'edited replacement text')).toBe(
+      true
+    );
+    expect(db.searchEvents('original', { groupIds: [62] })).toEqual([]);
+    expect(db.searchEvents('replacement', { groupIds: [62] })[0]?.event.eventId).toBe(
+      event.eventId
+    );
+
+    expect(db.deleteSearchText(event.eventId)).toBe(true);
+    expect(db.searchEvents('replacement', { groupIds: [62] })).toEqual([]);
+  });
+
+  it('tracks unread mentions by mentioned address', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'event-mention-target',
+      groupId: 63,
+      authorAddress: 'Qauthor',
+    });
+    db.insertEvent(event, true);
+
+    expect(db.replaceMentionsForEvent(event.eventId, ['Qmentioned'])).toBe(true);
+    expect(db.getChatSummaries('Qmentioned')[0]).toMatchObject({
+      groupId: 63,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+
+    db.markRead(63, event.timestamp, 'Qmentioned');
+    expect(db.getChatSummaries('Qmentioned')[0]).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+  });
+
+  it('replaces and deletes mentions for edited or deleted messages', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'event-mention-replace',
+      groupId: 64,
+      authorAddress: 'Qauthor',
+    });
+    db.insertEvent(event, true);
+
+    db.replaceMentionsForEvent(event.eventId, ['Qfirst']);
+    expect(db.getChatSummaries('Qfirst')[0]?.mentionCount).toBe(1);
+    db.replaceMentionsForEvent(event.eventId, ['Qsecond']);
+    expect(db.getChatSummaries('Qfirst')[0]?.mentionCount ?? 0).toBe(0);
+    expect(db.getChatSummaries('Qsecond')[0]?.mentionCount).toBe(1);
+    db.deleteMentionsForEvent(event.eventId);
+    expect(db.getChatSummaries('Qsecond')[0]?.mentionCount ?? 0).toBe(0);
+  });
+
   it('returns recent group events when requester has empty sync state', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);

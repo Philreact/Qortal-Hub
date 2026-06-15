@@ -19,6 +19,7 @@ import { formatEmailDate } from './qmailUtils';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
 import LockIcon from '@mui/icons-material/Lock';
+import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
 import { CustomButton } from '../../styles/App-styles';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import PersonOffIcon from '@mui/icons-material/PersonOff';
@@ -431,6 +432,9 @@ const GroupItem = memo(
     const isSelected = group?.groupId === selectedGroupId;
     const hasReticulumUnread =
       (group?.reticulumChatSummary?.unreadCount ?? 0) > 0;
+    const hasReticulumMention =
+      group?.reticulumChatSummary?.hasUnreadMention === true ||
+      (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
 
     const gcallRoomIdForRow =
       group?.groupId && group.groupId !== '0' && Number.isFinite(Number(group.groupId))
@@ -602,6 +606,15 @@ const GroupItem = memo(
                     }}
                   />
                 )}
+
+              {hasReticulumMention && (
+                <AlternateEmailIcon
+                  sx={{
+                    color: theme.palette.other.unread,
+                    fontSize: '18px',
+                  }}
+                />
+              )}
 
               {groupProperty?.isOpen === false && (
                 <LockIcon

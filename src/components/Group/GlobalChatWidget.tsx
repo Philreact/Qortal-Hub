@@ -18,6 +18,7 @@ import {
   useTheme,
 } from '@mui/material';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
+import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -1313,6 +1314,9 @@ export function GlobalChatWidget({
                               Date.now() - group?.timestamp <
                                 timeDifferenceForNotificationChats) ||
                               (groupEnterTimestamp ?? 0) < group?.timestamp));
+                        const hasReticulumMention =
+                          group?.reticulumChatSummary?.hasUnreadMention === true ||
+                          (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
                         const groupProperty = groupsProperties[group?.groupId];
                         const isPrivateGroup = groupProperty?.isOpen === false;
                         return (
@@ -1340,7 +1344,8 @@ export function GlobalChatWidget({
                                 void window.reticulumChat
                                   ?.markRead?.(
                                     Number(group?.groupId),
-                                    reticulumTimestamp
+                                    reticulumTimestamp,
+                                    myAddress
                                   )
                                   .then(() => {
                                     executeEvent(
@@ -1462,6 +1467,16 @@ export function GlobalChatWidget({
                             >
                               {hasUnreadGroup && (
                                 <MarkChatUnreadIcon
+                                  sx={{
+                                    color:
+                                      theme.palette.other?.unread ??
+                                      theme.palette.primary.main,
+                                    fontSize: '18px',
+                                  }}
+                                />
+                              )}
+                              {hasReticulumMention && (
+                                <AlternateEmailIcon
                                   sx={{
                                     color:
                                       theme.palette.other?.unread ??

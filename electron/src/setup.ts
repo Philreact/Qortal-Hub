@@ -87,6 +87,11 @@ import {
   readReticulumChatSummariesFromDb,
   readReticulumChatSyncStateFromDb,
   markReticulumChatReadInDb,
+  searchReticulumChatFromDb,
+  indexReticulumChatSearchTextInDb,
+  deleteReticulumChatSearchTextInDb,
+  replaceReticulumChatMentionsInDb,
+  deleteReticulumChatMentionsInDb,
   type ReticulumChatEvent,
 } from './reticulum-chat';
 import { startCallManager, stopCallManager, getCallManager } from './call';
@@ -3194,13 +3199,91 @@ ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) 
 });
 
 ipcMain.handle(
+  'reticulumChat:search',
+  async (
+    _event,
+    query: string,
+    options?: { groupIds?: number[]; limit?: number }
+  ) => {
+    const safeQuery = typeof query === 'string' ? query : '';
+    const safeOptions = options && typeof options === 'object' ? options : {};
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.searchEvents(safeQuery, safeOptions)
+      : searchReticulumChatFromDb(safeQuery, safeOptions);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:indexSearchText',
+  async (_event, eventId: string, text: string) => {
+    if (typeof eventId !== 'string' || typeof text !== 'string') {
+      return { success: false };
+    }
+    const manager = getReticulumChatManager();
+    const indexed = manager
+      ? manager.indexSearchText(eventId, text)
+      : indexReticulumChatSearchTextInDb(eventId, text);
+    return { success: indexed };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:deleteSearchText',
+  async (_event, eventId: string) => {
+    if (typeof eventId !== 'string') {
+      return { success: false };
+    }
+    const manager = getReticulumChatManager();
+    const deleted = manager
+      ? manager.deleteSearchText(eventId)
+      : deleteReticulumChatSearchTextInDb(eventId);
+    return { success: deleted };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:replaceMentions',
+  async (_event, eventId: string, mentionedAddresses: string[]) => {
+    if (typeof eventId !== 'string' || !Array.isArray(mentionedAddresses)) {
+      return { success: false };
+    }
+    const manager = getReticulumChatManager();
+    const replaced = manager
+      ? manager.replaceMentionsForEvent(eventId, mentionedAddresses)
+      : replaceReticulumChatMentionsInDb(eventId, mentionedAddresses);
+    return { success: replaced };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:deleteMentions',
+  async (_event, eventId: string) => {
+    if (typeof eventId !== 'string') {
+      return { success: false };
+    }
+    const manager = getReticulumChatManager();
+    const deleted = manager
+      ? manager.deleteMentionsForEvent(eventId)
+      : deleteReticulumChatMentionsInDb(eventId);
+    return { success: deleted };
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:markRead',
-  async (_event, groupId: number, upToTimestamp: number) => {
+  async (
+    _event,
+    groupId: number,
+    upToTimestamp: number,
+    myAddress?: string
+  ) => {
+    const address = typeof myAddress === 'string' ? myAddress : '';
     const manager = getReticulumChatManager();
     if (manager) {
-      manager.markRead(groupId, upToTimestamp);
+      manager.markRead(groupId, upToTimestamp, address);
     } else {
-      markReticulumChatReadInDb(groupId, upToTimestamp);
+      markReticulumChatReadInDb(groupId, upToTimestamp, address);
     }
     return { success: true };
   }

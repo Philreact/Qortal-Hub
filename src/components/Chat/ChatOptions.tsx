@@ -74,6 +74,7 @@ export const ChatOptions = ({
   selectedGroup,
   openQManager,
   isPrivate,
+  reticulumChatEnabled = false,
 }) => {
   const [mode, setMode] = useState('default');
   const [searchValue, setSearchValue] = useState('');
@@ -90,6 +91,8 @@ export const ChatOptions = ({
   const parentRefMentions = useRef(null);
   const [lastMentionTimestamp, setLastMentionTimestamp] = useState(null);
   const [debouncedValue, setDebouncedValue] = useState(''); // Debounced value
+  const [reticulumSearchResults, setReticulumSearchResults] = useState([]);
+  const [reticulumSearchLoading, setReticulumSearchLoading] = useState(false);
 
   const messages = useMemo(() => {
     return untransformedMessages?.map((item) => {
@@ -111,6 +114,14 @@ export const ChatOptions = ({
       } else return item;
     });
   }, [untransformedMessages]);
+
+  const messagesBySignature = useMemo(() => {
+    const map = new Map();
+    for (const message of messages || []) {
+      if (message?.signature) map.set(message.signature, message);
+    }
+    return map;
+  }, [messages]);
 
   const getTimestampMention = async () => {
     try {
@@ -176,7 +187,89 @@ export const ChatOptions = ({
     };
   }, [searchValue]); // Runs effect when searchValue changes
 
+  useEffect(() => {
+    if (!reticulumChatEnabled || mode !== 'search') {
+      setReticulumSearchResults([]);
+      setReticulumSearchLoading(false);
+      return;
+    }
+    const query = debouncedValue.trim();
+    const groupId = Number(selectedGroup);
+    if (!query || !Number.isInteger(groupId) || groupId <= 0) {
+      setReticulumSearchResults([]);
+      setReticulumSearchLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setReticulumSearchLoading(true);
+    void window.reticulumChat
+      ?.search(query, { groupIds: [groupId], limit: 100 })
+      .then((results) => {
+        if (cancelled) return;
+        const normalizedResults = (Array.isArray(results) ? results : [])
+          .map((result: any) => {
+            const event = result?.event || result;
+            if (!event?.eventId) return null;
+            const loadedMessage = messagesBySignature.get(event.eventId);
+            const fallbackMessage = {
+              signature: event.eventId,
+              sender: event.authorAddress,
+              senderName:
+                event.senderName ||
+                event.authorPrimaryName ||
+                event.authorAddress,
+              timestamp: event.timestamp,
+              searchSnippet: String(result?.snippet || '').replace(
+                /<\/?mark>/g,
+                ''
+              ),
+              reticulumChat: true,
+            };
+            return loadedMessage || fallbackMessage;
+          })
+          .filter(Boolean)
+          .filter((message: any) => {
+            if (!selectedMember) return true;
+            return (
+              message?.senderName === selectedMember ||
+              message?.sender === selectedMember
+            );
+          });
+        setReticulumSearchResults(normalizedResults);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('Reticulum chat search failed:', error);
+          setReticulumSearchResults([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReticulumSearchLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    debouncedValue,
+    messagesBySignature,
+    mode,
+    reticulumChatEnabled,
+    selectedGroup,
+    selectedMember,
+  ]);
+
   const searchedList = useMemo(() => {
+    if (reticulumChatEnabled) {
+      if (!debouncedValue?.trim() && selectedMember) {
+        return messages
+          .filter((message) => message?.senderName === selectedMember)
+          ?.sort((a, b) => b?.timestamp - a?.timestamp);
+      }
+      return debouncedValue?.trim() ? reticulumSearchResults : [];
+    }
+
     if (!debouncedValue?.trim()) {
       if (selectedMember) {
         return messages
@@ -207,7 +300,14 @@ export const ChatOptions = ({
         )?.includes(debouncedValue.toLowerCase())
       )
       ?.sort((a, b) => b?.timestamp - a?.timestamp);
-  }, [debouncedValue, messages, selectedMember, isPrivate]);
+  }, [
+    debouncedValue,
+    messages,
+    selectedMember,
+    isPrivate,
+    reticulumChatEnabled,
+    reticulumSearchResults,
+  ]);
 
   const mentionList = useMemo(() => {
     if (!messages || messages.length === 0 || !myName) return [];
@@ -520,7 +620,7 @@ export const ChatOptions = ({
             )}
           </Box>
 
-          {debouncedValue && searchedList?.length === 0 && (
+          {debouncedValue && searchedList?.length === 0 && !reticulumSearchLoading && (
             <Typography
               sx={{
                 fontSize: '11px',
@@ -531,6 +631,21 @@ export const ChatOptions = ({
               {t('core:message.generic.no_results', {
                 postProcess: 'capitalizeFirstChar',
               })}
+            </Typography>
+          )}
+
+          {reticulumSearchLoading && (
+            <Typography
+              sx={{
+                fontSize: '11px',
+                fontWeight: 400,
+                color: theme.palette.text.secondary,
+              }}
+            >
+              {t('core:action.search', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              ...
             </Typography>
           )}
 
@@ -873,6 +988,18 @@ const ShowMessage = ({ message, goToMessage, messages }) => {
           <MessageDisplay
             htmlContent={message?.decryptedData?.message || '<p></p>'}
           />
+        )}
+        {message?.searchSnippet && (
+          <Typography
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '13px',
+              overflowWrap: 'anywhere',
+              whiteSpace: 'normal',
+            }}
+          >
+            {message.searchSnippet}
+          </Typography>
         )}
       </Box>
     </Box>
