@@ -73,6 +73,7 @@ import { encryptSingle } from '../qdn/encryption/group-encryption';
 import { _createPoll, _voteOnPoll } from '../qortal/get.ts';
 import { createTransaction } from '../transactions/transactions';
 import { getData, storeData } from '../utils/chromeStorage';
+import publicKeyToAddress from '../utils/generateWallet/publicKeyToAddress';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages.ts';
 
 export function versionCase(request, event) {
@@ -2249,6 +2250,50 @@ export async function signPresenceMessageCase(request, event) {
       {
         requestId: request.requestId,
         action: 'signPresenceMessage',
+        error: error?.message,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
+export async function signReticulumChatEventCase(request, event) {
+  try {
+    const resKeyPair = await getKeyPair();
+    const privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    const publicKey = resKeyPair.publicKey;
+    const authorAddress = publicKeyToAddress(Base58.decode(publicKey));
+    const fields = {
+      ...(request.payload || {}),
+      authorAddress,
+      authorPublicKey: publicKey,
+    };
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(fields).sort()) {
+      sorted[key] = fields[key];
+    }
+    const messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
+    const signature = nacl.sign.detached(messageBytes, privateKeyBytes);
+
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'signReticulumChatEvent',
+        payload: {
+          authorAddress,
+          authorPublicKey: publicKey,
+          signature: Base58.encode(signature),
+        },
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'signReticulumChatEvent',
         error: error?.message,
         type: 'backgroundMessageResponse',
       },

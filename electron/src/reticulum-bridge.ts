@@ -160,9 +160,15 @@ type BridgeCmdFrame = {
     | 'send_qchat_file_resource'
     | 'authorize_qchat_file_resource'
     | 'reject_qchat_file_resource'
+    | 'accept_reticulum_chat_resource'
+    | 'send_reticulum_chat_resource'
+    | 'authorize_reticulum_chat_resource'
+    | 'reject_reticulum_chat_resource'
     | 'fanout_call'
     | 'send_group_call'
     | 'fanout_group_call'
+    | 'send_reticulum_chat'
+    | 'fanout_reticulum_chat'
     | 'send_group_audio_link_heartbeat'
     | 'open_group_audio_link'
     | 'close_group_audio_link'
@@ -536,6 +542,16 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'reticulum_chat_message';
+      payload?: {
+        wire?: Record<string, unknown>;
+        senderDestinationHash?: string;
+        peerPresenceHash?: string;
+        linkId?: string;
+      };
+    }
+  | {
+      type: 'event';
       event: 'group_audio_link_established';
       payload?: {
         linkId?: string;
@@ -667,6 +683,11 @@ type BridgeEventFrame =
   | {
       type: 'event';
       event: 'qchat_file_transfer';
+      payload?: Record<string, unknown>;
+    }
+  | {
+      type: 'event';
+      event: 'reticulum_chat_resource';
       payload?: Record<string, unknown>;
     }
   | {
@@ -1334,6 +1355,47 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return this.sendDetailed('reject_qchat_file_resource', payload);
   }
 
+  async acceptReticulumChatResourceDetailed(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    authMessage: Record<string, unknown>;
+    transferId: string;
+    savePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('accept_reticulum_chat_resource', payload);
+  }
+
+  async sendReticulumChatResourceDetailed(payload: {
+    allowedRecipientAddress: string;
+    transferId: string;
+    filePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    expiresAt?: number;
+    metadata?: Record<string, unknown>;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('send_reticulum_chat_resource', payload);
+  }
+
+  async authorizeReticulumChatResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('authorize_reticulum_chat_resource', payload);
+  }
+
+  async rejectReticulumChatResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+    reason: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('reject_reticulum_chat_resource', payload);
+  }
+
   async fanoutCallDetailed(
     messages: Record<string, unknown>[],
     excludePeerPresenceHashes: string[] = []
@@ -1381,6 +1443,33 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       };
     }
     return this.sendDetailed('fanout_group_call', {
+      messages,
+      excludePeerPresenceHashes,
+    });
+  }
+
+  async sendReticulumChatDetailed(
+    peerPresenceHash: string,
+    message: Record<string, unknown>
+  ): Promise<ReticulumSendResult> {
+    return this.sendDetailed('send_reticulum_chat', {
+      peerPresenceHash,
+      message,
+    });
+  }
+
+  async fanoutReticulumChatDetailed(
+    messages: Record<string, unknown>[],
+    excludePeerPresenceHashes: string[] = []
+  ): Promise<ReticulumSendResult> {
+    if (messages.length === 0) {
+      return {
+        ok: false,
+        reason: 'wire-too-large',
+        error: 'No Reticulum chat frames fit encrypted wire limit',
+      };
+    }
+    return this.sendDetailed('fanout_reticulum_chat', {
       messages,
       excludePeerPresenceHashes,
     });
@@ -3309,6 +3398,29 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         );
         return;
       }
+      case 'reticulum_chat_message': {
+        const wire = frame.payload?.wire;
+        const senderDestinationHash = frame.payload?.senderDestinationHash;
+        const peerPresenceHash = frame.payload?.peerPresenceHash;
+        if (!wire || typeof wire !== 'object') return;
+        this.markOverlayPeerVerifiedFromQortalTraffic(
+          typeof peerPresenceHash === 'string' ? peerPresenceHash : '',
+          typeof senderDestinationHash === 'string'
+            ? senderDestinationHash
+            : '',
+          'reticulum_chat'
+        );
+        this.emit(
+          'reticulum-chat-message',
+          wire as Record<string, unknown>,
+          typeof senderDestinationHash === 'string'
+            ? senderDestinationHash
+            : '',
+          typeof peerPresenceHash === 'string' ? peerPresenceHash : '',
+          typeof frame.payload?.linkId === 'string' ? frame.payload.linkId : ''
+        );
+        return;
+      }
       case 'group_audio_link_established': {
         const linkId = frame.payload?.linkId;
         if (typeof linkId !== 'string' || !linkId) return;
@@ -3794,6 +3906,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         this.emit('qchat-file-transfer', frame.payload ?? {});
         return;
       }
+      case 'reticulum_chat_resource': {
+        this.emit('reticulum-chat-resource', frame.payload ?? {});
+        return;
+      }
       case 'error': {
         const message =
           frame.payload?.message ??
@@ -3928,9 +4044,15 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       | 'send_qchat_file_resource'
       | 'authorize_qchat_file_resource'
       | 'reject_qchat_file_resource'
+      | 'accept_reticulum_chat_resource'
+      | 'send_reticulum_chat_resource'
+      | 'authorize_reticulum_chat_resource'
+      | 'reject_reticulum_chat_resource'
       | 'fanout_call'
       | 'send_group_call'
       | 'fanout_group_call'
+      | 'send_reticulum_chat'
+      | 'fanout_reticulum_chat'
       | 'send_group_audio_link_heartbeat'
       | 'close_group_audio_link'
       | 'reset_group_audio_peer_state'

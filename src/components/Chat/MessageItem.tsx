@@ -70,6 +70,31 @@ import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 
+const normalizeMessageHtmlContent = (raw: unknown): string | null => {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed.length ? trimmed : null;
+  }
+  if (typeof raw === 'object') {
+    try {
+      const doc = raw as { type?: string; content?: unknown };
+      if (doc.type === 'doc' && Array.isArray(doc.content)) {
+        return generateHTML(doc, [
+          StarterKit,
+          Underline,
+          Highlight,
+          Mention,
+          TextStyle,
+        ]);
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
 const formatQchatFileSize = (bytes?: number) => {
   const size = Number(bytes || 0);
   if (!Number.isFinite(size) || size <= 0) return '0 bytes';
@@ -227,13 +252,7 @@ export const MessageItemComponent = ({
     if (source) {
       const isHtml = isHtmlString(source);
       if (isHtml) return source;
-      return generateHTML(source, [
-        StarterKit,
-        Underline,
-        Highlight,
-        Mention,
-        TextStyle,
-      ]);
+      return normalizeMessageHtmlContent(source);
     }
   }, [deferredMessage?.messageText, deferredMessage?.editTimestamp]);
 
@@ -242,13 +261,7 @@ export const MessageItemComponent = ({
     if (source) {
       const isHtml = isHtmlString(source);
       if (isHtml) return source;
-      return generateHTML(source, [
-        StarterKit,
-        Underline,
-        Highlight,
-        Mention,
-        TextStyle,
-      ]);
+      return normalizeMessageHtmlContent(source);
     }
   }, [reply?.messageText, reply?.editTimestamp]);
 
@@ -258,13 +271,7 @@ export const MessageItemComponent = ({
     if (source) {
       const isHtml = isHtmlString(source);
       if (isHtml) return source;
-      return generateHTML(source, [
-        StarterKit,
-        Underline,
-        Highlight,
-        Mention,
-        TextStyle,
-      ]);
+      return normalizeMessageHtmlContent(source);
     }
     return null;
   }, [replyExpiredMeta?.messageText, replyExpiredMeta?.editTimestamp]);
@@ -1372,13 +1379,7 @@ export const ReplyPreview = ({ message, isEdit = false }) => {
     if (!message?.messageText) return null;
     const isHtml = isHtmlString(message?.messageText);
     if (isHtml) return message?.messageText;
-    return generateHTML(message?.messageText, [
-      StarterKit,
-      Underline,
-      Highlight,
-      Mention,
-      TextStyle,
-    ]);
+    return normalizeMessageHtmlContent(message?.messageText);
   }, [message?.messageText]);
 
   return (

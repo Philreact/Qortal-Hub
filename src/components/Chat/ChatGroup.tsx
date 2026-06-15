@@ -69,6 +69,13 @@ import ImageIcon from '@mui/icons-material/Image';
 import SendIcon from '@mui/icons-material/Send';
 import { messageHasImage } from '../../utils/chat';
 import { useTranslation } from 'react-i18next';
+import { useReticulumGroupChat } from '../../hooks/useReticulumGroupChat';
+import { generateHTML } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Underline from '@tiptap/extension-underline';
+import Highlight from '@tiptap/extension-highlight';
+import Mention from '@tiptap/extension-mention';
+import TextStyle from '@tiptap/extension-text-style';
 
 const uid = new ShortUniqueId({ length: 5 });
 const uidImages = new ShortUniqueId({ length: 12 });
@@ -77,6 +84,49 @@ const Q_MANAGER_DEFAULT_HEIGHT = 600;
 const Q_MANAGER_MIN_WIDTH = 360;
 const Q_MANAGER_MIN_HEIGHT = 420;
 const Q_MANAGER_HEADER_HEIGHT = 40;
+
+const sha256Hex = async (value: string) => {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+const nextReticulumAuthorSeq = (groupId: string | number, address: string) => {
+  const key = `reticulum-chat-author-seq:${groupId}:${address}`;
+  const current = Number(window.localStorage.getItem(key) || '0');
+  const next = Number.isFinite(current) ? current + 1 : 1;
+  window.localStorage.setItem(key, String(next));
+  return next;
+};
+
+const normalizeChatHtmlContent = (raw: unknown): string => {
+  if (raw == null) return '<p></p>';
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed.length ? trimmed : '<p></p>';
+  }
+  if (typeof raw === 'object') {
+    try {
+      const doc = raw as { type?: string; content?: unknown };
+      if (doc.type === 'doc' && Array.isArray(doc.content)) {
+        return generateHTML(doc, [
+          StarterKit,
+          Underline,
+          Highlight,
+          Mention,
+          TextStyle,
+        ]);
+      }
+    } catch {
+      // Fall through to empty paragraph.
+    }
+  }
+  return '<p></p>';
+};
 
 export const ChatGroup = ({
   selectedGroup,
@@ -129,6 +179,11 @@ export const ChatGroup = ({
   const groupSocketTimeoutRef = useRef(null); // Group Socket Timeout reference
   const editorRef = useRef(null);
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
+  const {
+    enabled: reticulumChatEnabled,
+    events: reticulumChatEvents,
+    publishEvent: publishReticulumChatEvent,
+  } = useReticulumGroupChat(selectedGroup);
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
   const lastReadTimestamp = useRef(null);
   const handleUpdateRef = useRef(null);
@@ -808,6 +863,7 @@ export const ChatGroup = ({
   };
 
   const initWebsocketMessageGroup = () => {
+    if (reticulumChatEnabled) return;
     let socketLink = `${getBaseApiReactSocket()}/websockets/chat/messages?txGroupId=${selectedGroup}&encoding=BASE64&limit=100`;
     socketRef.current = new WebSocket(socketLink);
 
@@ -845,6 +901,11 @@ export const ChatGroup = ({
   };
 
   useEffect(() => {
+    if (reticulumChatEnabled) {
+      forceCloseWebSocket();
+      setIsLoading(false);
+      return;
+    }
     if (hasInitializedWebsocket.current) return;
     if (triedToFetchSecretKey && !secretKey) {
       forceCloseWebSocket();
@@ -852,9 +913,14 @@ export const ChatGroup = ({
       setIsLoading(true);
       initWebsocketMessageGroup();
     }
-  }, [triedToFetchSecretKey, secretKey, isPrivate]);
+  }, [triedToFetchSecretKey, secretKey, isPrivate, reticulumChatEnabled]);
 
   useEffect(() => {
+    if (reticulumChatEnabled) {
+      forceCloseWebSocket();
+      setIsLoading(false);
+      return;
+    }
     if (isPrivate === null) return;
     if (isPrivate === false || !secretKey || hasInitializedWebsocket.current)
       return;
@@ -867,7 +933,7 @@ export const ChatGroup = ({
     }, 6000);
     initWebsocketMessageGroup();
     hasInitializedWebsocket.current = true;
-  }, [secretKey, isPrivate]);
+  }, [secretKey, isPrivate, reticulumChatEnabled]);
 
   useEffect(() => {
     const logoutEventFunc = () => {
@@ -925,6 +991,59 @@ export const ChatGroup = ({
     }
   };
 
+  const publishReticulumGroupChatEvent = useCallback(
+    async ({
+      encryptedPayload,
+      eventType,
+      targetEventId,
+      replyToEventId,
+    }: {
+      encryptedPayload: string;
+      eventType:
+        | 'message'
+        | 'edit'
+        | 'delete'
+        | 'reaction_add'
+        | 'reaction_remove'
+        | 'attachment_manifest';
+      targetEventId?: string;
+      replyToEventId?: string;
+    }) => {
+      const groupId = Number(selectedGroup);
+      if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
+        return { success: false, error: 'Reticulum chat is disabled' };
+      }
+      const timestamp = Date.now();
+      const eventId = crypto.randomUUID?.() || `${timestamp}-${uid.rnd()}`;
+      const payloadHash = await sha256Hex(encryptedPayload);
+      const baseFields = {
+        eventId,
+        groupId,
+        authorSeq: nextReticulumAuthorSeq(groupId, myAddress),
+        timestamp,
+        eventType,
+        targetEventId: targetEventId ?? null,
+        replyToEventId: replyToEventId ?? null,
+        encryptedPayload,
+        payloadHash,
+      };
+      const signed = await window.sendMessage('signReticulumChatEvent', baseFields);
+      if (signed?.error) throw new Error(signed.error);
+      const event = {
+        ...baseFields,
+        authorAddress: signed.authorAddress,
+        authorPublicKey: signed.authorPublicKey,
+        signature: signed.signature,
+      };
+      const result = await publishReticulumChatEvent(event);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Reticulum chat publish failed');
+      }
+      return { ...result, event };
+    },
+    [myAddress, publishReticulumChatEvent, reticulumChatEnabled, selectedGroup]
+  );
+
   const sendChatGroup = async ({
     groupId,
     typeMessage = undefined,
@@ -964,6 +1083,136 @@ export const ChatGroup = ({
       throw new Error(error);
     }
   };
+
+  const applyReticulumChatItem = useCallback((item) => {
+    if (!item || isChatSenderBlocked(item)) return;
+    const processed = processWithNewMessages([item], selectedGroup);
+    const nextItem = processed?.[0] || item;
+    const targetReference = nextItem.chatReference;
+    const itemType = nextItem?.decryptedData?.type || nextItem?.type;
+
+    if (
+      targetReference &&
+      (itemType === 'edit' || nextItem?.isEdited || itemType === 'reaction')
+    ) {
+      setChatReferences((prev) => {
+        const organized = { ...prev };
+        if (itemType === 'edit' || nextItem?.isEdited) {
+          organized[targetReference] = {
+            ...(organized[targetReference] || {}),
+            edit: nextItem.decryptedData || nextItem,
+          };
+          return organized;
+        }
+
+        const content = nextItem?.content || nextItem?.decryptedData?.content;
+        const sender = nextItem.sender;
+        const contentState =
+          nextItem?.contentState !== undefined
+            ? nextItem.contentState
+            : nextItem?.decryptedData?.contentState;
+        if (!content || !sender) return organized;
+        organized[targetReference] = {
+          ...(organized[targetReference] || {}),
+          reactions: organized[targetReference]?.reactions || {},
+        };
+        organized[targetReference].reactions[content] =
+          organized[targetReference].reactions[content] || [];
+        organized[targetReference].reactions[content] =
+          organized[targetReference].reactions[content].filter(
+            (reaction) => reaction.sender !== sender
+        );
+        if (contentState !== false) {
+          organized[targetReference].reactions[content].push(nextItem);
+        }
+        if (organized[targetReference].reactions[content].length === 0) {
+          delete organized[targetReference].reactions[content];
+        }
+        return organized;
+      });
+      return;
+    }
+
+    setMessages((prev) => {
+      if (prev.some((message) => message.signature === nextItem.signature)) {
+        return prev;
+      }
+      return [...prev, nextItem];
+    });
+  }, [isChatSenderBlocked, processWithNewMessages, selectedGroup]);
+
+  const convertReticulumEventToChatItem = useCallback(
+    async (event) => {
+      if (!event || Number(event.groupId) !== Number(selectedGroup)) return null;
+      const baseItem = {
+        signature: event.eventId,
+        id: event.eventId,
+        sender: event.authorAddress,
+        senderName:
+          event.senderName ||
+          event.authorPrimaryName ||
+          (event.authorAddress === myAddress ? myName : undefined),
+        timestamp: event.timestamp,
+        data: event.encryptedPayload,
+        chatReference: event.targetEventId || undefined,
+        repliedTo: event.replyToEventId || undefined,
+        reticulumChat: true,
+      };
+      let decryptedData = null;
+      if (isPrivate === false) {
+        try {
+          decryptedData = JSON.parse(event.encryptedPayload);
+        } catch {
+          decryptedData = { messageText: event.encryptedPayload };
+        }
+      } else {
+        if (!secretKeyRef.current) return null;
+        const decrypted = await window.sendMessage('decryptSingle', {
+          data: [baseItem],
+          secretKeyObject: secretKeyRef.current,
+        });
+        decryptedData = decrypted?.[0]?.decryptedData;
+      }
+      if (!decryptedData) return null;
+      const normalizedText = normalizeChatHtmlContent(
+        decryptedData.message || decryptedData.messageText
+      );
+      const normalizedDecryptedData = {
+        ...decryptedData,
+        ...(decryptedData.message !== undefined ? { message: normalizedText } : {}),
+        ...(decryptedData.messageText !== undefined ? { messageText: normalizedText } : {}),
+      };
+      return {
+        ...baseItem,
+        ...normalizedDecryptedData,
+        decryptedData: normalizedDecryptedData,
+        text: normalizedText,
+        isNotEncrypted: isPrivate === false,
+        unread: event.authorAddress === myAddress ? false : true,
+      };
+    },
+    [isPrivate, myAddress, myName, selectedGroup]
+  );
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || reticulumChatEvents.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const event of reticulumChatEvents) {
+        const item = await convertReticulumEventToChatItem(event);
+        if (!cancelled && item) applyReticulumChatItem(item);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applyReticulumChatItem,
+    convertReticulumEventToChatItem,
+    reticulumChatEnabled,
+    reticulumChatEvents,
+  ]);
+
   const clearEditorContent = () => {
     if (editorRef.current) {
       setMessageSize(0);
@@ -1123,6 +1372,17 @@ export const ChatGroup = ({
             : await encryptChatMessage(message64, secretKeyObject);
 
         const sendMessageFunc = async () => {
+          if (reticulumChatEnabled) {
+            const result = await publishReticulumGroupChatEvent({
+              encryptedPayload: encryptSingle,
+              eventType: chatReference ? 'edit' : 'message',
+              targetEventId: chatReference || undefined,
+              replyToEventId: repliedTo || undefined,
+            });
+            const localItem = await convertReticulumEventToChatItem(result.event);
+            if (localItem) applyReticulumChatItem(localItem);
+            return { ...result, clearQueueOnSuccess: true };
+          }
           return await sendChatGroup({
             groupId: selectedGroup,
             messageText: encryptSingle,
@@ -1232,7 +1492,7 @@ export const ChatGroup = ({
       editorRef.current
         .chain()
         .focus()
-        .setContent(message?.messageText || message?.text || '<p></p>')
+        .setContent(normalizeChatHtmlContent(message?.messageText || message?.text))
         .run();
     } catch (error) {
       console.error(error);
@@ -1277,6 +1537,16 @@ export const ChatGroup = ({
                 reactiontypeNumber
               );
         const sendMessageFunc = async () => {
+          if (reticulumChatEnabled) {
+            const result = await publishReticulumGroupChatEvent({
+              encryptedPayload: encryptSingle,
+              eventType: reactionState ? 'reaction_add' : 'reaction_remove',
+              targetEventId: chatMessage.signature,
+            });
+            const localItem = await convertReticulumEventToChatItem(result.event);
+            if (localItem) applyReticulumChatItem(localItem);
+            return { ...result, clearQueueOnSuccess: true };
+          }
           return await sendChatGroup({
             groupId: selectedGroup,
             messageText: encryptSingle,
@@ -1310,7 +1580,13 @@ export const ChatGroup = ({
         resumeAllQueues();
       }
     },
-    [isPrivate]
+    [
+      applyReticulumChatItem,
+      convertReticulumEventToChatItem,
+      isPrivate,
+      publishReticulumGroupChatEvent,
+      reticulumChatEnabled,
+    ]
   );
 
   const openQManager = useCallback(() => {

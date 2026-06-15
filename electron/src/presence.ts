@@ -280,7 +280,7 @@ export function encodeBytesBase58(bytes: Uint8Array): string {
   return base58Encode(bytes);
 }
 
-function base58Encode(bytes: Uint8Array): string {
+export function base58Encode(bytes: Uint8Array): string {
   const digits = [0];
   for (let i = 0; i < bytes.length; i++) {
     let carry = bytes[i];

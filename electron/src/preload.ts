@@ -361,6 +361,7 @@ try {
       legacyPublicStunFallback?: boolean;
       reticulumMeshUpnpEnabled?: boolean;
       reticulumManagedConfigEnabled?: boolean;
+      reticulumChatEnabled?: boolean;
     }) => ipcRenderer.invoke('appSettings:set', settings),
     reticulumGetStatus: () =>
       ipcRenderer.invoke('reticulum:getStatus') as Promise<{
@@ -1261,6 +1262,90 @@ try {
       },
     });
 
+    contextBridge.exposeInMainWorld('reticulumChat', {
+      isEnabled: async () =>
+        ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
+      setLocalGroupMemberships: async (groupIds: number[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalGroupMemberships',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      subscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      unsubscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeGroup',
+          groupId
+        ) as Promise<{ success: boolean; error?: string }>,
+      publishEvent: async (event: unknown) =>
+        ipcRenderer.invoke('reticulumChat:publishEvent', event) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      sendTyping: async (
+        groupId: number,
+        authorAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendTyping',
+          groupId,
+          authorAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      getHistory: async (groupId: number, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getHistory',
+          groupId,
+          limit
+        ) as Promise<unknown[]>,
+      getSyncState: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
+          Record<string, number>
+        >,
+      getSubscriptions: async () =>
+        ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
+          number[]
+        >,
+      onEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:event', handler);
+        ipcRenderer.send('reticulumChat:event:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:event', handler);
+          ipcRenderer.send('reticulumChat:event:unsubscribe');
+        };
+      },
+      onTyping: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:typing', handler);
+        ipcRenderer.send('reticulumChat:typing:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:typing', handler);
+          ipcRenderer.send('reticulumChat:typing:unsubscribe');
+        };
+      },
+    });
+
     contextBridge.exposeInMainWorld('hub', {
       getBootstrapIceServers: () => hubP2pBootstrapIceServers,
       getIceServers: () =>
@@ -1269,6 +1354,92 @@ try {
         ipcRenderer.invoke('hub:reportStunCallOutcome', stunUrls, success),
       reportObservedStunSources: (stunUrls: string[]) =>
         ipcRenderer.invoke('hub:reportObservedStunSources', stunUrls),
+    });
+  }
+
+  if (isDisabledLegacy) {
+    contextBridge.exposeInMainWorld('reticulumChat', {
+      isEnabled: async () =>
+        ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
+      setLocalGroupMemberships: async (groupIds: number[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalGroupMemberships',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      subscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      unsubscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeGroup',
+          groupId
+        ) as Promise<{ success: boolean; error?: string }>,
+      publishEvent: async (event: unknown) =>
+        ipcRenderer.invoke('reticulumChat:publishEvent', event) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      sendTyping: async (
+        groupId: number,
+        authorAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendTyping',
+          groupId,
+          authorAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      getHistory: async (groupId: number, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getHistory',
+          groupId,
+          limit
+        ) as Promise<unknown[]>,
+      getSyncState: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
+          Record<string, number>
+        >,
+      getSubscriptions: async () =>
+        ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
+          number[]
+        >,
+      onEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:event', handler);
+        ipcRenderer.send('reticulumChat:event:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:event', handler);
+          ipcRenderer.send('reticulumChat:event:unsubscribe');
+        };
+      },
+      onTyping: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:typing', handler);
+        ipcRenderer.send('reticulumChat:typing:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:typing', handler);
+          ipcRenderer.send('reticulumChat:typing:unsubscribe');
+        };
+      },
     });
   }
 

@@ -83,6 +83,7 @@ declare global {
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
       }>;
       setAppSettings?: (settings: {
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
@@ -91,6 +92,7 @@ declare global {
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
       }) => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
@@ -98,6 +100,7 @@ declare global {
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
       }>;
       /** Reticulum (rnsd) child process status from main process. */
       reticulumGetStatus?: () => Promise<{
@@ -520,6 +523,38 @@ declare global {
         source?: string
       ) => Promise<{ success: boolean }>;
       onEvent: (cb: (event: string, payload: unknown) => void) => () => void;
+    };
+
+    reticulumChat?: {
+      isEnabled: () => Promise<boolean>;
+      setLocalGroupMemberships: (
+        groupIds: number[]
+      ) => Promise<{ success: boolean; error?: string }>;
+      subscribeGroup: (
+        groupId: number
+      ) => Promise<{ success: boolean; error?: string }>;
+      unsubscribeGroup: (
+        groupId: number
+      ) => Promise<{ success: boolean; error?: string }>;
+      publishEvent: (
+        event: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendTyping: (
+        groupId: number,
+        authorAddress: string,
+        active: boolean
+      ) => Promise<{ success: boolean; error?: string }>;
+      getHistory: (groupId: number, limit?: number) => Promise<unknown[]>;
+      getSyncState: (groupId: number) => Promise<Record<string, number>>;
+      getSubscriptions: () => Promise<number[]>;
+      onEvent: (cb: (payload: { event: unknown }) => void) => () => void;
+      onTyping: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => () => void;
     };
 
     // ── Group Call ────────────────────────────────────────────────────────────

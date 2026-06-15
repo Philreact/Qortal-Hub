@@ -103,13 +103,30 @@ const linkify = (text) => {
 
 const hasCodeBlock = (html) => /<pre[\s>]/i.test(html ?? '');
 
+const normalizeHtmlContent = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return String(value);
+};
+
 export const MessageDisplay = ({ htmlContent, isReply = false }) => {
   const theme = useTheme();
   const contentRef = useRef(null);
   const [copied, setCopied] = useState(false);
+  const safeHtmlContent = useMemo(
+    () => normalizeHtmlContent(htmlContent),
+    [htmlContent]
+  );
 
   const sanitizedContent = useMemo(() => {
-    return DOMPurify.sanitize(linkify(htmlContent), {
+    return DOMPurify.sanitize(linkify(safeHtmlContent), {
       ALLOWED_TAGS: [
         'a',
         'b',
@@ -165,7 +182,7 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
       /<span[^>]*data-url="qortal:\/\/use-embed\/[^"]*"[^>]*>.*?<\/span>/g,
       ''
     );
-  }, [htmlContent]);
+  }, [safeHtmlContent]);
 
   const handleClickCapture = (e) => {
     if (isReply) {
@@ -235,7 +252,7 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
     }
   };
 
-  const embedLink = htmlContent?.match(/qortal:\/\/use-embed\/[^\s<>]+/);
+  const embedLink = safeHtmlContent.match(/qortal:\/\/use-embed\/[^\s<>]+/);
 
   let embedData = null;
 

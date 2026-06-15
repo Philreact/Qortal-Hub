@@ -68,6 +68,7 @@ import {
   getGroupNotificationTimestampCase,
   getRewardSharePrivateKeyCase,
   signPresenceMessageCase,
+  signReticulumChatEventCase,
   decryptBoxWithMyKeyCase,
   encryptSupportMessageCase,
   decryptSupportMessageCase,
@@ -3439,6 +3440,9 @@ function setupMessageListener() {
         break;
       case 'signPresenceMessage':
         signPresenceMessageCase(request, event);
+        break;
+      case 'signReticulumChatEvent':
+        signReticulumChatEventCase(request, event);
         break;
       case 'decryptBoxWithMyKey':
         decryptBoxWithMyKeyCase(request, event);

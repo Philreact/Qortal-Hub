@@ -241,6 +241,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
+  const [reticulumChatEnabled, setReticulumChatEnabled] = useState(false);
   const [reticulumConfigEditorInfo, setReticulumConfigEditorInfo] =
     useState<ReticulumConfigEditorInfo | null>(null);
   const [reticulumConfigDraft, setReticulumConfigDraft] = useState('');
@@ -709,6 +710,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
+      setReticulumChatEnabled(settings?.reticulumChatEnabled === true);
       if (settings?.closeAction) setCloseAction(settings.closeAction);
       window.localStorage.setItem(
         ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY,
@@ -967,6 +969,32 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setOpenSnack,
       td,
     ]
+  );
+
+  const handleToggleReticulumChat = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = reticulumChatEnabled;
+      setReticulumChatEnabled(checked);
+
+      try {
+        if (typeof window.electronAPI?.setAppSettings === 'function') {
+          await window.electronAPI.setAppSettings({
+            reticulumChatEnabled: checked,
+          });
+        }
+      } catch (error) {
+        setReticulumChatEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_chat_update_error',
+            'We could not update Reticulum group chat right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumChatEnabled, setInfoSnack, setOpenSnack, td]
   );
 
   const handleSaveReticulumConfig = useCallback(async () => {
@@ -3437,6 +3465,58 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       overflow: 'hidden',
                     }}
                   >
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td(
+                            'reticulum_group_chat',
+                            'Reticulum group chat'
+                          )}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'reticulum_group_chat_desc',
+                            'Use the experimental Reticulum transport for group chat messages when available.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={reticulumChatEnabled}
+                        onChange={handleToggleReticulumChat}
+                        sx={settingsSwitchSx}
+                      />
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
                     <Box
                       sx={{
                         alignItems: 'center',

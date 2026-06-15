@@ -181,6 +181,7 @@ _outgoing_qchat_file_link_id_by_peer_hash: Dict[str, str] = {}
 _incoming_unified_peer_hash_by_object: Dict[int, str] = {}
 _qchat_file_accepts_by_peer: Dict[str, Dict[str, Any]] = {}
 _qchat_file_pending_sends_by_transfer: Dict[str, Dict[str, Any]] = {}
+_RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
 _QCHAT_FILE_CHUNK_SIZE = (1024 * 1024) - 1
@@ -423,6 +424,7 @@ _GROUP_CALL_WIRE_TYPES = frozenset(
         "GX",
     }
 )
+_RETICULUM_CHAT_WIRE_TYPE = "RCHAT"
 _AUDIO_LINK_WIRE_TYPES = frozenset(
     {_GROUP_AUDIO_HEARTBEAT_WIRE_TYPE}
 )
@@ -3436,6 +3438,10 @@ def _scheduler_lane_for_command(action: Any) -> str:
         "send_qchat_file_resource",
         "authorize_qchat_file_resource",
         "reject_qchat_file_resource",
+        "accept_reticulum_chat_resource",
+        "send_reticulum_chat_resource",
+        "authorize_reticulum_chat_resource",
+        "reject_reticulum_chat_resource",
     }:
         return "file-transfer"
     return "control-send"
@@ -6170,6 +6176,20 @@ def _emit_call_bridge_message(
         else _resolve_sender_peer_destination_hash(sender_call_hash)
     )
     t = message.get("t")
+    if t == _RETICULUM_CHAT_WIRE_TYPE:
+        _note_presence_pressure("decoded:reticulum_chat", str(message.get("k") or ""))
+        payload: Dict[str, Any] = {
+            "wire": message,
+            "senderDestinationHash": sender_call_hash,
+            "peerPresenceHash": resolved_presence_hash,
+        }
+        if link_id:
+            payload["linkId"] = link_id
+        emit_event("reticulum_chat_message", payload)
+        log(
+            f"[presence_bridge] received reticulum_chat_message k={message.get('k')} sender_r={sender_call_hash[:16] if sender_call_hash else ''} size={len(_call_wire_json_bytes(message))}"
+        )
+        return True
     event_name = (
         "group_call_message"
         if isinstance(t, str) and t in _GROUP_CALL_WIRE_TYPES
@@ -6620,7 +6640,10 @@ def _qchat_file_chunk_bounds(size: int, chunk_index: int) -> Tuple[int, int]:
 def _qchat_file_emit(status: str, payload: Dict[str, Any]) -> None:
     event_payload = dict(payload)
     event_payload["status"] = status
-    emit_event("qchat_file_transfer", event_payload)
+    if event_payload.get("resourceType") == _RETICULUM_CHAT_RESOURCE_TYPE:
+        emit_event("reticulum_chat_resource", event_payload)
+    else:
+        emit_event("qchat_file_transfer", event_payload)
 
 
 def _qchat_file_progress_payload(
@@ -7054,16 +7077,25 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             except Exception:
                 pass
         return
-    if decoded.get("type") != "QCHAT_FILE_LINK_AUTH":
+    if decoded.get("type") not in ("QCHAT_FILE_LINK_AUTH", "RETICULUM_CHAT_RESOURCE_AUTH"):
         return
     transfer_id = str(decoded.get("transferId") or "").strip()
     state["transferId"] = transfer_id
+    resource_type = (
+        _RETICULUM_CHAT_RESOURCE_TYPE
+        if decoded.get("type") == "RETICULUM_CHAT_RESOURCE_AUTH"
+        else "qchat-dm-file"
+    )
+    state["resourceType"] = resource_type
     _qchat_file_emit(
         "auth",
         {
             "linkId": link_id,
             "transferId": transfer_id,
             "auth": decoded,
+            "resourceType": resource_type,
+            "eventId": decoded.get("eventId"),
+            "groupId": decoded.get("groupId"),
         },
     )
 
@@ -7170,6 +7202,7 @@ def _qchat_file_mark_chunk_sent(state: Dict[str, Any], chunk_index: int, chunk_s
                 "peerPresenceHash": state.get("peerPresenceHash") or "",
                 "fileName": state.get("fileName") or "",
                 "size": int(state.get("size") or 0),
+                "resourceType": state.get("resourceType") or "qchat-dm-file",
             },
         )
         return True
@@ -7253,6 +7286,7 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
     peer_hash = str(state.get("peerPresenceHash") or "")
     file_name = str(state.get("fileName") or os.path.basename(file_path))
     sha256 = str(state.get("sha256") or "").strip().lower()
+    resource_type = str(state.get("resourceType") or "qchat-dm-file")
     if link is None or not file_path or not transfer_id:
         return False
     if state.get("resource_started") is True:
@@ -7274,12 +7308,14 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
         root["peerPresenceHash"] = peer_hash
         root["fileName"] = file_name
         root["size"] = size
+        root["resourceType"] = resource_type
         root.setdefault("active_chunks", {})[chunk_index] = {
             "size": chunk_size,
             "progress": 0.0,
         }
     metadata = {
-        "kind": "qchat-dm-file",
+        "kind": resource_type,
+        "resourceType": resource_type,
         "transferId": transfer_id,
         "fileName": file_name,
         "size": size,
@@ -7290,6 +7326,9 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
         "chunkOffset": chunk_offset,
         "chunkSize": chunk_size,
     }
+    extra_metadata = root.get("metadata") if isinstance(root.get("metadata"), dict) else state.get("metadata")
+    if isinstance(extra_metadata, dict):
+        metadata.update(extra_metadata)
 
     def on_done(resource) -> None:
         status = "sent" if getattr(resource, "status", None) == RNS.Resource.COMPLETE else "failed"
@@ -7310,6 +7349,7 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
                             "peerPresenceHash": peer_hash,
                             "fileName": file_name,
                             "size": size,
+                            "resourceType": resource_type,
                             "reason": "chunk_ack_timeout",
                             "chunkIndex": chunk_index,
                         },
@@ -7337,6 +7377,7 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
                     "peerPresenceHash": peer_hash,
                     "fileName": file_name,
                     "size": size,
+                    "resourceType": resource_type,
                     "reason": "send_failed",
                     "chunkIndex": chunk_index,
                 },
@@ -7753,6 +7794,8 @@ def on_qchat_file_resource_concluded(resource) -> None:
                     "fileName": pending.get("fileName"),
                     "path": save_path,
                     "sha256": actual_hash,
+                    "resourceType": pending.get("resourceType") or "qchat-dm-file",
+                    **(pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}),
                 },
             )
             _qchat_file_receiver_transfer_done(peer_hash, transfer_id)
@@ -7785,6 +7828,8 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 "fileName": pending.get("fileName"),
                 "path": save_path,
                 "sha256": actual_hash,
+                "resourceType": pending.get("resourceType") or "qchat-dm-file",
+                **(pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}),
             },
         )
         _qchat_file_receiver_transfer_done(peer_hash, transfer_id)
@@ -9237,7 +9282,7 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         configure_audio_link(link, link_id)
         on_audio_link_packet(message, packet)
         return
-    if decoded.get("type") == "QCHAT_FILE_LINK_AUTH":
+    if decoded.get("type") in ("QCHAT_FILE_LINK_AUTH", "RETICULUM_CHAT_RESOURCE_AUTH"):
         link_id = _register_incoming_qchat_file_link(
             link,
             "",
@@ -9741,6 +9786,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
     save_path = str(payload.get("savePath") or "").strip()
     file_name = str(payload.get("fileName") or "").strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
+    resource_type = str(payload.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
     try:
         size = int(payload.get("size") or 0)
     except Exception:
@@ -9755,7 +9801,13 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
         emit_resp(req_id, False, error="Missing Reticulum link auth message")
         return
     try:
-        peer_identity = _parse_qchat_file_peer_identity(peer_hash, pk_b64)
+        if resource_type == _RETICULUM_CHAT_RESOURCE_TYPE and (not isinstance(pk_b64, str) or not pk_b64.strip()):
+            ensure_known_peer_from_recall(peer_hash, "ts_seed")
+            peer_identity = _known_peers.get(peer_hash)
+            if peer_identity is None:
+                raise ValueError("Missing Reticulum identity for chat resource peer")
+        else:
+            peer_identity = _parse_qchat_file_peer_identity(peer_hash, pk_b64)
     except Exception as exc:
         emit_resp(
             req_id,
@@ -9771,6 +9823,8 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "fileName": file_name,
             "size": size,
             "sha256": sha256,
+            "resourceType": resource_type,
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
             "received_bytes": 0,
@@ -9786,6 +9840,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "peerPresenceHash": peer_hash,
             "fileName": file_name,
             "size": size,
+            "resourceType": resource_type,
         },
     )
     links_to_open = min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
@@ -9799,6 +9854,8 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "fileName": file_name,
             "size": size,
             "sha256": sha256,
+            "resourceType": resource_type,
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
             "created_at": time.time(),
@@ -9813,6 +9870,7 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
     file_path = str(payload.get("filePath") or "").strip()
     file_name = str(payload.get("fileName") or os.path.basename(file_path)).strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
+    resource_type = str(payload.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
     try:
         expires_at_ms = float(payload.get("expiresAt") or 0)
     except Exception:
@@ -9833,6 +9891,8 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
                 "fileName": file_name,
                 "size": size,
                 "sha256": sha256,
+                "resourceType": resource_type,
+                "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
                 "created_at": time.time(),
                 "expires_at": expires_at,
                 "next_chunk_index": 0,
@@ -9846,6 +9906,7 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
                 "transferId": transfer_id,
                 "fileName": file_name,
                 "size": size,
+                "resourceType": resource_type,
             },
         )
         emit_resp(req_id, True)
@@ -9877,6 +9938,8 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
             "fileName": pending.get("fileName") or "",
             "size": int(pending.get("size") or 0),
             "sha256": pending.get("sha256") or "",
+            "resourceType": pending.get("resourceType") or "qchat-dm-file",
+            "metadata": pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {},
             "transferId": transfer_id,
             "send_root": pending,
         }
@@ -9933,6 +9996,30 @@ def handle_reject_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
         emit_resp(req_id, True)
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
+
+
+def handle_accept_reticulum_chat_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    next_payload = dict(payload)
+    next_payload["resourceType"] = _RETICULUM_CHAT_RESOURCE_TYPE
+    metadata = next_payload.get("metadata") if isinstance(next_payload.get("metadata"), dict) else {}
+    next_payload["metadata"] = {**metadata, "resourceType": _RETICULUM_CHAT_RESOURCE_TYPE}
+    handle_accept_qchat_file_resource(req_id, next_payload)
+
+
+def handle_send_reticulum_chat_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    next_payload = dict(payload)
+    next_payload["resourceType"] = _RETICULUM_CHAT_RESOURCE_TYPE
+    metadata = next_payload.get("metadata") if isinstance(next_payload.get("metadata"), dict) else {}
+    next_payload["metadata"] = {**metadata, "resourceType": _RETICULUM_CHAT_RESOURCE_TYPE}
+    handle_send_qchat_file_resource(req_id, next_payload)
+
+
+def handle_authorize_reticulum_chat_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    handle_authorize_qchat_file_resource(req_id, payload)
+
+
+def handle_reject_reticulum_chat_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    handle_reject_qchat_file_resource(req_id, payload)
 
 
 def handle_fanout_call(req_id: str, payload: Dict[str, Any]) -> None:
@@ -10257,6 +10344,153 @@ def handle_fanout_group_call(req_id: str, payload: Dict[str, Any]) -> None:
                 False,
                 payload=last_failure_payload,
                 error=last_failure_error,
+            )
+            return
+
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "packet_send_false"},
+            error="Overlay fanout had no successful delivery",
+        )
+    except Exception as exc:
+        emit_resp(req_id, False, error=str(exc))
+
+
+def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
+    peer_hash = str(payload.get("peerPresenceHash") or "")
+    msg = payload.get("message")
+    if not peer_hash or not isinstance(msg, dict):
+        emit_resp(req_id, False, error="Missing peerPresenceHash or message")
+        return
+    if msg.get("t") != _RETICULUM_CHAT_WIRE_TYPE:
+        emit_resp(req_id, False, error="Invalid Reticulum chat wire type")
+        return
+
+    if _destination is None:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "bridge_not_started"},
+            error="Bridge not started",
+        )
+        return
+
+    peer_key = peer_hash.strip().lower()
+    try:
+        encoded = _encode_group_signal_wire(msg)
+        if not encoded.get("ok"):
+            emit_resp(
+                req_id,
+                False,
+                payload=encoded.get("payload"),
+                error=str(encoded.get("error") or "Wire encoding failed"),
+            )
+            return
+        failure = _prepare_group_signal_peer(peer_key)
+        if failure is not None:
+            emit_resp(
+                req_id,
+                False,
+                payload=failure.get("payload"),
+                error=str(failure.get("error") or "Unknown peer presence hash"),
+            )
+            return
+        failure = _send_group_signal_wire_to_peer(peer_key, encoded["wire_bytes"])
+        if failure is not None:
+            emit_resp(
+                req_id,
+                False,
+                payload=failure.get("payload"),
+                error=str(failure.get("error") or "Packet send returned False"),
+            )
+            return
+        emit_resp(req_id, True)
+    except Exception as exc:
+        emit_resp(req_id, False, error=str(exc))
+
+
+def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages or any(
+        not isinstance(msg, dict) for msg in messages
+    ):
+        emit_resp(req_id, False, error="Missing messages")
+        return
+    if any(msg.get("t") != _RETICULUM_CHAT_WIRE_TYPE for msg in messages):
+        emit_resp(req_id, False, error="Invalid Reticulum chat wire type")
+        return
+
+    if _destination is None:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "bridge_not_started"},
+            error="Bridge not started",
+        )
+        return
+
+    exclude_raw = payload.get("excludePeerPresenceHashes")
+    exclude_hashes = (
+        [str(h).strip().lower() for h in exclude_raw if isinstance(h, str) and h.strip()]
+        if isinstance(exclude_raw, list)
+        else []
+    )
+
+    try:
+        encoded_frames = []
+        message_types = []
+        for msg in messages:
+            encoded = _encode_group_signal_wire(msg)
+            if not encoded.get("ok"):
+                emit_resp(
+                    req_id,
+                    False,
+                    payload=encoded.get("payload"),
+                    error=str(encoded.get("error") or "Wire encoding failed"),
+                )
+                return
+            encoded_frames.append(encoded["wire_bytes"])
+            message_types.append(str(msg.get("k") or "?"))
+
+        peer_hashes = _snapshot_established_overlay_neighbor_hashes(exclude_hashes)
+        if not peer_hashes:
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "no_route"},
+                error="No overlay route",
+            )
+            return
+
+        log(
+            "[presence_bridge] target=reticulum-chat fanout "
+            f"peers={len(peer_hashes)} exclude_hashes={','.join(exclude_hashes)} "
+            f"fanout_hashes={','.join(peer_hashes)} "
+            f"message_types={','.join(message_types)}"
+        )
+
+        delivered_peer_hashes: list[str] = []
+        for peer_hash in peer_hashes:
+            peer_delivered_all_frames = True
+            for wire_bytes in encoded_frames:
+                if not _send_wire_to_established_overlay_peer(
+                    peer_hash,
+                    wire_bytes,
+                    "reticulum_chat_fanout",
+                ):
+                    peer_delivered_all_frames = False
+            if peer_delivered_all_frames:
+                delivered_peer_hashes.append(peer_hash)
+
+        if delivered_peer_hashes:
+            emit_resp(
+                req_id,
+                True,
+                payload={
+                    "fanoutPeers": len(delivered_peer_hashes),
+                    "fanoutHashes": delivered_peer_hashes,
+                },
             )
             return
 
@@ -10648,12 +10882,24 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_authorize_qchat_file_resource(req_id, payload)
     elif action == "reject_qchat_file_resource":
         handle_reject_qchat_file_resource(req_id, payload)
+    elif action == "accept_reticulum_chat_resource":
+        handle_accept_reticulum_chat_resource(req_id, payload)
+    elif action == "send_reticulum_chat_resource":
+        handle_send_reticulum_chat_resource(req_id, payload)
+    elif action == "authorize_reticulum_chat_resource":
+        handle_authorize_reticulum_chat_resource(req_id, payload)
+    elif action == "reject_reticulum_chat_resource":
+        handle_reject_reticulum_chat_resource(req_id, payload)
     elif action == "fanout_call":
         handle_fanout_call(req_id, payload)
     elif action == "send_group_call":
         handle_send_group_call(req_id, payload)
     elif action == "fanout_group_call":
         handle_fanout_group_call(req_id, payload)
+    elif action == "send_reticulum_chat":
+        handle_send_reticulum_chat(req_id, payload)
+    elif action == "fanout_reticulum_chat":
+        handle_fanout_reticulum_chat(req_id, payload)
     elif action == "open_group_audio_link":
         handle_open_group_audio_link(req_id, payload)
     elif action == "close_group_audio_link":

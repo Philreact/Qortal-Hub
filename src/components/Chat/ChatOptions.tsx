@@ -37,8 +37,31 @@ import { useTranslation } from 'react-i18next';
 import { isHtmlString } from '../../utils/chat';
 import TextStyle from '@tiptap/extension-text-style';
 
+const normalizeMessageHtmlContent = (raw: unknown): string => {
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'object') {
+    try {
+      const doc = raw as { type?: string; content?: unknown };
+      if (doc.type === 'doc' && Array.isArray(doc.content)) {
+        return generateHTML(doc, [
+          StarterKit,
+          Underline,
+          Highlight,
+          Mention,
+          TextStyle,
+        ]);
+      }
+      return JSON.stringify(raw);
+    } catch {
+      return '';
+    }
+  }
+  return String(raw);
+};
+
 const extractTextFromHTML = (htmlString = '') => {
-  return convert(htmlString, {
+  return convert(normalizeMessageHtmlContent(htmlString), {
     wordwrap: false, // Disable word wrapping
   })?.toLowerCase();
 };
@@ -76,19 +99,14 @@ export const ChatOptions = ({
         try {
           transformedMessage = isHtml
             ? item?.messageText
-            : generateHTML(item?.messageText, [
-                StarterKit,
-                Underline,
-                Highlight,
-                Mention,
-                TextStyle,
-              ]);
+            : normalizeMessageHtmlContent(item?.messageText);
           return {
             ...item,
             messageText: transformedMessage,
           };
         } catch (error) {
           console.log(error);
+          return item;
         }
       } else return item;
     });

@@ -81,6 +81,15 @@ import { useIsOnline } from '../../hooks/usePresence';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 
 const uid = new ShortUniqueId({ length: 5 });
+
+const normalizeEditContent = (raw: unknown): string => {
+  if (raw == null) return '<p></p>';
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed.length ? trimmed : '<p></p>';
+  }
+  return '<p></p>';
+};
 const QCHAT_FILE_DEFAULT_EXPIRY_HOURS = 2;
 const QCHAT_FILE_COMPLETED_CACHE_KEY = 'qchat-dm-file-transfer-completed-v1';
 const QCHAT_FILE_COMPLETED_CACHE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1649,7 +1658,11 @@ export const ChatDirect = ({
   const onEdit = useCallback((message) => {
     setOnEditMessage(message);
     setReplyMessage(null);
-    editorRef.current.chain().focus().setContent(message?.text).run();
+    editorRef.current
+      .chain()
+      .focus()
+      .setContent(normalizeEditContent(message?.text))
+      .run();
   }, []);
 
   return (

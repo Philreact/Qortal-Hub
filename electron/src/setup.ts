@@ -79,6 +79,12 @@ import {
   getChatManager,
   flushChatStore,
 } from './chat';
+import {
+  startReticulumChatManager,
+  stopReticulumChatManager,
+  getReticulumChatManager,
+  type ReticulumChatEvent,
+} from './reticulum-chat';
 import { startCallManager, stopCallManager, getCallManager } from './call';
 import {
   startGroupCallManager,
@@ -1427,6 +1433,8 @@ export interface AppSettings {
   reticulumMeshUpnpEnabled?: boolean;
   /** When false, do not write/regenerate Qortal Hub's managed Reticulum config. */
   reticulumManagedConfigEnabled?: boolean;
+  /** Opt-in Reticulum-backed group chat transport. Default false until stable. */
+  reticulumChatEnabled?: boolean;
 }
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -1435,6 +1443,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   p2pEnabled: !isDisabledLegacy,
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
+  reticulumChatEnabled: false,
 };
 
 export async function readAppSettings(): Promise<AppSettings> {
@@ -1464,6 +1473,7 @@ export async function readAppSettings(): Promise<AppSettings> {
         parsed.reticulumMeshUpnpEnabled === false ? false : true,
       reticulumManagedConfigEnabled:
         parsed.reticulumManagedConfigEnabled === false ? false : true,
+      reticulumChatEnabled: parsed.reticulumChatEnabled === true,
     };
   } catch {
     return { ...DEFAULT_APP_SETTINGS };
@@ -2193,6 +2203,9 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     pm = startPresenceManager(transports);
     attachPresenceListeners(pm);
   }
+
+  const reticulumChat = startReticulumChatManager(bridgeTransport ?? null);
+  attachReticulumChatListeners(reticulumChat);
   startReticulumPresenceHealthWatchdog();
   startReticulumOverlayMaintenanceSync();
 
@@ -2994,6 +3007,9 @@ ipcMain.on('presence:unsubscribe', (event) => {
 const chatEventSubscribers = new Set<Electron.WebContents>();
 const chatTypingSubscribers = new Set<Electron.WebContents>();
 const chatReadSubscribers = new Set<Electron.WebContents>();
+const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
+const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
+let reticulumChatListenersAttached = false;
 
 export function attachChatListeners(
   manager: ReturnType<typeof getChatManager>
@@ -3016,6 +3032,132 @@ export function attachChatListeners(
     broadcastToSet(chatReadSubscribers, 'chat:read', payload)
   );
 }
+
+export function attachReticulumChatListeners(
+  manager: ReturnType<typeof getReticulumChatManager>
+): void {
+  if (!manager || reticulumChatListenersAttached) return;
+  reticulumChatListenersAttached = true;
+
+  manager.on('event', (payload: unknown) =>
+    broadcastToSet(reticulumChatEventSubscribers, 'reticulumChat:event', payload)
+  );
+
+  manager.on('typing', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatTypingSubscribers,
+      'reticulumChat:typing',
+      payload
+    )
+  );
+}
+
+ipcMain.handle('reticulumChat:isEnabled', async () => {
+  const settings = await readAppSettings();
+  return settings.reticulumChatEnabled === true;
+});
+
+ipcMain.handle(
+  'reticulumChat:setLocalGroupMemberships',
+  async (_event, groupIds: number[]) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    manager.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
+    return { success: true };
+  }
+);
+
+ipcMain.handle('reticulumChat:subscribeGroup', async (_event, groupId: number) => {
+  const settings = await readAppSettings();
+  if (settings.reticulumChatEnabled !== true) {
+    return { success: false, error: 'Reticulum chat is disabled' };
+  }
+  const manager = getReticulumChatManager();
+  if (!manager) {
+    return { success: false, error: 'Reticulum chat manager is not running' };
+  }
+  manager.subscribeGroup(groupId);
+  return { success: true };
+});
+
+ipcMain.handle(
+  'reticulumChat:unsubscribeGroup',
+  async (_event, groupId: number) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    manager.unsubscribeGroup(groupId);
+    return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:publishEvent',
+  async (_event, event: ReticulumChatEvent) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    const result = await manager.publishEvent(event);
+    if (result.ok) return { success: true };
+    const failed = result as Exclude<typeof result, { ok: true }>;
+    return { success: false, error: failed.error ?? failed.reason };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:sendTyping',
+  async (_event, groupId: number, authorAddress: string, active: boolean) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    manager.sendTyping(groupId, authorAddress, active);
+    return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getHistory',
+  async (_event, groupId: number, limit?: number) => {
+    const manager = getReticulumChatManager();
+    return manager ? manager.getHistory(groupId, limit) : [];
+  }
+);
+
+ipcMain.handle('reticulumChat:getSyncState', async (_event, groupId: number) => {
+  const manager = getReticulumChatManager();
+  return manager ? manager.getSyncState(groupId) : {};
+});
+
+ipcMain.handle('reticulumChat:getSubscriptions', async () => {
+  const manager = getReticulumChatManager();
+  return manager ? manager.getSubscriptions() : [];
+});
+
+ipcMain.on('reticulumChat:event:subscribe', (event) => {
+  reticulumChatEventSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:event:unsubscribe', (event) => {
+  reticulumChatEventSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:typing:subscribe', (event) => {
+  reticulumChatTypingSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:typing:unsubscribe', (event) => {
+  reticulumChatTypingSubscribers.delete(event.sender);
+});
 
 /**
  * Send a signed ChatEventEnvelope from the local renderer.
