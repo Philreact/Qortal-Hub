@@ -137,6 +137,19 @@ const mentionTextFromHtml = (html: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const mentionedAddressesFromPayload = (payload: unknown): string[] => {
+  if (!payload || typeof payload !== 'object') return [];
+  const value = (payload as { mentionedAddresses?: unknown }).mentionedAddresses;
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((address) => (typeof address === 'string' ? address.trim() : ''))
+        .filter(Boolean)
+    ),
+  ];
+};
+
 export const ChatGroup = ({
   selectedGroup,
   secretKey,
@@ -1282,6 +1295,12 @@ export const ChatGroup = ({
       const normalizedText = normalizeChatHtmlContent(
         decryptedData.message || decryptedData.messageText
       );
+      const mentionedAddresses = [
+        ...new Set([
+          ...mentionedAddressesFromPayload(decryptedData),
+          ...resolveMentionedAddresses(normalizedText),
+        ]),
+      ];
       if (event.eventType === 'delete' && event.targetEventId) {
         void window.reticulumChat?.deleteSearchText?.(event.targetEventId);
         void window.reticulumChat?.deleteMentions?.(event.targetEventId);
@@ -1296,7 +1315,7 @@ export const ChatGroup = ({
         );
         void window.reticulumChat?.replaceMentions?.(
           event.targetEventId,
-          resolveMentionedAddresses(normalizedText)
+          mentionedAddresses
         );
       } else if (
         (event.eventType === 'message' ||
@@ -1309,7 +1328,7 @@ export const ChatGroup = ({
         );
         void window.reticulumChat?.replaceMentions?.(
           event.eventId,
-          resolveMentionedAddresses(normalizedText)
+          mentionedAddresses
         );
       }
       const normalizedDecryptedData = {
@@ -1513,12 +1532,14 @@ export const ChatGroup = ({
                 : onEditMessage?.images || []
               : [];
 
+        const mentionedAddresses = resolveMentionedAddresses(htmlContent || '');
         const otherData = {
           repliedTo,
           ...(onEditMessage?.decryptedData || {}),
           type: chatReference ? 'edit' : '',
           specialId: uid.rnd(),
           images: images,
+          mentionedAddresses,
           ...publicData,
         };
         const objectMessage = {

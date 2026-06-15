@@ -162,7 +162,9 @@ const collectReticulumPlainText = (value: unknown, out: string[]): void => {
   }
   if (!value || typeof value !== 'object') return;
   for (const [key, next] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'type' || key === 'isEdited') continue;
+    if (key === 'type' || key === 'isEdited' || key === 'mentionedAddresses') {
+      continue;
+    }
     collectReticulumPlainText(next, out);
   }
 };
@@ -175,6 +177,19 @@ const reticulumTextFromPayload = (payload: unknown): string => {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+};
+
+const reticulumMentionedAddressesFromPayload = (payload: unknown): string[] => {
+  if (!payload || typeof payload !== 'object') return [];
+  const value = (payload as { mentionedAddresses?: unknown }).mentionedAddresses;
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((address) => (typeof address === 'string' ? address.trim() : ''))
+        .filter(Boolean)
+    ),
+  ];
 };
 
 const resolveReticulumMentionAddresses = (
@@ -1238,7 +1253,12 @@ export const Group = ({
       const mentionMap = await getReticulumMentionNameMap(groupId);
       await window.reticulumChat?.replaceMentions?.(
         targetEventId,
-        resolveReticulumMentionAddresses(text, mentionMap)
+        [
+          ...new Set([
+            ...reticulumMentionedAddressesFromPayload(payload),
+            ...resolveReticulumMentionAddresses(text, mentionMap),
+          ]),
+        ]
       );
       reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
       scheduleReticulumChatSummariesRefresh();

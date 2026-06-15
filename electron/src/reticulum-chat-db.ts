@@ -142,6 +142,7 @@ export class ReticulumChatDatabase {
       readAt: number;
     }>
   >();
+  private memoryReadWatermarks = new Map<string, number>();
   private memoryMeta = new Map<
     string,
     { ownEvent: boolean; lastServedAt: number; storedAt: number; wireBytes: number }
@@ -300,12 +301,12 @@ export class ReticulumChatDatabase {
         AND author_address != ?
     `);
     this.stmtGetWatermark = this.db.prepare(
-      'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ?'
+      'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ? AND address = ?'
     );
     this.stmtUpsertWatermark = this.db.prepare(`
-      INSERT INTO reticulum_chat_read_watermarks (group_id, timestamp)
-      VALUES (?, ?)
-      ON CONFLICT(group_id) DO UPDATE SET timestamp = excluded.timestamp
+      INSERT INTO reticulum_chat_read_watermarks (group_id, address, timestamp)
+      VALUES (?, ?, ?)
+      ON CONFLICT(group_id, address) DO UPDATE SET timestamp = excluded.timestamp
     `);
     this.stmtUpsertMention = this.db.prepare(`
       INSERT INTO reticulum_chat_mentions
@@ -772,7 +773,7 @@ export class ReticulumChatDatabase {
           : sqliteLast;
       if (!lastEvent) continue;
 
-      const watermark = this.getReadWatermark(groupId);
+      const watermark = this.getReadWatermark(groupId, myAddress);
       const unreadRow = this.stmtCountUnreadDisplayEvents.get(
         groupId,
         watermark,
@@ -782,6 +783,20 @@ export class ReticulumChatDatabase {
         typeof unreadRow?.cnt === 'number' && Number.isFinite(unreadRow.cnt)
           ? unreadRow.cnt
           : 0;
+      let memoryUnreadCount = 0;
+      if (myAddress) {
+        for (const event of this.memoryEvents.values()) {
+          if (
+            event.groupId === groupId &&
+            (event.eventType === 'message' ||
+              event.eventType === 'attachment_manifest') &&
+            event.timestamp > watermark &&
+            event.authorAddress !== myAddress
+          ) {
+            memoryUnreadCount += 1;
+          }
+        }
+      }
       const mentionRow = myAddress
         ? (this.stmtCountUnreadMentions.get(
             groupId,
@@ -815,7 +830,7 @@ export class ReticulumChatDatabase {
       summaries.push({
         groupId,
         lastEvent,
-        unreadCount,
+        unreadCount: Math.max(unreadCount, memoryUnreadCount),
         mentionCount: totalMentionCount,
         hasUnreadMention: totalMentionCount > 0,
         updatedAt: lastEvent.timestamp,
@@ -827,8 +842,15 @@ export class ReticulumChatDatabase {
   markRead(groupId: number, upToTimestamp: number, myAddress = ''): void {
     const timestamp = Number(upToTimestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) return;
-    const current = this.getReadWatermark(groupId);
-    if (timestamp > current) this.stmtUpsertWatermark.run(groupId, timestamp);
+    const address = typeof myAddress === 'string' ? myAddress.trim() : '';
+    const current = this.getReadWatermark(groupId, address);
+    if (timestamp > current) {
+      this.memoryReadWatermarks.set(
+        this.readWatermarkKey(groupId, address),
+        timestamp
+      );
+      this.stmtUpsertWatermark.run(groupId, address, timestamp);
+    }
     if (myAddress) {
       this.stmtMarkMentionsRead.run(Date.now(), groupId, myAddress, timestamp);
       const readAt = Date.now();
@@ -847,13 +869,39 @@ export class ReticulumChatDatabase {
     }
   }
 
-  getReadWatermark(groupId: number): number {
-    const row = this.stmtGetWatermark.get(groupId) as
+  getReadWatermark(groupId: number, address = ''): number {
+    const normalizedAddress = typeof address === 'string' ? address.trim() : '';
+    const memoryWatermark =
+      this.memoryReadWatermarks.get(
+        this.readWatermarkKey(groupId, normalizedAddress)
+      ) ?? 0;
+    const row = this.stmtGetWatermark.get(groupId, normalizedAddress) as
       | { timestamp?: number }
       | undefined;
-    return typeof row?.timestamp === 'number' && Number.isFinite(row.timestamp)
-      ? row.timestamp
-      : 0;
+    const sqliteWatermark =
+      typeof row?.timestamp === 'number' && Number.isFinite(row.timestamp)
+        ? row.timestamp
+        : 0;
+    const exactWatermark = Math.max(memoryWatermark, sqliteWatermark);
+    if (exactWatermark > 0) {
+      return exactWatermark;
+    }
+    if (!normalizedAddress) return 0;
+    const legacyMemoryWatermark =
+      this.memoryReadWatermarks.get(this.readWatermarkKey(groupId, '')) ?? 0;
+    const legacyRow = this.stmtGetWatermark.get(groupId, '') as
+      | { timestamp?: number }
+      | undefined;
+    const legacySqliteWatermark =
+      typeof legacyRow?.timestamp === 'number' &&
+      Number.isFinite(legacyRow.timestamp)
+        ? legacyRow.timestamp
+        : 0;
+    return Math.max(legacyMemoryWatermark, legacySqliteWatermark);
+  }
+
+  private readWatermarkKey(groupId: number, address: string): string {
+    return `${groupId}:${address}`;
   }
 
   getMissingEvents(
@@ -1046,8 +1094,10 @@ export class ReticulumChatDatabase {
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
       CREATE TABLE IF NOT EXISTS reticulum_chat_read_watermarks (
-        group_id INTEGER PRIMARY KEY,
-        timestamp INTEGER NOT NULL
+        group_id INTEGER NOT NULL,
+        address TEXT NOT NULL DEFAULT '',
+        timestamp INTEGER NOT NULL,
+        PRIMARY KEY (group_id, address)
       );
       CREATE TABLE IF NOT EXISTS reticulum_chat_mentions (
         event_id TEXT NOT NULL,
@@ -1080,5 +1130,31 @@ export class ReticulumChatDatabase {
         tokenize = 'unicode61'
       );
     `);
+    this.migrateReadWatermarksSchema();
+  }
+
+  private migrateReadWatermarksSchema(): void {
+    const columns = this.db
+      .prepare('PRAGMA table_info(reticulum_chat_read_watermarks)')
+      .all() as Array<{ name?: string }>;
+    const hasAddress = columns.some((column) => column.name === 'address');
+    if (hasAddress) return;
+    const tx = this.db.transaction(() => {
+      this.db.exec(`
+        ALTER TABLE reticulum_chat_read_watermarks
+          RENAME TO reticulum_chat_read_watermarks_legacy;
+        CREATE TABLE reticulum_chat_read_watermarks (
+          group_id INTEGER NOT NULL,
+          address TEXT NOT NULL DEFAULT '',
+          timestamp INTEGER NOT NULL,
+          PRIMARY KEY (group_id, address)
+        );
+        INSERT INTO reticulum_chat_read_watermarks (group_id, address, timestamp)
+          SELECT group_id, '', timestamp
+          FROM reticulum_chat_read_watermarks_legacy;
+        DROP TABLE reticulum_chat_read_watermarks_legacy;
+      `);
+    });
+    tx();
   }
 }

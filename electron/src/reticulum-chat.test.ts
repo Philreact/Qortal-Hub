@@ -246,6 +246,27 @@ describe('reticulum chat database', () => {
     });
   });
 
+  it('keeps read watermarks separate for local accounts sharing one db', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const accountA = deriveAddressFromPublicKey(base58Encode(nacl.sign.keyPair().publicKey));
+    const accountB = deriveAddressFromPublicKey(base58Encode(nacl.sign.keyPair().publicKey));
+    const event = signedEvent({
+      eventId: 'event-shared-db-unread',
+      groupId: 65,
+      timestamp: Date.now(),
+    });
+    expect(db.insertEvent(event, true)).toBe(true);
+
+    expect(db.getChatSummaries(accountA)[0]?.unreadCount).toBe(1);
+    expect(db.getChatSummaries(accountB)[0]?.unreadCount).toBe(1);
+
+    db.markRead(65, event.timestamp, accountB);
+
+    expect(db.getChatSummaries(accountB)[0]?.unreadCount).toBe(0);
+    expect(db.getChatSummaries(accountA)[0]?.unreadCount).toBe(1);
+  });
+
   it('replaces and deletes mentions for edited or deleted messages', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
