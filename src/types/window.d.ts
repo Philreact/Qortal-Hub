@@ -546,6 +546,11 @@ declare global {
       ) => Promise<{ success: boolean; error?: string }>;
       getHistory: (groupId: number, limit?: number) => Promise<unknown[]>;
       getSyncState: (groupId: number) => Promise<Record<string, number>>;
+      getSummaries: (myAddress?: string) => Promise<unknown[]>;
+      markRead: (
+        groupId: number,
+        upToTimestamp: number
+      ) => Promise<{ success: boolean }>;
       getSubscriptions: () => Promise<number[]>;
       onEvent: (cb: (payload: { event: unknown }) => void) => () => void;
       onTyping: (

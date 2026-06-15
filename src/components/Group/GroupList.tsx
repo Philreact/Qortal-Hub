@@ -30,7 +30,7 @@ import {
   groupChatHasUnreadAtom,
   groupsOwnerNamesSelector,
   isRunningPublicNodeAtom,
-  memberGroupsAtom,
+  memberGroupsWithReticulumChatAtom,
   qortalGroupMeshCallActiveAtom,
   qortalGroupMeshCallMaxParticipantsAtom,
   qortalGroupMeshCallParticipantCountAtom,
@@ -69,7 +69,7 @@ const GroupListInner = ({
     'tutorial',
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
-  const groups = useAtomValue(memberGroupsAtom);
+  const groups = useAtomValue(memberGroupsWithReticulumChatAtom);
   const groupChatHasUnread = useAtomValue(groupChatHasUnreadAtom);
   const groupsAnnHasUnread = useAtomValue(groupsAnnHasUnreadAtom);
 
@@ -429,6 +429,8 @@ const GroupItem = memo(
     }, [setIsPreviewOpen, setPreviewSrc]);
 
     const isSelected = group?.groupId === selectedGroupId;
+    const hasReticulumUnread =
+      (group?.reticulumChatSummary?.unreadCount ?? 0) > 0;
 
     const gcallRoomIdForRow =
       group?.groupId && group.groupId !== '0' && Number.isFinite(Number(group.groupId))
@@ -584,14 +586,15 @@ const GroupItem = memo(
                 marginLeft: '4px',
               }}
             >
-              {group?.data &&
-                groupChatTimestamp &&
-                group?.sender !== myAddress &&
-                group?.timestamp &&
-                ((!timestampEnterData &&
-                  Date.now() - group?.timestamp <
-                    timeDifferenceForNotificationChats) ||
-                  timestampEnterData < group?.timestamp) && (
+              {(hasReticulumUnread ||
+                (group?.data &&
+                  groupChatTimestamp &&
+                  group?.sender !== myAddress &&
+                  group?.timestamp &&
+                  ((!timestampEnterData &&
+                    Date.now() - group?.timestamp <
+                      timeDifferenceForNotificationChats) ||
+                    timestampEnterData < group?.timestamp))) && (
                   <MarkChatUnreadIcon
                     sx={{
                       color: theme.palette.other.unread,

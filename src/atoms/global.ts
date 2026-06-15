@@ -40,6 +40,21 @@ export const fullScreenAtom = atomWithReset(false);
 export const p2pHealthAtom = atom<P2pHealthLevel | 'unknown'>('unknown');
 export const groupAnnouncementsAtom = atomWithReset({});
 export const groupChatTimestampsAtom = atomWithReset({});
+export type ReticulumChatSummaryAtomEntry = {
+  groupId: number;
+  lastEvent?: {
+    authorAddress?: string;
+    encryptedPayload?: string;
+    eventId?: string;
+    eventType?: string;
+    timestamp?: number;
+  } | null;
+  unreadCount?: number;
+  updatedAt?: number;
+};
+export const reticulumChatSummariesAtom = atomWithReset<
+  Record<string, ReticulumChatSummaryAtomEntry>
+>({});
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);
@@ -92,6 +107,40 @@ export const selectedGroupIdAtom = atomWithReset(null);
 export const settingsLocalLastUpdatedAtom = atomWithReset(0);
 export const settingsQDNLastUpdatedAtom = atomWithReset(-100);
 export const timestampEnterDataAtom = atomWithReset({});
+
+export const memberGroupsWithReticulumChatAtom = atom((get) => {
+  const groups = get(memberGroupsAtom);
+  const reticulumSummaries = get(reticulumChatSummariesAtom);
+  if (!Array.isArray(groups) || !reticulumSummaries) return groups;
+  return groups.map((group: any) => {
+    const groupId = String(group?.groupId ?? '');
+    const summary = reticulumSummaries[groupId];
+    const lastEvent = summary?.lastEvent;
+    const reticulumTimestamp =
+      typeof summary?.updatedAt === 'number'
+        ? summary.updatedAt
+        : typeof lastEvent?.timestamp === 'number'
+          ? lastEvent.timestamp
+          : 0;
+    const coreTimestamp =
+      typeof group?.timestamp === 'number' ? group.timestamp : 0;
+    if (!reticulumTimestamp || reticulumTimestamp < coreTimestamp) {
+      return summary ? { ...group, reticulumChatSummary: summary } : group;
+    }
+    return {
+      ...group,
+      data: lastEvent?.encryptedPayload || group?.data || 'reticulum-chat',
+      reticulumChatSummary: summary,
+      sender: lastEvent?.authorAddress || group?.sender,
+      timestamp: reticulumTimestamp,
+    };
+  }).sort((a: any, b: any) => {
+    const timestampA = typeof a?.timestamp === 'number' ? a.timestamp : 0;
+    const timestampB = typeof b?.timestamp === 'number' ? b.timestamp : 0;
+    if (timestampA !== timestampB) return timestampB - timestampA;
+    return String(a?.groupName || '').localeCompare(String(b?.groupName || ''));
+  });
+});
 
 // When in Electron, use appStorage-backed persistence; otherwise Jotai uses localStorage (undefined = default).
 const electronStorage = getElectronPersistentStorage();
@@ -720,14 +769,15 @@ const TIME_DIFF_UNREAD_CHATS_MS = 900000;
 
 /** Derived: any group chat has unread. Subscribe here instead of memberGroupsAtom to avoid re-renders on list change. */
 export const groupChatHasUnreadAtom = atom((get) => {
-  const groups = get(memberGroupsAtom);
+  const groups = get(memberGroupsWithReticulumChatAtom);
   const myAddress = get(userInfoAtom)?.address;
   const groupChatTimestamps = get(groupChatTimestampsAtom);
   const timestampEnterData = get(timestampEnterDataAtom) || {};
   if (!groups?.length || !myAddress) return false;
-  return groups.some(
-    (group: any) =>
-      group?.groupId !== '0' &&
+  return groups.some((group: any) => {
+    if (group?.groupId === '0') return false;
+    if ((group?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
+    return (
       group?.data &&
       group?.sender !== myAddress &&
       group?.timestamp &&
@@ -735,7 +785,8 @@ export const groupChatHasUnreadAtom = atom((get) => {
       ((!timestampEnterData[group?.groupId] &&
         Date.now() - group?.timestamp < TIME_DIFF_UNREAD_CHATS_MS) ||
         timestampEnterData[group?.groupId] < group?.timestamp)
-  );
+    );
+  });
 });
 
 /** Derived: any group announcement has unread. */
@@ -759,14 +810,14 @@ export const hasUnreadGroupsAtom = atom((get) => {
 export const isUnreadChatAtomFamily = atomFamily((selectedGroupId: string) =>
   atom((get) => {
     if (!selectedGroupId) return false;
-    const groups = get(memberGroupsAtom);
+    const groups = get(memberGroupsWithReticulumChatAtom);
     const myAddress = get(userInfoAtom)?.address;
     const groupChatTimestamps = get(groupChatTimestampsAtom);
     const timestampEnterData = get(timestampEnterDataAtom) || {};
-    const findGroup = groups
-      ?.filter((g: any) => g?.sender !== myAddress)
-      ?.find((g: any) => g?.groupId === selectedGroupId);
+    const findGroup = groups?.find((g: any) => g?.groupId === selectedGroupId);
+    if ((findGroup?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
     if (!findGroup?.data || !findGroup?.timestamp) return false;
+    if (findGroup?.sender === myAddress) return false;
     return !!(
       groupChatTimestamps[findGroup?.groupId] &&
       ((!timestampEnterData[selectedGroupId] &&

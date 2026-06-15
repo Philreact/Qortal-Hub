@@ -65,6 +65,7 @@ import {
   memberGroupsAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
+  reticulumChatSummariesAtom,
   selectedGroupIdAtom,
   timestampEnterDataAtom,
   userInfoAtom,
@@ -250,6 +251,7 @@ export const Group = ({
   const [hideCommonKeyPopup, setHideCommonKeyPopup] = useState(false);
   const [isLoadingGroupMessage, setIsLoadingGroupMessage] = useState('');
   const setMutedGroups = useSetAtom(mutedGroupsAtom);
+  const memberGroupsForReticulum = useAtomValue(memberGroupsAtom);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
@@ -265,6 +267,10 @@ export const Group = ({
   const [groupChatTimestamps, setGroupChatTimestamps] = useAtom(
     groupChatTimestampsAtom
   );
+  const setReticulumChatSummaries = useSetAtom(reticulumChatSummariesAtom);
+  const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
+  const reticulumSummariesRefreshTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
   const setIsEnabledDevMode = useSetAtom(enabledDevModeAtom);
   const setIsDisabledEditorEnter = useSetAtom(isDisabledEditorEnterAtom);
 
@@ -638,6 +644,115 @@ export const Group = ({
       console.log(error);
     }
   }, []);
+
+  const refreshReticulumChatSummaries = useCallback(async () => {
+    try {
+      const enabled = await window.reticulumChat?.isEnabled?.();
+      if (!enabled) {
+        setReticulumChatSummaries({});
+        return;
+      }
+      const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
+      if (!Array.isArray(summaries)) {
+        setReticulumChatSummaries({});
+        return;
+      }
+      const next = summaries.reduce((acc, summary: any) => {
+        const groupId = Number(summary?.groupId);
+        if (!Number.isInteger(groupId) || groupId <= 0) return acc;
+        acc[String(groupId)] = summary;
+        return acc;
+      }, {} as Record<string, any>);
+      setReticulumChatSummaries(next);
+    } catch (error) {
+      console.error('[ReticulumChat] Failed to refresh group summaries:', error);
+    }
+  }, [myAddress, setReticulumChatSummaries]);
+
+  const scheduleReticulumChatSummariesRefresh = useCallback(() => {
+    if (reticulumSummariesRefreshTimerRef.current) {
+      clearTimeout(reticulumSummariesRefreshTimerRef.current);
+    }
+    reticulumSummariesRefreshTimerRef.current = setTimeout(() => {
+      reticulumSummariesRefreshTimerRef.current = null;
+      void refreshReticulumChatSummaries();
+    }, 150);
+  }, [refreshReticulumChatSummaries]);
+
+  useEffect(() => {
+    if (!myAddress) return;
+    const groupIds = (memberGroupsForReticulum || [])
+      .map((group: any) => Number(group?.groupId))
+      .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+    if (groupIds.length === 0) {
+      for (const groupId of reticulumSubscribedGroupIdsRef.current) {
+        void window.reticulumChat?.unsubscribeGroup?.(groupId);
+      }
+      reticulumSubscribedGroupIdsRef.current = new Set();
+      void window.reticulumChat?.setLocalGroupMemberships?.([]);
+      setReticulumChatSummaries({});
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const enabled = await window.reticulumChat?.isEnabled?.();
+      if (cancelled || !enabled) {
+        if (!cancelled) {
+          for (const groupId of reticulumSubscribedGroupIdsRef.current) {
+            void window.reticulumChat?.unsubscribeGroup?.(groupId);
+          }
+          reticulumSubscribedGroupIdsRef.current = new Set();
+          void window.reticulumChat?.setLocalGroupMemberships?.([]);
+          setReticulumChatSummaries({});
+        }
+        return;
+      }
+      await window.reticulumChat?.setLocalGroupMemberships?.(groupIds);
+      const nextIds = new Set(groupIds);
+      const previousIds = reticulumSubscribedGroupIdsRef.current;
+      for (const groupId of previousIds) {
+        if (!nextIds.has(groupId)) {
+          void window.reticulumChat?.unsubscribeGroup?.(groupId);
+        }
+      }
+      for (const groupId of nextIds) {
+        if (!previousIds.has(groupId)) {
+          void window.reticulumChat?.subscribeGroup?.(groupId);
+        }
+      }
+      reticulumSubscribedGroupIdsRef.current = nextIds;
+      await refreshReticulumChatSummaries();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    memberGroupsForReticulum,
+    myAddress,
+    refreshReticulumChatSummaries,
+    setReticulumChatSummaries,
+  ]);
+
+  useEffect(() => {
+    const offEvent = window.reticulumChat?.onEvent?.(() => {
+      scheduleReticulumChatSummariesRefresh();
+    });
+    const refreshHandler = () => {
+      scheduleReticulumChatSummariesRefresh();
+    };
+    subscribeToEvent('reticulum-chat-summaries-refresh', refreshHandler);
+    void refreshReticulumChatSummaries();
+    return () => {
+      offEvent?.();
+      unsubscribeFromEvent('reticulum-chat-summaries-refresh', refreshHandler);
+      if (reticulumSummariesRefreshTimerRef.current) {
+        clearTimeout(reticulumSummariesRefreshTimerRef.current);
+        reticulumSummariesRefreshTimerRef.current = null;
+      }
+    };
+  }, [refreshReticulumChatSummaries, scheduleReticulumChatSummariesRefresh]);
 
   const refreshHomeDataFunc = useCallback(() => {
     setGroupSection('default');
@@ -1948,7 +2063,21 @@ export const Group = ({
     [adminsWithNames, notifyAdmin]
   );
 
+  const markReticulumGroupRead = useCallback((group: any) => {
+    const groupId = Number(group?.groupId);
+    const timestamp = Number(
+      group?.reticulumChatSummary?.updatedAt ||
+        group?.reticulumChatSummary?.lastEvent?.timestamp ||
+        0
+    );
+    if (!Number.isInteger(groupId) || groupId <= 0 || timestamp <= 0) return;
+    void window.reticulumChat?.markRead?.(groupId, timestamp).then(() => {
+      executeEvent('reticulum-chat-summaries-refresh', {});
+    });
+  }, []);
+
   const selectGroupFunc = useCallback((group) => {
+    markReticulumGroupRead(group);
     setMobileViewMode('group');
     setDesktopSideView('groups');
     initiatedGetMembers.current = false;
@@ -1976,7 +2105,7 @@ export const Group = ({
     setTimeout(() => {
       setSelectedGroup(group);
     }, 200);
-  }, []);
+  }, [markReticulumGroupRead]);
 
   const renderQChatTabContent = ({
     hide = false,

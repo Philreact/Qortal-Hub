@@ -1306,6 +1306,16 @@ try {
         ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
           Record<string, number>
         >,
+      getSummaries: async (myAddress?: string) =>
+        ipcRenderer.invoke('reticulumChat:getSummaries', myAddress) as Promise<
+          unknown[]
+        >,
+      markRead: async (groupId: number, upToTimestamp: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markRead',
+          groupId,
+          upToTimestamp
+        ) as Promise<{ success: boolean }>,
       getSubscriptions: async () =>
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
           number[]
@@ -1402,6 +1412,16 @@ try {
         ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
           Record<string, number>
         >,
+      getSummaries: async (myAddress?: string) =>
+        ipcRenderer.invoke('reticulumChat:getSummaries', myAddress) as Promise<
+          unknown[]
+        >,
+      markRead: async (groupId: number, upToTimestamp: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markRead',
+          groupId,
+          upToTimestamp
+        ) as Promise<{ success: boolean }>,
       getSubscriptions: async () =>
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
           number[]

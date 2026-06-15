@@ -12,6 +12,13 @@ export type ReticulumChatAuthorHead = {
   timestamp: number;
 };
 
+export type ReticulumChatSummary = {
+  groupId: number;
+  lastEvent: ReticulumChatEvent | null;
+  unreadCount: number;
+  updatedAt: number;
+};
+
 type EventRow = {
   event_id: string;
   group_id: number;
@@ -72,6 +79,11 @@ export class ReticulumChatDatabase {
   private stmtGetAuthorHeads: Statement;
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
+  private stmtGetKnownGroups: Statement;
+  private stmtGetLastDisplayEvent: Statement;
+  private stmtCountUnreadDisplayEvents: Statement;
+  private stmtGetWatermark: Statement;
+  private stmtUpsertWatermark: Statement;
   private stmtMarkServed: Statement;
   private stmtTotalCacheBytes: Statement;
   private stmtEvictCandidate: Statement;
@@ -178,6 +190,32 @@ export class ReticulumChatDatabase {
       FROM reticulum_chat_events
       WHERE group_id = ?
       GROUP BY author_address
+    `);
+    this.stmtGetKnownGroups = this.db.prepare(`
+      SELECT DISTINCT group_id FROM reticulum_chat_events
+      ORDER BY group_id ASC
+    `);
+    this.stmtGetLastDisplayEvent = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ? AND event_type IN ('message', 'attachment_manifest')
+      ORDER BY timestamp DESC, event_id DESC
+      LIMIT 1
+    `);
+    this.stmtCountUnreadDisplayEvents = this.db.prepare(`
+      SELECT COUNT(*) AS cnt
+      FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND event_type IN ('message', 'attachment_manifest')
+        AND timestamp > ?
+        AND author_address != ?
+    `);
+    this.stmtGetWatermark = this.db.prepare(
+      'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ?'
+    );
+    this.stmtUpsertWatermark = this.db.prepare(`
+      INSERT INTO reticulum_chat_read_watermarks (group_id, timestamp)
+      VALUES (?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET timestamp = excluded.timestamp
     `);
     this.stmtMarkServed = this.db.prepare(
       'UPDATE reticulum_chat_events SET last_served_at = ? WHERE event_id = ?'
@@ -425,6 +463,69 @@ export class ReticulumChatDatabase {
     return out;
   }
 
+  getChatSummaries(myAddress = ''): ReticulumChatSummary[] {
+    const rows = this.stmtGetKnownGroups.all() as Array<{ group_id: number }>;
+    const groupIds = new Set(rows.map((row) => row.group_id));
+    for (const event of this.memoryEvents.values()) {
+      groupIds.add(event.groupId);
+    }
+
+    const summaries: ReticulumChatSummary[] = [];
+    for (const groupId of groupIds) {
+      const events = this.getRecentEvents(groupId, 500).filter(
+        (event) =>
+          event.eventType === 'message' ||
+          event.eventType === 'attachment_manifest'
+      );
+      const memoryLast = events[events.length - 1] ?? null;
+      const row = this.stmtGetLastDisplayEvent.get(groupId) as
+        | EventRow
+        | undefined;
+      const sqliteLast = row ? rowToEvent(row) : null;
+      const lastEvent =
+        memoryLast && (!sqliteLast || memoryLast.timestamp >= sqliteLast.timestamp)
+          ? memoryLast
+          : sqliteLast;
+      if (!lastEvent) continue;
+
+      const watermark = this.getReadWatermark(groupId);
+      const unreadRow = this.stmtCountUnreadDisplayEvents.get(
+        groupId,
+        watermark,
+        myAddress
+      ) as { cnt?: number } | undefined;
+      let unreadCount =
+        typeof unreadRow?.cnt === 'number' && Number.isFinite(unreadRow.cnt)
+          ? unreadRow.cnt
+          : 0;
+
+      summaries.push({
+        groupId,
+        lastEvent,
+        unreadCount,
+        updatedAt: lastEvent.timestamp,
+      });
+    }
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  markRead(groupId: number, upToTimestamp: number): void {
+    const timestamp = Number(upToTimestamp);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+    const current = this.getReadWatermark(groupId);
+    if (timestamp <= current) return;
+    this.stmtUpsertWatermark.run(groupId, timestamp);
+  }
+
+  getReadWatermark(groupId: number): number {
+    const row = this.stmtGetWatermark.get(groupId) as
+      | { timestamp?: number }
+      | undefined;
+    return typeof row?.timestamp === 'number' && Number.isFinite(row.timestamp)
+      ? row.timestamp
+      : 0;
+  }
+
   getMissingEvents(
     groupId: number,
     knownAuthorSeqs: Record<string, number>,
@@ -528,6 +629,10 @@ export class ReticulumChatDatabase {
         ON reticulum_chat_events (group_id, timestamp, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
+      CREATE TABLE IF NOT EXISTS reticulum_chat_read_watermarks (
+        group_id INTEGER PRIMARY KEY,
+        timestamp INTEGER NOT NULL
+      );
     `);
   }
 }

@@ -1213,6 +1213,28 @@ export const ChatGroup = ({
     reticulumChatEvents,
   ]);
 
+  useEffect(() => {
+    if (
+      !reticulumChatEnabled ||
+      !isActive ||
+      !selectedGroup ||
+      reticulumChatEvents.length === 0
+    ) {
+      return;
+    }
+    const groupId = Number(selectedGroup);
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    const latestTimestamp = reticulumChatEvents.reduce((latest, event: any) => {
+      if (Number(event?.groupId) !== groupId) return latest;
+      const timestamp = Number(event?.timestamp);
+      return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
+    }, 0);
+    if (latestTimestamp <= 0) return;
+    void window.reticulumChat?.markRead?.(groupId, latestTimestamp).then(() => {
+      executeEvent('reticulum-chat-summaries-refresh', {});
+    });
+  }, [isActive, reticulumChatEnabled, reticulumChatEvents, selectedGroup]);
+
   const clearEditorContent = () => {
     if (editorRef.current) {
       setMessageSize(0);
@@ -1379,8 +1401,6 @@ export const ChatGroup = ({
               targetEventId: chatReference || undefined,
               replyToEventId: repliedTo || undefined,
             });
-            const localItem = await convertReticulumEventToChatItem(result.event);
-            if (localItem) applyReticulumChatItem(localItem);
             return { ...result, clearQueueOnSuccess: true };
           }
           return await sendChatGroup({
@@ -1543,8 +1563,6 @@ export const ChatGroup = ({
               eventType: reactionState ? 'reaction_add' : 'reaction_remove',
               targetEventId: chatMessage.signature,
             });
-            const localItem = await convertReticulumEventToChatItem(result.event);
-            if (localItem) applyReticulumChatItem(localItem);
             return { ...result, clearQueueOnSuccess: true };
           }
           return await sendChatGroup({

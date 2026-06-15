@@ -150,7 +150,9 @@ export const ChatList = ({
   const rowVirtualizer = useVirtualizer({
     count: messages.length,
     getItemKey: (index) =>
-      messages[index]?.tempSignature || messages[index].signature,
+      messages[index]?.tempSignature ||
+      messages[index]?.signature ||
+      `chat-row-${index}`,
     getScrollElement: () => parentRef?.current,
     estimateSize: useCallback(() => 80, []), // Provide an estimated height of items, adjust this as needed
     overscan: 10, // Number of items to render outside the visible area to improve smoothness
@@ -243,8 +245,11 @@ export const ChatList = ({
 
     // Only add a message if it doesn't already exist in the Map
     initialMessages.forEach((message) => {
-      if (!uniqueInitialMessagesMap.has(message.signature)) {
-        uniqueInitialMessagesMap.set(message.signature, message);
+      if (!message || typeof message !== 'object') return;
+      const signature = message.signature || message.tempSignature;
+      if (!signature) return;
+      if (!uniqueInitialMessagesMap.has(signature)) {
+        uniqueInitialMessagesMap.set(signature, message);
       }
     });
 
@@ -266,7 +271,13 @@ export const ChatList = ({
         );
       })
       .sort((a, b) => a.timestamp - b.timestamp);
-    const totalMessages = [...uniqueInitialMessages, ...(tempMessages || [])];
+    const totalMessages = [...uniqueInitialMessages, ...(tempMessages || [])]
+      .filter(
+        (message) =>
+          message &&
+          typeof message === 'object' &&
+          (message.signature || message.tempSignature)
+      );
 
     if (totalMessages.length === 0) return;
 
@@ -572,11 +583,16 @@ export const ChatList = ({
                   );
                 }
 
+                const messageKey =
+                  message.signature ||
+                  message.tempSignature ||
+                  `chat-row-${virtualRow.index}`;
+
                 return (
                   <Box
                     data-index={virtualRow.index} //needed for dynamic row height measurement
                     ref={rowVirtualizer.measureElement} //measure dynamic row height
-                    key={message.signature}
+                    key={messageKey}
                     sx={{
                       alignItems: 'center',
                       display: 'flex',
@@ -601,7 +617,7 @@ export const ChatList = ({
                       }
                     >
                       <MessageItem
-                        key={message.signature}
+                        key={messageKey}
                         handleReaction={handleReaction}
                         isLast={index === messages.length - 1}
                         isPrivate={isPrivate}

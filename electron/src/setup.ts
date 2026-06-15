@@ -3141,6 +3141,20 @@ ipcMain.handle('reticulumChat:getSyncState', async (_event, groupId: number) => 
   return manager ? manager.getSyncState(groupId) : {};
 });
 
+ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) => {
+  const manager = getReticulumChatManager();
+  return manager ? manager.getChatSummaries(typeof myAddress === 'string' ? myAddress : '') : [];
+});
+
+ipcMain.handle(
+  'reticulumChat:markRead',
+  async (_event, groupId: number, upToTimestamp: number) => {
+    const manager = getReticulumChatManager();
+    manager?.markRead(groupId, upToTimestamp);
+    return { success: true };
+  }
+);
+
 ipcMain.handle('reticulumChat:getSubscriptions', async () => {
   const manager = getReticulumChatManager();
   return manager ? manager.getSubscriptions() : [];

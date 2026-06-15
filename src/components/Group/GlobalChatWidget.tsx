@@ -34,7 +34,7 @@ import {
   groupChatTimestampsAtom,
   groupsOwnerNamesAtom,
   groupsPropertiesAtom,
-  memberGroupsAtom,
+  memberGroupsWithReticulumChatAtom,
   userInfoAtom,
 } from '../../atoms/global';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
@@ -82,7 +82,7 @@ export function GlobalChatWidget({
 }: GlobalChatWidgetProps) {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group', 'auth']);
-  const memberGroups = useAtomValue(memberGroupsAtom) ?? [];
+  const memberGroups = useAtomValue(memberGroupsWithReticulumChatAtom) ?? [];
   const groupsProperties = useAtomValue(groupsPropertiesAtom) ?? {};
   const groupsOwnerNames = useAtomValue(groupsOwnerNamesAtom) ?? {};
   const groupChatTimestamps = useAtomValue(groupChatTimestampsAtom) ?? {};
@@ -1304,14 +1304,15 @@ export function GlobalChatWidget({
                         const groupEnterTimestamp =
                           timestampEnterData[group?.groupId];
                         const hasUnreadGroup =
-                          group?.data &&
-                          groupChatTimestamp &&
-                          group?.sender !== myAddress &&
-                          group?.timestamp &&
-                          ((groupEnterTimestamp == null &&
-                            Date.now() - group?.timestamp <
-                              timeDifferenceForNotificationChats) ||
-                            (groupEnterTimestamp ?? 0) < group?.timestamp);
+                          (group?.reticulumChatSummary?.unreadCount ?? 0) > 0 ||
+                          (group?.data &&
+                            groupChatTimestamp &&
+                            group?.sender !== myAddress &&
+                            group?.timestamp &&
+                            ((groupEnterTimestamp == null &&
+                              Date.now() - group?.timestamp <
+                                timeDifferenceForNotificationChats) ||
+                              (groupEnterTimestamp ?? 0) < group?.timestamp));
                         const groupProperty = groupsProperties[group?.groupId];
                         const isPrivateGroup = groupProperty?.isOpen === false;
                         return (
@@ -1329,6 +1330,25 @@ export function GlobalChatWidget({
                                     error?.message || 'An error occurred'
                                   );
                                 });
+                              const reticulumTimestamp = Number(
+                                group?.reticulumChatSummary?.updatedAt ||
+                                  group?.reticulumChatSummary?.lastEvent
+                                    ?.timestamp ||
+                                  0
+                              );
+                              if (reticulumTimestamp > 0) {
+                                void window.reticulumChat
+                                  ?.markRead?.(
+                                    Number(group?.groupId),
+                                    reticulumTimestamp
+                                  )
+                                  .then(() => {
+                                    executeEvent(
+                                      'reticulum-chat-summaries-refresh',
+                                      {}
+                                    );
+                                  });
+                              }
                               setSelectedGroup(group);
                               getTimestampEnterChat();
                             }}

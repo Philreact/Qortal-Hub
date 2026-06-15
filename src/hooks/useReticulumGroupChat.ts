@@ -171,7 +171,6 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
       primaryNameCacheRef.current.clear();
       offEvent?.();
       offTyping?.();
-      void window.reticulumChat?.unsubscribeGroup?.(validGroupId);
     };
   }, [enabled, enqueueIncomingEvent, validGroupId]);
 
@@ -180,12 +179,22 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
       if (!enabled || validGroupId == null) {
         return { success: false, error: 'Reticulum chat is disabled' };
       }
-      return (
+      const result =
         (await window.reticulumChat?.publishEvent?.(event)) ?? {
           success: false,
           error: 'Reticulum chat API unavailable',
+        };
+      if (result?.success) {
+        const chatEvent = event as ReticulumChatHookEvent;
+        if (Number(chatEvent?.groupId) === validGroupId) {
+          const enriched = await addPrimaryNamesToEvents(
+            [chatEvent],
+            primaryNameCacheRef.current
+          );
+          setEvents((prev) => mergeReticulumEvents(prev, enriched));
         }
-      );
+      }
+      return result;
     },
     [enabled, validGroupId]
   );

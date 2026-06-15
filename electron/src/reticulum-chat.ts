@@ -12,6 +12,7 @@ import {
 import {
   ReticulumChatDatabase,
   type ReticulumChatAuthorHead,
+  type ReticulumChatSummary,
 } from './reticulum-chat-db';
 import type { ReticulumBridge, ReticulumSendResult } from './reticulum-bridge';
 import { log as loggerLog, warn as loggerWarn } from './logger';
@@ -375,6 +376,7 @@ export class ReticulumChatManager extends EventEmitter {
   private observedDbEventIds = new Set<string>();
   private localNotifyWatcher: fs.FSWatcher | null = null;
   private localNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private localNotifyScanInterval: ReturnType<typeof setInterval> | null = null;
   private seenLocalNotifyFiles = new Set<string>();
 
   constructor(options: ReticulumChatManagerOptions = {}) {
@@ -473,6 +475,15 @@ export class ReticulumChatManager extends EventEmitter {
   getSyncState(groupId: number): Record<string, number> {
     this.assertGroupId(groupId);
     return this.db.getSyncState(groupId);
+  }
+
+  getChatSummaries(myAddress = ''): ReticulumChatSummary[] {
+    return this.db.getChatSummaries(myAddress);
+  }
+
+  markRead(groupId: number, upToTimestamp: number): void {
+    this.assertGroupId(groupId);
+    this.db.markRead(groupId, upToTimestamp);
   }
 
   handleWire(
@@ -652,6 +663,12 @@ export class ReticulumChatManager extends EventEmitter {
     fs.mkdirSync(this.localNotifyDir, { recursive: true });
     this.cleanupOldLocalNotifications();
     this.scanLocalNotifications();
+    if (!this.localNotifyScanInterval) {
+      this.localNotifyScanInterval = setInterval(() => {
+        this.scanLocalNotifications();
+      }, 2_000);
+      this.localNotifyScanInterval.unref?.();
+    }
     try {
       this.localNotifyWatcher = fs.watch(this.localNotifyDir, () => {
         this.scheduleLocalNotificationScan();
@@ -667,6 +684,10 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.localNotifyTimer) {
       clearTimeout(this.localNotifyTimer);
       this.localNotifyTimer = null;
+    }
+    if (this.localNotifyScanInterval) {
+      clearInterval(this.localNotifyScanInterval);
+      this.localNotifyScanInterval = null;
     }
     if (!this.localNotifyWatcher) return;
     this.localNotifyWatcher.close();
@@ -707,8 +728,9 @@ export class ReticulumChatManager extends EventEmitter {
       const eventId = typeof note.eventId === 'string' ? note.eventId : '';
       const groupId = Number(note.groupId);
       if (!eventId || !Number.isInteger(groupId) || groupId <= 0) return true;
-      if (!this.subscribedGroups.has(groupId) || !this.localGroupIds.has(groupId)) return true;
-      if (this.observedDbEventIds.has(eventId)) return true;
+      if (!this.subscribedGroups.has(groupId) || !this.localGroupIds.has(groupId)) {
+        return false;
+      }
       const event = this.db.getEvent(eventId);
       if (!event || event.groupId !== groupId) return false;
       this.observedDbEventIds.add(event.eventId);

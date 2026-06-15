@@ -47,7 +47,7 @@ import {
   groupsOwnerNamesAtom,
   groupsPropertiesAtom,
   joinRequestsCacheAtom,
-  memberGroupsAtom,
+  memberGroupsWithReticulumChatAtom,
   myGroupsWhereIAmAdminAtom,
   timestampEnterDataAtom,
   userInfoAtom,
@@ -682,7 +682,7 @@ export const GroupsWidget = ({
   const theme = useTheme();
   const { t } = useTranslation('group');
   const { show } = useContext(QORTAL_APP_CONTEXT);
-  const memberGroups = useAtomValue(memberGroupsAtom);
+  const memberGroups = useAtomValue(memberGroupsWithReticulumChatAtom);
   const myGroupsWhereIAmAdmin = useAtomValue(myGroupsWhereIAmAdminAtom);
   const ownerNamesByGroupId = useAtomValue(groupsOwnerNamesAtom) as Record<
     string,
@@ -838,12 +838,13 @@ export const GroupsWidget = ({
           group?.isOpen === true || groupsProperties[groupId]?.isOpen === true;
         const isEncryptedLike = isLikelyEncryptedSnippet(group.data);
         const isUnread =
-          !!group.data &&
-          !!groupChatTimestamps[groupId] &&
-          group.sender !== currentAddress &&
-          !!timestamp &&
-          ((!timestampEnterData[groupId] && Date.now() - timestamp < 900000) ||
-            (timestampEnterData[groupId] ?? 0) < timestamp);
+          (group?.reticulumChatSummary?.unreadCount ?? 0) > 0 ||
+          (!!group.data &&
+            !!groupChatTimestamps[groupId] &&
+            group.sender !== currentAddress &&
+            !!timestamp &&
+            ((!timestampEnterData[groupId] && Date.now() - timestamp < 900000) ||
+              (timestampEnterData[groupId] ?? 0) < timestamp));
         const ownerName = ownerNamesByGroupId?.[groupId] ?? null;
 
         return {
