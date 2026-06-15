@@ -42,7 +42,17 @@ describe('startReticulumForAppLaunch', () => {
     vi.mocked(startReticulumBridge).mockResolvedValue({} as never);
   });
 
-  it('starts the daemon and waits for shared-port readiness before starting the bridge', async () => {
+  it('starts the bridge without spawning when an existing shared instance is reachable', async () => {
+    await startReticulumForAppLaunch(1_234);
+
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(750);
+    expect(startReticulumBridge).toHaveBeenCalledTimes(1);
+    expect(startBundledReticulumDaemon).not.toHaveBeenCalled();
+    expect(restartBundledReticulumDaemonAndWaitReady).not.toHaveBeenCalled();
+  });
+
+  it('starts the daemon and waits for shared-port readiness when no existing shared instance is reachable', async () => {
+    const preflightError = new Error('No shared instance');
     vi.mocked(getReticulumDaemonStatus).mockReturnValue({
       running: true,
       pid: 123,
@@ -50,11 +60,18 @@ describe('startReticulumForAppLaunch', () => {
       configDir: '/tmp/qortal-appdata/qortal-hub/reticulum',
       reachability: 'unknown',
     });
+    vi.mocked(waitForReticulumSharedInstanceReady)
+      .mockRejectedValueOnce(preflightError)
+      .mockResolvedValueOnce(undefined);
 
     await startReticulumForAppLaunch(1_234);
 
     expect(startBundledReticulumDaemon).toHaveBeenCalledTimes(1);
-    expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(1_234);
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenNthCalledWith(1, 750);
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenNthCalledWith(
+      2,
+      1_234
+    );
     expect(startReticulumBridge).toHaveBeenCalledTimes(1);
     expect(restartBundledReticulumDaemonAndWaitReady).not.toHaveBeenCalled();
   });
@@ -72,11 +89,16 @@ describe('startReticulumForAppLaunch', () => {
     });
     vi.mocked(waitForReticulumSharedInstanceReady)
       .mockRejectedValueOnce(timeoutError)
+      .mockRejectedValueOnce(timeoutError)
       .mockResolvedValueOnce(undefined);
 
     await startReticulumForAppLaunch(2_345);
 
-    expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(2_345);
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenNthCalledWith(1, 750);
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenNthCalledWith(
+      2,
+      2_345
+    );
     expect(startReticulumBridge).toHaveBeenCalledTimes(1);
     expect(loggerLog).toHaveBeenCalledWith(
       '[Reticulum] Shared instance readiness failed during launch; trying bridge before restarting rnsd:',
@@ -97,16 +119,20 @@ describe('startReticulumForAppLaunch', () => {
       configDir: '/tmp/qortal-appdata/qortal-hub/reticulum',
       reachability: 'unknown',
     });
-    vi.mocked(waitForReticulumSharedInstanceReady).mockRejectedValueOnce(
-      timeoutError
-    );
+    vi.mocked(waitForReticulumSharedInstanceReady)
+      .mockRejectedValueOnce(timeoutError)
+      .mockRejectedValueOnce(timeoutError);
     vi.mocked(
       isReticulumSharedDaemonOwnedByAnotherLiveInstance
     ).mockReturnValue(true);
 
     await startReticulumForAppLaunch(2_345);
 
-    expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(2_345);
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenNthCalledWith(1, 750);
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenNthCalledWith(
+      2,
+      2_345
+    );
     expect(loggerLog).toHaveBeenCalledWith(
       '[Reticulum] Shared instance readiness failed during launch, but another live app instance owns rnsd; starting bridge without restarting daemon:',
       timeoutError
@@ -130,6 +156,7 @@ describe('startReticulumForAppLaunch', () => {
     });
     vi.mocked(waitForReticulumSharedInstanceReady)
       .mockRejectedValueOnce(timeoutError)
+      .mockRejectedValueOnce(timeoutError)
       .mockRejectedValueOnce(restartError);
     vi.mocked(startReticulumBridge).mockRejectedValueOnce(bridgeError);
 
@@ -152,6 +179,26 @@ describe('startReticulumForAppLaunch', () => {
     expect(restartBundledReticulumDaemonAndWaitReady).toHaveBeenCalledTimes(1);
   });
 
+  it('does not spawn a second daemon when an existing shared instance recovery fails', async () => {
+    const bridgeError = new Error('Bridge failed to attach');
+    const restartError = new Error('Restart failed');
+    vi.mocked(startReticulumBridge).mockRejectedValueOnce(bridgeError);
+    vi.mocked(restartBundledReticulumDaemonAndWaitReady).mockRejectedValueOnce(
+      restartError
+    );
+
+    await startReticulumForAppLaunch(2_345);
+
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(750);
+    expect(stopReticulumBridge).toHaveBeenCalledTimes(1);
+    expect(restartBundledReticulumDaemonAndWaitReady).toHaveBeenCalledTimes(1);
+    expect(startBundledReticulumDaemon).not.toHaveBeenCalled();
+    expect(loggerError).toHaveBeenCalledWith(
+      '[Reticulum] Existing shared instance recovery failed; skipping daemon spawn to avoid splitting shared rnsd:',
+      restartError
+    );
+  });
+
   it('skips the wait when no shared daemon is running', async () => {
     vi.mocked(getReticulumDaemonStatus).mockReturnValue({
       running: false,
@@ -160,11 +207,14 @@ describe('startReticulumForAppLaunch', () => {
       configDir: '/tmp/qortal-appdata/qortal-hub/reticulum',
       reachability: 'disconnected',
     });
+    vi.mocked(waitForReticulumSharedInstanceReady).mockRejectedValueOnce(
+      new Error('No shared instance')
+    );
 
     await startReticulumForAppLaunch(3_456);
 
     expect(startBundledReticulumDaemon).toHaveBeenCalledTimes(1);
-    expect(waitForReticulumSharedInstanceReady).not.toHaveBeenCalled();
+    expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(750);
     expect(startReticulumBridge).not.toHaveBeenCalled();
     expect(restartBundledReticulumDaemonAndWaitReady).not.toHaveBeenCalled();
   });

@@ -78,8 +78,10 @@ _OVERLAY_DEFAULT_HOPS = 4
 _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 5.0
 _OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
-_OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 3 * 60.0
+_OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
+_OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
 _OVERLAY_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
+_OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
@@ -4023,7 +4025,12 @@ def _note_overlay_peer_failure(peer_key: str, reason: str) -> None:
     count = int(state.get("count") or 0) + 1
     suppress_until = state.get("suppress_until")
     if count >= _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT:
-        suppress_until = now + _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS
+        suppress_seconds = min(
+            _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS,
+            _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS
+            * (2 ** max(0, count - _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT)),
+        )
+        suppress_until = now + suppress_seconds
     _overlay_peer_failures[peer_key] = {
         "count": count,
         "last_reason": reason,
@@ -4127,6 +4134,7 @@ def _set_verified_overlay_peers(
         retained_neighbors += 1
     if len(next_neighbors) < _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
         candidates: list[tuple[float, str]] = []
+        direct_cutoff = now - _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS
         for peer_hash, peer in next_verified.items():
             peer_key = str(peer_hash or "").strip().lower()
             if (
@@ -4136,10 +4144,10 @@ def _set_verified_overlay_peers(
                 or _overlay_peer_is_suppressed(peer_key)
             ):
                 continue
-            last_seen = peer.get("last_seen") if isinstance(peer, dict) else None
-            if not isinstance(last_seen, (int, float)):
-                last_seen = 0.0
-            candidates.append((float(last_seen), peer_key))
+            activity = _overlay_peer_direct_activity_score(peer_key)
+            if activity <= direct_cutoff:
+                continue
+            candidates.append((activity, peer_key))
         candidates.sort(key=lambda item: (-item[0], item[1]))
         for _last_seen, peer_key in candidates:
             if len(next_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
@@ -4198,6 +4206,16 @@ def _overlay_peer_recently_rx_active(peer_hash: str, now: Optional[float] = None
     if now is None:
         now = time.time()
     return (float(now) - last_in_seconds) <= _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS
+
+
+def _overlay_peer_direct_activity_score(peer_hash: str) -> float:
+    st = _peer_lifecycle.get(str(peer_hash or "").strip().lower()) or {}
+    score = 0.0
+    for key in ("last_seen_inbound", "last_send_ok"):
+        value = _coerce_epoch_seconds(st.get(key))
+        if value is not None:
+            score = max(score, value)
+    return score
 
 
 def _resolve_overlay_neighbor_hashes(
@@ -4302,6 +4320,7 @@ def _promote_recent_verified_overlay_neighbors(
     }
     local_hex = _local_presence_hash_hex()
     candidates: list[tuple[float, str]] = []
+    direct_cutoff = time.time() - _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS
     for peer_hash, peer in _verified_overlay_peers.items():
         peer_key = str(peer_hash or "").strip().lower()
         if not peer_key:
@@ -4316,10 +4335,10 @@ def _promote_recent_verified_overlay_neighbors(
             or peer_key in _inbound_overlay_neighbors
         ):
             continue
-        last_seen = peer.get("last_seen") if isinstance(peer, dict) else None
-        if not isinstance(last_seen, (int, float)):
-            last_seen = 0.0
-        candidates.append((float(last_seen), peer_key))
+        activity = _overlay_peer_direct_activity_score(peer_key)
+        if activity <= direct_cutoff:
+            continue
+        candidates.append((activity, peer_key))
     if not candidates:
         return 0
     candidates.sort(key=lambda item: (-item[0], item[1]))
@@ -4456,17 +4475,15 @@ def _overlay_bootstrap_peer_sort_key(peer_key: str) -> tuple[int, float, str]:
     lease = st.get("ts_seed_until")
     last_in = st.get("last_seen_inbound")
     last_ok = st.get("last_send_ok")
-    recent_ts = 0.0
     if isinstance(last_in, (int, float)):
-        recent_ts = max(recent_ts, float(last_in))
+        return (0, -float(last_in), peer_key)
     if isinstance(last_ok, (int, float)):
-        recent_ts = max(recent_ts, float(last_ok))
+        return (1, -float(last_ok), peer_key)
     if isinstance(lease, (int, float)) and float(lease) > now:
-        recent_ts = max(recent_ts, float(lease))
-        return (0, -recent_ts, peer_key)
-    if recent_ts > 0:
-        return (1, -recent_ts, peer_key)
-    return (2, 0.0, peer_key)
+        # TS seed leases prove Electron wants the peer, not that we recently
+        # heard from it. Prefer real RX/send activity when recovering fanout.
+        return (2, -float(lease), peer_key)
+    return (3, 0.0, peer_key)
 
 
 def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:

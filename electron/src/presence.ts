@@ -1197,22 +1197,11 @@ export class PresenceManager extends EventEmitter {
     if (!hash) return;
     const existing = this.reticulumCandidates.get(hash);
     if (!existing) {
-      this.reticulumCandidates.set(hash, {
-        destinationHash: hash,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        proofDeadlineAt: now + RETICULUM_CANDIDATE_PROOF_WINDOW_MS,
-        failureCount: 1,
-        source: 'failure',
-        lastFailureReason: reason,
-      });
       this.emit('reticulum-candidate-failed', {
         destinationHash: hash,
         reason,
         failureCount: 1,
       });
-      this.recomputeReticulumActiveNeighbors(now);
-      this.emitReticulumOverlayChanged();
       return;
     }
     existing.lastSeenAt = now;
@@ -1569,6 +1558,7 @@ export class PresenceManager extends EventEmitter {
       const waitingVerified = [...this.verifiedReticulumPeers.values()]
         .filter(
           (peer) =>
+            peer.linkClosedAt === null &&
             !seen.has(peer.destinationHash.toLowerCase())
         )
         .sort((a, b) => {
