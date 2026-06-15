@@ -1331,6 +1331,19 @@ try {
           ipcRenderer.send('reticulumChat:event:unsubscribe');
         };
       },
+      onSummaryChanged: (
+        cb: (payload: { groupId: number; eventId?: string; timestamp?: number }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { groupId: number; eventId?: string; timestamp?: number });
+        };
+        ipcRenderer.on('reticulumChat:summaryChanged', handler);
+        ipcRenderer.send('reticulumChat:summaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
+          ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
       onTyping: (
         cb: (payload: {
           groupId: number;
@@ -1435,6 +1448,19 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:event', handler);
           ipcRenderer.send('reticulumChat:event:unsubscribe');
+        };
+      },
+      onSummaryChanged: (
+        cb: (payload: { groupId: number; eventId?: string; timestamp?: number }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { groupId: number; eventId?: string; timestamp?: number });
+        };
+        ipcRenderer.on('reticulumChat:summaryChanged', handler);
+        ipcRenderer.send('reticulumChat:summaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
+          ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
         };
       },
       onTyping: (

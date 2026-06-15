@@ -83,6 +83,10 @@ import {
   startReticulumChatManager,
   stopReticulumChatManager,
   getReticulumChatManager,
+  readReticulumChatHistoryFromDb,
+  readReticulumChatSummariesFromDb,
+  readReticulumChatSyncStateFromDb,
+  markReticulumChatReadInDb,
   type ReticulumChatEvent,
 } from './reticulum-chat';
 import { startCallManager, stopCallManager, getCallManager } from './call';
@@ -2355,11 +2359,13 @@ const RETICULUM_HEALTH_MIN_VERIFIED = 3;
 const RETICULUM_HEALTH_WINDOWS_TIMEOUT_FAILURE_THRESHOLD = 2;
 const RETICULUM_HEALTH_WINDOWS_DAEMON_ESCALATION_THRESHOLD = 2;
 const RETICULUM_HEALTH_WINDOWS_DAEMON_RESTART_COOLDOWN_MS = 15 * 60_000;
+const RETICULUM_CHAT_SUBSCRIPTION_REPLAY_DEBOUNCE_MS = 1_000;
 let reticulumOverlaySyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let reticulumOverlaySyncSequence = 0;
 let reticulumOverlaySyncInFlight = false;
 let reticulumOverlaySyncPending = false;
 let reticulumOverlayMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
+let reticulumChatSubscriptionReplayTimer: ReturnType<typeof setTimeout> | null = null;
 let reticulumHealthTimer: ReturnType<typeof setInterval> | null = null;
 let reticulumHealthRecoveryInFlight = false;
 let reticulumHealthLastSoftRecoveryAt = 0;
@@ -2524,6 +2530,17 @@ function startReticulumOverlayMaintenanceSync(): void {
   loggerLog(
     `[ReticulumOverlay] Maintenance sync started interval_ms=${RETICULUM_OVERLAY_MAINTENANCE_SYNC_MS}`
   );
+}
+
+function scheduleReticulumChatSubscriptionReplay(): void {
+  if (reticulumChatSubscriptionReplayTimer) {
+    clearTimeout(reticulumChatSubscriptionReplayTimer);
+  }
+  reticulumChatSubscriptionReplayTimer = setTimeout(() => {
+    reticulumChatSubscriptionReplayTimer = null;
+    getReticulumChatManager()?.reannounceSubscriptions();
+  }, RETICULUM_CHAT_SUBSCRIPTION_REPLAY_DEBOUNCE_MS);
+  reticulumChatSubscriptionReplayTimer.unref?.();
 }
 
 export async function replayReticulumCachedPresence(
@@ -2777,8 +2794,21 @@ export function attachPresenceListeners(
   if (!manager) return;
   loggerLog('[Presence] Attaching manager listeners.');
   manager.on('presence-updated', broadcastPresenceUpdate);
-  manager.on('reticulum-overlay-changed', () => {
+  manager.on('reticulum-overlay-changed', (payload: unknown) => {
     void syncReticulumOverlayStateToBridge(manager);
+    const state = payload as {
+      activeNeighbors?: unknown;
+      publishFanout?: unknown;
+      verified?: unknown;
+    };
+    const activeNeighbors =
+      typeof state?.activeNeighbors === 'number' ? state.activeNeighbors : 0;
+    const publishFanout =
+      typeof state?.publishFanout === 'number' ? state.publishFanout : 0;
+    const verified = typeof state?.verified === 'number' ? state.verified : 0;
+    if (activeNeighbors > 0 || publishFanout > 0 || verified > 0) {
+      scheduleReticulumChatSubscriptionReplay();
+    }
   });
   manager.on(
     'reticulum-candidate-failed',
@@ -2913,6 +2943,7 @@ export function registerLateReticulumBridgeRecovery(): void {
     }
     // Mirror the normal startup signal so an already-authenticated renderer can
     // retry its initial presence announce after late Reticulum readiness.
+    scheduleReticulumChatSubscriptionReplay();
     notifyPresenceTransportReady();
   };
 
@@ -3009,6 +3040,7 @@ const chatTypingSubscribers = new Set<Electron.WebContents>();
 const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
+const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
 let reticulumChatListenersAttached = false;
 
 export function attachChatListeners(
@@ -3047,6 +3079,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumChatTypingSubscribers,
       'reticulumChat:typing',
+      payload
+    )
+  );
+
+  manager.on('summaryChanged', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatSummarySubscribers,
+      'reticulumChat:summaryChanged',
       payload
     )
   );
@@ -3132,25 +3172,36 @@ ipcMain.handle(
   'reticulumChat:getHistory',
   async (_event, groupId: number, limit?: number) => {
     const manager = getReticulumChatManager();
-    return manager ? manager.getHistory(groupId, limit) : [];
+    return manager
+      ? manager.getHistory(groupId, limit)
+      : readReticulumChatHistoryFromDb(groupId, limit);
   }
 );
 
 ipcMain.handle('reticulumChat:getSyncState', async (_event, groupId: number) => {
   const manager = getReticulumChatManager();
-  return manager ? manager.getSyncState(groupId) : {};
+  return manager
+    ? manager.getSyncState(groupId)
+    : readReticulumChatSyncStateFromDb(groupId);
 });
 
 ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) => {
   const manager = getReticulumChatManager();
-  return manager ? manager.getChatSummaries(typeof myAddress === 'string' ? myAddress : '') : [];
+  const address = typeof myAddress === 'string' ? myAddress : '';
+  return manager
+    ? manager.getChatSummaries(address)
+    : readReticulumChatSummariesFromDb(address);
 });
 
 ipcMain.handle(
   'reticulumChat:markRead',
   async (_event, groupId: number, upToTimestamp: number) => {
     const manager = getReticulumChatManager();
-    manager?.markRead(groupId, upToTimestamp);
+    if (manager) {
+      manager.markRead(groupId, upToTimestamp);
+    } else {
+      markReticulumChatReadInDb(groupId, upToTimestamp);
+    }
     return { success: true };
   }
 );
@@ -3171,6 +3222,12 @@ ipcMain.on('reticulumChat:typing:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:typing:unsubscribe', (event) => {
   reticulumChatTypingSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
+  reticulumChatSummarySubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:summaryChanged:unsubscribe', (event) => {
+  reticulumChatSummarySubscribers.delete(event.sender);
 });
 
 /**

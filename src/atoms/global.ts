@@ -113,7 +113,11 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
   const reticulumSummaries = get(reticulumChatSummariesAtom);
   if (!Array.isArray(groups) || !reticulumSummaries) return groups;
   return groups.map((group: any) => {
-    const groupId = String(group?.groupId ?? '');
+    const numericGroupId = Number(group?.groupId);
+    const groupId =
+      Number.isInteger(numericGroupId) && numericGroupId > 0
+        ? String(numericGroupId)
+        : String(group?.groupId ?? '');
     const summary = reticulumSummaries[groupId];
     const lastEvent = summary?.lastEvent;
     const reticulumTimestamp =

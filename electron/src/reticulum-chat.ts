@@ -414,7 +414,14 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   setLocalGroupMemberships(groupIds: number[]): void {
-    this.localGroupIds = new Set(groupIds.filter((id) => Number.isInteger(id) && id > 0));
+    const nextGroupIds = groupIds.filter((id) => Number.isInteger(id) && id > 0);
+    this.localGroupIds = new Set(nextGroupIds);
+    for (const groupId of nextGroupIds) {
+      const [latestEvent] = this.db.getRecentEvents(groupId, 1);
+      if (latestEvent) {
+        this.emitSummaryChanged(groupId, latestEvent);
+      }
+    }
   }
 
   getSubscriptions(): number[] {
@@ -426,6 +433,16 @@ export class ReticulumChatManager extends EventEmitter {
     this.markGroupHistoryObserved(groupId);
     this.subscribedGroups.add(groupId);
     this.startLocalNotificationWatcher();
+    this.announceGroupSubscription(groupId);
+  }
+
+  reannounceSubscriptions(): void {
+    for (const groupId of this.getSubscriptions()) {
+      this.announceGroupSubscription(groupId);
+    }
+  }
+
+  private announceGroupSubscription(groupId: number): void {
     void this.fanout({ t: 'RCHAT', k: 'sub', g: groupId });
     void this.fanout(this.buildAuthorHeadsReqWire(groupId));
     for (const wire of this.buildSyncReqWires(groupId)) {
@@ -436,7 +453,9 @@ export class ReticulumChatManager extends EventEmitter {
   unsubscribeGroup(groupId: number): void {
     this.assertGroupId(groupId);
     this.subscribedGroups.delete(groupId);
-    if (this.subscribedGroups.size === 0) this.stopLocalNotificationWatcher();
+    if (this.subscribedGroups.size === 0) {
+      this.stopLocalNotificationWatcher();
+    }
     void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
   }
 
@@ -484,6 +503,7 @@ export class ReticulumChatManager extends EventEmitter {
   markRead(groupId: number, upToTimestamp: number): void {
     this.assertGroupId(groupId);
     this.db.markRead(groupId, upToTimestamp);
+    this.emitSummaryChanged(groupId);
   }
 
   handleWire(
@@ -640,8 +660,17 @@ export class ReticulumChatManager extends EventEmitter {
     if (inserted) {
       this.observedDbEventIds.add(event.eventId);
       this.writeLocalEventNotification(event);
+      this.emitSummaryChanged(event.groupId, event);
     }
     return inserted;
+  }
+
+  private emitSummaryChanged(groupId: number, event?: ReticulumChatEvent): void {
+    this.emit('summaryChanged', {
+      groupId,
+      eventId: event?.eventId,
+      timestamp: event?.timestamp ?? this.now(),
+    });
   }
 
   private markGroupHistoryObserved(groupId: number): void {
@@ -734,6 +763,7 @@ export class ReticulumChatManager extends EventEmitter {
       const event = this.db.getEvent(eventId);
       if (!event || event.groupId !== groupId) return false;
       this.observedDbEventIds.add(event.eventId);
+      this.emitSummaryChanged(event.groupId, event);
       this.emit('event', { event });
       return true;
     } catch {
@@ -1491,6 +1521,55 @@ export class ReticulumChatManager extends EventEmitter {
 }
 
 let singleton: ReticulumChatManager | null = null;
+
+export function readReticulumChatHistoryFromDb(
+  groupId: number,
+  limit = 100
+): ReticulumChatEvent[] {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    return db.getRecentEvents(groupId, Math.max(1, Math.min(500, limit)));
+  } finally {
+    db.close();
+  }
+}
+
+export function readReticulumChatSummariesFromDb(
+  myAddress = ''
+): ReticulumChatSummary[] {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    return db.getChatSummaries(myAddress);
+  } finally {
+    db.close();
+  }
+}
+
+export function readReticulumChatSyncStateFromDb(
+  groupId: number
+): Record<string, number> {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return {};
+    return db.getSyncState(groupId);
+  } finally {
+    db.close();
+  }
+}
+
+export function markReticulumChatReadInDb(
+  groupId: number,
+  upToTimestamp: number
+): void {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    db.markRead(groupId, upToTimestamp);
+  } finally {
+    db.close();
+  }
+}
 
 export function startReticulumChatManager(
   bridge?: ReticulumBridge | null,

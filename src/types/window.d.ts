@@ -553,6 +553,13 @@ declare global {
       ) => Promise<{ success: boolean }>;
       getSubscriptions: () => Promise<number[]>;
       onEvent: (cb: (payload: { event: unknown }) => void) => () => void;
+      onSummaryChanged: (
+        cb: (payload: {
+          groupId: number;
+          eventId?: string;
+          timestamp?: number;
+        }) => void
+      ) => () => void;
       onTyping: (
         cb: (payload: {
           groupId: number;

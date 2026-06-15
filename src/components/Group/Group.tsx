@@ -723,6 +723,7 @@ export const Group = ({
       }
       reticulumSubscribedGroupIdsRef.current = nextIds;
       await refreshReticulumChatSummaries();
+      scheduleReticulumChatSummariesRefresh();
     })();
 
     return () => {
@@ -732,11 +733,20 @@ export const Group = ({
     memberGroupsForReticulum,
     myAddress,
     refreshReticulumChatSummaries,
+    scheduleReticulumChatSummariesRefresh,
     setReticulumChatSummaries,
   ]);
 
   useEffect(() => {
-    const offEvent = window.reticulumChat?.onEvent?.(() => {
+    const offSummaryChanged = window.reticulumChat?.onSummaryChanged?.((payload) => {
+      const groupId = Number(payload?.groupId);
+      if (
+        Number.isInteger(groupId) &&
+        groupId > 0 &&
+        !reticulumSubscribedGroupIdsRef.current.has(groupId)
+      ) {
+        return;
+      }
       scheduleReticulumChatSummariesRefresh();
     });
     const refreshHandler = () => {
@@ -745,7 +755,7 @@ export const Group = ({
     subscribeToEvent('reticulum-chat-summaries-refresh', refreshHandler);
     void refreshReticulumChatSummaries();
     return () => {
-      offEvent?.();
+      offSummaryChanged?.();
       unsubscribeFromEvent('reticulum-chat-summaries-refresh', refreshHandler);
       if (reticulumSummariesRefreshTimerRef.current) {
         clearTimeout(reticulumSummariesRefreshTimerRef.current);
