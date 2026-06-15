@@ -135,7 +135,6 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
   useEffect(() => {
     if (!enabled || validGroupId == null) return;
     let cancelled = false;
-    void window.reticulumChat?.setLocalGroupMemberships?.([validGroupId]);
     void window.reticulumChat?.subscribeGroup?.(validGroupId);
     void window.reticulumChat?.getHistory?.(validGroupId, 200).then(async (history) => {
       if (cancelled || !Array.isArray(history)) return;

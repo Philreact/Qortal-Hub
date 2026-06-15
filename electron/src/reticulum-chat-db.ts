@@ -19,6 +19,11 @@ export type ReticulumChatSummary = {
   updatedAt: number;
 };
 
+export type ReticulumChatSearchResult = {
+  event: ReticulumChatEvent;
+  snippet: string;
+};
+
 type EventRow = {
   event_id: string;
   group_id: number;
@@ -59,6 +64,55 @@ function eventWireBytes(event: ReticulumChatEvent): number {
   return Buffer.byteLength(JSON.stringify(event), 'utf8');
 }
 
+function collectSearchStrings(value: unknown, out: string[]): void {
+  if (typeof value === 'string') {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectSearchStrings(item, out);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const record = value as Record<string, unknown>;
+  for (const key of [
+    'message',
+    'messageText',
+    'text',
+    'content',
+    'filename',
+    'fileName',
+    'mimeType',
+  ]) {
+    if (key in record) collectSearchStrings(record[key], out);
+  }
+}
+
+function searchTextFromPayload(payload: string): string {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    const strings: string[] = [];
+    collectSearchStrings(parsed, strings);
+    return strings.join(' ').replace(/\s+/g, ' ').trim();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeSearchText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 20_000);
+}
+
+function buildFtsQuery(query: string): string {
+  return query
+    .split(/\s+/)
+    .map((term) => term.trim().replace(/"/g, ''))
+    .filter((term) => term.length >= 2)
+    .slice(0, 12)
+    .map((term) => `"${term}"*`)
+    .join(' AND ');
+}
+
 export class ReticulumChatDatabase {
   private db: DB;
   private memoryEvents = new Map<string, ReticulumChatEvent>();
@@ -88,6 +142,10 @@ export class ReticulumChatDatabase {
   private stmtTotalCacheBytes: Statement;
   private stmtEvictCandidate: Statement;
   private stmtDeleteEvent: Statement;
+  private stmtUpsertSearchText: Statement;
+  private stmtDeleteSearchText: Statement;
+  private stmtSearchEvents: Statement;
+  private stmtSearchEventsForGroups: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -234,6 +292,33 @@ export class ReticulumChatDatabase {
     this.stmtDeleteEvent = this.db.prepare(
       'DELETE FROM reticulum_chat_events WHERE event_id = ?'
     );
+    this.stmtUpsertSearchText = this.db.prepare(`
+      INSERT INTO reticulum_chat_search_fts
+        (event_id, group_id, author_address, timestamp, event_type, search_text)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtDeleteSearchText = this.db.prepare(
+      'DELETE FROM reticulum_chat_search_fts WHERE event_id = ?'
+    );
+    this.stmtSearchEvents = this.db.prepare(`
+      SELECT event_id,
+             snippet(reticulum_chat_search_fts, 5, '<mark>', '</mark>', '...', 12) AS snippet
+      FROM reticulum_chat_search_fts
+      WHERE reticulum_chat_search_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `);
+    this.stmtSearchEventsForGroups = this.db.prepare(`
+      SELECT event_id,
+             snippet(reticulum_chat_search_fts, 5, '<mark>', '</mark>', '...', 12) AS snippet
+      FROM reticulum_chat_search_fts
+      WHERE reticulum_chat_search_fts MATCH ?
+        AND group_id IN (
+          SELECT CAST(value AS INTEGER) FROM json_each(?)
+        )
+      ORDER BY rank
+      LIMIT ?
+    `);
   }
 
   close(): void {
@@ -269,6 +354,11 @@ export class ReticulumChatDatabase {
         storedAt: now,
         wireBytes: eventWireBytes(event),
       });
+      this.upsertSearchText(
+        event,
+        searchTextFromPayload(event.encryptedPayload),
+        false
+      );
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return !existed;
@@ -283,6 +373,60 @@ export class ReticulumChatDatabase {
     if (inMemory) return inMemory;
     const row = this.stmtGetEvent.get(eventId) as EventRow | undefined;
     return row ? rowToEvent(row) : null;
+  }
+
+  upsertSearchText(
+    event: ReticulumChatEvent,
+    text: string,
+    replaceExisting = true
+  ): void {
+    const normalized = normalizeSearchText(text);
+    if (!normalized) return;
+    if (replaceExisting) this.stmtDeleteSearchText.run(event.eventId);
+    this.stmtUpsertSearchText.run(
+      event.eventId,
+      event.groupId,
+      event.authorAddress,
+      event.timestamp,
+      event.eventType,
+      normalized
+    );
+  }
+
+  indexSearchText(eventId: string, text: string): boolean {
+    const event = this.getEvent(eventId);
+    if (!event) return false;
+    this.upsertSearchText(event, text, true);
+    return true;
+  }
+
+  searchEvents(
+    query: string,
+    options: { groupIds?: number[]; limit?: number } = {}
+  ): ReticulumChatSearchResult[] {
+    const ftsQuery = buildFtsQuery(query);
+    if (!ftsQuery) return [];
+    const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 50)));
+    const groupIds = (options.groupIds ?? [])
+      .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
+      .slice(0, 500);
+    const rows = groupIds.length > 0
+      ? (this.stmtSearchEventsForGroups.all(
+          ftsQuery,
+          JSON.stringify(groupIds),
+          limit
+        ) as Array<{ event_id: string; snippet?: string }>)
+      : (this.stmtSearchEvents.all(ftsQuery, limit) as Array<{
+          event_id: string;
+          snippet?: string;
+        }>);
+    const results: ReticulumChatSearchResult[] = [];
+    for (const row of rows) {
+      const event = this.getEvent(row.event_id);
+      if (!event) continue;
+      results.push({ event, snippet: row.snippet ?? '' });
+    }
+    return results;
   }
 
   getRecentEvents(groupId: number, limit: number): ReticulumChatEvent[] {
