@@ -96,6 +96,21 @@ const sha256Hex = async (value: string) => {
     .join('');
 };
 
+const mentionAddressHash = (address: string) =>
+  sha256Hex(`reticulum-chat-mention:${address.trim()}`);
+
+const buildMentionAddressHashes = async (addresses: string[]) =>
+  [
+    ...new Set(
+      await Promise.all(
+        addresses
+          .map((address) => address.trim())
+          .filter(Boolean)
+          .map((address) => mentionAddressHash(address))
+      )
+    ),
+  ];
+
 const nextReticulumAuthorSeq = (groupId: string | number, address: string) => {
   const key = `reticulum-chat-author-seq:${groupId}:${address}`;
   const current = Number(window.localStorage.getItem(key) || '0');
@@ -1096,6 +1111,7 @@ export const ChatGroup = ({
       eventType,
       targetEventId,
       replyToEventId,
+      mentionAddressHashes = [],
     }: {
       encryptedPayload: string;
       eventType:
@@ -1107,6 +1123,7 @@ export const ChatGroup = ({
         | 'attachment_manifest';
       targetEventId?: string;
       replyToEventId?: string;
+      mentionAddressHashes?: string[];
     }) => {
       const groupId = Number(selectedGroup);
       if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
@@ -1125,6 +1142,7 @@ export const ChatGroup = ({
         replyToEventId: replyToEventId ?? null,
         encryptedPayload,
         payloadHash,
+        mentionAddressHashes,
       };
       const signed = await window.sendMessage('signReticulumChatEvent', baseFields);
       if (signed?.error) throw new Error(signed.error);
@@ -1533,6 +1551,8 @@ export const ChatGroup = ({
               : [];
 
         const mentionedAddresses = resolveMentionedAddresses(htmlContent || '');
+        const mentionedAddressHashes =
+          await buildMentionAddressHashes(mentionedAddresses);
         const otherData = {
           repliedTo,
           ...(onEditMessage?.decryptedData || {}),
@@ -1561,6 +1581,7 @@ export const ChatGroup = ({
               eventType: chatReference ? 'edit' : 'message',
               targetEventId: chatReference || undefined,
               replyToEventId: repliedTo || undefined,
+              mentionAddressHashes: mentionedAddressHashes,
             });
             return { ...result, clearQueueOnSuccess: true };
           }

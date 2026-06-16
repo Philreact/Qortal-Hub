@@ -43,6 +43,7 @@ export interface ReticulumChatEvent {
   replyToEventId?: string;
   encryptedPayload: string;
   payloadHash: string;
+  mentionAddressHashes: string[];
   signature: string;
 }
 
@@ -54,6 +55,7 @@ export interface ReticulumChatEventHint {
   timestamp: number;
   eventType: ReticulumChatEventType;
   payloadHash: string;
+  mentionAddressHashes: string[];
 }
 
 export interface ReticulumChatEventHintWire {
@@ -63,6 +65,7 @@ export interface ReticulumChatEventHintWire {
   ts: number;
   et: ReticulumChatEventType;
   ph: string;
+  mh: string[];
 }
 
 export interface ReticulumChatEventOffer {
@@ -72,6 +75,7 @@ export interface ReticulumChatEventOffer {
   payloadHash: string;
   wireHash: string;
   sizeBytes: number;
+  sourcePeerHash?: string;
   senderReticulumDestinationHash?: string;
   senderReticulumIdentityPublicKeyBase64?: string;
 }
@@ -82,6 +86,14 @@ export interface ReticulumChatEventOfferWire {
   ph: string;
   wh: string;
   s: number;
+}
+
+export interface ReticulumChatEventRequestWire {
+  id: string;
+  a: string;
+  pk: string;
+  ts: number;
+  sig: string;
 }
 
 export interface ReticulumChatAuthorHeadWire {
@@ -99,13 +111,19 @@ type ReticulumChatPullQueueItem = {
   inFlight: boolean;
 };
 
+type ReticulumChatLocalSignature = {
+  authorAddress: string;
+  authorPublicKey: string;
+  signature: string;
+};
+
 export type ReticulumChatSyncMode = 'latest' | 'after' | 'before';
 
 export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'sub'; g: number }
   | { t: 'RCHAT'; k: 'unsub'; g: number }
   | { t: 'RCHAT'; k: 'event_hint'; g: number; h: ReticulumChatEventHintWire }
-  | { t: 'RCHAT'; k: 'event_req'; g: number; id: string }
+  | { t: 'RCHAT'; k: 'event_req'; g: number; r: ReticulumChatEventRequestWire }
   | { t: 'RCHAT'; k: 'event_offer'; g: number; o: ReticulumChatEventOfferWire }
   | { t: 'RCHAT'; k: 'author_gap_req'; g: number; a: string; after: number; limit?: number }
   | { t: 'RCHAT'; k: 'author_heads_req'; g: number; limit?: number; offset?: number }
@@ -147,10 +165,16 @@ export interface ReticulumChatManagerOptions {
   bridge?: ReticulumBridge | null;
   now?: () => number;
   localNotifyDebounceMs?: number;
+  signLocalFields?: (
+    fields: Record<string, unknown>
+  ) => Promise<ReticulumChatLocalSignature | null>;
+  validateGroupMember?: (groupId: number, address: string) => Promise<boolean>;
 }
 
 const RETICULUM_CHAT_MAX_FUTURE_SKEW_MS = 60_000;
 const RETICULUM_CHAT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
+const RETICULUM_CHAT_CONTROL_MAX_AGE_MS = 2 * 60_000;
+const RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS = 30_000;
 const RETICULUM_CHAT_TYPING_TTL_MS = 8_000;
 const RETICULUM_CHAT_TYPING_REFRESH_MS = 3_000;
 const RETICULUM_CHAT_SYNC_LIMIT = 200;
@@ -165,6 +189,10 @@ const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
+const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_MS = 45_000;
+const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS = 10_000;
+const RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS = 2 * 60_000;
+const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
 const VALID_EVENT_TYPES = new Set<ReticulumChatEventType>([
   'message',
   'edit',
@@ -201,6 +229,7 @@ export function buildReticulumChatSignedFields(
     eventId: event.eventId,
     eventType: event.eventType,
     groupId: event.groupId,
+    mentionAddressHashes: event.mentionAddressHashes,
     payloadHash: event.payloadHash,
     replyToEventId: event.replyToEventId ?? null,
     targetEventId: event.targetEventId ?? null,
@@ -237,6 +266,7 @@ export function buildReticulumChatEventHint(
     timestamp: event.timestamp,
     eventType: event.eventType,
     payloadHash: event.payloadHash,
+    mentionAddressHashes: event.mentionAddressHashes,
   };
 }
 
@@ -248,6 +278,7 @@ function eventHintToWire(hint: ReticulumChatEventHint): ReticulumChatEventHintWi
     ts: hint.timestamp,
     et: hint.eventType,
     ph: hint.payloadHash,
+    mh: hint.mentionAddressHashes,
   };
 }
 
@@ -262,6 +293,9 @@ function eventHintFromWire(groupId: number, wire: unknown): ReticulumChatEventHi
     timestamp: Number(h.ts || 0),
     eventType: h.et as ReticulumChatEventType,
     payloadHash: String(h.ph || ''),
+    mentionAddressHashes: Array.isArray(h.mh)
+      ? h.mh.map((item) => String(item || '')).filter(Boolean)
+      : [],
   };
 }
 
@@ -329,12 +363,37 @@ export function validateReticulumChatEventShape(
   if (typeof e.encryptedPayload !== 'string' || !e.encryptedPayload) return false;
   if (typeof e.payloadHash !== 'string' || !/^[0-9a-f]{64}$/i.test(e.payloadHash)) return false;
   if (hashReticulumChatPayload(e.encryptedPayload) !== e.payloadHash.toLowerCase()) return false;
+  if (
+    !Array.isArray(e.mentionAddressHashes) ||
+    e.mentionAddressHashes.some(
+      (hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash)
+    )
+  ) {
+    return false;
+  }
   if (typeof e.signature !== 'string' || !e.signature) return false;
   try {
     return deriveAddressFromPublicKey(e.authorPublicKey) === e.authorAddress;
   } catch {
     return false;
   }
+}
+
+export function buildReticulumChatEventRequestSignedFields(input: {
+  groupId: number;
+  eventId: string;
+  authorAddress: string;
+  authorPublicKey: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    authorPublicKey: input.authorPublicKey,
+    eventId: input.eventId,
+    groupId: input.groupId,
+    timestamp: input.timestamp,
+    type: 'RCHAT_EVENT_REQ',
+  };
 }
 
 export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
@@ -353,6 +412,42 @@ export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
   }
 }
 
+export function verifyReticulumChatEventRequest(
+  groupId: number,
+  request: ReticulumChatEventRequestWire,
+  now = Date.now()
+): boolean {
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    if (typeof request.id !== 'string' || request.id.length < 8) return false;
+    if (typeof request.a !== 'string' || !request.a) return false;
+    if (typeof request.pk !== 'string' || !request.pk) return false;
+    if (typeof request.sig !== 'string' || !request.sig) return false;
+    if (!Number.isFinite(request.ts)) return false;
+    if (request.ts - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+    if (now - request.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
+    const derived = deriveAddressFromPublicKey(request.pk);
+    if (derived !== request.a) return false;
+    return nacl.sign.detached.verify(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumChatEventRequestSignedFields({
+            groupId,
+            eventId: request.id,
+            authorAddress: request.a,
+            authorPublicKey: request.pk,
+            timestamp: request.ts,
+          })
+        )
+      ),
+      new Uint8Array(base58Decode(request.sig)),
+      new Uint8Array(base58Decode(request.pk))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function defaultReticulumChatDbPath(): string {
   return path.join(app.getPath('appData'), 'qortal-shared', 'reticulum-chat.db');
 }
@@ -363,13 +458,19 @@ export class ReticulumChatManager extends EventEmitter {
   private readonly dbPath: string;
   private readonly localNotifyDir: string;
   private readonly localNotifyDebounceMs: number;
+  private signLocalFields?: (
+    fields: Record<string, unknown>
+  ) => Promise<ReticulumChatLocalSignature | null>;
+  private validateGroupMember?: (groupId: number, address: string) => Promise<boolean>;
   private bridge: ReticulumBridge | null;
   private localGroupIds = new Set<number>();
   private subscribedGroups = new Set<number>();
-  private peerSubscriptions = new Map<string, Set<number>>();
+  private peerSubscriptions = new Map<string, Map<number, number>>();
+  private groupMemberValidationCache = new Map<string, { isMember: boolean; expiresAt: number }>();
   private requestedEventPulls = new Map<string, number>();
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
   private eventPullQueueTimer: ReturnType<typeof setTimeout> | null = null;
+  private subscriptionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private eventPullQueueActive = false;
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private lastTypingSentAt = new Map<string, number>();
@@ -389,6 +490,8 @@ export class ReticulumChatManager extends EventEmitter {
       10,
       options.localNotifyDebounceMs ?? RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS
     );
+    this.signLocalFields = options.signLocalFields;
+    this.validateGroupMember = options.validateGroupMember;
     this.bridge = options.bridge ?? null;
     this.db = new ReticulumChatDatabase(this.dbPath);
     fs.mkdirSync(this.localNotifyDir, { recursive: true });
@@ -402,9 +505,18 @@ export class ReticulumChatManager extends EventEmitter {
     this.attachBridge(bridge);
   }
 
+  setRuntimeCallbacks(
+    options: Pick<ReticulumChatManagerOptions, 'signLocalFields' | 'validateGroupMember'>
+  ): void {
+    this.signLocalFields = options.signLocalFields;
+    this.validateGroupMember = options.validateGroupMember;
+    this.groupMemberValidationCache.clear();
+  }
+
   close(): void {
     this.detachBridge();
     this.stopLocalNotificationWatcher();
+    this.stopSubscriptionRefreshTimer();
     if (this.eventPullQueueTimer) {
       clearTimeout(this.eventPullQueueTimer);
       this.eventPullQueueTimer = null;
@@ -417,6 +529,14 @@ export class ReticulumChatManager extends EventEmitter {
   setLocalGroupMemberships(groupIds: number[]): void {
     const nextGroupIds = groupIds.filter((id) => Number.isInteger(id) && id > 0);
     this.localGroupIds = new Set(nextGroupIds);
+    for (const groupId of this.getSubscriptions()) {
+      if (this.localGroupIds.has(groupId)) continue;
+      this.subscribedGroups.delete(groupId);
+      void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
+    }
+    if (this.subscribedGroups.size === 0) {
+      this.stopSubscriptionRefreshTimer();
+    }
     for (const groupId of nextGroupIds) {
       const [latestEvent] = this.db.getRecentEvents(groupId, 1);
       if (latestEvent) {
@@ -430,10 +550,11 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   subscribeGroup(groupId: number): void {
-    this.assertGroupId(groupId);
+    this.assertLocalGroupMember(groupId);
     this.markGroupHistoryObserved(groupId);
     this.subscribedGroups.add(groupId);
     this.startLocalNotificationWatcher();
+    this.startSubscriptionRefreshTimer();
     this.announceGroupSubscription(groupId);
   }
 
@@ -456,16 +577,40 @@ export class ReticulumChatManager extends EventEmitter {
     this.subscribedGroups.delete(groupId);
     if (this.subscribedGroups.size === 0) {
       this.stopLocalNotificationWatcher();
+      this.stopSubscriptionRefreshTimer();
     }
     void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
   }
 
   async publishEvent(event: ReticulumChatEvent): Promise<ReticulumSendResult> {
+    if (
+      !Number.isInteger(event?.groupId) ||
+      event.groupId <= 0 ||
+      !this.localGroupIds.has(event.groupId)
+    ) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Cannot publish Reticulum chat event for a group the local user is not a member of',
+      };
+    }
+    const authorIsMember = await this.isValidatedGroupMember(
+      event.groupId,
+      typeof event?.authorAddress === 'string' ? event.authorAddress : ''
+    );
+    if (!authorIsMember) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Cannot publish Reticulum chat event: author is not a current group member',
+      };
+    }
     const accepted = this.acceptEvent(event, true);
     if (!accepted) {
       return { ok: false, reason: 'send-command-failed', error: 'Invalid event' };
     }
-    const fanoutResult = await this.fanout(this.buildEventHintWire(event));
+    const targetedPeers = await this.sendEventHintToInterestedPeers(event);
+    const fanoutResult = await this.fanout(this.buildEventHintWire(event), targetedPeers);
     if (!fanoutResult.ok) {
       const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
@@ -477,7 +622,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   sendTyping(groupId: number, authorAddress: string, active: boolean): void {
-    this.assertGroupId(groupId);
+    this.assertLocalGroupMember(groupId);
     const key = `${groupId}:${authorAddress}`;
     const now = this.now();
     if (active && now - (this.lastTypingSentAt.get(key) ?? 0) < RETICULUM_CHAT_TYPING_REFRESH_MS) {
@@ -580,8 +725,11 @@ export class ReticulumChatManager extends EventEmitter {
         }
         return;
       case 'event_req':
-        if (typeof wire.id !== 'string' || !wire.id) return;
-        void this.offerEventResource(peerPresenceHash || senderDestinationHash, groupId, wire.id);
+        void this.handleEventResourceRequest(
+          groupId,
+          wire.r,
+          peerPresenceHash || senderDestinationHash
+        );
         return;
       case 'event_offer':
         this.handleEventOffer(eventOfferFromWire(groupId, wire.o), peerPresenceHash || senderDestinationHash);
@@ -686,7 +834,7 @@ export class ReticulumChatManager extends EventEmitter {
     const now = this.now();
     if (!validateReticulumChatEventShape(candidate, now)) return false;
     const event = candidate;
-    if (!ownEvent && !this.localGroupIds.has(event.groupId)) return false;
+    if (!this.localGroupIds.has(event.groupId)) return false;
     if (!verifyReticulumChatEvent(event)) return false;
     if (this.db.hasEvent(event.eventId)) return false;
     const inserted = this.db.insertEvent(event, ownEvent);
@@ -713,11 +861,33 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private canServeGroupHistory(groupId: number): boolean {
-    return (
-      this.subscribedGroups.has(groupId) ||
-      this.localGroupIds.has(groupId) ||
-      this.db.getRecentEvents(groupId, 1).length > 0
-    );
+    return this.localGroupIds.has(groupId);
+  }
+
+  private async isValidatedGroupMember(groupId: number, address: string): Promise<boolean> {
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    const normalizedAddress = address.trim();
+    if (!normalizedAddress) return false;
+    if (!this.validateGroupMember) return this.localGroupIds.has(groupId);
+    const cacheKey = `${groupId}:${normalizedAddress}`;
+    const cached = this.groupMemberValidationCache.get(cacheKey);
+    const now = this.now();
+    if (cached && cached.expiresAt > now) return cached.isMember;
+    let isMember = false;
+    try {
+      isMember = await this.validateGroupMember(groupId, normalizedAddress);
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}:`,
+        err
+      );
+      isMember = false;
+    }
+    this.groupMemberValidationCache.set(cacheKey, {
+      isMember,
+      expiresAt: now + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
+    });
+    return isMember;
   }
 
   private startLocalNotificationWatcher(): void {
@@ -1201,6 +1371,14 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Number.isFinite(hint.timestamp)) return false;
     if (typeof hint.eventType !== 'string' || !VALID_EVENT_TYPES.has(hint.eventType as ReticulumChatEventType)) return false;
     if (typeof hint.payloadHash !== 'string' || !/^[0-9a-f]{64}$/i.test(hint.payloadHash)) return false;
+    if (
+      !Array.isArray(hint.mentionAddressHashes) ||
+      hint.mentionAddressHashes.some(
+        (hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash)
+      )
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -1229,7 +1407,11 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private scheduleEventPullQueue(delayMs = 0): void {
-    if (this.eventPullQueueTimer) return;
+    if (this.eventPullQueueTimer) {
+      if (delayMs > 0) return;
+      clearTimeout(this.eventPullQueueTimer);
+      this.eventPullQueueTimer = null;
+    }
     this.eventPullQueueTimer = setTimeout(() => {
       this.eventPullQueueTimer = null;
       void this.processEventPullQueue();
@@ -1285,7 +1467,24 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.requestedEventPulls.set(requestKey, now);
     item.attempts += 1;
-    const result = await this.sendToPeer(peerKey, { t: 'RCHAT', k: 'event_req', g: hint.groupId, id: hint.eventId });
+    const signedRequest = await this.buildSignedEventRequestWire(
+      hint.groupId,
+      hint.eventId
+    );
+    if (!signedRequest) {
+      item.inFlight = false;
+      item.nextAttemptAt = now + RETICULUM_CHAT_PULL_RETRY_MS;
+      loggerWarn(
+        `[ReticulumChat] Cannot request event ${hint.eventId}: local signing unavailable`
+      );
+      return;
+    }
+    const result = await this.sendToPeer(peerKey, {
+      t: 'RCHAT',
+      k: 'event_req',
+      g: hint.groupId,
+      r: signedRequest,
+    });
     item.inFlight = false;
     if (this.db.hasEvent(hint.eventId)) {
       this.pendingEventPulls.delete(this.eventPullKey(hint.groupId, hint.eventId));
@@ -1303,11 +1502,92 @@ export class ReticulumChatManager extends EventEmitter {
     item.nextAttemptAt = now + RETICULUM_CHAT_PULL_THROTTLE_MS;
   }
 
+  private async sendEventHintToInterestedPeers(
+    event: ReticulumChatEvent,
+    excludePeerPresenceHashes: string[] = []
+  ): Promise<string[]> {
+    const peerHashes = this.getInterestedPeers(event.groupId, excludePeerPresenceHashes);
+    if (!peerHashes.length) return [];
+    const wire = this.buildEventHintWire(event);
+    const deliveredPeerHashes: string[] = [];
+    for (const peerHash of peerHashes) {
+      const result = await this.sendToPeer(peerHash, wire);
+      if (result.ok) {
+        deliveredPeerHashes.push(peerHash);
+      } else {
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] Targeted event hint failed for ${event.eventId}:`,
+          failed.error ?? failed.reason
+        );
+      }
+    }
+    return deliveredPeerHashes;
+  }
+
+  private async buildSignedEventRequestWire(
+    groupId: number,
+    eventId: string
+  ): Promise<ReticulumChatEventRequestWire | null> {
+    if (!this.signLocalFields) return null;
+    const timestamp = this.now();
+    const signed = await this.signLocalFields({
+      eventId,
+      groupId,
+      timestamp,
+      type: 'RCHAT_EVENT_REQ',
+    }).catch((err) => {
+      loggerWarn('[ReticulumChat] Failed to sign event request:', err);
+      return null;
+    });
+    if (
+      !signed ||
+      typeof signed.authorAddress !== 'string' ||
+      typeof signed.authorPublicKey !== 'string' ||
+      typeof signed.signature !== 'string'
+    ) {
+      return null;
+    }
+    const wire: ReticulumChatEventRequestWire = {
+      id: eventId,
+      a: signed.authorAddress,
+      pk: signed.authorPublicKey,
+      ts: timestamp,
+      sig: signed.signature,
+    };
+    if (!verifyReticulumChatEventRequest(groupId, wire, timestamp)) return null;
+    return wire;
+  }
+
+  private async handleEventResourceRequest(
+    groupId: number,
+    candidate: unknown,
+    peerHash: string
+  ): Promise<void> {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+    const request = candidate as ReticulumChatEventRequestWire;
+    if (!verifyReticulumChatEventRequest(groupId, request, this.now())) return;
+    const requesterIsMember = await this.isValidatedGroupMember(groupId, request.a);
+    if (!requesterIsMember) {
+      loggerWarn(
+        `[ReticulumChat] Refusing event resource ${request.id}: requester is not a group member`
+      );
+      return;
+    }
+    await this.offerEventResource(peerHash, groupId, request.id);
+  }
+
   private async offerEventResource(peerHash: string, groupId: number, eventId: string): Promise<void> {
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey || !this.bridge) return;
+    if (!this.localGroupIds.has(groupId)) return;
     const event = this.db.getEvent(eventId);
     if (!event || event.groupId !== groupId) return;
+    const authorIsMember = await this.isValidatedGroupMember(
+      event.groupId,
+      event.authorAddress
+    );
+    if (!authorIsMember) return;
     if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') return;
     const blob = serializeReticulumChatEvent(event);
     const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
@@ -1348,8 +1628,12 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.isValidEventOffer(offer)) return;
     if (!this.subscribedGroups.has(offer.groupId) || !this.localGroupIds.has(offer.groupId)) return;
     if (this.db.hasEvent(offer.eventId)) return;
-    this.resourceOffers.set(offer.transferId, offer);
-    void this.acceptEventResource(peerHash, offer);
+    const trackedOffer = {
+      ...offer,
+      sourcePeerHash: peerHash.trim().toLowerCase(),
+    };
+    this.resourceOffers.set(offer.transferId, trackedOffer);
+    void this.acceptEventResource(peerHash, trackedOffer);
   }
 
   private isValidEventOffer(offer: Partial<ReticulumChatEventOffer>): offer is ReticulumChatEventOffer {
@@ -1363,13 +1647,17 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private async acceptEventResource(peerHash: string, offer: ReticulumChatEventOffer): Promise<void> {
-    if (!this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') return;
+    if (!this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
+      this.handleEventResourceFailure(offer.transferId, 'accept_unavailable');
+      return;
+    }
     const senderHash = (offer.senderReticulumDestinationHash || peerHash).trim().toLowerCase();
     if (!senderHash) {
       loggerWarn(`[ReticulumChat] Cannot accept event resource ${offer.eventId}: missing sender Reticulum identity`);
+      this.handleEventResourceFailure(offer.transferId, 'missing_sender_identity');
       return;
     }
-    await this.bridge.acceptReticulumChatResourceDetailed({
+    const result = await this.bridge.acceptReticulumChatResourceDetailed({
       peerPresenceHash: senderHash,
       reticulumIdentityPublicKeyBase64: offer.senderReticulumIdentityPublicKeyBase64?.trim() ?? '',
       transferId: offer.transferId,
@@ -1384,6 +1672,13 @@ export class ReticulumChatManager extends EventEmitter {
         groupId: offer.groupId,
       },
     });
+    if (!result.ok) {
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      this.handleEventResourceFailure(
+        offer.transferId,
+        failed.error ?? failed.reason ?? 'accept_failed'
+      );
+    }
   }
 
   handleResourceEvent(payload: ReticulumChatResourcePayload): void {
@@ -1391,25 +1686,100 @@ export class ReticulumChatManager extends EventEmitter {
       void this.authorizeResource(payload);
       return;
     }
+    if (payload?.status === 'failed' && payload.transferId) {
+      this.handleEventResourceFailure(
+        payload.transferId,
+        typeof payload.reason === 'string' ? payload.reason : 'resource_failed'
+      );
+      return;
+    }
     if (payload?.status !== 'received' || !payload.path || !payload.transferId) return;
+    void this.importReceivedEventResource(payload);
+  }
+
+  private async importReceivedEventResource(payload: ReticulumChatResourcePayload): Promise<void> {
+    if (!payload.path || !payload.transferId) return;
     const offer = this.resourceOffers.get(payload.transferId);
     if (!offer) return;
     try {
       const blob = fs.readFileSync(payload.path, 'utf8');
       const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
-      if (wireHash !== offer.wireHash.toLowerCase()) return;
+      if (wireHash !== offer.wireHash.toLowerCase()) {
+        this.retryEventPullAfterResourceFailure(offer, 'wire_hash_mismatch');
+        return;
+      }
       const parsed = JSON.parse(blob) as unknown;
+      if (!this.canAcceptInboundEventResource(parsed)) {
+        this.retryEventPullAfterResourceFailure(offer, 'invalid_event_resource');
+        return;
+      }
+      const candidate = parsed as ReticulumChatEvent;
+      const authorIsMember = await this.isValidatedGroupMember(
+        candidate.groupId,
+        candidate.authorAddress
+      );
+      if (!authorIsMember) {
+        this.retryEventPullAfterResourceFailure(offer, 'non_member_event_author');
+        return;
+      }
       if (this.acceptEvent(parsed, false)) {
         const event = parsed as ReticulumChatEvent;
         this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
         this.emit('event', { event });
-        void this.fanout(this.buildEventHintWire(event), payload.peerPresenceHash ? [payload.peerPresenceHash] : []);
+        const exclude = payload.peerPresenceHash ? [payload.peerPresenceHash] : [];
+        void this.sendEventHintToInterestedPeers(event, exclude).then((targetedPeers) => {
+          void this.fanout(this.buildEventHintWire(event), [...exclude, ...targetedPeers]);
+        });
+      } else {
+        this.retryEventPullAfterResourceFailure(offer, 'invalid_event_resource');
       }
     } catch (err) {
       loggerWarn('[ReticulumChat] Failed to import event resource:', err);
+      this.retryEventPullAfterResourceFailure(offer, 'resource_import_failed');
     } finally {
       this.resourceOffers.delete(payload.transferId);
     }
+  }
+
+  private canAcceptInboundEventResource(candidate: unknown): candidate is ReticulumChatEvent {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    if (!validateReticulumChatEventShape(candidate, this.now())) return false;
+    const event = candidate as ReticulumChatEvent;
+    if (!this.localGroupIds.has(event.groupId)) return false;
+    return verifyReticulumChatEvent(event);
+  }
+
+  private handleEventResourceFailure(transferId: string, reason: string): void {
+    const offer = this.resourceOffers.get(transferId);
+    if (!offer) return;
+    this.resourceOffers.delete(transferId);
+    this.retryEventPullAfterResourceFailure(offer, reason);
+  }
+
+  private retryEventPullAfterResourceFailure(
+    offer: ReticulumChatEventOffer,
+    reason: string
+  ): void {
+    const queueKey = this.eventPullKey(offer.groupId, offer.eventId);
+    const item = this.pendingEventPulls.get(queueKey);
+    if (!item || this.db.hasEvent(offer.eventId)) return;
+    const failedPeer = (
+      offer.sourcePeerHash ||
+      offer.senderReticulumDestinationHash ||
+      ''
+    ).trim().toLowerCase();
+    if (failedPeer) item.peerHashes.delete(failedPeer);
+    item.inFlight = false;
+    item.nextAttemptAt = 0;
+    if (item.peerHashes.size === 0) {
+      this.pendingEventPulls.delete(queueKey);
+      return;
+    }
+    loggerWarn(
+      `[ReticulumChat] Event resource failed for ${offer.eventId}, trying another peer:`,
+      reason
+    );
+    this.scheduleEventPullQueue();
   }
 
   private async authorizeResource(payload: ReticulumChatResourcePayload): Promise<void> {
@@ -1470,14 +1840,68 @@ export class ReticulumChatManager extends EventEmitter {
     this.typingTimers.set(key, timer);
   }
 
+  private startSubscriptionRefreshTimer(): void {
+    if (this.subscriptionRefreshTimer || this.subscribedGroups.size === 0) return;
+    this.scheduleSubscriptionRefresh();
+  }
+
+  private stopSubscriptionRefreshTimer(): void {
+    if (!this.subscriptionRefreshTimer) return;
+    clearTimeout(this.subscriptionRefreshTimer);
+    this.subscriptionRefreshTimer = null;
+  }
+
+  private scheduleSubscriptionRefresh(): void {
+    if (this.subscriptionRefreshTimer || this.subscribedGroups.size === 0) return;
+    const jitter = Math.floor(Math.random() * RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS);
+    this.subscriptionRefreshTimer = setTimeout(() => {
+      this.subscriptionRefreshTimer = null;
+      this.refreshSubscriptions();
+      this.scheduleSubscriptionRefresh();
+    }, RETICULUM_CHAT_SUBSCRIPTION_REFRESH_MS + jitter);
+    this.subscriptionRefreshTimer.unref?.();
+  }
+
+  private refreshSubscriptions(): void {
+    this.prunePeerSubscriptions();
+    for (const groupId of this.getSubscriptions()) {
+      void this.fanout({ t: 'RCHAT', k: 'sub', g: groupId });
+    }
+  }
+
   private notePeerSubscription(peerHash: string, groupId: number, active: boolean): void {
     const key = peerHash.trim().toLowerCase();
     if (!key) return;
-    const set = this.peerSubscriptions.get(key) ?? new Set<number>();
-    if (active) set.add(groupId);
-    else set.delete(groupId);
-    if (set.size) this.peerSubscriptions.set(key, set);
+    this.prunePeerSubscriptions();
+    const groups = this.peerSubscriptions.get(key) ?? new Map<number, number>();
+    if (active) groups.set(groupId, this.now() + RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS);
+    else groups.delete(groupId);
+    if (groups.size) this.peerSubscriptions.set(key, groups);
     else this.peerSubscriptions.delete(key);
+  }
+
+  private prunePeerSubscriptions(now = this.now()): void {
+    for (const [peerHash, groups] of this.peerSubscriptions) {
+      for (const [groupId, expiresAt] of groups) {
+        if (expiresAt <= now) groups.delete(groupId);
+      }
+      if (groups.size === 0) this.peerSubscriptions.delete(peerHash);
+    }
+  }
+
+  private getInterestedPeers(
+    groupId: number,
+    excludePeerPresenceHashes: string[] = []
+  ): string[] {
+    this.prunePeerSubscriptions();
+    const excluded = new Set(
+      excludePeerPresenceHashes.map((hash) => hash.trim().toLowerCase()).filter(Boolean)
+    );
+    const peers: string[] = [];
+    for (const [peerHash, groups] of this.peerSubscriptions) {
+      if (groups.has(groupId) && !excluded.has(peerHash)) peers.push(peerHash);
+    }
+    return peers;
   }
 
   private async fanout(
@@ -1549,6 +1973,13 @@ export class ReticulumChatManager extends EventEmitter {
   private assertGroupId(groupId: number): void {
     if (!Number.isInteger(groupId) || groupId <= 0) {
       throw new Error('Invalid groupId');
+    }
+  }
+
+  private assertLocalGroupMember(groupId: number): void {
+    this.assertGroupId(groupId);
+    if (!this.localGroupIds.has(groupId)) {
+      throw new Error('Local user is not a member of this group');
     }
   }
 }
@@ -1661,13 +2092,20 @@ export function deleteReticulumChatMentionsInDb(eventId: string): boolean {
 
 export function startReticulumChatManager(
   bridge?: ReticulumBridge | null,
-  dbPath?: string
+  dbPath?: string,
+  options: Pick<ReticulumChatManagerOptions, 'signLocalFields' | 'validateGroupMember'> = {}
 ): ReticulumChatManager {
   if (singleton) {
     singleton.setBridge(bridge ?? null);
+    singleton.setRuntimeCallbacks(options);
     return singleton;
   }
-  singleton = new ReticulumChatManager({ bridge: bridge ?? null, dbPath });
+  singleton = new ReticulumChatManager({
+    bridge: bridge ?? null,
+    dbPath,
+    signLocalFields: options.signLocalFields,
+    validateGroupMember: options.validateGroupMember,
+  });
   loggerLog('[ReticulumChat] Manager started');
   return singleton;
 }

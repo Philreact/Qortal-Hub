@@ -2213,7 +2213,10 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     attachPresenceListeners(pm);
   }
 
-  const reticulumChat = startReticulumChatManager(bridgeTransport ?? null);
+  const reticulumChat = startReticulumChatManager(bridgeTransport ?? null, undefined, {
+    signLocalFields: signReticulumChatControlFields,
+    validateGroupMember: validateQortalGroupMember,
+  });
   attachReticulumChatListeners(reticulumChat);
   startReticulumPresenceHealthWatchdog();
   startReticulumOverlayMaintenanceSync();
@@ -2520,6 +2523,85 @@ function scheduleReticulumOverlayStateSyncRetry(
     void syncReticulumOverlayStateToBridge(manager, attempt + 1, sequence);
   }, delay);
   reticulumOverlaySyncRetryTimer.unref?.();
+}
+
+async function signReticulumChatControlFields(
+  fields: Record<string, unknown>
+): Promise<{
+  authorAddress: string;
+  authorPublicKey: string;
+  signature: string;
+} | null> {
+  const main = myCapacitorApp.getMainWindow();
+  if (!main || main.isDestroyed()) return null;
+  const pJson = JSON.stringify(fields ?? {});
+  try {
+    const result = await main.webContents.executeJavaScript(
+      `(async () => {
+        const __p = ${pJson};
+        const result = await window.sendMessage('signReticulumChatEvent', __p, 10000);
+        if (result && typeof result === 'object' && result.error) {
+          return { error: String(result.error), message: result.message };
+        }
+        return result;
+      })()`,
+      true
+    );
+    if (
+      result &&
+      typeof result.authorAddress === 'string' &&
+      typeof result.authorPublicKey === 'string' &&
+      typeof result.signature === 'string'
+    ) {
+      return {
+        authorAddress: result.authorAddress,
+        authorPublicKey: result.authorPublicKey,
+        signature: result.signature,
+      };
+    }
+  } catch (err) {
+    loggerWarn('[ReticulumChat] Control signing failed:', err);
+  }
+  return null;
+}
+
+async function validateQortalGroupMember(
+  groupId: number,
+  address: string
+): Promise<boolean> {
+  const normalizedAddress = address.trim();
+  if (!Number.isInteger(groupId) || groupId <= 0 || !normalizedAddress) {
+    return false;
+  }
+  const main = myCapacitorApp.getMainWindow();
+  if (!main || main.isDestroyed()) return false;
+  const payloadJson = JSON.stringify({
+    groupId,
+    address: normalizedAddress,
+  });
+  try {
+    const result = await main.webContents.executeJavaScript(
+      `(async () => {
+        const payload = ${payloadJson};
+        const rows = await window.sendMessage(
+          'validateGroupMembers',
+          { groupId: payload.groupId, addresses: [payload.address] },
+          10000
+        ).catch(() => null);
+        return Array.isArray(rows) && rows.some((item) =>
+          item &&
+          typeof item === 'object' &&
+          item.address === payload.address &&
+          item.isMember === true
+        );
+      })()`,
+      true
+    );
+    return result === true;
+  } catch (err) {
+    loggerWarn('[ReticulumChat] Selected-node group membership validation failed:', err);
+    return false;
+  }
 }
 
 function startReticulumOverlayMaintenanceSync(): void {
@@ -3123,8 +3205,15 @@ ipcMain.handle('reticulumChat:subscribeGroup', async (_event, groupId: number) =
   if (!manager) {
     return { success: false, error: 'Reticulum chat manager is not running' };
   }
-  manager.subscribeGroup(groupId);
-  return { success: true };
+  try {
+    manager.subscribeGroup(groupId);
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Reticulum chat subscribe failed',
+    };
+  }
 });
 
 ipcMain.handle(
@@ -3168,8 +3257,15 @@ ipcMain.handle(
     if (!manager) {
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
-    manager.sendTyping(groupId, authorAddress, active);
-    return { success: true };
+    try {
+      manager.sendTyping(groupId, authorAddress, active);
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum chat typing send failed',
+      };
+    }
   }
 );
 

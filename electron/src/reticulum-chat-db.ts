@@ -1,4 +1,5 @@
 import Database, { type Database as DB, type Statement } from 'better-sqlite3';
+import * as nodeCrypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ReticulumChatEvent } from './reticulum-chat';
@@ -38,6 +39,7 @@ type EventRow = {
   reply_to_event_id: string | null;
   encrypted_payload: string;
   payload_hash: string;
+  mention_address_hashes: string;
   signature: string;
   own_event: number;
   last_served_at: number;
@@ -58,8 +60,42 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
     ...(row.reply_to_event_id ? { replyToEventId: row.reply_to_event_id } : {}),
     encryptedPayload: row.encrypted_payload,
     payloadHash: row.payload_hash,
+    mentionAddressHashes: parseMentionAddressHashes(row.mention_address_hashes),
     signature: row.signature,
   };
+}
+
+function parseMentionAddressHashes(value: unknown): string[] {
+  if (typeof value !== 'string' || !value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => /^[0-9a-f]{64}$/i.test(item));
+  } catch {
+    return [];
+  }
+}
+
+function serializeMentionAddressHashes(value: unknown): string {
+  if (!Array.isArray(value)) return '[]';
+  return JSON.stringify(
+    [
+      ...new Set(
+        value
+          .map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
+          .filter((item) => /^[0-9a-f]{64}$/i.test(item))
+      ),
+    ].slice(0, 100)
+  );
+}
+
+export function hashReticulumChatMentionAddress(address: string): string {
+  return nodeCrypto
+    .createHash('sha256')
+    .update(`reticulum-chat-mention:${address.trim()}`, 'utf8')
+    .digest('hex');
 }
 
 function eventWireBytes(event: ReticulumChatEvent): number {
@@ -78,7 +114,9 @@ function collectSearchStrings(value: unknown, out: string[]): void {
   if (!value || typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
   for (const [key, next] of Object.entries(record)) {
-    if (key === 'type' || key === 'isEdited') continue;
+    if (key === 'type' || key === 'isEdited' || key === 'mentionedAddresses') {
+      continue;
+    }
     collectSearchStrings(next, out);
   }
 }
@@ -192,12 +230,12 @@ export class ReticulumChatDatabase {
       INSERT OR IGNORE INTO reticulum_chat_events
         (event_id, group_id, author_address, author_public_key, author_seq,
          timestamp, event_type, target_event_id, reply_to_event_id,
-         encrypted_payload, payload_hash, signature, own_event,
+         encrypted_payload, payload_hash, mention_address_hashes, signature, own_event,
          last_served_at, stored_at, wire_bytes)
       VALUES
         (@event_id, @group_id, @author_address, @author_public_key, @author_seq,
          @timestamp, @event_type, @target_event_id, @reply_to_event_id,
-         @encrypted_payload, @payload_hash, @signature, @own_event,
+         @encrypted_payload, @payload_hash, @mention_address_hashes, @signature, @own_event,
          @last_served_at, @stored_at, @wire_bytes)
     `);
     this.stmtGetEvent = this.db.prepare(
@@ -412,6 +450,9 @@ export class ReticulumChatDatabase {
       reply_to_event_id: event.replyToEventId ?? null,
       encrypted_payload: event.encryptedPayload,
       payload_hash: event.payloadHash,
+      mention_address_hashes: serializeMentionAddressHashes(
+        event.mentionAddressHashes
+      ),
       signature: event.signature,
       own_event: ownEvent ? 1 : 0,
       last_served_at: now,
@@ -757,7 +798,8 @@ export class ReticulumChatDatabase {
 
     const summaries: ReticulumChatSummary[] = [];
     for (const groupId of groupIds) {
-      const events = this.getRecentEvents(groupId, 500).filter(
+      const recentEvents = this.getRecentEvents(groupId, 500);
+      const events = recentEvents.filter(
         (event) =>
           event.eventType === 'message' ||
           event.eventType === 'attachment_manifest'
@@ -810,6 +852,44 @@ export class ReticulumChatDatabase {
           ? mentionRow.cnt
           : 0;
       let memoryMentionCount = 0;
+      const myMentionHash = myAddress
+        ? hashReticulumChatMentionAddress(myAddress)
+        : '';
+      let eventMentionHashCount = 0;
+      const effectiveMentionEvents = new Map<string, ReticulumChatEvent>();
+      for (const event of recentEvents) {
+        if (
+          event.eventType === 'message' ||
+          event.eventType === 'attachment_manifest'
+        ) {
+          effectiveMentionEvents.set(event.eventId, event);
+          continue;
+        }
+        if (event.eventType === 'edit' && event.targetEventId) {
+          effectiveMentionEvents.set(event.targetEventId, event);
+          continue;
+        }
+        if (event.eventType === 'delete' && event.targetEventId) {
+          effectiveMentionEvents.delete(event.targetEventId);
+        }
+      }
+      const countEventMentionHash = (event: ReticulumChatEvent) => {
+        if (
+          !myMentionHash ||
+          event.authorAddress === myAddress ||
+          event.timestamp <= watermark ||
+          (event.eventType !== 'message' &&
+            event.eventType !== 'attachment_manifest' &&
+            event.eventType !== 'edit') ||
+          !event.mentionAddressHashes?.includes(myMentionHash)
+        ) {
+          return;
+        }
+        eventMentionHashCount += 1;
+      };
+      for (const event of effectiveMentionEvents.values()) {
+        countEventMentionHash(event);
+      }
       if (myAddress) {
         for (const mentions of this.memoryMentions.values()) {
           for (const mention of mentions) {
@@ -825,7 +905,11 @@ export class ReticulumChatDatabase {
           }
         }
       }
-      const totalMentionCount = Math.max(mentionCount, memoryMentionCount);
+      const totalMentionCount = Math.max(
+        mentionCount,
+        memoryMentionCount,
+        eventMentionHashCount
+      );
 
       summaries.push({
         groupId,
@@ -1081,6 +1165,7 @@ export class ReticulumChatDatabase {
         reply_to_event_id TEXT,
         encrypted_payload TEXT NOT NULL,
         payload_hash TEXT NOT NULL,
+        mention_address_hashes TEXT NOT NULL DEFAULT '[]',
         signature TEXT NOT NULL,
         own_event INTEGER NOT NULL DEFAULT 0,
         last_served_at INTEGER NOT NULL,
@@ -1131,6 +1216,19 @@ export class ReticulumChatDatabase {
       );
     `);
     this.migrateReadWatermarksSchema();
+    this.ensureColumn(
+      'reticulum_chat_events',
+      'mention_address_hashes',
+      "TEXT NOT NULL DEFAULT '[]'"
+    );
+  }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+      name?: string;
+    }>;
+    if (columns.some((column) => column.name === columnName)) return;
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
   private migrateReadWatermarksSchema(): void {

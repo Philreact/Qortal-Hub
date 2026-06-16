@@ -110,6 +110,7 @@ import {
   updateNameCase,
   userInfoCase,
   validApiCase,
+  validateGroupMembersCase,
   versionCase,
   voteOnPollCase,
 } from '../background/background-cases';
@@ -3251,6 +3252,9 @@ function setupMessageListener() {
         break;
       case 'validApi':
         validApiCase(request, event);
+        break;
+      case 'validateGroupMembers':
+        validateGroupMembersCase(request, event);
         break;
       case 'name':
         nameCase(request, event);

@@ -21,6 +21,7 @@ import {
   decryptSingleFunc,
   decryptWallet,
   findUsableApi,
+  getBaseApi,
   getApiKeyFromStorage,
   getBalanceInfo,
   getCustomNodesFromStorage,
@@ -184,6 +185,52 @@ export async function validApiCase(request, event) {
       {
         requestId: request.requestId,
         action: 'validApi',
+        error: error?.message,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
+export async function validateGroupMembersCase(request, event) {
+  try {
+    const groupId = Number(request?.payload?.groupId);
+    const addresses = Array.isArray(request?.payload?.addresses)
+      ? request.payload.addresses
+          .map((address) => (typeof address === 'string' ? address.trim() : ''))
+          .filter(Boolean)
+      : [];
+    if (!Number.isInteger(groupId) || groupId <= 0 || addresses.length === 0) {
+      throw new Error('Invalid groupId or addresses');
+    }
+    const validApi = await getBaseApi();
+    const response = await fetch(
+      `${validApi.replace(/\/+$/u, '')}/groups/members/${groupId}/validate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(addresses),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Group member validation failed: ${response.status}`);
+    }
+    const result = await response.json();
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupMembers',
+        payload: Array.isArray(result) ? result : [],
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupMembers',
         error: error?.message,
         type: 'backgroundMessageResponse',
       },

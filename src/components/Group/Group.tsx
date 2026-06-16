@@ -569,6 +569,10 @@ export const Group = ({
     secretKeyRef.current = secretKey;
   }, [secretKey]);
 
+  useEffect(() => {
+    reticulumBackgroundProcessedEventIdsRef.current.clear();
+  }, [myAddress]);
+
   // Track view modes to prevent marking messages as read when not viewing chat
   const desktopViewModeRef = useRef(desktopViewMode);
   const mobileViewModeRef = useRef(mobileViewMode);
@@ -1213,33 +1217,20 @@ export const Group = ({
         | { isOpen?: boolean }
         | undefined;
       const isPublicGroup = groupProperty?.isOpen === true;
+      if (groupProperty?.isOpen !== true && groupProperty?.isOpen !== false) {
+        return;
+      }
+      if (!isPublicGroup) {
+        reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
+        scheduleReticulumChatSummariesRefresh();
+        return;
+      }
 
       let payload: unknown = null;
-      if (isPublicGroup) {
-        try {
-          payload = JSON.parse(String(event.encryptedPayload || ''));
-        } catch {
-          payload = event.encryptedPayload || '';
-        }
-      } else {
-        const group = (memberGroupsRef.current || []).find(
-          (item: any) => Number(item?.groupId) === groupId
-        );
-        const secretKeyObject = await getSecretKeyForGroup(
-          group ? { groupId: String(groupId) } : null
-        );
-        if (!secretKeyObject) return;
-        const decrypted = await window.sendMessage('decryptSingle', {
-          data: [
-            {
-              data: event.encryptedPayload,
-              signature: event.eventId,
-              sender: event.authorAddress,
-            },
-          ],
-          secretKeyObject,
-        });
-        payload = decrypted?.[0]?.decryptedData;
+      try {
+        payload = JSON.parse(String(event.encryptedPayload || ''));
+      } catch {
+        payload = event.encryptedPayload || '';
       }
 
       const text = reticulumTextFromPayload(payload);
@@ -1265,7 +1256,6 @@ export const Group = ({
     },
     [
       getReticulumMentionNameMap,
-      getSecretKeyForGroup,
       scheduleReticulumChatSummariesRefresh,
     ]
   );
@@ -1866,6 +1856,7 @@ export const Group = ({
     setSecretKey(null);
     secretKeyRef.current = null;
     lastFetchedSecretKey.current = null;
+    reticulumBackgroundProcessedEventIdsRef.current.clear();
     setSecretKeyPublishDate(null);
     setSecretKeyDetails(null);
     setNewEncryptionNotification(null);

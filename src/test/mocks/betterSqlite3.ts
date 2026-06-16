@@ -1,14 +1,28 @@
 type ReticulumChatRow = Record<string, any>;
+type ReticulumResourceRow = Record<string, any>;
+type ReticulumResourceChunkRow = Record<string, any>;
 
-const storesByPath = new Map<string, { reticulumChatEvents: ReticulumChatRow[] }>();
+type MockStore = {
+  reticulumChatEvents: ReticulumChatRow[];
+  reticulumResources: ReticulumResourceRow[];
+  reticulumResourceChunks: ReticulumResourceChunkRow[];
+};
+
+const storesByPath = new Map<string, MockStore>();
 
 class Statement {
   constructor(
     private readonly sql: string,
-    private readonly store: { reticulumChatEvents: ReticulumChatRow[] }
+    private readonly store: MockStore
   ) {}
 
   all(...args: any[]) {
+    if (this.sql.includes('FROM reticulum_resource_chunks')) {
+      const [resourceId] = args;
+      return this.store.reticulumResourceChunks
+        .filter((row) => row.resource_id === resourceId)
+        .sort((a, b) => a.chunk_index - b.chunk_index);
+    }
     if (this.sql.includes('FROM reticulum_chat_events')) {
       if (this.sql.includes('WHERE group_id = ? AND author_address = ? AND author_seq > ?')) {
         const [groupId, authorAddress, seq, limit] = args;
@@ -148,6 +162,24 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM reticulum_resources')) {
+      const [resourceId] = args;
+      return this.store.reticulumResources.find((row) => row.resource_id === resourceId);
+    }
+    if (this.sql.includes('FROM reticulum_resource_chunks')) {
+      if (this.sql.includes('COUNT(*) AS count')) {
+        const [resourceId] = args;
+        return {
+          count: this.store.reticulumResourceChunks.filter(
+            (row) => row.resource_id === resourceId && row.status !== 'complete'
+          ).length,
+        };
+      }
+      const [resourceId, chunkIndex] = args;
+      return this.store.reticulumResourceChunks.find(
+        (row) => row.resource_id === resourceId && row.chunk_index === chunkIndex
+      );
+    }
     if (this.sql.includes('FROM reticulum_chat_events')) {
       if (this.sql.includes('WHERE event_id = ?')) {
         const [eventId] = args;
@@ -190,6 +222,67 @@ class Statement {
   }
 
   run(params?: any, second?: any) {
+    if (this.sql.includes('INSERT INTO reticulum_resources')) {
+      const index = this.store.reticulumResources.findIndex(
+        (row) => row.resource_id === params.resource_id
+      );
+      if (index >= 0) {
+        this.store.reticulumResources[index] = {
+          ...this.store.reticulumResources[index],
+          ...params,
+        };
+        return { changes: 1, lastInsertRowid: index + 1 };
+      }
+      this.store.reticulumResources.push({ ...params });
+      return { changes: 1, lastInsertRowid: this.store.reticulumResources.length };
+    }
+    if (this.sql.includes('UPDATE reticulum_resources')) {
+      const [status, assembledPath, updatedAt, resourceId] = Array.isArray(params)
+        ? params
+        : [params, second, arguments[2], arguments[3]];
+      const row = this.store.reticulumResources.find(
+        (item) => item.resource_id === resourceId
+      );
+      if (row) {
+        row.status = status;
+        row.assembled_path = assembledPath;
+        row.updated_at = updatedAt;
+      }
+      return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT INTO reticulum_resource_chunks')) {
+      const index = this.store.reticulumResourceChunks.findIndex(
+        (row) =>
+          row.resource_id === params.resource_id &&
+          row.chunk_index === params.chunk_index
+      );
+      if (index >= 0) {
+        this.store.reticulumResourceChunks[index] = {
+          ...this.store.reticulumResourceChunks[index],
+          ...params,
+        };
+        return { changes: 1, lastInsertRowid: index + 1 };
+      }
+      this.store.reticulumResourceChunks.push({ ...params });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumResourceChunks.length,
+      };
+    }
+    if (this.sql.includes('UPDATE reticulum_resource_chunks')) {
+      const [localPath, updatedAt, resourceId, chunkIndex] = Array.isArray(params)
+        ? params
+        : [params, second, arguments[2], arguments[3]];
+      const row = this.store.reticulumResourceChunks.find(
+        (item) => item.resource_id === resourceId && item.chunk_index === chunkIndex
+      );
+      if (row) {
+        row.status = 'complete';
+        row.local_path = localPath;
+        row.updated_at = updatedAt;
+      }
+      return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
     if (this.sql.includes('INSERT OR IGNORE INTO reticulum_chat_events')) {
       if (
         this.store.reticulumChatEvents.some(
@@ -228,11 +321,15 @@ class Statement {
 }
 
 class MockDatabase {
-  private readonly store: { reticulumChatEvents: ReticulumChatRow[] };
+  private readonly store: MockStore;
 
   constructor(dbPath = ':memory:') {
     const key = String(dbPath);
-    const store = storesByPath.get(key) ?? { reticulumChatEvents: [] };
+    const store = storesByPath.get(key) ?? {
+      reticulumChatEvents: [],
+      reticulumResources: [],
+      reticulumResourceChunks: [],
+    };
     storesByPath.set(key, store);
     this.store = store;
   }

@@ -183,6 +183,7 @@ _qchat_file_accepts_by_peer: Dict[str, Dict[str, Any]] = {}
 _qchat_file_accepts_by_transfer: Dict[str, Dict[str, Any]] = {}
 _qchat_file_pending_sends_by_transfer: Dict[str, Dict[str, Any]] = {}
 _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
+_RETICULUM_RESOURCE_TYPE = "reticulum_resource"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
 _QCHAT_FILE_CHUNK_SIZE = (1024 * 1024) - 1
@@ -3443,6 +3444,10 @@ def _scheduler_lane_for_command(action: Any) -> str:
         "send_reticulum_chat_resource",
         "authorize_reticulum_chat_resource",
         "reject_reticulum_chat_resource",
+        "accept_reticulum_resource",
+        "send_reticulum_resource",
+        "authorize_reticulum_resource",
+        "reject_reticulum_resource",
     }:
         return "file-transfer"
     return "control-send"
@@ -6643,6 +6648,8 @@ def _qchat_file_emit(status: str, payload: Dict[str, Any]) -> None:
     event_payload["status"] = status
     if event_payload.get("resourceType") == _RETICULUM_CHAT_RESOURCE_TYPE:
         emit_event("reticulum_chat_resource", event_payload)
+    elif str(event_payload.get("resourceType") or "").startswith(_RETICULUM_RESOURCE_TYPE):
+        emit_event("reticulum_resource", event_payload)
     else:
         emit_event("qchat_file_transfer", event_payload)
 
@@ -10002,6 +10009,16 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
     if not pending:
         emit_resp(req_id, False, payload={"code": "unknown_transfer_id"}, error="Unknown transfer id")
         return
+    allowed_recipient = str(pending.get("allowedRecipientAddress") or "").strip().lower()
+    link_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if allowed_recipient and link_peer_hash and allowed_recipient != link_peer_hash:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "recipient_mismatch"},
+            error="Resource recipient mismatch",
+        )
+        return
     if float(pending.get("expires_at") or 0) < time.time():
         emit_resp(req_id, False, payload={"code": "transfer_expired"}, error="Transfer expired")
         return
@@ -10092,6 +10109,34 @@ def handle_authorize_reticulum_chat_resource(req_id: str, payload: Dict[str, Any
 
 
 def handle_reject_reticulum_chat_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    handle_reject_qchat_file_resource(req_id, payload)
+
+
+def _generic_reticulum_resource_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    next_payload = dict(payload)
+    logical_resource_type = str(next_payload.get("resourceType") or "").strip()
+    next_payload["resourceType"] = _RETICULUM_RESOURCE_TYPE
+    metadata = next_payload.get("metadata") if isinstance(next_payload.get("metadata"), dict) else {}
+    next_metadata = {**metadata, "resourceType": _RETICULUM_RESOURCE_TYPE}
+    if logical_resource_type and logical_resource_type != _RETICULUM_RESOURCE_TYPE:
+        next_metadata["logicalResourceType"] = logical_resource_type
+    next_payload["metadata"] = next_metadata
+    return next_payload
+
+
+def handle_accept_reticulum_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    handle_accept_qchat_file_resource(req_id, _generic_reticulum_resource_payload(payload))
+
+
+def handle_send_reticulum_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    handle_send_qchat_file_resource(req_id, _generic_reticulum_resource_payload(payload))
+
+
+def handle_authorize_reticulum_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    handle_authorize_qchat_file_resource(req_id, payload)
+
+
+def handle_reject_reticulum_resource(req_id: str, payload: Dict[str, Any]) -> None:
     handle_reject_qchat_file_resource(req_id, payload)
 
 
@@ -10963,6 +11008,14 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_authorize_reticulum_chat_resource(req_id, payload)
     elif action == "reject_reticulum_chat_resource":
         handle_reject_reticulum_chat_resource(req_id, payload)
+    elif action == "accept_reticulum_resource":
+        handle_accept_reticulum_resource(req_id, payload)
+    elif action == "send_reticulum_resource":
+        handle_send_reticulum_resource(req_id, payload)
+    elif action == "authorize_reticulum_resource":
+        handle_authorize_reticulum_resource(req_id, payload)
+    elif action == "reject_reticulum_resource":
+        handle_reject_reticulum_resource(req_id, payload)
     elif action == "fanout_call":
         handle_fanout_call(req_id, payload)
     elif action == "send_group_call":

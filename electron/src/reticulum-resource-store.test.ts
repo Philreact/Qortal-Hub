@@ -1,0 +1,131 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import * as fs from 'fs';
+import * as nodeCrypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
+import {
+  ReticulumResourceStore,
+  type ReticulumResourceManifest,
+} from './reticulum-resource-store';
+
+function tempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-store-test-'));
+}
+
+function tempStore(): { dir: string; store: ReticulumResourceStore } {
+  const dir = tempDir();
+  return {
+    dir,
+    store: new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => 100_000,
+    }),
+  };
+}
+
+describe('reticulum resource store', () => {
+  const stores: ReticulumResourceStore[] = [];
+
+  afterEach(() => {
+    while (stores.length) stores.pop()?.close();
+  });
+
+  it('imports a local file as hashed chunks and assembles the encrypted payload', () => {
+    const { dir, store } = tempStore();
+    stores.push(store);
+    const sourcePath = path.join(dir, 'source.bin');
+    const contents = Buffer.concat([
+      Buffer.from('first chunk data'),
+      Buffer.alloc(64, 7),
+      Buffer.from('last chunk data'),
+    ]);
+    fs.writeFileSync(sourcePath, contents);
+
+    const manifest = store.importLocalFile({
+      sourcePath,
+      namespace: 'test.feature',
+      fileName: 'image.enc',
+      mimeType: 'application/octet-stream',
+      chunkSize: 16 * 1024,
+      encrypted: true,
+    });
+
+    expect(manifest.namespace).toBe('test.feature');
+    expect(manifest.encrypted).toBe(true);
+    expect(manifest.chunkHashes).toHaveLength(1);
+    expect(store.getChunks(manifest.resourceId)).toEqual([
+      expect.objectContaining({
+        chunkIndex: 0,
+        status: 'complete',
+        sizeBytes: contents.length,
+      }),
+    ]);
+
+    const assembledPath = store.assembleResource(manifest.resourceId);
+    expect(path.basename(assembledPath)).toBe('assembled.enc');
+    expect(fs.readFileSync(assembledPath)).toEqual(contents);
+  });
+
+  it('stores a received manifest and verifies chunks before assembly', () => {
+    const { store } = tempStore();
+    stores.push(store);
+    const first = Buffer.from('a'.repeat(16 * 1024));
+    const second = Buffer.from('second');
+    const manifest: ReticulumResourceManifest = {
+      resourceId: 'resource-received',
+      namespace: 'test.feature',
+      fileName: 'payload.enc',
+      mimeType: 'application/octet-stream',
+      sizeBytes: first.length + second.length,
+      chunkSize: first.length,
+      chunkHashes: [
+        cryptoHash(first),
+        cryptoHash(second),
+      ],
+      fileHash: cryptoHash(Buffer.concat([first, second])),
+      encrypted: true,
+      createdAt: 100_000,
+    };
+
+    store.storeManifest(manifest);
+    expect(store.getChunks(manifest.resourceId).map((chunk) => chunk.status)).toEqual([
+      'missing',
+      'missing',
+    ]);
+    expect(() => store.storeChunk(manifest.resourceId, 0, Buffer.from('wrong'))).toThrow(
+      /Chunk hash mismatch/
+    );
+
+    store.storeChunk(manifest.resourceId, 0, first);
+    store.storeChunk(manifest.resourceId, 1, second);
+
+    const assembledPath = store.assembleResource(manifest.resourceId);
+    expect(fs.readFileSync(assembledPath)).toEqual(Buffer.concat([first, second]));
+  });
+
+  it('assembles public resources to the original safe filename', () => {
+    const { dir, store } = tempStore();
+    stores.push(store);
+    const sourcePath = path.join(dir, 'public-image.png');
+    const contents = Buffer.from('public image bytes');
+    fs.writeFileSync(sourcePath, contents);
+
+    const manifest = store.importLocalFile({
+      sourcePath,
+      namespace: 'test.public',
+      fileName: 'public-image.png',
+      mimeType: 'image/png',
+      encrypted: false,
+    });
+
+    const assembledPath = store.assembleResource(manifest.resourceId);
+    expect(path.basename(assembledPath)).toBe('public-image.png');
+    expect(path.basename(path.dirname(assembledPath))).toBe('assembled');
+    expect(fs.readFileSync(assembledPath)).toEqual(contents);
+  });
+});
+
+function cryptoHash(value: Buffer): string {
+  return nodeCrypto.createHash('sha256').update(value).digest('hex');
+}

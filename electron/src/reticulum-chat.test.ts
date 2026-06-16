@@ -2,22 +2,29 @@ import { describe, expect, it, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as nodeCrypto from 'crypto';
 import nacl from 'tweetnacl';
 import {
   buildReticulumChatSignedFields,
+  buildReticulumChatEventRequestSignedFields,
   buildReticulumChatEventHint,
   hashReticulumChatPayload,
   ReticulumChatManager,
+  serializeReticulumChatEvent,
   type ReticulumChatEvent,
   validateReticulumChatEventShape,
   verifyReticulumChatEvent,
+  type ReticulumChatManagerOptions,
 } from './reticulum-chat';
 import {
   base58Encode,
   canonicalizeForSigning,
   deriveAddressFromPublicKey,
 } from './presence';
-import { ReticulumChatDatabase } from './reticulum-chat-db';
+import {
+  hashReticulumChatMentionAddress,
+  ReticulumChatDatabase,
+} from './reticulum-chat-db';
 import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
   byteLengthUtf8JsonWithBridgeSender,
@@ -40,6 +47,7 @@ function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChat
     encryptedPayload,
     payloadHash:
       overrides.payloadHash ?? hashReticulumChatPayload(encryptedPayload),
+    mentionAddressHashes: overrides.mentionAddressHashes ?? [],
     signature: '',
   };
   const signedBytes = canonicalizeForSigning(
@@ -73,6 +81,7 @@ function signedAuthorEvents(
       ...(overrides.replyToEventId ? { replyToEventId: overrides.replyToEventId } : {}),
       encryptedPayload,
       payloadHash: overrides.payloadHash ?? hashReticulumChatPayload(encryptedPayload),
+      mentionAddressHashes: overrides.mentionAddressHashes ?? [],
       signature: '',
     };
     const sig = nacl.sign.detached(
@@ -82,6 +91,76 @@ function signedAuthorEvents(
     event.signature = overrides.signature ?? base58Encode(sig);
     return event;
   });
+}
+
+function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOptions['signLocalFields']> {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  return async (fields) => {
+    const fullFields = {
+      ...fields,
+      authorAddress,
+      authorPublicKey,
+    };
+    const signedFields =
+      fullFields.type === 'RCHAT_EVENT_REQ' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.eventId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+        ? buildReticulumChatEventRequestSignedFields({
+            groupId: fullFields.groupId,
+            eventId: fullFields.eventId,
+            authorAddress,
+            authorPublicKey,
+            timestamp: fullFields.timestamp,
+          })
+        : fullFields;
+    const signature = nacl.sign.detached(
+      new Uint8Array(canonicalizeForSigning(signedFields)),
+      kp.secretKey
+    );
+    return {
+      authorAddress,
+      authorPublicKey,
+      signature: base58Encode(signature),
+    };
+  };
+}
+
+function signedEventRequestWire(params: {
+  groupId: number;
+  eventId: string;
+  timestamp: number;
+}): {
+  id: string;
+  a: string;
+  pk: string;
+  ts: number;
+  sig: string;
+} {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumChatEventRequestSignedFields({
+    groupId: params.groupId,
+    eventId: params.eventId,
+    authorAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    id: params.eventId,
+    a: authorAddress,
+    pk: authorPublicKey,
+    ts: params.timestamp,
+    sig: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
 }
 
 function tempDbPath(): string {
@@ -265,6 +344,121 @@ describe('reticulum chat database', () => {
 
     expect(db.getChatSummaries(accountB)[0]?.unreadCount).toBe(0);
     expect(db.getChatSummaries(accountA)[0]?.unreadCount).toBe(1);
+  });
+
+  it('tracks unread mention hints from event address hashes', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-mention-hash-target',
+      groupId: 66,
+      authorAddress: 'Qauthor',
+      mentionAddressHashes: [hashReticulumChatMentionAddress(mentionedAddress)],
+    });
+    db.insertEvent(event, true);
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      groupId: 66,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+
+    db.markRead(66, event.timestamp, mentionedAddress);
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+  });
+
+  it('applies edit and delete state to event mention hash summaries', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const mentionHash = hashReticulumChatMentionAddress(mentionedAddress);
+
+    const original = signedEvent({
+      eventId: 'event-mention-edit-original',
+      groupId: 67,
+      authorAddress: 'Qauthor',
+      authorSeq: 1,
+      timestamp: Date.now(),
+      mentionAddressHashes: [],
+    });
+    const editAddsMention = signedEvent({
+      eventId: 'event-mention-edit-adds',
+      groupId: 67,
+      authorAddress: 'Qauthor',
+      authorSeq: 2,
+      timestamp: original.timestamp + 1,
+      eventType: 'edit',
+      targetEventId: original.eventId,
+      mentionAddressHashes: [mentionHash],
+    });
+    const editRemovesMention = signedEvent({
+      eventId: 'event-mention-edit-removes',
+      groupId: 67,
+      authorAddress: 'Qauthor',
+      authorSeq: 3,
+      timestamp: original.timestamp + 2,
+      eventType: 'edit',
+      targetEventId: original.eventId,
+      mentionAddressHashes: [],
+    });
+    db.insertEvent(original, true);
+    db.insertEvent(editAddsMention, true);
+    expect(
+      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 67)
+    ).toMatchObject({
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+    db.insertEvent(editRemovesMention, true);
+    expect(
+      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 67)
+    ).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+
+    const deletedOriginal = signedEvent({
+      eventId: 'event-mention-delete-original',
+      groupId: 68,
+      authorAddress: 'Qauthor',
+      authorSeq: 1,
+      timestamp: Date.now(),
+      mentionAddressHashes: [mentionHash],
+    });
+    const deleteEvent = signedEvent({
+      eventId: 'event-mention-delete',
+      groupId: 68,
+      authorAddress: 'Qauthor',
+      authorSeq: 2,
+      timestamp: deletedOriginal.timestamp + 1,
+      eventType: 'delete',
+      targetEventId: deletedOriginal.eventId,
+      mentionAddressHashes: [],
+    });
+    db.insertEvent(deletedOriginal, true);
+    expect(
+      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 68)
+    ).toMatchObject({
+      groupId: 68,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+    db.insertEvent(deleteEvent, true);
+    expect(
+      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 68)
+    ).toMatchObject({
+      groupId: 68,
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
   });
 
   it('replaces and deletes mentions for edited or deleted messages', () => {
@@ -469,6 +663,93 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('sends targeted hints only while peer subscriptions are fresh', async () => {
+    let now = 100_000;
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.handleWire({ t: 'RCHAT', k: 'sub', g: 69 }, 'peer-a');
+
+    await manager.publishEvent(signedEvent({
+      eventId: 'event-targeted-subscription-fresh',
+      groupId: 69,
+      authorSeq: 1,
+      timestamp: now,
+    }));
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          t: 'RCHAT',
+          k: 'event_hint',
+          g: 69,
+        }),
+      })
+    );
+
+    direct.length = 0;
+    now += 2 * 60_000 + 1;
+    await manager.publishEvent(signedEvent({
+      eventId: 'event-targeted-subscription-expired',
+      groupId: 69,
+      authorSeq: 2,
+      timestamp: now,
+    }));
+    expect(direct.find((item) => item.peer === 'peer-a' && item.wire.k === 'event_hint')).toBeUndefined();
+    manager.close();
+  });
+
+  it('does not exclude peers from fallback fanout when targeted hints fail', async () => {
+    let fallbackExcludes: string[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (
+        _messages: Record<string, unknown>[],
+        excludePeerPresenceHashes: string[] = []
+      ) => {
+        fallbackExcludes = excludePeerPresenceHashes;
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({
+        ok: false as const,
+        reason: 'no-route' as const,
+        error: 'No overlay route',
+      }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    manager.setLocalGroupMemberships([70]);
+    manager.handleWire({ t: 'RCHAT', k: 'sub', g: 70 }, 'peer-a');
+
+    await manager.publishEvent(signedEvent({
+      eventId: 'event-targeted-fallback-after-failure',
+      groupId: 70,
+      authorSeq: 1,
+      timestamp: 100_000,
+    }));
+
+    expect(fallbackExcludes).toEqual([]);
+    manager.close();
+  });
+
   it('requests a missing hinted event once per throttle window', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -483,6 +764,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     const event = signedEvent({ groupId: 9 });
     manager.setLocalGroupMemberships([9]);
@@ -520,8 +802,178 @@ describe('reticulum chat manager', () => {
       },
       'peer'
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(direct.filter((wire) => wire.k === 'event_req')).toHaveLength(1);
+    expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'event_req',
+      g: 9,
+      r: expect.objectContaining({
+        id: event.eventId,
+        a: expect.any(String),
+        pk: expect.any(String),
+        sig: expect.any(String),
+      }),
+    });
+    expect(byteLengthUtf8JsonWithBridgeSender(direct.find((wire) => wire.k === 'event_req')!)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
+  it('rotates to another peer when an event resource transfer fails', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      eventId: 'event-resource-rotate',
+      groupId: 71,
+      authorSeq: 1,
+      timestamp: 100_000,
+    });
+    const hint = buildReticulumChatEventHint(event);
+    const hintWire = {
+      id: hint.eventId,
+      a: hint.authorAddress,
+      n: hint.authorSeq,
+      ts: hint.timestamp,
+      et: hint.eventType,
+      ph: hint.payloadHash,
+      mh: hint.mentionAddressHashes,
+    };
+    manager.setLocalGroupMemberships([71]);
+    manager.subscribeGroup(71);
+    manager.handleWire({ t: 'RCHAT', k: 'event_hint', g: 71, h: hintWire }, 'peer-a');
+    manager.handleWire({ t: 'RCHAT', k: 'event_hint', g: 71, h: hintWire }, 'peer-b');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'event_req',
+          r: expect.objectContaining({ id: event.eventId }),
+        }),
+      })
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 71,
+        o: {
+          x: 'transfer-resource-rotate',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: 'a'.repeat(64),
+          s: 10,
+        },
+      },
+      'peer-a'
+    );
+    manager.handleResourceEvent({
+      status: 'failed',
+      transferId: 'transfer-resource-rotate',
+      peerPresenceHash: 'peer-a',
+      reason: 'link_failed',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-b',
+        wire: expect.objectContaining({
+          k: 'event_req',
+          r: expect.objectContaining({ id: event.eventId }),
+        }),
+      })
+    );
+    manager.close();
+  });
+
+  it('rotates to another peer when accepting an event resource fails', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumChatResourceDetailed: async () => ({
+        ok: false as const,
+        reason: 'no-route' as const,
+        error: 'No resource link',
+      }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      eventId: 'event-resource-accept-rotate',
+      groupId: 72,
+      authorSeq: 1,
+      timestamp: 100_000,
+    });
+    const hint = buildReticulumChatEventHint(event);
+    const hintWire = {
+      id: hint.eventId,
+      a: hint.authorAddress,
+      n: hint.authorSeq,
+      ts: hint.timestamp,
+      et: hint.eventType,
+      ph: hint.payloadHash,
+      mh: hint.mentionAddressHashes,
+    };
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    manager.handleWire({ t: 'RCHAT', k: 'event_hint', g: 72, h: hintWire }, 'peer-a');
+    manager.handleWire({ t: 'RCHAT', k: 'event_hint', g: 72, h: hintWire }, 'peer-b');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 72,
+        o: {
+          x: 'transfer-resource-accept-rotate',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: 'b'.repeat(64),
+          s: 10,
+        },
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-b',
+        wire: expect.objectContaining({
+          k: 'event_req',
+          r: expect.objectContaining({ id: event.eventId }),
+        }),
+      })
+    );
     manager.close();
   });
 
@@ -539,6 +991,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([58]);
     manager.subscribeGroup(58);
@@ -592,6 +1045,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([59]);
     manager.subscribeGroup(59);
@@ -642,6 +1096,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([62]);
     manager.subscribeGroup(62);
@@ -683,6 +1138,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([55]);
     manager.subscribeGroup(55);
@@ -731,6 +1187,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
     });
+    manager.setLocalGroupMemberships([48]);
     manager.subscribeGroup(48);
     expect(sent).toContainEqual({ t: 'RCHAT', k: 'sub', g: 48 });
     expect(sent.find((wire) => wire.k === 'sync_req')).toMatchObject({
@@ -1041,7 +1498,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('serves cached group history even when the group is not currently open', async () => {
+  it('serves cached group history for groups the local user belongs to even when not currently open', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -1064,7 +1521,6 @@ describe('reticulum chat manager', () => {
       timestamp: 50_000,
     });
     await manager.publishEvent(event);
-    manager.setLocalGroupMemberships([]);
     direct.length = 0;
 
     manager.handleWire(
@@ -1079,6 +1535,292 @@ describe('reticulum chat manager', () => {
       g: 54,
       hints: [expect.objectContaining({ id: event.eventId })],
     });
+    manager.close();
+  });
+
+  it('does not publish, subscribe, type, or serve cached history for groups the local user is not a member of', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([57]);
+    const event = signedEvent({
+      eventId: 'event-non-member-cached',
+      groupId: 57,
+      timestamp: 50_000,
+    });
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+
+    manager.setLocalGroupMemberships([]);
+    sent.length = 0;
+    direct.length = 0;
+
+    await expect(
+      manager.publishEvent(signedEvent({ eventId: 'event-non-member-publish', groupId: 57 }))
+    ).resolves.toMatchObject({ ok: false });
+    expect(() => manager.subscribeGroup(57)).toThrow(/not a member/i);
+    expect(() => manager.sendTyping(57, 'Qsender', true)).toThrow(/not a member/i);
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'sync_req', g: 57, mode: 'latest', limit: 10 },
+      'peer'
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 57,
+        r: signedEventRequestWire({
+          groupId: 57,
+          eventId: event.eventId,
+          timestamp: 60_000,
+        }),
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sent).toEqual([]);
+    expect(direct).toEqual([]);
+    manager.close();
+  });
+
+  it('refuses to publish when Core membership validation rejects the author', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      validateGroupMember: async () => false,
+    });
+    manager.setLocalGroupMemberships([73]);
+    const event = signedEvent({ eventId: 'event-core-non-member-author', groupId: 73 });
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: false,
+    });
+    expect(manager.getHistory(73, 10)).toEqual([]);
+    expect(sent).toEqual([]);
+    manager.close();
+  });
+
+  it('refuses signed event resource requests when Core membership validation rejects the requester', async () => {
+    const sentResources: unknown[] = [];
+    const signer = createReticulumChatTestSigner();
+    const blockedKp = nacl.sign.keyPair();
+    const blockedPublicKey = base58Encode(blockedKp.publicKey);
+    const blockedAddress = deriveAddressFromPublicKey(blockedPublicKey);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: signer,
+      validateGroupMember: async (_groupId, address) => address !== blockedAddress,
+    });
+    manager.setLocalGroupMemberships([74]);
+    const event = signedEvent({
+      eventId: 'event-resource-core-gated',
+      groupId: 74,
+      timestamp: 100_000,
+    });
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+
+    const timestamp = 100_000;
+    const fields = buildReticulumChatEventRequestSignedFields({
+      groupId: 74,
+      eventId: event.eventId,
+      authorAddress: blockedAddress,
+      authorPublicKey: blockedPublicKey,
+      timestamp,
+    });
+    const signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        blockedKp.secretKey
+      )
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 74,
+        r: {
+          id: event.eventId,
+          a: blockedAddress,
+          pk: blockedPublicKey,
+          ts: timestamp,
+          sig: signature,
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sentResources).toEqual([]);
+    manager.close();
+  });
+
+  it('refuses downloaded event resources when Core membership validation rejects the event author', async () => {
+    const acceptedTransfers: unknown[] = [];
+    const blockedKp = nacl.sign.keyPair();
+    const blockedPublicKey = base58Encode(blockedKp.publicKey);
+    const blockedAddress = deriveAddressFromPublicKey(blockedPublicKey);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+        acceptedTransfers.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address !== blockedAddress,
+    });
+    manager.setLocalGroupMemberships([75]);
+    manager.subscribeGroup(75);
+
+    const event = signedEvent({
+      eventId: 'event-inbound-non-member-author',
+      groupId: 75,
+      authorAddress: blockedAddress,
+      authorPublicKey: blockedPublicKey,
+      timestamp: 100_000,
+    });
+    const eventForSignature = { ...event, signature: '' };
+    event.signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(buildReticulumChatSignedFields(eventForSignature))),
+        blockedKp.secretKey
+      )
+    );
+    const blob = serializeReticulumChatEvent(event);
+    const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const resourcePath = path.join(path.dirname(tempDbPath()), 'event-resource.json');
+    fs.writeFileSync(resourcePath, blob, 'utf8');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 75,
+        o: {
+          x: 'transfer-inbound-non-member-author',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'peer'
+    );
+    expect(acceptedTransfers).toHaveLength(1);
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'transfer-inbound-non-member-author',
+      peerPresenceHash: 'peer',
+      path: resourcePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(manager.getHistory(75, 10)).toEqual([]);
+    manager.close();
+  });
+
+  it('refuses to serve cached event resources when Core membership validation rejects the event author', async () => {
+    const sentResources: unknown[] = [];
+    const blockedKp = nacl.sign.keyPair();
+    const blockedPublicKey = base58Encode(blockedKp.publicKey);
+    const blockedAddress = deriveAddressFromPublicKey(blockedPublicKey);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([76]);
+
+    const event = signedEvent({
+      eventId: 'event-cached-non-member-author',
+      groupId: 76,
+      authorAddress: blockedAddress,
+      authorPublicKey: blockedPublicKey,
+      timestamp: 100_000,
+    });
+    const eventForSignature = { ...event, signature: '' };
+    event.signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(buildReticulumChatSignedFields(eventForSignature))),
+        blockedKp.secretKey
+      )
+    );
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+    sentResources.length = 0;
+    manager.setRuntimeCallbacks({
+      validateGroupMember: async (_groupId, address) => address !== blockedAddress,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 76,
+        r: signedEventRequestWire({
+          groupId: 76,
+          eventId: event.eventId,
+          timestamp: 100_000,
+        }),
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sentResources).toEqual([]);
     manager.close();
   });
 

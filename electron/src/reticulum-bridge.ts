@@ -164,6 +164,10 @@ type BridgeCmdFrame = {
     | 'send_reticulum_chat_resource'
     | 'authorize_reticulum_chat_resource'
     | 'reject_reticulum_chat_resource'
+    | 'accept_reticulum_resource'
+    | 'send_reticulum_resource'
+    | 'authorize_reticulum_resource'
+    | 'reject_reticulum_resource'
     | 'fanout_call'
     | 'send_group_call'
     | 'fanout_group_call'
@@ -688,6 +692,11 @@ type BridgeEventFrame =
   | {
       type: 'event';
       event: 'reticulum_chat_resource';
+      payload?: Record<string, unknown>;
+    }
+  | {
+      type: 'event';
+      event: 'reticulum_resource';
       payload?: Record<string, unknown>;
     }
   | {
@@ -1394,6 +1403,50 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     reason: string;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('reject_reticulum_chat_resource', payload);
+  }
+
+  async acceptReticulumResourceDetailed(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    authMessage: Record<string, unknown>;
+    transferId: string;
+    savePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    resourceType?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('accept_reticulum_resource', payload);
+  }
+
+  async sendReticulumResourceDetailed(payload: {
+    allowedRecipientAddress: string;
+    transferId: string;
+    filePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    expiresAt?: number;
+    resourceType?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('send_reticulum_resource', payload);
+  }
+
+  async authorizeReticulumResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('authorize_reticulum_resource', payload);
+  }
+
+  async rejectReticulumResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+    reason: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('reject_reticulum_resource', payload);
   }
 
   async fanoutCallDetailed(
@@ -3910,6 +3963,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         this.emit('reticulum-chat-resource', frame.payload ?? {});
         return;
       }
+      case 'reticulum_resource': {
+        this.emit('reticulum-resource', frame.payload ?? {});
+        return;
+      }
       case 'error': {
         const message =
           frame.payload?.message ??
@@ -4048,6 +4105,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       | 'send_reticulum_chat_resource'
       | 'authorize_reticulum_chat_resource'
       | 'reject_reticulum_chat_resource'
+      | 'accept_reticulum_resource'
+      | 'send_reticulum_resource'
+      | 'authorize_reticulum_resource'
+      | 'reject_reticulum_resource'
       | 'fanout_call'
       | 'send_group_call'
       | 'fanout_group_call'
