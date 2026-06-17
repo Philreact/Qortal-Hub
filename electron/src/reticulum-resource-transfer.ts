@@ -17,7 +17,6 @@ export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 export const RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS = 15_000;
 
 export type ReticulumResourceTransferRequest = {
-  resourceId: string;
   eventId?: string;
   fileHash: string;
   chunkIndexes?: number[];
@@ -27,7 +26,6 @@ export type ReticulumResourceTransferRequest = {
 export type ReticulumResourceTransferOffer = {
   transferId: string;
   contextId: number;
-  resourceId: string;
   eventId?: string;
   fileHash: string;
   sizeBytes: number;
@@ -51,7 +49,6 @@ export type ReticulumResourceTransferPayload = {
 export type ReticulumResourceTransferProgress = {
   contextId: number;
   eventId?: string;
-  resourceId: string;
   fileHash: string;
   chunkIndex?: number;
   completedChunks?: number;
@@ -62,7 +59,7 @@ export type ReticulumResourceTransferProgress = {
 
 type ReticulumResourceDownloadState<TRequestWire> = {
   contextId: number;
-  resourceId: string;
+  fileHash: string;
   eventId?: string;
   manifest: ReticulumResourceManifest;
   peerHashes: Set<string>;
@@ -187,7 +184,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const blobId = options.manifest.fileHash.toLowerCase();
     const manifest: ReticulumResourceManifest = {
       ...options.manifest,
-      resourceId: blobId,
       fileHash: blobId,
       chunkHashes: options.manifest.chunkHashes.map((hash) => hash.toLowerCase()),
     };
@@ -216,7 +212,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   ): Promise<void> {
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey || !this.bridge) return;
-    const manifest = this.resourceStore.getManifest(request.resourceId);
+    const manifest = this.resourceStore.getManifest(request.fileHash);
     if (!manifest || manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) return;
     if (this.canServeRequest) {
       const allowed = await this.canServeRequest(contextId, request, manifest);
@@ -231,7 +227,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (availableChunks.length === 0) return;
     for (const chunk of availableChunks) {
       const transferId = nodeCrypto.randomBytes(8).toString('hex');
-      const fileName = `${manifest.resourceId}.chunk-${chunk.index}`;
+      const fileName = `${manifest.fileHash}.chunk-${chunk.index}`;
       const registered = await this.bridge.sendReticulumResourceDetailed({
         allowedRecipientAddress: peerKey,
         transferId,
@@ -242,7 +238,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         resourceType: this.chunkResourceType,
         metadata: {
           logicalResourceType: this.chunkResourceType,
-          resourceId: manifest.resourceId,
           eventId: request.eventId ?? '',
           contextId,
           ...this.contextMetadata(contextId),
@@ -259,7 +254,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const offer: ReticulumResourceTransferOffer = {
         transferId,
         contextId,
-        resourceId: manifest.resourceId,
         ...(request.eventId ? { eventId: request.eventId } : {}),
         fileHash: manifest.fileHash,
         sizeBytes: chunk.sizeBytes,
@@ -279,7 +273,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return;
     const download = this.downloads.get(offer.fileHash.toLowerCase());
-    const manifest = download?.manifest ?? this.resourceStore.getManifest(offer.resourceId);
+    const manifest = download?.manifest ?? this.resourceStore.getManifest(offer.fileHash);
     if (!manifest || manifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) return;
     if (this.canAcceptOffer) {
       const allowed = await this.canAcceptOffer(offer.contextId, offer, manifest);
@@ -289,7 +283,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const expectedChunkHash = manifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
       if (!expectedChunkHash || offer.chunkHash?.toLowerCase() !== expectedChunkHash) return;
       if (offer.chunkSize !== this.expectedChunkSize(manifest, offer.chunkIndex)) return;
-      const localChunk = this.resourceStore.getChunk(offer.resourceId, offer.chunkIndex);
+      const localChunk = this.resourceStore.getChunk(offer.fileHash, offer.chunkIndex);
       if (localChunk?.status === 'complete' && localChunk.localPath) return;
     }
     const trackedOffer: ReticulumResourceTransferOffer = {
@@ -350,7 +344,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     const state: ReticulumResourceDownloadState<TRequestWire> = {
       contextId,
-      resourceId: blobId,
+      fileHash: blobId,
       ...(eventId ? { eventId } : {}),
       manifest,
       peerHashes: new Set(peerHashes.map((peer) => peer.trim().toLowerCase()).filter(Boolean)),
@@ -405,9 +399,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     });
     if (missing.length === 0) {
       try {
-        this.resourceStore.assembleResource(state.resourceId);
+        this.resourceStore.assembleResource(state.fileHash);
         this.emitProgress(state, true);
-        this.downloads.delete(state.resourceId);
+        this.downloads.delete(state.fileHash);
       } catch {
         this.emitProgress(state);
       }
@@ -444,7 +438,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     for (const [peerKey, peerRequestedChunks] of peerChunks.entries()) {
       const requests = await this.buildRequestPayloads(state, peerRequestedChunks);
       for (const request of requests) {
-        const throttleKey = `${state.contextId}:${peerKey}:${state.resourceId}:${peerRequestedChunks.join(',')}`;
+        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${peerRequestedChunks.join(',')}`;
         const now = this.now();
         if (now - (this.requestedResources.get(throttleKey) ?? 0) < RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS) {
           continue;
@@ -486,7 +480,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const payload: ReticulumResourceTransferProgress = {
       contextId: state.contextId,
       eventId: state.eventId,
-      resourceId: state.resourceId,
       fileHash: state.manifest.fileHash,
       completedChunks,
       totalChunks,
@@ -498,7 +491,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   }
 
   private getMissingChunkIndexes(manifest: ReticulumResourceManifest): number[] {
-    const chunks = this.resourceStore.getChunks(manifest.resourceId);
+    const chunks = this.resourceStore.getChunks(manifest.fileHash);
     const byIndex = new Map(chunks.map((chunk) => [chunk.chunkIndex, chunk]));
     const missing: number[] = [];
     for (const [index, chunkHash] of manifest.chunkHashes.entries()) {
@@ -527,7 +520,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         .filter((index) => Number.isInteger(index) && index >= 0 && index < manifest.chunkHashes.length)
         .slice(0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT)
     );
-    const chunks = this.resourceStore.getChunks(manifest.resourceId);
+    const chunks = this.resourceStore.getChunks(manifest.fileHash);
     const available: Array<{ index: number; localPath: string; sizeBytes: number; chunkHash: string }> = [];
     for (const chunk of chunks) {
       if (!requested.has(chunk.chunkIndex)) continue;
@@ -579,12 +572,12 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     const senderHash = (offer.sourcePeerHash || peerHash).trim().toLowerCase();
     if (!senderHash) {
-      loggerWarn(`[${this.loggerPrefix}] Cannot accept resource ${offer.resourceId}: missing sender identity`);
+      loggerWarn(`[${this.loggerPrefix}] Cannot accept resource ${offer.fileHash}: missing sender identity`);
       this.finishTransfer(offer.transferId, false);
       return;
     }
     const savePath = this.resourceStore.createPlaintextTempPath(
-      offer.resourceId,
+      offer.fileHash,
       path.extname(offer.fileName) || '.bin'
     );
     const result = await this.bridge.acceptReticulumResourceDetailed({
@@ -602,7 +595,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         logicalResourceType: offer.chunkIndex != null
           ? this.chunkResourceType
           : this.resourceType,
-        resourceId: offer.resourceId,
         eventId: offer.eventId ?? '',
         contextId: offer.contextId,
         ...this.contextMetadata(offer.contextId),
@@ -614,7 +606,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       authMessage: {
         type: this.authMessageType,
         transferId: offer.transferId,
-        resourceId: offer.resourceId,
         eventId: offer.eventId ?? '',
         contextId: offer.contextId,
         ...this.contextMetadata(offer.contextId),
@@ -645,7 +636,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const offer = this.offers.get(transferId);
     if (
       !offer ||
-      auth.resourceId !== offer.resourceId ||
       Number(auth.contextId) !== offer.contextId ||
       auth.fileHash !== offer.fileHash ||
       (offer.chunkIndex != null && Number(auth.chunkIndex) !== offer.chunkIndex) ||
@@ -672,22 +662,21 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     try {
       const bytes = fs.readFileSync(payload.path);
       const actualHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
-      const pendingManifest = this.resourceStore.getManifest(offer.resourceId);
+      const pendingManifest = this.resourceStore.getManifest(offer.fileHash);
       if (!pendingManifest) return;
       if (pendingManifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) return;
       if (offer.chunkIndex != null) {
         const expectedChunkHash = pendingManifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
         if (!expectedChunkHash || actualHash !== expectedChunkHash) return;
-        this.resourceStore.storeChunk(offer.resourceId, offer.chunkIndex, bytes);
+        this.resourceStore.storeChunk(offer.fileHash, offer.chunkIndex, bytes);
         try {
-          this.resourceStore.assembleResource(offer.resourceId);
+          this.resourceStore.assembleResource(offer.fileHash);
         } catch {
           // More chunks are still missing.
         }
         this.emit('resource', {
           contextId: offer.contextId,
           eventId: offer.eventId,
-          resourceId: offer.resourceId,
           fileHash: offer.fileHash,
           chunkIndex: offer.chunkIndex,
         });
@@ -718,7 +707,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.emit('resource', {
         contextId: offer.contextId,
         eventId: offer.eventId,
-        resourceId: offer.resourceId,
         fileHash: offer.fileHash,
       });
       this.handleReceivedChunk(offer, true);
@@ -738,7 +726,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.offers.delete(transferId);
     this.activeAccepts.delete(transferId);
     if (!success && offer?.chunkIndex != null) {
-      const state = this.downloads.get(offer.resourceId);
+      const state = this.downloads.get(offer.fileHash);
       if (state) {
         state.nextRequestAt = 0;
         this.scheduleDownload(0);
@@ -751,19 +739,19 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     offer: ReticulumResourceTransferOffer,
     completeResource = false
   ): void {
-    const state = this.downloads.get(offer.resourceId);
+    const state = this.downloads.get(offer.fileHash);
     if (!state) return;
     if (offer.chunkIndex != null) {
       state.chunkAttempts.delete(offer.chunkIndex);
     }
     try {
-      this.resourceStore.assembleResource(offer.resourceId);
+      this.resourceStore.assembleResource(offer.fileHash);
       this.emitProgress(state, true);
-      this.downloads.delete(offer.resourceId);
+      this.downloads.delete(offer.fileHash);
       return;
     } catch {
       if (completeResource) {
-        this.downloads.delete(offer.resourceId);
+        this.downloads.delete(offer.fileHash);
         return;
       }
       this.emitProgress(state);
@@ -775,7 +763,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   private isValidOffer(offer: ReticulumResourceTransferOffer): boolean {
     if (typeof offer.transferId !== 'string' || !offer.transferId) return false;
     if (!Number.isInteger(offer.contextId) || offer.contextId <= 0) return false;
-    if (typeof offer.resourceId !== 'string' || offer.resourceId.length < 8) return false;
     if (offer.eventId != null && (typeof offer.eventId !== 'string' || offer.eventId.length < 8)) return false;
     if (typeof offer.fileHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.fileHash)) return false;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;

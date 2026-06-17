@@ -319,7 +319,7 @@ const RETICULUM_RESOURCE_URL_TOKEN_MAX = 2_000;
 let reticulumResourceProtocolRegistered = false;
 const reticulumResourceUrlTokens = new Map<
   string,
-  { resourceId: string; expiresAt: number }
+  { fileHash: string; expiresAt: number }
 >();
 
 function getReticulumResourceStore(): ReticulumResourceStore {
@@ -366,28 +366,28 @@ function pruneReticulumResourceUrlTokens(now = Date.now()): void {
   }
 }
 
-function mintReticulumResourceUrlToken(resourceId: string): string {
+function mintReticulumResourceUrlToken(fileHash: string): string {
   pruneReticulumResourceUrlTokens();
   const token = crypto.randomBytes(24).toString('hex');
   reticulumResourceUrlTokens.set(token, {
-    resourceId,
+    fileHash,
     expiresAt: Date.now() + RETICULUM_RESOURCE_URL_TOKEN_TTL_MS,
   });
   return token;
 }
 
 function validateReticulumResourceUrlToken(
-  resourceId: string,
+  fileHash: string,
   token: string
 ): boolean {
   pruneReticulumResourceUrlTokens();
   const entry = reticulumResourceUrlTokens.get(token);
-  return Boolean(entry && entry.resourceId === resourceId);
+  return Boolean(entry && entry.fileHash === fileHash);
 }
 
-function reticulumResourceUrl(resourceId: string): string {
-  const token = mintReticulumResourceUrlToken(resourceId);
-  return `${RETICULUM_RESOURCE_PROTOCOL}://-/resource/${encodeURIComponent(resourceId)}?token=${encodeURIComponent(token)}`;
+function reticulumResourceUrl(fileHash: string): string {
+  const token = mintReticulumResourceUrlToken(fileHash);
+  return `${RETICULUM_RESOURCE_PROTOCOL}://-/resource/${encodeURIComponent(fileHash)}?token=${encodeURIComponent(token)}`;
 }
 
 async function registerReticulumResourceProtocol(): Promise<void> {
@@ -403,15 +403,15 @@ async function registerReticulumResourceProtocol(): Promise<void> {
       if (parts[0] !== 'resource' || !parts[1]) {
         return new Response('Not Found', { status: 404 });
       }
-      const resourceId = decodeURIComponent(parts[1]);
+      const fileHash = decodeURIComponent(parts[1]);
       const token = url.searchParams.get('token') || '';
-      if (!validateReticulumResourceUrlToken(resourceId, token)) {
+      if (!validateReticulumResourceUrlToken(fileHash, token)) {
         return new Response('Not Found', { status: 404 });
       }
       const store = getReticulumResourceStore();
-      const manifest = store.getManifest(resourceId);
+      const manifest = store.getManifest(fileHash);
       if (!manifest) return new Response('Not Found', { status: 404 });
-      const filePath = store.assembleResource(resourceId);
+      const filePath = store.assembleResource(fileHash);
       const bytes = await fs.promises.readFile(filePath);
       const body = bytes.buffer.slice(
         bytes.byteOffset,
@@ -3507,17 +3507,17 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle('reticulumResource:getUrl', async (_event, resourceId: string) => {
-  const id = typeof resourceId === 'string' ? resourceId.trim() : '';
-  if (!id) return { success: false, error: 'Invalid resource id' };
+ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
+  const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+  if (!hash) return { success: false, error: 'Invalid file hash' };
   try {
     const store = getReticulumResourceStore();
-    const manifest = store.getManifest(id);
+    const manifest = store.getManifest(hash);
     if (!manifest) return { success: false, error: 'Unknown resource' };
-    store.assembleResource(id);
+    store.assembleResource(hash);
     return {
       success: true,
-      url: reticulumResourceUrl(id),
+      url: reticulumResourceUrl(hash),
       manifest,
     };
   } catch (err) {

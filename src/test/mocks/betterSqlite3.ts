@@ -18,9 +18,9 @@ class Statement {
 
   all(...args: any[]) {
     if (this.sql.includes('FROM reticulum_resource_chunks')) {
-      const [resourceId] = args;
+      const [fileHash] = args;
       return this.store.reticulumResourceChunks
-        .filter((row) => row.resource_id === resourceId)
+        .filter((row) => row.file_hash === fileHash)
         .sort((a, b) => a.chunk_index - b.chunk_index);
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
@@ -163,21 +163,21 @@ class Statement {
 
   get(...args: any[]) {
     if (this.sql.includes('FROM reticulum_resources')) {
-      const [resourceId] = args;
-      return this.store.reticulumResources.find((row) => row.resource_id === resourceId);
+      const [fileHash] = args;
+      return this.store.reticulumResources.find((row) => row.file_hash === fileHash);
     }
     if (this.sql.includes('FROM reticulum_resource_chunks')) {
       if (this.sql.includes('COUNT(*) AS count')) {
-        const [resourceId] = args;
+        const [fileHash] = args;
         return {
           count: this.store.reticulumResourceChunks.filter(
-            (row) => row.resource_id === resourceId && row.status !== 'complete'
+            (row) => row.file_hash === fileHash && row.status !== 'complete'
           ).length,
         };
       }
-      const [resourceId, chunkIndex] = args;
+      const [fileHash, chunkIndex] = args;
       return this.store.reticulumResourceChunks.find(
-        (row) => row.resource_id === resourceId && row.chunk_index === chunkIndex
+        (row) => row.file_hash === fileHash && row.chunk_index === chunkIndex
       );
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
@@ -224,7 +224,7 @@ class Statement {
   run(params?: any, second?: any) {
     if (this.sql.includes('INSERT INTO reticulum_resources')) {
       const index = this.store.reticulumResources.findIndex(
-        (row) => row.resource_id === params.resource_id
+        (row) => row.file_hash === params.file_hash
       );
       if (index >= 0) {
         this.store.reticulumResources[index] = {
@@ -237,11 +237,11 @@ class Statement {
       return { changes: 1, lastInsertRowid: this.store.reticulumResources.length };
     }
     if (this.sql.includes('UPDATE reticulum_resources')) {
-      const [status, assembledPath, updatedAt, resourceId] = Array.isArray(params)
+      const [status, assembledPath, updatedAt, fileHash] = Array.isArray(params)
         ? params
         : [params, second, arguments[2], arguments[3]];
       const row = this.store.reticulumResources.find(
-        (item) => item.resource_id === resourceId
+        (item) => item.file_hash === fileHash
       );
       if (row) {
         row.status = status;
@@ -253,7 +253,7 @@ class Statement {
     if (this.sql.includes('INSERT INTO reticulum_resource_chunks')) {
       const index = this.store.reticulumResourceChunks.findIndex(
         (row) =>
-          row.resource_id === params.resource_id &&
+          row.file_hash === params.file_hash &&
           row.chunk_index === params.chunk_index
       );
       if (index >= 0) {
@@ -270,11 +270,11 @@ class Statement {
       };
     }
     if (this.sql.includes('UPDATE reticulum_resource_chunks')) {
-      const [localPath, updatedAt, resourceId, chunkIndex] = Array.isArray(params)
+      const [localPath, updatedAt, fileHash, chunkIndex] = Array.isArray(params)
         ? params
         : [params, second, arguments[2], arguments[3]];
       const row = this.store.reticulumResourceChunks.find(
-        (item) => item.resource_id === resourceId && item.chunk_index === chunkIndex
+        (item) => item.file_hash === fileHash && item.chunk_index === chunkIndex
       );
       if (row) {
         row.status = 'complete';

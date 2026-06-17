@@ -53,17 +53,17 @@ describe('reticulum resource store', () => {
 
     expect(manifest.namespace).toBe('test.feature');
     expect(manifest.encrypted).toBe(true);
-    expect(manifest.resourceId).toBe(manifest.fileHash);
     expect(manifest.chunkHashes).toHaveLength(1);
-    expect(store.getChunks(manifest.resourceId)).toEqual([
+    expect(store.getChunks(manifest.fileHash)).toEqual([
       expect.objectContaining({
+        fileHash: manifest.fileHash,
         chunkIndex: 0,
         status: 'complete',
         sizeBytes: contents.length,
       }),
     ]);
 
-    const assembledPath = store.assembleResource(manifest.resourceId);
+    const assembledPath = store.assembleResource(manifest.fileHash);
     expect(path.basename(assembledPath)).toBe('assembled.enc');
     expect(fs.readFileSync(assembledPath)).toEqual(contents);
   });
@@ -74,7 +74,6 @@ describe('reticulum resource store', () => {
     const first = Buffer.from('a'.repeat(16 * 1024));
     const second = Buffer.from('second');
     const manifest: ReticulumResourceManifest = {
-      resourceId: 'resource-received',
       namespace: 'test.feature',
       fileName: 'payload.enc',
       mimeType: 'application/octet-stream',
@@ -90,8 +89,7 @@ describe('reticulum resource store', () => {
     };
 
     store.storeManifest(manifest);
-    expect(store.getManifest(manifest.fileHash)?.resourceId).toBe(manifest.fileHash);
-    expect(store.getManifest(manifest.resourceId)).toBeNull();
+    expect(store.getManifest(manifest.fileHash)?.fileHash).toBe(manifest.fileHash);
     expect(store.getChunks(manifest.fileHash).map((chunk) => chunk.status)).toEqual([
       'missing',
       'missing',
@@ -122,7 +120,7 @@ describe('reticulum resource store', () => {
       encrypted: false,
     });
 
-    const assembledPath = store.assembleResource(manifest.resourceId);
+    const assembledPath = store.assembleResource(manifest.fileHash);
     expect(path.basename(assembledPath)).toBe('public-image.png');
     expect(path.basename(path.dirname(assembledPath))).toBe('assembled');
     expect(fs.readFileSync(assembledPath)).toEqual(contents);

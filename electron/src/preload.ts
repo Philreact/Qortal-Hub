@@ -863,8 +863,8 @@ try {
         manifest?: unknown;
         error?: string;
       }>,
-    getUrl: async (resourceId: string) =>
-      ipcRenderer.invoke('reticulumResource:getUrl', resourceId) as Promise<{
+    getUrl: async (fileHash: string) =>
+      ipcRenderer.invoke('reticulumResource:getUrl', fileHash) as Promise<{
         success: boolean;
         url?: string;
         manifest?: unknown;
@@ -1411,7 +1411,6 @@ try {
         cb: (payload: {
           groupId?: number;
           eventId?: string;
-          resourceId?: string;
           fileHash?: string;
           chunkIndex?: number;
           completedChunks?: number;
@@ -1425,7 +1424,6 @@ try {
             payload as {
               groupId?: number;
               eventId?: string;
-              resourceId?: string;
               fileHash?: string;
               chunkIndex?: number;
               completedChunks?: number;
@@ -1612,7 +1610,6 @@ try {
         cb: (payload: {
           groupId?: number;
           eventId?: string;
-          resourceId?: string;
           fileHash?: string;
           chunkIndex?: number;
           completedChunks?: number;
@@ -1626,7 +1623,6 @@ try {
             payload as {
               groupId?: number;
               eventId?: string;
-              resourceId?: string;
               fileHash?: string;
               chunkIndex?: number;
               completedChunks?: number;

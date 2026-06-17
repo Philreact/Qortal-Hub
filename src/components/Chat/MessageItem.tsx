@@ -338,10 +338,10 @@ export const MessageItemComponent = ({
   const isReticulumResourceImage =
     message?.reticulumChat === true &&
     message?.images?.[0]?.reticulumResource === true &&
-    typeof message?.images?.[0]?.resourceId === 'string';
+    typeof message?.images?.[0]?.fileHash === 'string';
   const imageResourceId =
     isReticulumResourceImage
-      ? message.images[0].resourceId
+      ? message.images[0].fileHash
       : '';
   const imageResourceManifest =
     isReticulumResourceImage &&
@@ -573,7 +573,7 @@ export const MessageItemComponent = ({
   useEffect(() => {
     if (!imageResourceId || typeof window.reticulumChat?.onResource !== 'function') return;
     return window.reticulumChat.onResource((payload) => {
-      if (payload?.resourceId === imageResourceId) {
+      if (payload?.fileHash === imageResourceId) {
         setResourceReloadNonce((value) => value + 1);
       }
     });

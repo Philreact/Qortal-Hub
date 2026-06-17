@@ -595,7 +595,6 @@ declare global {
         cb: (payload: {
           groupId?: number;
           eventId?: string;
-          resourceId?: string;
           fileHash?: string;
           chunkIndex?: number;
           completedChunks?: number;
@@ -617,7 +616,7 @@ declare global {
         metadata?: Record<string, unknown>;
       }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
       getUrl: (
-        resourceId: string
+        fileHash: string
       ) => Promise<{
         success: boolean;
         url?: string;

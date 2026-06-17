@@ -122,13 +122,11 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
     } else if (
       fullFields.type === 'RCHAT_RESOURCE_REQ' &&
       typeof fullFields.groupId === 'number' &&
-      typeof fullFields.resourceId === 'string' &&
       typeof fullFields.fileHash === 'string' &&
       typeof fullFields.timestamp === 'number'
     ) {
       signedFields = buildReticulumChatResourceRequestSignedFields({
         groupId: fullFields.groupId,
-        resourceId: fullFields.resourceId,
         eventId: typeof fullFields.eventId === 'string' ? fullFields.eventId : undefined,
         fileHash: fullFields.fileHash,
         chunkIndexes: Array.isArray(fullFields.chunkIndexes)
@@ -203,7 +201,6 @@ function signedResourceRequestWire(params: {
   const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
   const fields = buildReticulumChatResourceRequestSignedFields({
     groupId: params.groupId,
-    resourceId: params.fileHash,
     fileHash: params.fileHash,
     chunkIndexes: params.chunkIndexes,
     authorAddress,
@@ -1056,7 +1053,6 @@ describe('reticulum chat manager', () => {
       .update(Buffer.concat([chunk0, chunk1, chunk2]))
       .digest('hex');
     const manifest = {
-      resourceId: 'resource-partial-serving',
       namespace: 'reticulum-chat-image',
       ownerId: '77:sender',
       fileName: 'image.webp',
@@ -1131,7 +1127,6 @@ describe('reticulum chat manager', () => {
     const chunk = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 4);
     const chunkHash = nodeCrypto.createHash('sha256').update(chunk).digest('hex');
     const manifest = {
-      resourceId: 'resource-stale-local-membership',
       namespace: 'reticulum-chat-image',
       ownerId: '78:sender',
       fileName: 'image.webp',

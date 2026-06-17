@@ -1371,6 +1371,25 @@ export const ChatGroup = ({
         ...decryptedData,
         ...(decryptedData.message !== undefined ? { message: normalizedText } : {}),
         ...(decryptedData.messageText !== undefined ? { messageText: normalizedText } : {}),
+        ...(Array.isArray(decryptedData.images)
+          ? {
+              images: decryptedData.images.map((image) => {
+                if (
+                  !image ||
+                  typeof image !== 'object' ||
+                  image.reticulumResource !== true
+                ) {
+                  return image;
+                }
+                const fileHash =
+                  typeof image.fileHash === 'string' ? image.fileHash : '';
+                return {
+                  ...image,
+                  fileHash,
+                };
+              }),
+            }
+          : {}),
       };
       return {
         ...baseItem,

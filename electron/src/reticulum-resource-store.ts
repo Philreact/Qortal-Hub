@@ -10,7 +10,6 @@ export const RETICULUM_RESOURCE_MIN_CHUNK_SIZE = 16 * 1024;
 export const RETICULUM_RESOURCE_MAX_CHUNK_SIZE = 512 * 1024;
 
 export type ReticulumResourceManifest = {
-  resourceId: string;
   namespace: string;
   ownerId?: string;
   fileName: string;
@@ -32,7 +31,7 @@ export type ReticulumResourceManifest = {
 };
 
 export type ReticulumResourceChunkStatus = {
-  resourceId: string;
+  fileHash: string;
   chunkIndex: number;
   chunkHash: string;
   sizeBytes: number;
@@ -59,7 +58,6 @@ export type ReticulumResourceStoreOptions = {
 };
 
 type ResourceRow = {
-  resource_id: string;
   namespace: string;
   owner_id: string | null;
   file_name: string;
@@ -79,7 +77,7 @@ type ResourceRow = {
 };
 
 type ChunkRow = {
-  resource_id: string;
+  file_hash: string;
   chunk_index: number;
   chunk_hash: string;
   size_bytes: number;
@@ -139,7 +137,6 @@ function parseJsonArray(value: string): string[] {
 
 function rowToManifest(row: ResourceRow): ReticulumResourceManifest {
   return {
-    resourceId: row.resource_id,
     namespace: row.namespace,
     ...(row.owner_id ? { ownerId: row.owner_id } : {}),
     fileName: row.file_name,
@@ -184,14 +181,14 @@ export class ReticulumResourceStore {
 
     this.stmtUpsertResource = this.db.prepare(`
       INSERT INTO reticulum_resources
-        (resource_id, namespace, owner_id, file_name, mime_type, size_bytes,
-         chunk_size, chunk_count, chunk_hashes, file_hash, encrypted, status,
+        (file_hash, namespace, owner_id, file_name, mime_type, size_bytes,
+         chunk_size, chunk_count, chunk_hashes, encrypted, status,
          assembled_path, metadata, thumbnail, created_at, updated_at)
       VALUES
-        (@resource_id, @namespace, @owner_id, @file_name, @mime_type, @size_bytes,
-         @chunk_size, @chunk_count, @chunk_hashes, @file_hash, @encrypted, @status,
+        (@file_hash, @namespace, @owner_id, @file_name, @mime_type, @size_bytes,
+         @chunk_size, @chunk_count, @chunk_hashes, @encrypted, @status,
          @assembled_path, @metadata, @thumbnail, @created_at, @updated_at)
-      ON CONFLICT(resource_id) DO UPDATE SET
+      ON CONFLICT(file_hash) DO UPDATE SET
         namespace = excluded.namespace,
         owner_id = excluded.owner_id,
         file_name = excluded.file_name,
@@ -200,26 +197,25 @@ export class ReticulumResourceStore {
         chunk_size = excluded.chunk_size,
         chunk_count = excluded.chunk_count,
         chunk_hashes = excluded.chunk_hashes,
-        file_hash = excluded.file_hash,
         encrypted = excluded.encrypted,
         metadata = excluded.metadata,
         thumbnail = excluded.thumbnail,
         updated_at = excluded.updated_at
     `);
     this.stmtGetResource = this.db.prepare(
-      'SELECT * FROM reticulum_resources WHERE resource_id = ? LIMIT 1'
+      'SELECT * FROM reticulum_resources WHERE file_hash = ? LIMIT 1'
     );
     this.stmtUpdateResourceStatus = this.db.prepare(`
       UPDATE reticulum_resources
       SET status = ?, assembled_path = ?, updated_at = ?
-      WHERE resource_id = ?
+      WHERE file_hash = ?
     `);
     this.stmtUpsertChunk = this.db.prepare(`
       INSERT INTO reticulum_resource_chunks
-        (resource_id, chunk_index, chunk_hash, size_bytes, status, local_path, updated_at)
+        (file_hash, chunk_index, chunk_hash, size_bytes, status, local_path, updated_at)
       VALUES
-        (@resource_id, @chunk_index, @chunk_hash, @size_bytes, @status, @local_path, @updated_at)
-      ON CONFLICT(resource_id, chunk_index) DO UPDATE SET
+        (@file_hash, @chunk_index, @chunk_hash, @size_bytes, @status, @local_path, @updated_at)
+      ON CONFLICT(file_hash, chunk_index) DO UPDATE SET
         chunk_hash = excluded.chunk_hash,
         size_bytes = excluded.size_bytes,
         status = excluded.status,
@@ -228,22 +224,22 @@ export class ReticulumResourceStore {
     `);
     this.stmtGetChunk = this.db.prepare(`
       SELECT * FROM reticulum_resource_chunks
-      WHERE resource_id = ? AND chunk_index = ?
+      WHERE file_hash = ? AND chunk_index = ?
       LIMIT 1
     `);
     this.stmtGetChunks = this.db.prepare(`
       SELECT * FROM reticulum_resource_chunks
-      WHERE resource_id = ?
+      WHERE file_hash = ?
       ORDER BY chunk_index ASC
     `);
     this.stmtUpdateChunkComplete = this.db.prepare(`
       UPDATE reticulum_resource_chunks
       SET status = 'complete', local_path = ?, updated_at = ?
-      WHERE resource_id = ? AND chunk_index = ?
+      WHERE file_hash = ? AND chunk_index = ?
     `);
     this.stmtCountMissingChunks = this.db.prepare(`
       SELECT COUNT(*) AS count FROM reticulum_resource_chunks
-      WHERE resource_id = ? AND status != 'complete'
+      WHERE file_hash = ? AND status != 'complete'
     `);
   }
 
@@ -262,7 +258,7 @@ export class ReticulumResourceStore {
     const stagingChunksDir = path.join(stagingDir, 'chunks');
     fs.mkdirSync(stagingChunksDir, { recursive: true });
     const chunkHashes: string[] = [];
-    const fileHash = nodeCrypto.createHash('sha256');
+    const fileHashHasher = nodeCrypto.createHash('sha256');
     const fd = fs.openSync(sourcePath, 'r');
     try {
       let offset = 0;
@@ -271,7 +267,7 @@ export class ReticulumResourceStore {
         const size = Math.min(chunkSize, stat.size - offset);
         const buffer = Buffer.alloc(size);
         fs.readSync(fd, buffer, 0, size, offset);
-        fileHash.update(buffer);
+        fileHashHasher.update(buffer);
         const chunkHash = sha256Hex(buffer);
         chunkHashes.push(chunkHash);
         fs.writeFileSync(this.chunkPath(stagingChunksDir, chunkIndex), buffer);
@@ -281,8 +277,7 @@ export class ReticulumResourceStore {
     } finally {
       fs.closeSync(fd);
     }
-    const digest = fileHash.digest('hex');
-    const resourceId = digest;
+    const digest = fileHashHasher.digest('hex');
     const blobDir = this.blobDir(digest);
     const chunksDir = this.chunksDir(digest);
     fs.rmSync(blobDir, { recursive: true, force: true });
@@ -291,7 +286,6 @@ export class ReticulumResourceStore {
     fs.mkdirSync(chunksDir, { recursive: true });
 
     const manifest: ReticulumResourceManifest = {
-      resourceId,
       namespace: options.namespace,
       ...(options.ownerId ? { ownerId: options.ownerId } : {}),
       fileName: safeFileName(options.fileName || sourcePath),
@@ -313,11 +307,11 @@ export class ReticulumResourceStore {
       this.stmtUpdateChunkComplete.run(
         this.chunkPath(chunksDir, chunkIndex),
         now,
-        resourceId,
+        digest,
         chunkIndex
       );
       this.stmtUpsertChunk.run({
-        resource_id: resourceId,
+        file_hash: digest,
         chunk_index: chunkIndex,
         chunk_hash: chunkHash,
         size_bytes: sizeBytes,
@@ -326,7 +320,7 @@ export class ReticulumResourceStore {
         updated_at: now,
       });
     }
-    this.stmtUpdateResourceStatus.run('complete', null, now, resourceId);
+    this.stmtUpdateResourceStatus.run('complete', null, now, digest);
     fs.writeFileSync(this.manifestPath(digest), JSON.stringify(manifest, null, 2), 'utf8');
     return manifest;
   }
@@ -336,7 +330,6 @@ export class ReticulumResourceStore {
     this.validateManifest(normalizedManifest);
     const now = this.now();
     this.stmtUpsertResource.run({
-      resource_id: normalizedManifest.resourceId,
       namespace: normalizedManifest.namespace,
       owner_id: normalizedManifest.ownerId ?? null,
       file_name: safeFileName(normalizedManifest.fileName),
@@ -355,9 +348,9 @@ export class ReticulumResourceStore {
       updated_at: now,
     });
     for (const [chunkIndex, chunkHash] of normalizedManifest.chunkHashes.entries()) {
-      const existing = this.getChunk(normalizedManifest.resourceId, chunkIndex);
+      const existing = this.getChunk(normalizedManifest.fileHash, chunkIndex);
       this.stmtUpsertChunk.run({
-        resource_id: normalizedManifest.resourceId,
+        file_hash: normalizedManifest.fileHash,
         chunk_index: chunkIndex,
         chunk_hash: chunkHash,
         size_bytes: this.expectedChunkSize(normalizedManifest, chunkIndex),
@@ -374,24 +367,24 @@ export class ReticulumResourceStore {
     );
   }
 
-  getManifest(resourceId: string): ReticulumResourceManifest | null {
-    const row = this.stmtGetResource.get(resourceId) as ResourceRow | undefined;
+  getManifest(fileHash: string): ReticulumResourceManifest | null {
+    const row = this.stmtGetResource.get(fileHash) as ResourceRow | undefined;
     return row ? rowToManifest(row) : null;
   }
 
-  getChunk(resourceId: string, chunkIndex: number): ReticulumResourceChunkStatus | null {
-    const row = this.stmtGetChunk.get(resourceId, chunkIndex) as ChunkRow | undefined;
+  getChunk(fileHash: string, chunkIndex: number): ReticulumResourceChunkStatus | null {
+    const row = this.stmtGetChunk.get(fileHash, chunkIndex) as ChunkRow | undefined;
     return row ? this.rowToChunkStatus(row) : null;
   }
 
-  getChunks(resourceId: string): ReticulumResourceChunkStatus[] {
-    return (this.stmtGetChunks.all(resourceId) as ChunkRow[]).map((row) =>
+  getChunks(fileHash: string): ReticulumResourceChunkStatus[] {
+    return (this.stmtGetChunks.all(fileHash) as ChunkRow[]).map((row) =>
       this.rowToChunkStatus(row)
     );
   }
 
-  storeChunk(resourceId: string, chunkIndex: number, bytes: Buffer): void {
-    const manifest = this.getManifest(resourceId);
+  storeChunk(fileHash: string, chunkIndex: number, bytes: Buffer): void {
+    const manifest = this.getManifest(fileHash);
     if (!manifest) throw new Error('Unknown resource manifest');
     const expectedHash = manifest.chunkHashes[chunkIndex];
     if (!expectedHash) throw new Error('Invalid chunk index');
@@ -403,16 +396,16 @@ export class ReticulumResourceStore {
     fs.mkdirSync(chunksDir, { recursive: true });
     const localPath = this.chunkPath(chunksDir, chunkIndex);
     fs.writeFileSync(localPath, bytes);
-    this.stmtUpdateChunkComplete.run(localPath, this.now(), resourceId, chunkIndex);
-    if (this.hasAllChunks(resourceId)) {
-      this.stmtUpdateResourceStatus.run('complete', null, this.now(), resourceId);
+    this.stmtUpdateChunkComplete.run(localPath, this.now(), fileHash, chunkIndex);
+    if (this.hasAllChunks(fileHash)) {
+      this.stmtUpdateResourceStatus.run('complete', null, this.now(), fileHash);
     }
   }
 
-  assembleResource(resourceId: string): string {
-    const manifest = this.getManifest(resourceId);
+  assembleResource(fileHash: string): string {
+    const manifest = this.getManifest(fileHash);
     if (!manifest) throw new Error('Unknown resource manifest');
-    const chunks = this.getChunks(resourceId);
+    const chunks = this.getChunks(fileHash);
     if (chunks.length !== manifest.chunkHashes.length || chunks.some((c) => c.status !== 'complete')) {
       throw new Error('Resource has missing chunks');
     }
@@ -420,7 +413,7 @@ export class ReticulumResourceStore {
     const tempPath = `${assembledPath}.${process.pid}.${Date.now()}.tmp`;
     fs.mkdirSync(path.dirname(assembledPath), { recursive: true });
     const out = fs.openSync(tempPath, 'w');
-    const fileHash = nodeCrypto.createHash('sha256');
+    const assembledFileHash = nodeCrypto.createHash('sha256');
     try {
       for (const chunk of chunks) {
         if (!chunk.localPath) throw new Error('Chunk local path missing');
@@ -429,37 +422,37 @@ export class ReticulumResourceStore {
         if (actualChunkHash !== chunk.chunkHash.toLowerCase()) {
           throw new Error(`Chunk ${chunk.chunkIndex} hash mismatch`);
         }
-        fileHash.update(data);
+        assembledFileHash.update(data);
         fs.writeSync(out, data);
       }
     } finally {
       fs.closeSync(out);
     }
-    const actualFileHash = fileHash.digest('hex');
+    const actualFileHash = assembledFileHash.digest('hex');
     if (actualFileHash !== manifest.fileHash.toLowerCase()) {
       fs.rmSync(tempPath, { force: true });
       throw new Error('Assembled file hash mismatch');
     }
     fs.renameSync(tempPath, assembledPath);
-    this.stmtUpdateResourceStatus.run('complete', assembledPath, this.now(), resourceId);
+    this.stmtUpdateResourceStatus.run('complete', assembledPath, this.now(), fileHash);
     return assembledPath;
   }
 
-  createPlaintextTempPath(resourceId: string, extension = ''): string {
-    const manifest = this.getManifest(resourceId);
+  createPlaintextTempPath(fileHash: string, extension = ''): string {
+    const manifest = this.getManifest(fileHash);
     const suffix = extension || path.extname(manifest?.fileName || '') || '.bin';
     const safeSuffix = suffix.startsWith('.') ? suffix : `.${suffix}`;
     return path.join(
       os.tmpdir(),
       'qortal-reticulum-resources',
-      `${resourceId}-${nodeCrypto.randomBytes(6).toString('hex')}${safeSuffix}`
+      `${fileHash}-${nodeCrypto.randomBytes(6).toString('hex')}${safeSuffix}`
     );
   }
 
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS reticulum_resources (
-        resource_id TEXT PRIMARY KEY,
+        file_hash TEXT PRIMARY KEY,
         namespace TEXT NOT NULL,
         owner_id TEXT,
         file_name TEXT NOT NULL,
@@ -468,7 +461,6 @@ export class ReticulumResourceStore {
         chunk_size INTEGER NOT NULL,
         chunk_count INTEGER NOT NULL,
         chunk_hashes TEXT NOT NULL,
-        file_hash TEXT NOT NULL,
         encrypted INTEGER NOT NULL,
         status TEXT NOT NULL,
         assembled_path TEXT,
@@ -479,26 +471,24 @@ export class ReticulumResourceStore {
       );
       CREATE INDEX IF NOT EXISTS idx_reticulum_resources_namespace
         ON reticulum_resources(namespace, updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_reticulum_resources_file_hash
-        ON reticulum_resources(file_hash);
       CREATE TABLE IF NOT EXISTS reticulum_resource_chunks (
-        resource_id TEXT NOT NULL,
+        file_hash TEXT NOT NULL,
         chunk_index INTEGER NOT NULL,
         chunk_hash TEXT NOT NULL,
         size_bytes INTEGER NOT NULL,
         status TEXT NOT NULL,
         local_path TEXT,
         updated_at INTEGER NOT NULL,
-        PRIMARY KEY(resource_id, chunk_index),
-        FOREIGN KEY(resource_id) REFERENCES reticulum_resources(resource_id) ON DELETE CASCADE
+        PRIMARY KEY(file_hash, chunk_index),
+        FOREIGN KEY(file_hash) REFERENCES reticulum_resources(file_hash) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_reticulum_resource_chunks_status
-        ON reticulum_resource_chunks(resource_id, status);
+        ON reticulum_resource_chunks(file_hash, status);
     `);
   }
 
   private validateManifest(manifest: ReticulumResourceManifest): void {
-    if (!manifest.resourceId || !manifest.namespace) throw new Error('Invalid resource identity');
+    if (!manifest.fileHash || !manifest.namespace) throw new Error('Invalid resource identity');
     if (!manifest.fileName || !manifest.mimeType) throw new Error('Invalid resource metadata');
     if (!Number.isInteger(manifest.sizeBytes) || manifest.sizeBytes < 0) {
       throw new Error('Invalid resource size');
@@ -520,15 +510,14 @@ export class ReticulumResourceStore {
     return {
       ...manifest,
       fileHash,
-      resourceId: fileHash,
       chunkHashes: Array.isArray(manifest.chunkHashes)
         ? manifest.chunkHashes.map((hash) => String(hash).trim().toLowerCase())
         : [],
     };
   }
 
-  private hasAllChunks(resourceId: string): boolean {
-    const row = this.stmtCountMissingChunks.get(resourceId) as { count: number } | undefined;
+  private hasAllChunks(fileHash: string): boolean {
+    const row = this.stmtCountMissingChunks.get(fileHash) as { count: number } | undefined;
     return row?.count === 0;
   }
 
@@ -539,7 +528,7 @@ export class ReticulumResourceStore {
 
   private rowToChunkStatus(row: ChunkRow): ReticulumResourceChunkStatus {
     return {
-      resourceId: row.resource_id,
+      fileHash: row.file_hash,
       chunkIndex: row.chunk_index,
       chunkHash: row.chunk_hash,
       sizeBytes: row.size_bytes,

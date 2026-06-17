@@ -118,7 +118,6 @@ export interface ReticulumChatResourceRequestWire {
 export interface ReticulumChatResourceOffer {
   transferId: string;
   groupId: number;
-  resourceId: string;
   eventId?: string;
   fileHash: string;
   sizeBytes: number;
@@ -132,7 +131,6 @@ export interface ReticulumChatResourceOffer {
 
 export interface ReticulumChatResourceOfferWire {
   x: string;
-  rid: string;
   eid?: string;
   fh: string;
   s: number;
@@ -267,7 +265,6 @@ type ReticulumChatResourcePayload = {
   size?: number;
   fileName?: string;
   mimeType?: string;
-  resourceId?: string;
   fileHash?: string;
   metadata?: Record<string, unknown>;
   linkId?: string;
@@ -408,7 +405,6 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
 function resourceOfferToWire(offer: ReticulumChatResourceOffer): ReticulumChatResourceOfferWire {
   return {
     x: offer.transferId,
-    rid: offer.resourceId,
     ...(offer.eventId ? { eid: offer.eventId } : {}),
     fh: offer.fileHash,
     s: offer.sizeBytes,
@@ -424,7 +420,6 @@ function resourceOfferFromWire(groupId: number, wire: unknown): ReticulumChatRes
   return {
     transferId: String(o.x || ''),
     groupId,
-    resourceId: String(o.rid || ''),
     ...(typeof o.eid === 'string' && o.eid ? { eventId: o.eid } : {}),
     fileHash: String(o.fh || ''),
     sizeBytes: Number(o.s || 0),
@@ -491,7 +486,6 @@ export function buildReticulumChatEventRequestSignedFields(input: {
 
 export function buildReticulumChatResourceRequestSignedFields(input: {
   groupId: number;
-  resourceId: string;
   eventId?: string;
   fileHash: string;
   chunkIndexes?: number[];
@@ -505,7 +499,6 @@ export function buildReticulumChatResourceRequestSignedFields(input: {
     eventId: input.eventId ?? null,
     fileHash: input.fileHash,
     groupId: input.groupId,
-    resourceId: input.resourceId,
     chunkIndexes: Array.isArray(input.chunkIndexes) ? input.chunkIndexes : [],
     timestamp: input.timestamp,
     type: 'RCHAT_RESOURCE_REQ',
@@ -593,7 +586,6 @@ export function verifyReticulumChatResourceRequest(
         canonicalizeForSigning(
           buildReticulumChatResourceRequestSignedFields({
             groupId,
-            resourceId: request.fh,
             eventId: request.eid,
             fileHash: request.fh,
             chunkIndexes: Array.isArray(request.c) ? request.c : [],
@@ -727,7 +719,7 @@ export class ReticulumChatManager extends EventEmitter {
           );
           if (!requesterIsMember) {
             loggerWarn(
-              `[ReticulumChat] Refusing resource ${request.resourceId}: requester is not a group member`
+              `[ReticulumChat] Refusing resource ${request.fileHash}: requester is not a group member`
             );
             return false;
           }
@@ -748,7 +740,6 @@ export class ReticulumChatManager extends EventEmitter {
     return {
       transferId: offer.transferId,
       groupId: offer.contextId,
-      resourceId: offer.resourceId,
       ...(offer.eventId ? { eventId: offer.eventId } : {}),
       fileHash: offer.fileHash,
       sizeBytes: offer.sizeBytes,
@@ -767,7 +758,6 @@ export class ReticulumChatManager extends EventEmitter {
     return {
       transferId: offer.transferId,
       contextId: offer.groupId,
-      resourceId: offer.resourceId,
       ...(offer.eventId ? { eventId: offer.eventId } : {}),
       fileHash: offer.fileHash,
       sizeBytes: offer.sizeBytes,
@@ -784,7 +774,6 @@ export class ReticulumChatManager extends EventEmitter {
     this.emit('resource', {
       groupId: progress.contextId,
       eventId: progress.eventId,
-      resourceId: progress.resourceId,
       fileHash: progress.fileHash,
       chunkIndex: progress.chunkIndex,
       completedChunks: progress.completedChunks,
@@ -1923,7 +1912,6 @@ export class ReticulumChatManager extends EventEmitter {
       fileHash: manifest.fileHash,
       chunkIndexes,
       groupId,
-      resourceId: manifest.fileHash,
       timestamp,
       type: 'RCHAT_RESOURCE_REQ',
     }).catch((err) => {
@@ -2056,7 +2044,6 @@ export class ReticulumChatManager extends EventEmitter {
     await this.resourceTransfer?.handleRequest(
       groupId,
       {
-        resourceId: request.fh,
         eventId: request.eid,
         fileHash: request.fh,
         chunkIndexes: request.c,
@@ -2071,7 +2058,6 @@ export class ReticulumChatManager extends EventEmitter {
     const offer = candidate as Partial<ReticulumChatResourceOffer>;
     if (typeof offer.transferId !== 'string' || !offer.transferId) return;
     if (!Number.isInteger(offer.groupId) || offer.groupId <= 0) return;
-    if (typeof offer.resourceId !== 'string' || offer.resourceId.length < 8) return;
     if (offer.eventId != null && (typeof offer.eventId !== 'string' || offer.eventId.length < 8)) return;
     if (typeof offer.fileHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.fileHash)) return;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return;
@@ -2188,7 +2174,6 @@ export class ReticulumChatManager extends EventEmitter {
   private isValidReticulumResourceManifest(candidate: unknown): candidate is ReticulumResourceManifest {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
     const manifest = candidate as Partial<ReticulumResourceManifest>;
-    if (typeof manifest.resourceId !== 'string' || manifest.resourceId.length < 8) return false;
     if (typeof manifest.namespace !== 'string' || !manifest.namespace) return false;
     if (typeof manifest.fileName !== 'string' || !manifest.fileName) return false;
     if (typeof manifest.mimeType !== 'string' || !manifest.mimeType) return false;
