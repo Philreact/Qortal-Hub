@@ -16,10 +16,13 @@ import {
   session,
   ipcMain,
   dialog,
+  net,
 } from 'electron';
 import electronIsDev from 'electron-is-dev';
 import windowStateKeeper from 'electron-window-state';
 import { dirname, join } from 'path';
+import { pipeline } from 'stream/promises';
+import { pathToFileURL } from 'url';
 import {
   log as loggerLog,
   error as loggerError,
@@ -412,16 +415,12 @@ async function registerReticulumResourceProtocol(): Promise<void> {
       const manifest = store.getManifest(fileHash);
       if (!manifest) return new Response('Not Found', { status: 404 });
       const filePath = store.assembleResource(fileHash);
-      const bytes = await fs.promises.readFile(filePath);
-      const body = bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength
-      ) as ArrayBuffer;
-      const headers = new Headers();
+      const response = await net.fetch(pathToFileURL(filePath).toString());
+      const headers = new Headers(response.headers);
       headers.set('content-type', manifest.mimeType || 'application/octet-stream');
       headers.set('cache-control', 'no-store');
       headers.set('cross-origin-resource-policy', 'same-origin');
-      return new Response(body, { status: 200, headers });
+      return new Response(response.body, { status: response.status, headers });
     } catch (err) {
       loggerWarn('[ReticulumResource] Protocol read failed:', err);
       return new Response('Not Found', { status: 404 });
@@ -437,6 +436,47 @@ function normalizeBase64Payload(value: unknown): string {
     ? trimmed.slice(trimmed.indexOf(',') + 1)
     : trimmed;
   return /^[A-Za-z0-9+/]*={0,2}$/u.test(withoutPrefix) ? withoutPrefix : '';
+}
+
+function guessMimeTypeFromFileName(fileName: string): string {
+  const ext = path.extname(fileName || '').toLowerCase();
+  switch (ext) {
+    case '.apng':
+      return 'image/apng';
+    case '.avif':
+      return 'image/avif';
+    case '.gif':
+      return 'image/gif';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.webp':
+      return 'image/webp';
+    case '.mp4':
+      return 'video/mp4';
+    case '.webm':
+      return 'video/webm';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.ogg':
+      return 'audio/ogg';
+    case '.wav':
+      return 'audio/wav';
+    case '.pdf':
+      return 'application/pdf';
+    case '.txt':
+      return 'text/plain';
+    case '.json':
+      return 'application/json';
+    case '.zip':
+      return 'application/zip';
+    default:
+      return 'application/octet-stream';
+  }
 }
 
 // let allowedDomains: string[] = [...defaultDomains]
@@ -3507,6 +3547,65 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle(
+  'reticulumResource:importFilePath',
+  async (
+    _event,
+    payload: {
+      filePath?: string;
+      namespace?: string;
+      ownerId?: string;
+      fileName?: string;
+      mimeType?: string;
+      encrypted?: boolean;
+      metadata?: Record<string, unknown>;
+    }
+  ) => {
+    const sourcePath =
+      typeof payload?.filePath === 'string' && payload.filePath.trim()
+        ? path.resolve(payload.filePath.trim())
+        : '';
+    if (!sourcePath) return { success: false, error: 'Invalid file path' };
+    try {
+      const stat = await fs.promises.stat(sourcePath);
+      if (!stat.isFile()) return { success: false, error: 'Selected path is not a file' };
+      const fileName =
+        typeof payload?.fileName === 'string' && payload.fileName.trim()
+          ? payload.fileName.trim()
+          : path.basename(sourcePath);
+      const mimeType =
+        typeof payload?.mimeType === 'string' && payload.mimeType.trim()
+          ? payload.mimeType.trim()
+          : guessMimeTypeFromFileName(fileName);
+      const namespace =
+        typeof payload?.namespace === 'string' && payload.namespace.trim()
+          ? payload.namespace.trim()
+          : 'default';
+      const manifest = getReticulumResourceStore().importLocalFile({
+        sourcePath,
+        namespace,
+        ownerId:
+          typeof payload?.ownerId === 'string' && payload.ownerId.trim()
+            ? payload.ownerId.trim()
+            : undefined,
+        fileName,
+        mimeType,
+        encrypted: payload?.encrypted === true,
+        metadata:
+          payload?.metadata && typeof payload.metadata === 'object'
+            ? payload.metadata
+            : undefined,
+      });
+      return { success: true, manifest };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum resource file import failed',
+      };
+    }
+  }
+);
+
 ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
   const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
   if (!hash) return { success: false, error: 'Invalid file hash' };
@@ -3527,6 +3626,40 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
     };
   }
 });
+
+ipcMain.handle(
+  'reticulumResource:saveAs',
+  async (_event, fileHash: string, suggestedFileName?: string) => {
+    const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+    if (!hash) return { success: false, error: 'Invalid file hash' };
+    try {
+      const store = getReticulumResourceStore();
+      const manifest = store.getManifest(hash);
+      if (!manifest) return { success: false, error: 'Unknown resource' };
+      const assembledPath = store.assembleResource(hash);
+      const defaultPath = path.basename(
+        typeof suggestedFileName === 'string' && suggestedFileName.trim()
+          ? suggestedFileName.trim()
+          : manifest.fileName || 'resource.bin'
+      );
+      const result = await dialog.showSaveDialog({ defaultPath });
+      if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true };
+      }
+      await fs.promises.mkdir(path.dirname(result.filePath), { recursive: true });
+      await pipeline(
+        fs.createReadStream(assembledPath),
+        fs.createWriteStream(result.filePath)
+      );
+      return { success: true, path: result.filePath };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum resource save failed',
+      };
+    }
+  }
+);
 
 ipcMain.handle(
   'reticulumChat:getHistory',

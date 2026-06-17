@@ -66,10 +66,12 @@ import AppViewerContainer from '../Apps/AppViewerContainer';
 import CloseIcon from '@mui/icons-material/Close';
 import { throttle } from 'lodash';
 import ImageIcon from '@mui/icons-material/Image';
+import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import SendIcon from '@mui/icons-material/Send';
 import { messageHasImage } from '../../utils/chat';
 import { useTranslation } from 'react-i18next';
 import { useReticulumGroupChat } from '../../hooks/useReticulumGroupChat';
+import { fileToBase64 } from '../../utils/fileReading';
 import { generateHTML } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
@@ -77,6 +79,18 @@ import Highlight from '@tiptap/extension-highlight';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
 import { getGroupMembers } from '../Group/groupApi';
+
+type PendingReticulumResourceFile = {
+  filePath?: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  isImage: boolean;
+  previewUrl?: string;
+  base64?: string;
+  width?: number;
+  height?: number;
+};
 
 const uid = new ShortUniqueId({ length: 5 });
 const uidImages = new ShortUniqueId({ length: 12 });
@@ -213,6 +227,10 @@ export const ChatGroup = ({
   const [isDeleteImage, setIsDeleteImage] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
   const [chatImagesToSave, setChatImagesToSave] = useState([]);
+  const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
+    PendingReticulumResourceFile[]
+  >([]);
+  const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
   const hasInitializedWebsocket = useRef(false);
   const socketRef = useRef(null); // WebSocket reference
   const timeoutIdRef = useRef(null); // Timeout ID reference
@@ -1391,6 +1409,27 @@ export const ChatGroup = ({
               }),
             }
           : {}),
+        ...(Array.isArray(decryptedData.attachments)
+          ? {
+              attachments: decryptedData.attachments.map((attachment) => {
+                if (
+                  !attachment ||
+                  typeof attachment !== 'object' ||
+                  attachment.reticulumResource !== true
+                ) {
+                  return attachment;
+                }
+                const fileHash =
+                  typeof attachment.fileHash === 'string'
+                    ? attachment.fileHash
+                    : '';
+                return {
+                  ...attachment,
+                  fileHash,
+                };
+              }),
+            }
+          : {}),
       };
       return {
         ...baseItem,
@@ -1462,6 +1501,67 @@ export const ChatGroup = ({
     }
   };
 
+  const clearPendingReticulumFiles = useCallback(() => {
+    setPendingReticulumFiles((prev) => {
+      prev.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+      return [];
+    });
+  }, []);
+
+  useEffect(() => {
+    pendingReticulumFilesRef.current = pendingReticulumFiles;
+  }, [pendingReticulumFiles]);
+
+  useEffect(() => {
+    return () => {
+      pendingReticulumFilesRef.current.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+    };
+  }, []);
+
+  const getImageFileDimensions = useCallback(
+    (file: File): Promise<{ width: number; height: number } | null> => {
+      return new Promise((resolve) => {
+        if (!file.type?.startsWith('image/')) {
+          resolve(null);
+          return;
+        }
+        const objectUrl = URL.createObjectURL(file);
+        const img = new Image();
+        const timeout = window.setTimeout(() => {
+          img.onload = null;
+          img.onerror = null;
+          URL.revokeObjectURL(objectUrl);
+          resolve(null);
+        }, 5_000);
+        img.onload = () => {
+          window.clearTimeout(timeout);
+          const width = Number(img.naturalWidth || img.width || 0);
+          const height = Number(img.naturalHeight || img.height || 0);
+          URL.revokeObjectURL(objectUrl);
+          resolve(
+            Number.isFinite(width) &&
+              width > 0 &&
+              Number.isFinite(height) &&
+              height > 0
+              ? { width, height }
+              : null
+          );
+        };
+        img.onerror = () => {
+          window.clearTimeout(timeout);
+          URL.revokeObjectURL(objectUrl);
+          resolve(null);
+        };
+        img.src = objectUrl;
+      });
+    },
+    []
+  );
+
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
@@ -1487,9 +1587,12 @@ export const ChatGroup = ({
 
         const hasImage =
           chatImagesToSave?.length > 0 || onEditMessage?.images?.length > 0;
+        const hasPendingReticulumFiles =
+          reticulumChatEnabled && pendingReticulumFiles.length > 0;
         if (
           (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') &&
           !hasImage &&
+          !hasPendingReticulumFiles &&
           !deleteImage
         )
           return;
@@ -1610,11 +1713,72 @@ export const ChatGroup = ({
         }
 
         const reticulumImages =
-          reticulumChatEnabled && chatImagesToSave?.length > 0
+          reticulumChatEnabled &&
+          (chatImagesToSave?.length > 0 ||
+            pendingReticulumFiles.some((file) => file.isImage))
             ? await Promise.all(
-                chatImagesToSave.map(async (base64, index) => {
-                  const imageMimeType = 'image/webp';
-                  const dimensions = await getImageDimensions(base64, imageMimeType);
+                [
+                  ...chatImagesToSave.map((base64, index) => ({
+                    base64,
+                    fileName: `chat-image-${Date.now()}-${index}.webp`,
+                    mimeType: 'image/webp',
+                    sizeBytes: 0,
+                    isImage: true,
+                  })),
+                  ...pendingReticulumFiles.filter((file) => file.isImage),
+                ].map(async (file, index) => {
+                  const imageMimeType = file.mimeType || 'image/webp';
+                  const base64 =
+                    typeof file.base64 === 'string' && file.base64
+                      ? file.base64
+                      : '';
+                  const dimensions =
+                    file.width && file.height
+                      ? { width: file.width, height: file.height }
+                      : base64
+                        ? await getImageDimensions(base64, imageMimeType)
+                        : null;
+                  if (file.filePath && isPrivate !== true) {
+                    const imported = await window.reticulumResources?.importFilePath?.({
+                      filePath: file.filePath,
+                      namespace: 'reticulum-group-resource',
+                      ownerId: `${selectedGroup}:${myAddress}`,
+                      fileName: file.fileName || `chat-image-${Date.now()}-${index}`,
+                      mimeType: imageMimeType,
+                      encrypted: false,
+                      metadata: {
+                        feature: 'reticulum-chat',
+                        groupId: selectedGroup,
+                        attachmentKind: 'image',
+                        originalMimeType: imageMimeType,
+                        ...(dimensions
+                          ? {
+                              width: dimensions.width,
+                              height: dimensions.height,
+                            }
+                          : {}),
+                      },
+                    });
+                    if (!imported?.success || !imported.manifest) {
+                      throw new Error(
+                        imported?.error || 'Reticulum image resource import failed'
+                      );
+                    }
+                    return {
+                      ...(imported.manifest as Record<string, unknown>),
+                      ...(dimensions
+                        ? {
+                            width: dimensions.width,
+                            height: dimensions.height,
+                          }
+                        : {}),
+                      reticulumResource: true,
+                      timestamp: Date.now(),
+                    };
+                  }
+                  if (!base64) {
+                    throw new Error('Reticulum image file is not available');
+                  }
                   const resourceBase64 =
                     isPrivate === true
                       ? await encryptChatMessage(
@@ -1628,9 +1792,9 @@ export const ChatGroup = ({
                       : base64;
                   const imported = await window.reticulumResources?.importBase64?.({
                     base64: resourceBase64,
-                    namespace: 'reticulum-chat-image',
+                    namespace: 'reticulum-group-resource',
                     ownerId: `${selectedGroup}:${myAddress}`,
-                    fileName: `chat-image-${Date.now()}-${index}.webp`,
+                    fileName: file.fileName || `chat-image-${Date.now()}-${index}.webp`,
                     mimeType:
                       isPrivate === true
                         ? 'application/qortal-encrypted-reticulum-resource'
@@ -1639,6 +1803,7 @@ export const ChatGroup = ({
                     metadata: {
                       feature: 'reticulum-chat',
                       groupId: selectedGroup,
+                      attachmentKind: 'image',
                       originalMimeType: imageMimeType,
                       ...(dimensions
                         ? {
@@ -1668,6 +1833,48 @@ export const ChatGroup = ({
               )
             : null;
 
+        const reticulumAttachments =
+          reticulumChatEnabled &&
+          pendingReticulumFiles.some((file) => !file.isImage)
+            ? await Promise.all(
+                pendingReticulumFiles
+                  .filter((file) => !file.isImage)
+                  .map(async (file) => {
+                    if (isPrivate === true) {
+                      throw new Error(
+                        'Private group file attachments need streaming encryption before they can be sent'
+                      );
+                    }
+                    if (!file.filePath) {
+                      throw new Error('File attachments require a local file path');
+                    }
+                    const imported = await window.reticulumResources?.importFilePath?.({
+                      filePath: file.filePath,
+                      namespace: 'reticulum-group-resource',
+                      ownerId: `${selectedGroup}:${myAddress}`,
+                      fileName: file.fileName,
+                      mimeType: file.mimeType || 'application/octet-stream',
+                      encrypted: false,
+                      metadata: {
+                        feature: 'reticulum-chat',
+                        groupId: selectedGroup,
+                        attachmentKind: 'file',
+                      },
+                    });
+                    if (!imported?.success || !imported.manifest) {
+                      throw new Error(
+                        imported?.error || 'Reticulum file resource import failed'
+                      );
+                    }
+                    return {
+                      ...(imported.manifest as Record<string, unknown>),
+                      reticulumResource: true,
+                      timestamp: Date.now(),
+                    };
+                  })
+              )
+            : [];
+
         const images = reticulumImages
           ? reticulumImages
           : imagesToPublish?.length > 0
@@ -1694,6 +1901,9 @@ export const ChatGroup = ({
           type: chatReference ? 'edit' : '',
           specialId: uid.rnd(),
           images: images,
+          ...(reticulumAttachments.length > 0
+            ? { attachments: reticulumAttachments }
+            : {}),
           mentionedAddresses,
           ...publicData,
         };
@@ -1750,6 +1960,7 @@ export const ChatGroup = ({
         setOnEditMessage(null);
         setIsDeleteImage(false);
         setChatImagesToSave([]);
+        clearPendingReticulumFiles();
       }
       // send chat message
     } catch (error) {
@@ -2013,6 +2224,7 @@ export const ChatGroup = ({
     (img) => {
       if (
         chatImagesToSave?.length > 0 ||
+        pendingReticulumFiles.length > 0 ||
         (messageHasImage(onEditMessage) && !isDeleteImage)
       ) {
         setInfoSnack({
@@ -2026,7 +2238,98 @@ export const ChatGroup = ({
       }
       setChatImagesToSave((prev) => [...prev, img]);
     },
-    [chatImagesToSave, onEditMessage?.images, isDeleteImage]
+    [chatImagesToSave, pendingReticulumFiles.length, onEditMessage?.images, isDeleteImage]
+  );
+
+  const insertFiles = useCallback(
+    async (files: File[]) => {
+      const file = files.find((item) => item && item.size >= 0);
+      if (!file) return;
+      if (
+        chatImagesToSave?.length > 0 ||
+        pendingReticulumFiles.length > 0 ||
+        (messageHasImage(onEditMessage) && !isDeleteImage)
+      ) {
+        setInfoSnack({
+          type: 'error',
+          message: t('core:message.generic.message_with_image', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+        });
+        setOpenSnack(true);
+        return;
+      }
+
+      const isImage = file.type?.startsWith('image/') === true;
+      if (!reticulumChatEnabled) {
+        if (!isImage) {
+          setInfoSnack({
+            type: 'error',
+            message: 'File attachments require Reticulum chat',
+          });
+          setOpenSnack(true);
+          return;
+        }
+        const base64 = await fileToBase64(file);
+        insertImage(base64);
+        return;
+      }
+
+      const filePath =
+        typeof (file as File & { path?: unknown }).path === 'string'
+          ? String((file as File & { path?: unknown }).path)
+          : '';
+      if (!isImage && !filePath) {
+        setInfoSnack({
+          type: 'error',
+          message: 'This file source cannot be streamed from disk',
+        });
+        setOpenSnack(true);
+        return;
+      }
+      if (!isImage && isPrivate === true) {
+        setInfoSnack({
+          type: 'error',
+          message:
+            'Private group file attachments need streaming encryption before they can be sent',
+        });
+        setOpenSnack(true);
+        return;
+      }
+      const dimensions = isImage ? await getImageFileDimensions(file) : null;
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+      const needsBase64ImagePayload =
+        isImage && (!filePath || isPrivate === true);
+      const base64 = needsBase64ImagePayload ? await fileToBase64(file) : undefined;
+      setPendingReticulumFiles([
+        {
+          ...(filePath ? { filePath } : {}),
+          fileName: file.name || 'resource.bin',
+          mimeType: file.type || 'application/octet-stream',
+          sizeBytes: file.size || 0,
+          isImage,
+          ...(previewUrl ? { previewUrl } : {}),
+          ...(typeof base64 === 'string' && base64 ? { base64 } : {}),
+          ...(dimensions
+            ? {
+                width: dimensions.width,
+                height: dimensions.height,
+              }
+            : {}),
+        },
+      ]);
+    },
+    [
+      chatImagesToSave,
+      getImageFileDimensions,
+      insertImage,
+      isDeleteImage,
+      isPrivate,
+      onEditMessage,
+      pendingReticulumFiles.length,
+      reticulumChatEnabled,
+      t,
+    ]
   );
 
   return (
@@ -2211,6 +2514,86 @@ export const ChatGroup = ({
                   </Tooltip>
                 </div>
               ))}
+
+              {pendingReticulumFiles.map((file, index) => (
+                <Box
+                  key={`${file.fileName}-${index}`}
+                  sx={{
+                    alignItems: 'center',
+                    border: '1px solid',
+                    borderColor: theme.palette.divider,
+                    borderRadius: '8px',
+                    display: 'flex',
+                    gap: '8px',
+                    maxWidth: 260,
+                    minHeight: '50px',
+                    p: '6px 8px',
+                    position: 'relative',
+                  }}
+                >
+                  {file.isImage && file.previewUrl ? (
+                    <Box
+                      component="img"
+                      src={file.previewUrl}
+                      sx={{
+                        borderRadius: '4px',
+                        flexShrink: 0,
+                        height: 38,
+                        objectFit: 'cover',
+                        width: 38,
+                      }}
+                    />
+                  ) : (
+                    <InsertDriveFileRoundedIcon
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        flexShrink: 0,
+                      }}
+                    />
+                  )}
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography
+                      sx={{
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {file.fileName}
+                    </Typography>
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '11px',
+                      }}
+                    >
+                      {file.mimeType || 'application/octet-stream'}
+                    </Typography>
+                  </Box>
+                  <Tooltip title="Remove file">
+                    <IconButton
+                      onClick={() => {
+                        setPendingReticulumFiles((prev) => {
+                          const removed = prev[index];
+                          if (removed?.previewUrl) {
+                            URL.revokeObjectURL(removed.previewUrl);
+                          }
+                          return prev.filter((_, i) => i !== index);
+                        });
+                      }}
+                      size="small"
+                      sx={{
+                        ml: 'auto',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              ))}
             </Box>
 
             {replyMessage && (
@@ -2231,6 +2614,7 @@ export const ChatGroup = ({
                     setOnEditMessage(null);
                     setIsDeleteImage(false);
                     setChatImagesToSave([]);
+                    clearPendingReticulumFiles();
                   }}
                 >
                   <ExitIcon />
@@ -2255,6 +2639,7 @@ export const ChatGroup = ({
                     setOnEditMessage(null);
                     setIsDeleteImage(false);
                     setChatImagesToSave([]);
+                    clearPendingReticulumFiles();
                     clearEditorContent();
                   }}
                 >
@@ -2273,6 +2658,7 @@ export const ChatGroup = ({
               setIsFocusedParent={setIsFocusedParent}
               membersWithNames={members}
               insertImage={insertImage}
+              insertFiles={insertFiles}
             />
             {messageSize > MESSAGE_LIMIT_WARNING && (
               <Box

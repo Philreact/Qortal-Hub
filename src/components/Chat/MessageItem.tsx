@@ -373,6 +373,30 @@ export const MessageItemComponent = ({
     imageResourceWidth && imageResourceHeight
       ? `${imageResourceWidth} / ${imageResourceHeight}`
       : '4 / 3';
+  const reticulumFileAttachment =
+    message?.reticulumChat === true && Array.isArray(message?.attachments)
+      ? message.attachments.find(
+          (attachment) =>
+            attachment &&
+            typeof attachment === 'object' &&
+            attachment.reticulumResource === true &&
+            typeof attachment.fileHash === 'string' &&
+            !String(attachment.mimeType || '').startsWith('image/')
+        )
+      : null;
+  const reticulumFileResourceId =
+    typeof reticulumFileAttachment?.fileHash === 'string'
+      ? reticulumFileAttachment.fileHash
+      : '';
+  const reticulumFileName =
+    typeof reticulumFileAttachment?.fileName === 'string' &&
+    reticulumFileAttachment.fileName.trim()
+      ? reticulumFileAttachment.fileName.trim()
+      : 'File attachment';
+  const reticulumFileSize =
+    typeof reticulumFileAttachment?.sizeBytes === 'number'
+      ? reticulumFileAttachment.sizeBytes
+      : 0;
   const reticulumResourceGroupId = Number(
     message?.groupId ??
       message?.decryptedData?.groupId ??
@@ -392,6 +416,10 @@ export const MessageItemComponent = ({
   const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
+  const [fileResourceStatus, setFileResourceStatus] = useState<
+    'idle' | 'downloading' | 'ready' | 'saving' | 'error'
+  >('idle');
+  const [fileResourceProgress, setFileResourceProgress] = useState<number | null>(null);
   const qchatFileData = qchatFileTransfer?.data || {};
   const qchatTransferState =
     qchatFileData?.transferId && qchatFileTransferStates
@@ -607,13 +635,106 @@ export const MessageItemComponent = ({
     secretKeyObject,
   ]);
   useEffect(() => {
-    if (!imageResourceId || typeof window.reticulumChat?.onResource !== 'function') return;
+    if (
+      (!imageResourceId && !reticulumFileResourceId) ||
+      typeof window.reticulumChat?.onResource !== 'function'
+    )
+      return;
     return window.reticulumChat.onResource((payload) => {
       if (payload?.fileHash === imageResourceId) {
         setResourceReloadNonce((value) => value + 1);
       }
+      if (payload?.fileHash === reticulumFileResourceId) {
+        if (typeof payload.progress === 'number') {
+          setFileResourceProgress(
+            Math.max(0, Math.min(100, Math.round(payload.progress * 100)))
+          );
+        }
+        if (payload.complete) {
+          setFileResourceStatus('ready');
+          setFileResourceProgress(100);
+        }
+      }
     });
-  }, [imageResourceId]);
+  }, [imageResourceId, reticulumFileResourceId]);
+
+  const requestReticulumFileResource = useCallback(async () => {
+    if (
+      !reticulumFileAttachment ||
+      !reticulumFileResourceId ||
+      !Number.isInteger(reticulumResourceGroupId) ||
+      reticulumResourceGroupId <= 0
+    ) {
+      return { success: false, error: 'Invalid resource attachment' };
+    }
+    const ready = await window.reticulumResources?.getUrl?.(reticulumFileResourceId);
+    if (ready?.success) {
+      setFileResourceStatus('ready');
+      setFileResourceProgress(100);
+      return { success: true };
+    }
+    setFileResourceStatus('downloading');
+    const response = await window.reticulumChat?.requestResource?.(
+      reticulumResourceGroupId,
+      reticulumFileAttachment,
+      reticulumResourceEventId || undefined
+    );
+    if (response?.success === false) {
+      setFileResourceStatus('error');
+      return response;
+    }
+    return { success: true };
+  }, [
+    reticulumFileAttachment,
+    reticulumFileResourceId,
+    reticulumResourceEventId,
+    reticulumResourceGroupId,
+  ]);
+
+  const saveReticulumFileResource = useCallback(async () => {
+    if (!reticulumFileResourceId) return;
+    setFileResourceStatus((status) => (status === 'ready' ? 'saving' : status));
+    const ready = await window.reticulumResources?.getUrl?.(reticulumFileResourceId);
+    if (!ready?.success) {
+      const requested = await requestReticulumFileResource();
+      if (requested?.success === false) return;
+      return;
+    }
+    const saved = await window.reticulumResources?.saveAs?.(
+      reticulumFileResourceId,
+      reticulumFileName
+    );
+    if (saved?.success) {
+      setFileResourceStatus('ready');
+      return;
+    }
+    setFileResourceStatus(saved?.canceled ? 'ready' : 'error');
+  }, [
+    requestReticulumFileResource,
+    reticulumFileName,
+    reticulumFileResourceId,
+  ]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!reticulumFileResourceId) {
+      setFileResourceStatus('idle');
+      setFileResourceProgress(null);
+      return;
+    }
+    void window.reticulumResources?.getUrl?.(reticulumFileResourceId).then((result) => {
+      if (cancelled) return;
+      if (result?.success) {
+        setFileResourceStatus('ready');
+        setFileResourceProgress(100);
+      } else {
+        setFileResourceStatus('idle');
+        setFileResourceProgress(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reticulumFileResourceId, resourceReloadNonce]);
   useEffect(() => {
     if (!qchatFileTransfer) return;
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -621,6 +742,7 @@ export const MessageItemComponent = ({
   }, [qchatFileTransfer]);
   const hasNoMessage =
     !qchatFileTransfer &&
+    !reticulumFileAttachment &&
     (!message.decryptedData?.data?.message ||
       message.decryptedData?.data?.message === '<p></p>') &&
     (message?.images || [])?.length === 0 &&
@@ -1311,6 +1433,90 @@ export const MessageItemComponent = ({
                   />
                 </Box>
               ) : null)}
+
+            {reticulumFileAttachment && (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  border: '1px solid',
+                  borderColor: theme.palette.divider,
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '10px',
+                  marginTop: '8px',
+                  maxWidth: 460,
+                  p: 1.25,
+                }}
+              >
+                <InsertDriveFileRoundedIcon
+                  sx={{ color: theme.palette.text.secondary, flexShrink: 0 }}
+                />
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography
+                    sx={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {reticulumFileName}
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color:
+                        fileResourceStatus === 'error'
+                          ? theme.palette.error.main
+                          : theme.palette.text.secondary,
+                      fontSize: 12,
+                    }}
+                  >
+                    {formatQchatFileSize(reticulumFileSize)} ·{' '}
+                    {fileResourceStatus === 'ready'
+                      ? 'ready'
+                      : fileResourceStatus === 'saving'
+                        ? 'saving'
+                        : fileResourceStatus === 'downloading'
+                          ? fileResourceProgress !== null
+                            ? `downloading ${fileResourceProgress}%`
+                            : 'downloading'
+                          : fileResourceStatus === 'error'
+                            ? 'download failed'
+                            : 'not downloaded'}
+                  </Typography>
+                  {(fileResourceStatus === 'downloading' ||
+                    fileResourceStatus === 'saving') && (
+                    <LinearProgress
+                      variant={
+                        fileResourceProgress !== null ? 'determinate' : 'indeterminate'
+                      }
+                      value={fileResourceProgress ?? undefined}
+                      sx={{
+                        mt: 0.75,
+                        height: 4,
+                        borderRadius: 1,
+                      }}
+                    />
+                  )}
+                </Box>
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<DownloadRoundedIcon />}
+                  disabled={
+                    fileResourceStatus === 'downloading' ||
+                    fileResourceStatus === 'saving'
+                  }
+                  onClick={() => {
+                    void saveReticulumFileResource();
+                  }}
+                  sx={{ flexShrink: 0, textTransform: 'none' }}
+                >
+                  {fileResourceStatus === 'ready' ? 'Save' : 'Download'}
+                </Button>
+              </Box>
+            )}
 
             {/* Sending / updating status */}
             {(isUpdating || isTemp) && (

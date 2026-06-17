@@ -615,12 +615,30 @@ declare global {
         encrypted?: boolean;
         metadata?: Record<string, unknown>;
       }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
+      importFilePath: (payload: {
+        filePath?: string;
+        namespace?: string;
+        ownerId?: string;
+        fileName?: string;
+        mimeType?: string;
+        encrypted?: boolean;
+        metadata?: Record<string, unknown>;
+      }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
       getUrl: (
         fileHash: string
       ) => Promise<{
         success: boolean;
         url?: string;
         manifest?: unknown;
+        error?: string;
+      }>;
+      saveAs: (
+        fileHash: string,
+        suggestedFileName?: string
+      ) => Promise<{
+        success: boolean;
+        canceled?: boolean;
+        path?: string;
         error?: string;
       }>;
     };

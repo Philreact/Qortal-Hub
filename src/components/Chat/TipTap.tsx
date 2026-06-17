@@ -495,6 +495,7 @@ type TiptapProps = {
   membersWithNames?: unknown[];
   enableMentions?: boolean;
   insertImage?: (image: any) => void;
+  insertFiles?: (files: File[]) => void | Promise<void>;
 };
 
 const Tiptap = ({
@@ -511,6 +512,7 @@ const Tiptap = ({
   membersWithNames = [],
   enableMentions,
   insertImage,
+  insertFiles,
 }: TiptapProps) => {
   const theme = useTheme();
   const [isDisabledEditorEnter, setIsDisabledEditorEnter] = useAtom(
@@ -736,9 +738,19 @@ const Tiptap = ({
           },
           handlePaste(view, event) {
             if (!isChat) return false;
-            if (typeof insertImage !== 'function') return false;
             const items = event.clipboardData?.items;
             if (!items) return false;
+
+            if (typeof insertFiles === 'function') {
+              const files = Array.from(event.clipboardData?.files || []);
+              if (files.length > 0) {
+                event.preventDefault();
+                void insertFiles(files);
+                return true;
+              }
+            }
+
+            if (typeof insertImage !== 'function') return false;
 
             for (const item of items) {
               if (item.type.startsWith('image/')) {
@@ -789,8 +801,13 @@ const Tiptap = ({
           },
           handleDrop(_view, event) {
             if (!isChat) return false;
-            if (typeof insertImage !== 'function') return false;
             const files = Array.from(event.dataTransfer?.files || []);
+            if (files.length > 0 && typeof insertFiles === 'function') {
+              event.preventDefault();
+              void insertFiles(files);
+              return true;
+            }
+            if (typeof insertImage !== 'function') return false;
             const image = files.find((file) => file.type.startsWith('image/'));
             if (!image) return false;
             event.preventDefault();

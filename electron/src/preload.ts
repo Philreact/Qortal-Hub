@@ -863,11 +863,28 @@ try {
         manifest?: unknown;
         error?: string;
       }>,
+    importFilePath: async (payload: unknown) =>
+      ipcRenderer.invoke('reticulumResource:importFilePath', payload) as Promise<{
+        success: boolean;
+        manifest?: unknown;
+        error?: string;
+      }>,
     getUrl: async (fileHash: string) =>
       ipcRenderer.invoke('reticulumResource:getUrl', fileHash) as Promise<{
         success: boolean;
         url?: string;
         manifest?: unknown;
+        error?: string;
+      }>,
+    saveAs: async (fileHash: string, suggestedFileName?: string) =>
+      ipcRenderer.invoke(
+        'reticulumResource:saveAs',
+        fileHash,
+        suggestedFileName
+      ) as Promise<{
+        success: boolean;
+        canceled?: boolean;
+        path?: string;
         error?: string;
       }>,
   });
