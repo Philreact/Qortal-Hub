@@ -1908,7 +1908,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.signLocalFields) return null;
     const timestamp = this.now();
     const signed = await this.signLocalFields({
-      eventId: eventId ?? null,
+      eventId: null,
       fileHash: manifest.fileHash,
       chunkIndexes,
       groupId,
@@ -1938,7 +1938,6 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.localGroupIds.add(groupId);
     const wire: ReticulumChatResourceRequestWire = {
-      ...(eventId ? { eid: eventId } : {}),
       fh: manifest.fileHash,
       c: chunkIndexes,
       pk: signed.authorPublicKey,
