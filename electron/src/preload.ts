@@ -856,6 +856,22 @@ try {
     },
   });
 
+  contextBridge.exposeInMainWorld('reticulumResources', {
+    importBase64: async (payload: unknown) =>
+      ipcRenderer.invoke('reticulumResource:importBase64', payload) as Promise<{
+        success: boolean;
+        manifest?: unknown;
+        error?: string;
+      }>,
+    getUrl: async (resourceId: string) =>
+      ipcRenderer.invoke('reticulumResource:getUrl', resourceId) as Promise<{
+        success: boolean;
+        url?: string;
+        manifest?: unknown;
+        error?: string;
+      }>,
+  });
+
   if (!isDisabledLegacy) {
     // P2P Network API
     contextBridge.exposeInMainWorld('p2pNetwork', {
@@ -1296,6 +1312,17 @@ try {
           authorAddress,
           active
         ) as Promise<{ success: boolean; error?: string }>,
+      requestResource: async (
+        groupId: number,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestResource',
+          groupId,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
       getHistory: async (groupId: number, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
@@ -1378,6 +1405,41 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
           ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onResource: (
+        cb: (payload: {
+          groupId?: number;
+          eventId?: string;
+          resourceId?: string;
+          fileHash?: string;
+          chunkIndex?: number;
+          completedChunks?: number;
+          totalChunks?: number;
+          progress?: number;
+          complete?: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId?: number;
+              eventId?: string;
+              resourceId?: string;
+              fileHash?: string;
+              chunkIndex?: number;
+              completedChunks?: number;
+              totalChunks?: number;
+              progress?: number;
+              complete?: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:resource', handler);
+        ipcRenderer.send('reticulumChat:resource:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:resource', handler);
+          ipcRenderer.send('reticulumChat:resource:unsubscribe');
         };
       },
       onTyping: (
@@ -1451,6 +1513,17 @@ try {
           authorAddress,
           active
         ) as Promise<{ success: boolean; error?: string }>,
+      requestResource: async (
+        groupId: number,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestResource',
+          groupId,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
       getHistory: async (groupId: number, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
@@ -1533,6 +1606,41 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
           ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onResource: (
+        cb: (payload: {
+          groupId?: number;
+          eventId?: string;
+          resourceId?: string;
+          fileHash?: string;
+          chunkIndex?: number;
+          completedChunks?: number;
+          totalChunks?: number;
+          progress?: number;
+          complete?: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId?: number;
+              eventId?: string;
+              resourceId?: string;
+              fileHash?: string;
+              chunkIndex?: number;
+              completedChunks?: number;
+              totalChunks?: number;
+              progress?: number;
+              complete?: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:resource', handler);
+        ipcRenderer.send('reticulumChat:resource:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:resource', handler);
+          ipcRenderer.send('reticulumChat:resource:unsubscribe');
         };
       },
       onTyping: (

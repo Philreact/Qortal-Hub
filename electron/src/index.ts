@@ -40,6 +40,7 @@ import {
   ensureReticulumManagersStarted,
   notifyPresenceTransportReady,
   replayReticulumCachedPresence,
+  shutdownReticulumResourceStore,
   setLastP2POptions,
   startDecentralizedStunAfterP2P,
 } from './setup';
@@ -226,6 +227,7 @@ function performAppShutdown(reason: string): void {
   }
   shutdownHandled = true;
   loggerLog(`[App] Shutdown reason=${reason}`);
+  shutdownReticulumResourceStore();
   stopReticulumMeshCoordinator();
   stopReticulumBridge();
   const quitPlan = planReticulumAppQuit();
@@ -411,6 +413,16 @@ protocol.registerSchemesAsPrivileged([
       corsEnabled: true,
       stream: true,
       codeCache: true,
+    },
+  },
+  {
+    scheme: 'qortal-reticulum-resource',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
     },
   },
 ]);

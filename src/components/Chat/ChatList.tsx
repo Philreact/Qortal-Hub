@@ -24,6 +24,7 @@ type ChatListProps = {
   tempMessages: any;
   onReply: any;
   onEdit: any;
+  onDelete?: any;
   handleReaction: any;
   chatReferences: any;
   tempChatReferences: any;
@@ -38,6 +39,7 @@ type ChatListProps = {
   hasSecretKey?: any;
   isPrivate?: any;
   reticulumChatEnabled?: boolean;
+  secretKeyObject?: any;
   compactScrollButton?: boolean;
   chatId?: any;
 };
@@ -48,6 +50,7 @@ export const ChatList = ({
   tempMessages,
   onReply,
   onEdit,
+  onDelete,
   handleReaction,
   chatReferences,
   tempChatReferences,
@@ -62,6 +65,7 @@ export const ChatList = ({
   hasSecretKey,
   isPrivate,
   reticulumChatEnabled = false,
+  secretKeyObject,
   compactScrollButton = false,
   chatId,
 }: ChatListProps) => {
@@ -631,7 +635,10 @@ export const ChatList = ({
                         lastSignature={lastSignature}
                         message={message}
                         myAddress={myAddress}
+                        selectedGroup={selectedGroup}
+                        secretKeyObject={secretKeyObject}
                         onEdit={onEdit}
+                        onDelete={onDelete}
                         onReply={onReply}
                         onAcceptQchatFileTransfer={onAcceptQchatFileTransfer}
                         qchatFileTransferStates={qchatFileTransferStates}

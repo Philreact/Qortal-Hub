@@ -7,6 +7,7 @@ import nacl from 'tweetnacl';
 import {
   buildReticulumChatSignedFields,
   buildReticulumChatEventRequestSignedFields,
+  buildReticulumChatResourceRequestSignedFields,
   buildReticulumChatEventHint,
   hashReticulumChatPayload,
   ReticulumChatManager,
@@ -29,6 +30,7 @@ import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
   byteLengthUtf8JsonWithBridgeSender,
 } from './reticulum-wire-size';
+import { ReticulumResourceStore, RETICULUM_RESOURCE_MIN_CHUNK_SIZE } from './reticulum-resource-store';
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
   const kp = nacl.sign.keyPair();
@@ -151,6 +153,49 @@ function signedEventRequestWire(params: {
   });
   return {
     id: params.eventId,
+    a: authorAddress,
+    pk: authorPublicKey,
+    ts: params.timestamp,
+    sig: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
+}
+
+function signedResourceRequestWire(params: {
+  groupId: number;
+  resourceId: string;
+  fileHash: string;
+  chunkIndexes: number[];
+  timestamp: number;
+}): {
+  rid: string;
+  fh: string;
+  c: number[];
+  a: string;
+  pk: string;
+  ts: number;
+  sig: string;
+} {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumChatResourceRequestSignedFields({
+    groupId: params.groupId,
+    resourceId: params.resourceId,
+    fileHash: params.fileHash,
+    chunkIndexes: params.chunkIndexes,
+    authorAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    rid: params.resourceId,
+    fh: params.fileHash,
+    c: params.chunkIndexes,
     a: authorAddress,
     pk: authorPublicKey,
     ts: params.timestamp,
@@ -977,6 +1022,145 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('serves only requested resource chunks that are locally available', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-partial-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const chunk0 = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 1);
+    const chunk1 = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 2);
+    const chunk2 = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 3);
+    const chunkHashes = [chunk0, chunk1, chunk2].map((chunk) =>
+      nodeCrypto.createHash('sha256').update(chunk).digest('hex')
+    );
+    const fileHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat([chunk0, chunk1, chunk2]))
+      .digest('hex');
+    const manifest = {
+      resourceId: 'resource-partial-serving',
+      namespace: 'reticulum-chat-image',
+      ownerId: '77:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: chunk0.length + chunk1.length + chunk2.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 77 },
+    };
+    resourceStore.storeManifest(manifest);
+    resourceStore.storeChunk(manifest.resourceId, 0, chunk0);
+    resourceStore.storeChunk(manifest.resourceId, 2, chunk2);
+
+    const offeredResources: Array<Record<string, unknown>> = [];
+    const offerWires: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        offeredResources.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
+        offerWires.push(wire);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([77]);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_req',
+        g: 77,
+        r: signedResourceRequestWire({
+          groupId: 77,
+          resourceId: manifest.resourceId,
+          fileHash,
+          chunkIndexes: [0, 1, 2],
+          timestamp: 100_000,
+        }),
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(offeredResources.map((payload) => payload.metadata)).toEqual([
+      expect.objectContaining({ chunkIndex: 0, chunkHash: chunkHashes[0] }),
+      expect.objectContaining({ chunkIndex: 2, chunkHash: chunkHashes[2] }),
+    ]);
+    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual([0, 2]);
+    expect(offerWires.every((wire) => wire.k === 'resource_offer')).toBe(true);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('requests resources after Core validates the local signer even when local membership cache is stale', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-stale-local-membership-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const chunk = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 4);
+    const chunkHash = nodeCrypto.createHash('sha256').update(chunk).digest('hex');
+    const manifest = {
+      resourceId: 'resource-stale-local-membership',
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: chunk.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes: [chunkHash],
+      fileHash: chunkHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+
+    await expect(manager.requestResource(78, manifest)).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'resource_req',
+        g: 78,
+      })
+    );
+    manager.close();
+    resourceStore.close();
+  });
+
   it('requests an author gap when a live hint skips an author sequence', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -1623,6 +1807,42 @@ describe('reticulum chat manager', () => {
     });
     expect(manager.getHistory(73, 10)).toEqual([]);
     expect(sent).toEqual([]);
+    manager.close();
+  });
+
+  it('publishes when Core validates the author even if the local membership cache is not populated yet', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const event = signedEvent({
+      eventId: 'event-core-member-author-with-empty-local-cache',
+      groupId: 77,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      validateGroupMember: async (_groupId, address) => address === event.authorAddress,
+    });
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(manager.getHistory(77, 10)).toContainEqual(
+      expect.objectContaining({ eventId: event.eventId })
+    );
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'event_hint',
+        g: 77,
+      })
+    );
     manager.close();
   });
 

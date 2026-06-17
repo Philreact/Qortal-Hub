@@ -9879,7 +9879,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
         emit_resp(req_id, False, error="Missing Reticulum link auth message")
         return
     try:
-        if resource_type == _RETICULUM_CHAT_RESOURCE_TYPE and (not isinstance(pk_b64, str) or not pk_b64.strip()):
+        if resource_type in (_RETICULUM_CHAT_RESOURCE_TYPE, _RETICULUM_RESOURCE_TYPE) and (not isinstance(pk_b64, str) or not pk_b64.strip()):
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
             peer_identity = _known_peers.get(peer_hash)
             if peer_identity is None:

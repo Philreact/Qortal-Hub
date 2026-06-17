@@ -228,6 +228,7 @@ export const ChatGroup = ({
   const lastReadTimestamp = useRef(null);
   const handleUpdateRef = useRef(null);
   const iframeRef = useRef(null);
+  const appliedReticulumEventIdsRef = useRef<Set<string>>(new Set());
   const [windowSize, setWindowSize] = useState(() =>
     typeof window !== 'undefined'
       ? {
@@ -528,6 +529,10 @@ export const ChatGroup = ({
       secretKeyRef.current = secretKey;
     }
   }, [secretKey]);
+
+  useEffect(() => {
+    appliedReticulumEventIdsRef.current.clear();
+  }, [selectedGroup]);
 
   const checkForFirstSecretKeyNotification = (messages) => {
     messages?.forEach((message) => {
@@ -1211,11 +1216,17 @@ export const ChatGroup = ({
 
     if (targetReference && itemType === 'delete') {
       setMessages((prev) =>
-        prev.filter(
+        prev.some(
           (message) =>
-            message?.signature !== targetReference &&
-            message?.tempSignature !== targetReference
+            message?.signature === targetReference ||
+            message?.tempSignature === targetReference
         )
+          ? prev.filter(
+              (message) =>
+                message?.signature !== targetReference &&
+                message?.tempSignature !== targetReference
+            )
+          : prev
       );
       setChatReferences((prev) => {
         if (!prev?.[targetReference]) return prev;
@@ -1372,8 +1383,13 @@ export const ChatGroup = ({
     let cancelled = false;
     void (async () => {
       for (const event of reticulumChatEvents) {
+        const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
+        if (eventId && appliedReticulumEventIdsRef.current.has(eventId)) continue;
         const item = await convertReticulumEventToChatItem(event);
-        if (!cancelled && item) applyReticulumChatItem(item);
+        if (!cancelled && item) {
+          applyReticulumChatItem(item);
+          if (eventId) appliedReticulumEventIdsRef.current.add(eventId);
+        }
       }
     })();
     return () => {
@@ -1485,7 +1501,7 @@ export const ChatGroup = ({
 
         const imagesToPublish: ImageToPublish[] = [];
 
-        if (deleteImage) {
+        if (deleteImage && !reticulumChatEnabled) {
           const fee = await getFee('ARBITRARY');
           await show({
             publishFee: fee.fee + ' QORT',
@@ -1502,7 +1518,7 @@ export const ChatGroup = ({
           });
         }
 
-        if (chatImagesToSave?.length > 0) {
+        if (chatImagesToSave?.length > 0 && !reticulumChatEnabled) {
           const imageToSave = chatImagesToSave[0];
 
           const base64ToSave = isPrivate
@@ -1534,8 +1550,55 @@ export const ChatGroup = ({
             );
         }
 
-        const images =
-          imagesToPublish?.length > 0
+        const reticulumImages =
+          reticulumChatEnabled && chatImagesToSave?.length > 0
+            ? await Promise.all(
+                chatImagesToSave.map(async (base64, index) => {
+                  const imageMimeType = 'image/webp';
+                  const resourceBase64 =
+                    isPrivate === true
+                      ? await encryptChatMessage(
+                          await objectToBase64({
+                            imageBase64: base64,
+                            mimeType: imageMimeType,
+                            version: 1,
+                          }),
+                          secretKeyObject
+                        )
+                      : base64;
+                  const imported = await window.reticulumResources?.importBase64?.({
+                    base64: resourceBase64,
+                    namespace: 'reticulum-chat-image',
+                    ownerId: `${selectedGroup}:${myAddress}`,
+                    fileName: `chat-image-${Date.now()}-${index}.webp`,
+                    mimeType:
+                      isPrivate === true
+                        ? 'application/qortal-encrypted-reticulum-resource'
+                        : imageMimeType,
+                    encrypted: isPrivate === true,
+                    metadata: {
+                      feature: 'reticulum-chat',
+                      groupId: selectedGroup,
+                      originalMimeType: imageMimeType,
+                    },
+                  });
+                  if (!imported?.success || !imported.manifest) {
+                    throw new Error(
+                      imported?.error || 'Reticulum image resource import failed'
+                    );
+                  }
+                  return {
+                    ...(imported.manifest as Record<string, unknown>),
+                    reticulumResource: true,
+                    timestamp: Date.now(),
+                  };
+                })
+              )
+            : null;
+
+        const images = reticulumImages
+          ? reticulumImages
+          : imagesToPublish?.length > 0
             ? imagesToPublish.map((item) => {
                 return {
                   name: item.name,
@@ -1701,6 +1764,85 @@ export const ChatGroup = ({
     }
   }, []);
 
+  const onDelete = useCallback(
+    async (message) => {
+      try {
+        if (!reticulumChatEnabled || !message?.reticulumChat) return;
+        if (isSending) return;
+        if (+balance < MIN_REQUIRED_QORTS)
+          throw new Error(
+            t('group:message.error.qortals_required', {
+              quantity: MIN_REQUIRED_QORTS,
+              postProcess: 'capitalizeFirstChar',
+            })
+          );
+        if (isPrivate === null)
+          throw new Error(
+            t('group:message.error:determine_group_private', {
+              postProcess: 'capitalizeFirstChar',
+            })
+          );
+        pauseAllQueues();
+        setIsSending(true);
+
+        const targetEventId = message.signature || message.id;
+        if (!targetEventId) return;
+        const secretKeyObject = await getSecretKey(false, true);
+        const objectMessage = {
+          message: '',
+          type: 'delete',
+          targetEventId,
+          specialId: uid.rnd(),
+          version: 3,
+        };
+        const message64: any = await objectToBase64(objectMessage);
+        const encryptedPayload =
+          isPrivate === false
+            ? JSON.stringify(objectMessage)
+            : await encryptChatMessage(message64, secretKeyObject);
+        const result = await publishReticulumGroupChatEvent({
+          encryptedPayload,
+          eventType: 'delete',
+          targetEventId,
+        });
+        if (!result?.success) {
+          throw new Error(result?.error || 'Reticulum chat delete failed');
+        }
+        if (result?.event) {
+          const item = await convertReticulumEventToChatItem(result.event);
+          if (item) {
+            if (typeof result.event.eventId === 'string') {
+              appliedReticulumEventIdsRef.current.add(result.event.eventId);
+            }
+            applyReticulumChatItem(item);
+          }
+        }
+      } catch (error) {
+        const errorMsg = error?.message || error;
+        setInfoSnack({
+          type: 'error',
+          message: errorMsg,
+        });
+        setOpenSnack(true);
+        console.error(error);
+      } finally {
+        setIsSending(false);
+        resumeAllQueues();
+      }
+    },
+    [
+      applyReticulumChatItem,
+      balance,
+      convertReticulumEventToChatItem,
+      getSecretKey,
+      isPrivate,
+      isSending,
+      publishReticulumGroupChatEvent,
+      reticulumChatEnabled,
+      t,
+    ]
+  );
+
   const handleReaction = useCallback(
     async (reaction, chatMessage, reactionState = true) => {
       try {
@@ -1841,11 +1983,13 @@ export const ChatGroup = ({
         members={members}
         myAddress={myAddress}
         myName={myName}
+        onDelete={onDelete}
         onEdit={onEdit}
         onReply={onReply}
         openQManager={openQManager}
         reticulumChatEnabled={reticulumChatEnabled}
         selectedGroup={selectedGroup}
+        secretKeyObject={secretKey}
         tempChatReferences={tempChatReferences}
         tempMessages={tempMessages}
       />

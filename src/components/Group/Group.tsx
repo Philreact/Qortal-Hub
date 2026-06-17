@@ -151,6 +151,31 @@ type ReticulumBackgroundEvent = {
   targetEventId?: string;
 };
 
+const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
+const RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX = 10_000;
+
+const getGroupIdFromGroupLike = (group: unknown): number | null => {
+  if (!group || typeof group !== 'object') return null;
+  const candidate =
+    (group as { groupId?: unknown }).groupId ??
+    (group as { groupid?: unknown }).groupid ??
+    (group as { group_id?: unknown }).group_id ??
+    (group as { id?: unknown }).id;
+  const groupId = Number(candidate);
+  return Number.isInteger(groupId) && groupId > 0 ? groupId : null;
+};
+
+const getGroupIdsFromGroupLikeList = (groups: unknown): number[] => {
+  if (!Array.isArray(groups)) return [];
+  return [
+    ...new Set(
+      groups
+        .map(getGroupIdFromGroupLike)
+        .filter((groupId): groupId is number => groupId != null)
+    ),
+  ];
+};
+
 const collectReticulumPlainText = (value: unknown, out: string[]): void => {
   if (typeof value === 'string') {
     out.push(value);
@@ -229,7 +254,7 @@ function MemberGroupsEffects({
     if (!myAddress) return;
     if (
       !areKeysEqual(
-        memberGroups?.map((grp: any) => grp?.groupId),
+        getGroupIdsFromGroupLikeList(memberGroups),
         Object.keys(groupsPropertiesRef.current || {})
       )
     ) {
@@ -337,12 +362,43 @@ export const Group = ({
   );
   const setReticulumChatSummaries = useSetAtom(reticulumChatSummariesAtom);
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
-  const reticulumBackgroundProcessedEventIdsRef = useRef<Set<string>>(new Set());
+  const reticulumBackgroundProcessedEventIdsRef = useRef<Map<string, number>>(
+    new Map()
+  );
   const reticulumGroupMentionNameCacheRef = useRef<
     Map<number, Map<string, string>>
   >(new Map());
   const reticulumSummariesRefreshTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pruneReticulumBackgroundProcessedEvents = useCallback(() => {
+    const now = Date.now();
+    const map = reticulumBackgroundProcessedEventIdsRef.current;
+    const cutoff = now - RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS;
+    for (const [eventId, seenAt] of map.entries()) {
+      if (seenAt < cutoff) map.delete(eventId);
+    }
+    if (map.size <= RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX) return;
+    const excess = map.size - RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX;
+    const oldest = [...map.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, excess);
+    for (const [eventId] of oldest) map.delete(eventId);
+  }, []);
+  const hasProcessedReticulumBackgroundEvent = useCallback(
+    (eventId: string) => {
+      pruneReticulumBackgroundProcessedEvents();
+      return reticulumBackgroundProcessedEventIdsRef.current.has(eventId);
+    },
+    [pruneReticulumBackgroundProcessedEvents]
+  );
+  const noteProcessedReticulumBackgroundEvent = useCallback(
+    (eventId: string) => {
+      if (!eventId) return;
+      reticulumBackgroundProcessedEventIdsRef.current.set(eventId, Date.now());
+      pruneReticulumBackgroundProcessedEvents();
+    },
+    [pruneReticulumBackgroundProcessedEvents]
+  );
   const setIsEnabledDevMode = useSetAtom(enabledDevModeAtom);
   const setIsDisabledEditorEnter = useSetAtom(isDisabledEditorEnterAtom);
 
@@ -757,9 +813,7 @@ export const Group = ({
 
   useEffect(() => {
     if (!myAddress) return;
-    const groupIds = (memberGroupsForReticulum || [])
-      .map((group: any) => Number(group?.groupId))
-      .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+    const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
     if (groupIds.length === 0) {
       for (const groupId of reticulumSubscribedGroupIdsRef.current) {
         void window.reticulumChat?.unsubscribeGroup?.(groupId);
@@ -1189,7 +1243,7 @@ export const Group = ({
   const processReticulumBackgroundEvent = useCallback(
     async (event: ReticulumBackgroundEvent) => {
       if (!event?.eventId || !event?.groupId || !event?.eventType) return;
-      if (reticulumBackgroundProcessedEventIdsRef.current.has(event.eventId)) {
+      if (hasProcessedReticulumBackgroundEvent(event.eventId)) {
         return;
       }
 
@@ -1197,7 +1251,7 @@ export const Group = ({
         if (event.targetEventId) {
           await window.reticulumChat?.deleteSearchText?.(event.targetEventId);
           await window.reticulumChat?.deleteMentions?.(event.targetEventId);
-          reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
+          noteProcessedReticulumBackgroundEvent(event.eventId);
           scheduleReticulumChatSummariesRefresh();
         }
         return;
@@ -1221,7 +1275,7 @@ export const Group = ({
         return;
       }
       if (!isPublicGroup) {
-        reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
+        noteProcessedReticulumBackgroundEvent(event.eventId);
         scheduleReticulumChatSummariesRefresh();
         return;
       }
@@ -1238,7 +1292,11 @@ export const Group = ({
         event.eventType === 'edit' && event.targetEventId
           ? event.targetEventId
           : event.eventId;
-      if (!targetEventId || !text) return;
+      if (!targetEventId || !text) {
+        noteProcessedReticulumBackgroundEvent(event.eventId);
+        scheduleReticulumChatSummariesRefresh();
+        return;
+      }
 
       await window.reticulumChat?.indexSearchText?.(targetEventId, text);
       const mentionMap = await getReticulumMentionNameMap(groupId);
@@ -1251,11 +1309,13 @@ export const Group = ({
           ]),
         ]
       );
-      reticulumBackgroundProcessedEventIdsRef.current.add(event.eventId);
+      noteProcessedReticulumBackgroundEvent(event.eventId);
       scheduleReticulumChatSummariesRefresh();
     },
     [
       getReticulumMentionNameMap,
+      hasProcessedReticulumBackgroundEvent,
+      noteProcessedReticulumBackgroundEvent,
       scheduleReticulumChatSummariesRefresh,
     ]
   );
@@ -1286,9 +1346,7 @@ export const Group = ({
 
   useEffect(() => {
     if (!myAddress) return;
-    const groupIds = (memberGroupsForReticulum || [])
-      .map((group: any) => Number(group?.groupId))
-      .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+    const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
     if (groupIds.length === 0) return;
     let cancelled = false;
     void window.reticulumChat?.isEnabled?.().then(async (enabled) => {

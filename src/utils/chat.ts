@@ -4,8 +4,17 @@ export function buildImageEmbedLink(image?: {
   name?: string;
   identifier?: string;
   service?: string;
+  resourceId?: string;
+  dataUrl?: string;
+  base64?: string;
+  mimeType?: string;
   timestamp?: number;
 }): string | null {
+  if (image?.resourceId) return null;
+  if (image?.dataUrl) return image.dataUrl;
+  if (image?.base64) {
+    return `data:${image.mimeType || 'image/webp'};base64,${image.base64}`;
+  }
   if (!image?.name || !image.identifier || !image.service) return null;
 
   const base = `${QORTAL_PROTOCOL}use-embed/IMAGE?name=${image.name}&identifier=${image.identifier}&service=${image.service}&mimeType=image%2Fpng&timestamp=${image?.timestamp || ''}`;
@@ -17,9 +26,12 @@ export function buildImageEmbedLink(image?: {
 export const messageHasImage = (message) => {
   return (
     Array.isArray(message?.images) &&
-    message.images[0]?.identifier &&
-    message.images[0]?.name &&
-    message.images[0]?.service
+    (message.images[0]?.resourceId ||
+      message.images[0]?.dataUrl ||
+      message.images[0]?.base64 ||
+      (message.images[0]?.identifier &&
+        message.images[0]?.name &&
+        message.images[0]?.service))
   );
 };
 

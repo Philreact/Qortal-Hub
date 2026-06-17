@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { app } from 'electron';
 
-export const RETICULUM_RESOURCE_DEFAULT_CHUNK_SIZE = 128 * 1024;
+export const RETICULUM_RESOURCE_DEFAULT_CHUNK_SIZE = 512 * 1024;
 export const RETICULUM_RESOURCE_MIN_CHUNK_SIZE = 16 * 1024;
 export const RETICULUM_RESOURCE_MAX_CHUNK_SIZE = 512 * 1024;
 

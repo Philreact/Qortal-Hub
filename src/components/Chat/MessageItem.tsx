@@ -36,6 +36,7 @@ import ReplyIcon from '@mui/icons-material/Reply';
 import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import TextStyle from '@tiptap/extension-text-style';
@@ -184,10 +185,13 @@ type MessageItemProps = {
   message: string;
   myAddress: string;
   onEdit: (messageId: string) => void;
+  onDelete?: (message: any) => void;
   onReply: (messageId: string) => void;
   onAcceptQchatFileTransfer?: (message: any) => void;
   qchatFileTransferStates?: Record<string, any>;
   qchatCompletedTransfers?: Record<string, any>;
+  selectedGroup?: any;
+  secretKeyObject?: any;
   onSeen: () => void;
   reactions: ReactionsMap | null;
   reply: string | null;
@@ -208,10 +212,13 @@ export const MessageItemComponent = ({
   message,
   myAddress,
   onEdit,
+  onDelete,
   onReply,
   onAcceptQchatFileTransfer,
   qchatFileTransferStates,
   qchatCompletedTransfers,
+  selectedGroup,
+  secretKeyObject,
   onSeen,
   reactions,
   reply,
@@ -328,6 +335,36 @@ export const MessageItemComponent = ({
   );
 
   const qchatFileTransfer = getQchatFileTransfer(message);
+  const imageResourceId =
+    typeof message?.images?.[0]?.resourceId === 'string'
+      ? message.images[0].resourceId
+      : '';
+  const imageResourceManifest =
+    imageResourceId && message?.images?.[0] && typeof message.images[0] === 'object'
+      ? message.images[0]
+      : null;
+  const imageResourceFileHash =
+    typeof imageResourceManifest?.fileHash === 'string'
+      ? imageResourceManifest.fileHash
+      : '';
+  const reticulumResourceGroupId = Number(
+    message?.groupId ??
+      message?.decryptedData?.groupId ??
+      selectedGroup?.groupId ??
+      selectedGroup?.id ??
+      0
+  );
+  const reticulumResourceEventId =
+    typeof message?.signature === 'string'
+      ? message.signature
+      : typeof message?.tempSignature === 'string'
+        ? message.tempSignature
+        : '';
+  const imageEmbedLink = messageHasImage(message)
+    ? buildImageEmbedLink(message.images[0])
+    : null;
+  const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
+  const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
   const qchatFileData = qchatFileTransfer?.data || {};
   const qchatTransferState =
     qchatFileData?.transferId && qchatFileTransferStates
@@ -429,6 +466,111 @@ export const MessageItemComponent = ({
         return qchatDisplayStatus;
     }
   })();
+
+  useEffect(() => {
+    let cancelled = false;
+    const timers: number[] = [];
+    setLocalResourceImageUrl(null);
+    if (!imageResourceId) return;
+    const arrayBufferToBinaryString = (buffer: ArrayBuffer): string => {
+      const bytes = new Uint8Array(buffer);
+      const chunkSize = 0x8000;
+      let out = '';
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        out += String.fromCharCode(
+          ...bytes.subarray(offset, offset + chunkSize)
+        );
+      }
+      return out;
+    };
+    const load = async (attempt = 0) => {
+      const result = await window.reticulumResources?.getUrl?.(imageResourceId);
+      if (cancelled) return;
+      if (result?.success && result.url) {
+        const manifest = result.manifest as
+          | {
+              encrypted?: boolean;
+              metadata?: Record<string, unknown>;
+            }
+          | undefined;
+        if (manifest?.encrypted) {
+          if (!secretKeyObject) return;
+          try {
+            const response = await fetch(result.url);
+            if (response.ok) {
+              const encryptedPayload = arrayBufferToBinaryString(
+                await response.arrayBuffer()
+              );
+              const decrypted = await window.sendMessage?.('decryptSingle', {
+                data: [{ data: encryptedPayload }],
+                secretKeyObject,
+              });
+              if (cancelled) return;
+              const decryptedData = decrypted?.[0]?.decryptedData;
+              const imageBase64 =
+                typeof decryptedData?.imageBase64 === 'string'
+                  ? decryptedData.imageBase64
+                  : '';
+              if (imageBase64) {
+                const mimeType =
+                  typeof decryptedData?.mimeType === 'string'
+                    ? decryptedData.mimeType
+                    : typeof manifest.metadata?.originalMimeType === 'string'
+                      ? manifest.metadata.originalMimeType
+                      : 'image/webp';
+                setLocalResourceImageUrl(`data:${mimeType};base64,${imageBase64}`);
+                return;
+              }
+            }
+          } catch (error) {
+            console.error('[ReticulumResource] Failed to load encrypted image:', error);
+          }
+        }
+        if (!manifest?.encrypted) {
+          setLocalResourceImageUrl(result.url);
+          return;
+        }
+      }
+      if (
+        attempt === 0 &&
+        message?.reticulumChat &&
+        imageResourceManifest &&
+        Number.isInteger(reticulumResourceGroupId) &&
+        reticulumResourceGroupId > 0
+      ) {
+        void window.reticulumChat?.requestResource?.(
+          reticulumResourceGroupId,
+          imageResourceManifest,
+          reticulumResourceEventId || undefined
+        );
+      }
+      if (attempt < 5) {
+        const delay = attempt === 0 ? 1_500 : Math.min(8_000, 2_000 * attempt);
+        timers.push(window.setTimeout(() => void load(attempt + 1), delay));
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [
+    imageResourceFileHash,
+    imageResourceId,
+    message?.reticulumChat,
+    resourceReloadNonce,
+    reticulumResourceEventId,
+    reticulumResourceGroupId,
+    secretKeyObject,
+  ]);
+  useEffect(() => {
+    if (!imageResourceId || typeof window.reticulumChat?.onResource !== 'function') return;
+    return window.reticulumChat.onResource((payload) => {
+      if (payload?.resourceId === imageResourceId) {
+        setResourceReloadNonce((value) => value + 1);
+      }
+    });
+  }, [imageResourceId]);
   useEffect(() => {
     if (!qchatFileTransfer) return;
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -693,6 +835,29 @@ export const MessageItemComponent = ({
                           }}
                         >
                           <EditIcon sx={{ fontSize: '18px' }} />
+                        </ButtonBase>
+                      </Tooltip>
+                    )}
+
+                  {message?.sender === myAddress &&
+                    message?.reticulumChat &&
+                    typeof onDelete === 'function' && (
+                      <Tooltip title="Delete" disableFocusListener>
+                        <ButtonBase
+                          sx={{
+                            borderRadius: '6px',
+                            color: theme.palette.text.secondary,
+                            padding: '4px',
+                            '&:hover': {
+                              backgroundColor: theme.palette.action.hover,
+                              color: theme.palette.text.primary,
+                            },
+                          }}
+                          onClick={() => {
+                            onDelete(message);
+                          }}
+                        >
+                          <DeleteOutlineIcon sx={{ fontSize: '18px' }} />
                         </ButtonBase>
                       </Tooltip>
                     )}
@@ -1051,9 +1216,23 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {message?.images && messageHasImage(message) && (
-              <Embed embedLink={buildImageEmbedLink(message.images[0])} />
-            )}
+            {(localResourceImageUrl || imageEmbedLink) &&
+              ((localResourceImageUrl || imageEmbedLink)?.startsWith('data:image/') ? (
+                <Box
+                  component="img"
+                  src={localResourceImageUrl || imageEmbedLink || undefined}
+                  sx={{
+                    borderRadius: '8px',
+                    display: 'block',
+                    marginTop: '8px',
+                    maxHeight: 360,
+                    maxWidth: '100%',
+                    objectFit: 'contain',
+                  }}
+                />
+              ) : (
+                <Embed embedLink={imageEmbedLink} />
+              ))}
 
             {/* Sending / updating status */}
             {(isUpdating || isTemp) && (

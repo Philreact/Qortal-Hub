@@ -544,6 +544,11 @@ declare global {
         authorAddress: string,
         active: boolean
       ) => Promise<{ success: boolean; error?: string }>;
+      requestResource: (
+        groupId: number,
+        manifest: unknown,
+        eventId?: string
+      ) => Promise<{ success: boolean; error?: string }>;
       getHistory: (groupId: number, limit?: number) => Promise<unknown[]>;
       getSyncState: (groupId: number) => Promise<Record<string, number>>;
       getSummaries: (myAddress?: string) => Promise<unknown[]>;
@@ -586,6 +591,39 @@ declare global {
           active: boolean;
         }) => void
       ) => () => void;
+      onResource: (
+        cb: (payload: {
+          groupId?: number;
+          eventId?: string;
+          resourceId?: string;
+          fileHash?: string;
+          chunkIndex?: number;
+          completedChunks?: number;
+          totalChunks?: number;
+          progress?: number;
+          complete?: boolean;
+        }) => void
+      ) => () => void;
+    };
+
+    reticulumResources?: {
+      importBase64: (payload: {
+        base64?: string;
+        namespace?: string;
+        ownerId?: string;
+        fileName?: string;
+        mimeType?: string;
+        encrypted?: boolean;
+        metadata?: Record<string, unknown>;
+      }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
+      getUrl: (
+        resourceId: string
+      ) => Promise<{
+        success: boolean;
+        url?: string;
+        manifest?: unknown;
+        error?: string;
+      }>;
     };
 
     // ── Group Call ────────────────────────────────────────────────────────────

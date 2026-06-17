@@ -787,6 +787,16 @@ const Tiptap = ({
 
             return false; // fallback to default behavior otherwise
           },
+          handleDrop(_view, event) {
+            if (!isChat) return false;
+            if (typeof insertImage !== 'function') return false;
+            const files = Array.from(event.dataTransfer?.files || []);
+            const image = files.find((file) => file.type.startsWith('image/'));
+            if (!image) return false;
+            event.preventDefault();
+            handleImageUpload(image);
+            return true;
+          },
         }}
       />
     </Box>

@@ -117,6 +117,7 @@ import {
   startReticulumMeshCoordinator,
   stopReticulumMeshCoordinator,
 } from './reticulum-mesh';
+import { ReticulumResourceStore } from './reticulum-resource-store';
 import { isDisabledLegacy } from './feature-flags';
 import {
   AUDIO_SURFACE_WINDOW_ROLE,
@@ -285,12 +286,14 @@ function attachGroupAudioIpcTiming(
 }
 
 const AdmZip = require('adm-zip');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const writeFileAtomic = require('write-file-atomic');
 
 const defaultDomains = [
   'capacitor-electron://-',
+  'qortal-reticulum-resource://-',
   'http://127.0.0.1:12391',
   'https://127.0.0.1:12391',
   'ws://127.0.0.1:12391',
@@ -308,6 +311,133 @@ const defaultDomains = [
   'https://apinode4.qortalnodes.live',
   'https://www.qort.trade',
 ];
+
+let reticulumResourceStore: ReticulumResourceStore | null = null;
+const RETICULUM_RESOURCE_PROTOCOL = 'qortal-reticulum-resource';
+const RETICULUM_RESOURCE_URL_TOKEN_TTL_MS = 5 * 60_000;
+const RETICULUM_RESOURCE_URL_TOKEN_MAX = 2_000;
+let reticulumResourceProtocolRegistered = false;
+const reticulumResourceUrlTokens = new Map<
+  string,
+  { resourceId: string; expiresAt: number }
+>();
+
+function getReticulumResourceStore(): ReticulumResourceStore {
+  if (!reticulumResourceStore) {
+    reticulumResourceStore = new ReticulumResourceStore();
+  }
+  return reticulumResourceStore;
+}
+
+export function shutdownReticulumResourceStore(): void {
+  reticulumResourceUrlTokens.clear();
+  if (reticulumResourceProtocolRegistered) {
+    try {
+      session.defaultSession.protocol.unhandle(RETICULUM_RESOURCE_PROTOCOL);
+    } catch (err) {
+      loggerWarn('[ReticulumResource] Failed to unhandle resource protocol:', err);
+    } finally {
+      reticulumResourceProtocolRegistered = false;
+    }
+  }
+  if (!reticulumResourceStore) return;
+  try {
+    reticulumResourceStore.close();
+  } catch (err) {
+    loggerWarn('[ReticulumResource] Failed to close resource store:', err);
+  } finally {
+    reticulumResourceStore = null;
+  }
+}
+
+function pruneReticulumResourceUrlTokens(now = Date.now()): void {
+  for (const [token, entry] of reticulumResourceUrlTokens.entries()) {
+    if (entry.expiresAt <= now) {
+      reticulumResourceUrlTokens.delete(token);
+    }
+  }
+  if (reticulumResourceUrlTokens.size <= RETICULUM_RESOURCE_URL_TOKEN_MAX) return;
+  const excess = reticulumResourceUrlTokens.size - RETICULUM_RESOURCE_URL_TOKEN_MAX;
+  const oldest = [...reticulumResourceUrlTokens.entries()]
+    .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+    .slice(0, excess);
+  for (const [token] of oldest) {
+    reticulumResourceUrlTokens.delete(token);
+  }
+}
+
+function mintReticulumResourceUrlToken(resourceId: string): string {
+  pruneReticulumResourceUrlTokens();
+  const token = crypto.randomBytes(24).toString('hex');
+  reticulumResourceUrlTokens.set(token, {
+    resourceId,
+    expiresAt: Date.now() + RETICULUM_RESOURCE_URL_TOKEN_TTL_MS,
+  });
+  return token;
+}
+
+function validateReticulumResourceUrlToken(
+  resourceId: string,
+  token: string
+): boolean {
+  pruneReticulumResourceUrlTokens();
+  const entry = reticulumResourceUrlTokens.get(token);
+  return Boolean(entry && entry.resourceId === resourceId);
+}
+
+function reticulumResourceUrl(resourceId: string): string {
+  const token = mintReticulumResourceUrlToken(resourceId);
+  return `${RETICULUM_RESOURCE_PROTOCOL}://-/resource/${encodeURIComponent(resourceId)}?token=${encodeURIComponent(token)}`;
+}
+
+async function registerReticulumResourceProtocol(): Promise<void> {
+  if (reticulumResourceProtocolRegistered) return;
+  const protocol = session.defaultSession.protocol;
+  if (protocol.isProtocolHandled(RETICULUM_RESOURCE_PROTOCOL)) {
+    protocol.unhandle(RETICULUM_RESOURCE_PROTOCOL);
+  }
+  protocol.handle(RETICULUM_RESOURCE_PROTOCOL, async (request) => {
+    try {
+      const url = new URL(request.url);
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts[0] !== 'resource' || !parts[1]) {
+        return new Response('Not Found', { status: 404 });
+      }
+      const resourceId = decodeURIComponent(parts[1]);
+      const token = url.searchParams.get('token') || '';
+      if (!validateReticulumResourceUrlToken(resourceId, token)) {
+        return new Response('Not Found', { status: 404 });
+      }
+      const store = getReticulumResourceStore();
+      const manifest = store.getManifest(resourceId);
+      if (!manifest) return new Response('Not Found', { status: 404 });
+      const filePath = store.assembleResource(resourceId);
+      const bytes = await fs.promises.readFile(filePath);
+      const body = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
+      const headers = new Headers();
+      headers.set('content-type', manifest.mimeType || 'application/octet-stream');
+      headers.set('cache-control', 'no-store');
+      headers.set('cross-origin-resource-policy', 'same-origin');
+      return new Response(body, { status: 200, headers });
+    } catch (err) {
+      loggerWarn('[ReticulumResource] Protocol read failed:', err);
+      return new Response('Not Found', { status: 404 });
+    }
+  });
+  reticulumResourceProtocolRegistered = true;
+}
+
+function normalizeBase64Payload(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  const withoutPrefix = trimmed.includes(',')
+    ? trimmed.slice(trimmed.indexOf(',') + 1)
+    : trimmed;
+  return /^[A-Za-z0-9+/]*={0,2}$/u.test(withoutPrefix) ? withoutPrefix : '';
+}
 
 // let allowedDomains: string[] = [...defaultDomains]
 const domainHolder = {
@@ -753,6 +883,7 @@ export class ElectronCapacitorApp {
       this.audioSurfaceScheme,
       join(app.getAppPath(), 'app')
     );
+    await registerReticulumResourceProtocol();
     this.audioSurfaceHttpsOrigin = await ensureAudioSurfaceHttpsServer(
       join(app.getAppPath(), 'app')
     );
@@ -2216,6 +2347,7 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
   const reticulumChat = startReticulumChatManager(bridgeTransport ?? null, undefined, {
     signLocalFields: signReticulumChatControlFields,
     validateGroupMember: validateQortalGroupMember,
+    resourceStore: getReticulumResourceStore(),
   });
   attachReticulumChatListeners(reticulumChat);
   startReticulumPresenceHealthWatchdog();
@@ -3128,6 +3260,7 @@ const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
+const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
 let reticulumChatListenersAttached = false;
 
 export function attachChatListeners(
@@ -3174,6 +3307,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumChatSummarySubscribers,
       'reticulumChat:summaryChanged',
+      payload
+    )
+  );
+
+  manager.on('resource', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatResourceSubscribers,
+      'reticulumChat:resource',
       payload
     )
   );
@@ -3268,6 +3409,124 @@ ipcMain.handle(
     }
   }
 );
+
+ipcMain.handle(
+  'reticulumChat:requestResource',
+  async (
+    _event,
+    groupId: number,
+    manifest: unknown,
+    eventId?: string
+  ) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      const result = await manager.requestResource(
+        groupId,
+        manifest as any,
+        typeof eventId === 'string' && eventId ? eventId : undefined
+      );
+      if (result.ok) return { success: true };
+      const failed = result as Exclude<typeof result, { ok: true }>;
+      return { success: false, error: failed.error ?? failed.reason };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum resource request failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumResource:importBase64',
+  async (
+    _event,
+    payload: {
+      base64?: string;
+      namespace?: string;
+      ownerId?: string;
+      fileName?: string;
+      mimeType?: string;
+      encrypted?: boolean;
+      metadata?: Record<string, unknown>;
+    }
+  ) => {
+    const base64 = normalizeBase64Payload(payload?.base64);
+    if (!base64) return { success: false, error: 'Invalid base64 resource data' };
+    const mimeType =
+      typeof payload?.mimeType === 'string' && payload.mimeType.trim()
+        ? payload.mimeType.trim()
+        : 'application/octet-stream';
+    const fileName =
+      typeof payload?.fileName === 'string' && payload.fileName.trim()
+        ? payload.fileName.trim()
+        : 'resource.bin';
+    const namespace =
+      typeof payload?.namespace === 'string' && payload.namespace.trim()
+        ? payload.namespace.trim()
+        : 'default';
+    const tempDir = path.join(app.getPath('temp'), 'qortal-reticulum-resource-imports');
+    const tempPath = path.join(
+      tempDir,
+      `${Date.now()}-${Math.random().toString(16).slice(2)}-${path.basename(fileName)}`
+    );
+    try {
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      await fs.promises.writeFile(tempPath, Buffer.from(base64, 'base64'));
+      const manifest = getReticulumResourceStore().importLocalFile({
+        sourcePath: tempPath,
+        namespace,
+        ownerId:
+          typeof payload?.ownerId === 'string' && payload.ownerId.trim()
+            ? payload.ownerId.trim()
+            : undefined,
+        fileName,
+        mimeType,
+        encrypted: payload?.encrypted === true,
+        metadata:
+          payload?.metadata && typeof payload.metadata === 'object'
+            ? payload.metadata
+            : undefined,
+      });
+      return { success: true, manifest };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum resource import failed',
+      };
+    } finally {
+      await fs.promises.unlink(tempPath).catch(() => undefined);
+    }
+  }
+);
+
+ipcMain.handle('reticulumResource:getUrl', async (_event, resourceId: string) => {
+  const id = typeof resourceId === 'string' ? resourceId.trim() : '';
+  if (!id) return { success: false, error: 'Invalid resource id' };
+  try {
+    const store = getReticulumResourceStore();
+    const manifest = store.getManifest(id);
+    if (!manifest) return { success: false, error: 'Unknown resource' };
+    store.assembleResource(id);
+    return {
+      success: true,
+      url: reticulumResourceUrl(id),
+      manifest,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Reticulum resource URL failed',
+    };
+  }
+});
 
 ipcMain.handle(
   'reticulumChat:getHistory',
@@ -3407,6 +3666,13 @@ ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:summaryChanged:unsubscribe', (event) => {
   reticulumChatSummarySubscribers.delete(event.sender);
+});
+
+ipcMain.on('reticulumChat:resource:subscribe', (event) => {
+  reticulumChatResourceSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:resource:unsubscribe', (event) => {
+  reticulumChatResourceSubscribers.delete(event.sender);
 });
 
 /**
