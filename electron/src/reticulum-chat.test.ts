@@ -105,19 +105,40 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
       authorAddress,
       authorPublicKey,
     };
-    const signedFields =
+    let signedFields = fullFields;
+    if (
       fullFields.type === 'RCHAT_EVENT_REQ' &&
       typeof fullFields.groupId === 'number' &&
       typeof fullFields.eventId === 'string' &&
       typeof fullFields.timestamp === 'number'
-        ? buildReticulumChatEventRequestSignedFields({
-            groupId: fullFields.groupId,
-            eventId: fullFields.eventId,
-            authorAddress,
-            authorPublicKey,
-            timestamp: fullFields.timestamp,
-          })
-        : fullFields;
+    ) {
+      signedFields = buildReticulumChatEventRequestSignedFields({
+        groupId: fullFields.groupId,
+        eventId: fullFields.eventId,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_RESOURCE_REQ' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.resourceId === 'string' &&
+      typeof fullFields.fileHash === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatResourceRequestSignedFields({
+        groupId: fullFields.groupId,
+        resourceId: fullFields.resourceId,
+        eventId: typeof fullFields.eventId === 'string' ? fullFields.eventId : undefined,
+        fileHash: fullFields.fileHash,
+        chunkIndexes: Array.isArray(fullFields.chunkIndexes)
+          ? fullFields.chunkIndexes.filter((index): index is number => Number.isInteger(index))
+          : [],
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    }
     const signature = nacl.sign.detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
       kp.secretKey
@@ -167,15 +188,12 @@ function signedEventRequestWire(params: {
 
 function signedResourceRequestWire(params: {
   groupId: number;
-  resourceId: string;
   fileHash: string;
   chunkIndexes: number[];
   timestamp: number;
 }): {
-  rid: string;
   fh: string;
   c: number[];
-  a: string;
   pk: string;
   ts: number;
   sig: string;
@@ -185,7 +203,7 @@ function signedResourceRequestWire(params: {
   const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
   const fields = buildReticulumChatResourceRequestSignedFields({
     groupId: params.groupId,
-    resourceId: params.resourceId,
+    resourceId: params.fileHash,
     fileHash: params.fileHash,
     chunkIndexes: params.chunkIndexes,
     authorAddress,
@@ -193,10 +211,8 @@ function signedResourceRequestWire(params: {
     timestamp: params.timestamp,
   });
   return {
-    rid: params.resourceId,
     fh: params.fileHash,
     c: params.chunkIndexes,
-    a: authorAddress,
     pk: authorPublicKey,
     ts: params.timestamp,
     sig: base58Encode(
@@ -853,7 +869,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'event_req',
       g: 9,
-      r: expect.objectContaining({
+      q: expect.objectContaining({
         id: event.eventId,
         a: expect.any(String),
         pk: expect.any(String),
@@ -910,7 +926,7 @@ describe('reticulum chat manager', () => {
         peer: 'peer-a',
         wire: expect.objectContaining({
           k: 'event_req',
-          r: expect.objectContaining({ id: event.eventId }),
+          q: expect.objectContaining({ id: event.eventId }),
         }),
       })
     );
@@ -943,7 +959,7 @@ describe('reticulum chat manager', () => {
         peer: 'peer-b',
         wire: expect.objectContaining({
           k: 'event_req',
-          r: expect.objectContaining({ id: event.eventId }),
+          q: expect.objectContaining({ id: event.eventId }),
         }),
       })
     );
@@ -1015,7 +1031,7 @@ describe('reticulum chat manager', () => {
         peer: 'peer-b',
         wire: expect.objectContaining({
           k: 'event_req',
-          r: expect.objectContaining({ id: event.eventId }),
+          q: expect.objectContaining({ id: event.eventId }),
         }),
       })
     );
@@ -1054,8 +1070,8 @@ describe('reticulum chat manager', () => {
       metadata: { groupId: 77 },
     };
     resourceStore.storeManifest(manifest);
-    resourceStore.storeChunk(manifest.resourceId, 0, chunk0);
-    resourceStore.storeChunk(manifest.resourceId, 2, chunk2);
+    resourceStore.storeChunk(manifest.fileHash, 0, chunk0);
+    resourceStore.storeChunk(manifest.fileHash, 2, chunk2);
 
     const offeredResources: Array<Record<string, unknown>> = [];
     const offerWires: Array<Record<string, unknown>> = [];
@@ -1084,9 +1100,8 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'resource_req',
         g: 77,
-        r: signedResourceRequestWire({
+        q: signedResourceRequestWire({
           groupId: 77,
-          resourceId: manifest.resourceId,
           fileHash,
           chunkIndexes: [0, 1, 2],
           timestamp: 100_000,
@@ -1156,6 +1171,12 @@ describe('reticulum chat manager', () => {
         k: 'resource_req',
         g: 78,
       })
+    );
+    const requestWire = sent.find((wire) => wire.k === 'resource_req') as any;
+    expect(requestWire.q.rid).toBeUndefined();
+    expect(requestWire.q.fh).toBe(manifest.fileHash);
+    expect(byteLengthUtf8JsonWithBridgeSender(requestWire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     manager.close();
     resourceStore.close();
@@ -1769,7 +1790,7 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'event_req',
         g: 57,
-        r: signedEventRequestWire({
+        q: signedEventRequestWire({
           groupId: 57,
           eventId: event.eventId,
           timestamp: 60_000,
@@ -1897,7 +1918,7 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'event_req',
         g: 74,
-        r: {
+        q: {
           id: event.eventId,
           a: blockedAddress,
           pk: blockedPublicKey,
@@ -2030,7 +2051,7 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'event_req',
         g: 76,
-        r: signedEventRequestWire({
+        q: signedEventRequestWire({
           groupId: 76,
           eventId: event.eventId,
           timestamp: 100_000,

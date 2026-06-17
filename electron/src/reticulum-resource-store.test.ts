@@ -53,6 +53,7 @@ describe('reticulum resource store', () => {
 
     expect(manifest.namespace).toBe('test.feature');
     expect(manifest.encrypted).toBe(true);
+    expect(manifest.resourceId).toBe(manifest.fileHash);
     expect(manifest.chunkHashes).toHaveLength(1);
     expect(store.getChunks(manifest.resourceId)).toEqual([
       expect.objectContaining({
@@ -89,18 +90,20 @@ describe('reticulum resource store', () => {
     };
 
     store.storeManifest(manifest);
-    expect(store.getChunks(manifest.resourceId).map((chunk) => chunk.status)).toEqual([
+    expect(store.getManifest(manifest.fileHash)?.resourceId).toBe(manifest.fileHash);
+    expect(store.getManifest(manifest.resourceId)).toBeNull();
+    expect(store.getChunks(manifest.fileHash).map((chunk) => chunk.status)).toEqual([
       'missing',
       'missing',
     ]);
-    expect(() => store.storeChunk(manifest.resourceId, 0, Buffer.from('wrong'))).toThrow(
+    expect(() => store.storeChunk(manifest.fileHash, 0, Buffer.from('wrong'))).toThrow(
       /Chunk hash mismatch/
     );
 
-    store.storeChunk(manifest.resourceId, 0, first);
-    store.storeChunk(manifest.resourceId, 1, second);
+    store.storeChunk(manifest.fileHash, 0, first);
+    store.storeChunk(manifest.fileHash, 1, second);
 
-    const assembledPath = store.assembleResource(manifest.resourceId);
+    const assembledPath = store.assembleResource(manifest.fileHash);
     expect(fs.readFileSync(assembledPath)).toEqual(Buffer.concat([first, second]));
   });
 

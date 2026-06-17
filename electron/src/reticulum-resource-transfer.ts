@@ -184,16 +184,23 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     candidatePeers?: string[];
     featureData?: Record<string, unknown>;
   }): void {
-    this.resourceStore.storeManifest(options.manifest);
+    const blobId = options.manifest.fileHash.toLowerCase();
+    const manifest: ReticulumResourceManifest = {
+      ...options.manifest,
+      resourceId: blobId,
+      fileHash: blobId,
+      chunkHashes: options.manifest.chunkHashes.map((hash) => hash.toLowerCase()),
+    };
+    this.resourceStore.storeManifest(manifest);
     try {
-      this.resourceStore.assembleResource(options.manifest.resourceId);
+      this.resourceStore.assembleResource(blobId);
       return;
     } catch {
       // Missing chunks are expected; continue into network retrieval.
     }
     const state = this.upsertDownload(
       options.contextId,
-      options.manifest,
+      manifest,
       options.eventId,
       options.candidatePeers ?? [],
       options.featureData
@@ -271,7 +278,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!this.isValidOffer(offer)) return;
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return;
-    const manifest = this.resourceStore.getManifest(offer.resourceId);
+    const download = this.downloads.get(offer.fileHash.toLowerCase());
+    const manifest = download?.manifest ?? this.resourceStore.getManifest(offer.resourceId);
     if (!manifest || manifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) return;
     if (this.canAcceptOffer) {
       const allowed = await this.canAcceptOffer(offer.contextId, offer, manifest);
@@ -291,7 +299,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       sourcePeerHash: peerKey,
     };
     this.offers.set(offer.transferId, trackedOffer);
-    const download = this.downloads.get(offer.resourceId);
     if (download && offer.chunkIndex != null) {
       download.peerHashes.add(peerKey);
       let peers = download.chunkPeers.get(offer.chunkIndex);
@@ -328,7 +335,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     peerHashes: string[],
     featureData?: Record<string, unknown>
   ): ReticulumResourceDownloadState<TRequestWire> {
-    const existing = this.downloads.get(manifest.resourceId);
+    const blobId = manifest.fileHash.toLowerCase();
+    const existing = this.downloads.get(blobId);
     if (existing) {
       existing.contextId = contextId;
       existing.eventId = eventId || existing.eventId;
@@ -342,7 +350,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     const state: ReticulumResourceDownloadState<TRequestWire> = {
       contextId,
-      resourceId: manifest.resourceId,
+      resourceId: blobId,
       ...(eventId ? { eventId } : {}),
       manifest,
       peerHashes: new Set(peerHashes.map((peer) => peer.trim().toLowerCase()).filter(Boolean)),
@@ -351,7 +359,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       nextRequestAt: 0,
       ...(featureData ? { featureData } : {}),
     };
-    this.downloads.set(manifest.resourceId, state);
+    this.downloads.set(blobId, state);
     return state;
   }
 
@@ -693,7 +701,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
           : {};
       this.resourceStore.importLocalFile({
         sourcePath: payload.path,
-        resourceId: offer.resourceId,
         namespace: pendingManifest?.namespace || 'reticulum-resource',
         ownerId: pendingManifest?.ownerId,
         fileName: pendingManifest?.fileName || offer.fileName,

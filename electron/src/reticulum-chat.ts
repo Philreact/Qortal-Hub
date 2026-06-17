@@ -107,11 +107,9 @@ export interface ReticulumChatEventRequestWire {
 }
 
 export interface ReticulumChatResourceRequestWire {
-  rid: string;
   eid?: string;
   fh: string;
   c?: number[];
-  a: string;
   pk: string;
   ts: number;
   sig: string;
@@ -170,9 +168,9 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'sub'; g: number }
   | { t: 'RCHAT'; k: 'unsub'; g: number }
   | { t: 'RCHAT'; k: 'event_hint'; g: number; h: ReticulumChatEventHintWire }
-  | { t: 'RCHAT'; k: 'event_req'; g: number; r: ReticulumChatEventRequestWire }
+  | { t: 'RCHAT'; k: 'event_req'; g: number; q: ReticulumChatEventRequestWire }
   | { t: 'RCHAT'; k: 'event_offer'; g: number; o: ReticulumChatEventOfferWire }
-  | { t: 'RCHAT'; k: 'resource_req'; g: number; r: ReticulumChatResourceRequestWire }
+  | { t: 'RCHAT'; k: 'resource_req'; g: number; q: ReticulumChatResourceRequestWire }
   | { t: 'RCHAT'; k: 'resource_offer'; g: number; o: ReticulumChatResourceOfferWire }
   | { t: 'RCHAT'; k: 'author_gap_req'; g: number; a: string; after: number; limit?: number }
   | { t: 'RCHAT'; k: 'author_heads_req'; g: number; limit?: number; offset?: number }
@@ -573,7 +571,6 @@ export function verifyReticulumChatResourceRequest(
 ): boolean {
   try {
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
-    if (typeof request.rid !== 'string' || request.rid.length < 8) return false;
     if (request.eid != null && (typeof request.eid !== 'string' || request.eid.length < 8)) return false;
     if (typeof request.fh !== 'string' || !/^[0-9a-f]{64}$/i.test(request.fh)) return false;
     if (
@@ -584,24 +581,23 @@ export function verifyReticulumChatResourceRequest(
     ) {
       return false;
     }
-    if (typeof request.a !== 'string' || !request.a) return false;
     if (typeof request.pk !== 'string' || !request.pk) return false;
     if (typeof request.sig !== 'string' || !request.sig) return false;
     if (!Number.isFinite(request.ts)) return false;
     if (request.ts - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
     if (now - request.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(request.pk);
-    if (derived !== request.a) return false;
+    if (!derived) return false;
     return nacl.sign.detached.verify(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatResourceRequestSignedFields({
             groupId,
-            resourceId: request.rid,
+            resourceId: request.fh,
             eventId: request.eid,
             fileHash: request.fh,
             chunkIndexes: Array.isArray(request.c) ? request.c : [],
-            authorAddress: request.a,
+            authorAddress: derived,
             authorPublicKey: request.pk,
             timestamp: request.ts,
           })
@@ -701,14 +697,14 @@ export class ReticulumChatManager extends EventEmitter {
           t: 'RCHAT',
           k: 'resource_req',
           g: groupId,
-          r: request,
+          q: request,
         }),
       fanoutRequest: (groupId, request) =>
         this.fanout({
           t: 'RCHAT',
           k: 'resource_req',
           g: groupId,
-          r: request,
+          q: request,
         }),
       sendOfferToPeer: (peerHash, groupId, offer) =>
         this.sendToPeer(peerHash, {
@@ -719,7 +715,7 @@ export class ReticulumChatManager extends EventEmitter {
         }),
       canServeRequest: async (groupId, request, manifest) => {
         if (!this.localGroupIds.has(groupId)) return false;
-        if (!this.resourceManifestBelongsToGroup(manifest, groupId)) return false;
+        if (manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) return false;
         if (request.eventId) {
           const event = this.db.getEvent(request.eventId);
           if (!event || event.groupId !== groupId) return false;
@@ -1051,7 +1047,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'event_req':
         void this.handleEventResourceRequest(
           groupId,
-          wire.r,
+          wire.q,
           peerPresenceHash || senderDestinationHash
         );
         return;
@@ -1061,7 +1057,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'resource_req':
         void this.handleGenericResourceRequest(
           groupId,
-          wire.r,
+          wire.q,
           peerPresenceHash || senderDestinationHash
         );
         return;
@@ -1821,7 +1817,7 @@ export class ReticulumChatManager extends EventEmitter {
       t: 'RCHAT',
       k: 'event_req',
       g: hint.groupId,
-      r: signedRequest,
+      q: signedRequest,
     });
     item.inFlight = false;
     if (this.db.hasEvent(hint.eventId)) {
@@ -1910,7 +1906,7 @@ export class ReticulumChatManager extends EventEmitter {
       fileHash: manifest.fileHash,
       chunkIndexes,
       groupId,
-      resourceId: manifest.resourceId,
+      resourceId: manifest.fileHash,
       timestamp,
       type: 'RCHAT_RESOURCE_REQ',
     }).catch((err) => {
@@ -1937,11 +1933,9 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.localGroupIds.add(groupId);
     const wire: ReticulumChatResourceRequestWire = {
-      rid: manifest.resourceId,
       ...(eventId ? { eid: eventId } : {}),
       fh: manifest.fileHash,
       c: chunkIndexes,
-      a: signed.authorAddress,
       pk: signed.authorPublicKey,
       ts: timestamp,
       sig: signed.signature,
@@ -2020,7 +2014,7 @@ export class ReticulumChatManager extends EventEmitter {
         );
         if (
           request &&
-          wireFitsReticulum({ t: 'RCHAT', k: 'resource_req', g: groupId, r: request })
+          wireFitsReticulum({ t: 'RCHAT', k: 'resource_req', g: groupId, q: request })
         ) {
           break;
         }
@@ -2045,11 +2039,11 @@ export class ReticulumChatManager extends EventEmitter {
     await this.resourceTransfer?.handleRequest(
       groupId,
       {
-        resourceId: request.rid,
+        resourceId: request.fh,
         eventId: request.eid,
         fileHash: request.fh,
         chunkIndexes: request.c,
-        requesterAddress: request.a,
+        requesterAddress: deriveAddressFromPublicKey(request.pk),
       },
       peerHash
     );

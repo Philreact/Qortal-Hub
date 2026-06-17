@@ -45,7 +45,6 @@ export type ReticulumResourceImportOptions = {
   sourcePath: string;
   namespace: string;
   ownerId?: string;
-  resourceId?: string;
   fileName?: string;
   mimeType?: string;
   chunkSize?: number;
@@ -283,7 +282,7 @@ export class ReticulumResourceStore {
       fs.closeSync(fd);
     }
     const digest = fileHash.digest('hex');
-    const resourceId = options.resourceId?.trim() || sha256Hex(`${options.namespace}:${digest}`);
+    const resourceId = digest;
     const blobDir = this.blobDir(digest);
     const chunksDir = this.chunksDir(digest);
     fs.rmSync(blobDir, { recursive: true, force: true });
@@ -333,43 +332,44 @@ export class ReticulumResourceStore {
   }
 
   storeManifest(manifest: ReticulumResourceManifest): void {
-    this.validateManifest(manifest);
+    const normalizedManifest = this.normalizeManifest(manifest);
+    this.validateManifest(normalizedManifest);
     const now = this.now();
     this.stmtUpsertResource.run({
-      resource_id: manifest.resourceId,
-      namespace: manifest.namespace,
-      owner_id: manifest.ownerId ?? null,
-      file_name: safeFileName(manifest.fileName),
-      mime_type: manifest.mimeType,
-      size_bytes: manifest.sizeBytes,
-      chunk_size: manifest.chunkSize,
-      chunk_count: manifest.chunkHashes.length,
-      chunk_hashes: JSON.stringify(manifest.chunkHashes),
-      file_hash: manifest.fileHash,
-      encrypted: manifest.encrypted ? 1 : 0,
+      resource_id: normalizedManifest.resourceId,
+      namespace: normalizedManifest.namespace,
+      owner_id: normalizedManifest.ownerId ?? null,
+      file_name: safeFileName(normalizedManifest.fileName),
+      mime_type: normalizedManifest.mimeType,
+      size_bytes: normalizedManifest.sizeBytes,
+      chunk_size: normalizedManifest.chunkSize,
+      chunk_count: normalizedManifest.chunkHashes.length,
+      chunk_hashes: JSON.stringify(normalizedManifest.chunkHashes),
+      file_hash: normalizedManifest.fileHash,
+      encrypted: normalizedManifest.encrypted ? 1 : 0,
       status: 'pending',
       assembled_path: null,
-      metadata: manifest.metadata ? JSON.stringify(manifest.metadata) : null,
-      thumbnail: manifest.thumbnail ? JSON.stringify(manifest.thumbnail) : null,
-      created_at: manifest.createdAt || now,
+      metadata: normalizedManifest.metadata ? JSON.stringify(normalizedManifest.metadata) : null,
+      thumbnail: normalizedManifest.thumbnail ? JSON.stringify(normalizedManifest.thumbnail) : null,
+      created_at: normalizedManifest.createdAt || now,
       updated_at: now,
     });
-    for (const [chunkIndex, chunkHash] of manifest.chunkHashes.entries()) {
-      const existing = this.getChunk(manifest.resourceId, chunkIndex);
+    for (const [chunkIndex, chunkHash] of normalizedManifest.chunkHashes.entries()) {
+      const existing = this.getChunk(normalizedManifest.resourceId, chunkIndex);
       this.stmtUpsertChunk.run({
-        resource_id: manifest.resourceId,
+        resource_id: normalizedManifest.resourceId,
         chunk_index: chunkIndex,
         chunk_hash: chunkHash,
-        size_bytes: this.expectedChunkSize(manifest, chunkIndex),
+        size_bytes: this.expectedChunkSize(normalizedManifest, chunkIndex),
         status: existing?.status === 'complete' ? 'complete' : 'missing',
         local_path: existing?.localPath ?? null,
         updated_at: now,
       });
     }
-    fs.mkdirSync(this.blobDir(manifest.fileHash), { recursive: true });
+    fs.mkdirSync(this.blobDir(normalizedManifest.fileHash), { recursive: true });
     fs.writeFileSync(
-      this.manifestPath(manifest.fileHash),
-      JSON.stringify(manifest, null, 2),
+      this.manifestPath(normalizedManifest.fileHash),
+      JSON.stringify(normalizedManifest, null, 2),
       'utf8'
     );
   }
@@ -513,6 +513,18 @@ export class ReticulumResourceStore {
     if (manifest.chunkHashes.some((hash) => !/^[0-9a-f]{64}$/i.test(hash))) {
       throw new Error('Invalid chunk hash');
     }
+  }
+
+  private normalizeManifest(manifest: ReticulumResourceManifest): ReticulumResourceManifest {
+    const fileHash = typeof manifest.fileHash === 'string' ? manifest.fileHash.trim().toLowerCase() : '';
+    return {
+      ...manifest,
+      fileHash,
+      resourceId: fileHash,
+      chunkHashes: Array.isArray(manifest.chunkHashes)
+        ? manifest.chunkHashes.map((hash) => String(hash).trim().toLowerCase())
+        : [],
+    };
   }
 
   private hasAllChunks(resourceId: string): boolean {
