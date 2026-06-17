@@ -353,6 +353,26 @@ export const MessageItemComponent = ({
     typeof imageResourceManifest?.fileHash === 'string'
       ? imageResourceManifest.fileHash
       : '';
+  const imageResourceWidth = (() => {
+    const direct = Number(imageResourceManifest?.width);
+    const metadata = Number(
+      (imageResourceManifest?.metadata as Record<string, unknown> | undefined)?.width
+    );
+    const value = Number.isFinite(direct) && direct > 0 ? direct : metadata;
+    return Number.isFinite(value) && value > 0 ? value : null;
+  })();
+  const imageResourceHeight = (() => {
+    const direct = Number(imageResourceManifest?.height);
+    const metadata = Number(
+      (imageResourceManifest?.metadata as Record<string, unknown> | undefined)?.height
+    );
+    const value = Number.isFinite(direct) && direct > 0 ? direct : metadata;
+    return Number.isFinite(value) && value > 0 ? value : null;
+  })();
+  const imageResourceAspectRatio =
+    imageResourceWidth && imageResourceHeight
+      ? `${imageResourceWidth} / ${imageResourceHeight}`
+      : '4 / 3';
   const reticulumResourceGroupId = Number(
     message?.groupId ??
       message?.decryptedData?.groupId ??
@@ -1239,12 +1259,14 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {displayImageUrl &&
-              (localResourceImageUrl || displayImageUrl.startsWith('data:image/') ? (
+            {(displayImageUrl || isReticulumResourceImage) &&
+              (displayImageUrl &&
+              (localResourceImageUrl || displayImageUrl.startsWith('data:image/')) ? (
                 <Box
                   component="img"
                   src={displayImageUrl}
                   sx={{
+                    aspectRatio: imageResourceAspectRatio,
                     borderRadius: '8px',
                     display: 'block',
                     marginTop: '8px',
@@ -1255,6 +1277,39 @@ export const MessageItemComponent = ({
                 />
               ) : imageEmbedLink ? (
                 <Embed embedLink={imageEmbedLink} />
+              ) : isReticulumResourceImage ? (
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    aspectRatio: imageResourceAspectRatio,
+                    backgroundColor: alpha(theme.palette.text.primary, 0.045),
+                    border: '1px solid',
+                    borderColor: alpha(theme.palette.text.primary, 0.08),
+                    borderRadius: '8px',
+                    color: theme.palette.text.secondary,
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginTop: '8px',
+                    maxHeight: 360,
+                    maxWidth: '100%',
+                    minHeight: 96,
+                    overflow: 'hidden',
+                    position: 'relative',
+                    width: 'min(100%, 480px)',
+                  }}
+                >
+                  <Typography sx={{ fontSize: '13px' }}>
+                    Downloading image...
+                  </Typography>
+                  <LinearProgress
+                    sx={{
+                      bottom: 0,
+                      left: 0,
+                      position: 'absolute',
+                      right: 0,
+                    }}
+                  />
+                </Box>
               ) : null)}
 
             {/* Sending / updating status */}

@@ -1527,6 +1527,38 @@ export const ChatGroup = ({
         }
 
         const imagesToPublish: ImageToPublish[] = [];
+        const getImageDimensions = (
+          base64: string,
+          mimeType = 'image/webp'
+        ): Promise<{ width: number; height: number } | null> => {
+          return new Promise((resolve) => {
+            if (typeof base64 !== 'string' || !base64.trim()) {
+              resolve(null);
+              return;
+            }
+            const img = new Image();
+            const timeout = window.setTimeout(() => {
+              img.onload = null;
+              img.onerror = null;
+              resolve(null);
+            }, 5_000);
+            img.onload = () => {
+              window.clearTimeout(timeout);
+              const width = Number(img.naturalWidth || img.width || 0);
+              const height = Number(img.naturalHeight || img.height || 0);
+              resolve(
+                Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+                  ? { width, height }
+                  : null
+              );
+            };
+            img.onerror = () => {
+              window.clearTimeout(timeout);
+              resolve(null);
+            };
+            img.src = `data:${mimeType};base64,${base64}`;
+          });
+        };
 
         if (deleteImage && !reticulumChatEnabled) {
           const fee = await getFee('ARBITRARY');
@@ -1582,6 +1614,7 @@ export const ChatGroup = ({
             ? await Promise.all(
                 chatImagesToSave.map(async (base64, index) => {
                   const imageMimeType = 'image/webp';
+                  const dimensions = await getImageDimensions(base64, imageMimeType);
                   const resourceBase64 =
                     isPrivate === true
                       ? await encryptChatMessage(
@@ -1607,6 +1640,12 @@ export const ChatGroup = ({
                       feature: 'reticulum-chat',
                       groupId: selectedGroup,
                       originalMimeType: imageMimeType,
+                      ...(dimensions
+                        ? {
+                            width: dimensions.width,
+                            height: dimensions.height,
+                          }
+                        : {}),
                     },
                   });
                   if (!imported?.success || !imported.manifest) {
@@ -1616,6 +1655,12 @@ export const ChatGroup = ({
                   }
                   return {
                     ...(imported.manifest as Record<string, unknown>),
+                    ...(dimensions
+                      ? {
+                          width: dimensions.width,
+                          height: dimensions.height,
+                        }
+                      : {}),
                     reticulumResource: true,
                     timestamp: Date.now(),
                   };
