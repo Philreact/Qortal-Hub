@@ -1,6 +1,6 @@
 import { log as loggerLog, error as loggerError } from './logger';
 loggerLog('User Preload!');
-import { contextBridge, shell, ipcRenderer } from 'electron';
+import { contextBridge, shell, ipcRenderer, webUtils } from 'electron';
 import { buildBootstrapIceServers } from './stun-bootstrap';
 import { isDisabledLegacy } from './feature-flags';
 import { AUDIO_SURFACE_WINDOW_ROLE } from './audio-window-policy';
@@ -857,6 +857,13 @@ try {
   });
 
   contextBridge.exposeInMainWorld('reticulumResources', {
+    getPathForFile: (file: File) => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return '';
+      }
+    },
     importBase64: async (payload: unknown) =>
       ipcRenderer.invoke('reticulumResource:importBase64', payload) as Promise<{
         success: boolean;

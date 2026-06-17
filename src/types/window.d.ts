@@ -606,6 +606,7 @@ declare global {
     };
 
     reticulumResources?: {
+      getPathForFile: (file: File) => string;
       importBase64: (payload: {
         base64?: string;
         namespace?: string;

@@ -634,6 +634,18 @@ export const MessageItemComponent = ({
     reticulumResourceGroupId,
     secretKeyObject,
   ]);
+
+  const markFileResourceReadyIfAvailable = useCallback(async () => {
+    if (!reticulumFileResourceId) return false;
+    const result = await window.reticulumResources?.getUrl?.(reticulumFileResourceId);
+    if (result?.success) {
+      setFileResourceStatus('ready');
+      setFileResourceProgress(100);
+      return true;
+    }
+    return false;
+  }, [reticulumFileResourceId]);
+
   useEffect(() => {
     if (
       (!imageResourceId && !reticulumFileResourceId) ||
@@ -654,9 +666,10 @@ export const MessageItemComponent = ({
           setFileResourceStatus('ready');
           setFileResourceProgress(100);
         }
+        void markFileResourceReadyIfAvailable();
       }
     });
-  }, [imageResourceId, reticulumFileResourceId]);
+  }, [imageResourceId, markFileResourceReadyIfAvailable, reticulumFileResourceId]);
 
   const requestReticulumFileResource = useCallback(async () => {
     if (
@@ -667,10 +680,8 @@ export const MessageItemComponent = ({
     ) {
       return { success: false, error: 'Invalid resource attachment' };
     }
-    const ready = await window.reticulumResources?.getUrl?.(reticulumFileResourceId);
-    if (ready?.success) {
-      setFileResourceStatus('ready');
-      setFileResourceProgress(100);
+    const ready = await markFileResourceReadyIfAvailable();
+    if (ready) {
       return { success: true };
     }
     setFileResourceStatus('downloading');
@@ -689,13 +700,14 @@ export const MessageItemComponent = ({
     reticulumFileResourceId,
     reticulumResourceEventId,
     reticulumResourceGroupId,
+    markFileResourceReadyIfAvailable,
   ]);
 
   const saveReticulumFileResource = useCallback(async () => {
     if (!reticulumFileResourceId) return;
     setFileResourceStatus((status) => (status === 'ready' ? 'saving' : status));
-    const ready = await window.reticulumResources?.getUrl?.(reticulumFileResourceId);
-    if (!ready?.success) {
+    const ready = await markFileResourceReadyIfAvailable();
+    if (!ready) {
       const requested = await requestReticulumFileResource();
       if (requested?.success === false) return;
       return;
@@ -710,10 +722,12 @@ export const MessageItemComponent = ({
     }
     setFileResourceStatus(saved?.canceled ? 'ready' : 'error');
   }, [
+    markFileResourceReadyIfAvailable,
     requestReticulumFileResource,
     reticulumFileName,
     reticulumFileResourceId,
   ]);
+
   useEffect(() => {
     let cancelled = false;
     if (!reticulumFileResourceId) {
@@ -735,6 +749,25 @@ export const MessageItemComponent = ({
       cancelled = true;
     };
   }, [reticulumFileResourceId, resourceReloadNonce]);
+
+  useEffect(() => {
+    if (!reticulumFileResourceId || fileResourceStatus !== 'downloading') return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void markFileResourceReadyIfAvailable().then((ready) => {
+        if (cancelled || !ready) return;
+        window.clearInterval(timer);
+      });
+    }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    fileResourceStatus,
+    markFileResourceReadyIfAvailable,
+    reticulumFileResourceId,
+  ]);
   useEffect(() => {
     if (!qchatFileTransfer) return;
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);

@@ -2276,9 +2276,10 @@ export const ChatGroup = ({
       }
 
       const filePath =
-        typeof (file as File & { path?: unknown }).path === 'string'
+        window.reticulumResources?.getPathForFile?.(file) ||
+        (typeof (file as File & { path?: unknown }).path === 'string'
           ? String((file as File & { path?: unknown }).path)
-          : '';
+          : '');
       if (!isImage && !filePath) {
         setInfoSnack({
           type: 'error',
