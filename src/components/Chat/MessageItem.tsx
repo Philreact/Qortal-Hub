@@ -435,6 +435,7 @@ export const MessageItemComponent = ({
     activeTransfers?: number;
     pendingTransfers?: number;
     requestedChunkCount?: number;
+    inFlightChunkCount?: number;
     nextRequestAt?: number | null;
   } | null>(null);
   const qchatFileData = qchatFileTransfer?.data || {};
@@ -667,6 +668,7 @@ export const MessageItemComponent = ({
         activeTransfers?: number;
         pendingTransfers?: number;
         requestedChunkCount?: number;
+        inFlightChunkCount?: number;
         nextRequestAt?: number | null;
       } | null;
     }) => {

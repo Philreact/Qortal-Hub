@@ -27,6 +27,7 @@ import {
   type ReticulumResourceManifest,
 } from './reticulum-resource-store';
 import {
+  RETICULUM_RESOURCE_TRANSFER_CHUNK_BUNDLE_LIMIT,
   RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT,
   ReticulumResourceTransferManager,
   type ReticulumResourceTransferOffer,
@@ -124,8 +125,10 @@ export interface ReticulumChatResourceOffer {
   fileName: string;
   mimeType: string;
   chunkIndex?: number;
+  chunkIndexes?: number[];
   chunkHash?: string;
   chunkSize?: number;
+  bundleHash?: string;
   sourcePeerHash?: string;
 }
 
@@ -135,8 +138,10 @@ export interface ReticulumChatResourceOfferWire {
   fh: string;
   s: number;
   ci?: number;
+  cis?: number[];
   ch?: string;
   cs?: number;
+  bh?: string;
 }
 
 export interface ReticulumChatAuthorHeadWire {
@@ -409,8 +414,10 @@ function resourceOfferToWire(offer: ReticulumChatResourceOffer): ReticulumChatRe
     fh: offer.fileHash,
     s: offer.sizeBytes,
     ...(Number.isInteger(offer.chunkIndex) ? { ci: offer.chunkIndex } : {}),
+    ...(Array.isArray(offer.chunkIndexes) && offer.chunkIndexes.length > 0 ? { cis: offer.chunkIndexes } : {}),
     ...(offer.chunkHash ? { ch: offer.chunkHash } : {}),
     ...(Number.isInteger(offer.chunkSize) ? { cs: offer.chunkSize } : {}),
+    ...(offer.bundleHash ? { bh: offer.bundleHash } : {}),
   };
 }
 
@@ -426,8 +433,10 @@ function resourceOfferFromWire(groupId: number, wire: unknown): ReticulumChatRes
     fileName: '',
     mimeType: '',
     ...(Number.isInteger(o.ci) ? { chunkIndex: Number(o.ci) } : {}),
+    ...(Array.isArray(o.cis) ? { chunkIndexes: o.cis.map((index) => Number(index)) } : {}),
     ...(typeof o.ch === 'string' && o.ch ? { chunkHash: o.ch } : {}),
     ...(Number.isInteger(o.cs) ? { chunkSize: Number(o.cs) } : {}),
+    ...(typeof o.bh === 'string' && o.bh ? { bundleHash: o.bh } : {}),
   };
 }
 
@@ -746,8 +755,10 @@ export class ReticulumChatManager extends EventEmitter {
       fileName: offer.fileName,
       mimeType: offer.mimeType,
       ...(offer.chunkIndex != null ? { chunkIndex: offer.chunkIndex } : {}),
+      ...(offer.chunkIndexes?.length ? { chunkIndexes: offer.chunkIndexes } : {}),
       ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
       ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
+      ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
     };
   }
@@ -764,8 +775,10 @@ export class ReticulumChatManager extends EventEmitter {
       fileName: offer.fileName,
       mimeType: offer.mimeType,
       ...(offer.chunkIndex != null ? { chunkIndex: offer.chunkIndex } : {}),
+      ...(offer.chunkIndexes?.length ? { chunkIndexes: offer.chunkIndexes } : {}),
       ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
       ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
+      ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
     };
   }
@@ -2065,7 +2078,24 @@ export class ReticulumChatManager extends EventEmitter {
     if (typeof offer.fileHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.fileHash)) return;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return;
     if (offer.chunkIndex != null && (!Number.isInteger(offer.chunkIndex) || offer.chunkIndex < 0)) return;
+    if (offer.chunkIndexes != null) {
+      if (
+        !Array.isArray(offer.chunkIndexes) ||
+        offer.chunkIndexes.length === 0 ||
+        offer.chunkIndexes.length > RETICULUM_RESOURCE_TRANSFER_CHUNK_BUNDLE_LIMIT ||
+        typeof offer.bundleHash !== 'string' ||
+        !/^[0-9a-f]{64}$/i.test(offer.bundleHash)
+      ) return;
+      const seen = new Set<number>();
+      for (const chunkIndex of offer.chunkIndexes) {
+        if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || seen.has(chunkIndex)) return;
+        seen.add(chunkIndex);
+      }
+    }
     if (offer.chunkHash != null && (typeof offer.chunkHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.chunkHash))) {
+      return;
+    }
+    if (offer.bundleHash != null && (typeof offer.bundleHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.bundleHash))) {
       return;
     }
     if (offer.chunkSize != null && (!Number.isInteger(offer.chunkSize) || offer.chunkSize <= 0)) return;

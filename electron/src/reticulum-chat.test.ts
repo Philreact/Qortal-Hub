@@ -1107,11 +1107,19 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
+    const bundleHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat([chunk0, chunk2]))
+      .digest('hex');
     expect(offeredResources.map((payload) => payload.metadata)).toEqual([
-      expect.objectContaining({ chunkIndex: 0, chunkHash: chunkHashes[0] }),
-      expect.objectContaining({ chunkIndex: 2, chunkHash: chunkHashes[2] }),
+      expect.objectContaining({
+        chunkIndexes: [0, 2],
+        bundleHash,
+        bundleSize: chunk0.length + chunk2.length,
+      }),
     ]);
-    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual([0, 2]);
+    expect(offerWires.map((wire) => (wire.o as any).cis)).toEqual([[0, 2]]);
+    expect(offerWires.map((wire) => (wire.o as any).bh)).toEqual([bundleHash]);
     expect(offerWires.every((wire) => wire.k === 'resource_offer')).toBe(true);
     manager.close();
     resourceStore.close();
@@ -1173,6 +1181,101 @@ describe('reticulum chat manager', () => {
     expect(byteLengthUtf8JsonWithBridgeSender(requestWire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('does not accept duplicate chunk bundle offers while chunks are in flight', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-in-flight-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const chunk0 = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 5);
+    const chunk1 = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 6);
+    const chunkHashes = [chunk0, chunk1].map((chunk) =>
+      nodeCrypto.createHash('sha256').update(chunk).digest('hex')
+    );
+    const fileHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat([chunk0, chunk1]))
+      .digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '79:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: chunk0.length + chunk1.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 79 },
+    };
+    const bundleHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat([chunk0, chunk1]))
+      .digest('hex');
+    let accepts = 0;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      acceptReticulumResourceDetailed: async () => {
+        accepts += 1;
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([79]);
+    manager.subscribeGroup(79);
+
+    await expect(manager.requestResource(79, manifest)).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_offer',
+        g: 79,
+        o: {
+          x: 'transfer-bundle-a',
+          fh: fileHash,
+          s: chunk0.length + chunk1.length,
+          cis: [0, 1],
+          bh: bundleHash,
+        },
+      },
+      'peer-a'
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_offer',
+        g: 79,
+        o: {
+          x: 'transfer-bundle-b',
+          fh: fileHash,
+          s: chunk0.length + chunk1.length,
+          cis: [0, 1],
+          bh: bundleHash,
+        },
+      },
+      'peer-b'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toBe(1);
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      inFlightChunkCount: 2,
+    });
     manager.close();
     resourceStore.close();
   });

@@ -651,6 +651,7 @@ declare global {
           activeTransfers?: number;
           pendingTransfers?: number;
           requestedChunkCount?: number;
+          inFlightChunkCount?: number;
           nextRequestAt?: number | null;
         } | null;
         error?: string;
