@@ -184,6 +184,8 @@ _qchat_file_accepts_by_transfer: Dict[str, Dict[str, Any]] = {}
 _qchat_file_pending_sends_by_transfer: Dict[str, Dict[str, Any]] = {}
 _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _RETICULUM_RESOURCE_TYPE = "reticulum_resource"
+_RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
+_RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
 _QCHAT_FILE_CHUNK_SIZE = (1024 * 1024) - 1
@@ -7085,15 +7087,20 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             except Exception:
                 pass
         return
-    if decoded.get("type") not in ("QCHAT_FILE_LINK_AUTH", "RETICULUM_CHAT_RESOURCE_AUTH"):
+    if decoded.get("type") not in (
+        "QCHAT_FILE_LINK_AUTH",
+        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
+    ):
         return
     transfer_id = str(decoded.get("transferId") or "").strip()
     state["transferId"] = transfer_id
-    resource_type = (
-        _RETICULUM_CHAT_RESOURCE_TYPE
-        if decoded.get("type") == "RETICULUM_CHAT_RESOURCE_AUTH"
-        else "qchat-dm-file"
-    )
+    if decoded.get("type") == _RETICULUM_CHAT_RESOURCE_AUTH_TYPE:
+        resource_type = _RETICULUM_CHAT_RESOURCE_TYPE
+    elif decoded.get("type") == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
+        resource_type = _RETICULUM_RESOURCE_TYPE
+    else:
+        resource_type = "qchat-dm-file"
     state["resourceType"] = resource_type
     _qchat_file_emit(
         "auth",
@@ -9357,7 +9364,11 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         configure_audio_link(link, link_id)
         on_audio_link_packet(message, packet)
         return
-    if decoded.get("type") in ("QCHAT_FILE_LINK_AUTH", "RETICULUM_CHAT_RESOURCE_AUTH"):
+    if decoded.get("type") in (
+        "QCHAT_FILE_LINK_AUTH",
+        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
+    ):
         link_id = _register_incoming_qchat_file_link(
             link,
             "",
