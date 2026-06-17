@@ -335,12 +335,18 @@ export const MessageItemComponent = ({
   );
 
   const qchatFileTransfer = getQchatFileTransfer(message);
+  const isReticulumResourceImage =
+    message?.reticulumChat === true &&
+    message?.images?.[0]?.reticulumResource === true &&
+    typeof message?.images?.[0]?.resourceId === 'string';
   const imageResourceId =
-    typeof message?.images?.[0]?.resourceId === 'string'
+    isReticulumResourceImage
       ? message.images[0].resourceId
       : '';
   const imageResourceManifest =
-    imageResourceId && message?.images?.[0] && typeof message.images[0] === 'object'
+    isReticulumResourceImage &&
+    message?.images?.[0] &&
+    typeof message.images[0] === 'object'
       ? message.images[0]
       : null;
   const imageResourceFileHash =

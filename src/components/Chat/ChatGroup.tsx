@@ -224,6 +224,7 @@ export const ChatGroup = ({
     events: reticulumChatEvents,
     publishEvent: publishReticulumChatEvent,
   } = useReticulumGroupChat(selectedGroup);
+  const reticulumChatEnabledRef = useRef(false);
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
   const lastReadTimestamp = useRef(null);
   const handleUpdateRef = useRef(null);
@@ -306,6 +307,10 @@ export const ChatGroup = ({
       qManagerSize.height,
     ]
   );
+
+  useEffect(() => {
+    reticulumChatEnabledRef.current = reticulumChatEnabled;
+  }, [reticulumChatEnabled]);
 
   useEffect(() => {
     const onResize = () => {
@@ -635,6 +640,8 @@ export const ChatGroup = ({
               );
 
               res(combineUIAndExtensionMsgs);
+
+              if (reticulumChatEnabledRef.current) return;
 
               if (isInitiated) {
                 const formatted = combineUIAndExtensionMsgs

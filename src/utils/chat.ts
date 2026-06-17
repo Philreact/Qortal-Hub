@@ -5,12 +5,13 @@ export function buildImageEmbedLink(image?: {
   identifier?: string;
   service?: string;
   resourceId?: string;
+  reticulumResource?: boolean;
   dataUrl?: string;
   base64?: string;
   mimeType?: string;
   timestamp?: number;
 }): string | null {
-  if (image?.resourceId) return null;
+  if (image?.reticulumResource && image?.resourceId) return null;
   if (image?.dataUrl) return image.dataUrl;
   if (image?.base64) {
     return `data:${image.mimeType || 'image/webp'};base64,${image.base64}`;
@@ -26,7 +27,7 @@ export function buildImageEmbedLink(image?: {
 export const messageHasImage = (message) => {
   return (
     Array.isArray(message?.images) &&
-    (message.images[0]?.resourceId ||
+    ((message.images[0]?.reticulumResource && message.images[0]?.resourceId) ||
       message.images[0]?.dataUrl ||
       message.images[0]?.base64 ||
       (message.images[0]?.identifier &&
