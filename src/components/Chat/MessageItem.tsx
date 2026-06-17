@@ -539,17 +539,33 @@ export const MessageItemComponent = ({
         }
       }
       if (
-        attempt === 0 &&
         message?.reticulumChat &&
         imageResourceManifest &&
         Number.isInteger(reticulumResourceGroupId) &&
         reticulumResourceGroupId > 0
       ) {
-        void window.reticulumChat?.requestResource?.(
-          reticulumResourceGroupId,
-          imageResourceManifest,
-          reticulumResourceEventId || undefined
-        );
+        void window.reticulumChat
+          ?.requestResource?.(
+            reticulumResourceGroupId,
+            imageResourceManifest,
+            reticulumResourceEventId || undefined
+          )
+          .then((response) => {
+            if (response?.success === false) {
+              console.warn(
+                '[ReticulumResource] Image resource request failed:',
+                response.error || 'unknown error',
+                imageResourceId
+              );
+            }
+          })
+          .catch((error) => {
+            console.warn(
+              '[ReticulumResource] Image resource request failed:',
+              error instanceof Error ? error.message : error,
+              imageResourceId
+            );
+          });
       }
       if (attempt < 5) {
         const delay = attempt === 0 ? 1_500 : Math.min(8_000, 2_000 * attempt);

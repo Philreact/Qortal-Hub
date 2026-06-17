@@ -7754,14 +7754,11 @@ def on_qchat_file_resource_concluded(resource) -> None:
         is_chunked = isinstance(metadata, dict) and metadata.get("chunked") is True
         if isinstance(metadata, dict):
             metadata_transfer_id = str(metadata.get("transferId") or "")
-            metadata_file_name = str(metadata.get("fileName") or "")
             metadata_size = int(metadata.get("size") or 0)
             metadata_sha256 = str(metadata.get("sha256") or "").strip().lower()
             expected_size = int(pending.get("size") or 0)
-            expected_file_name = str(pending.get("fileName") or "")
             if (
                 (metadata_transfer_id and metadata_transfer_id != transfer_id)
-                or (metadata_file_name and metadata_file_name != expected_file_name)
                 or (metadata_size and expected_size and metadata_size != expected_size)
                 or (not is_chunked and metadata_sha256 and expected_hash and metadata_sha256 != expected_hash)
             ):

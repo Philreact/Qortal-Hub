@@ -213,10 +213,20 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey || !this.bridge) return;
     const manifest = this.resourceStore.getManifest(request.fileHash);
-    if (!manifest || manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) return;
+    if (!manifest || manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: manifest not found`
+      );
+      return;
+    }
     if (this.canServeRequest) {
       const allowed = await this.canServeRequest(contextId, request, manifest);
-      if (!allowed) return;
+      if (!allowed) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: request not allowed`
+        );
+        return;
+      }
     }
     const requestedIndexes = Array.isArray(request.chunkIndexes)
       ? request.chunkIndexes
@@ -224,7 +234,12 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
           .map((_, index) => index)
           .slice(0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT);
     const availableChunks = this.getAvailableRequestedChunks(manifest, requestedIndexes);
-    if (availableChunks.length === 0) return;
+    if (availableChunks.length === 0) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: no requested chunks available`
+      );
+      return;
+    }
     for (const chunk of availableChunks) {
       const transferId = nodeCrypto.randomBytes(8).toString('hex');
       const fileName = `${manifest.fileHash}.chunk-${chunk.index}`;
@@ -250,7 +265,14 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         },
         expiresAt: this.now() + RETICULUM_RESOURCE_TRANSFER_TTL_MS,
       });
-      if (!registered.ok) continue;
+      if (!registered.ok) {
+        const failed = registered as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[${this.loggerPrefix}] Failed to register chunk offer fileHash=${manifest.fileHash} chunk=${chunk.index}:`,
+          failed.error ?? failed.reason
+        );
+        continue;
+      }
       const offer: ReticulumResourceTransferOffer = {
         transferId,
         contextId,
@@ -274,15 +296,35 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!peerKey) return;
     const download = this.downloads.get(offer.fileHash.toLowerCase());
     const manifest = download?.manifest ?? this.resourceStore.getManifest(offer.fileHash);
-    if (!manifest || manifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) return;
+    if (!manifest || manifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: manifest not found`
+      );
+      return;
+    }
     if (this.canAcceptOffer) {
       const allowed = await this.canAcceptOffer(offer.contextId, offer, manifest);
-      if (!allowed) return;
+      if (!allowed) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: offer not allowed`
+        );
+        return;
+      }
     }
     if (offer.chunkIndex != null) {
       const expectedChunkHash = manifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
-      if (!expectedChunkHash || offer.chunkHash?.toLowerCase() !== expectedChunkHash) return;
-      if (offer.chunkSize !== this.expectedChunkSize(manifest, offer.chunkIndex)) return;
+      if (!expectedChunkHash || offer.chunkHash?.toLowerCase() !== expectedChunkHash) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash} chunk=${offer.chunkIndex}: chunk hash mismatch`
+        );
+        return;
+      }
+      if (offer.chunkSize !== this.expectedChunkSize(manifest, offer.chunkIndex)) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash} chunk=${offer.chunkIndex}: chunk size mismatch`
+        );
+        return;
+      }
       const localChunk = this.resourceStore.getChunk(offer.fileHash, offer.chunkIndex);
       if (localChunk?.status === 'complete' && localChunk.localPath) return;
     }
@@ -437,6 +479,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const deliveredChunks = new Set<number>();
     for (const [peerKey, peerRequestedChunks] of peerChunks.entries()) {
       const requests = await this.buildRequestPayloads(state, peerRequestedChunks);
+      if (requests.length === 0) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Could not build targeted request fileHash=${state.fileHash} chunks=${peerRequestedChunks.join(',')}`
+        );
+      }
       for (const request of requests) {
         const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${peerRequestedChunks.join(',')}`;
         const now = this.now();
@@ -448,16 +495,33 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         if (result.ok) {
           delivered = true;
           for (const index of peerRequestedChunks) deliveredChunks.add(index);
+        } else {
+          const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+          loggerWarn(
+            `[${this.loggerPrefix}] Targeted resource request failed fileHash=${state.fileHash} peer=${peerKey}:`,
+            failed.error ?? failed.reason
+          );
         }
       }
     }
     if (!delivered) {
       const requests = await this.buildRequestPayloads(state, chunks);
+      if (requests.length === 0) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Could not build fanout request fileHash=${state.fileHash} chunks=${chunks.join(',')}`
+        );
+      }
       for (const request of requests) {
         const result = await this.fanoutRequest(state.contextId, request);
         if (result.ok) {
           delivered = true;
           for (const index of chunks) deliveredChunks.add(index);
+        } else {
+          const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+          loggerWarn(
+            `[${this.loggerPrefix}] Fanout resource request failed fileHash=${state.fileHash}:`,
+            failed.error ?? failed.reason
+          );
         }
       }
     }
@@ -616,6 +680,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       },
     });
     if (!result.ok) {
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[${this.loggerPrefix}] Failed to accept resource offer fileHash=${offer.fileHash} transfer=${offer.transferId}:`,
+        failed.error ?? failed.reason
+      );
       this.finishTransfer(offer.transferId, false);
     }
   }
@@ -625,6 +694,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!transferId || !this.bridge) return;
     const auth = payload.auth && typeof payload.auth === 'object' ? payload.auth : {};
     if (auth.type !== this.authMessageType) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Rejecting resource auth transfer=${transferId}: bad auth type`
+      );
       await this.bridge.rejectReticulumResourceDetailed?.({
         linkId: payload.linkId || '',
         transferId,
@@ -641,6 +713,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       (offer.chunkIndex != null && Number(auth.chunkIndex) !== offer.chunkIndex) ||
       (offer.chunkHash && auth.chunkHash !== offer.chunkHash)
     ) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Rejecting resource auth transfer=${transferId}: metadata mismatch`
+      );
       await this.bridge.rejectReticulumResourceDetailed?.({
         linkId: payload.linkId || '',
         transferId,
@@ -663,11 +738,26 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const bytes = fs.readFileSync(payload.path);
       const actualHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
       const pendingManifest = this.resourceStore.getManifest(offer.fileHash);
-      if (!pendingManifest) return;
-      if (pendingManifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) return;
+      if (!pendingManifest) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Cannot import resource transfer=${offer.transferId}: manifest not found`
+        );
+        return;
+      }
+      if (pendingManifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Cannot import resource transfer=${offer.transferId}: manifest file hash mismatch`
+        );
+        return;
+      }
       if (offer.chunkIndex != null) {
         const expectedChunkHash = pendingManifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
-        if (!expectedChunkHash || actualHash !== expectedChunkHash) return;
+        if (!expectedChunkHash || actualHash !== expectedChunkHash) {
+          loggerWarn(
+            `[${this.loggerPrefix}] Cannot import resource chunk fileHash=${offer.fileHash} chunk=${offer.chunkIndex}: hash mismatch`
+          );
+          return;
+        }
         this.resourceStore.storeChunk(offer.fileHash, offer.chunkIndex, bytes);
         try {
           this.resourceStore.assembleResource(offer.fileHash);
@@ -683,7 +773,12 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.handleReceivedChunk(offer);
         return;
       }
-      if (actualHash !== offer.fileHash.toLowerCase()) return;
+      if (actualHash !== offer.fileHash.toLowerCase()) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Cannot import resource fileHash=${offer.fileHash}: hash mismatch`
+        );
+        return;
+      }
       const metadata =
         pendingManifest?.metadata && typeof pendingManifest.metadata === 'object'
           ? pendingManifest.metadata

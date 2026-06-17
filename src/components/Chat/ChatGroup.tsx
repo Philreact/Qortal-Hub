@@ -1300,6 +1300,7 @@ export const ChatGroup = ({
       const baseItem = {
         signature: event.eventId,
         id: event.eventId,
+        groupId: event.groupId,
         sender: event.authorAddress,
         senderName:
           event.senderName ||
