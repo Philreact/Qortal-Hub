@@ -370,6 +370,7 @@ export const MessageItemComponent = ({
     ? buildImageEmbedLink(message.images[0])
     : null;
   const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
+  const displayImageUrl = localResourceImageUrl || imageEmbedLink;
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
   const qchatFileData = qchatFileTransfer?.data || {};
   const qchatTransferState =
@@ -1222,11 +1223,11 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {(localResourceImageUrl || imageEmbedLink) &&
-              ((localResourceImageUrl || imageEmbedLink)?.startsWith('data:image/') ? (
+            {displayImageUrl &&
+              (localResourceImageUrl || displayImageUrl.startsWith('data:image/') ? (
                 <Box
                   component="img"
-                  src={localResourceImageUrl || imageEmbedLink || undefined}
+                  src={displayImageUrl}
                   sx={{
                     borderRadius: '8px',
                     display: 'block',
@@ -1236,9 +1237,9 @@ export const MessageItemComponent = ({
                     objectFit: 'contain',
                   }}
                 />
-              ) : (
+              ) : imageEmbedLink ? (
                 <Embed embedLink={imageEmbedLink} />
-              ))}
+              ) : null)}
 
             {/* Sending / updating status */}
             {(isUpdating || isTemp) && (

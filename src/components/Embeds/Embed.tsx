@@ -62,6 +62,7 @@ const getPoll = async (name) => {
 };
 
 export const Embed = ({ embedLink }) => {
+  const safeEmbedLink = typeof embedLink === 'string' ? embedLink : '';
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [poll, setPoll] = useState(null);
@@ -82,7 +83,8 @@ export const Embed = ({ embedLink }) => {
     'tutorial',
   ]);
   const resourceData = useMemo(() => {
-    const parsedDataOnTheFly = parseQortalLink(embedLink);
+    if (!safeEmbedLink) return null;
+    const parsedDataOnTheFly = parseQortalLink(safeEmbedLink);
     if (
       parsedDataOnTheFly?.service &&
       parsedDataOnTheFly?.name &&
@@ -105,7 +107,7 @@ export const Embed = ({ embedLink }) => {
     } else {
       return null;
     }
-  }, [embedLink]);
+  }, [safeEmbedLink]);
 
   const keyIdentifier = useMemo(() => {
     if (resourceData) {
@@ -338,8 +340,9 @@ export const Embed = ({ embedLink }) => {
   };
 
   const handleLink = () => {
+    if (!safeEmbedLink) return;
     try {
-      const parsedData = parseQortalLink(embedLink);
+      const parsedData = parseQortalLink(safeEmbedLink);
       setParsedData(parsedData);
       const type = parsedData?.type;
       try {
@@ -382,8 +385,9 @@ export const Embed = ({ embedLink }) => {
   };
 
   const fetchImage = (forceRefresh = false) => {
+    if (!safeEmbedLink) return;
     try {
-      const parsedData = parseQortalLink(embedLink);
+      const parsedData = parseQortalLink(safeEmbedLink);
       handleImage(parsedData, forceRefresh);
     } catch (error) {
       setErrorMsg(
@@ -412,10 +416,10 @@ export const Embed = ({ embedLink }) => {
   };
 
   useEffect(() => {
-    if (!embedLink || hasFetched.current) return;
+    if (!safeEmbedLink || hasFetched.current) return;
     handleLink();
     hasFetched.current = true;
-  }, [embedLink]);
+  }, [safeEmbedLink]);
 
   const resourceDetails = useAtomValue(resourceKeySelector(keyIdentifier));
 
@@ -423,7 +427,8 @@ export const Embed = ({ embedLink }) => {
     let parsedType;
     let encryptionType = false;
     try {
-      const parsedDataOnTheFly = parseQortalLink(embedLink);
+      if (!safeEmbedLink) return { parsedType, encryptionType };
+      const parsedDataOnTheFly = parseQortalLink(safeEmbedLink);
       if (parsedDataOnTheFly?.type) {
         parsedType = parsedDataOnTheFly.type;
       }
@@ -434,7 +439,7 @@ export const Embed = ({ embedLink }) => {
       console.log(error);
     }
     return { parsedType, encryptionType };
-  }, [embedLink]);
+  }, [safeEmbedLink]);
 
   return (
     <div>
