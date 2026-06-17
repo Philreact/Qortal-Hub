@@ -118,6 +118,8 @@ const OVERLAY_LINK_PER_PACKET_REASONS = new Set([
   'presence_forward',
   'call_signal',
 ]);
+const BRIDGE_GRACEFUL_STOP_TIMEOUT_MS = 5_000;
+const BRIDGE_FORCE_STOP_TIMEOUT_MS = 3_000;
 
 function shouldLogOverlayLinkStateEvent(reason: string): boolean {
   if (OVERLAY_LINK_PER_PACKET_REASONS.has(reason)) return false;
@@ -806,11 +808,14 @@ function resolveBridgeLaunch(configDir: string):
   ]);
 }
 
-function killBridgeProcessTree(pid: number): boolean {
+function signalBridgeProcessTree(
+  pid: number,
+  signal: NodeJS.Signals = 'SIGTERM'
+): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (process.platform !== 'win32') {
     try {
-      process.kill(-pid, 'SIGTERM');
+      process.kill(-pid, signal);
       return true;
     } catch (err) {
       const code =
@@ -825,7 +830,7 @@ function killBridgeProcessTree(pid: number): boolean {
         return false;
       }
       try {
-        process.kill(pid, 'SIGTERM');
+        process.kill(pid, signal);
         return true;
       } catch (pidErr) {
         loggerWarn(
@@ -856,6 +861,32 @@ function killBridgeProcessTree(pid: number): boolean {
     return false;
   }
   return true;
+}
+
+function waitForBridgeChildExit(
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('error', onError);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(true);
+    const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+    timer.unref?.();
+    child.once('exit', onExit);
+    child.once('error', onError);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finish(true);
+    }
+  });
 }
 
 function toPresenceRoute(raw: unknown): PresenceRoute | null {
@@ -1222,7 +1253,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return this.statePromise;
   }
 
-  stop(): void {
+  private prepareStop(): ChildProcess | null {
     this.desiredRunning = false;
     loggerLog('[ReticulumBridge] Stopping bridge');
     this.state = 'stopped';
@@ -1261,15 +1292,51 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     this.stdoutBuffer = '';
     const child = this.child;
     this.child = null;
-    if (child && child.exitCode === null && !child.killed) {
-      if (typeof child.pid === 'number') {
-        killBridgeProcessTree(child.pid);
-      } else {
-        child.kill();
-      }
-    }
     this.localPresenceDestinationHash = undefined;
     this.launchConfigDir = null;
+    return child && child.exitCode === null ? child : null;
+  }
+
+  stop(): void {
+    const child = this.prepareStop();
+    if (!child) return;
+    if (typeof child.pid === 'number') {
+      signalBridgeProcessTree(child.pid, 'SIGTERM');
+    } else {
+      child.kill();
+    }
+  }
+
+  async stopAndWait(
+    gracefulTimeoutMs = BRIDGE_GRACEFUL_STOP_TIMEOUT_MS
+  ): Promise<void> {
+    const child = this.prepareStop();
+    if (!child) return;
+
+    if (typeof child.pid === 'number') {
+      signalBridgeProcessTree(child.pid, 'SIGTERM');
+    } else {
+      child.kill();
+    }
+
+    if (await waitForBridgeChildExit(child, gracefulTimeoutMs)) {
+      return;
+    }
+
+    const pid = child.pid;
+    loggerWarn(
+      `[ReticulumBridge] Bridge child pid=${pid ?? 'unknown'} survived graceful stop; forcing stop`
+    );
+    if (typeof pid === 'number') {
+      signalBridgeProcessTree(pid, 'SIGKILL');
+    } else {
+      child.kill('SIGKILL');
+    }
+    if (!(await waitForBridgeChildExit(child, BRIDGE_FORCE_STOP_TIMEOUT_MS))) {
+      loggerError(
+        `[ReticulumBridge] Bridge child pid=${pid ?? 'unknown'} did not exit after force stop`
+      );
+    }
   }
 
   /**
@@ -3995,12 +4062,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 }
 
 let bridgeInstance: ReticulumBridge | null = null;
+let bridgeStopPromise: Promise<void> | null = null;
 
 export function getReticulumBridge(): ReticulumBridge | null {
   return bridgeInstance;
 }
 
 export async function startReticulumBridge(): Promise<ReticulumBridge> {
+  if (bridgeStopPromise) {
+    await bridgeStopPromise;
+  }
   if (!bridgeInstance) {
     bridgeInstance = new ReticulumBridge();
   }
@@ -4011,4 +4082,21 @@ export async function startReticulumBridge(): Promise<ReticulumBridge> {
 export function stopReticulumBridge(): void {
   bridgeInstance?.stop();
   bridgeInstance = null;
+}
+
+export async function stopReticulumBridgeAndWait(): Promise<void> {
+  const bridge = bridgeInstance;
+  if (!bridge) {
+    await bridgeStopPromise;
+    return;
+  }
+  bridgeInstance = null;
+  let stopPromise: Promise<void>;
+  stopPromise = bridge.stopAndWait().finally(() => {
+    if (bridgeStopPromise === stopPromise) {
+      bridgeStopPromise = null;
+    }
+  });
+  bridgeStopPromise = stopPromise;
+  await stopPromise;
 }

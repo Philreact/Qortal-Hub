@@ -71,6 +71,7 @@ import {
   getReticulumBridge,
   startReticulumBridge,
   stopReticulumBridge,
+  stopReticulumBridgeAndWait,
 } from './reticulum-bridge';
 import { getPresenceManager } from './presence';
 import { isDisabledLegacy } from './feature-flags';
@@ -191,7 +192,7 @@ async function restartReticulumBridgeAndWaitReady(
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = null;
 
-  stopReticulumBridge();
+  await stopReticulumBridgeAndWait();
 
   while (Date.now() <= deadline) {
     try {
@@ -200,7 +201,7 @@ async function restartReticulumBridgeAndWaitReady(
       return;
     } catch (error) {
       lastError = error;
-      stopReticulumBridge();
+      await stopReticulumBridgeAndWait();
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
         break;

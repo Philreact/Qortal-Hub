@@ -44,7 +44,7 @@ vi.mock('./reticulum-bridge-rebind', () => ({
 
 vi.mock('./reticulum-bridge', () => ({
   startReticulumBridge: vi.fn(async () => {}),
-  stopReticulumBridge: vi.fn(),
+  stopReticulumBridgeAndWait: vi.fn(async () => {}),
 }));
 
 vi.mock('./upnp-nat', () => ({
@@ -66,7 +66,10 @@ import {
   writeManagedReticulumConfigIfManaged,
 } from './reticulum-daemon';
 import { rebindReticulumBridgeConsumers } from './reticulum-bridge-rebind';
-import { startReticulumBridge, stopReticulumBridge } from './reticulum-bridge';
+import {
+  startReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 
 describe('ReticulumMeshCoordinator', () => {
   beforeEach(() => {
@@ -90,7 +93,7 @@ describe('ReticulumMeshCoordinator', () => {
 
     await applyManagedMeshConfigAfterReachableUpdate();
 
-    expect(stopReticulumBridge).toHaveBeenCalledTimes(1);
+    expect(stopReticulumBridgeAndWait).toHaveBeenCalledTimes(1);
     expect(restartBundledReticulumDaemonAndWaitReady).toHaveBeenCalledTimes(1);
     expect(startReticulumBridge).toHaveBeenCalledTimes(1);
     expect(rebindReticulumBridgeConsumers).toHaveBeenCalledTimes(1);
@@ -109,7 +112,7 @@ describe('ReticulumMeshCoordinator', () => {
 
     await applyManagedMeshConfigAfterReachableUpdate();
 
-    expect(stopReticulumBridge).toHaveBeenCalledTimes(1);
+    expect(stopReticulumBridgeAndWait).toHaveBeenCalledTimes(1);
     expect(restartBundledReticulumDaemonAndWaitReady).toHaveBeenCalledTimes(1);
     expect(startReticulumBridge).not.toHaveBeenCalled();
     expect(rebindReticulumBridgeConsumers).not.toHaveBeenCalled();

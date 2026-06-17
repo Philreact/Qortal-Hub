@@ -90,7 +90,7 @@ import type { GcEnvelope } from './group-call';
 import {
   getReticulumBridge,
   startReticulumBridge,
-  stopReticulumBridge,
+  stopReticulumBridgeAndWait,
   type ReticulumOverlayVerifiedPeer,
 } from './reticulum-bridge';
 import {
@@ -2591,7 +2591,7 @@ async function restartLocalReticulumBridgeForHealth(
   replayReason: string
 ): Promise<void> {
   loggerWarn(`[ReticulumHealth] Restarting local bridge reason=${reason}`);
-  stopReticulumBridge();
+  await stopReticulumBridgeAndWait();
   const restarted = await startReticulumBridge();
   attachReticulumStatusBridgeEvents(restarted);
   await ensureReticulumManagersStarted();
@@ -2636,7 +2636,7 @@ async function recoverWindowsReticulumBridgeCommandTimeout(
       loggerWarn(
         '[ReticulumHealth] Windows command timeouts persisted after local bridge restarts; restarting owned shared daemon'
       );
-      stopReticulumBridge();
+      await stopReticulumBridgeAndWait();
       await restartBundledReticulumDaemonAndWaitReady(60_000, {
         forceKillOnStopTimeout: true,
       });
