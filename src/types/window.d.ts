@@ -633,6 +633,28 @@ declare global {
         manifest?: unknown;
         error?: string;
       }>;
+      getStatus: (
+        fileHash: string
+      ) => Promise<{
+        success: boolean;
+        manifest?: unknown;
+        completedChunks?: number;
+        totalChunks?: number;
+        progress?: number;
+        complete?: boolean;
+        latestChunkUpdatedAt?: number | null;
+        checkedAt?: number;
+        runtime?: {
+          active?: boolean;
+          peerCount?: number;
+          advertisedPeerCount?: number;
+          activeTransfers?: number;
+          pendingTransfers?: number;
+          requestedChunkCount?: number;
+          nextRequestAt?: number | null;
+        } | null;
+        error?: string;
+      }>;
       saveAs: (
         fileHash: string,
         suggestedFileName?: string

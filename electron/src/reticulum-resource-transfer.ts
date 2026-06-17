@@ -57,6 +57,16 @@ export type ReticulumResourceTransferProgress = {
   complete?: boolean;
 };
 
+export type ReticulumResourceDownloadRuntimeStatus = {
+  active: boolean;
+  peerCount: number;
+  advertisedPeerCount: number;
+  activeTransfers: number;
+  pendingTransfers: number;
+  requestedChunkCount: number;
+  nextRequestAt: number | null;
+};
+
 type ReticulumResourceDownloadState<TRequestWire> = {
   contextId: number;
   fileHash: string;
@@ -172,6 +182,50 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.requestedResources.clear();
     this.pendingAccepts.length = 0;
     this.activeAccepts.clear();
+  }
+
+  getDownloadStatus(fileHash: string): ReticulumResourceDownloadRuntimeStatus {
+    const blobId = String(fileHash || '').trim().toLowerCase();
+    const state = this.downloads.get(blobId);
+    if (!state) {
+      return {
+        active: false,
+        peerCount: 0,
+        advertisedPeerCount: 0,
+        activeTransfers: 0,
+        pendingTransfers: 0,
+        requestedChunkCount: 0,
+        nextRequestAt: null,
+      };
+    }
+    const advertisedPeers = new Set<string>();
+    for (const peers of state.chunkPeers.values()) {
+      for (const peer of peers) {
+        const peerKey = peer.trim().toLowerCase();
+        if (peerKey) advertisedPeers.add(peerKey);
+      }
+    }
+    let activeTransfers = 0;
+    for (const transferId of this.activeAccepts) {
+      if (this.offers.get(transferId)?.fileHash.toLowerCase() === blobId) {
+        activeTransfers += 1;
+      }
+    }
+    let pendingTransfers = 0;
+    for (const transferId of this.pendingAccepts) {
+      if (this.offers.get(transferId)?.fileHash.toLowerCase() === blobId) {
+        pendingTransfers += 1;
+      }
+    }
+    return {
+      active: true,
+      peerCount: state.peerHashes.size,
+      advertisedPeerCount: advertisedPeers.size,
+      activeTransfers,
+      pendingTransfers,
+      requestedChunkCount: state.chunkAttempts.size,
+      nextRequestAt: state.nextRequestAt || null,
+    };
   }
 
   requestResource(options: {

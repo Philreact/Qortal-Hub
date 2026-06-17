@@ -70,6 +70,7 @@ import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
+const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
 
 const normalizeMessageHtmlContent = (raw: unknown): string | null => {
   if (raw == null) return null;
@@ -420,6 +421,22 @@ export const MessageItemComponent = ({
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
   >('idle');
   const [fileResourceProgress, setFileResourceProgress] = useState<number | null>(null);
+  const [fileResourceChunks, setFileResourceChunks] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
+  const [fileResourceLastChunkAt, setFileResourceLastChunkAt] = useState<number | null>(null);
+  const [fileResourceCheckedAt, setFileResourceCheckedAt] = useState<number | null>(null);
+  const [fileResourceStartedAt, setFileResourceStartedAt] = useState<number | null>(null);
+  const [fileResourceRuntime, setFileResourceRuntime] = useState<{
+    active?: boolean;
+    peerCount?: number;
+    advertisedPeerCount?: number;
+    activeTransfers?: number;
+    pendingTransfers?: number;
+    requestedChunkCount?: number;
+    nextRequestAt?: number | null;
+  } | null>(null);
   const qchatFileData = qchatFileTransfer?.data || {};
   const qchatTransferState =
     qchatFileData?.transferId && qchatFileTransferStates
@@ -635,16 +652,70 @@ export const MessageItemComponent = ({
     secretKeyObject,
   ]);
 
-  const markFileResourceReadyIfAvailable = useCallback(async () => {
+  const applyFileResourceStatus = useCallback(
+    (payload?: {
+      completedChunks?: number;
+      totalChunks?: number;
+      progress?: number;
+      complete?: boolean;
+      latestChunkUpdatedAt?: number | null;
+      checkedAt?: number;
+      runtime?: {
+        active?: boolean;
+        peerCount?: number;
+        advertisedPeerCount?: number;
+        activeTransfers?: number;
+        pendingTransfers?: number;
+        requestedChunkCount?: number;
+        nextRequestAt?: number | null;
+      } | null;
+    }) => {
+      if (!payload) return;
+      if (typeof payload.checkedAt === 'number') {
+        setFileResourceCheckedAt(payload.checkedAt);
+      }
+      if (payload.runtime && typeof payload.runtime === 'object') {
+        setFileResourceRuntime(payload.runtime);
+      }
+      if (typeof payload.progress === 'number') {
+        setFileResourceProgress(
+          Math.max(0, Math.min(100, Math.round(payload.progress * 100)))
+        );
+      }
+      if (
+        typeof payload.completedChunks === 'number' &&
+        typeof payload.totalChunks === 'number' &&
+        payload.totalChunks > 0
+      ) {
+        setFileResourceChunks({
+          completed: Math.max(0, Math.min(payload.completedChunks, payload.totalChunks)),
+          total: payload.totalChunks,
+        });
+      }
+      if (typeof payload.latestChunkUpdatedAt === 'number' && payload.latestChunkUpdatedAt > 0) {
+        setFileResourceLastChunkAt(payload.latestChunkUpdatedAt);
+      }
+      if (payload.complete) {
+        setFileResourceStatus('ready');
+        setFileResourceProgress(100);
+        if (typeof payload.totalChunks === 'number' && payload.totalChunks > 0) {
+          setFileResourceChunks({
+            completed: payload.totalChunks,
+            total: payload.totalChunks,
+          });
+        }
+      }
+    },
+    []
+  );
+
+  const markFileResourceReadyIfComplete = useCallback(async () => {
     if (!reticulumFileResourceId) return false;
-    const result = await window.reticulumResources?.getUrl?.(reticulumFileResourceId);
-    if (result?.success) {
-      setFileResourceStatus('ready');
-      setFileResourceProgress(100);
-      return true;
-    }
-    return false;
-  }, [reticulumFileResourceId]);
+    const status = await window.reticulumResources?.getStatus?.(reticulumFileResourceId);
+    if (!status?.success) return false;
+    applyFileResourceStatus(status);
+    return status.complete === true;
+  }, [applyFileResourceStatus, reticulumFileResourceId]);
 
   useEffect(() => {
     if (
@@ -657,19 +728,18 @@ export const MessageItemComponent = ({
         setResourceReloadNonce((value) => value + 1);
       }
       if (payload?.fileHash === reticulumFileResourceId) {
-        if (typeof payload.progress === 'number') {
-          setFileResourceProgress(
-            Math.max(0, Math.min(100, Math.round(payload.progress * 100)))
-          );
-        }
+        applyFileResourceStatus(payload);
         if (payload.complete) {
-          setFileResourceStatus('ready');
-          setFileResourceProgress(100);
+          void markFileResourceReadyIfComplete();
         }
-        void markFileResourceReadyIfAvailable();
       }
     });
-  }, [imageResourceId, markFileResourceReadyIfAvailable, reticulumFileResourceId]);
+  }, [
+    applyFileResourceStatus,
+    imageResourceId,
+    markFileResourceReadyIfComplete,
+    reticulumFileResourceId,
+  ]);
 
   const requestReticulumFileResource = useCallback(async () => {
     if (
@@ -680,11 +750,31 @@ export const MessageItemComponent = ({
     ) {
       return { success: false, error: 'Invalid resource attachment' };
     }
-    const ready = await markFileResourceReadyIfAvailable();
+    const ready = await markFileResourceReadyIfComplete();
     if (ready) {
       return { success: true };
     }
     setFileResourceStatus('downloading');
+    setFileResourceProgress((progress) =>
+      typeof progress === 'number' ? progress : 0
+    );
+    setFileResourceLastChunkAt(null);
+    const startedAt = Date.now();
+    setFileResourceCheckedAt(startedAt);
+    setFileResourceStartedAt(startedAt);
+    setFileResourceRuntime(null);
+    const totalChunks = Array.isArray(reticulumFileAttachment?.chunkHashes)
+      ? reticulumFileAttachment.chunkHashes.length
+      : 0;
+    setFileResourceChunks((current) => {
+      if (current && current.total === totalChunks) return current;
+      return totalChunks > 0
+        ? {
+            completed: 0,
+            total: totalChunks,
+          }
+        : null;
+    });
     const response = await window.reticulumChat?.requestResource?.(
       reticulumResourceGroupId,
       reticulumFileAttachment,
@@ -700,13 +790,13 @@ export const MessageItemComponent = ({
     reticulumFileResourceId,
     reticulumResourceEventId,
     reticulumResourceGroupId,
-    markFileResourceReadyIfAvailable,
+    markFileResourceReadyIfComplete,
   ]);
 
   const saveReticulumFileResource = useCallback(async () => {
     if (!reticulumFileResourceId) return;
     setFileResourceStatus((status) => (status === 'ready' ? 'saving' : status));
-    const ready = await markFileResourceReadyIfAvailable();
+    const ready = await markFileResourceReadyIfComplete();
     if (!ready) {
       const requested = await requestReticulumFileResource();
       if (requested?.success === false) return;
@@ -722,7 +812,7 @@ export const MessageItemComponent = ({
     }
     setFileResourceStatus(saved?.canceled ? 'ready' : 'error');
   }, [
-    markFileResourceReadyIfAvailable,
+    markFileResourceReadyIfComplete,
     requestReticulumFileResource,
     reticulumFileName,
     reticulumFileResourceId,
@@ -735,37 +825,50 @@ export const MessageItemComponent = ({
       setFileResourceProgress(null);
       return;
     }
-    void window.reticulumResources?.getUrl?.(reticulumFileResourceId).then((result) => {
+    void window.reticulumResources?.getStatus?.(reticulumFileResourceId).then((result) => {
       if (cancelled) return;
-      if (result?.success) {
-        setFileResourceStatus('ready');
-        setFileResourceProgress(100);
+      if (result?.success && result.complete) {
+        applyFileResourceStatus(result);
       } else {
         setFileResourceStatus('idle');
         setFileResourceProgress(null);
+        setFileResourceChunks(null);
+        setFileResourceLastChunkAt(null);
+        setFileResourceCheckedAt(null);
+        setFileResourceStartedAt(null);
+        setFileResourceRuntime(null);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [reticulumFileResourceId, resourceReloadNonce]);
+  }, [
+    applyFileResourceStatus,
+    reticulumFileResourceId,
+    resourceReloadNonce,
+  ]);
 
   useEffect(() => {
     if (!reticulumFileResourceId || fileResourceStatus !== 'downloading') return;
     let cancelled = false;
     const timer = window.setInterval(() => {
-      void markFileResourceReadyIfAvailable().then((ready) => {
-        if (cancelled || !ready) return;
-        window.clearInterval(timer);
-      });
+      void window.reticulumResources
+        ?.getStatus?.(reticulumFileResourceId)
+        .then((status) => {
+          if (cancelled || !status?.success) return;
+          applyFileResourceStatus(status);
+          if (status.complete) {
+            window.clearInterval(timer);
+          }
+        });
     }, 1_000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, [
+    applyFileResourceStatus,
     fileResourceStatus,
-    markFileResourceReadyIfAvailable,
     reticulumFileResourceId,
   ]);
   useEffect(() => {
@@ -773,6 +876,77 @@ export const MessageItemComponent = ({
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [qchatFileTransfer]);
+  useEffect(() => {
+    if (fileResourceStatus !== 'downloading') return;
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [fileResourceStatus]);
+  useEffect(() => {
+    if (fileResourceStatus !== 'downloading') return;
+    const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
+    if (!referenceAt) return;
+    if (Date.now() - referenceAt < RETICULUM_FILE_DOWNLOAD_STALL_MS) return;
+    setFileResourceStatus('error');
+  }, [fileResourceLastChunkAt, fileResourceStartedAt, fileResourceStatus, nowMs]);
+  const fileResourceActivityText = (() => {
+    if (fileResourceStatus !== 'downloading') return '';
+    const total = fileResourceChunks?.total || 0;
+    const completed = fileResourceChunks?.completed || 0;
+    const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
+    if (!referenceAt) return 'waiting for first chunk';
+    const ageSeconds = Math.max(0, Math.floor((nowMs - referenceAt) / 1000));
+    if (completed <= 0) {
+      if (ageSeconds < 8) return 'requesting chunks';
+      if (ageSeconds < 30) return `waiting for first chunk ${ageSeconds}s`;
+      return `retrying / waiting for first chunk ${ageSeconds}s`;
+    }
+    if (ageSeconds < 8) return 'receiving';
+    if (ageSeconds < 30) return `waiting ${ageSeconds}s`;
+    return `retrying / waiting for peers ${ageSeconds}s`;
+  })();
+  const fileResourcePeerText = (() => {
+    if (fileResourceStatus !== 'downloading' || !fileResourceRuntime?.active) {
+      return '';
+    }
+    const peerCount = Number(fileResourceRuntime.peerCount || 0);
+    const advertisedPeerCount = Number(fileResourceRuntime.advertisedPeerCount || 0);
+    const activeTransfers = Number(fileResourceRuntime.activeTransfers || 0);
+    const pendingTransfers = Number(fileResourceRuntime.pendingTransfers || 0);
+    const peersText =
+      advertisedPeerCount > 0 && advertisedPeerCount !== peerCount
+        ? `peers ${advertisedPeerCount}/${peerCount}`
+        : `peers ${peerCount}`;
+    const linksText =
+      activeTransfers > 0 || pendingTransfers > 0
+        ? `links ${activeTransfers}${pendingTransfers > 0 ? `+${pendingTransfers}` : ''}/4`
+        : '';
+    return [peersText, linksText].filter(Boolean).join(' · ');
+  })();
+  const fileResourceStatusText = (() => {
+    if (fileResourceStatus === 'ready') return 'ready';
+    if (fileResourceStatus === 'saving') return 'saving';
+    if (fileResourceStatus === 'downloading') {
+      if (fileResourceProgress === null) return 'downloading';
+      const chunkText = fileResourceChunks
+        ? ` (${fileResourceChunks.completed}/${fileResourceChunks.total} chunks)`
+        : '';
+      const details = [fileResourceActivityText, fileResourcePeerText]
+        .filter(Boolean)
+        .join(' · ');
+      return `downloading ${fileResourceProgress}%${chunkText}${
+        details ? ` · ${details}` : ''
+      }`;
+    }
+    if (fileResourceStatus === 'error') {
+      if (!fileResourceChunks?.completed) return 'download failed';
+      return `download paused at ${fileResourceProgress ?? 0}%${
+        fileResourceChunks
+          ? ` (${fileResourceChunks.completed}/${fileResourceChunks.total} chunks)`
+          : ''
+      }`;
+    }
+    return 'not downloaded';
+  })();
   const hasNoMessage =
     !qchatFileTransfer &&
     !reticulumFileAttachment &&
@@ -1505,18 +1679,7 @@ export const MessageItemComponent = ({
                       fontSize: 12,
                     }}
                   >
-                    {formatQchatFileSize(reticulumFileSize)} ·{' '}
-                    {fileResourceStatus === 'ready'
-                      ? 'ready'
-                      : fileResourceStatus === 'saving'
-                        ? 'saving'
-                        : fileResourceStatus === 'downloading'
-                          ? fileResourceProgress !== null
-                            ? `downloading ${fileResourceProgress}%`
-                            : 'downloading'
-                          : fileResourceStatus === 'error'
-                            ? 'download failed'
-                            : 'not downloaded'}
+                    {formatQchatFileSize(reticulumFileSize)} · {fileResourceStatusText}
                   </Typography>
                   {(fileResourceStatus === 'downloading' ||
                     fileResourceStatus === 'saving') && (
@@ -1538,15 +1701,18 @@ export const MessageItemComponent = ({
                   variant="contained"
                   startIcon={<DownloadRoundedIcon />}
                   disabled={
-                    fileResourceStatus === 'downloading' ||
-                    fileResourceStatus === 'saving'
+                    fileResourceStatus === 'downloading' || fileResourceStatus === 'saving'
                   }
                   onClick={() => {
                     void saveReticulumFileResource();
                   }}
                   sx={{ flexShrink: 0, textTransform: 'none' }}
                 >
-                  {fileResourceStatus === 'ready' ? 'Save' : 'Download'}
+                  {fileResourceStatus === 'ready'
+                    ? 'Save'
+                    : fileResourceStatus === 'error'
+                      ? 'Retry'
+                      : 'Download'}
                 </Button>
               </Box>
             )}

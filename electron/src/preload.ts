@@ -883,6 +883,27 @@ try {
         manifest?: unknown;
         error?: string;
       }>,
+    getStatus: async (fileHash: string) =>
+      ipcRenderer.invoke('reticulumResource:getStatus', fileHash) as Promise<{
+        success: boolean;
+        manifest?: unknown;
+        completedChunks?: number;
+        totalChunks?: number;
+        progress?: number;
+        complete?: boolean;
+        latestChunkUpdatedAt?: number | null;
+        checkedAt?: number;
+        runtime?: {
+          active?: boolean;
+          peerCount?: number;
+          advertisedPeerCount?: number;
+          activeTransfers?: number;
+          pendingTransfers?: number;
+          requestedChunkCount?: number;
+          nextRequestAt?: number | null;
+        } | null;
+        error?: string;
+      }>,
     saveAs: async (fileHash: string, suggestedFileName?: string) =>
       ipcRenderer.invoke(
         'reticulumResource:saveAs',

@@ -947,6 +947,10 @@ export class ReticulumChatManager extends EventEmitter {
     return { ok: true };
   }
 
+  getResourceDownloadStatus(fileHash: string) {
+    return this.resourceTransfer?.getDownloadStatus(fileHash) ?? null;
+  }
+
   getHistory(groupId: number, limit = 100): ReticulumChatEvent[] {
     this.assertGroupId(groupId);
     return this.db.getRecentEvents(groupId, Math.max(1, Math.min(500, limit)));

@@ -3627,6 +3627,41 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
   }
 });
 
+ipcMain.handle('reticulumResource:getStatus', async (_event, fileHash: string) => {
+  const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+  if (!hash) return { success: false, error: 'Invalid file hash' };
+  try {
+    const store = getReticulumResourceStore();
+    const manifest = store.getManifest(hash);
+    if (!manifest) return { success: false, error: 'Unknown resource' };
+    const chunks = store.getChunks(hash);
+    const completedChunks = chunks.filter((chunk) => chunk.status === 'complete').length;
+    const latestChunkUpdatedAt = chunks.reduce(
+      (latest, chunk) =>
+        chunk.status === 'complete' ? Math.max(latest, Number(chunk.updatedAt || 0)) : latest,
+      0
+    );
+    const totalChunks = manifest.chunkHashes.length;
+    const runtime = getReticulumChatManager()?.getResourceDownloadStatus(hash) ?? null;
+    return {
+      success: true,
+      manifest,
+      completedChunks,
+      totalChunks,
+      progress: totalChunks > 0 ? completedChunks / totalChunks : 0,
+      complete: totalChunks > 0 && completedChunks >= totalChunks,
+      latestChunkUpdatedAt: latestChunkUpdatedAt || null,
+      checkedAt: Date.now(),
+      runtime,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Reticulum resource status failed',
+    };
+  }
+});
+
 ipcMain.handle(
   'reticulumResource:saveAs',
   async (_event, fileHash: string, suggestedFileName?: string) => {
