@@ -845,7 +845,13 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   subscribeGroup(groupId: number): void {
-    this.assertLocalGroupMember(groupId);
+    this.assertGroupId(groupId);
+    if (!this.localGroupIds.has(groupId)) {
+      loggerWarn(
+        `[ReticulumChat] Subscribing group=${groupId} before membership sync completed; adding local group hint`
+      );
+      this.localGroupIds.add(groupId);
+    }
     this.markGroupHistoryObserved(groupId);
     this.subscribedGroups.add(groupId);
     this.startLocalNotificationWatcher();
@@ -1677,10 +1683,21 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private handleEventHint(candidate: unknown, peerHash: string): void {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      loggerWarn('[ReticulumChat] Dropping inbound event hint: invalid hint payload');
+      return;
+    }
     const hint = candidate as Partial<ReticulumChatEventHint>;
-    if (!this.isValidEventHint(hint)) return;
-    if (!this.subscribedGroups.has(hint.groupId) || !this.localGroupIds.has(hint.groupId)) return;
+    if (!this.isValidEventHint(hint)) {
+      loggerWarn('[ReticulumChat] Dropping inbound event hint: invalid hint shape');
+      return;
+    }
+    if (!this.subscribedGroups.has(hint.groupId) || !this.localGroupIds.has(hint.groupId)) {
+      loggerWarn(
+        `[ReticulumChat] Dropping inbound event hint ${hint.eventId}: group=${hint.groupId} subscribed=${this.subscribedGroups.has(hint.groupId)} localMember=${this.localGroupIds.has(hint.groupId)}`
+      );
+      return;
+    }
     this.noteEventSourcePeer(hint.eventId, peerHash);
     const localMaxSeq = this.db.getAuthorMaxSeq(hint.groupId, hint.authorAddress);
     if (hint.authorSeq > localMaxSeq + 1) {
@@ -2133,10 +2150,21 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private handleEventOffer(candidate: unknown, peerHash: string): void {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      loggerWarn('[ReticulumChat] Dropping inbound event offer: invalid offer payload');
+      return;
+    }
     const offer = candidate as Partial<ReticulumChatEventOffer>;
-    if (!this.isValidEventOffer(offer)) return;
-    if (!this.subscribedGroups.has(offer.groupId) || !this.localGroupIds.has(offer.groupId)) return;
+    if (!this.isValidEventOffer(offer)) {
+      loggerWarn('[ReticulumChat] Dropping inbound event offer: invalid offer shape');
+      return;
+    }
+    if (!this.subscribedGroups.has(offer.groupId) || !this.localGroupIds.has(offer.groupId)) {
+      loggerWarn(
+        `[ReticulumChat] Dropping inbound event offer ${offer.eventId}: group=${offer.groupId} subscribed=${this.subscribedGroups.has(offer.groupId)} localMember=${this.localGroupIds.has(offer.groupId)}`
+      );
+      return;
+    }
     if (this.db.hasEvent(offer.eventId)) return;
     const trackedOffer = {
       ...offer,

@@ -1743,7 +1743,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('does not publish, subscribe, type, or serve cached history for groups the local user is not a member of', async () => {
+  it('does not publish, type, or serve cached history before local membership is known', async () => {
     const sent: Record<string, unknown>[] = [];
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -1778,7 +1778,6 @@ describe('reticulum chat manager', () => {
     await expect(
       manager.publishEvent(signedEvent({ eventId: 'event-non-member-publish', groupId: 57 }))
     ).resolves.toMatchObject({ ok: false });
-    expect(() => manager.subscribeGroup(57)).toThrow(/not a member/i);
     expect(() => manager.sendTyping(57, 'Qsender', true)).toThrow(/not a member/i);
 
     manager.handleWire(
@@ -1802,6 +1801,7 @@ describe('reticulum chat manager', () => {
 
     expect(sent).toEqual([]);
     expect(direct).toEqual([]);
+    expect(() => manager.subscribeGroup(57)).not.toThrow();
     manager.close();
   });
 

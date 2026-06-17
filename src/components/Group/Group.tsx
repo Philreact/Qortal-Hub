@@ -345,10 +345,12 @@ export const Group = ({
   const [isLoadingGroupMessage, setIsLoadingGroupMessage] = useState('');
   const setMutedGroups = useSetAtom(mutedGroupsAtom);
   const memberGroupsForReticulum = useAtomValue(memberGroupsAtom);
+  const [memberGroupsLoadedAddress, setMemberGroupsLoadedAddress] = useState('');
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
   const timestampEnterDataRef = useRef({});
+  const myAddressRef = useRef('');
   const selectedGroupRef = useRef(null);
   const selectedDirectRef = useRef(null);
   const groupSectionRef = useRef(null);
@@ -812,7 +814,14 @@ export const Group = ({
   }, [refreshReticulumChatSummaries]);
 
   useEffect(() => {
+    myAddressRef.current = myAddress || '';
+  }, [myAddress]);
+
+  useEffect(() => {
     if (!myAddress) return;
+    if (memberGroupsLoadedAddress !== myAddress) {
+      return;
+    }
     const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
     if (groupIds.length === 0) {
       for (const groupId of reticulumSubscribedGroupIdsRef.current) {
@@ -860,6 +869,7 @@ export const Group = ({
       cancelled = true;
     };
   }, [
+    memberGroupsLoadedAddress,
     memberGroupsForReticulum,
     myAddress,
     refreshReticulumChatSummaries,
@@ -1511,6 +1521,9 @@ export const Group = ({
           message.payload || []
         ).filter((item: any) => item?.groupId !== '0');
         setMemberGroups(sortedFiltered);
+        if (myAddressRef.current) {
+          setMemberGroupsLoadedAddress(myAddressRef.current);
+        }
         memberGroupsRef.current = sortedFiltered;
         getLatestRegularChat(sortedFiltered);
 
@@ -1923,6 +1936,7 @@ export const Group = ({
     setSelectedGroup(null);
     setSelectedDirect(null);
     setMemberGroups([]);
+    setMemberGroupsLoadedAddress('');
     memberGroupsRef.current = [];
     setDirects([]);
     setAdmins([]);
@@ -1949,6 +1963,7 @@ export const Group = ({
     setIsQChatTabActive(false);
     // Reset all useRef values to their initial states
     hasInitializedWebsocket.current = false;
+    myAddressRef.current = '';
     selectedGroupRef.current = null;
     selectedDirectRef.current = null;
     groupSectionRef.current = null;
