@@ -1,13 +1,25 @@
 import { LoadingButton } from '@mui/lab';
-import { Box, Input, MenuItem, Select, SelectChangeEvent } from '@mui/material';
-import { useState } from 'react';
+import {
+  Autocomplete,
+  Box,
+  CircularProgress,
+  MenuItem,
+  Select,
+  SelectChangeEvent,
+  TextField,
+} from '@mui/material';
+import { useMemo, useState } from 'react';
 import { Spacer } from '../../common/Spacer';
 import { getFee } from '../../background/background.ts';
 import { useTranslation } from 'react-i18next';
 import { Label } from '../../styles/App-styles.ts';
+import { useNameSearch } from '../../hooks/useNameSearch';
+import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { validateAddress } from '../../utils/validateAddress';
 
 export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
   const [value, setValue] = useState('');
+  const [searchValue, setSearchValue] = useState('');
   const [expiryTime, setExpiryTime] = useState<string>('259200');
   const [isLoadingInvite, setIsLoadingInvite] = useState(false);
   const { t } = useTranslation([
@@ -17,8 +29,41 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
     'question',
     'tutorial',
   ]);
+  const searchQuery = searchValue.trim();
+  const { results: nameSearchResults, isLoading: isLoadingNameSearch } =
+    useNameSearch(searchQuery, 15);
+
+  const nameOptions = useMemo(
+    () =>
+      nameSearchResults
+        ?.map((item) => item.name)
+        .filter((name) => !hasInvisibleCharacters(name)) ?? [],
+    [nameSearchResults]
+  );
 
   const inviteMember = async () => {
+    const invitee = value.trim();
+
+    if (!expiryTime || !invitee) {
+      setInfoSnack({
+        type: 'error',
+        message: t('auth:message.generic.name_address', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+      });
+      setOpenSnack(true);
+      return;
+    }
+
+    if (!validateAddress(invitee) && hasInvisibleCharacters(invitee)) {
+      setInfoSnack({
+        type: 'error',
+        message: 'Names with invisible characters cannot be invited.',
+      });
+      setOpenSnack(true);
+      return;
+    }
+
     try {
       const fee = await getFee('GROUP_INVITE');
 
@@ -32,50 +77,41 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
 
       setIsLoadingInvite(true);
 
-      if (!expiryTime || !value) return;
-      new Promise((res, rej) => {
-        window
-          .sendMessage('inviteToGroup', {
-            groupId,
-            qortalAddress: value,
-            inviteTime: +expiryTime,
-          })
-          .then((response) => {
-            if (!response?.error) {
-              setInfoSnack({
-                type: 'success',
-                message: t('group:message.success.group_invite', {
-                  invitee: value,
-                  postProcess: 'capitalizeFirstChar',
-                }),
-              });
-              setOpenSnack(true);
-              res(response);
-              setValue('');
-              return;
-            }
-            setInfoSnack({
-              type: 'error',
-              message: response?.error,
-            });
-            setOpenSnack(true);
-            rej(response.error);
-          })
-          .catch((error) => {
-            setInfoSnack({
-              type: 'error',
-              message:
-                error?.message ||
-                t('core:message.error.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-            });
-            setOpenSnack(true);
-            rej(error);
-          });
+      const response = await window.sendMessage('inviteToGroup', {
+        groupId,
+        qortalAddress: invitee,
+        inviteTime: +expiryTime,
       });
+
+      if (response?.error) {
+        setInfoSnack({
+          type: 'error',
+          message: response.error,
+        });
+        setOpenSnack(true);
+        return;
+      }
+
+      setInfoSnack({
+        type: 'success',
+        message: t('group:message.success.group_invite', {
+          invitee,
+          postProcess: 'capitalizeFirstChar',
+        }),
+      });
+      setOpenSnack(true);
+      setValue('');
+      setSearchValue('');
     } catch (error) {
-      console.log(error);
+      setInfoSnack({
+        type: 'error',
+        message:
+          (error instanceof Error ? error.message : '') ||
+          t('core:message.error.generic', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+      });
+      setOpenSnack(true);
     } finally {
       setIsLoadingInvite(false);
     }
@@ -96,12 +132,45 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
 
       <Spacer height="20px" />
 
-      <Input
+      <Autocomplete
+        freeSolo
         value={value}
-        placeholder={t('auth:message.generic.name_address', {
+        inputValue={searchValue}
+        loading={isLoadingNameSearch}
+        noOptionsText={t('core:option_no', {
           postProcess: 'capitalizeFirstChar',
         })}
-        onChange={(e) => setValue(e.target.value)}
+        options={nameOptions}
+        onChange={(_event, newValue) => {
+          const nextValue =
+            typeof newValue === 'string' ? newValue.trim() : '';
+          setValue(nextValue);
+          setSearchValue(nextValue);
+        }}
+        onInputChange={(_event, newInputValue) => {
+          setSearchValue(newInputValue);
+          setValue(newInputValue);
+        }}
+        renderInput={(params) => (
+          <TextField
+            {...params}
+            variant="standard"
+            placeholder={t('auth:message.generic.name_address', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            InputProps={{
+              ...params.InputProps,
+              endAdornment: (
+                <>
+                  {isLoadingNameSearch ? (
+                    <CircularProgress color="inherit" size={16} />
+                  ) : null}
+                  {params.InputProps.endAdornment}
+                </>
+              ),
+            }}
+          />
+        )}
       />
 
       <Spacer height="20px" />

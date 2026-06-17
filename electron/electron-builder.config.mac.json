@@ -34,6 +34,9 @@
         "!presence_bridge.py",
         "!mesh-network.identity",
         "!mesh-network.passphrase",
+        "!__pycache__/**",
+        "!**/__pycache__/**",
+        "!**/*.pyc",
         "!test-darwin-*"
       ]
     }
