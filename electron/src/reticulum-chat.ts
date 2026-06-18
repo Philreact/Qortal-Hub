@@ -110,6 +110,7 @@ export interface ReticulumChatResourceRequestWire {
   eid?: string;
   fh: string;
   r?: Array<[number, number]>;
+  cf?: boolean;
   pk: string;
   ts: number;
   sig: string;
@@ -855,6 +856,7 @@ export class ReticulumChatManager extends EventEmitter {
       totalChunks: progress.totalChunks,
       progress: progress.progress,
       complete: progress.complete,
+      failed: progress.failed,
     });
   }
 
@@ -2021,6 +2023,7 @@ export class ReticulumChatManager extends EventEmitter {
     const wire: ReticulumChatResourceRequestWire = {
       fh: manifest.fileHash,
       r: chunkIndexesToRanges(chunkIndexes),
+      cf: true,
       pk: signed.authorPublicKey,
       ts: timestamp,
       sig: signed.signature,
@@ -2127,6 +2130,7 @@ export class ReticulumChatManager extends EventEmitter {
         eventId: request.eid,
         fileHash: request.fh,
         chunkIndexes: chunkRangesToIndexes(request.r ?? []) ?? [],
+        requireCompleteFile: request.cf === true,
         requesterAddress: deriveAddressFromPublicKey(request.pk),
       },
       peerHash

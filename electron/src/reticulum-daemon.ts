@@ -592,8 +592,7 @@ function commandLooksLikeReticulumDaemon(command: string): boolean {
   const commandForCompare =
     process.platform === 'win32' ? command.toLowerCase() : command;
   return (
-    commandForCompare.includes('rnsd') ||
-    commandForCompare.includes(RNS_MODULE)
+    commandForCompare.includes('rnsd') || commandForCompare.includes(RNS_MODULE)
   );
 }
 
@@ -707,7 +706,11 @@ function stopOrphanedReticulumDaemonProcess(pid: number): boolean {
   );
   const forceSignal = process.platform === 'win32' ? undefined : 'SIGKILL';
   if (
-    signalReticulumPid(pid, forceSignal, 'startup-recovery-orphan-daemon-force') &&
+    signalReticulumPid(
+      pid,
+      forceSignal,
+      'startup-recovery-orphan-daemon-force'
+    ) &&
     waitForPidExitSync(pid, RETICULUM_DAEMON_FORCE_STOP_TIMEOUT_MS)
   ) {
     clearReticulumSharedDaemonState(pid);
@@ -737,7 +740,9 @@ function processHasActiveAncestor(
   return false;
 }
 
-function normalizeWindowsProcessInfo(raw: unknown): ReticulumProcessInfo | null {
+function normalizeWindowsProcessInfo(
+  raw: unknown
+): ReticulumProcessInfo | null {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as {
     ProcessId?: unknown;
@@ -1898,7 +1903,7 @@ export function buildManagedReticulumConfig(
   const ifaceBody = ifaceParts.join('\n\n');
   return `${renderReticulumHeader(slice)}
 [logging]
-loglevel = 4
+loglevel = 7
 
 [interfaces]
 ${ifaceBody}

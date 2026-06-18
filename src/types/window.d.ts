@@ -601,6 +601,7 @@ declare global {
           totalChunks?: number;
           progress?: number;
           complete?: boolean;
+          failed?: boolean;
         }) => void
       ) => () => void;
     };

@@ -7123,6 +7123,8 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
                     "fileName": state.get("fileName") or "",
                 },
             )
+            if state.get("streamMode") is True:
+                _qchat_file_start_channel_stream_receiver(state)
         else:
             _qchat_file_emit(
                 "failed",
@@ -7420,6 +7422,195 @@ def _qchat_file_close_success_link_after_grace(link, state: Dict[str, Any]) -> N
     timer.start()
 
 
+def _qchat_file_start_channel_stream_sender(state: Dict[str, Any]) -> bool:
+    link = state.get("link")
+    file_path = str(state.get("filePath") or "")
+    transfer_id = str(state.get("transferId") or "")
+    peer_hash = str(state.get("peerPresenceHash") or "")
+    file_name = str(state.get("fileName") or os.path.basename(file_path))
+    resource_type = str(state.get("resourceType") or "qchat-dm-file")
+    if link is None or not file_path or not transfer_id:
+        return False
+    if state.get("stream_started") is True:
+        return True
+    state["stream_started"] = True
+
+    def run() -> None:
+        size = 0
+        sent = 0
+        try:
+            size = os.path.getsize(file_path)
+            channel = link.get_channel()
+            writer = RNS.Buffer.create_writer(1, channel)
+            _qchat_file_emit(
+                "sending",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "resourceType": resource_type,
+                    "progress": 0,
+                    "bytesTransferred": 0,
+                },
+            )
+            with open(file_path, "rb") as source:
+                while True:
+                    chunk = source.read(64 * 1024)
+                    if not chunk:
+                        break
+                    writer.write(chunk)
+                    sent += len(chunk)
+                    writer.flush()
+                    progress = min(1.0, sent / float(size)) if size > 0 else 0.0
+                    if _should_emit_qchat_file_progress(state, progress, force=progress >= 1.0):
+                        _qchat_file_emit(
+                            "sending",
+                            {
+                                "transferId": transfer_id,
+                                "peerPresenceHash": peer_hash,
+                                "fileName": file_name,
+                                "size": size,
+                                "resourceType": resource_type,
+                                **_qchat_file_progress_payload(state, progress, size),
+                            },
+                        )
+            writer.close()
+            state["completed"] = True
+            with _state_lock:
+                _qchat_file_pending_sends_by_transfer.pop(transfer_id, None)
+            _qchat_file_emit(
+                "sent",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "resourceType": resource_type,
+                },
+            )
+            _qchat_file_close_success_link_after_grace(link, state)
+        except Exception as exc:
+            state["completed"] = True
+            _qchat_file_emit(
+                "failed",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "resourceType": resource_type,
+                    "reason": "channel_stream_send_failed",
+                    "error": str(exc),
+                },
+            )
+            try:
+                link.teardown()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=run, name=f"qchat-file-stream-send-{transfer_id[:8]}", daemon=True)
+    thread.start()
+    return True
+
+
+def _qchat_file_start_channel_stream_receiver(state: Dict[str, Any]) -> bool:
+    link = state.get("link")
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    transfer_id = str(state.get("transferId") or "").strip()
+    pending = _qchat_file_get_pending_receive(peer_hash, transfer_id)
+    if link is None or not pending or pending.get("stream_started") is True:
+        return False
+    pending["stream_started"] = True
+
+    def run() -> None:
+        save_path = str(pending.get("savePath") or "")
+        part_path = save_path + ".part"
+        expected_hash = str(pending.get("sha256") or "").strip().lower()
+        file_name = str(pending.get("fileName") or "")
+        size = int(pending.get("size") or 0)
+        received = 0
+        try:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            channel = link.get_channel()
+            reader = RNS.Buffer.create_reader(1, channel)
+            _qchat_file_emit(
+                "receiving",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "progress": 0,
+                    "bytesTransferred": 0,
+                },
+            )
+            with open(part_path, "wb") as out:
+                while True:
+                    chunk = reader.read(64 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    received += len(chunk)
+                    progress = min(1.0, received / float(size)) if size > 0 else 0.0
+                    if _should_emit_qchat_file_progress(pending, progress, force=progress >= 1.0):
+                        _qchat_file_emit(
+                            "receiving",
+                            {
+                                "transferId": transfer_id,
+                                "peerPresenceHash": peer_hash,
+                                "fileName": file_name,
+                                "size": size,
+                                **_qchat_file_progress_payload(pending, progress, size),
+                            },
+                        )
+            if size > 0 and received != size:
+                raise ValueError(f"stream size mismatch received={received} expected={size}")
+            actual_hash = _sha256_file_hex(part_path)
+            if expected_hash and actual_hash.lower() != expected_hash:
+                raise ValueError(f"stream hash mismatch expected={expected_hash} actual={actual_hash}")
+            os.replace(part_path, save_path)
+            pending["completed"] = True
+            _qchat_file_remove_pending_receive(peer_hash, transfer_id)
+            _qchat_file_receiver_transfer_done(peer_hash, transfer_id)
+            _qchat_file_emit(
+                "received",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "path": save_path,
+                    "resourceType": pending.get("resourceType") or "qchat-dm-file",
+                },
+            )
+        except Exception as exc:
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
+            _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
+            _qchat_file_emit(
+                "failed",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "reason": "channel_stream_receive_failed",
+                    "error": str(exc),
+                },
+            )
+            try:
+                link.teardown()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=run, name=f"qchat-file-stream-recv-{transfer_id[:8]}", daemon=True)
+    thread.start()
+    return True
+
+
 def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
     link = state.get("link")
     file_path = str(state.get("filePath") or "")
@@ -7714,6 +7905,9 @@ def on_outgoing_qchat_file_link_established(link) -> None:
         _send_qchat_file_auth_message(link, state, "auth")
         return
     try:
+        if state.get("streamMode") is True:
+            _qchat_file_start_channel_stream_sender(state)
+            return
         _start_qchat_file_resource_for_state(state)
     except Exception as exc:
         _qchat_file_emit(
@@ -10064,6 +10258,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
     file_name = str(payload.get("fileName") or "").strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
     resource_type = str(payload.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
+    stream_mode = payload.get("streamMode") is True
     try:
         size = int(payload.get("size") or 0)
     except Exception:
@@ -10102,6 +10297,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "size": size,
             "sha256": sha256,
             "resourceType": resource_type,
+            "streamMode": stream_mode,
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
@@ -10122,7 +10318,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "resourceType": resource_type,
         },
     )
-    links_to_open = min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
+    links_to_open = 1 if stream_mode else min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
     for _ in range(links_to_open):
         state = {
             "peerPresenceHash": peer_hash,
@@ -10134,6 +10330,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "size": size,
             "sha256": sha256,
             "resourceType": resource_type,
+            "streamMode": stream_mode,
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
@@ -10150,6 +10347,7 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
     file_name = str(payload.get("fileName") or os.path.basename(file_path)).strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
     resource_type = str(payload.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
+    stream_mode = payload.get("streamMode") is True
     try:
         expires_at_ms = float(payload.get("expiresAt") or 0)
     except Exception:
@@ -10171,6 +10369,7 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
                 "size": size,
                 "sha256": sha256,
                 "resourceType": resource_type,
+                "streamMode": stream_mode,
                 "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
                 "created_at": time.time(),
                 "expires_at": expires_at,
@@ -10228,6 +10427,7 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
             "size": int(pending.get("size") or 0),
             "sha256": pending.get("sha256") or "",
             "resourceType": pending.get("resourceType") or "qchat-dm-file",
+            "streamMode": pending.get("streamMode") is True,
             "metadata": pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {},
             "transferId": transfer_id,
             "send_root": pending,
@@ -10248,7 +10448,10 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
                 ).encode("utf-8"),
                 f"target=qchat-file-reticulum auth_result_ok transfer={transfer_id}",
             )
-        _start_qchat_file_resource_for_state(state)
+        if state.get("streamMode") is True:
+            _qchat_file_start_channel_stream_sender(state)
+        else:
+            _start_qchat_file_resource_for_state(state)
         emit_resp(req_id, True)
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))

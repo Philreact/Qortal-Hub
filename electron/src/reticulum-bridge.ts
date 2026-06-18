@@ -1416,6 +1416,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     sha256?: string;
     resourceType?: string;
     metadata?: Record<string, unknown>;
+    streamMode?: boolean;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('accept_reticulum_resource', payload);
   }
@@ -1430,6 +1431,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     expiresAt?: number;
     resourceType?: string;
     metadata?: Record<string, unknown>;
+    streamMode?: boolean;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('send_reticulum_resource', payload);
   }

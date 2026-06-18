@@ -1465,6 +1465,7 @@ try {
           totalChunks?: number;
           progress?: number;
           complete?: boolean;
+          failed?: boolean;
         }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
@@ -1478,6 +1479,7 @@ try {
               totalChunks?: number;
               progress?: number;
               complete?: boolean;
+              failed?: boolean;
             }
           );
         };
@@ -1664,6 +1666,7 @@ try {
           totalChunks?: number;
           progress?: number;
           complete?: boolean;
+          failed?: boolean;
         }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
@@ -1677,6 +1680,7 @@ try {
               totalChunks?: number;
               progress?: number;
               complete?: boolean;
+              failed?: boolean;
             }
           );
         };

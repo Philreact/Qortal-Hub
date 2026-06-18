@@ -667,6 +667,7 @@ export const MessageItemComponent = ({
       totalChunks?: number;
       progress?: number;
       complete?: boolean;
+      failed?: boolean;
       latestChunkUpdatedAt?: number | null;
       checkedAt?: number;
       runtime?: {
@@ -720,6 +721,9 @@ export const MessageItemComponent = ({
             total: payload.totalChunks,
           });
         }
+      }
+      if (payload.failed) {
+        setFileResourceStatus('error');
       }
     },
     []
