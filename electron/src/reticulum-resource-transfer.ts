@@ -1045,6 +1045,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         );
       }
     }
+    const totalBytes = Math.max(0, Math.floor(Number(state.manifest.sizeBytes) || 0));
+    const bytesTransferred = totalBytes > 0
+      ? Math.max(0, Math.min(totalBytes, Math.floor(progress * totalBytes)))
+      : undefined;
     const payload: ReticulumResourceTransferProgress = {
       contextId: state.contextId,
       eventId: state.eventId,
@@ -1052,17 +1056,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       completedChunks: displayCompletedChunks,
       totalChunks,
       ...(isFullFileTransfer ? { fullFileTransfer: true } : {}),
-      ...(activeTransfer &&
-      isFullFileTransfer
+      ...(bytesTransferred != null
         ? {
-            bytesTransferred: Math.max(
-              0,
-              Math.min(
-                activeTransfer.offer.sizeBytes,
-                Math.floor(Number(activeTransfer.bytesTransferred) || 0)
-              )
-            ),
-            totalBytes: activeTransfer.offer.sizeBytes,
+            bytesTransferred,
+            totalBytes,
           }
         : {}),
       progress,

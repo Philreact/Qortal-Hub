@@ -709,10 +709,8 @@ export const MessageItemComponent = ({
       }
       if (payload.fullFileTransfer) {
         setFileResourceFullFileTransfer(true);
-        setFileResourceChunks(null);
       }
       if (
-        !payload.fullFileTransfer &&
         typeof payload.completedChunks === 'number' &&
         typeof payload.totalChunks === 'number' &&
         payload.totalChunks > 0
@@ -953,18 +951,18 @@ export const MessageItemComponent = ({
     const total = fileResourceFullFileTransfer ? 0 : fileResourceChunks?.total || 0;
     const completed = fileResourceFullFileTransfer ? 0 : fileResourceChunks?.completed || 0;
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
-    if (!referenceAt) return fileResourceFullFileTransfer ? 'waiting for file stream' : 'waiting for first chunk';
+    if (!referenceAt) return fileResourceFullFileTransfer ? 'waiting for file' : 'waiting for first chunk';
     const ageSeconds = Math.max(0, Math.floor((nowMs - referenceAt) / 1000));
     const activeTransfers = Number(fileResourceRuntime?.activeTransfers || 0);
     const isReceivingBundle =
       Boolean(fileResourceRuntime?.active) && activeTransfers > 0;
     if (fileResourceFullFileTransfer) {
       if (isReceivingBundle) {
-        if ((fileResourceProgress ?? 0) > 0) return 'receiving file stream';
-        return `receiving file stream ${ageSeconds}s`;
+        if ((fileResourceProgress ?? 0) > 0) return 'receiving file';
+        return `receiving file ${ageSeconds}s`;
       }
       if (ageSeconds < 8) return 'requesting file';
-      if (ageSeconds < 30) return `waiting for file stream ${ageSeconds}s`;
+      if (ageSeconds < 30) return `waiting for file ${ageSeconds}s`;
       return `waiting for peer ${ageSeconds}s`;
     }
     if (completed <= 0) {
