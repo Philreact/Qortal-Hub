@@ -798,7 +798,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         if (this.activeAccepts.has(candidateTransferId)) return false;
         const candidateOffer = this.offers.get(candidateTransferId);
         if (!candidateOffer) return true;
-        return !this.peerHasMaxActiveAccepts(candidateOffer.sourcePeerHash || '');
+        return !this.peerHasMaxActiveAcceptsForResource(
+          candidateOffer.sourcePeerHash || '',
+          candidateOffer.fileHash
+        );
       });
       if (pendingIndex < 0) break;
       const [transferId] = this.pendingAccepts.splice(pendingIndex, 1);
@@ -1133,9 +1136,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         state.inFlightChunks.delete(chunkIndex);
       }
     }
-    if (state.fullTransfer && now - state.fullTransfer.startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
-      delete state.fullTransfer;
-    }
   }
 
   private releaseFullTransfer(
@@ -1160,13 +1160,17 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
   }
 
-  private peerHasMaxActiveAccepts(peerHash: string): boolean {
+  private peerHasMaxActiveAcceptsForResource(peerHash: string, fileHash: string): boolean {
     const peerKey = peerHash.trim().toLowerCase();
+    const blobId = fileHash.trim().toLowerCase();
     if (!peerKey) return false;
     let activeForPeer = 0;
     for (const transferId of this.activeAccepts) {
       const offer = this.offers.get(transferId);
-      if ((offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey) {
+      if (
+        (offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey &&
+        (offer?.fileHash || '').trim().toLowerCase() === blobId
+      ) {
         activeForPeer += 1;
       }
     }
@@ -1177,6 +1181,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const now = this.now();
     const staleTransferIds: string[] = [];
     for (const transferId of this.activeAccepts) {
+      const offer = this.offers.get(transferId);
+      if (offer && offer.chunkIndex == null) continue;
       const startedAt = this.activeAcceptStartedAt.get(transferId) ?? now;
       if (now - startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
         staleTransferIds.push(transferId);

@@ -1459,6 +1459,97 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
+  it('allows one active transfer per peer per resource so an image is not blocked by a large file', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-peer-resource-link-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const largeChunk = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 14);
+    const imageChunk = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 15);
+    const largeHash = nodeCrypto.createHash('sha256').update(largeChunk).digest('hex');
+    const imageHash = nodeCrypto.createHash('sha256').update(imageChunk).digest('hex');
+    const largeManifest = {
+      namespace: 'reticulum-chat-file',
+      ownerId: '82:sender',
+      fileName: 'large.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: largeChunk.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes: [largeHash],
+      fileHash: largeHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 82 },
+    };
+    const imageManifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '82:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: imageChunk.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes: [imageHash],
+      fileHash: imageHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 82 },
+    };
+    let accepts = 0;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      acceptReticulumResourceDetailed: async () => {
+        accepts += 1;
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([82]);
+    manager.subscribeGroup(82);
+
+    await expect(manager.requestResource(82, largeManifest)).resolves.toMatchObject({ ok: true });
+    await expect(manager.requestResource(82, imageManifest)).resolves.toMatchObject({ ok: true });
+    for (const offer of [
+      { x: 'large-transfer', fh: largeHash, s: largeChunk.length, ci: 0, ch: largeHash, cs: largeChunk.length },
+      { x: 'image-transfer', fh: imageHash, s: imageChunk.length, ci: 0, ch: imageHash, cs: imageChunk.length },
+    ]) {
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'resource_offer',
+          g: 82,
+          o: offer,
+        },
+        'peer-a'
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toBe(2);
+    expect(manager.getResourceDownloadStatus(largeHash)).toMatchObject({
+      activeTransfers: 1,
+      pendingTransfers: 0,
+      inFlightChunkCount: 1,
+    });
+    expect(manager.getResourceDownloadStatus(imageHash)).toMatchObject({
+      activeTransfers: 1,
+      pendingTransfers: 0,
+      inFlightChunkCount: 1,
+    });
+    manager.close();
+    resourceStore.close();
+  });
+
   it('requests an author gap when a live hint skips an author sequence', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
