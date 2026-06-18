@@ -1,4 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -1463,6 +1464,88 @@ describe('reticulum chat manager', () => {
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       inFlightChunkCount: 1,
     });
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('emits live progress while a chunk bundle transfer is still receiving', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-live-progress-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const chunks = [1, 2, 3, 4].map((value) =>
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, value)
+    );
+    const chunkHashes = chunks.map((chunk) =>
+      nodeCrypto.createHash('sha256').update(chunk).digest('hex')
+    );
+    const fileHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat(chunks))
+      .digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-file',
+      ownerId: '83:receiver',
+      fileName: 'bundle.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: chunks.reduce((total, chunk) => total + chunk.length, 0),
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 83 },
+    };
+    const bridge = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    bridge.fanoutReticulumChatDetailed = async () => ({ ok: true as const });
+    bridge.acceptReticulumResourceDetailed = async () => ({ ok: true as const });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    const progressEvents: Array<Record<string, unknown>> = [];
+    manager.on('resource', (payload) => progressEvents.push(payload as Record<string, unknown>));
+    manager.setLocalGroupMemberships([83]);
+    manager.subscribeGroup(83);
+
+    await expect(manager.requestResource(83, manifest)).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_offer',
+        g: 83,
+        o: {
+          x: 'transfer-bundle-progress',
+          fh: fileHash,
+          s: manifest.sizeBytes,
+          bh: nodeCrypto.createHash('sha256').update(Buffer.concat(chunks)).digest('hex'),
+          br: [[0, chunks.length]],
+        },
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    bridge.emit('reticulum-resource', {
+      status: 'receiving',
+      transferId: 'transfer-bundle-progress',
+      progress: 0.5,
+    });
+
+    expect(progressEvents).toContainEqual(
+      expect.objectContaining({
+        fileHash,
+        progress: 0.5,
+        completedChunks: 2,
+        totalChunks: chunks.length,
+      })
+    );
     manager.close();
     resourceStore.close();
   });

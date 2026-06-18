@@ -54,6 +54,7 @@ export type ReticulumResourceTransferPayload = {
   path?: string;
   linkId?: string;
   auth?: Record<string, unknown>;
+  progress?: number;
   reason?: string;
 };
 
@@ -592,6 +593,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       void this.authorize(payload);
       return;
     }
+    if (payload?.status === 'receiving' && payload.transferId) {
+      this.handleTransferProgress(payload);
+      return;
+    }
     if (payload?.status === 'failed' && payload.transferId) {
       this.finishTransfer(payload.transferId, false);
       return;
@@ -783,22 +788,85 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
 
   private emitProgress(
     state: ReticulumResourceDownloadState<TRequestWire>,
-    complete = false
+    complete = false,
+    activeTransfer?: {
+      offer: ReticulumResourceTransferOffer;
+      progress: number;
+    }
   ): void {
     const totalChunks = state.manifest.chunkHashes.length;
-    const missingChunks = this.getMissingChunkIndexes(state.manifest).length;
-    const completedChunks = Math.max(0, totalChunks - missingChunks);
+    const completedChunks = activeTransfer
+      ? this.getCompletedChunkCountFast(state.manifest)
+      : Math.max(0, totalChunks - this.getMissingChunkIndexes(state.manifest).length);
+    let displayCompletedChunks = completedChunks;
+    let progress =
+      totalChunks > 0 ? completedChunks / totalChunks : 0;
+    if (activeTransfer && totalChunks > 0) {
+      const transferProgress = Math.max(0, Math.min(1, activeTransfer.progress));
+      const transferChunkCount = this.offerProgressChunkCount(
+        activeTransfer.offer,
+        totalChunks,
+        completedChunks
+      );
+      const estimatedCompletedChunks = Math.max(
+        completedChunks,
+        Math.min(totalChunks, completedChunks + transferChunkCount * transferProgress)
+      );
+      displayCompletedChunks = Math.floor(estimatedCompletedChunks);
+      progress = Math.max(progress, estimatedCompletedChunks / totalChunks);
+    }
     const payload: ReticulumResourceTransferProgress = {
       contextId: state.contextId,
       eventId: state.eventId,
       fileHash: state.manifest.fileHash,
-      completedChunks,
+      completedChunks: displayCompletedChunks,
       totalChunks,
-      progress: totalChunks > 0 ? completedChunks / totalChunks : 0,
-      complete: complete || missingChunks === 0,
+      progress,
+      complete: complete || (!activeTransfer && completedChunks >= totalChunks),
     };
     this.emit('progress', payload);
     this.onProgress?.(payload);
+  }
+
+  private handleTransferProgress(payload: ReticulumResourceTransferPayload): void {
+    if (typeof payload.progress !== 'number') return;
+    const offer = this.offers.get(payload.transferId || '');
+    if (!offer) return;
+    const state = this.downloads.get(offer.fileHash);
+    if (!state) return;
+    this.emitProgress(state, false, {
+      offer,
+      progress: payload.progress,
+    });
+  }
+
+  private offerProgressChunkCount(
+    offer: ReticulumResourceTransferOffer,
+    totalChunks: number,
+    completedChunks: number
+  ): number {
+    if (Array.isArray(offer.chunks) && offer.chunks.length > 0) {
+      return offer.chunks.length;
+    }
+    if (offer.chunkIndex != null) return 1;
+    return Math.max(0, totalChunks - completedChunks);
+  }
+
+  private getCompletedChunkCountFast(manifest: ReticulumResourceManifest): number {
+    const chunks = this.resourceStore.getChunks(manifest.fileHash);
+    let completed = 0;
+    for (const chunk of chunks) {
+      if (
+        chunk.status === 'complete' &&
+        chunk.localPath &&
+        Number.isInteger(chunk.chunkIndex) &&
+        chunk.chunkIndex >= 0 &&
+        chunk.chunkIndex < manifest.chunkHashes.length
+      ) {
+        completed += 1;
+      }
+    }
+    return completed;
   }
 
   private getMissingChunkIndexes(manifest: ReticulumResourceManifest): number[] {
