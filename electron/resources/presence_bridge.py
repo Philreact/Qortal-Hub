@@ -192,6 +192,8 @@ _QCHAT_FILE_CHUNK_SIZE = 2 * 1024 * 1024
 _QCHAT_FILE_PARALLEL_LINKS = 1
 _QCHAT_FILE_SUCCESS_LINK_CLOSE_GRACE_SECONDS = 15.0
 _QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS = 90.0
+_QCHAT_FILE_CHUNK_DIAG_MIN_INTERVAL_SECONDS = 5.0
+_QCHAT_FILE_CHUNK_DIAG_MIN_DELTA = 0.05
 _QCHAT_FILE_RESERVED_METADATA_KEYS = {
     "kind",
     "resourceType",
@@ -6716,6 +6718,34 @@ def _should_emit_qchat_file_progress(
     return False
 
 
+def _should_log_qchat_file_chunk_progress(
+    state: Dict[str, Any],
+    key: str,
+    progress: float,
+) -> bool:
+    progress = max(0.0, min(1.0, float(progress)))
+    now = time.monotonic()
+    diag = state.setdefault("chunk_progress_diag", {})
+    if not isinstance(diag, dict):
+        diag = {}
+        state["chunk_progress_diag"] = diag
+    previous = diag.get(key)
+    if not isinstance(previous, dict):
+        diag[key] = {"at": now, "progress": progress}
+        return True
+    last_at = float(previous.get("at") or 0)
+    last_progress = float(previous.get("progress") or -1)
+    if (
+        now - last_at >= _QCHAT_FILE_CHUNK_DIAG_MIN_INTERVAL_SECONDS
+        or abs(progress - last_progress) >= _QCHAT_FILE_CHUNK_DIAG_MIN_DELTA
+        or progress >= 1.0
+    ):
+        previous["at"] = now
+        previous["progress"] = progress
+        return True
+    return False
+
+
 def _identity_from_reticulum_public_key_base64(pk_b64: str):
     s = str(pk_b64 or "").strip()
     if not s:
@@ -7061,8 +7091,16 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             return
         chunk = active.get(chunk_index)
         if not isinstance(chunk, dict):
+            log(
+                "[presence_bridge] qchat file chunk ack ignored "
+                f"transfer={transfer_id} chunk={chunk_index} reason=not_active"
+            )
             return
         chunk_size = int(chunk.get("size") or decoded.get("chunkSize") or 0)
+        log(
+            "[presence_bridge] qchat file chunk ack received "
+            f"transfer={transfer_id} chunk={chunk_index} chunk_size={chunk_size}"
+        )
         transfer_complete = _qchat_file_mark_chunk_sent(root, chunk_index, chunk_size)
         if transfer_complete:
             _qchat_file_close_success_link_after_grace(link, state)
@@ -7327,9 +7365,13 @@ def _qchat_file_read_chunk(file_path: str, offset: int, chunk_size: int) -> byte
 
 def _send_qchat_file_chunk_ack(link, transfer_id: str, chunk_index: int, chunk_size: int) -> bool:
     if link is None:
+        log(
+            "[presence_bridge] qchat file chunk ack not sent "
+            f"transfer={transfer_id} chunk={chunk_index} reason=no_link"
+        )
         return False
     try:
-        return bool(
+        ok = bool(
             _send_packet_on_link(
                 link,
                 json.dumps(
@@ -7347,6 +7389,11 @@ def _send_qchat_file_chunk_ack(link, transfer_id: str, chunk_index: int, chunk_s
                 ),
             )
         )
+        log(
+            "[presence_bridge] qchat file chunk ack sent "
+            f"transfer={transfer_id} chunk={chunk_index} chunk_size={chunk_size} ok={ok}"
+        )
+        return ok
     except Exception as exc:
         log(
             "[presence_bridge] qchat file chunk ack failed "
@@ -7406,6 +7453,7 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
         root.setdefault("active_chunks", {})[chunk_index] = {
             "size": chunk_size,
             "progress": 0.0,
+            "started_at": time.monotonic(),
         }
     _qchat_file_emit(
         "sending",
@@ -7450,6 +7498,21 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
 
     def on_done(resource) -> None:
         status = "sent" if getattr(resource, "status", None) == RNS.Resource.COMPLETE else "failed"
+        resource_status = getattr(resource, "status", None)
+        elapsed = 0.0
+        active_for_elapsed = root.get("active_chunks")
+        if isinstance(active_for_elapsed, dict):
+            active_chunk = active_for_elapsed.get(chunk_index)
+            if isinstance(active_chunk, dict):
+                started_at = float(active_chunk.get("started_at") or 0)
+                if started_at > 0:
+                    elapsed = max(0.0, time.monotonic() - started_at)
+        log(
+            "[presence_bridge] qchat file chunk send concluded "
+            f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+            f"chunk_size={chunk_size} status={status} resource_status={resource_status} "
+            f"elapsed_ms={int(elapsed * 1000)}"
+        )
         if status == "sent":
             active = root.setdefault("active_chunks", {})
             if isinstance(active, dict) and chunk_index in active:
@@ -7460,6 +7523,11 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
                         return
                     if root.get("completed") is True or state.get("completed") is True:
                         return
+                    log(
+                        "[presence_bridge] qchat file chunk ack timeout "
+                        f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+                        f"chunk_size={chunk_size} timeout_s={_QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS}"
+                    )
                     _qchat_file_emit(
                         "failed",
                         {
@@ -7517,6 +7585,16 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
         active = root.setdefault("active_chunks", {})
         if isinstance(active, dict) and chunk_index in active:
             active[chunk_index]["progress"] = progress
+        if _should_log_qchat_file_chunk_progress(
+            root,
+            f"send:{chunk_index}",
+            progress,
+        ):
+            log(
+                "[presence_bridge] qchat file chunk send progress "
+                f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+                f"chunk_size={chunk_size} progress={progress:.3f}"
+            )
         _qchat_file_update_sent_progress(root)
 
     chunk_data = _qchat_file_read_chunk(file_path, chunk_offset, chunk_size)
@@ -7735,9 +7813,14 @@ def on_qchat_file_resource_started(resource) -> None:
     transfer_id = str(pending.get("transferId") or "")
     file_name = str(pending.get("fileName") or "")
     size = int(pending.get("size") or 0)
+    metadata = getattr(resource, "metadata", None)
+    chunk_index = int(metadata.get("chunkIndex") or 0) if isinstance(metadata, dict) else -1
+    chunk_count = int(metadata.get("chunkCount") or 0) if isinstance(metadata, dict) else 0
+    chunk_size = int(metadata.get("chunkSize") or 0) if isinstance(metadata, dict) else 0
     log(
         "[presence_bridge] qchat file resource started "
-        f"transfer={transfer_id} peer={peer_hash[:16]} size={size}"
+        f"transfer={transfer_id} peer={peer_hash[:16]} size={size} "
+        f"chunk={chunk_index}/{chunk_count} chunk_size={chunk_size}"
     )
 
     def on_progress(res) -> None:
@@ -7747,6 +7830,16 @@ def on_qchat_file_resource_started(resource) -> None:
             progress = float(res.get_progress())
         except Exception:
             progress = 0.0
+        if _should_log_qchat_file_chunk_progress(
+            pending,
+            f"recv:{chunk_index}",
+            progress,
+        ):
+            log(
+                "[presence_bridge] qchat file chunk receive progress "
+                f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+                f"chunk_size={chunk_size} progress={progress:.3f}"
+            )
         if not _should_emit_qchat_file_progress(pending, progress):
             return
         _qchat_file_emit(
@@ -7800,6 +7893,11 @@ def on_qchat_file_resource_concluded(resource) -> None:
     expected_hash = str(pending.get("sha256") or "").strip().lower()
     try:
         if getattr(resource, "status", None) != RNS.Resource.COMPLETE:
+            log(
+                "[presence_bridge] qchat file resource incomplete "
+                f"transfer={transfer_id} peer={peer_hash[:16]} "
+                f"resource_status={getattr(resource, 'status', None)}"
+            )
             _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
             _qchat_file_emit(
                 "failed",
@@ -7822,6 +7920,13 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 or (metadata_size and expected_size and metadata_size != expected_size)
                 or (not is_chunked and metadata_sha256 and expected_hash and metadata_sha256 != expected_hash)
             ):
+                log(
+                    "[presence_bridge] qchat file resource metadata mismatch "
+                    f"transfer={transfer_id} peer={peer_hash[:16]} "
+                    f"metadata_transfer={metadata_transfer_id} expected_transfer={transfer_id} "
+                    f"metadata_size={metadata_size} expected_size={expected_size} "
+                    f"is_chunked={is_chunked}"
+                )
                 _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
                 _qchat_file_emit(
                     "failed",
@@ -7834,6 +7939,10 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 return
         source_path = _resource_file_path(resource)
         if not source_path:
+            log(
+                "[presence_bridge] qchat file resource missing file "
+                f"transfer={transfer_id} peer={peer_hash[:16]}"
+            )
             _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
             _qchat_file_emit(
                 "failed",
@@ -7849,6 +7958,11 @@ def on_qchat_file_resource_concluded(resource) -> None:
             chunk_count = int(metadata.get("chunkCount") or 0)
             chunk_offset = int(metadata.get("chunkOffset") or 0)
             chunk_size = int(metadata.get("chunkSize") or 0)
+            log(
+                "[presence_bridge] qchat file chunk receive concluded "
+                f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+                f"chunk_size={chunk_size} chunk_offset={chunk_offset} source={source_path}"
+            )
             lock = pending.get("chunk_lock")
             if lock is None:
                 lock = threading.RLock()
@@ -7859,6 +7973,17 @@ def on_qchat_file_resource_concluded(resource) -> None:
                     _write_chunk_to_part_file(source_path, save_path, chunk_offset)
                     completed_chunks.add(chunk_index)
                     pending["received_bytes"] = int(pending.get("received_bytes") or 0) + chunk_size
+                    log(
+                        "[presence_bridge] qchat file chunk stored "
+                        f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+                        f"completed={len(completed_chunks)}/{chunk_count} "
+                        f"received_bytes={int(pending.get('received_bytes') or 0)}"
+                    )
+                else:
+                    log(
+                        "[presence_bridge] qchat file chunk duplicate "
+                        f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count}"
+                    )
                 size = int(pending.get("size") or 0)
                 progress = min(1.0, max(0.0, int(pending.get("received_bytes") or 0) / float(size))) if size > 0 else 0.0
                 if _should_emit_qchat_file_progress(pending, progress, force=progress >= 1.0):
@@ -7878,6 +8003,10 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 state["qchat_file_chunk_completed"] = True
             if not done:
                 if not _send_qchat_file_chunk_ack(link, transfer_id, chunk_index, chunk_size):
+                    log(
+                        "[presence_bridge] qchat file chunk ack send failed after store "
+                        f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count}"
+                    )
                     _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
                     _qchat_file_emit(
                         "failed",
@@ -7892,6 +8021,11 @@ def on_qchat_file_resource_concluded(resource) -> None:
             part_path = save_path + ".part"
             actual_hash = _sha256_file_hex(part_path)
             if expected_hash and actual_hash.lower() != expected_hash:
+                log(
+                    "[presence_bridge] qchat file final hash mismatch "
+                    f"transfer={transfer_id} peer={peer_hash[:16]} "
+                    f"expected={expected_hash} actual={actual_hash}"
+                )
                 _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
                 _qchat_file_emit(
                     "failed",
@@ -7906,6 +8040,10 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 return
             os.replace(part_path, save_path)
             if not _send_qchat_file_chunk_ack(link, transfer_id, chunk_index, chunk_size):
+                log(
+                    "[presence_bridge] qchat file final chunk ack send failed "
+                    f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count}"
+                )
                 _qchat_file_fail_pending_receive(state, peer_hash, transfer_id)
                 _qchat_file_emit(
                     "failed",

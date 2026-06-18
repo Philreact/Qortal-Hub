@@ -9,14 +9,14 @@ import {
 } from './reticulum-resource-store';
 import { log as loggerLog, warn as loggerWarn } from './logger';
 
-export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 32;
+export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 8;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 1;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
 export const RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 export const RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS = 15_000;
-export const RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS = 2 * 60 * 1000;
+export const RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS = 10 * 60 * 1000;
 const RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS = 5_000;
 
 export type ReticulumResourceTransferRequest = {
@@ -56,6 +56,8 @@ export type ReticulumResourceTransferPayload = {
   linkId?: string;
   auth?: Record<string, unknown>;
   progress?: number;
+  bytesTransferred?: number;
+  bytesPerSecond?: number;
   reason?: string;
 };
 
@@ -859,18 +861,27 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!offer) return;
     const state = this.downloads.get(offer.fileHash);
     if (!state) return;
-    this.logTransferSpeed(offer, payload.progress);
+    this.activeAcceptStartedAt.set(offer.transferId, this.now());
+    this.refreshOfferChunksInFlight(state, offer);
+    this.logTransferSpeed(offer, payload);
     this.emitProgress(state, false, {
       offer,
       progress: payload.progress,
     });
   }
 
-  private logTransferSpeed(offer: ReticulumResourceTransferOffer, progress: number): void {
+  private logTransferSpeed(
+    offer: ReticulumResourceTransferOffer,
+    payload: ReticulumResourceTransferPayload
+  ): void {
     if (!offer.transferId || offer.sizeBytes <= 0) return;
     const now = this.now();
+    const progress = typeof payload.progress === 'number' ? payload.progress : 0;
     const boundedProgress = Math.max(0, Math.min(1, progress));
-    const bytes = Math.floor(offer.sizeBytes * boundedProgress);
+    const payloadBytes = Number(payload.bytesTransferred);
+    const bytes = Number.isFinite(payloadBytes) && payloadBytes >= 0
+      ? Math.min(offer.sizeBytes, Math.floor(payloadBytes))
+      : Math.floor(offer.sizeBytes * boundedProgress);
     const previous = this.transferSpeedSamples.get(offer.transferId);
     if (!previous || bytes < previous.bytes) {
       this.transferSpeedSamples.set(offer.transferId, {
@@ -878,18 +889,28 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         bytes,
         loggedAt: now,
       });
+      loggerLog(
+        `[${this.loggerPrefix}] Download speed fileHash=${offer.fileHash} ` +
+          `transfer=${offer.transferId} ` +
+          `peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} ` +
+          `progress=${Math.round(boundedProgress * 100)}% ` +
+          `speed=${formatBytesPerSecond(Number(payload.bytesPerSecond) || 0)} ` +
+          `received=${formatByteCount(bytes)}/${formatByteCount(offer.sizeBytes)}`
+      );
       return;
     }
     const elapsedMs = now - previous.at;
     const logElapsedMs = now - previous.loggedAt;
     if (
-      bytes <= previous.bytes ||
       elapsedMs <= 0 ||
       (logElapsedMs < RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS && boundedProgress < 1)
     ) {
       return;
     }
-    const bytesPerSecond = ((bytes - previous.bytes) * 1000) / elapsedMs;
+    const payloadBytesPerSecond = Number(payload.bytesPerSecond);
+    const bytesPerSecond = Number.isFinite(payloadBytesPerSecond) && payloadBytesPerSecond >= 0
+      ? payloadBytesPerSecond
+      : ((bytes - previous.bytes) * 1000) / elapsedMs;
     const remainingBytes = Math.max(0, offer.sizeBytes - bytes);
     const etaSeconds =
       bytesPerSecond > 0 ? Math.ceil(remainingBytes / bytesPerSecond) : null;
@@ -1529,6 +1550,19 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const reservation = state.inFlightChunks.get(chunkIndex);
       if (reservation?.transferId === offer.transferId) {
         state.inFlightChunks.delete(chunkIndex);
+      }
+    }
+  }
+
+  private refreshOfferChunksInFlight(
+    state: ReticulumResourceDownloadState<TRequestWire>,
+    offer: ReticulumResourceTransferOffer
+  ): void {
+    const now = this.now();
+    for (const chunkIndex of this.getOfferChunkIndexes(offer)) {
+      const reservation = state.inFlightChunks.get(chunkIndex);
+      if (reservation?.transferId === offer.transferId) {
+        reservation.startedAt = now;
       }
     }
   }
