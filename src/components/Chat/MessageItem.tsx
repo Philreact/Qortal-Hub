@@ -700,8 +700,8 @@ export const MessageItemComponent = ({
       }
       if (typeof payload.progress === 'number') {
         const nextProgress = Math.max(0, Math.min(100, Math.round(payload.progress * 100)));
-        setFileResourceProgress(
-          nextProgress
+        setFileResourceProgress((progress) =>
+          typeof progress === 'number' ? Math.max(progress, nextProgress) : nextProgress
         );
         if (nextProgress > 0) {
           setFileResourceLastChunkAt(Date.now());
@@ -715,10 +715,14 @@ export const MessageItemComponent = ({
         typeof payload.totalChunks === 'number' &&
         payload.totalChunks > 0
       ) {
-        setFileResourceChunks({
-          completed: Math.max(0, Math.min(payload.completedChunks, payload.totalChunks)),
+        const completed = Math.max(0, Math.min(payload.completedChunks, payload.totalChunks));
+        setFileResourceChunks((chunks) => ({
+          completed:
+            chunks && chunks.total === payload.totalChunks
+              ? Math.max(chunks.completed, completed)
+              : completed,
           total: payload.totalChunks,
-        });
+        }));
       }
       if (
         typeof payload.bytesTransferred === 'number' &&
@@ -726,12 +730,19 @@ export const MessageItemComponent = ({
         payload.totalBytes > 0
       ) {
         const received = Math.max(0, Math.min(payload.bytesTransferred, payload.totalBytes));
-        setFileResourceBytes({
-          received,
+        const byteProgress = Math.max(
+          0,
+          Math.min(100, Math.round((received / payload.totalBytes) * 100))
+        );
+        setFileResourceBytes((bytes) => ({
+          received:
+            bytes && bytes.total === payload.totalBytes
+              ? Math.max(bytes.received, received)
+              : received,
           total: payload.totalBytes,
-        });
-        setFileResourceProgress(
-          Math.max(0, Math.min(100, Math.round((received / payload.totalBytes) * 100)))
+        }));
+        setFileResourceProgress((progress) =>
+          typeof progress === 'number' ? Math.max(progress, byteProgress) : byteProgress
         );
         if (received > 0) {
           setFileResourceLastChunkAt(Date.now());
