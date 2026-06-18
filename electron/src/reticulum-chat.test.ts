@@ -1299,14 +1299,10 @@ describe('reticulum chat manager', () => {
     expect(offeredResources).toHaveLength(1);
     expect(offeredResources[0]?.resourceType).toBe('reticulum_group_resource_chunk');
     expect((offeredResources[0]?.metadata as any).chunkBundle).toBe(true);
-    expect((offeredResources[0]?.metadata as any).chunks).toEqual(
-      chunks.map((chunk, index) => ({
-        index,
-        hash: manifest.chunkHashes[index],
-        sizeBytes: chunk.length,
-        offset: chunks.slice(0, index).reduce((sum, previous) => sum + previous.length, 0),
-      }))
-    );
+    expect((offeredResources[0]?.metadata as any).chunks).toBeUndefined();
+    expect((offeredResources[0]?.metadata as any).chunkRanges).toEqual([
+      [0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT],
+    ]);
     expect(offeredResources[0]?.size).toBe(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
     expect(offerWires).toHaveLength(1);
     expect((offerWires[0]?.o as any).ci).toBeUndefined();

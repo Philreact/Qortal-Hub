@@ -79,6 +79,39 @@ export type ReticulumResourceDownloadRuntimeStatus = {
   nextRequestAt: number | null;
 };
 
+function chunkIndexesToRanges(chunkIndexes: number[]): Array<[number, number]> {
+  const sorted = [...new Set(chunkIndexes)]
+    .filter((index) => Number.isInteger(index) && index >= 0)
+    .sort((a, b) => a - b);
+  const ranges: Array<[number, number]> = [];
+  for (const index of sorted) {
+    const previous = ranges[ranges.length - 1];
+    if (previous && previous[0] + previous[1] === index) {
+      previous[1] += 1;
+    } else {
+      ranges.push([index, 1]);
+    }
+  }
+  return ranges;
+}
+
+function offerChunkRanges(offer: ReticulumResourceTransferOffer): Array<[number, number]> {
+  if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return [];
+  return chunkIndexesToRanges(offer.chunks.map((chunk) => chunk.index));
+}
+
+function sameChunkRanges(a: unknown, b: Array<[number, number]>): boolean {
+  if (!Array.isArray(a)) return b.length === 0;
+  if (a.length !== b.length) return false;
+  return a.every(
+    (range, index) =>
+      Array.isArray(range) &&
+      range.length === 2 &&
+      range[0] === b[index]?.[0] &&
+      range[1] === b[index]?.[1]
+  );
+}
+
 type ReticulumResourceDownloadState<TRequestWire> = {
   contextId: number;
   fileHash: string;
@@ -383,6 +416,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const transferId = nodeCrypto.randomBytes(8).toString('hex');
     const fileName = `${manifest.fileHash}.chunks-${bundle.chunks[0]?.index ?? 0}`;
     const bundleHash = nodeCrypto.createHash('sha256').update(fs.readFileSync(bundle.path)).digest('hex');
+    const chunkRanges = chunkIndexesToRanges(bundle.chunks.map((chunk) => chunk.index));
     const registered = await this.bridge.sendReticulumResourceDetailed({
       allowedRecipientAddress: peerKey,
       transferId,
@@ -398,7 +432,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         ...this.contextMetadata(contextId),
         fileHash: manifest.fileHash,
         chunkBundle: true,
-        chunks: bundle.chunks,
+        chunkRanges,
+        bundleHash,
         mimeType: manifest.mimeType,
         namespace: manifest.namespace,
       },
@@ -927,6 +962,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     );
     const isChunkTransfer =
       offer.chunkIndex != null || (Array.isArray(offer.chunks) && offer.chunks.length > 0);
+    const chunkRanges = offerChunkRanges(offer);
     const result = await this.bridge.acceptReticulumResourceDetailed({
       peerPresenceHash: senderHash,
       reticulumIdentityPublicKeyBase64: '',
@@ -950,7 +986,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         chunkHash: offer.chunkHash ?? '',
         bundleHash: offer.bundleHash ?? '',
         chunkBundle: Array.isArray(offer.chunks) && offer.chunks.length > 0,
-        chunks: offer.chunks ?? [],
+        chunkRanges,
         mimeType: offer.mimeType,
       },
       authMessage: {
@@ -965,7 +1001,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         chunkSize: offer.chunkSize ?? null,
         bundleHash: offer.bundleHash ?? '',
         chunkBundle: Array.isArray(offer.chunks) && offer.chunks.length > 0,
-        chunks: offer.chunks ?? [],
+        chunkRanges,
       },
     });
     if (!result.ok) {
@@ -1002,8 +1038,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       (offer.chunkIndex != null && Number(auth.chunkIndex) !== offer.chunkIndex) ||
       (offer.chunkHash && auth.chunkHash !== offer.chunkHash) ||
       (offer.bundleHash && auth.bundleHash !== offer.bundleHash) ||
-      (Array.isArray(offer.chunks) &&
-        JSON.stringify(auth.chunks ?? []) !== JSON.stringify(offer.chunks))
+      (Array.isArray(offer.chunks) && !sameChunkRanges(auth.chunkRanges, offerChunkRanges(offer)))
     ) {
       loggerWarn(
         `[${this.loggerPrefix}] Rejecting resource auth transfer=${transferId}: metadata mismatch`
