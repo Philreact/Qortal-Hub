@@ -31,7 +31,10 @@ import {
   byteLengthUtf8JsonWithBridgeSender,
 } from './reticulum-wire-size';
 import { ReticulumResourceStore, RETICULUM_RESOURCE_MIN_CHUNK_SIZE } from './reticulum-resource-store';
-import { RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS } from './reticulum-resource-transfer';
+import {
+  RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT,
+  RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
+} from './reticulum-resource-transfer';
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
   const kp = nacl.sign.keyPair();
@@ -1211,12 +1214,10 @@ describe('reticulum chat manager', () => {
   it('serves multiple requested resource chunks as one verified bundle offer', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-bundle-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
-    const chunks = [
-      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 21),
-      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 22),
-      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 23),
-      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 24),
-    ];
+    const chunks = Array.from(
+      { length: RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT },
+      (_, index) => Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 21 + index)
+    );
     fs.writeFileSync(sourcePath, Buffer.concat(chunks));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -1264,7 +1265,7 @@ describe('reticulum chat manager', () => {
         q: signedResourceRequestWire({
           groupId: 82,
           fileHash: manifest.fileHash,
-          chunkIndexes: [0, 1, 2, 3],
+          chunkIndexes: chunks.map((_, index) => index),
           timestamp: 100_000,
         }),
       },
@@ -1275,16 +1276,21 @@ describe('reticulum chat manager', () => {
     expect(offeredResources).toHaveLength(1);
     expect(offeredResources[0]?.resourceType).toBe('reticulum_group_resource_chunk');
     expect((offeredResources[0]?.metadata as any).chunkBundle).toBe(true);
-    expect((offeredResources[0]?.metadata as any).chunks).toEqual([
-      { index: 0, hash: manifest.chunkHashes[0], sizeBytes: chunks[0].length, offset: 0 },
-      { index: 1, hash: manifest.chunkHashes[1], sizeBytes: chunks[1].length, offset: chunks[0].length },
-      { index: 2, hash: manifest.chunkHashes[2], sizeBytes: chunks[2].length, offset: chunks[0].length + chunks[1].length },
-      { index: 3, hash: manifest.chunkHashes[3], sizeBytes: chunks[3].length, offset: chunks[0].length + chunks[1].length + chunks[2].length },
-    ]);
+    expect((offeredResources[0]?.metadata as any).chunks).toEqual(
+      chunks.map((chunk, index) => ({
+        index,
+        hash: manifest.chunkHashes[index],
+        sizeBytes: chunk.length,
+        offset: chunks.slice(0, index).reduce((sum, previous) => sum + previous.length, 0),
+      }))
+    );
     expect(offeredResources[0]?.size).toBe(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
     expect(offerWires).toHaveLength(1);
     expect((offerWires[0]?.o as any).ci).toBeUndefined();
-    expect((offerWires[0]?.o as any).cb).toEqual([0, 1, 2, 3]);
+    expect((offerWires[0]?.o as any).cb).toEqual(chunks.map((_, index) => index));
+    expect(byteLengthUtf8JsonWithBridgeSender(offerWires[0])).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
     manager.close();
     resourceStore.close();
   });

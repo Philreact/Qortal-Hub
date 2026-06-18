@@ -9,7 +9,7 @@ import {
 } from './reticulum-resource-store';
 import { warn as loggerWarn } from './logger';
 
-export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 4;
+export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 32;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 1;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
