@@ -192,6 +192,7 @@ _QCHAT_FILE_CHUNK_SIZE = 1024 * 1024
 _QCHAT_FILE_PARALLEL_LINKS = 1
 _QCHAT_FILE_SUCCESS_LINK_CLOSE_GRACE_SECONDS = 15.0
 _QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS = 90.0
+_QCHAT_FILE_CHANNEL_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
 _QCHAT_FILE_CHUNK_DIAG_MIN_INTERVAL_SECONDS = 5.0
 _QCHAT_FILE_CHUNK_DIAG_MIN_DELTA = 0.05
 _QCHAT_FILE_RESERVED_METADATA_KEYS = {
@@ -7455,26 +7456,39 @@ def _qchat_file_start_channel_stream_sender(state: Dict[str, Any]) -> bool:
                 },
             )
             with open(file_path, "rb") as source:
+                idle_since = time.monotonic()
                 while True:
                     chunk = source.read(64 * 1024)
                     if not chunk:
                         break
-                    writer.write(chunk)
-                    sent += len(chunk)
-                    writer.flush()
-                    progress = min(1.0, sent / float(size)) if size > 0 else 0.0
-                    if _should_emit_qchat_file_progress(state, progress, force=progress >= 1.0):
-                        _qchat_file_emit(
-                            "sending",
-                            {
-                                "transferId": transfer_id,
-                                "peerPresenceHash": peer_hash,
-                                "fileName": file_name,
-                                "size": size,
-                                "resourceType": resource_type,
-                                **_qchat_file_progress_payload(state, progress, size),
-                            },
-                        )
+                    view = memoryview(chunk)
+                    offset = 0
+                    while offset < len(view):
+                        written = writer.write(view[offset:])
+                        if written is None:
+                            written = 0
+                        if written <= 0:
+                            if time.monotonic() - idle_since > _QCHAT_FILE_CHANNEL_STREAM_IDLE_TIMEOUT_SECONDS:
+                                raise TimeoutError("channel stream send timed out waiting for buffer space")
+                            time.sleep(0.02)
+                            continue
+                        idle_since = time.monotonic()
+                        offset += int(written)
+                        sent += int(written)
+                        writer.flush()
+                        progress = min(1.0, sent / float(size)) if size > 0 else 0.0
+                        if _should_emit_qchat_file_progress(state, progress, force=progress >= 1.0):
+                            _qchat_file_emit(
+                                "sending",
+                                {
+                                    "transferId": transfer_id,
+                                    "peerPresenceHash": peer_hash,
+                                    "fileName": file_name,
+                                    "size": size,
+                                    "resourceType": resource_type,
+                                    **_qchat_file_progress_payload(state, progress, size),
+                                },
+                            )
             writer.close()
             state["completed"] = True
             with _state_lock:
@@ -7546,10 +7560,17 @@ def _qchat_file_start_channel_stream_receiver(state: Dict[str, Any]) -> bool:
                 },
             )
             with open(part_path, "wb") as out:
+                idle_since = time.monotonic()
                 while True:
                     chunk = reader.read(64 * 1024)
-                    if not chunk:
+                    if chunk is None:
+                        if time.monotonic() - idle_since > _QCHAT_FILE_CHANNEL_STREAM_IDLE_TIMEOUT_SECONDS:
+                            raise TimeoutError("channel stream receive timed out waiting for data")
+                        time.sleep(0.02)
+                        continue
+                    if chunk == b"":
                         break
+                    idle_since = time.monotonic()
                     out.write(chunk)
                     received += len(chunk)
                     progress = min(1.0, received / float(size)) if size > 0 else 0.0

@@ -20,6 +20,7 @@ export const RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 export const RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS = 15_000;
 export const RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS = 75_000;
+export const RETICULUM_RESOURCE_TRANSFER_COMPLETE_FILE_RESPONSE_TIMEOUT_MS = 15_000;
 const RETICULUM_RESOURCE_TRANSFER_ACCEPT_STALE_MS = 75_000;
 const RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS = 5_000;
 
@@ -823,7 +824,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return attempts < RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS;
     });
     if ((state.chunkAttempts.get(-1) ?? 0) > 0) {
-      this.emitProgress(state);
+      this.emitProgress(state, false, undefined, true);
+      this.downloads.delete(state.fileHash);
       return;
     }
     if (missing.length === 0) {
@@ -888,7 +890,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       }
     }
     state.chunkAttempts.set(-1, (state.chunkAttempts.get(-1) ?? 0) + 1);
-    state.nextRequestAt = 0;
+    state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_COMPLETE_FILE_RESPONSE_TIMEOUT_MS;
     if (!delivered) {
       this.emitProgress(state, false, undefined, true);
       this.downloads.delete(state.fileHash);
