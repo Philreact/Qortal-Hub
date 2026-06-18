@@ -854,6 +854,8 @@ export class ReticulumChatManager extends EventEmitter {
       chunkIndex: progress.chunkIndex,
       completedChunks: progress.completedChunks,
       totalChunks: progress.totalChunks,
+      bytesTransferred: progress.bytesTransferred,
+      totalBytes: progress.totalBytes,
       progress: progress.progress,
       complete: progress.complete,
       failed: progress.failed,

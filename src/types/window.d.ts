@@ -599,6 +599,8 @@ declare global {
           chunkIndex?: number;
           completedChunks?: number;
           totalChunks?: number;
+          bytesTransferred?: number;
+          totalBytes?: number;
           progress?: number;
           complete?: boolean;
           failed?: boolean;

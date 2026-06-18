@@ -1476,6 +1476,155 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
+  it('does not accept duplicate complete-file offers while a full transfer is active', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-duplicate-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const bytes = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 11);
+    const fileHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '84:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: bytes.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes: [fileHash],
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 84 },
+    };
+    let accepts = 0;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      acceptReticulumResourceDetailed: async () => {
+        accepts += 1;
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([84]);
+    manager.subscribeGroup(84);
+
+    await expect(manager.requestResource(84, manifest)).resolves.toMatchObject({ ok: true });
+    for (const transferId of ['full-transfer-a', 'full-transfer-b', 'full-transfer-c']) {
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'resource_offer',
+          g: 84,
+          o: {
+            x: transferId,
+            fh: fileHash,
+            s: bytes.length,
+          },
+        },
+        'peer-a'
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toBe(1);
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      activeTransfers: 1,
+      pendingTransfers: 0,
+      inFlightChunkCount: 0,
+    });
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('fails a complete-file download when the active full transfer goes stale', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-stale-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const bytes = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 12);
+    const fileHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '85:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: bytes.length,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes: [fileHash],
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 85 },
+    };
+    let now = 100_000;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      acceptReticulumResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    const progressEvents: Array<Record<string, unknown>> = [];
+    manager.on('resource', (payload) => progressEvents.push(payload as Record<string, unknown>));
+    manager.setLocalGroupMemberships([85]);
+    manager.subscribeGroup(85);
+
+    await expect(manager.requestResource(85, manifest)).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_offer',
+        g: 85,
+        o: {
+          x: 'full-transfer-stale',
+          fh: fileHash,
+          s: bytes.length,
+        },
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      activeTransfers: 1,
+    });
+
+    now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      active: false,
+      activeTransfers: 0,
+      pendingTransfers: 0,
+    });
+    expect(progressEvents).toContainEqual(
+      expect.objectContaining({
+        fileHash,
+        failed: true,
+      })
+    );
+    manager.close();
+    resourceStore.close();
+  });
+
   it('emits live progress while a chunk transfer is still receiving', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-live-progress-'));
     const resourceStore = new ReticulumResourceStore({

@@ -1463,6 +1463,8 @@ try {
           chunkIndex?: number;
           completedChunks?: number;
           totalChunks?: number;
+          bytesTransferred?: number;
+          totalBytes?: number;
           progress?: number;
           complete?: boolean;
           failed?: boolean;
@@ -1477,6 +1479,8 @@ try {
               chunkIndex?: number;
               completedChunks?: number;
               totalChunks?: number;
+              bytesTransferred?: number;
+              totalBytes?: number;
               progress?: number;
               complete?: boolean;
               failed?: boolean;
@@ -1664,6 +1668,8 @@ try {
           chunkIndex?: number;
           completedChunks?: number;
           totalChunks?: number;
+          bytesTransferred?: number;
+          totalBytes?: number;
           progress?: number;
           complete?: boolean;
           failed?: boolean;
@@ -1678,6 +1684,8 @@ try {
               chunkIndex?: number;
               completedChunks?: number;
               totalChunks?: number;
+              bytesTransferred?: number;
+              totalBytes?: number;
               progress?: number;
               complete?: boolean;
               failed?: boolean;
