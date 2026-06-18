@@ -105,6 +105,30 @@ describe('reticulum resource store', () => {
     expect(fs.readFileSync(assembledPath)).toEqual(Buffer.concat([first, second]));
   });
 
+  it('reuses an existing assembled resource instead of rebuilding it', () => {
+    const { dir, store } = tempStore();
+    stores.push(store);
+    const sourcePath = path.join(dir, 'source.bin');
+    const contents = Buffer.from('reuse assembled bytes');
+    fs.writeFileSync(sourcePath, contents);
+
+    const manifest = store.importLocalFile({
+      sourcePath,
+      namespace: 'test.feature',
+      fileName: 'reuse.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+    });
+
+    const assembledPath = store.assembleResource(manifest.fileHash);
+    const oldTime = new Date(10_000);
+    fs.utimesSync(assembledPath, oldTime, oldTime);
+
+    expect(store.assembleResource(manifest.fileHash)).toBe(assembledPath);
+    expect(fs.readFileSync(assembledPath)).toEqual(contents);
+    expect(fs.statSync(assembledPath).mtimeMs).toBe(10_000);
+  });
+
   it('assembles public resources to the original safe filename', () => {
     const { dir, store } = tempStore();
     stores.push(store);

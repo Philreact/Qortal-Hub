@@ -80,6 +80,7 @@ type ReticulumResourceDownloadState<TRequestWire> = {
   chunkAttempts: Map<number, number>;
   chunkPeers: Map<number, Set<string>>;
   inFlightChunks: Map<number, { transferId: string; startedAt: number }>;
+  fullTransfer?: { transferId: string; startedAt: number };
   nextRequestAt: number;
   featureData?: Record<string, unknown>;
   requestPayloads?: TRequestWire[];
@@ -296,6 +297,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         return;
       }
     }
+    const fullResourcePath = this.tryGetCompleteResourcePath(manifest.fileHash);
+    if (fullResourcePath) {
+      await this.sendFullResourceOffer(contextId, request, peerKey, manifest, fullResourcePath);
+      return;
+    }
     const requestedIndexes = Array.isArray(request.chunkIndexes)
       ? request.chunkIndexes
       : manifest.chunkHashes
@@ -389,6 +395,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         return;
       }
     }
+    if (download?.fullTransfer) return;
     if (offer.chunkIndex != null) {
       const expectedChunkHash = manifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
       if (!expectedChunkHash || offer.chunkHash?.toLowerCase() !== expectedChunkHash) {
@@ -406,6 +413,20 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const localChunk = this.resourceStore.getChunk(offer.fileHash, offer.chunkIndex);
       if (localChunk?.status === 'complete' && localChunk.localPath) return;
       if (download && download.inFlightChunks.has(offer.chunkIndex)) return;
+    } else {
+      if (offer.sizeBytes !== manifest.sizeBytes) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: size mismatch`
+        );
+        return;
+      }
+      try {
+        this.resourceStore.assembleResource(offer.fileHash);
+        return;
+      } catch {
+        // Missing data is expected for active downloads.
+      }
+      if (download?.fullTransfer) return;
     }
     const trackedOffer: ReticulumResourceTransferOffer = {
       ...offer,
@@ -422,8 +443,74 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         download.chunkPeers.set(offer.chunkIndex, peers);
       }
       peers.add(peerKey);
+    } else if (download) {
+      download.peerHashes.add(peerKey);
     }
     this.enqueueAccept(offer.transferId);
+  }
+
+  private tryGetCompleteResourcePath(fileHash: string): string | null {
+    try {
+      return this.resourceStore.assembleResource(fileHash);
+    } catch {
+      return null;
+    }
+  }
+
+  private async sendFullResourceOffer(
+    contextId: number,
+    request: ReticulumResourceTransferRequest,
+    peerKey: string,
+    manifest: ReticulumResourceManifest,
+    filePath: string
+  ): Promise<void> {
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    const registered = await this.bridge?.sendReticulumResourceDetailed({
+      allowedRecipientAddress: peerKey,
+      transferId,
+      filePath,
+      fileName: manifest.fileName,
+      size: manifest.sizeBytes,
+      sha256: manifest.fileHash,
+      resourceType: this.resourceType,
+      metadata: {
+        logicalResourceType: this.resourceType,
+        eventId: request.eventId ?? '',
+        contextId,
+        ...this.contextMetadata(contextId),
+        fileHash: manifest.fileHash,
+        mimeType: manifest.mimeType,
+        namespace: manifest.namespace,
+      },
+      expiresAt: this.now() + RETICULUM_RESOURCE_TRANSFER_TTL_MS,
+    });
+    if (!registered?.ok) {
+      const failed = registered as Exclude<ReticulumSendResult, { ok: true }> | undefined;
+      loggerWarn(
+        `[${this.loggerPrefix}] Failed to register full resource offer fileHash=${manifest.fileHash}:`,
+        failed?.error ?? failed?.reason ?? 'bridge unavailable'
+      );
+      return;
+    }
+    const offer: ReticulumResourceTransferOffer = {
+      transferId,
+      contextId,
+      ...(request.eventId ? { eventId: request.eventId } : {}),
+      fileHash: manifest.fileHash,
+      sizeBytes: manifest.sizeBytes,
+      fileName: manifest.fileName,
+      mimeType: manifest.mimeType,
+    };
+    this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
+    const sent = await this.sendOfferToPeer(peerKey, contextId, offer);
+    if (!sent.ok) {
+      const failed = sent as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[${this.loggerPrefix}] Failed to send full resource offer fileHash=${manifest.fileHash}:`,
+        failed.error ?? failed.reason
+      );
+      this.offers.delete(transferId);
+    }
   }
 
   handleResourceEvent(payload: ReticulumResourceTransferPayload): void {
@@ -516,6 +603,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
 
   private async dispatchRequests(state: ReticulumResourceDownloadState<TRequestWire>): Promise<void> {
     this.releaseStaleInFlightChunks(state);
+    if (state.fullTransfer) {
+      this.emitProgress(state);
+      return;
+    }
     const missing = this.getMissingChunkIndexes(state.manifest).filter((index) => {
       if (state.inFlightChunks.has(index)) return false;
       const attempts = state.chunkAttempts.get(index) ?? 0;
@@ -717,7 +808,13 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.activeAccepts.add(transferId);
       this.activeAcceptStartedAt.set(transferId, this.now());
       const state = this.downloads.get(offer.fileHash);
-      if (state) this.markOfferChunksInFlight(state, offer);
+      if (state) {
+        if (offer.chunkIndex != null) {
+          this.markOfferChunksInFlight(state, offer);
+        } else {
+          state.fullTransfer = { transferId: offer.transferId, startedAt: this.now() };
+        }
+      }
       await this.accept(offer.sourcePeerHash || '', offer);
     }
   }
@@ -907,7 +1004,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.finishTransfer(payload.transferId, false);
     } finally {
       const state = this.downloads.get(offer.fileHash);
-      if (state) this.releaseOfferChunksInFlight(state, offer);
+      if (state) {
+        this.releaseOfferChunksInFlight(state, offer);
+        this.releaseFullTransfer(state, offer);
+      }
       this.offers.delete(payload.transferId);
       this.activeAccepts.delete(payload.transferId);
       this.activeAcceptStartedAt.delete(payload.transferId);
@@ -924,9 +1024,12 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.activeAcceptStartedAt.delete(transferId);
     if (offer) {
       const state = this.downloads.get(offer.fileHash);
-      if (state) this.releaseOfferChunksInFlight(state, offer);
+      if (state) {
+        this.releaseOfferChunksInFlight(state, offer);
+        this.releaseFullTransfer(state, offer);
+      }
     }
-    if (!success && offer?.chunkIndex != null) {
+    if (!success && offer) {
       const state = this.downloads.get(offer.fileHash);
       if (state) {
         state.nextRequestAt = 0;
@@ -946,13 +1049,16 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       state.chunkAttempts.delete(offer.chunkIndex);
     }
     this.releaseOfferChunksInFlight(state, offer);
+    this.releaseFullTransfer(state, offer);
     try {
       this.resourceStore.assembleResource(offer.fileHash);
       this.emitProgress(state, true);
+      this.clearPendingOffersForFile(offer.fileHash, offer.transferId);
       this.downloads.delete(offer.fileHash);
       return;
     } catch {
       if (completeResource) {
+        this.clearPendingOffersForFile(offer.fileHash, offer.transferId);
         this.downloads.delete(offer.fileHash);
         return;
       }
@@ -1025,6 +1131,31 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     for (const [chunkIndex, reservation] of state.inFlightChunks.entries()) {
       if (now - reservation.startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
         state.inFlightChunks.delete(chunkIndex);
+      }
+    }
+    if (state.fullTransfer && now - state.fullTransfer.startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
+      delete state.fullTransfer;
+    }
+  }
+
+  private releaseFullTransfer(
+    state: ReticulumResourceDownloadState<TRequestWire>,
+    offer: ReticulumResourceTransferOffer
+  ): void {
+    if (state.fullTransfer?.transferId === offer.transferId) {
+      delete state.fullTransfer;
+    }
+  }
+
+  private clearPendingOffersForFile(fileHash: string, exceptTransferId = ''): void {
+    const blobId = fileHash.toLowerCase();
+    for (let index = this.pendingAccepts.length - 1; index >= 0; index -= 1) {
+      const transferId = this.pendingAccepts[index];
+      if (transferId === exceptTransferId) continue;
+      const offer = this.offers.get(transferId);
+      if (offer?.fileHash.toLowerCase() === blobId) {
+        this.pendingAccepts.splice(index, 1);
+        this.offers.delete(transferId);
       }
     }
   }

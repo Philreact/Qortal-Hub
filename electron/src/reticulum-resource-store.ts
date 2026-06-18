@@ -405,6 +405,17 @@ export class ReticulumResourceStore {
   assembleResource(fileHash: string): string {
     const manifest = this.getManifest(fileHash);
     if (!manifest) throw new Error('Unknown resource manifest');
+    const row = this.stmtGetResource.get(fileHash) as ResourceRow | undefined;
+    if (row?.assembled_path && fs.existsSync(row.assembled_path)) {
+      try {
+        const stat = fs.statSync(row.assembled_path);
+        if (stat.isFile() && stat.size === manifest.sizeBytes) {
+          return row.assembled_path;
+        }
+      } catch {
+        // Fall through and rebuild from verified chunks.
+      }
+    }
     const chunks = this.getChunks(fileHash);
     if (chunks.length !== manifest.chunkHashes.length || chunks.some((c) => c.status !== 'complete')) {
       throw new Error('Resource has missing chunks');

@@ -1127,6 +1127,92 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
+  it('serves a complete resource as one bridge transfer so the bridge can stream chunks over one link', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-offer-'));
+    const sourcePath = path.join(tempRoot, 'source.bin');
+    const sourceBytes = Buffer.concat([
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 11),
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 12),
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 13),
+    ]);
+    fs.writeFileSync(sourcePath, sourceBytes);
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const manifest = resourceStore.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-chat-file',
+      ownerId: '81:sender',
+      fileName: 'source.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+      metadata: { groupId: 81 },
+    });
+
+    const offeredResources: Array<Record<string, unknown>> = [];
+    const offerWires: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        offeredResources.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
+        offerWires.push(wire);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([81]);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_req',
+        g: 81,
+        q: signedResourceRequestWire({
+          groupId: 81,
+          fileHash: manifest.fileHash,
+          chunkIndexes: [0, 1, 2],
+          timestamp: 100_000,
+        }),
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(offeredResources).toHaveLength(1);
+    expect(offeredResources[0]).toEqual(
+      expect.objectContaining({
+        fileName: manifest.fileName,
+        size: manifest.sizeBytes,
+        sha256: manifest.fileHash,
+        resourceType: 'reticulum_group_resource',
+      })
+    );
+    expect(offeredResources[0].metadata).toEqual(
+      expect.not.objectContaining({
+        chunkIndex: expect.anything(),
+        chunkHash: expect.anything(),
+        chunkSize: expect.anything(),
+      })
+    );
+    expect(offerWires).toHaveLength(1);
+    expect((offerWires[0].o as any).ci).toBeUndefined();
+    expect((offerWires[0].o as any).ch).toBeUndefined();
+    expect((offerWires[0].o as any).s).toBe(manifest.sizeBytes);
+    manager.close();
+    resourceStore.close();
+  });
+
   it('requests resources after Core validates the local signer even when local membership cache is stale', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-stale-local-membership-'));
     const resourceStore = new ReticulumResourceStore({
