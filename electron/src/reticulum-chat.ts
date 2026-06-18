@@ -249,6 +249,8 @@ const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_MS = 45_000;
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS = 10_000;
 const RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS = 2 * 60_000;
+const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_SIZE = 8;
+const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_INTERVAL_MS = 200;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
 const RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT = RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
@@ -698,6 +700,9 @@ export class ReticulumChatManager extends EventEmitter {
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
   private eventPullQueueTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private subscriptionFanoutQueue: ReticulumChatWire[] = [];
+  private subscriptionFanoutTimer: ReturnType<typeof setTimeout> | null = null;
+  private subscriptionFanoutSentInBatch = 0;
   private eventPullQueueActive = false;
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
@@ -880,6 +885,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.detachBridge();
     this.stopLocalNotificationWatcher();
     this.stopSubscriptionRefreshTimer();
+    this.clearSubscriptionFanoutQueue();
     if (this.eventPullQueueTimer) {
       clearTimeout(this.eventPullQueueTimer);
       this.eventPullQueueTimer = null;
@@ -896,10 +902,12 @@ export class ReticulumChatManager extends EventEmitter {
     for (const groupId of this.getSubscriptions()) {
       if (this.localGroupIds.has(groupId)) continue;
       this.subscribedGroups.delete(groupId);
+      this.removeQueuedSubscriptionFanouts(groupId);
       void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
     }
     if (this.subscribedGroups.size === 0) {
       this.stopSubscriptionRefreshTimer();
+      this.clearSubscriptionFanoutQueue();
     }
     for (const groupId of nextGroupIds) {
       const [latestEvent] = this.db.getRecentEvents(groupId, 1);
@@ -937,19 +945,21 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private announceGroupSubscription(groupId: number): void {
-    void this.fanout({ t: 'RCHAT', k: 'sub', g: groupId });
-    void this.fanout(this.buildAuthorHeadsReqWire(groupId));
-    for (const wire of this.buildSyncReqWires(groupId)) {
-      void this.fanout(wire);
-    }
+    this.enqueueSubscriptionFanouts([
+      { t: 'RCHAT', k: 'sub', g: groupId },
+      this.buildAuthorHeadsReqWire(groupId),
+      ...this.buildSyncReqWires(groupId),
+    ]);
   }
 
   unsubscribeGroup(groupId: number): void {
     this.assertGroupId(groupId);
     this.subscribedGroups.delete(groupId);
+    this.removeQueuedSubscriptionFanouts(groupId);
     if (this.subscribedGroups.size === 0) {
       this.stopLocalNotificationWatcher();
       this.stopSubscriptionRefreshTimer();
+      this.clearSubscriptionFanoutQueue();
     }
     void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
   }
@@ -2535,6 +2545,53 @@ export class ReticulumChatManager extends EventEmitter {
     this.subscriptionRefreshTimer = null;
   }
 
+  private stopSubscriptionFanoutTimer(): void {
+    if (!this.subscriptionFanoutTimer) return;
+    clearTimeout(this.subscriptionFanoutTimer);
+    this.subscriptionFanoutTimer = null;
+  }
+
+  private clearSubscriptionFanoutQueue(): void {
+    this.subscriptionFanoutQueue = [];
+    this.subscriptionFanoutSentInBatch = 0;
+    this.stopSubscriptionFanoutTimer();
+  }
+
+  private enqueueSubscriptionFanouts(wires: ReticulumChatWire[]): void {
+    this.subscriptionFanoutQueue.push(...wires);
+    this.drainSubscriptionFanoutQueue();
+  }
+
+  private removeQueuedSubscriptionFanouts(groupId: number): void {
+    this.subscriptionFanoutQueue = this.subscriptionFanoutQueue.filter((wire) => wire.g !== groupId);
+  }
+
+  private scheduleSubscriptionFanoutDrain(): void {
+    if (this.subscriptionFanoutTimer) return;
+    this.subscriptionFanoutTimer = setTimeout(() => {
+      this.subscriptionFanoutTimer = null;
+      this.subscriptionFanoutSentInBatch = 0;
+      this.drainSubscriptionFanoutQueue();
+    }, RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_INTERVAL_MS);
+    this.subscriptionFanoutTimer.unref?.();
+  }
+
+  private drainSubscriptionFanoutQueue(): void {
+    while (
+      this.subscriptionFanoutQueue.length > 0 &&
+      this.subscriptionFanoutSentInBatch < RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_SIZE
+    ) {
+      const wire = this.subscriptionFanoutQueue.shift();
+      if (!wire) break;
+      if (!this.subscribedGroups.has(wire.g) || !this.localGroupIds.has(wire.g)) continue;
+      this.subscriptionFanoutSentInBatch += 1;
+      void this.fanout(wire);
+    }
+    if (this.subscriptionFanoutQueue.length > 0 || this.subscriptionFanoutSentInBatch > 0) {
+      this.scheduleSubscriptionFanoutDrain();
+    }
+  }
+
   private scheduleSubscriptionRefresh(): void {
     if (this.subscriptionRefreshTimer || this.subscribedGroups.size === 0) return;
     const jitter = Math.floor(Math.random() * RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS);
@@ -2548,9 +2605,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private refreshSubscriptions(): void {
     this.prunePeerSubscriptions();
-    for (const groupId of this.getSubscriptions()) {
-      void this.fanout({ t: 'RCHAT', k: 'sub', g: groupId });
-    }
+    this.enqueueSubscriptionFanouts(
+      this.getSubscriptions().map((groupId) => ({ t: 'RCHAT', k: 'sub', g: groupId }))
+    );
   }
 
   private notePeerSubscription(peerHash: string, groupId: number, active: boolean): void {

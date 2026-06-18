@@ -117,6 +117,7 @@ const OVERLAY_LINK_PER_PACKET_REASONS = new Set([
   'presence_publish',
   'presence_forward',
   'call_signal',
+  'reticulum_chat_fanout',
 ]);
 
 function shouldLogOverlayLinkStateEvent(reason: string): boolean {
