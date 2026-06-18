@@ -149,6 +149,23 @@ describe('reticulum resource store', () => {
     expect(path.basename(path.dirname(assembledPath))).toBe('assembled');
     expect(fs.readFileSync(assembledPath)).toEqual(contents);
   });
+
+  it('creates the plaintext temp directory before returning a temp path', () => {
+    const dir = tempDir();
+    const tempRoot = path.join(dir, 'missing-temp-root');
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      tempDir: tempRoot,
+      now: () => 100_000,
+    });
+    stores.push(store);
+    const tempPath = store.createPlaintextTempPath(cryptoHash(Buffer.from('resource')), '.bundle-0.bin');
+
+    expect(path.dirname(tempPath)).toBe(path.join(tempRoot, 'qortal-reticulum-resources'));
+    fs.writeFileSync(tempPath, Buffer.from('ok'));
+    expect(fs.readFileSync(tempPath, 'utf8')).toBe('ok');
+  });
 });
 
 function cryptoHash(value: Buffer): string {

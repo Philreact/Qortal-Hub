@@ -54,6 +54,7 @@ export type ReticulumResourceImportOptions = {
 export type ReticulumResourceStoreOptions = {
   dbPath?: string;
   rootDir?: string;
+  tempDir?: string;
   now?: () => number;
 };
 
@@ -157,6 +158,7 @@ function rowToManifest(row: ResourceRow): ReticulumResourceManifest {
 export class ReticulumResourceStore {
   private readonly db: DB;
   private readonly rootDir: string;
+  private readonly tempDir: string;
   private readonly now: () => number;
   private readonly stmtUpsertResource: Statement;
   private readonly stmtGetResource: Statement;
@@ -169,6 +171,7 @@ export class ReticulumResourceStore {
 
   constructor(options: ReticulumResourceStoreOptions = {}) {
     this.rootDir = options.rootDir ?? defaultReticulumResourceRootDir();
+    this.tempDir = options.tempDir ?? os.tmpdir();
     this.now = options.now ?? Date.now;
     const dbPath = options.dbPath ?? defaultReticulumResourceDbPath();
     fs.mkdirSync(this.rootDir, { recursive: true });
@@ -453,9 +456,10 @@ export class ReticulumResourceStore {
     const manifest = this.getManifest(fileHash);
     const suffix = extension || path.extname(manifest?.fileName || '') || '.bin';
     const safeSuffix = suffix.startsWith('.') ? suffix : `.${suffix}`;
+    const tempDir = path.join(this.tempDir, 'qortal-reticulum-resources');
+    fs.mkdirSync(tempDir, { recursive: true });
     return path.join(
-      os.tmpdir(),
-      'qortal-reticulum-resources',
+      tempDir,
       `${fileHash}-${nodeCrypto.randomBytes(6).toString('hex')}${safeSuffix}`
     );
   }
