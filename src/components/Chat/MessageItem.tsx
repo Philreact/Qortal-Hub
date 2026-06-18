@@ -918,11 +918,16 @@ export const MessageItemComponent = ({
       advertisedPeerCount > 0 && advertisedPeerCount !== peerCount
         ? `peers ${advertisedPeerCount}/${peerCount}`
         : `peers ${peerCount}`;
-    const linksText =
-      activeTransfers > 0 || pendingTransfers > 0
-        ? `links ${activeTransfers}${pendingTransfers > 0 ? `+${pendingTransfers}` : ''}/4`
-        : '';
-    return [peersText, linksText].filter(Boolean).join(' · ');
+    const transferParts: string[] = [];
+    if (activeTransfers > 0) {
+      transferParts.push(`${activeTransfers} active`);
+    }
+    if (pendingTransfers > 0) {
+      transferParts.push(`${pendingTransfers} queued`);
+    }
+    const transfersText =
+      transferParts.length > 0 ? `transfers ${transferParts.join(', ')}` : '';
+    return [peersText, transfersText].filter(Boolean).join(' · ');
   })();
   const fileResourceStatusText = (() => {
     if (fileResourceStatus === 'ready') return 'ready';

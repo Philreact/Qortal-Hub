@@ -1108,19 +1108,20 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const bundleHash = nodeCrypto
-      .createHash('sha256')
-      .update(Buffer.concat([chunk0, chunk2]))
-      .digest('hex');
     expect(offeredResources.map((payload) => payload.metadata)).toEqual([
       expect.objectContaining({
-        chunkIndexes: [0, 2],
-        bundleHash,
-        bundleSize: chunk0.length + chunk2.length,
+        chunkIndex: 0,
+        chunkHash: chunkHashes[0],
+        chunkSize: chunk0.length,
+      }),
+      expect.objectContaining({
+        chunkIndex: 2,
+        chunkHash: chunkHashes[2],
+        chunkSize: chunk2.length,
       }),
     ]);
-    expect(offerWires.map((wire) => (wire.o as any).cis)).toEqual([[0, 2]]);
-    expect(offerWires.map((wire) => (wire.o as any).bh)).toEqual([bundleHash]);
+    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual([0, 2]);
+    expect(offerWires.map((wire) => (wire.o as any).ch)).toEqual([chunkHashes[0], chunkHashes[2]]);
     expect(offerWires.every((wire) => wire.k === 'resource_offer')).toBe(true);
     manager.close();
     resourceStore.close();
@@ -1186,7 +1187,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('does not accept duplicate chunk bundle offers while chunks are in flight', async () => {
+  it('does not accept duplicate chunk offers while chunks are in flight', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-in-flight-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -1215,10 +1216,6 @@ describe('reticulum chat manager', () => {
       createdAt: 100_000,
       metadata: { groupId: 79 },
     };
-    const bundleHash = nodeCrypto
-      .createHash('sha256')
-      .update(Buffer.concat([chunk0, chunk1]))
-      .digest('hex');
     let accepts = 0;
     const bridge = {
       on: () => undefined,
@@ -1247,11 +1244,12 @@ describe('reticulum chat manager', () => {
         k: 'resource_offer',
         g: 79,
         o: {
-          x: 'transfer-bundle-a',
+          x: 'transfer-chunk-a',
           fh: fileHash,
-          s: chunk0.length + chunk1.length,
-          cis: [0, 1],
-          bh: bundleHash,
+          s: chunk0.length,
+          ci: 0,
+          ch: chunkHashes[0],
+          cs: chunk0.length,
         },
       },
       'peer-a'
@@ -1262,11 +1260,12 @@ describe('reticulum chat manager', () => {
         k: 'resource_offer',
         g: 79,
         o: {
-          x: 'transfer-bundle-b',
+          x: 'transfer-chunk-b',
           fh: fileHash,
-          s: chunk0.length + chunk1.length,
-          cis: [0, 1],
-          bh: bundleHash,
+          s: chunk0.length,
+          ci: 0,
+          ch: chunkHashes[0],
+          cs: chunk0.length,
         },
       },
       'peer-b'
@@ -1275,7 +1274,7 @@ describe('reticulum chat manager', () => {
 
     expect(accepts).toBe(1);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      inFlightChunkCount: 2,
+      inFlightChunkCount: 1,
     });
     manager.close();
     resourceStore.close();
@@ -1311,14 +1310,6 @@ describe('reticulum chat manager', () => {
       createdAt: 100_000,
       metadata: { groupId: 80 },
     };
-    const firstBundleHash = nodeCrypto
-      .createHash('sha256')
-      .update(Buffer.concat([chunks[0], chunks[1]]))
-      .digest('hex');
-    const secondBundleHash = nodeCrypto
-      .createHash('sha256')
-      .update(Buffer.concat([chunks[2], chunks[3]]))
-      .digest('hex');
     let now = 100_000;
     let accepts = 0;
     const bridge = {
@@ -1342,28 +1333,20 @@ describe('reticulum chat manager', () => {
     manager.subscribeGroup(80);
 
     await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
-    for (const offer of [
-      {
-        x: 'transfer-peer-a-1',
-        fh: fileHash,
-        s: chunks[0].length + chunks[1].length,
-        cis: [0, 1],
-        bh: firstBundleHash,
-      },
-      {
-        x: 'transfer-peer-a-2',
-        fh: fileHash,
-        s: chunks[2].length + chunks[3].length,
-        cis: [2, 3],
-        bh: secondBundleHash,
-      },
-    ]) {
+    for (const [index, chunk] of chunks.entries()) {
       manager.handleWire(
         {
           t: 'RCHAT',
           k: 'resource_offer',
           g: 80,
-          o: offer,
+          o: {
+            x: `transfer-peer-a-${index}`,
+            fh: fileHash,
+            s: chunk.length,
+            ci: index,
+            ch: chunkHashes[index],
+            cs: chunk.length,
+          },
         },
         'peer-a'
       );
@@ -1373,8 +1356,8 @@ describe('reticulum chat manager', () => {
     expect(accepts).toBe(1);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       activeTransfers: 1,
-      pendingTransfers: 1,
-      inFlightChunkCount: 2,
+      pendingTransfers: 3,
+      inFlightChunkCount: 1,
     });
 
     now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
@@ -1384,7 +1367,7 @@ describe('reticulum chat manager', () => {
     expect(accepts).toBe(2);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       activeTransfers: 1,
-      pendingTransfers: 0,
+      pendingTransfers: 2,
     });
     manager.close();
     resourceStore.close();
