@@ -835,6 +835,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   subscribeGroup(groupId: number): void {
     this.assertGroupId(groupId);
+    const alreadySubscribed = this.subscribedGroups.has(groupId);
     if (!this.localGroupIds.has(groupId)) {
       loggerWarn(
         `[ReticulumChat] Subscribing group=${groupId} before membership sync completed; adding local group hint`
@@ -845,6 +846,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.subscribedGroups.add(groupId);
     this.startLocalNotificationWatcher();
     this.startSubscriptionRefreshTimer();
+    if (alreadySubscribed) return;
     this.announceGroupSubscription(groupId);
   }
 

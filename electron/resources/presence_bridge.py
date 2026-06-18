@@ -188,7 +188,7 @@ _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
 _RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
-_QCHAT_FILE_CHUNK_SIZE = 256 * 1024
+_QCHAT_FILE_CHUNK_SIZE = 128 * 1024
 _QCHAT_FILE_PARALLEL_LINKS = 1
 _QCHAT_FILE_SUCCESS_LINK_CLOSE_GRACE_SECONDS = 15.0
 _QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS = 90.0
@@ -7407,6 +7407,25 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
             "size": chunk_size,
             "progress": 0.0,
         }
+    _qchat_file_emit(
+        "sending",
+        {
+            "transferId": transfer_id,
+            "peerPresenceHash": peer_hash,
+            "fileName": file_name,
+            "size": size,
+            "resourceType": resource_type,
+            "chunkIndex": chunk_index,
+            "chunkSize": chunk_size,
+            "chunkCount": chunk_count,
+            **_qchat_file_progress_payload(root, min(1.0, float(root.get("sent_bytes") or 0) / float(size)) if size > 0 else 0.0, size),
+        },
+    )
+    log(
+        "[presence_bridge] qchat file resource starting "
+        f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
+        f"chunk_size={chunk_size} total_size={size} resource_type={resource_type}"
+    )
     metadata = {
         "kind": resource_type,
         "resourceType": resource_type,
@@ -7651,6 +7670,10 @@ def on_qchat_file_resource_advertised(resource) -> bool:
     with _state_lock:
         pending = _qchat_file_expire_pending_receive(peer_hash, transfer_id_hint)
     if not pending:
+        log(
+            "[presence_bridge] qchat file resource advertised without pending receive "
+            f"peer={peer_hash} transfer={transfer_id_hint}"
+        )
         return False
     expected_size = int(pending.get("size") or 0)
     pending["started_at"] = time.time()
@@ -7661,6 +7684,10 @@ def on_qchat_file_resource_advertised(resource) -> bool:
     except Exception:
         pass
     _register_incoming_qchat_file_link(link, peer_hash, transfer_id)
+    log(
+        "[presence_bridge] qchat file resource advertised "
+        f"transfer={transfer_id} peer={peer_hash[:16]} size={expected_size}"
+    )
     _qchat_file_emit(
         "receiving",
         {
@@ -7700,10 +7727,18 @@ def on_qchat_file_resource_started(resource) -> None:
         state["resource_started"] = True
         state["qchat_file_chunk_completed"] = False
     if not pending:
+        log(
+            "[presence_bridge] qchat file resource started without pending receive "
+            f"peer={peer_hash} transfer={transfer_id_hint}"
+        )
         return
     transfer_id = str(pending.get("transferId") or "")
     file_name = str(pending.get("fileName") or "")
     size = int(pending.get("size") or 0)
+    log(
+        "[presence_bridge] qchat file resource started "
+        f"transfer={transfer_id} peer={peer_hash[:16]} size={size}"
+    )
 
     def on_progress(res) -> None:
         if isinstance(pending.get("completed_chunks"), set):
