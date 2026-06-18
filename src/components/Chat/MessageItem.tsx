@@ -680,9 +680,13 @@ export const MessageItemComponent = ({
         setFileResourceRuntime(payload.runtime);
       }
       if (typeof payload.progress === 'number') {
+        const nextProgress = Math.max(0, Math.min(100, Math.round(payload.progress * 100)));
         setFileResourceProgress(
-          Math.max(0, Math.min(100, Math.round(payload.progress * 100)))
+          nextProgress
         );
+        if (nextProgress > 0) {
+          setFileResourceLastChunkAt(Date.now());
+        }
       }
       if (
         typeof payload.completedChunks === 'number' &&
@@ -897,7 +901,14 @@ export const MessageItemComponent = ({
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
     if (!referenceAt) return 'waiting for first chunk';
     const ageSeconds = Math.max(0, Math.floor((nowMs - referenceAt) / 1000));
+    const activeTransfers = Number(fileResourceRuntime?.activeTransfers || 0);
+    const isReceivingBundle =
+      Boolean(fileResourceRuntime?.active) && activeTransfers > 0;
     if (completed <= 0) {
+      if (isReceivingBundle) {
+        if ((fileResourceProgress ?? 0) > 0) return 'receiving first bundle';
+        return `receiving first bundle ${ageSeconds}s`;
+      }
       if (ageSeconds < 8) return 'requesting chunks';
       if (ageSeconds < 30) return `waiting for first chunk ${ageSeconds}s`;
       return `retrying / waiting for first chunk ${ageSeconds}s`;

@@ -7,7 +7,7 @@ import {
   ReticulumResourceStore,
   type ReticulumResourceManifest,
 } from './reticulum-resource-store';
-import { warn as loggerWarn } from './logger';
+import { log as loggerLog, warn as loggerWarn } from './logger';
 
 export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 32;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
@@ -17,6 +17,7 @@ export const RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 export const RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS = 15_000;
 export const RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS = 2 * 60 * 1000;
+const RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS = 5_000;
 
 export type ReticulumResourceTransferRequest = {
   eventId?: string;
@@ -113,6 +114,23 @@ function sameChunkRanges(a: unknown, b: Array<[number, number]>): boolean {
   );
 }
 
+function formatByteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatBytesPerSecond(bytesPerSecond: number): string {
+  return `${formatByteCount(bytesPerSecond)}/s`;
+}
+
 type ReticulumResourceDownloadState<TRequestWire> = {
   contextId: number;
   fileHash: string;
@@ -126,6 +144,12 @@ type ReticulumResourceDownloadState<TRequestWire> = {
   nextRequestAt: number;
   featureData?: Record<string, unknown>;
   requestPayloads?: TRequestWire[];
+};
+
+type TransferSpeedSample = {
+  at: number;
+  bytes: number;
+  loggedAt: number;
 };
 
 export type ReticulumResourceTransferOptions<TRequestWire> = {
@@ -195,6 +219,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   private readonly pendingAccepts: string[] = [];
   private readonly activeAccepts = new Set<string>();
   private readonly activeAcceptStartedAt = new Map<string, number>();
+  private readonly transferSpeedSamples = new Map<string, TransferSpeedSample>();
   private downloadTimer: ReturnType<typeof setTimeout> | null = null;
   private schedulerActive = false;
 
@@ -834,9 +859,53 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!offer) return;
     const state = this.downloads.get(offer.fileHash);
     if (!state) return;
+    this.logTransferSpeed(offer, payload.progress);
     this.emitProgress(state, false, {
       offer,
       progress: payload.progress,
+    });
+  }
+
+  private logTransferSpeed(offer: ReticulumResourceTransferOffer, progress: number): void {
+    if (!offer.transferId || offer.sizeBytes <= 0) return;
+    const now = this.now();
+    const boundedProgress = Math.max(0, Math.min(1, progress));
+    const bytes = Math.floor(offer.sizeBytes * boundedProgress);
+    const previous = this.transferSpeedSamples.get(offer.transferId);
+    if (!previous || bytes < previous.bytes) {
+      this.transferSpeedSamples.set(offer.transferId, {
+        at: now,
+        bytes,
+        loggedAt: now,
+      });
+      return;
+    }
+    const elapsedMs = now - previous.at;
+    const logElapsedMs = now - previous.loggedAt;
+    if (
+      bytes <= previous.bytes ||
+      elapsedMs <= 0 ||
+      (logElapsedMs < RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS && boundedProgress < 1)
+    ) {
+      return;
+    }
+    const bytesPerSecond = ((bytes - previous.bytes) * 1000) / elapsedMs;
+    const remainingBytes = Math.max(0, offer.sizeBytes - bytes);
+    const etaSeconds =
+      bytesPerSecond > 0 ? Math.ceil(remainingBytes / bytesPerSecond) : null;
+    loggerLog(
+      `[${this.loggerPrefix}] Download speed fileHash=${offer.fileHash} ` +
+        `transfer=${offer.transferId} ` +
+        `peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} ` +
+        `progress=${Math.round(boundedProgress * 100)}% ` +
+        `speed=${formatBytesPerSecond(bytesPerSecond)} ` +
+        `received=${formatByteCount(bytes)}/${formatByteCount(offer.sizeBytes)}` +
+        (etaSeconds != null ? ` eta=${etaSeconds}s` : '')
+    );
+    this.transferSpeedSamples.set(offer.transferId, {
+      at: now,
+      bytes,
+      loggedAt: now,
     });
   }
 
@@ -1236,6 +1305,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.releaseFullTransfer(state, offer);
       }
       this.offers.delete(payload.transferId);
+      this.transferSpeedSamples.delete(payload.transferId);
       this.activeAccepts.delete(payload.transferId);
       this.activeAcceptStartedAt.delete(payload.transferId);
       void this.processAcceptQueue();
@@ -1247,6 +1317,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const offer = this.offers.get(transferId);
     if (offer) this.cleanupTemporaryOfferFile(offer);
     this.offers.delete(transferId);
+    this.transferSpeedSamples.delete(transferId);
     this.activeAccepts.delete(transferId);
     this.activeAcceptStartedAt.delete(transferId);
     if (offer) {
