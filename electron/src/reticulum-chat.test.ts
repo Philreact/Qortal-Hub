@@ -31,6 +31,7 @@ import {
   byteLengthUtf8JsonWithBridgeSender,
 } from './reticulum-wire-size';
 import { ReticulumResourceStore, RETICULUM_RESOURCE_MIN_CHUNK_SIZE } from './reticulum-resource-store';
+import { RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS } from './reticulum-resource-transfer';
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
   const kp = nacl.sign.keyPair();
@@ -1275,6 +1276,115 @@ describe('reticulum chat manager', () => {
     expect(accepts).toBe(1);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       inFlightChunkCount: 2,
+    });
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('keeps only one active resource transfer per peer and releases stale active transfers', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-one-peer-link-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const chunks = [7, 8, 9, 10].map((value) =>
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, value)
+    );
+    const chunkHashes = chunks.map((chunk) =>
+      nodeCrypto.createHash('sha256').update(chunk).digest('hex')
+    );
+    const fileHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat(chunks))
+      .digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '80:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: chunks.reduce((total, chunk) => total + chunk.length, 0),
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 80 },
+    };
+    const firstBundleHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat([chunks[0], chunks[1]]))
+      .digest('hex');
+    const secondBundleHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat([chunks[2], chunks[3]]))
+      .digest('hex');
+    let now = 100_000;
+    let accepts = 0;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      acceptReticulumResourceDetailed: async () => {
+        accepts += 1;
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([80]);
+    manager.subscribeGroup(80);
+
+    await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
+    for (const offer of [
+      {
+        x: 'transfer-peer-a-1',
+        fh: fileHash,
+        s: chunks[0].length + chunks[1].length,
+        cis: [0, 1],
+        bh: firstBundleHash,
+      },
+      {
+        x: 'transfer-peer-a-2',
+        fh: fileHash,
+        s: chunks[2].length + chunks[3].length,
+        cis: [2, 3],
+        bh: secondBundleHash,
+      },
+    ]) {
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'resource_offer',
+          g: 80,
+          o: offer,
+        },
+        'peer-a'
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toBe(1);
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      activeTransfers: 1,
+      pendingTransfers: 1,
+      inFlightChunkCount: 2,
+    });
+
+    now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
+    manager.getResourceDownloadStatus(fileHash);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toBe(2);
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      activeTransfers: 1,
+      pendingTransfers: 0,
     });
     manager.close();
     resourceStore.close();

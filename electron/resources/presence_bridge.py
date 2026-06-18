@@ -192,6 +192,19 @@ _QCHAT_FILE_CHUNK_SIZE = (1024 * 1024) - 1
 _QCHAT_FILE_PARALLEL_LINKS = 1
 _QCHAT_FILE_SUCCESS_LINK_CLOSE_GRACE_SECONDS = 15.0
 _QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS = 90.0
+_QCHAT_FILE_RESERVED_METADATA_KEYS = {
+    "kind",
+    "resourceType",
+    "transferId",
+    "fileName",
+    "size",
+    "sha256",
+    "chunked",
+    "chunkIndex",
+    "chunkCount",
+    "chunkOffset",
+    "chunkSize",
+}
 _TRANSPORT_MONITOR_INTERVAL_SECONDS = 5.0
 _OVERLAY_PENDING_PACKET_LIMIT = 24
 
@@ -7409,7 +7422,12 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
     }
     extra_metadata = root.get("metadata") if isinstance(root.get("metadata"), dict) else state.get("metadata")
     if isinstance(extra_metadata, dict):
-        metadata.update(extra_metadata)
+        for key, value in extra_metadata.items():
+            metadata_key = str(key)
+            if metadata_key in _QCHAT_FILE_RESERVED_METADATA_KEYS:
+                metadata[f"app_{metadata_key}"] = value
+            else:
+                metadata[metadata_key] = value
 
     def on_done(resource) -> None:
         status = "sent" if getattr(resource, "status", None) == RNS.Resource.COMPLETE else "failed"

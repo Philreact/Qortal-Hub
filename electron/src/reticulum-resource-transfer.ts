@@ -13,6 +13,7 @@ export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 32;
 export const RETICULUM_RESOURCE_TRANSFER_CHUNK_BUNDLE_LIMIT = 16;
 export const RETICULUM_RESOURCE_TRANSFER_CHUNK_BUNDLE_MAX_BYTES = 8 * 1024 * 1024;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 1;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
 export const RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
@@ -154,6 +155,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   private readonly requestedResources = new Map<string, number>();
   private readonly pendingAccepts: string[] = [];
   private readonly activeAccepts = new Set<string>();
+  private readonly activeAcceptStartedAt = new Map<string, number>();
   private downloadTimer: ReturnType<typeof setTimeout> | null = null;
   private schedulerActive = false;
 
@@ -193,6 +195,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.requestedResources.clear();
     this.pendingAccepts.length = 0;
     this.activeAccepts.clear();
+    this.activeAcceptStartedAt.clear();
   }
 
   getDownloadStatus(fileHash: string): ReticulumResourceDownloadRuntimeStatus {
@@ -210,6 +213,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         nextRequestAt: null,
       };
     }
+    this.cleanupStaleActiveAccepts();
     this.releaseStaleInFlightChunks(state);
     const advertisedPeers = new Set<string>();
     for (const peers of state.chunkPeers.values()) {
@@ -385,6 +389,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!this.isValidOffer(offer)) return;
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return;
+    this.cleanupStaleActiveAccepts(false);
     const download = this.downloads.get(offer.fileHash.toLowerCase());
     if (download) this.releaseStaleInFlightChunks(download);
     const manifest = download?.manifest ?? this.resourceStore.getManifest(offer.fileHash);
@@ -462,7 +467,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       sourcePeerHash: peerKey,
     };
     this.offers.set(offer.transferId, trackedOffer);
-    if (download) this.markOfferChunksInFlight(download, trackedOffer);
     if (download && offer.chunkIndex != null) {
       download.peerHashes.add(peerKey);
       let peers = download.chunkPeers.get(offer.chunkIndex);
@@ -822,15 +826,26 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   }
 
   private async processAcceptQueue(): Promise<void> {
+    this.cleanupStaleActiveAccepts(false);
     while (
       this.activeAccepts.size < RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY &&
       this.pendingAccepts.length > 0
     ) {
-      const transferId = this.pendingAccepts.shift();
+      const pendingIndex = this.pendingAccepts.findIndex((candidateTransferId) => {
+        if (this.activeAccepts.has(candidateTransferId)) return false;
+        const candidateOffer = this.offers.get(candidateTransferId);
+        if (!candidateOffer) return true;
+        return !this.peerHasMaxActiveAccepts(candidateOffer.sourcePeerHash || '');
+      });
+      if (pendingIndex < 0) break;
+      const [transferId] = this.pendingAccepts.splice(pendingIndex, 1);
       if (!transferId || this.activeAccepts.has(transferId)) continue;
       const offer = this.offers.get(transferId);
       if (!offer) continue;
       this.activeAccepts.add(transferId);
+      this.activeAcceptStartedAt.set(transferId, this.now());
+      const state = this.downloads.get(offer.fileHash);
+      if (state) this.markOfferChunksInFlight(state, offer);
       await this.accept(offer.sourcePeerHash || '', offer);
     }
   }
@@ -951,7 +966,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   private async importReceived(payload: ReticulumResourceTransferPayload): Promise<void> {
     if (!payload.path || !payload.transferId) return;
     const offer = this.offers.get(payload.transferId);
-    if (!offer) return;
+    if (!offer) {
+      await fs.promises.unlink(payload.path).catch(() => undefined);
+      return;
+    }
     try {
       const bytes = fs.readFileSync(payload.path);
       const actualHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
@@ -1096,16 +1114,18 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       if (state) this.releaseOfferChunksInFlight(state, offer);
       this.offers.delete(payload.transferId);
       this.activeAccepts.delete(payload.transferId);
+      this.activeAcceptStartedAt.delete(payload.transferId);
       void this.processAcceptQueue();
       await fs.promises.unlink(payload.path).catch(() => undefined);
     }
   }
 
-  private finishTransfer(transferId: string, success: boolean): void {
+  private finishTransfer(transferId: string, success: boolean, drainQueue = true): void {
     const offer = this.offers.get(transferId);
     if (offer) this.cleanupTemporaryOfferFile(offer);
     this.offers.delete(transferId);
     this.activeAccepts.delete(transferId);
+    this.activeAcceptStartedAt.delete(transferId);
     if (offer) {
       const state = this.downloads.get(offer.fileHash);
       if (state) this.releaseOfferChunksInFlight(state, offer);
@@ -1117,7 +1137,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.scheduleDownload(0);
       }
     }
-    void this.processAcceptQueue();
+    if (drainQueue) void this.processAcceptQueue();
   }
 
   private handleReceivedChunk(
@@ -1223,6 +1243,37 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         state.inFlightChunks.delete(chunkIndex);
       }
     }
+  }
+
+  private peerHasMaxActiveAccepts(peerHash: string): boolean {
+    const peerKey = peerHash.trim().toLowerCase();
+    if (!peerKey) return false;
+    let activeForPeer = 0;
+    for (const transferId of this.activeAccepts) {
+      const offer = this.offers.get(transferId);
+      if ((offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey) {
+        activeForPeer += 1;
+      }
+    }
+    return activeForPeer >= RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER;
+  }
+
+  private cleanupStaleActiveAccepts(drainQueue = true): void {
+    const now = this.now();
+    const staleTransferIds: string[] = [];
+    for (const transferId of this.activeAccepts) {
+      const startedAt = this.activeAcceptStartedAt.get(transferId) ?? now;
+      if (now - startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
+        staleTransferIds.push(transferId);
+      }
+    }
+    for (const transferId of staleTransferIds) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Resource transfer stale transfer=${transferId}; releasing active slot`
+      );
+      this.finishTransfer(transferId, false, false);
+    }
+    if (drainQueue && staleTransferIds.length > 0) void this.processAcceptQueue();
   }
 
   private contextMetadata(contextId: number): Record<string, number> {
