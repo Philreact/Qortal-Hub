@@ -1903,7 +1903,7 @@ export function buildManagedReticulumConfig(
   const ifaceBody = ifaceParts.join('\n\n');
   return `${renderReticulumHeader(slice)}
 [logging]
-loglevel = 7
+loglevel = 4
 
 [interfaces]
 ${ifaceBody}
