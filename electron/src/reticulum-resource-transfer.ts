@@ -297,11 +297,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         return;
       }
     }
-    const fullResourcePath = this.tryGetCompleteResourcePath(manifest.fileHash);
-    if (fullResourcePath) {
-      await this.sendFullResourceOffer(contextId, request, peerKey, manifest, fullResourcePath);
-      return;
-    }
     const requestedIndexes = Array.isArray(request.chunkIndexes)
       ? request.chunkIndexes
       : manifest.chunkHashes
@@ -447,70 +442,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       download.peerHashes.add(peerKey);
     }
     this.enqueueAccept(offer.transferId);
-  }
-
-  private tryGetCompleteResourcePath(fileHash: string): string | null {
-    try {
-      return this.resourceStore.assembleResource(fileHash);
-    } catch {
-      return null;
-    }
-  }
-
-  private async sendFullResourceOffer(
-    contextId: number,
-    request: ReticulumResourceTransferRequest,
-    peerKey: string,
-    manifest: ReticulumResourceManifest,
-    filePath: string
-  ): Promise<void> {
-    const transferId = nodeCrypto.randomBytes(8).toString('hex');
-    const registered = await this.bridge?.sendReticulumResourceDetailed({
-      allowedRecipientAddress: peerKey,
-      transferId,
-      filePath,
-      fileName: manifest.fileName,
-      size: manifest.sizeBytes,
-      sha256: manifest.fileHash,
-      resourceType: this.resourceType,
-      metadata: {
-        logicalResourceType: this.resourceType,
-        eventId: request.eventId ?? '',
-        contextId,
-        ...this.contextMetadata(contextId),
-        fileHash: manifest.fileHash,
-        mimeType: manifest.mimeType,
-        namespace: manifest.namespace,
-      },
-      expiresAt: this.now() + RETICULUM_RESOURCE_TRANSFER_TTL_MS,
-    });
-    if (!registered?.ok) {
-      const failed = registered as Exclude<ReticulumSendResult, { ok: true }> | undefined;
-      loggerWarn(
-        `[${this.loggerPrefix}] Failed to register full resource offer fileHash=${manifest.fileHash}:`,
-        failed?.error ?? failed?.reason ?? 'bridge unavailable'
-      );
-      return;
-    }
-    const offer: ReticulumResourceTransferOffer = {
-      transferId,
-      contextId,
-      ...(request.eventId ? { eventId: request.eventId } : {}),
-      fileHash: manifest.fileHash,
-      sizeBytes: manifest.sizeBytes,
-      fileName: manifest.fileName,
-      mimeType: manifest.mimeType,
-    };
-    this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
-    const sent = await this.sendOfferToPeer(peerKey, contextId, offer);
-    if (!sent.ok) {
-      const failed = sent as Exclude<ReticulumSendResult, { ok: true }>;
-      loggerWarn(
-        `[${this.loggerPrefix}] Failed to send full resource offer fileHash=${manifest.fileHash}:`,
-        failed.error ?? failed.reason
-      );
-      this.offers.delete(transferId);
-    }
   }
 
   handleResourceEvent(payload: ReticulumResourceTransferPayload): void {

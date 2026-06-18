@@ -1127,7 +1127,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('serves a complete resource as one bridge transfer so the bridge can stream chunks over one link', async () => {
+  it('serves a complete resource as requested chunk offers, not one full resource transfer', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const sourceBytes = Buffer.concat([
@@ -1147,6 +1147,7 @@ describe('reticulum chat manager', () => {
       ownerId: '81:sender',
       fileName: 'source.bin',
       mimeType: 'application/octet-stream',
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
       encrypted: false,
       metadata: { groupId: 81 },
     });
@@ -1189,26 +1190,33 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(offeredResources).toHaveLength(1);
-    expect(offeredResources[0]).toEqual(
-      expect.objectContaining({
-        fileName: manifest.fileName,
-        size: manifest.sizeBytes,
-        sha256: manifest.fileHash,
-        resourceType: 'reticulum_group_resource',
-      })
+    expect(offeredResources).toHaveLength(3);
+    expect(offeredResources.map((payload) => payload.resourceType)).toEqual([
+      'reticulum_group_resource_chunk',
+      'reticulum_group_resource_chunk',
+      'reticulum_group_resource_chunk',
+    ]);
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkIndex)).toEqual([
+      0,
+      1,
+      2,
+    ]);
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkHash)).toEqual(
+      manifest.chunkHashes
     );
-    expect(offeredResources[0].metadata).toEqual(
-      expect.not.objectContaining({
-        chunkIndex: expect.anything(),
-        chunkHash: expect.anything(),
-        chunkSize: expect.anything(),
-      })
-    );
-    expect(offerWires).toHaveLength(1);
-    expect((offerWires[0].o as any).ci).toBeUndefined();
-    expect((offerWires[0].o as any).ch).toBeUndefined();
-    expect((offerWires[0].o as any).s).toBe(manifest.sizeBytes);
+    expect(offeredResources.map((payload) => payload.size)).toEqual([
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+    ]);
+    expect(offerWires).toHaveLength(3);
+    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual([0, 1, 2]);
+    expect(offerWires.map((wire) => (wire.o as any).ch)).toEqual(manifest.chunkHashes);
+    expect(offerWires.map((wire) => (wire.o as any).s)).toEqual([
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+    ]);
     manager.close();
     resourceStore.close();
   });
