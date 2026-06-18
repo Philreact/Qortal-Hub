@@ -901,6 +901,8 @@ try {
           pendingTransfers?: number;
           requestedChunkCount?: number;
           inFlightChunkCount?: number;
+          currentBytesPerSecond?: number;
+          averageBytesPerSecond?: number;
           nextRequestAt?: number | null;
         } | null;
         error?: string;

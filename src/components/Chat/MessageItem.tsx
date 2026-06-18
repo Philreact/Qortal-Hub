@@ -108,6 +108,12 @@ const formatQchatFileSize = (bytes?: number) => {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
+const formatQchatFileSpeed = (bytesPerSecond?: number) => {
+  const speed = Number(bytesPerSecond || 0);
+  if (!Number.isFinite(speed) || speed <= 0) return '';
+  return `${formatQchatFileSize(speed)}/s`;
+};
+
 const getBadgeImg = (level) => {
   switch (level?.toString()) {
     case '0':
@@ -436,6 +442,8 @@ export const MessageItemComponent = ({
     pendingTransfers?: number;
     requestedChunkCount?: number;
     inFlightChunkCount?: number;
+    currentBytesPerSecond?: number;
+    averageBytesPerSecond?: number;
     nextRequestAt?: number | null;
   } | null>(null);
   const qchatFileData = qchatFileTransfer?.data || {};
@@ -669,6 +677,8 @@ export const MessageItemComponent = ({
         pendingTransfers?: number;
         requestedChunkCount?: number;
         inFlightChunkCount?: number;
+        currentBytesPerSecond?: number;
+        averageBytesPerSecond?: number;
         nextRequestAt?: number | null;
       } | null;
     }) => {
@@ -925,6 +935,12 @@ export const MessageItemComponent = ({
     const advertisedPeerCount = Number(fileResourceRuntime.advertisedPeerCount || 0);
     const activeTransfers = Number(fileResourceRuntime.activeTransfers || 0);
     const pendingTransfers = Number(fileResourceRuntime.pendingTransfers || 0);
+    const currentSpeedText = formatQchatFileSpeed(
+      Number(fileResourceRuntime.currentBytesPerSecond || 0)
+    );
+    const averageSpeedText = formatQchatFileSpeed(
+      Number(fileResourceRuntime.averageBytesPerSecond || 0)
+    );
     const peersText =
       advertisedPeerCount > 0 && advertisedPeerCount !== peerCount
         ? `peers ${advertisedPeerCount}/${peerCount}`
@@ -938,7 +954,12 @@ export const MessageItemComponent = ({
     }
     const transfersText =
       transferParts.length > 0 ? `transfers ${transferParts.join(', ')}` : '';
-    return [peersText, transfersText].filter(Boolean).join(' · ');
+    const speedText = currentSpeedText
+      ? `speed ${currentSpeedText}`
+      : averageSpeedText
+        ? `avg ${averageSpeedText}`
+        : '';
+    return [peersText, transfersText, speedText].filter(Boolean).join(' · ');
   })();
   const fileResourceStatusText = (() => {
     if (fileResourceStatus === 'ready') return 'ready';

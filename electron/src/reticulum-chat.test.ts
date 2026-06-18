@@ -1299,14 +1299,23 @@ describe('reticulum chat manager', () => {
 
     expect(offeredResources).toHaveLength(1);
     expect(offeredResources[0]?.resourceType).toBe('reticulum_group_resource_chunk');
-    expect((offeredResources[0]?.metadata as any).chunkBundle).toBeUndefined();
-    expect((offeredResources[0]?.metadata as any).chunkIndex).toBe(0);
-    expect((offeredResources[0]?.metadata as any).chunkHash).toBe(manifest.chunkHashes[0]);
-    expect(offeredResources[0]?.size).toBe(RETICULUM_RESOURCE_MIN_CHUNK_SIZE);
+    expect((offeredResources[0]?.metadata as any).chunkBundle).toBe(true);
+    expect((offeredResources[0]?.metadata as any).rangeStartChunk).toBe(0);
+    expect((offeredResources[0]?.metadata as any).chunkCount).toBe(
+      RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT
+    );
+    expect((offeredResources[0]?.metadata as any).chunkRanges).toEqual([
+      [0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT],
+    ]);
+    expect(offeredResources[0]?.size).toBe(
+      RETICULUM_RESOURCE_MIN_CHUNK_SIZE * RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT
+    );
     expect(offerWires).toHaveLength(1);
-    expect((offerWires[0]?.o as any).ci).toBe(0);
-    expect((offerWires[0]?.o as any).ch).toBe(manifest.chunkHashes[0]);
-    expect((offerWires[0]?.o as any).br).toBeUndefined();
+    expect((offerWires[0]?.o as any).ci).toBeUndefined();
+    expect((offerWires[0]?.o as any).ch).toBeUndefined();
+    expect((offerWires[0]?.o as any).br).toEqual([
+      [0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT],
+    ]);
     expect(byteLengthUtf8JsonWithBridgeSender(offerWires[0])).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
