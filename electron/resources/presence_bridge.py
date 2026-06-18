@@ -7555,6 +7555,7 @@ def _qchat_file_start_channel_stream_receiver(state: Dict[str, Any]) -> bool:
                     "peerPresenceHash": peer_hash,
                     "fileName": file_name,
                     "size": size,
+                    "resourceType": pending.get("resourceType") or "qchat-dm-file",
                     "progress": 0,
                     "bytesTransferred": 0,
                 },
@@ -7582,6 +7583,7 @@ def _qchat_file_start_channel_stream_receiver(state: Dict[str, Any]) -> bool:
                                 "peerPresenceHash": peer_hash,
                                 "fileName": file_name,
                                 "size": size,
+                                "resourceType": pending.get("resourceType") or "qchat-dm-file",
                                 **_qchat_file_progress_payload(pending, progress, size),
                             },
                         )
@@ -7988,6 +7990,7 @@ def on_qchat_file_resource_advertised(resource) -> bool:
             "peerPresenceHash": peer_hash,
             "fileName": pending.get("fileName"),
             "size": expected_size,
+            "resourceType": pending.get("resourceType") or "qchat-dm-file",
         },
     )
     return True
@@ -8064,6 +8067,7 @@ def on_qchat_file_resource_started(resource) -> None:
                 "peerPresenceHash": peer_hash,
                 "fileName": file_name,
                 "size": size,
+                "resourceType": pending.get("resourceType") or "qchat-dm-file",
                 **_qchat_file_progress_payload(pending, progress, size),
             },
         )

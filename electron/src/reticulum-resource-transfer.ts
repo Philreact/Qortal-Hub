@@ -74,6 +74,7 @@ export type ReticulumResourceTransferProgress = {
   chunkIndex?: number;
   completedChunks?: number;
   totalChunks?: number;
+  fullFileTransfer?: boolean;
   bytesTransferred?: number;
   totalBytes?: number;
   progress?: number;
@@ -1011,11 +1012,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     let displayCompletedChunks = completedChunks;
     let progress =
       totalChunks > 0 ? completedChunks / totalChunks : 0;
+    const isFullFileTransfer = !!activeTransfer &&
+      activeTransfer?.offer.chunkIndex == null &&
+      (!Array.isArray(activeTransfer.offer.chunks) || activeTransfer.offer.chunks.length === 0);
     if (activeTransfer && totalChunks > 0) {
       const transferProgress = Math.max(0, Math.min(1, activeTransfer.progress));
-      const isFullFileTransfer =
-        activeTransfer.offer.chunkIndex == null &&
-        (!Array.isArray(activeTransfer.offer.chunks) || activeTransfer.offer.chunks.length === 0);
       const transferChunkCount = this.offerProgressChunkCount(
         activeTransfer.offer,
         totalChunks,
@@ -1050,11 +1051,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       fileHash: state.manifest.fileHash,
       completedChunks: displayCompletedChunks,
       totalChunks,
+      ...(isFullFileTransfer ? { fullFileTransfer: true } : {}),
       ...(activeTransfer &&
-      activeTransfer.offer.chunkIndex == null &&
-      (!Array.isArray(activeTransfer.offer.chunks) || activeTransfer.offer.chunks.length === 0) &&
-      Number.isFinite(activeTransfer.bytesTransferred) &&
-      activeTransfer.bytesTransferred != null
+      isFullFileTransfer
         ? {
             bytesTransferred: Math.max(
               0,

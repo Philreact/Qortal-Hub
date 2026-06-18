@@ -1463,6 +1463,7 @@ try {
           chunkIndex?: number;
           completedChunks?: number;
           totalChunks?: number;
+          fullFileTransfer?: boolean;
           bytesTransferred?: number;
           totalBytes?: number;
           progress?: number;
@@ -1479,6 +1480,7 @@ try {
               chunkIndex?: number;
               completedChunks?: number;
               totalChunks?: number;
+              fullFileTransfer?: boolean;
               bytesTransferred?: number;
               totalBytes?: number;
               progress?: number;
@@ -1668,6 +1670,7 @@ try {
           chunkIndex?: number;
           completedChunks?: number;
           totalChunks?: number;
+          fullFileTransfer?: boolean;
           bytesTransferred?: number;
           totalBytes?: number;
           progress?: number;
@@ -1684,6 +1687,7 @@ try {
               chunkIndex?: number;
               completedChunks?: number;
               totalChunks?: number;
+              fullFileTransfer?: boolean;
               bytesTransferred?: number;
               totalBytes?: number;
               progress?: number;

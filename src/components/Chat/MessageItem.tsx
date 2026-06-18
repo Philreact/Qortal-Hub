@@ -435,6 +435,7 @@ export const MessageItemComponent = ({
     received: number;
     total: number;
   } | null>(null);
+  const [fileResourceFullFileTransfer, setFileResourceFullFileTransfer] = useState(false);
   const [fileResourceLastChunkAt, setFileResourceLastChunkAt] = useState<number | null>(null);
   const [fileResourceCheckedAt, setFileResourceCheckedAt] = useState<number | null>(null);
   const [fileResourceStartedAt, setFileResourceStartedAt] = useState<number | null>(null);
@@ -669,6 +670,7 @@ export const MessageItemComponent = ({
     (payload?: {
       completedChunks?: number;
       totalChunks?: number;
+      fullFileTransfer?: boolean;
       bytesTransferred?: number;
       totalBytes?: number;
       progress?: number;
@@ -705,7 +707,12 @@ export const MessageItemComponent = ({
           setFileResourceLastChunkAt(Date.now());
         }
       }
+      if (payload.fullFileTransfer) {
+        setFileResourceFullFileTransfer(true);
+        setFileResourceChunks(null);
+      }
       if (
+        !payload.fullFileTransfer &&
         typeof payload.completedChunks === 'number' &&
         typeof payload.totalChunks === 'number' &&
         payload.totalChunks > 0
@@ -739,7 +746,12 @@ export const MessageItemComponent = ({
         setFileResourceStatus('ready');
         setFileResourceProgress(100);
         setFileResourceBytes(null);
-        if (typeof payload.totalChunks === 'number' && payload.totalChunks > 0) {
+        setFileResourceFullFileTransfer(false);
+        if (
+          !payload.fullFileTransfer &&
+          typeof payload.totalChunks === 'number' &&
+          payload.totalChunks > 0
+        ) {
           setFileResourceChunks({
             completed: payload.totalChunks,
             total: payload.totalChunks,
@@ -807,19 +819,16 @@ export const MessageItemComponent = ({
     setFileResourceCheckedAt(startedAt);
     setFileResourceStartedAt(startedAt);
     setFileResourceRuntime(null);
-    setFileResourceBytes(null);
-    const totalChunks = Array.isArray(reticulumFileAttachment?.chunkHashes)
-      ? reticulumFileAttachment.chunkHashes.length
-      : 0;
-    setFileResourceChunks((current) => {
-      if (current && current.total === totalChunks) return current;
-      return totalChunks > 0
+    setFileResourceFullFileTransfer(true);
+    setFileResourceChunks(null);
+    setFileResourceBytes(
+      reticulumFileSize > 0
         ? {
-            completed: 0,
-            total: totalChunks,
+            received: 0,
+            total: reticulumFileSize,
           }
-        : null;
-    });
+        : null
+    );
     const response = await window.reticulumChat?.requestResource?.(
       reticulumResourceGroupId,
       reticulumFileAttachment,
@@ -832,6 +841,7 @@ export const MessageItemComponent = ({
     return { success: true };
   }, [
     reticulumFileAttachment,
+    reticulumFileSize,
     reticulumFileResourceId,
     reticulumResourceEventId,
     reticulumResourceGroupId,
@@ -868,6 +878,9 @@ export const MessageItemComponent = ({
     if (!reticulumFileResourceId) {
       setFileResourceStatus('idle');
       setFileResourceProgress(null);
+      setFileResourceChunks(null);
+      setFileResourceBytes(null);
+      setFileResourceFullFileTransfer(false);
       return;
     }
     void window.reticulumResources?.getStatus?.(reticulumFileResourceId).then((result) => {
@@ -879,6 +892,7 @@ export const MessageItemComponent = ({
         setFileResourceProgress(null);
         setFileResourceChunks(null);
         setFileResourceBytes(null);
+        setFileResourceFullFileTransfer(false);
         setFileResourceLastChunkAt(null);
         setFileResourceCheckedAt(null);
         setFileResourceStartedAt(null);
@@ -936,14 +950,23 @@ export const MessageItemComponent = ({
   }, [fileResourceLastChunkAt, fileResourceStartedAt, fileResourceStatus, nowMs]);
   const fileResourceActivityText = (() => {
     if (fileResourceStatus !== 'downloading') return '';
-    const total = fileResourceChunks?.total || 0;
-    const completed = fileResourceChunks?.completed || 0;
+    const total = fileResourceFullFileTransfer ? 0 : fileResourceChunks?.total || 0;
+    const completed = fileResourceFullFileTransfer ? 0 : fileResourceChunks?.completed || 0;
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
-    if (!referenceAt) return 'waiting for first chunk';
+    if (!referenceAt) return fileResourceFullFileTransfer ? 'waiting for file stream' : 'waiting for first chunk';
     const ageSeconds = Math.max(0, Math.floor((nowMs - referenceAt) / 1000));
     const activeTransfers = Number(fileResourceRuntime?.activeTransfers || 0);
     const isReceivingBundle =
       Boolean(fileResourceRuntime?.active) && activeTransfers > 0;
+    if (fileResourceFullFileTransfer) {
+      if (isReceivingBundle) {
+        if ((fileResourceProgress ?? 0) > 0) return 'receiving file stream';
+        return `receiving file stream ${ageSeconds}s`;
+      }
+      if (ageSeconds < 8) return 'requesting file';
+      if (ageSeconds < 30) return `waiting for file stream ${ageSeconds}s`;
+      return `waiting for peer ${ageSeconds}s`;
+    }
     if (completed <= 0) {
       if (isReceivingBundle) {
         if ((fileResourceProgress ?? 0) > 0) return 'receiving first bundle';
@@ -1000,7 +1023,7 @@ export const MessageItemComponent = ({
         fileResourceBytes && fileResourceBytes.total > 0
           ? `${formatQchatFileSize(fileResourceBytes.received)} / ${formatQchatFileSize(fileResourceBytes.total)}`
           : '';
-      const chunkText = fileResourceChunks
+      const chunkText = !fileResourceFullFileTransfer && fileResourceChunks
         ? ` (${fileResourceChunks.completed}/${fileResourceChunks.total} chunks)`
         : '';
       const details = [fileResourceActivityText, fileResourcePeerText]
