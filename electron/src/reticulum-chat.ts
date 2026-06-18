@@ -109,7 +109,7 @@ export interface ReticulumChatEventRequestWire {
 export interface ReticulumChatResourceRequestWire {
   eid?: string;
   fh: string;
-  c?: number[];
+  r?: Array<[number, number]>;
   pk: string;
   ts: number;
   sig: string;
@@ -511,20 +511,73 @@ export function buildReticulumChatResourceRequestSignedFields(input: {
   eventId?: string;
   fileHash: string;
   chunkIndexes?: number[];
+  chunkRanges?: Array<[number, number]>;
   authorAddress: string;
   authorPublicKey: string;
   timestamp: number;
 }): Record<string, unknown> {
+  const chunkRanges = normalizeChunkRanges(
+    Array.isArray(input.chunkRanges)
+      ? input.chunkRanges
+      : chunkIndexesToRanges(input.chunkIndexes ?? [])
+  );
   return {
     authorAddress: input.authorAddress,
     authorPublicKey: input.authorPublicKey,
     eventId: input.eventId ?? null,
     fileHash: input.fileHash,
     groupId: input.groupId,
-    chunkIndexes: Array.isArray(input.chunkIndexes) ? input.chunkIndexes : [],
+    chunkRanges,
     timestamp: input.timestamp,
     type: 'RCHAT_RESOURCE_REQ',
   };
+}
+
+function chunkIndexesToRanges(chunkIndexes: number[]): Array<[number, number]> {
+  const sorted = [...new Set(chunkIndexes)]
+    .filter((index) => Number.isInteger(index) && index >= 0)
+    .sort((a, b) => a - b);
+  const ranges: Array<[number, number]> = [];
+  for (const index of sorted) {
+    const previous = ranges[ranges.length - 1];
+    if (previous && previous[0] + previous[1] === index) {
+      previous[1] += 1;
+    } else {
+      ranges.push([index, 1]);
+    }
+  }
+  return ranges;
+}
+
+function normalizeChunkRanges(ranges: Array<[number, number]>): Array<[number, number]> {
+  const indexes = chunkRangesToIndexes(ranges);
+  if (!indexes) return [];
+  return chunkIndexesToRanges(indexes);
+}
+
+function chunkRangesToIndexes(ranges: unknown): number[] | null {
+  if (!Array.isArray(ranges)) return null;
+  const indexes: number[] = [];
+  for (const range of ranges) {
+    if (
+      !Array.isArray(range) ||
+      range.length !== 2 ||
+      !Number.isInteger(range[0]) ||
+      !Number.isInteger(range[1]) ||
+      range[0] < 0 ||
+      range[1] <= 0
+    ) {
+      return null;
+    }
+    if (indexes.length + range[1] > RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT) {
+      return null;
+    }
+    for (let offset = 0; offset < range[1]; offset += 1) {
+      indexes.push(range[0] + offset);
+    }
+  }
+  if (new Set(indexes).size !== indexes.length) return null;
+  return indexes;
 }
 
 export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
@@ -588,14 +641,8 @@ export function verifyReticulumChatResourceRequest(
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
     if (request.eid != null && (typeof request.eid !== 'string' || request.eid.length < 8)) return false;
     if (typeof request.fh !== 'string' || !/^[0-9a-f]{64}$/i.test(request.fh)) return false;
-    if (
-      request.c != null &&
-      (!Array.isArray(request.c) ||
-        request.c.some((index) => !Number.isInteger(index) || index < 0) ||
-        request.c.length > RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT)
-    ) {
-      return false;
-    }
+    const chunkIndexes = chunkRangesToIndexes(request.r ?? []);
+    if (!chunkIndexes) return false;
     if (typeof request.pk !== 'string' || !request.pk) return false;
     if (typeof request.sig !== 'string' || !request.sig) return false;
     if (!Number.isFinite(request.ts)) return false;
@@ -610,7 +657,7 @@ export function verifyReticulumChatResourceRequest(
             groupId,
             eventId: request.eid,
             fileHash: request.fh,
-            chunkIndexes: Array.isArray(request.c) ? request.c : [],
+            chunkIndexes,
             authorAddress: derived,
             authorPublicKey: request.pk,
             timestamp: request.ts,
@@ -1944,7 +1991,7 @@ export class ReticulumChatManager extends EventEmitter {
     const signed = await this.signLocalFields({
       eventId: null,
       fileHash: manifest.fileHash,
-      chunkIndexes,
+      chunkRanges: chunkIndexesToRanges(chunkIndexes),
       groupId,
       timestamp,
       type: 'RCHAT_RESOURCE_REQ',
@@ -1973,7 +2020,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.localGroupIds.add(groupId);
     const wire: ReticulumChatResourceRequestWire = {
       fh: manifest.fileHash,
-      c: chunkIndexes,
+      r: chunkIndexesToRanges(chunkIndexes),
       pk: signed.authorPublicKey,
       ts: timestamp,
       sig: signed.signature,
@@ -2079,7 +2126,7 @@ export class ReticulumChatManager extends EventEmitter {
       {
         eventId: request.eid,
         fileHash: request.fh,
-        chunkIndexes: request.c,
+        chunkIndexes: chunkRangesToIndexes(request.r ?? []) ?? [],
         requesterAddress: deriveAddressFromPublicKey(request.pk),
       },
       peerHash

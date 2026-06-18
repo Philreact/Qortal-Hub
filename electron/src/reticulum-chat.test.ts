@@ -133,9 +133,15 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         groupId: fullFields.groupId,
         eventId: typeof fullFields.eventId === 'string' ? fullFields.eventId : undefined,
         fileHash: fullFields.fileHash,
-        chunkIndexes: Array.isArray(fullFields.chunkIndexes)
-          ? fullFields.chunkIndexes.filter((index): index is number => Number.isInteger(index))
-          : [],
+        chunkRanges: Array.isArray(fullFields.chunkRanges)
+          ? (fullFields.chunkRanges.filter(
+              (range): range is [number, number] =>
+                Array.isArray(range) &&
+                range.length === 2 &&
+                Number.isInteger(range[0]) &&
+                Number.isInteger(range[1])
+            ) as Array<[number, number]>)
+          : undefined,
         authorAddress,
         authorPublicKey,
         timestamp: fullFields.timestamp,
@@ -195,7 +201,7 @@ function signedResourceRequestWire(params: {
   timestamp: number;
 }): {
   fh: string;
-  c: number[];
+  r: Array<[number, number]>;
   pk: string;
   ts: number;
   sig: string;
@@ -203,17 +209,23 @@ function signedResourceRequestWire(params: {
   const kp = nacl.sign.keyPair();
   const authorPublicKey = base58Encode(kp.publicKey);
   const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const ranges: Array<[number, number]> = [];
+  for (const index of [...params.chunkIndexes].sort((a, b) => a - b)) {
+    const previous = ranges[ranges.length - 1];
+    if (previous && previous[0] + previous[1] === index) previous[1] += 1;
+    else ranges.push([index, 1]);
+  }
   const fields = buildReticulumChatResourceRequestSignedFields({
     groupId: params.groupId,
     fileHash: params.fileHash,
-    chunkIndexes: params.chunkIndexes,
+    chunkRanges: ranges,
     authorAddress,
     authorPublicKey,
     timestamp: params.timestamp,
   });
   return {
     fh: params.fileHash,
-    c: params.chunkIndexes,
+    r: ranges,
     pk: authorPublicKey,
     ts: params.timestamp,
     sig: base58Encode(
@@ -1257,17 +1269,28 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([82]);
 
+    const requestWire = signedResourceRequestWire({
+      groupId: 82,
+      fileHash: manifest.fileHash,
+      chunkIndexes: chunks.map((_, index) => index),
+      timestamp: 100_000,
+    });
+    expect(requestWire.r).toEqual([[0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT]]);
+    expect(
+      byteLengthUtf8JsonWithBridgeSender({
+        t: 'RCHAT',
+        k: 'resource_req',
+        g: 82,
+        q: requestWire,
+      })
+    ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
+
     manager.handleWire(
       {
         t: 'RCHAT',
         k: 'resource_req',
         g: 82,
-        q: signedResourceRequestWire({
-          groupId: 82,
-          fileHash: manifest.fileHash,
-          chunkIndexes: chunks.map((_, index) => index),
-          timestamp: 100_000,
-        }),
+        q: requestWire,
       },
       'peer-a'
     );
