@@ -431,7 +431,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         size: manifest.sizeBytes,
         sha256: manifest.fileHash,
         resourceType: this.resourceType,
-        streamMode: true,
+        streamMode: false,
         metadata: {
           logicalResourceType: this.resourceType,
           eventId: request.eventId ?? '',
@@ -1343,7 +1343,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       resourceType: isChunkTransfer
         ? this.chunkResourceType
         : this.resourceType,
-      streamMode: !isChunkTransfer,
+      streamMode: false,
       metadata: {
         logicalResourceType: isChunkTransfer
           ? this.chunkResourceType

@@ -7360,6 +7360,18 @@ def _qchat_file_fail_pending_receive(
         _qchat_file_remove_pending_receive(peer_hash, transfer_id)
 
 
+def _qchat_file_mark_transfer_started(state: Optional[Dict[str, Any]]) -> None:
+    if state is None:
+        return
+    timer = state.pop("auth_timeout_timer", None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+    state["resource_started"] = True
+
+
 def _qchat_file_read_chunk(file_path: str, offset: int, chunk_size: int) -> bytes:
     with open(file_path, "rb") as f:
         f.seek(offset)
@@ -7536,6 +7548,7 @@ def _qchat_file_start_channel_stream_receiver(state: Dict[str, Any]) -> bool:
     if link is None or not pending or pending.get("stream_started") is True:
         return False
     pending["stream_started"] = True
+    _qchat_file_mark_transfer_started(state)
 
     def run() -> None:
         save_path = str(pending.get("savePath") or "")
@@ -7620,6 +7633,7 @@ def _qchat_file_start_channel_stream_receiver(state: Dict[str, Any]) -> bool:
                     "peerPresenceHash": peer_hash,
                     "fileName": file_name,
                     "size": size,
+                    "resourceType": pending.get("resourceType") or "qchat-dm-file",
                     "reason": "channel_stream_receive_failed",
                     "error": str(exc),
                 },
@@ -8014,13 +8028,7 @@ def on_qchat_file_resource_started(resource) -> None:
     with _state_lock:
         pending = _qchat_file_get_pending_receive(peer_hash, transfer_id_hint)
     if state is not None:
-        timer = state.pop("auth_timeout_timer", None)
-        if timer is not None:
-            try:
-                timer.cancel()
-            except Exception:
-                pass
-        state["resource_started"] = True
+        _qchat_file_mark_transfer_started(state)
         state["qchat_file_chunk_completed"] = False
     if not pending:
         log(
