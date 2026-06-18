@@ -146,7 +146,7 @@ export interface ReticulumChatResourceOfferWire {
   ch?: string;
   cs?: number;
   bh?: string;
-  cb?: number[];
+  br?: Array<[number, number]>;
 }
 
 export interface ReticulumChatAuthorHeadWire {
@@ -424,7 +424,7 @@ function resourceOfferToWire(offer: ReticulumChatResourceOffer): ReticulumChatRe
     ...(offer.bundleHash ? { bh: offer.bundleHash } : {}),
     ...(Array.isArray(offer.chunks) && offer.chunks.length > 0
       ? {
-          cb: offer.chunks.map((chunk) => chunk.index),
+          br: chunkIndexesToRanges(offer.chunks.map((chunk) => chunk.index)),
         }
       : {}),
   };
@@ -445,9 +445,9 @@ function resourceOfferFromWire(groupId: number, wire: unknown): ReticulumChatRes
     ...(typeof o.ch === 'string' && o.ch ? { chunkHash: o.ch } : {}),
     ...(Number.isInteger(o.cs) ? { chunkSize: Number(o.cs) } : {}),
     ...(typeof o.bh === 'string' && o.bh ? { bundleHash: o.bh } : {}),
-    ...(Array.isArray(o.cb)
+    ...(Array.isArray(o.br)
       ? {
-          chunkIndexes: o.cb.filter((index) => Number.isInteger(index)).map((index) => Number(index)),
+          chunkIndexes: chunkRangesToIndexes(o.br) ?? [],
         }
       : {}),
   };

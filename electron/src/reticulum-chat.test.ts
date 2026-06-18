@@ -1310,7 +1310,7 @@ describe('reticulum chat manager', () => {
     expect(offeredResources[0]?.size).toBe(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
     expect(offerWires).toHaveLength(1);
     expect((offerWires[0]?.o as any).ci).toBeUndefined();
-    expect((offerWires[0]?.o as any).cb).toEqual(chunks.map((_, index) => index));
+    expect((offerWires[0]?.o as any).br).toEqual([[0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT]]);
     expect(byteLengthUtf8JsonWithBridgeSender(offerWires[0])).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
