@@ -9,7 +9,7 @@ import {
 } from './reticulum-resource-store';
 import { warn as loggerWarn } from './logger';
 
-export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 32;
+export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT = 4;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 1;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
@@ -36,6 +36,14 @@ export type ReticulumResourceTransferOffer = {
   chunkIndex?: number;
   chunkHash?: string;
   chunkSize?: number;
+  bundleHash?: string;
+  chunkIndexes?: number[];
+  chunks?: Array<{
+    index: number;
+    hash: string;
+    sizeBytes: number;
+    offset: number;
+  }>;
   sourcePeerHash?: string;
   temporaryPath?: string;
 };
@@ -309,7 +317,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       );
       return;
     }
-    for (const chunk of [...availableChunks].sort((a, b) => a.index - b.index)) {
+    if (availableChunks.length === 1) {
+      const chunk = availableChunks[0];
       const transferId = nodeCrypto.randomBytes(8).toString('hex');
       const fileName = `${manifest.fileHash}.chunk-${chunk.index}`;
       const registered = await this.bridge.sendReticulumResourceDetailed({
@@ -340,7 +349,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
           `[${this.loggerPrefix}] Failed to register chunk offer fileHash=${manifest.fileHash} chunk=${chunk.index}:`,
           failed.error ?? failed.reason
         );
-        continue;
+        return;
       }
       const offer: ReticulumResourceTransferOffer = {
         transferId,
@@ -364,6 +373,71 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         );
         this.offers.delete(transferId);
       }
+      return;
+    }
+    const bundle = this.createChunkBundle(
+      manifest,
+      [...availableChunks].sort((a, b) => a.index - b.index)
+    );
+    if (!bundle) return;
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    const fileName = `${manifest.fileHash}.chunks-${bundle.chunks[0]?.index ?? 0}`;
+    const bundleHash = nodeCrypto.createHash('sha256').update(fs.readFileSync(bundle.path)).digest('hex');
+    const registered = await this.bridge.sendReticulumResourceDetailed({
+      allowedRecipientAddress: peerKey,
+      transferId,
+      filePath: bundle.path,
+      fileName,
+      size: bundle.sizeBytes,
+      sha256: bundleHash,
+      resourceType: this.chunkResourceType,
+      metadata: {
+        logicalResourceType: this.chunkResourceType,
+        eventId: request.eventId ?? '',
+        contextId,
+        ...this.contextMetadata(contextId),
+        fileHash: manifest.fileHash,
+        chunkBundle: true,
+        chunks: bundle.chunks,
+        mimeType: manifest.mimeType,
+        namespace: manifest.namespace,
+      },
+      expiresAt: this.now() + RETICULUM_RESOURCE_TRANSFER_TTL_MS,
+    });
+    if (!registered.ok) {
+      const failed = registered as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[${this.loggerPrefix}] Failed to register chunk bundle fileHash=${manifest.fileHash} chunks=${bundle.chunks.map((chunk) => chunk.index).join(',')}:`,
+        failed.error ?? failed.reason
+      );
+      this.cleanupTemporaryPath(bundle.path);
+      return;
+    }
+    const offer: ReticulumResourceTransferOffer = {
+      transferId,
+      contextId,
+      ...(request.eventId ? { eventId: request.eventId } : {}),
+      fileHash: manifest.fileHash,
+      sizeBytes: bundle.sizeBytes,
+      fileName,
+      mimeType: manifest.mimeType,
+      chunkIndex: bundle.chunks.length === 1 ? bundle.chunks[0]?.index : undefined,
+      chunkHash: bundle.chunks.length === 1 ? bundle.chunks[0]?.hash : undefined,
+      chunkSize: bundle.chunks.length === 1 ? bundle.chunks[0]?.sizeBytes : undefined,
+      bundleHash,
+      chunks: bundle.chunks,
+      temporaryPath: bundle.path,
+    };
+    this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
+    const sent = await this.sendOfferToPeer(peerKey, contextId, offer);
+    if (!sent.ok) {
+      const failed = sent as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[${this.loggerPrefix}] Failed to send chunk bundle offer fileHash=${manifest.fileHash} chunks=${bundle.chunks.map((chunk) => chunk.index).join(',')}:`,
+        failed.error ?? failed.reason
+      );
+      this.offers.delete(transferId);
+      this.cleanupTemporaryPath(bundle.path);
     }
   }
 
@@ -381,42 +455,66 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       );
       return;
     }
+    const normalizedOffer = this.normalizeChunkBundleOffer(offer, manifest);
+    if (!normalizedOffer) return;
     if (this.canAcceptOffer) {
-      const allowed = await this.canAcceptOffer(offer.contextId, offer, manifest);
+      const allowed = await this.canAcceptOffer(normalizedOffer.contextId, normalizedOffer, manifest);
       if (!allowed) {
         loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: offer not allowed`
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: offer not allowed`
         );
         return;
       }
     }
     if (download?.fullTransfer) return;
-    if (offer.chunkIndex != null) {
-      const expectedChunkHash = manifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
-      if (!expectedChunkHash || offer.chunkHash?.toLowerCase() !== expectedChunkHash) {
+    if (normalizedOffer.chunkIndex != null) {
+      const expectedChunkHash = manifest.chunkHashes[normalizedOffer.chunkIndex]?.toLowerCase();
+      if (!expectedChunkHash || normalizedOffer.chunkHash?.toLowerCase() !== expectedChunkHash) {
         loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash} chunk=${offer.chunkIndex}: chunk hash mismatch`
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash} chunk=${normalizedOffer.chunkIndex}: chunk hash mismatch`
         );
         return;
       }
-      if (offer.chunkSize !== this.expectedChunkSize(manifest, offer.chunkIndex)) {
+      if (normalizedOffer.chunkSize !== this.expectedChunkSize(manifest, normalizedOffer.chunkIndex)) {
         loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash} chunk=${offer.chunkIndex}: chunk size mismatch`
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash} chunk=${normalizedOffer.chunkIndex}: chunk size mismatch`
         );
         return;
       }
-      const localChunk = this.resourceStore.getChunk(offer.fileHash, offer.chunkIndex);
+      const localChunk = this.resourceStore.getChunk(normalizedOffer.fileHash, normalizedOffer.chunkIndex);
       if (localChunk?.status === 'complete' && localChunk.localPath) return;
-      if (download && download.inFlightChunks.has(offer.chunkIndex)) return;
-    } else {
-      if (offer.sizeBytes !== manifest.sizeBytes) {
+      if (download && download.inFlightChunks.has(normalizedOffer.chunkIndex)) return;
+      if (this.peerHasActiveOrPendingAcceptForResource(peerKey, normalizedOffer.fileHash)) return;
+    } else if (Array.isArray(normalizedOffer.chunks) && normalizedOffer.chunks.length > 0) {
+      if (!this.isValidChunkBundleOffer(normalizedOffer, manifest)) {
         loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: size mismatch`
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: invalid chunk bundle`
+        );
+        return;
+      }
+      const neededChunks = normalizedOffer.chunks.filter((chunk) => {
+        const localChunk = this.resourceStore.getChunk(normalizedOffer.fileHash, chunk.index);
+        if (localChunk?.status === 'complete' && localChunk.localPath) return false;
+        if (download?.inFlightChunks.has(chunk.index)) return false;
+        return true;
+      });
+      if (neededChunks.length === 0) return;
+      if (neededChunks.length !== normalizedOffer.chunks.length) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: partial chunk bundle overlap`
+        );
+        return;
+      }
+      if (this.peerHasActiveOrPendingAcceptForResource(peerKey, normalizedOffer.fileHash)) return;
+    } else {
+      if (normalizedOffer.sizeBytes !== manifest.sizeBytes) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: size mismatch`
         );
         return;
       }
       try {
-        this.resourceStore.assembleResource(offer.fileHash);
+        this.resourceStore.assembleResource(normalizedOffer.fileHash);
         return;
       } catch {
         // Missing data is expected for active downloads.
@@ -424,24 +522,34 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       if (download?.fullTransfer) return;
     }
     const trackedOffer: ReticulumResourceTransferOffer = {
-      ...offer,
-      fileName: offer.fileName || manifest.fileName,
-      mimeType: offer.mimeType || manifest.mimeType,
+      ...normalizedOffer,
+      fileName: normalizedOffer.fileName || manifest.fileName,
+      mimeType: normalizedOffer.mimeType || manifest.mimeType,
       sourcePeerHash: peerKey,
     };
-    this.offers.set(offer.transferId, trackedOffer);
-    if (download && offer.chunkIndex != null) {
+    this.offers.set(normalizedOffer.transferId, trackedOffer);
+    if (download && normalizedOffer.chunkIndex != null) {
       download.peerHashes.add(peerKey);
-      let peers = download.chunkPeers.get(offer.chunkIndex);
+      let peers = download.chunkPeers.get(normalizedOffer.chunkIndex);
       if (!peers) {
         peers = new Set<string>();
-        download.chunkPeers.set(offer.chunkIndex, peers);
+        download.chunkPeers.set(normalizedOffer.chunkIndex, peers);
       }
       peers.add(peerKey);
+    } else if (download && Array.isArray(normalizedOffer.chunks)) {
+      download.peerHashes.add(peerKey);
+      for (const chunk of normalizedOffer.chunks) {
+        let peers = download.chunkPeers.get(chunk.index);
+        if (!peers) {
+          peers = new Set<string>();
+          download.chunkPeers.set(chunk.index, peers);
+        }
+        peers.add(peerKey);
+      }
     } else if (download) {
       download.peerHashes.add(peerKey);
     }
-    this.enqueueAccept(offer.transferId);
+    this.enqueueAccept(normalizedOffer.transferId);
   }
 
   handleResourceEvent(payload: ReticulumResourceTransferPayload): void {
@@ -711,6 +819,55 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     return available;
   }
 
+  private createChunkBundle(
+    manifest: ReticulumResourceManifest,
+    chunks: Array<{ index: number; localPath: string; sizeBytes: number; chunkHash: string }>
+  ): {
+    path: string;
+    sizeBytes: number;
+    chunks: NonNullable<ReticulumResourceTransferOffer['chunks']>;
+  } | null {
+    if (chunks.length === 0) return null;
+    const tempPath = this.resourceStore.createPlaintextTempPath(
+      manifest.fileHash,
+      `.bundle-${chunks[0]?.index ?? 0}.bin`
+    );
+    let offset = 0;
+    const bundleChunks: NonNullable<ReticulumResourceTransferOffer['chunks']> = [];
+    const out = fs.openSync(tempPath, 'w');
+    let failed = false;
+    try {
+      for (const chunk of chunks) {
+        const bytes = fs.readFileSync(chunk.localPath);
+        const actualHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+        if (actualHash !== chunk.chunkHash.toLowerCase()) {
+          throw new Error(`chunk hash mismatch for ${chunk.index}`);
+        }
+        fs.writeSync(out, bytes, 0, bytes.length, offset);
+        bundleChunks.push({
+          index: chunk.index,
+          hash: chunk.chunkHash.toLowerCase(),
+          sizeBytes: bytes.length,
+          offset,
+        });
+        offset += bytes.length;
+      }
+    } catch {
+      failed = true;
+    } finally {
+      fs.closeSync(out);
+    }
+    if (failed) {
+      this.cleanupTemporaryPath(tempPath);
+      return null;
+    }
+    return {
+      path: tempPath,
+      sizeBytes: offset,
+      chunks: bundleChunks,
+    };
+  }
+
   private enqueueAccept(transferId: string): void {
     if (this.pendingAccepts.includes(transferId) || this.activeAccepts.has(transferId)) {
       return;
@@ -743,7 +900,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.activeAcceptStartedAt.set(transferId, this.now());
       const state = this.downloads.get(offer.fileHash);
       if (state) {
-        if (offer.chunkIndex != null) {
+        if (offer.chunkIndex != null || (Array.isArray(offer.chunks) && offer.chunks.length > 0)) {
           this.markOfferChunksInFlight(state, offer);
         } else {
           state.fullTransfer = { transferId: offer.transferId, startedAt: this.now() };
@@ -768,7 +925,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       offer.fileHash,
       path.extname(offer.fileName) || '.bin'
     );
-    const isChunkTransfer = offer.chunkIndex != null;
+    const isChunkTransfer =
+      offer.chunkIndex != null || (Array.isArray(offer.chunks) && offer.chunks.length > 0);
     const result = await this.bridge.acceptReticulumResourceDetailed({
       peerPresenceHash: senderHash,
       reticulumIdentityPublicKeyBase64: '',
@@ -776,7 +934,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       savePath,
       fileName: offer.fileName,
       size: offer.sizeBytes,
-      sha256: offer.chunkHash || offer.fileHash,
+      sha256: offer.bundleHash || offer.chunkHash || offer.fileHash,
       resourceType: isChunkTransfer
         ? this.chunkResourceType
         : this.resourceType,
@@ -790,6 +948,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         fileHash: offer.fileHash,
         chunkIndex: offer.chunkIndex ?? null,
         chunkHash: offer.chunkHash ?? '',
+        bundleHash: offer.bundleHash ?? '',
+        chunkBundle: Array.isArray(offer.chunks) && offer.chunks.length > 0,
+        chunks: offer.chunks ?? [],
         mimeType: offer.mimeType,
       },
       authMessage: {
@@ -802,6 +963,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         chunkIndex: offer.chunkIndex ?? null,
         chunkHash: offer.chunkHash ?? '',
         chunkSize: offer.chunkSize ?? null,
+        bundleHash: offer.bundleHash ?? '',
+        chunkBundle: Array.isArray(offer.chunks) && offer.chunks.length > 0,
+        chunks: offer.chunks ?? [],
       },
     });
     if (!result.ok) {
@@ -836,7 +1000,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       Number(auth.contextId) !== offer.contextId ||
       auth.fileHash !== offer.fileHash ||
       (offer.chunkIndex != null && Number(auth.chunkIndex) !== offer.chunkIndex) ||
-      (offer.chunkHash && auth.chunkHash !== offer.chunkHash)
+      (offer.chunkHash && auth.chunkHash !== offer.chunkHash) ||
+      (offer.bundleHash && auth.bundleHash !== offer.bundleHash) ||
+      (Array.isArray(offer.chunks) &&
+        JSON.stringify(auth.chunks ?? []) !== JSON.stringify(offer.chunks))
     ) {
       loggerWarn(
         `[${this.loggerPrefix}] Rejecting resource auth transfer=${transferId}: metadata mismatch`
@@ -897,6 +1064,29 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
           eventId: offer.eventId,
           fileHash: offer.fileHash,
           chunkIndex: offer.chunkIndex,
+        });
+        this.handleReceivedChunk(offer);
+        return;
+      }
+      if (Array.isArray(offer.chunks) && offer.chunks.length > 0) {
+        if (offer.bundleHash && actualHash !== offer.bundleHash.toLowerCase()) {
+          loggerWarn(
+            `[${this.loggerPrefix}] Cannot import resource chunk bundle fileHash=${offer.fileHash}: bundle hash mismatch`
+          );
+          return;
+        }
+        if (!this.importReceivedChunkBundle(offer, bytes, pendingManifest)) {
+          return;
+        }
+        try {
+          this.resourceStore.assembleResource(offer.fileHash);
+        } catch {
+          // More chunks are still missing.
+        }
+        this.emit('resource', {
+          contextId: offer.contextId,
+          eventId: offer.eventId,
+          fileHash: offer.fileHash,
         });
         this.handleReceivedChunk(offer);
         return;
@@ -1022,6 +1212,114 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return false;
     }
     if (offer.chunkSize != null && (!Number.isInteger(offer.chunkSize) || offer.chunkSize <= 0)) return false;
+    if (offer.bundleHash != null && (typeof offer.bundleHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.bundleHash))) {
+      return false;
+    }
+    if (offer.chunkIndexes != null) {
+      if (
+        !Array.isArray(offer.chunkIndexes) ||
+        offer.chunkIndexes.length === 0 ||
+        offer.chunkIndexes.some((index) => !Number.isInteger(index) || index < 0)
+      ) {
+        return false;
+      }
+    }
+    if (offer.chunks != null) {
+      if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return false;
+      for (const chunk of offer.chunks) {
+        if (
+          !chunk ||
+          !Number.isInteger(chunk.index) ||
+          chunk.index < 0 ||
+          typeof chunk.hash !== 'string' ||
+          !/^[0-9a-f]{64}$/i.test(chunk.hash) ||
+          !Number.isInteger(chunk.sizeBytes) ||
+          chunk.sizeBytes <= 0 ||
+          !Number.isInteger(chunk.offset) ||
+          chunk.offset < 0
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  private normalizeChunkBundleOffer(
+    offer: ReticulumResourceTransferOffer,
+    manifest: ReticulumResourceManifest
+  ): ReticulumResourceTransferOffer | null {
+    if (Array.isArray(offer.chunks) && offer.chunks.length > 0) return offer;
+    if (!Array.isArray(offer.chunkIndexes) || offer.chunkIndexes.length === 0) return offer;
+    const seen = new Set<number>();
+    const chunks: NonNullable<ReticulumResourceTransferOffer['chunks']> = [];
+    let offset = 0;
+    for (const index of offer.chunkIndexes) {
+      if (seen.has(index)) return null;
+      seen.add(index);
+      const hash = manifest.chunkHashes[index]?.toLowerCase();
+      if (!hash) return null;
+      const sizeBytes = this.expectedChunkSize(manifest, index);
+      chunks.push({
+        index,
+        hash,
+        sizeBytes,
+        offset,
+      });
+      offset += sizeBytes;
+    }
+    if (offer.sizeBytes !== offset) return null;
+    return {
+      ...offer,
+      chunks,
+    };
+  }
+
+  private isValidChunkBundleOffer(
+    offer: ReticulumResourceTransferOffer,
+    manifest: ReticulumResourceManifest
+  ): boolean {
+    if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return false;
+    let expectedOffset = 0;
+    const seen = new Set<number>();
+    for (const chunk of offer.chunks) {
+      if (seen.has(chunk.index)) return false;
+      seen.add(chunk.index);
+      const expectedHash = manifest.chunkHashes[chunk.index]?.toLowerCase();
+      if (!expectedHash || chunk.hash.toLowerCase() !== expectedHash) return false;
+      if (chunk.sizeBytes !== this.expectedChunkSize(manifest, chunk.index)) return false;
+      if (chunk.offset !== expectedOffset) return false;
+      expectedOffset += chunk.sizeBytes;
+    }
+    return offer.sizeBytes === expectedOffset;
+  }
+
+  private importReceivedChunkBundle(
+    offer: ReticulumResourceTransferOffer,
+    bytes: Buffer,
+    manifest: ReticulumResourceManifest
+  ): boolean {
+    if (!this.isValidChunkBundleOffer(offer, manifest)) return false;
+    if (bytes.length !== offer.sizeBytes) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Cannot import resource chunk bundle fileHash=${offer.fileHash}: size mismatch`
+      );
+      return false;
+    }
+    for (const chunk of offer.chunks ?? []) {
+      const chunkBytes = bytes.subarray(chunk.offset, chunk.offset + chunk.sizeBytes);
+      const actualHash = nodeCrypto.createHash('sha256').update(chunkBytes).digest('hex');
+      if (actualHash !== chunk.hash.toLowerCase()) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Cannot import resource chunk bundle fileHash=${offer.fileHash} chunk=${chunk.index}: hash mismatch`
+        );
+        return false;
+      }
+    }
+    for (const chunk of offer.chunks ?? []) {
+      const chunkBytes = bytes.subarray(chunk.offset, chunk.offset + chunk.sizeBytes);
+      this.resourceStore.storeChunk(offer.fileHash, chunk.index, Buffer.from(chunkBytes));
+    }
     return true;
   }
 
@@ -1032,6 +1330,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
 
   private getOfferChunkIndexes(offer: ReticulumResourceTransferOffer): number[] {
     if (offer.chunkIndex != null) return [offer.chunkIndex];
+    if (Array.isArray(offer.chunks)) return offer.chunks.map((chunk) => chunk.index);
     return [];
   }
 
@@ -1086,6 +1385,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const offer = this.offers.get(transferId);
       if (offer?.fileHash.toLowerCase() === blobId) {
         this.pendingAccepts.splice(index, 1);
+        this.cleanupTemporaryOfferFile(offer);
         this.offers.delete(transferId);
       }
     }
@@ -1108,12 +1408,43 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     return activeForPeer >= RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER;
   }
 
+  private peerHasActiveOrPendingAcceptForResource(peerHash: string, fileHash: string): boolean {
+    const peerKey = peerHash.trim().toLowerCase();
+    const blobId = fileHash.trim().toLowerCase();
+    if (!peerKey || !blobId) return false;
+    for (const transferId of this.activeAccepts) {
+      const offer = this.offers.get(transferId);
+      if (
+        (offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey &&
+        (offer?.fileHash || '').trim().toLowerCase() === blobId
+      ) {
+        return true;
+      }
+    }
+    for (const transferId of this.pendingAccepts) {
+      const offer = this.offers.get(transferId);
+      if (
+        (offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey &&
+        (offer?.fileHash || '').trim().toLowerCase() === blobId
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private cleanupStaleActiveAccepts(drainQueue = true): void {
     const now = this.now();
     const staleTransferIds: string[] = [];
     for (const transferId of this.activeAccepts) {
       const offer = this.offers.get(transferId);
-      if (offer && offer.chunkIndex == null) continue;
+      if (
+        offer &&
+        offer.chunkIndex == null &&
+        (!Array.isArray(offer.chunks) || offer.chunks.length === 0)
+      ) {
+        continue;
+      }
       const startedAt = this.activeAcceptStartedAt.get(transferId) ?? now;
       if (now - startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
         staleTransferIds.push(transferId);

@@ -126,6 +126,14 @@ export interface ReticulumChatResourceOffer {
   chunkIndex?: number;
   chunkHash?: string;
   chunkSize?: number;
+  bundleHash?: string;
+  chunkIndexes?: number[];
+  chunks?: Array<{
+    index: number;
+    hash: string;
+    sizeBytes: number;
+    offset: number;
+  }>;
   sourcePeerHash?: string;
 }
 
@@ -137,6 +145,8 @@ export interface ReticulumChatResourceOfferWire {
   ci?: number;
   ch?: string;
   cs?: number;
+  bh?: string;
+  cb?: number[];
 }
 
 export interface ReticulumChatAuthorHeadWire {
@@ -411,6 +421,12 @@ function resourceOfferToWire(offer: ReticulumChatResourceOffer): ReticulumChatRe
     ...(Number.isInteger(offer.chunkIndex) ? { ci: offer.chunkIndex } : {}),
     ...(offer.chunkHash ? { ch: offer.chunkHash } : {}),
     ...(Number.isInteger(offer.chunkSize) ? { cs: offer.chunkSize } : {}),
+    ...(offer.bundleHash ? { bh: offer.bundleHash } : {}),
+    ...(Array.isArray(offer.chunks) && offer.chunks.length > 0
+      ? {
+          cb: offer.chunks.map((chunk) => chunk.index),
+        }
+      : {}),
   };
 }
 
@@ -428,6 +444,12 @@ function resourceOfferFromWire(groupId: number, wire: unknown): ReticulumChatRes
     ...(Number.isInteger(o.ci) ? { chunkIndex: Number(o.ci) } : {}),
     ...(typeof o.ch === 'string' && o.ch ? { chunkHash: o.ch } : {}),
     ...(Number.isInteger(o.cs) ? { chunkSize: Number(o.cs) } : {}),
+    ...(typeof o.bh === 'string' && o.bh ? { bundleHash: o.bh } : {}),
+    ...(Array.isArray(o.cb)
+      ? {
+          chunkIndexes: o.cb.filter((index) => Number.isInteger(index)).map((index) => Number(index)),
+        }
+      : {}),
   };
 }
 
@@ -748,6 +770,9 @@ export class ReticulumChatManager extends EventEmitter {
       ...(offer.chunkIndex != null ? { chunkIndex: offer.chunkIndex } : {}),
       ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
       ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
+      ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
+      ...(offer.chunkIndexes ? { chunkIndexes: offer.chunkIndexes } : {}),
+      ...(offer.chunks ? { chunks: offer.chunks } : {}),
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
     };
   }
@@ -766,6 +791,9 @@ export class ReticulumChatManager extends EventEmitter {
       ...(offer.chunkIndex != null ? { chunkIndex: offer.chunkIndex } : {}),
       ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
       ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
+      ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
+      ...(offer.chunkIndexes ? { chunkIndexes: offer.chunkIndexes } : {}),
+      ...(offer.chunks ? { chunks: offer.chunks } : {}),
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
     };
   }
@@ -2080,6 +2108,36 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (offer.chunkSize != null && (!Number.isInteger(offer.chunkSize) || offer.chunkSize <= 0)) return;
+    if (offer.bundleHash != null && (typeof offer.bundleHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.bundleHash))) {
+      return;
+    }
+    if (offer.chunkIndexes != null) {
+      if (
+        !Array.isArray(offer.chunkIndexes) ||
+        offer.chunkIndexes.length === 0 ||
+        offer.chunkIndexes.some((index) => !Number.isInteger(index) || index < 0)
+      ) {
+        return;
+      }
+    }
+    if (offer.chunks != null) {
+      if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return;
+      for (const chunk of offer.chunks) {
+        if (
+          !chunk ||
+          !Number.isInteger(chunk.index) ||
+          chunk.index < 0 ||
+          typeof chunk.hash !== 'string' ||
+          !/^[0-9a-f]{64}$/i.test(chunk.hash) ||
+          !Number.isInteger(chunk.sizeBytes) ||
+          chunk.sizeBytes <= 0 ||
+          !Number.isInteger(chunk.offset) ||
+          chunk.offset < 0
+        ) {
+          return;
+        }
+      }
+    }
     void this.resourceTransfer?.handleOffer(
       this.chatOfferToResourceTransferOffer(offer as ReticulumChatResourceOffer),
       peerHash
