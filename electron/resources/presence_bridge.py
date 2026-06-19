@@ -92,6 +92,10 @@ _PRESENCE_BRIDGE_VERBOSE_LOGS = (
     os.environ.get("QORTAL_PRESENCE_BRIDGE_VERBOSE_LOGS", "").strip().lower()
     in ("1", "true", "yes", "on")
 )
+_RNS_INTERNAL_TIMING_PROBES_ENABLED = (
+    os.environ.get("QORTAL_RNS_SHARED_TIMING_LOGS", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 # Presence heartbeats are expected every 25s and TS expires sessions after 95s.
 # Keep overlay links a little longer than that, but do not trust a link forever
 # when no inbound Qortal overlay traffic arrives after the remote app exits.
@@ -9613,9 +9617,10 @@ def ensure_started(config_dir: str):
         RNS.Transport.register_announce_handler(_announce_handler)
         ensure_transport_monitor_started()
         ensure_rns_callback_scheduler_monitor_started()
-        install_rns_shared_frame_probe()
-        install_rns_transport_inbound_probe()
-        install_rns_link_receive_probe()
+        if _RNS_INTERNAL_TIMING_PROBES_ENABLED:
+            install_rns_shared_frame_probe()
+            install_rns_transport_inbound_probe()
+            install_rns_link_receive_probe()
         return _destination
 
 
