@@ -940,8 +940,8 @@ describe('ReticulumBridge group audio support', () => {
     });
 
     expect(seen).toEqual([
-      { peerHash: 'peer-hash', reason: 'closed' },
-      { peerHash: 'peer-hash-2', reason: 'closed' },
+      { peerHash: 'peer-hash', reason: 'closed', lastActivityAgeMs: null },
+      { peerHash: 'peer-hash-2', reason: 'closed', lastActivityAgeMs: null },
     ]);
   });
 

@@ -40,6 +40,7 @@ export const RETICULUM_OVERLAY_MAX_NEIGHBORS =
   RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS;
 /** Keep a verified overlay peer around briefly after link loss while retrying fanout. */
 export const RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS = 2 * 60_000;
+const RETICULUM_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_MS = 30_000;
 const RETICULUM_CANDIDATE_PROOF_WINDOW_MS = 90_000;
 const RETICULUM_CANDIDATE_FAILURE_LIMIT = 2;
 
@@ -192,6 +193,7 @@ export interface PresenceTransportHandlers {
   onOverlayLinkClosed?: (payload: {
     peerHash: string;
     reason?: string;
+    lastActivityAgeMs?: number | null;
   }) => void;
 }
 
@@ -1130,7 +1132,8 @@ export class PresenceManager extends EventEmitter {
   noteReticulumOverlayLinkClosed(
     destinationHash: string,
     reason?: string,
-    now: number = Date.now()
+    now: number = Date.now(),
+    details: { lastActivityAgeMs?: number | null } = {}
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
@@ -1138,6 +1141,20 @@ export class PresenceManager extends EventEmitter {
     const wasVerified = Boolean(existingVerified);
     const wasActive = this.activeReticulumNeighborHashes.includes(hash);
     if (!wasVerified && !wasActive) return;
+    const reasonKey = String(reason ?? '').toLowerCase();
+    const lastActivityAgeMs = details.lastActivityAgeMs;
+    const keepActiveForRecentTimeout =
+      wasVerified &&
+      reasonKey.includes('timeout') &&
+      typeof lastActivityAgeMs === 'number' &&
+      Number.isFinite(lastActivityAgeMs) &&
+      lastActivityAgeMs <= RETICULUM_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_MS;
+    if (keepActiveForRecentTimeout) {
+      loggerLog(
+        `[Presence] Reticulum overlay fanout peer retained sender_hash=${hash}${reason ? ` reason=${reason}` : ''} last_activity_age_ms=${Math.max(0, Math.floor(lastActivityAgeMs))} verified_retained=yes`
+      );
+      return;
+    }
     this.activeReticulumNeighborHashes = this.activeReticulumNeighborHashes.filter(
       (activeHash) => activeHash !== hash
     );
@@ -1692,8 +1709,10 @@ function subscribePresenceTransport(
     onCandidatePeerDiscovered: ({ peerHash, source }) => {
       manager.noteReticulumCandidateDiscovered(peerHash, source ?? transport.kind);
     },
-    onOverlayLinkClosed: ({ peerHash, reason }) => {
-      manager.noteReticulumOverlayLinkClosed(peerHash, reason);
+    onOverlayLinkClosed: ({ peerHash, reason, lastActivityAgeMs }) => {
+      manager.noteReticulumOverlayLinkClosed(peerHash, reason, Date.now(), {
+        lastActivityAgeMs,
+      });
     },
     onReady: () => {
       if (transport.kind === 'reticulum' && typeof transport.getLocalDestinationHash === 'function') {

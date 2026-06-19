@@ -3143,7 +3143,7 @@ export function registerLateReticulumBridgeRecovery(): void {
     attachReticulumStatusBridgeEvents(currentBridge);
 
     loggerLog(
-      '[ReticulumBridge] Bridge became ready after startup timeout; updating presence transport and rebinding call/group-call managers'
+      '[ReticulumBridge] Bridge became ready after startup timeout; updating presence transport and rebinding call/group-call/chat managers'
     );
     startReticulumPresenceHealthWatchdog();
     startReticulumOverlayMaintenanceSync();
@@ -3193,6 +3193,11 @@ export function registerLateReticulumBridgeRecovery(): void {
         '[ReticulumBridge] Late recovery group-call rebind failed:',
         err
       );
+    }
+    try {
+      getReticulumChatManager()?.setBridge(currentBridge);
+    } catch (err) {
+      loggerWarn('[ReticulumBridge] Late recovery chat rebind failed:', err);
     }
     try {
       stopReticulumMeshCoordinator();
