@@ -3077,6 +3077,13 @@ function startBundledReticulumDaemonLocked(): void {
   }
 
   try {
+    const serviceLogMode =
+      String(process.env.QORTAL_RNS_SHARED_TIMING_LOGS ?? '')
+        .trim()
+        .toLowerCase() === '1';
+    const launchArgs = serviceLogMode
+      ? [...plan.args, '--service']
+      : plan.args;
     const env = {
       ...process.env,
       ...(plan.envExtra ?? {}),
@@ -3087,7 +3094,7 @@ function startBundledReticulumDaemonLocked(): void {
     loggerLog(
       `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE}`
     );
-    const subprocess = spawn(plan.cmd, plan.args, {
+    const subprocess = spawn(plan.cmd, launchArgs, {
       cwd: plan.cwd,
       env,
       detached: true,

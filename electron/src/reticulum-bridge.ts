@@ -148,6 +148,38 @@ function overlayAgeDetail(
   return parts.length ? ` ${parts.join(' ')}` : '';
 }
 
+function numericFrameField(frame: unknown, key: string): number | null {
+  if (!frame || typeof frame !== 'object') return null;
+  const value = (frame as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function bridgeEventTimingDetail(frame: unknown, nowMs: number): string {
+  const queuedAtMs = numericFrameField(frame, '_queuedAtMs');
+  const writeAtMs = numericFrameField(frame, '_writeAtMs');
+  const queuedDepthBefore = numericFrameField(frame, '_eventQueueDepthBefore');
+  const queuedDepthAfter = numericFrameField(frame, '_eventQueueDepthAfter');
+  const parts: string[] = [];
+  if (queuedAtMs !== null) {
+    parts.push(`queued_age_ms=${Math.max(0, Math.round(nowMs - queuedAtMs))}`);
+  }
+  if (writeAtMs !== null) {
+    parts.push(`stdout_age_ms=${Math.max(0, Math.round(nowMs - writeAtMs))}`);
+  }
+  if (queuedAtMs !== null && writeAtMs !== null) {
+    parts.push(
+      `python_queue_ms=${Math.max(0, Math.round(writeAtMs - queuedAtMs))}`
+    );
+  }
+  if (queuedDepthBefore !== null) {
+    parts.push(`queue_depth_before=${Math.round(queuedDepthBefore)}`);
+  }
+  if (queuedDepthAfter !== null) {
+    parts.push(`queue_depth_after=${Math.round(queuedDepthAfter)}`);
+  }
+  return parts.join(' ');
+}
+
 type BridgeCmdFrame = {
   type: 'cmd';
   action:
@@ -1024,6 +1056,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   private waitingForAudioBinaryDrain = false;
   private audioFlushScheduled = false;
   private audioTimingLogLastByKey = new Map<string, number>();
+  private bridgeEventTimingLogLastByEvent = new Map<string, number>();
   private audioLastBridgeEnqueueAtMsByRoute = new Map<string, number>();
   private audioLastFd3WriteAtMsByRoute = new Map<string, number>();
   private audioInBuffer = Buffer.alloc(0);
@@ -3282,6 +3315,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       return;
     }
 
+    this.logBridgeEventTimingIfSlow(frame);
+
     switch (frame.event) {
       case 'ready':
         this.state = 'ready';
@@ -3936,6 +3971,33 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         return;
       }
     }
+  }
+
+  private logBridgeEventTimingIfSlow(frame: BridgeEventFrame): void {
+    const now = Date.now();
+    const queuedAtMs = numericFrameField(frame, '_queuedAtMs');
+    const writeAtMs = numericFrameField(frame, '_writeAtMs');
+    const queuedAgeMs = queuedAtMs !== null ? now - queuedAtMs : 0;
+    const stdoutAgeMs = writeAtMs !== null ? now - writeAtMs : 0;
+    const pythonQueueMs =
+      queuedAtMs !== null && writeAtMs !== null ? writeAtMs - queuedAtMs : 0;
+    if (queuedAgeMs < 80 && stdoutAgeMs < 80 && pythonQueueMs < 80) {
+      return;
+    }
+    const last = this.bridgeEventTimingLogLastByEvent.get(frame.event) ?? 0;
+    if (now - last < 2_000) return;
+    this.bridgeEventTimingLogLastByEvent.set(frame.event, now);
+    if (this.bridgeEventTimingLogLastByEvent.size > 256) {
+      for (const key of Array.from(
+        this.bridgeEventTimingLogLastByEvent.keys()
+      ).slice(0, 64)) {
+        this.bridgeEventTimingLogLastByEvent.delete(key);
+      }
+    }
+    const detail = bridgeEventTimingDetail(frame, now);
+    loggerLog(
+      `[ReticulumBridge] target=presence-reticulum event_delivery event=${frame.event}${detail ? ` ${detail}` : ''}`
+    );
   }
 
   private transitionToDegraded(reason?: string): void {
