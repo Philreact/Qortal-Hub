@@ -80,7 +80,7 @@ _OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
-_OVERLAY_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
+_OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
@@ -5509,13 +5509,16 @@ def _overlay_link_recent_activity_age_seconds(state: Dict[str, Any], now: float)
     return max(0.0, now - recent_at)
 
 
-def _overlay_timeout_close_should_keep_peer(state: Dict[str, Any], reason: str, now: float) -> bool:
-    if str(reason or "").strip().lower() != "timeout":
+def _overlay_recent_activity_close_should_keep_peer(
+    state: Dict[str, Any], reason: str, now: float
+) -> bool:
+    reason_key = str(reason or "").strip().lower()
+    if reason_key not in {"timeout", "destination_closed"}:
         return False
     age = _overlay_link_recent_activity_age_seconds(state, now)
     return (
         age is not None
-        and age <= _OVERLAY_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_SECONDS
+        and age <= _OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS
     )
 
 
@@ -6273,11 +6276,11 @@ def on_overlay_link_closed(link) -> None:
         reason,
         closed_by_reticulum=True,
     )
-    if peer_hash and _overlay_timeout_close_should_keep_peer(state, reason, now):
+    if peer_hash and _overlay_recent_activity_close_should_keep_peer(state, reason, now):
         age = _overlay_link_recent_activity_age_seconds(state, now)
-        _note_overlay_peer_alive(peer_hash, "recent_timeout_activity")
+        _note_overlay_peer_alive(peer_hash, "recent_close_activity")
         verbose_presence_log(
-            "[presence_bridge] target=presence-reticulum overlay_timeout_kept_peer "
+            "[presence_bridge] target=presence-reticulum overlay_close_kept_peer "
             f"peer={peer_hash} recent_activity_age_ms={int((age or 0.0) * 1000.0)}"
         )
         return
@@ -9611,7 +9614,6 @@ def _send_group_signal_wire_to_peer(peer_hash: str, wire_bytes: bytes) -> Option
         "group_signal",
         queue_if_pending=False,
     ):
-        _demote_overlay_fanout_peer(peer_hash, "group_signal_no_established_link")
         return {
             "payload": {"code": "packet_send_false"},
             "error": "Packet send returned False",
@@ -9672,7 +9674,6 @@ def _send_call_signal_wire_to_peer(peer_hash: str, wire_bytes: bytes) -> Optiona
         "call_signal",
         queue_if_pending=False,
     ):
-        _demote_overlay_fanout_peer(peer_hash, "call_signal_no_established_link")
         return {
             "payload": {"code": "packet_send_false"},
             "error": "Packet send returned False",

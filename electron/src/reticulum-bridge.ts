@@ -1189,6 +1189,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const onOverlayLinkClosed = (payload: {
       peerHash: string;
       reason?: string;
+      lastActivityAgeMs?: number | null;
     }) => handlers.onOverlayLinkClosed?.(payload);
 
     this.on('ready', onReady);
@@ -3844,6 +3845,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           this.emit('overlay-link-closed', {
             peerHash: peerPresenceHash,
             reason,
+            lastActivityAgeMs:
+              typeof frame.payload?.lastActivityAgeMs === 'number' &&
+              Number.isFinite(frame.payload.lastActivityAgeMs)
+                ? frame.payload.lastActivityAgeMs
+                : null,
           });
         }
         this.emit('overlay-link-state', {

@@ -327,6 +327,51 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.useRealTimers();
   });
 
+  it('keeps a verified fanout peer active after a timeout with recent activity', () => {
+    const manager = new PresenceManager();
+    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(9_999);
+    manager.noteReticulumOverlayLinkClosed(hashes[0], 'timeout', Date.now(), {
+      lastActivityAgeMs: 1_041,
+    });
+
+    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
+      hashes
+    );
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      hashes.slice(0, RETICULUM_OVERLAY_MAX_NEIGHBORS)
+    );
+
+    vi.useRealTimers();
+  });
+
+  it('keeps a verified fanout peer active after destination_closed with recent activity', () => {
+    const manager = new PresenceManager();
+    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(9_999);
+    manager.noteReticulumOverlayLinkClosed(
+      hashes[0],
+      'destination_closed',
+      Date.now(),
+      {
+        lastActivityAgeMs: 222,
+      }
+    );
+
+    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
+      hashes
+    );
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      hashes.slice(0, RETICULUM_OVERLAY_MAX_NEIGHBORS)
+    );
+
+    vi.useRealTimers();
+  });
+
   it('releases a closed verified slot after the grace window expires', () => {
     const manager = new PresenceManager();
     const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
