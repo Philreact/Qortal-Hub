@@ -10548,7 +10548,9 @@ def _send_call_signal_wire_to_peer(peer_hash: str, wire_bytes: bytes) -> Optiona
         "call_signal",
         queue_if_pending=False,
     ):
-        _demote_overlay_fanout_peer(peer_hash, "call_signal_no_established_link")
+        # Like group signaling, a direct call signal miss only says the overlay
+        # link was not established at this instant. Do not suppress the peer for
+        # unrelated chat/presence fanout.
         return {
             "payload": {"code": "packet_send_false"},
             "error": "Packet send returned False",
