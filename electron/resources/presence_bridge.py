@@ -10484,7 +10484,10 @@ def _send_group_signal_wire_to_peer(peer_hash: str, wire_bytes: bytes) -> Option
         "group_signal",
         queue_if_pending=False,
     ):
-        _demote_overlay_fanout_peer(peer_hash, "group_signal_no_established_link")
+        # Group/call signaling is latency-sensitive and intentionally does not
+        # queue behind a pending overlay link. A miss here only means "not
+        # established at this instant"; it should not globally suppress the peer
+        # for chat/presence fanout.
         return {
             "payload": {"code": "packet_send_false"},
             "error": "Packet send returned False",
@@ -11333,7 +11336,19 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
             encoded_frames.append(encoded["wire_bytes"])
             message_types.append(str(msg.get("k") or "?"))
 
-        peer_hashes = _snapshot_established_overlay_neighbor_hashes(exclude_hashes)
+        peer_hashes = _resolve_overlay_neighbor_hashes(
+            exclude_hashes,
+            established_only=False,
+        )
+        if not peer_hashes:
+            _promote_recent_verified_overlay_neighbors(
+                "reticulum_chat_fanout",
+                set(exclude_hashes),
+            )
+            peer_hashes = _resolve_overlay_neighbor_hashes(
+                exclude_hashes,
+                established_only=False,
+            )
         if not peer_hashes:
             emit_resp(
                 req_id,
@@ -11354,7 +11369,7 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
         for peer_hash in peer_hashes:
             peer_delivered_all_frames = True
             for wire_bytes in encoded_frames:
-                if not _send_wire_to_established_overlay_peer(
+                if not _send_wire_to_overlay_peer(
                     peer_hash,
                     wire_bytes,
                     "reticulum_chat_fanout",
