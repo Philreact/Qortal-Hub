@@ -90,6 +90,9 @@ _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
+_PRESENCE_ANNOUNCE_APP_DATA_OPEN = b"presence"
+_PRESENCE_ANNOUNCE_APP_DATA_FULL = b"presence-full"
+_PEER_INBOUND_FULL_HINT_TTL_SECONDS = 2 * 60.0
 _PRESENCE_PEER_SEND_TIMEOUT_SECONDS = 2.5
 _AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS = 1.5
 _AUDIO_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
@@ -4244,6 +4247,7 @@ def _register_peer(
     st = _peer_lifecycle[peer_key]
     if source in ("inbound", "announce", "wire_kr", "gcall_join"):
         st["last_seen_inbound"] = now
+    if source in ("inbound", "wire_kr", "gcall_join"):
         _note_overlay_peer_alive(peer_key, source)
     if source in ("ts_seed", "recall"):
         st["ts_seed_until"] = now + _PEER_TS_SEED_LEASE_SECONDS
@@ -4261,6 +4265,12 @@ def _mark_candidate_peer(peer_key: str, source: str) -> None:
     peer_key = str(peer_key or "").strip().lower()
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
+        return
+    if _overlay_peer_inbound_full(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum candidate_skipped "
+            f"peer_hash={peer_key} source={source} reason=peer_inbound_full"
+        )
         return
     now = time.time()
     existing = _candidate_peers.get(peer_key) or {}
@@ -4362,6 +4372,85 @@ def _overlay_peer_is_suppressed(peer_key: str) -> bool:
     return _overlay_peer_suppressed_until(peer_key) > time.time()
 
 
+def _parse_presence_announce_capacity(app_data: Any) -> Optional[bool]:
+    if app_data is None:
+        return None
+    if isinstance(app_data, str):
+        raw = app_data.strip().encode("utf-8", errors="ignore")
+    elif isinstance(app_data, (bytes, bytearray)):
+        raw = bytes(app_data).strip()
+    else:
+        return None
+    if raw == _PRESENCE_ANNOUNCE_APP_DATA_FULL:
+        return True
+    if raw in (_PRESENCE_ANNOUNCE_APP_DATA_OPEN, b"presence-open"):
+        return False
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    inbound_full = decoded.get("inboundFull")
+    if isinstance(inbound_full, bool):
+        return inbound_full
+    inbound_free = decoded.get("inboundFree")
+    if isinstance(inbound_free, int):
+        return inbound_free <= 0
+    return None
+
+
+def _note_peer_inbound_capacity_hint(peer_key: str, app_data: Any) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return
+    inbound_full = _parse_presence_announce_capacity(app_data)
+    if inbound_full is None:
+        return
+    now = time.time()
+    st = _peer_lifecycle.setdefault(
+        peer_key,
+        {
+            "last_seen_inbound": None,
+            "last_send_ok": None,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        },
+    )
+    if inbound_full:
+        st["overlay_inbound_full_until"] = now + _PEER_INBOUND_FULL_HINT_TTL_SECONDS
+        _candidate_peers.pop(peer_key, None)
+    else:
+        st.pop("overlay_inbound_full_until", None)
+    st["overlay_inbound_full_last_seen"] = now
+
+
+def _overlay_peer_inbound_full(peer_key: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    st = _peer_lifecycle.get(peer_key) or {}
+    until = st.get("overlay_inbound_full_until")
+    if not isinstance(until, (int, float)):
+        return False
+    now = time.time()
+    if float(until) <= now:
+        st.pop("overlay_inbound_full_until", None)
+        return False
+    return True
+
+
+def _overlay_peer_available_for_new_outbound(peer_key: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    if _overlay_peer_is_suppressed(peer_key):
+        return False
+    if _overlay_peer_inbound_full(peer_key) and not _overlay_peer_has_established_link(peer_key):
+        return False
+    return True
+
+
 def _note_overlay_peer_alive(peer_key: str, source: str) -> None:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
@@ -4457,7 +4546,7 @@ def _set_verified_overlay_peers(
             continue
         if local_hex and peer_hash == local_hex:
             continue
-        if _overlay_peer_is_suppressed(peer_hash):
+        if not _overlay_peer_available_for_new_outbound(peer_hash):
             continue
         if peer_hash not in _known_peers:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
@@ -4473,7 +4562,7 @@ def _set_verified_overlay_peers(
             break
         if peer_hash in next_neighbors:
             continue
-        if _overlay_peer_is_suppressed(peer_hash):
+        if not _overlay_peer_available_for_new_outbound(peer_hash):
             continue
         if not isinstance(seen_at, (int, float)):
             continue
@@ -4498,7 +4587,7 @@ def _set_verified_overlay_peers(
                 not peer_key
                 or peer_key in next_neighbors
                 or (local_hex and peer_key == local_hex)
-                or _overlay_peer_is_suppressed(peer_key)
+                or not _overlay_peer_available_for_new_outbound(peer_key)
             ):
                 continue
             activity = _overlay_peer_direct_activity_score(peer_key)
@@ -4686,7 +4775,7 @@ def _promote_recent_verified_overlay_neighbors(
             continue
         if local_hex and peer_key == local_hex:
             continue
-        if _overlay_peer_is_suppressed(peer_key):
+        if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
         if (
             peer_key in exclude
@@ -4863,7 +4952,7 @@ def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:
             continue
         if local_hex and peer_key == local_hex:
             continue
-        if _overlay_peer_is_suppressed(peer_key):
+        if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
         if peer_key in _active_overlay_neighbors or peer_key in _inbound_overlay_neighbors:
             continue
@@ -5548,10 +5637,13 @@ class PresenceAnnounceHandler:
             return
         peer_hash = destination_hash_hex(destination_hash)
         app_data_len = len(app_data) if app_data is not None else 0
+        inbound_full = _parse_presence_announce_capacity(app_data)
         log(
-            f"[presence_bridge] received announce peer={peer_hash} app_data_len={app_data_len}"
+            f"[presence_bridge] received announce peer={peer_hash} app_data_len={app_data_len} "
+            f"inbound_full={inbound_full if inbound_full is not None else 'unknown'}"
         )
         _register_peer(peer_hash, announced_identity, "announce")
+        _note_peer_inbound_capacity_hint(peer_hash, app_data)
         _mark_candidate_peer(peer_hash, "announce")
         _retry_pending_overlay_connect_on_announce(peer_hash)
         _retry_pending_audio_connect_on_announce(peer_hash)
@@ -6155,6 +6247,18 @@ def _ensure_overlay_link(
             if existing is not None:
                 return existing
             _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+    if _overlay_peer_inbound_full(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_skipped "
+            f"peer={peer_key} reason=peer_inbound_full"
+        )
+        return None
+    if _overlay_peer_is_suppressed(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_skipped "
+            f"peer={peer_key} reason=peer_suppressed"
+        )
+        return None
     if not _admit_overlay_peer_if_allowed(peer_key, "outbound", incoming=False):
         return None
     link_id = ""
@@ -6302,6 +6406,18 @@ def _retry_pending_overlay_connect_on_announce(peer_hash: str) -> None:
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
         return
+    if _overlay_peer_inbound_full(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce_suppressed "
+            f"peer={peer_key} reason=peer_inbound_full"
+        )
+        return
+    if _overlay_peer_is_suppressed(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce_suppressed "
+            f"peer={peer_key} reason=peer_suppressed"
+        )
+        return
     link = None
     existing_link_id = ""
     stale_state: Optional[Dict[str, Any]] = None
@@ -6405,6 +6521,14 @@ def _sync_overlay_links() -> None:
         state = get_overlay_link_state(link_id) if link_id else None
         if state is not None:
             maintained_outbound_links += 1
+            continue
+        if _overlay_peer_inbound_full(peer_hash):
+            _active_overlay_neighbors.pop(peer_hash, None)
+            _candidate_peers.pop(peer_hash, None)
+            verbose_presence_log(
+                "[presence_bridge] target=presence-reticulum overlay_sync_skip_outbound "
+                f"peer={peer_hash} reason=peer_inbound_full"
+            )
             continue
         if maintained_outbound_links >= target_outbound_links:
             continue
@@ -8557,11 +8681,21 @@ def make_presence_wire(
 def announce_local_destination(reason: str = "unspecified") -> None:
     if _destination is None:
         return
-    _destination.announce(app_data=b"presence")
+    with _state_lock:
+        inbound_full = (
+            len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
+            or len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS
+        )
+    app_data = (
+        _PRESENCE_ANNOUNCE_APP_DATA_FULL
+        if inbound_full
+        else _PRESENCE_ANNOUNCE_APP_DATA_OPEN
+    )
+    _destination.announce(app_data=app_data)
     log(
         "[presence_bridge] rns destination announce "
         f"at={_log_clock_time()} "
-        f"reason={reason} "
+        f"reason={reason} inbound_full={'yes' if inbound_full else 'no'} "
         + destination_hash_hex(_destination.hash)
     )
 

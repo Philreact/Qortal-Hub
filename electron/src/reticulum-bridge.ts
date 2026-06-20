@@ -120,6 +120,8 @@ const OVERLAY_LINK_PER_PACKET_REASONS = new Set([
 ]);
 const BRIDGE_GRACEFUL_STOP_TIMEOUT_MS = 5_000;
 const BRIDGE_FORCE_STOP_TIMEOUT_MS = 3_000;
+const P2P_HEALTH_RECEIVE_WINDOW_MS = 30_000;
+const P2P_HEALTH_MIN_RECEIVING_PEERS = 3;
 
 function shouldLogOverlayLinkStateEvent(reason: string): boolean {
   if (OVERLAY_LINK_PER_PACKET_REASONS.has(reason)) return false;
@@ -504,6 +506,10 @@ export type ReticulumConnectivitySnapshot = {
   overlayLinksOutboundConnected?: number;
   /** Recently receiving inbound overlay peers feeding this node data. */
   overlayLinksInboundConnected?: number;
+  /** Distinct overlay peers we have received traffic from inside the health window. */
+  overlayLinksReceivingConnected?: number;
+  /** How long the receiving-peer count has continuously satisfied the health threshold. */
+  overlayLinksReceivingStableMs?: number;
 };
 
 export type ReticulumOverlayVerifiedPeer = {
@@ -1197,6 +1203,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     string,
     ReticulumOverlayLinkSnapshot
   >();
+  private overlayReceivingHealthySince: number | null = null;
 
   private markOverlayPeerVerifiedFromQortalTraffic(
     peerPresenceHash: string,
@@ -2408,12 +2415,24 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   getConnectivitySnapshot(): ReticulumConnectivitySnapshot {
     const directionCounts = this.getOverlayLinkDirectionCounts();
+    const receivingPeerCount = this.getReceivingOverlayPeerCount();
+    const now = Date.now();
+    if (receivingPeerCount >= P2P_HEALTH_MIN_RECEIVING_PEERS) {
+      this.overlayReceivingHealthySince ??= now;
+    } else {
+      this.overlayReceivingHealthySince = null;
+    }
     return {
       ...this.connectivitySnapshot,
       bridgeState: this.state,
       overlayLinksConnected: this.getEstablishedOverlayPeerCount(),
       overlayLinksOutboundConnected: directionCounts.outbound,
       overlayLinksInboundConnected: directionCounts.inbound,
+      overlayLinksReceivingConnected: receivingPeerCount,
+      overlayLinksReceivingStableMs:
+        this.overlayReceivingHealthySince === null
+          ? 0
+          : Math.max(0, now - this.overlayReceivingHealthySince),
       ...(this.lastDegradedReason ? { reason: this.lastDegradedReason } : {}),
     };
   }
@@ -2480,6 +2499,22 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       }
     }
     return { outbound: outbound.size, inbound: inbound.size };
+  }
+
+  private getReceivingOverlayPeerCount(now = Date.now()): number {
+    this.pruneStaleOverlayLinkSnapshots(now);
+    const localHash = this.localPresenceDestinationHash?.trim().toLowerCase();
+    const receiving = new Set<string>();
+    for (const snap of this.overlayLinkSnapshots.values()) {
+      if (!snap.lastRxAt || now - snap.lastRxAt > P2P_HEALTH_RECEIVE_WINDOW_MS) {
+        continue;
+      }
+      const peerKey = snap.peerPresenceHash.trim().toLowerCase();
+      if (!peerKey) continue;
+      if (localHash && peerKey === localHash) continue;
+      receiving.add(peerKey);
+    }
+    return receiving.size;
   }
 
   getOverlayLinkSnapshots(): ReticulumOverlayLinkSnapshot[] {

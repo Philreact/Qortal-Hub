@@ -2212,6 +2212,10 @@ export type ReticulumDaemonStatus = {
   p2pInboundOverlayPeers?: number;
   /** Distinct peers with an established overlay link (deduped). */
   p2pActiveOverlayPeers?: number;
+  /** Distinct overlay peers received from inside the health window. */
+  p2pReceivingOverlayPeers?: number;
+  /** How long receiving peer count has continuously met the health threshold. */
+  p2pReceivingOverlayPeersStableMs?: number;
   /** Identity-verified Reticulum overlay peers (signed presence). */
   verifiedOverlayPeerCount?: number;
 };
@@ -2582,6 +2586,10 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
       bridgeStatus.overlayLinksOutboundConnected ?? 0;
     const p2pInboundOverlayPeers =
       bridgeStatus.overlayLinksInboundConnected ?? 0;
+    const p2pReceivingOverlayPeers =
+      bridgeStatus.overlayLinksReceivingConnected ?? 0;
+    const p2pReceivingOverlayPeersStableMs =
+      bridgeStatus.overlayLinksReceivingStableMs ?? 0;
     const transportFallback =
       getReticulumInstanceIndex() > 0 &&
       shouldFallbackToSharedTransportState({
@@ -2620,6 +2628,8 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
       p2pOutboundOverlayPeers,
       p2pInboundOverlayPeers,
       p2pActiveOverlayPeers,
+      p2pReceivingOverlayPeers,
+      p2pReceivingOverlayPeersStableMs,
       ...(typeof bridgeStatus.overlayLinksConnected === 'number'
         ? { overlayLinksConnected: bridgeStatus.overlayLinksConnected }
         : {}),

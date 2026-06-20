@@ -26,6 +26,8 @@ type ReticulumStatusSnapshot = {
   p2pOutboundOverlayPeers?: number;
   p2pInboundOverlayPeers?: number;
   p2pActiveOverlayPeers?: number;
+  p2pReceivingOverlayPeers?: number;
+  p2pReceivingOverlayPeersStableMs?: number;
 };
 
 export const CoreSyncStatus = ({
@@ -86,6 +88,9 @@ export const CoreSyncStatus = ({
       const hubs = status.onlineRemoteHubInterfaces ?? 0;
       const nextP2pHealth = computeP2pHealth({
         onlineRemoteHubInterfaces: hubs,
+        p2pReceivingOverlayPeers: status.p2pReceivingOverlayPeers,
+        p2pReceivingOverlayPeersStableMs:
+          status.p2pReceivingOverlayPeersStableMs,
         p2pActiveOverlayPeers: status.p2pActiveOverlayPeers ?? 0,
         p2pOutboundOverlayPeers: status.p2pOutboundOverlayPeers,
         p2pInboundOverlayPeers: status.p2pInboundOverlayPeers,
