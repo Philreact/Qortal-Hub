@@ -49,6 +49,8 @@ _recent_presence_message_ids: Dict[str, float] = {}
 _RECENT_PRESENCE_MESSAGE_ID_TTL_SECONDS = 2 * 60.0
 _RECENT_PRESENCE_MESSAGE_ID_LIMIT = 4096
 _last_presence_wire: Optional[bytes] = None
+_last_presence_announce_wire: Optional[bytes] = None
+_last_presence_announce_id = ""
 _last_transport_state: Optional[Dict[str, Any]] = None
 _transport_monitor_thread: Optional[threading.Thread] = None
 _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
@@ -5756,9 +5758,13 @@ def _dedup_age_ts(state: Dict[str, Any], both_established: bool) -> float:
 
 
 def _dedup_activity_ts(state: Dict[str, Any]) -> float:
-    """Sort key for recently useful links; higher = more useful."""
+    """Sort key for recently useful links; higher = more useful.
+
+    Overlay usefulness is based on inbound traffic. A successful local send only
+    proves we wrote to the link; it does not prove the peer is participating.
+    """
     best = 0.0
-    for key in ("last_rx_at", "last_send_ok_at", "last_activity_at", "established_at"):
+    for key in ("last_rx_at", "established_at"):
         t = state.get(key)
         if isinstance(t, (int, float)):
             best = max(best, float(t))
@@ -5969,16 +5975,12 @@ def _maybe_prune_stale_overlay_links() -> None:
                 ):
                     stale_ids.append(link_id)
                 continue
-            last_activity = state.get("last_activity_at")
-            if not isinstance(last_activity, (int, float)):
-                last_activity = state.get("last_rx_at")
-            if not isinstance(last_activity, (int, float)):
-                last_activity = state.get("last_send_ok_at")
-            if not isinstance(last_activity, (int, float)):
-                last_activity = state.get("established_at") or state.get("created_at")
-            if not isinstance(last_activity, (int, float)):
+            last_rx = state.get("last_rx_at")
+            if not isinstance(last_rx, (int, float)):
+                last_rx = state.get("established_at") or state.get("created_at")
+            if not isinstance(last_rx, (int, float)):
                 continue
-            if now - float(last_activity) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
+            if now - float(last_rx) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
                 stale_ids.append(link_id)
     for link_id in stale_ids:
         state = get_overlay_link_state(link_id)
@@ -8287,7 +8289,6 @@ def on_outgoing_overlay_link_established(link) -> None:
     now = time.time()
     state["established"] = True
     state["established_at"] = now
-    state["last_activity_at"] = now
     try:
         if _identity is not None:
             link.identify(_identity)
@@ -8300,6 +8301,7 @@ def on_outgoing_overlay_link_established(link) -> None:
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _note_overlay_peer_alive(ph_out, "link_established")
         _register_active_overlay_for_peer(ph_out, link_id)
+        _enqueue_latest_presence_announce_replay(ph_out, "link_established")
     if not _overlay_link_is_current(link_id, link):
         return
     _flush_overlay_link_pending(link_id)
@@ -8326,7 +8328,6 @@ def _send_wire_to_overlay_peer(
         )
         if ok:
             now = time.time()
-            state["last_activity_at"] = now
             state["last_send_ok_at"] = now
         else:
             _queue_overlay_packet(state, traffic, wire_bytes)
@@ -8375,13 +8376,38 @@ def _send_wire_to_established_overlay_peer(
     )
     if ok and _overlay_link_is_current(link_id, link):
         now = time.time()
-        state["last_activity_at"] = now
         state["last_send_ok_at"] = now
         emit_overlay_link_state(link_id, state, traffic)
         return True
     if _overlay_link_is_current(link_id, link):
         emit_overlay_link_state(link_id, state, traffic)
     return False
+
+
+def _enqueue_latest_presence_announce_replay(peer_hash: str, reason: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    wire_bytes = _last_presence_announce_wire
+    if not wire_bytes:
+        return False
+    lane = _presence_fanout_lane_for_peer(peer_key)
+    queued = _enqueue_scheduler_task(
+        lane,
+        f"presence_announce_replay:{_last_presence_announce_id or 'unknown'}:{peer_key[:8]}",
+        _fanout_presence_wire_to_peer,
+        peer_key,
+        wire_bytes,
+        "presence_announce_replay",
+        _last_presence_announce_id,
+        drop_oldest=True,
+    )
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum presence_announce_replay_queued "
+        f"peer={peer_key} reason={reason} envelope_id={_last_presence_announce_id or 'n/a'} "
+        f"queued={str(bool(queued)).lower()}"
+    )
+    return bool(queued)
 
 
 def _presence_fanout_lane_for_peer(peer_hash: str) -> str:
@@ -10127,7 +10153,8 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
         return
 
     try:
-        global _last_presence_wire, _rns_auth_announced, _last_no_verified_peers_announce_at
+        global _last_presence_wire, _last_presence_announce_wire, _last_presence_announce_id
+        global _rns_auth_announced, _last_no_verified_peers_announce_at
         env_type = envelope.get("type") if isinstance(envelope.get("type"), str) else ""
         if env_type == "PRESENCE_OFFLINE":
             _rns_announce_on_auth_session_end()
@@ -10146,6 +10173,12 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
 
         wire_bytes = make_presence_wire(envelope, _OVERLAY_DEFAULT_HOPS)
         _last_presence_wire = wire_bytes
+        if env_type == "PRESENCE_ANNOUNCE":
+            _last_presence_announce_wire = wire_bytes
+            _last_presence_announce_id = str(envelope.get("id") or "")
+        elif env_type == "PRESENCE_OFFLINE":
+            _last_presence_announce_wire = None
+            _last_presence_announce_id = ""
         peer_hashes = _snapshot_established_overlay_neighbor_hashes()
         local_hex = destination_hash_hex(_destination.hash)
         env_type = envelope.get("type") if isinstance(envelope.get("type"), str) else ""
