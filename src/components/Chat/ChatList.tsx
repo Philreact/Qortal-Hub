@@ -145,12 +145,19 @@ export const ChatList = ({
     }),
     [scrollButtonSx]
   );
+  const getMessageKey = useCallback(
+    (message: any, index: number) =>
+      message?.tempSignature ||
+      message?.signature ||
+      message?.identifier ||
+      `${chatIdentity}:row:${index}`,
+    [chatIdentity]
+  );
 
   // Initialize the virtualizer
   const rowVirtualizer = useVirtualizer({
     count: messages.length,
-    getItemKey: (index) =>
-      messages[index]?.tempSignature || messages[index].signature,
+    getItemKey: (index) => getMessageKey(messages[index], index),
     getScrollElement: () => parentRef?.current,
     estimateSize: useCallback(() => 80, []), // Provide an estimated height of items, adjust this as needed
     overscan: 10, // Number of items to render outside the visible area to improve smoothness
@@ -546,10 +553,14 @@ export const ChatList = ({
                   reactions,
                   isUpdating,
                 } = rowPayload;
+                const rowKey = getMessageKey(
+                  messages[virtualRow.index],
+                  virtualRow.index
+                );
                 if (!message) {
                   return (
                     <Box
-                      key={virtualRow.index}
+                      key={rowKey}
                       sx={{
                         alignItems: 'center',
                         display: 'flex',
@@ -576,7 +587,7 @@ export const ChatList = ({
                   <Box
                     data-index={virtualRow.index} //needed for dynamic row height measurement
                     ref={rowVirtualizer.measureElement} //measure dynamic row height
-                    key={message.signature}
+                    key={rowKey}
                     sx={{
                       alignItems: 'center',
                       display: 'flex',
@@ -601,7 +612,7 @@ export const ChatList = ({
                       }
                     >
                       <MessageItem
-                        key={message.signature}
+                        key={rowKey}
                         handleReaction={handleReaction}
                         isLast={index === messages.length - 1}
                         isPrivate={isPrivate}
