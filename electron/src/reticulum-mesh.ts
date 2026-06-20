@@ -19,7 +19,10 @@ import {
   writeManagedReticulumConfigIfManaged,
 } from './reticulum-daemon';
 import { rebindReticulumBridgeConsumers } from './reticulum-bridge-rebind';
-import { startReticulumBridge, stopReticulumBridge } from './reticulum-bridge';
+import {
+  startReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 import type { NatApiClient } from './upnp-nat';
 import {
   createNatApiClient,
@@ -88,7 +91,7 @@ export async function applyManagedMeshConfigAfterReachableUpdate(): Promise<void
     loggerLog('[ReticulumMesh] rnsd not running; config saved for next start');
     return;
   }
-  stopReticulumBridge();
+  await stopReticulumBridgeAndWait();
   try {
     await restartBundledReticulumDaemonAndWaitReady();
   } catch (err) {

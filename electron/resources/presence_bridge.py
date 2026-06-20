@@ -45,7 +45,12 @@ _inbound_overlay_neighbors: Dict[str, float] = {}
 _peer_lifecycle: Dict[str, Dict[str, Any]] = {}
 # Recent presence senders (destination hash hex, lowercased) for recall retries on publish.
 _recent_presence_senders: "deque[str]" = deque(maxlen=128)
+_recent_presence_message_ids: Dict[str, float] = {}
+_RECENT_PRESENCE_MESSAGE_ID_TTL_SECONDS = 2 * 60.0
+_RECENT_PRESENCE_MESSAGE_ID_LIMIT = 4096
 _last_presence_wire: Optional[bytes] = None
+_last_presence_announce_wire: Optional[bytes] = None
+_last_presence_announce_id = ""
 _last_transport_state: Optional[Dict[str, Any]] = None
 _transport_monitor_thread: Optional[threading.Thread] = None
 _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
@@ -80,13 +85,29 @@ _OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
-_OVERLAY_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
+_OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
+_PRESENCE_ANNOUNCE_APP_DATA_OPEN = b"presence"
+_PRESENCE_ANNOUNCE_APP_DATA_FULL = b"presence-full"
+_PEER_INBOUND_FULL_HINT_TTL_SECONDS = 2 * 60.0
+_PRESENCE_PEER_SEND_TIMEOUT_SECONDS = 2.5
+_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS = 1.5
+_AUDIO_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
+_OVERLAY_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
+_LINK_PACKET_SEND_TIMEOUT_SECONDS = 2.5
+_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
+_AUDIO_LINK_SEND_TIMEOUTS_BEFORE_TEARDOWN = 4
+_AUDIO_LINK_SEND_TIMEOUT_RECENT_RX_GRACE_SECONDS = 10.0
+_AUDIO_LINK_SEND_TIMEOUT_BACKOFF_SECONDS = 0.75
 _PRESENCE_BRIDGE_VERBOSE_LOGS = (
     os.environ.get("QORTAL_PRESENCE_BRIDGE_VERBOSE_LOGS", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+_RNS_INTERNAL_TIMING_PROBES_ENABLED = (
+    os.environ.get("QORTAL_RNS_SHARED_TIMING_LOGS", "").strip().lower()
     in ("1", "true", "yes", "on")
 )
 # Presence heartbeats are expected every 25s and TS expires sessions after 95s.
@@ -230,6 +251,10 @@ _CMD_QUEUE_MAX = 256
 _AUDIO_DECODED_QUEUE_MAX = 96
 _JSON_RESP_OUT_QUEUE_MAX = 512
 _JSON_EVENT_OUT_QUEUE_MAX = 2048
+_JSON_PRIORITY_EVENT_OUT_QUEUE_MAX = 512
+_JSON_PRIORITY_EVENT_COALESCE_HIGH_WATERMARK = 16
+_JSON_EVENT_COALESCE_HIGH_WATERMARK = 512
+_JSON_EVENT_COALESCED_MAX = 512
 _AUDIO_BINARY_OUT_QUEUE_MAX = 128
 _AUDIO_BATCH_STALE_SECONDS = 0.75
 _AUDIO_OUTBOUND_DEADLINE_SECONDS = 0.32
@@ -260,6 +285,7 @@ _PACKET_PATH_WARMING_TIMEOUTS_BEFORE_FAILING = 2
 _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
 _SCHEDULER_AUDIO_SHARDS = 4
+_SCHEDULER_PRESENCE_FANOUT_SHARDS = 8
 _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS = 80.0
 _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "control-send": 256,
@@ -269,6 +295,8 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
 }
 for _audio_shard in range(_SCHEDULER_AUDIO_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"audio-send-{_audio_shard}"] = 64
+for _presence_shard in range(_SCHEDULER_PRESENCE_FANOUT_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"presence-fanout-{_presence_shard}"] = 64
 
 _shutdown = threading.Event()
 _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
@@ -277,6 +305,11 @@ _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
 _json_event_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
     maxsize=_JSON_EVENT_OUT_QUEUE_MAX
 )
+_json_priority_event_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
+    maxsize=_JSON_PRIORITY_EVENT_OUT_QUEUE_MAX
+)
+_json_event_coalesce_lock = threading.Lock()
+_json_event_coalesced_by_key: Dict[str, Dict[str, Any]] = {}
 _audio_binary_out_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(
     maxsize=_AUDIO_BINARY_OUT_QUEUE_MAX
 )
@@ -302,6 +335,8 @@ if os.name != "nt":
 _audio_in_fd: Optional[int] = None
 _audio_drops_ingress = 0
 _audio_drops_json_out = 0
+_json_event_coalesced_updates = 0
+_json_event_coalesced_evictions = 0
 _audio_drops_binary_out = 0
 _audio_stale_drops = 0
 _audio_packet_send_failures = 0
@@ -334,6 +369,9 @@ _audio_rns_callback_scheduler_gap_over_100_count = 0
 _audio_rns_callback_scheduler_gap_over_250_count = 0
 _audio_rns_callback_scheduler_gap_over_500_count = 0
 _audio_rns_callback_scheduler_gap_over_1000_count = 0
+_RNS_GAP_MEDIAN_BUCKET_MS = 50
+_RNS_GAP_MEDIAN_MAX_MS = 120_000
+_RNS_GAP_MEDIAN_BUCKET_COUNT = (_RNS_GAP_MEDIAN_MAX_MS // _RNS_GAP_MEDIAN_BUCKET_MS) + 2
 _audio_rns_raw_inbound_gap_ms_max = 0.0
 _audio_rns_raw_inbound_gap_ms_window = 0.0
 _audio_rns_raw_inbound_gap_over_80_count = 0
@@ -341,6 +379,8 @@ _audio_rns_raw_inbound_gap_over_160_count = 0
 _audio_rns_raw_inbound_gap_over_320_count = 0
 _audio_rns_raw_inbound_gap_over_640_count = 0
 _audio_rns_raw_inbound_gap_over_1000_count = 0
+_audio_rns_raw_inbound_gap_bucket_counts = [0] * _RNS_GAP_MEDIAN_BUCKET_COUNT
+_audio_rns_raw_inbound_gap_sample_count = 0
 _audio_rns_raw_inbound_to_link_receive_ms_max = 0.0
 _audio_rns_raw_inbound_to_link_receive_over_80_count = 0
 _audio_rns_raw_inbound_to_link_receive_over_160_count = 0
@@ -357,6 +397,8 @@ _audio_rns_shared_frame_gap_over_160_count = 0
 _audio_rns_shared_frame_gap_over_320_count = 0
 _audio_rns_shared_frame_gap_over_640_count = 0
 _audio_rns_shared_frame_gap_over_1000_count = 0
+_audio_rns_shared_frame_gap_bucket_counts = [0] * _RNS_GAP_MEDIAN_BUCKET_COUNT
+_audio_rns_shared_frame_gap_sample_count = 0
 _audio_rns_shared_frame_to_transport_inbound_ms_max = 0.0
 _audio_rns_shared_frame_to_transport_inbound_over_80_count = 0
 _audio_rns_shared_frame_to_transport_inbound_over_160_count = 0
@@ -401,6 +443,7 @@ _presence_pressure_window_started_at = time.monotonic()
 _presence_pressure_counts: Dict[str, int] = {}
 _callback_slow_last_log_by_name: Dict[str, float] = {}
 _audio_timing_anomaly_log_last_by_key: Dict[str, float] = {}
+_bridge_event_timing_log_last_by_event: Dict[str, float] = {}
 _audio_fd3_parse_last_wall_ms_by_route: Dict[str, int] = {}
 # One-shot narrowing logs (grep target=reticulum-audio-ipc stage=…)
 _audio_ipc_fd3_first_batch_ok_logged = False
@@ -451,12 +494,133 @@ _AUDIO_LINK_WIRE_TYPES = frozenset(
     {_GROUP_AUDIO_HEARTBEAT_WIRE_TYPE}
 )
 
+_PRIORITY_EVENT_NAMES = frozenset(
+    {
+        "group_audio_link_closed",
+        "group_audio_link_established",
+        "group_audio_send_failed",
+        "error",
+        "ready",
+    }
+)
+_COALESCIBLE_EVENT_NAMES = frozenset(
+    {
+        "candidate_peer_discovered",
+        "group_audio_send_failed",
+        "group_audio_queue_state",
+        "overlay_link_state",
+        "presence_message",
+        "transport_state",
+    }
+)
+
+
+def _json_event_depth() -> int:
+    with _json_event_coalesce_lock:
+        coalesced_depth = len(_json_event_coalesced_by_key)
+    return (
+        _json_event_queue.qsize()
+        + _json_priority_event_queue.qsize()
+        + coalesced_depth
+    )
+
+
+def _event_payload(frame: Dict[str, Any]) -> Dict[str, Any]:
+    payload = frame.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _coalesce_key_for_event(frame: Dict[str, Any]) -> Optional[str]:
+    event_name = str(frame.get("event") or "")
+    if event_name not in _COALESCIBLE_EVENT_NAMES:
+        return None
+    payload = _event_payload(frame)
+    if event_name == "group_audio_send_failed":
+        link_id = str(payload.get("linkId") or "")
+        peer_hash = str(payload.get("peerPresenceHash") or "")
+        code = str(payload.get("code") or payload.get("reason") or "")
+        transport = str(payload.get("transport") or "")
+        return f"{event_name}:{transport}:{link_id or peer_hash}:{code}"
+    if event_name == "presence_message":
+        envelope = payload.get("envelope")
+        if isinstance(envelope, dict):
+            address = str(envelope.get("address") or envelope.get("peerAddress") or "")
+            session_id = str(envelope.get("sessionId") or "")
+            if address or session_id:
+                return f"{event_name}:{address}:{session_id}"
+            envelope_id = str(envelope.get("id") or "")
+            if envelope_id:
+                return f"{event_name}:{envelope_id}"
+        return event_name
+    if event_name == "overlay_link_state":
+        link_id = str(payload.get("linkId") or "")
+        peer_hash = str(payload.get("peerPresenceHash") or "")
+        return f"{event_name}:{link_id or peer_hash}"
+    if event_name == "candidate_peer_discovered":
+        return f"{event_name}:{str(payload.get('peerHash') or '')}"
+    if event_name == "group_audio_queue_state":
+        return event_name
+    if event_name == "transport_state":
+        return event_name
+    return None
+
+
+def _queue_coalesced_json_event_line(frame: Dict[str, Any], key: str) -> None:
+    global _json_event_coalesced_updates, _json_event_coalesced_evictions
+    with _json_event_coalesce_lock:
+        if (
+            key not in _json_event_coalesced_by_key
+            and len(_json_event_coalesced_by_key) >= _JSON_EVENT_COALESCED_MAX
+        ):
+            oldest_key = next(iter(_json_event_coalesced_by_key), None)
+            if oldest_key is not None:
+                _json_event_coalesced_by_key.pop(oldest_key, None)
+                _json_event_coalesced_evictions += 1
+        _json_event_coalesced_by_key[key] = frame
+        _json_event_coalesced_updates += 1
+
+
+def _pop_coalesced_json_event_line() -> Optional[Dict[str, Any]]:
+    with _json_event_coalesce_lock:
+        if not _json_event_coalesced_by_key:
+            return None
+        key = next(iter(_json_event_coalesced_by_key))
+        return _json_event_coalesced_by_key.pop(key, None)
+
 
 def _queue_json_event_line(frame: Dict[str, Any]) -> None:
     global _audio_drops_json_out
+    target_queue = _json_event_queue
     try:
-        _json_event_queue.put_nowait(frame)
+        if isinstance(frame, dict):
+            frame.setdefault("_queuedAtMs", _now_wall_ms())
+            frame.setdefault("_queuedAtMono", time.monotonic())
+            frame.setdefault("_eventQueueDepthBefore", _json_event_depth())
+            event_name = str(frame.get("event") or "")
+            if event_name in _PRIORITY_EVENT_NAMES:
+                coalesce_key = _coalesce_key_for_event(frame)
+                if (
+                    coalesce_key is not None
+                    and _json_priority_event_queue.qsize() >= _JSON_PRIORITY_EVENT_COALESCE_HIGH_WATERMARK
+                ):
+                    _queue_coalesced_json_event_line(frame, coalesce_key)
+                    return
+                target_queue = _json_priority_event_queue
+            else:
+                coalesce_key = _coalesce_key_for_event(frame)
+                if (
+                    coalesce_key is not None
+                    and _json_event_depth() >= _JSON_EVENT_COALESCE_HIGH_WATERMARK
+                ):
+                    _queue_coalesced_json_event_line(frame, coalesce_key)
+                    return
+        target_queue.put_nowait(frame)
     except queue.Full:
+        if isinstance(frame, dict):
+            coalesce_key = _coalesce_key_for_event(frame)
+            if coalesce_key is not None:
+                _queue_coalesced_json_event_line(frame, coalesce_key)
+                return
         _audio_drops_json_out += 1
         _mark_audio_queue_state_dirty()
         if _audio_drops_json_out % 200 == 1:
@@ -519,6 +683,8 @@ def _scheduler_stats_for_lane(lane: str) -> Dict[str, Any]:
         "busyMsMax": 0.0,
         "slowTaskCount": 0,
         "lastTask": "",
+        "currentTask": "",
+        "currentTaskStartedAt": 0.0,
     }
     _scheduler_stats[lane] = stats
     return stats
@@ -527,6 +693,8 @@ def _scheduler_stats_for_lane(lane: str) -> Dict[str, Any]:
 def _logical_scheduler_lane(lane: str) -> str:
     if lane.startswith("audio-send-"):
         return "audio-send"
+    if lane.startswith("presence-fanout-"):
+        return "presence-fanout"
     return lane
 
 
@@ -548,6 +716,42 @@ def _format_bridge_pressure_counts(counts: Dict[str, int]) -> str:
     return ",".join(f"{key}:{value}" for key, value in sorted(counts.items()))
 
 
+def _format_scheduler_active_tasks(now: float) -> str:
+    parts: list[str] = []
+    with _state_lock:
+        for lane in sorted(_scheduler_stats.keys()):
+            stats = _scheduler_stats.get(lane) or {}
+            task = str(stats.get("currentTask") or "")
+            started_at = float(stats.get("currentTaskStartedAt") or 0.0)
+            if not task or started_at <= 0:
+                continue
+            duration_ms = max(0.0, (now - started_at) * 1000.0)
+            parts.append(f"{lane}:{task[:48]}:{int(duration_ms)}ms")
+    return ",".join(parts) if parts else "none"
+
+
+def _record_gap_median_sample(bucket_counts: List[int], gap_ms: float) -> None:
+    try:
+        bucket = int(max(0.0, float(gap_ms)) // _RNS_GAP_MEDIAN_BUCKET_MS)
+    except Exception:
+        bucket = 0
+    if bucket >= len(bucket_counts):
+        bucket = len(bucket_counts) - 1
+    bucket_counts[bucket] += 1
+
+
+def _estimate_gap_median_ms(bucket_counts: List[int], sample_count: int) -> int:
+    if sample_count <= 0:
+        return 0
+    target = (sample_count + 1) // 2
+    seen = 0
+    for bucket, count in enumerate(bucket_counts):
+        seen += int(count or 0)
+        if seen >= target:
+            return min(bucket * _RNS_GAP_MEDIAN_BUCKET_MS, _RNS_GAP_MEDIAN_MAX_MS)
+    return _RNS_GAP_MEDIAN_MAX_MS
+
+
 def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False) -> None:
     global _bridge_pressure_last_log_at
     global _audio_rns_callback_scheduler_gap_ms_window
@@ -561,6 +765,9 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
     cmd_q = _cmd_queue_bounded.qsize()
     resp_q = _json_resp_queue.qsize()
     event_q = _json_event_queue.qsize()
+    priority_event_q = _json_priority_event_queue.qsize()
+    with _json_event_coalesce_lock:
+        coalesced_event_q = len(_json_event_coalesced_by_key)
     lane_depths: Dict[str, int] = {}
     slow_counts: Dict[str, int] = {}
     with _state_lock:
@@ -575,6 +782,16 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         overlay_links = len(_overlay_links_by_id)
         audio_links = len(_audio_links_by_id)
         file_links = len(_qchat_file_links_by_id)
+        raw_gap_sample_count = int(_audio_rns_raw_inbound_gap_sample_count or 0)
+        shared_gap_sample_count = int(_audio_rns_shared_frame_gap_sample_count or 0)
+        raw_gap_median_ms = _estimate_gap_median_ms(
+            _audio_rns_raw_inbound_gap_bucket_counts,
+            raw_gap_sample_count,
+        )
+        shared_gap_median_ms = _estimate_gap_median_ms(
+            _audio_rns_shared_frame_gap_bucket_counts,
+            shared_gap_sample_count,
+        )
 
     rns_scheduler_gap_ms_max = float(_audio_rns_callback_scheduler_gap_ms_max or 0.0)
     rns_raw_gap_ms_max = float(_audio_rns_raw_inbound_gap_ms_max or 0.0)
@@ -595,6 +812,8 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         cmd_q > 0
         or resp_q > 0
         or event_q > 0
+        or priority_event_q > 0
+        or coalesced_event_q > 0
         or any(depth > 0 for depth in lane_depths.values())
         or file_links > 0
         or rns_gap_pressure
@@ -605,17 +824,22 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
     _bridge_pressure_last_log_at = now
     lanes_text = _format_bridge_pressure_counts(lane_depths)
     slow_text = _format_bridge_pressure_counts(slow_counts)
+    active_text = _format_scheduler_active_tasks(now)
     log(
         "[presence_bridge] bridge_pressure "
         f"cmd_q={cmd_q} resp_q={resp_q} event_q={event_q} "
+        f"priority_event_q={priority_event_q} coalesced_event_q={coalesced_event_q} "
         f"lanes={lanes_text} "
         f"links=overlay:{overlay_links},audio:{audio_links},file:{file_links} "
-        f"scheduler_slow={slow_text} rns_gap_ms_window={int(rns_gap_ms_window)} "
+        f"scheduler_slow={slow_text} scheduler_active={active_text} "
+        f"rns_gap_ms_window={int(rns_gap_ms_window)} "
         f"rns_gap_ms_max={int(rns_gap_ms_max)} "
         f"rns_gap_window_parts=scheduler:{int(rns_scheduler_gap_ms_window)},"
         f"raw:{int(rns_raw_gap_ms_window)},shared:{int(rns_shared_gap_ms_window)} "
         f"rns_gap_max_parts=scheduler:{int(rns_scheduler_gap_ms_max)},"
-        f"raw:{int(rns_raw_gap_ms_max)},shared:{int(rns_shared_gap_ms_max)}"
+        f"raw:{int(rns_raw_gap_ms_max)},shared:{int(rns_shared_gap_ms_max)} "
+        f"rns_gap_total_median_ms=raw:{raw_gap_median_ms},shared:{shared_gap_median_ms} "
+        f"rns_gap_total_samples=raw:{raw_gap_sample_count},shared:{shared_gap_sample_count}"
     )
     if rns_gap_ms_window >= _BRIDGE_PRESSURE_RNS_GAP_THRESHOLD_MS:
         _maybe_log_rns_interface_pressure(
@@ -826,6 +1050,11 @@ def _scheduler_worker_loop(lane: str) -> None:
             return
         queued_at, name, fn, args, kwargs = item
         started_at = time.monotonic()
+        with _state_lock:
+            stats = _scheduler_stats_for_lane(lane)
+            stats["currentTask"] = str(name or "")[:80]
+            stats["currentTaskStartedAt"] = started_at
+            _mark_audio_queue_state_dirty()
         try:
             fn(*args, **kwargs)
         except Exception as exc:
@@ -841,6 +1070,12 @@ def _scheduler_worker_loop(lane: str) -> None:
             )
         finally:
             _note_scheduler_complete(lane, name, queued_at, started_at)
+            with _state_lock:
+                stats = _scheduler_stats_for_lane(lane)
+                if str(stats.get("currentTask") or "") == str(name or "")[:80]:
+                    stats["currentTask"] = ""
+                    stats["currentTaskStartedAt"] = 0.0
+                    _mark_audio_queue_state_dirty()
             _emit_audio_queue_state()
 
 
@@ -1131,6 +1366,20 @@ def _log_audio_timing_anomaly(stage: str, route_key: str, detail: str) -> None:
         for old_key in list(_audio_timing_anomaly_log_last_by_key.keys())[:128]:
             _audio_timing_anomaly_log_last_by_key.pop(old_key, None)
     log(f"[presence_bridge] {_AUDIO_IPC_LOG} stage={stage} {detail}")
+
+
+def _log_bridge_event_timing_anomaly(event_name: str, detail: str) -> None:
+    """Throttled diagnostics for Python→Electron event delivery."""
+    key = str(event_name or "unknown")
+    now = time.monotonic()
+    last = float(_bridge_event_timing_log_last_by_event.get(key) or 0.0)
+    if now - last < _AUDIO_TIMING_LOG_THROTTLE_SECONDS:
+        return
+    _bridge_event_timing_log_last_by_event[key] = now
+    if len(_bridge_event_timing_log_last_by_event) > 256:
+        for old_key in list(_bridge_event_timing_log_last_by_event.keys())[:64]:
+            _bridge_event_timing_log_last_by_event.pop(old_key, None)
+    log(f"[presence_bridge] target=presence-reticulum event_delivery {detail}")
 
 
 def _log_audio_data_plane(stage: str, detail: str = "") -> None:
@@ -1553,6 +1802,7 @@ def _record_rns_shared_frame_probe(raw: Any, interface: Any) -> None:
     global _audio_rns_shared_frame_gap_ms_max, _audio_rns_shared_frame_interface_last
     global _audio_rns_shared_frame_interface_worst
     global _audio_rns_shared_frame_gap_ms_window
+    global _audio_rns_shared_frame_gap_sample_count
     if not isinstance(raw, (bytes, bytearray)) or len(raw) < 4:
         return
     try:
@@ -1585,6 +1835,11 @@ def _record_rns_shared_frame_probe(raw: Any, interface: Any) -> None:
                 if frame_gap_ms > _audio_rns_shared_frame_gap_ms_window:
                     _audio_rns_shared_frame_gap_ms_window = float(frame_gap_ms)
                 _increment_shared_frame_gap_buckets(float(frame_gap_ms))
+                _record_gap_median_sample(
+                    _audio_rns_shared_frame_gap_bucket_counts,
+                    float(frame_gap_ms),
+                )
+                _audio_rns_shared_frame_gap_sample_count += 1
                 if frame_gap_ms >= _AUDIO_TIMING_GAP_LOG_THRESHOLD_MS:
                     _log_audio_timing_anomaly(
                         "rns-shared-frame-gap",
@@ -1611,6 +1866,7 @@ def _record_rns_raw_inbound_probe(raw: Any, interface: Any) -> None:
     global _audio_rns_raw_inbound_gap_ms_max, _audio_rns_raw_inbound_interface_last
     global _audio_rns_raw_inbound_interface_worst
     global _audio_rns_raw_inbound_gap_ms_window
+    global _audio_rns_raw_inbound_gap_sample_count
     global _audio_rns_shared_frame_to_transport_inbound_ms_max
     global _audio_rns_shared_frame_to_transport_inbound_samples
     global _audio_rns_shared_frame_interface_last, _audio_rns_shared_frame_interface_worst
@@ -1676,6 +1932,11 @@ def _record_rns_raw_inbound_probe(raw: Any, interface: Any) -> None:
                 if raw_gap_ms > _audio_rns_raw_inbound_gap_ms_window:
                     _audio_rns_raw_inbound_gap_ms_window = float(raw_gap_ms)
                 _increment_raw_gap_buckets(float(raw_gap_ms))
+                _record_gap_median_sample(
+                    _audio_rns_raw_inbound_gap_bucket_counts,
+                    float(raw_gap_ms),
+                )
+                _audio_rns_raw_inbound_gap_sample_count += 1
                 if raw_gap_ms >= _AUDIO_TIMING_GAP_LOG_THRESHOLD_MS:
                     _log_audio_timing_anomaly(
                         "rns-raw-inbound-gap",
@@ -2825,11 +3086,38 @@ def _process_audio_batch(frames: list) -> None:
                             },
                         )
                         continue
-                    packet = RNS.Packet(link, wire_bytes, create_receipt=False)
-                    send_start = time.monotonic()
-                    result = packet.send()
-                send_duration_ms = _note_rns_send_duration(send_start)
-                if result is False:
+                    result, send_duration_ms = _send_packet_on_audio_link_bounded(
+                        send_link_id,
+                        link,
+                        wire_bytes,
+                        "audio_send",
+                    )
+                if result is None:
+                    _audio_packet_send_failures += 1
+                    _note_audio_route_send(
+                        "link",
+                        send_link_id,
+                        room_id,
+                        str(snapshot.get("peerPresenceHash") or ""),
+                        str(snapshot.get("peerDestinationHash") or ""),
+                        len(wire_bytes),
+                        ok=False,
+                        incoming=snapshot.get("incoming") is True,
+                        source_received_at_wall_ms=_received_at_wall_ms,
+                        send_duration_ms=send_duration_ms,
+                    )
+                    _mark_audio_queue_state_dirty()
+                    emit_event(
+                        "group_audio_send_failed",
+                        {
+                            "linkId": send_link_id,
+                            "peerPresenceHash": str(snapshot.get("peerPresenceHash") or ""),
+                            "reason": "packet_send_timeout",
+                            "code": "packet_send_timeout",
+                            "transport": "link",
+                        },
+                    )
+                elif result is False:
                     _audio_packet_send_failures += 1
                     _note_audio_route_send(
                         "link",
@@ -2861,6 +3149,7 @@ def _process_audio_batch(frames: list) -> None:
                             now_send = time.time()
                             current_state["last_send_ok_at"] = now_send
                             current_state["last_activity_at"] = now_send
+                            current_state["consecutive_send_timeouts"] = 0
                     _note_audio_route_send(
                         "link",
                         send_link_id,
@@ -2972,11 +3261,38 @@ def _process_audio_batch(frames: list) -> None:
                     },
                 )
                 continue
-            packet = RNS.Packet(outbound, wire_bytes, create_receipt=False)
-            send_start = time.monotonic()
-            result = packet.send()
-            send_duration_ms = _note_rns_send_duration(send_start)
-            if result is False:
+            result, send_duration_ms = _send_packet_to_destination_bounded(
+                outbound,
+                wire_bytes,
+                f"target=gcall-audio-data-plane packet_audio_send peer={peer_hash}",
+                timeout_seconds=_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
+            )
+            if result is None:
+                _audio_packet_send_failures += 1
+                _note_audio_route_send(
+                    "packet",
+                    str(peer_hash),
+                    room_id,
+                    str(peer_hash),
+                    str(peer_call_hash or destination_hash_hex(destination_hash)),
+                    len(wire_bytes),
+                    ok=False,
+                    source_received_at_wall_ms=_received_at_wall_ms,
+                    send_duration_ms=send_duration_ms,
+                )
+                _note_call_media_send_result(peer_hash, False)
+                _mark_audio_queue_state_dirty()
+                emit_event(
+                    "group_audio_send_failed",
+                    {
+                        "peerPresenceHash": peer_hash,
+                        "reason": "packet_send_timeout",
+                        "code": "packet_send_timeout",
+                        "transport": "packet",
+                    },
+                )
+                continue
+            elif result is False:
                 _audio_packet_send_failures += 1
                 _note_audio_route_send(
                     "packet",
@@ -3049,6 +3365,31 @@ def _process_audio_batch(frames: list) -> None:
 def _stdout_writer_loop() -> None:
     resp_closed = False
     event_closed = False
+
+    def write_event_frame(frame: Dict[str, Any]) -> None:
+        if isinstance(frame, dict):
+            now_mono = time.monotonic()
+            queued_mono = float(frame.get("_queuedAtMono") or 0.0)
+            queued_age_ms = (
+                max(0.0, (now_mono - queued_mono) * 1000.0)
+                if queued_mono > 0
+                else 0.0
+            )
+            depth_after = _json_event_depth()
+            frame["_writeAtMs"] = _now_wall_ms()
+            frame["_writeAtMono"] = now_mono
+            frame["_eventQueueDepthAfter"] = depth_after
+            if queued_age_ms >= _AUDIO_TIMING_DELAY_LOG_THRESHOLD_MS:
+                event_name = str(frame.get("event") or "unknown")
+                _log_bridge_event_timing_anomaly(
+                    event_name,
+                    f"event={event_name} queued_age_ms={queued_age_ms:.3f} "
+                    f"queue_depth_before={int(frame.get('_eventQueueDepthBefore') or 0)} "
+                    f"queue_depth_after={depth_after}",
+                )
+        sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
     while True:
         if not resp_closed:
             try:
@@ -3066,6 +3407,22 @@ def _stdout_writer_loop() -> None:
         if resp_closed and event_closed:
             break
 
+        if not event_closed:
+            try:
+                frame = _json_priority_event_queue.get_nowait()
+            except queue.Empty:
+                frame = None
+            else:
+                if frame is None:
+                    continue
+                write_event_frame(frame)
+                continue
+
+            frame = _pop_coalesced_json_event_line()
+            if frame is not None:
+                write_event_frame(frame)
+                continue
+
         if not resp_closed:
             try:
                 frame = _json_resp_queue.get(timeout=0.01)
@@ -3082,14 +3439,18 @@ def _stdout_writer_loop() -> None:
         if event_closed:
             continue
         try:
-            frame = _json_event_queue.get(timeout=0.05)
+            try:
+                frame = _json_priority_event_queue.get_nowait()
+            except queue.Empty:
+                frame = _pop_coalesced_json_event_line()
+                if frame is None:
+                    frame = _json_event_queue.get(timeout=0.05)
         except queue.Empty:
             continue
         if frame is None:
             event_closed = True
             continue
-        sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
+        write_event_frame(frame)
 
 
 def _audio_binary_out_writer_loop() -> None:
@@ -3450,7 +3811,6 @@ def _scheduler_lane_for_command(action: Any) -> str:
         "open_group_audio_link",
         "close_group_audio_link",
         "reset_group_audio_peer_state",
-        "overlay_sync_state",
     }:
         return "link-management"
     if action_name in {"warm_group_audio_path"}:
@@ -3919,6 +4279,7 @@ def _register_peer(
     st = _peer_lifecycle[peer_key]
     if source in ("inbound", "announce", "wire_kr", "gcall_join"):
         st["last_seen_inbound"] = now
+    if source in ("inbound", "wire_kr", "gcall_join"):
         _note_overlay_peer_alive(peer_key, source)
     if source in ("ts_seed", "recall"):
         st["ts_seed_until"] = now + _PEER_TS_SEED_LEASE_SECONDS
@@ -3936,6 +4297,12 @@ def _mark_candidate_peer(peer_key: str, source: str) -> None:
     peer_key = str(peer_key or "").strip().lower()
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
+        return
+    if _overlay_peer_inbound_full(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum candidate_skipped "
+            f"peer_hash={peer_key} source={source} reason=peer_inbound_full"
+        )
         return
     now = time.time()
     existing = _candidate_peers.get(peer_key) or {}
@@ -4037,6 +4404,85 @@ def _overlay_peer_is_suppressed(peer_key: str) -> bool:
     return _overlay_peer_suppressed_until(peer_key) > time.time()
 
 
+def _parse_presence_announce_capacity(app_data: Any) -> Optional[bool]:
+    if app_data is None:
+        return None
+    if isinstance(app_data, str):
+        raw = app_data.strip().encode("utf-8", errors="ignore")
+    elif isinstance(app_data, (bytes, bytearray)):
+        raw = bytes(app_data).strip()
+    else:
+        return None
+    if raw == _PRESENCE_ANNOUNCE_APP_DATA_FULL:
+        return True
+    if raw in (_PRESENCE_ANNOUNCE_APP_DATA_OPEN, b"presence-open"):
+        return False
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    inbound_full = decoded.get("inboundFull")
+    if isinstance(inbound_full, bool):
+        return inbound_full
+    inbound_free = decoded.get("inboundFree")
+    if isinstance(inbound_free, int):
+        return inbound_free <= 0
+    return None
+
+
+def _note_peer_inbound_capacity_hint(peer_key: str, app_data: Any) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return
+    inbound_full = _parse_presence_announce_capacity(app_data)
+    if inbound_full is None:
+        return
+    now = time.time()
+    st = _peer_lifecycle.setdefault(
+        peer_key,
+        {
+            "last_seen_inbound": None,
+            "last_send_ok": None,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        },
+    )
+    if inbound_full:
+        st["overlay_inbound_full_until"] = now + _PEER_INBOUND_FULL_HINT_TTL_SECONDS
+        _candidate_peers.pop(peer_key, None)
+    else:
+        st.pop("overlay_inbound_full_until", None)
+    st["overlay_inbound_full_last_seen"] = now
+
+
+def _overlay_peer_inbound_full(peer_key: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    st = _peer_lifecycle.get(peer_key) or {}
+    until = st.get("overlay_inbound_full_until")
+    if not isinstance(until, (int, float)):
+        return False
+    now = time.time()
+    if float(until) <= now:
+        st.pop("overlay_inbound_full_until", None)
+        return False
+    return True
+
+
+def _overlay_peer_available_for_new_outbound(peer_key: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    if _overlay_peer_is_suppressed(peer_key):
+        return False
+    if _overlay_peer_inbound_full(peer_key) and not _overlay_peer_has_established_link(peer_key):
+        return False
+    return True
+
+
 def _note_overlay_peer_alive(peer_key: str, source: str) -> None:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
@@ -4132,7 +4578,7 @@ def _set_verified_overlay_peers(
             continue
         if local_hex and peer_hash == local_hex:
             continue
-        if _overlay_peer_is_suppressed(peer_hash):
+        if not _overlay_peer_available_for_new_outbound(peer_hash):
             continue
         if peer_hash not in _known_peers:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
@@ -4148,7 +4594,7 @@ def _set_verified_overlay_peers(
             break
         if peer_hash in next_neighbors:
             continue
-        if _overlay_peer_is_suppressed(peer_hash):
+        if not _overlay_peer_available_for_new_outbound(peer_hash):
             continue
         if not isinstance(seen_at, (int, float)):
             continue
@@ -4173,7 +4619,7 @@ def _set_verified_overlay_peers(
                 not peer_key
                 or peer_key in next_neighbors
                 or (local_hex and peer_key == local_hex)
-                or _overlay_peer_is_suppressed(peer_key)
+                or not _overlay_peer_available_for_new_outbound(peer_key)
             ):
                 continue
             activity = _overlay_peer_direct_activity_score(peer_key)
@@ -4312,6 +4758,8 @@ def _snapshot_established_overlay_neighbor_hashes(
                 continue
             if local_hex and peer_key == local_hex:
                 continue
+            if _overlay_peer_is_suppressed(peer_key):
+                continue
             link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
             state = _overlay_links_by_id.get(link_id) if link_id else None
             if (
@@ -4359,7 +4807,7 @@ def _promote_recent_verified_overlay_neighbors(
             continue
         if local_hex and peer_key == local_hex:
             continue
-        if _overlay_peer_is_suppressed(peer_key):
+        if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
         if (
             peer_key in exclude
@@ -4536,7 +4984,7 @@ def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:
             continue
         if local_hex and peer_key == local_hex:
             continue
-        if _overlay_peer_is_suppressed(peer_key):
+        if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
         if peer_key in _active_overlay_neighbors or peer_key in _inbound_overlay_neighbors:
             continue
@@ -5221,10 +5669,13 @@ class PresenceAnnounceHandler:
             return
         peer_hash = destination_hash_hex(destination_hash)
         app_data_len = len(app_data) if app_data is not None else 0
+        inbound_full = _parse_presence_announce_capacity(app_data)
         log(
-            f"[presence_bridge] received announce peer={peer_hash} app_data_len={app_data_len}"
+            f"[presence_bridge] received announce peer={peer_hash} app_data_len={app_data_len} "
+            f"inbound_full={inbound_full if inbound_full is not None else 'unknown'}"
         )
         _register_peer(peer_hash, announced_identity, "announce")
+        _note_peer_inbound_capacity_hint(peer_hash, app_data)
         _mark_candidate_peer(peer_hash, "announce")
         _retry_pending_overlay_connect_on_announce(peer_hash)
         _retry_pending_audio_connect_on_announce(peer_hash)
@@ -5380,7 +5831,20 @@ def _queue_overlay_packet(state: Dict[str, Any], traffic: str, wire_bytes: bytes
 def _send_packet_on_link(link, wire_bytes: bytes, log_target: str) -> bool:
     try:
         packet = RNS.Packet(link, wire_bytes, create_receipt=False)
-        result = packet.send()
+        completed, result, error = _run_with_timeout(
+            f"link-packet-send-{str(id(link))[-8:]}",
+            _LINK_PACKET_SEND_TIMEOUT_SECONDS,
+            packet.send,
+        )
+        if not completed:
+            log(
+                f"[presence_bridge] {log_target} packet_send_timeout "
+                f"timeout_ms={int(_LINK_PACKET_SEND_TIMEOUT_SECONDS * 1000)}"
+            )
+            return False
+        if error:
+            log(f"[presence_bridge] {log_target} packet_send_exception err={error}")
+            return False
         if result is False:
             log(f"[presence_bridge] {log_target} packet_send_false")
             return False
@@ -5418,9 +5882,13 @@ def _dedup_age_ts(state: Dict[str, Any], both_established: bool) -> float:
 
 
 def _dedup_activity_ts(state: Dict[str, Any]) -> float:
-    """Sort key for recently useful links; higher = more useful."""
+    """Sort key for recently useful links; higher = more useful.
+
+    Overlay usefulness is based on inbound traffic. A successful local send only
+    proves we wrote to the link; it does not prove the peer is participating.
+    """
     best = 0.0
-    for key in ("last_rx_at", "last_send_ok_at", "last_activity_at", "established_at"):
+    for key in ("last_rx_at", "established_at"):
         t = state.get(key)
         if isinstance(t, (int, float)):
             best = max(best, float(t))
@@ -5541,14 +6009,10 @@ def _overlay_link_recent_activity_age_seconds(state: Dict[str, Any], now: float)
     return max(0.0, now - recent_at)
 
 
-def _overlay_timeout_close_should_keep_peer(state: Dict[str, Any], reason: str, now: float) -> bool:
-    if str(reason or "").strip().lower() != "timeout":
-        return False
-    age = _overlay_link_recent_activity_age_seconds(state, now)
-    return (
-        age is not None
-        and age <= _OVERLAY_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_SECONDS
-    )
+def _overlay_recent_activity_close_should_keep_peer(
+    state: Dict[str, Any], reason: str, now: float
+) -> bool:
+    return False
 
 
 def _overlay_mesh_link_count_locked() -> int:
@@ -5600,10 +6064,22 @@ def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
     verbose_presence_log(_overlay_close_debug_line(link_id, state, reason))
     link = state.get("link")
     if link is not None:
-        try:
-            link.teardown()
-        except Exception:
-            pass
+        completed, _result, error = _run_with_timeout(
+            f"overlay-link-teardown-{str(link_id or '')[:8]}",
+            _OVERLAY_LINK_TEARDOWN_TIMEOUT_SECONDS,
+            link.teardown,
+        )
+        if not completed:
+            log(
+                "[presence_bridge] target=presence-reticulum overlay_link_teardown_timeout "
+                f"link={link_id} reason={reason} "
+                f"timeout_ms={int(_OVERLAY_LINK_TEARDOWN_TIMEOUT_SECONDS * 1000)}"
+            )
+        elif error:
+            log(
+                "[presence_bridge] target=presence-reticulum overlay_link_teardown_exception "
+                f"link={link_id} reason={reason} err={error}"
+            )
     state["established"] = False
     emit_overlay_link_state(link_id, state, reason)
     if peer_hash and _overlay_teardown_should_demote(reason):
@@ -5623,16 +6099,12 @@ def _maybe_prune_stale_overlay_links() -> None:
                 ):
                     stale_ids.append(link_id)
                 continue
-            last_activity = state.get("last_activity_at")
-            if not isinstance(last_activity, (int, float)):
-                last_activity = state.get("last_rx_at")
-            if not isinstance(last_activity, (int, float)):
-                last_activity = state.get("last_send_ok_at")
-            if not isinstance(last_activity, (int, float)):
-                last_activity = state.get("established_at") or state.get("created_at")
-            if not isinstance(last_activity, (int, float)):
+            last_rx = state.get("last_rx_at")
+            if not isinstance(last_rx, (int, float)):
+                last_rx = state.get("established_at") or state.get("created_at")
+            if not isinstance(last_rx, (int, float)):
                 continue
-            if now - float(last_activity) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
+            if now - float(last_rx) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
                 stale_ids.append(link_id)
     for link_id in stale_ids:
         state = get_overlay_link_state(link_id)
@@ -5807,6 +6279,18 @@ def _ensure_overlay_link(
             if existing is not None:
                 return existing
             _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+    if _overlay_peer_inbound_full(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_skipped "
+            f"peer={peer_key} reason=peer_inbound_full"
+        )
+        return None
+    if _overlay_peer_is_suppressed(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_skipped "
+            f"peer={peer_key} reason=peer_suppressed"
+        )
+        return None
     if not _admit_overlay_peer_if_allowed(peer_key, "outbound", incoming=False):
         return None
     link_id = ""
@@ -5871,23 +6355,54 @@ def _ensure_overlay_link(
                     f"peer={peer_key} links={len(_overlay_links_by_id)} max={_OVERLAY_MAX_TOTAL_LINKS}"
                 )
                 return None
-            link_id = str(uuid.uuid4())
-            link = RNS.Link(
-                outbound,
-                established_callback=on_outgoing_overlay_link_established,
-                closed_callback=on_overlay_link_closed,
+        link_id = str(uuid.uuid4())
+        link = RNS.Link(
+            outbound,
+            established_callback=on_outgoing_overlay_link_established,
+            closed_callback=on_overlay_link_closed,
+        )
+        teardown_new_link = False
+        existing_to_return: Optional[Dict[str, Any]] = None
+        with _state_lock:
+            existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key)
+            if existing_link_id:
+                existing = _overlay_links_by_id.get(existing_link_id)
+                if existing is not None:
+                    log(
+                        "[presence_bridge] target=presence-reticulum "
+                        f"overlay_link_reuse_{'incoming' if existing.get('incoming') is True else 'outgoing'} "
+                        f"peer={peer_key} link={existing_link_id}"
+                    )
+                    teardown_new_link = True
+                    existing_to_return = existing
+                else:
+                    _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+            if existing_to_return is None and len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS:
+                log(
+                    "[presence_bridge] target=presence-reticulum overlay_link_rejected_pressure "
+                    f"peer={peer_key} links={len(_overlay_links_by_id)} max={_OVERLAY_MAX_TOTAL_LINKS}"
+                )
+                teardown_new_link = True
+            if teardown_new_link:
+                state = existing_to_return
+            else:
+                now = time.time()
+                state = {
+                    "link": link,
+                    "peerPresenceHash": peer_key,
+                    "incoming": False,
+                    "established": False,
+                    "created_at": now,
+                    "pending_packets": deque(maxlen=_OVERLAY_PENDING_PACKET_LIMIT),
+                }
+                _overlay_links_by_id[link_id] = state
+                _overlay_link_ids_by_object[id(link)] = link_id
+        if teardown_new_link:
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=presence-reticulum overlay_link_discard_new peer={peer_key}",
             )
-            now = time.time()
-            state = {
-                "link": link,
-                "peerPresenceHash": peer_key,
-                "incoming": False,
-                "established": False,
-                "created_at": now,
-                "pending_packets": deque(maxlen=_OVERLAY_PENDING_PACKET_LIMIT),
-            }
-            _overlay_links_by_id[link_id] = state
-            _overlay_link_ids_by_object[id(link)] = link_id
+            return existing_to_return
     except Exception as exc:
         error = str(exc)
     if error is not None:
@@ -5923,6 +6438,18 @@ def _retry_pending_overlay_connect_on_announce(peer_hash: str) -> None:
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
         return
+    if _overlay_peer_inbound_full(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce_suppressed "
+            f"peer={peer_key} reason=peer_inbound_full"
+        )
+        return
+    if _overlay_peer_is_suppressed(peer_key):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce_suppressed "
+            f"peer={peer_key} reason=peer_suppressed"
+        )
+        return
     link = None
     existing_link_id = ""
     stale_state: Optional[Dict[str, Any]] = None
@@ -5944,10 +6471,10 @@ def _retry_pending_overlay_connect_on_announce(peer_hash: str) -> None:
                 pass
         stale_state = remove_overlay_link(existing_link_id)
     if link is not None:
-        try:
-            link.teardown()
-        except Exception:
-            pass
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=presence-reticulum overlay_link_retry_previous peer={peer_key}",
+        )
     if stale_state is not None:
         stale_state["established"] = False
         emit_overlay_link_state(existing_link_id, stale_state, "announce_retry")
@@ -5988,10 +6515,10 @@ def _retry_pending_audio_connect_on_announce(peer_hash: str) -> None:
                 link.set_link_closed_callback(None)
             except Exception:
                 pass
-            try:
-                link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=reticulum-audio-link audio_link_retry_previous peer={peer_key}",
+            )
         removed = remove_audio_link(existing_link_id)
         if removed is not None:
             emit_event(
@@ -6019,7 +6546,24 @@ def _sync_overlay_links() -> None:
     _bootstrap_overlay_neighbors_if_degraded("sync")
     desired_outbound = set(_active_overlay_neighbors.keys())
     desired = desired_outbound | set(_inbound_overlay_neighbors.keys())
+    target_outbound_links = min(_OVERLAY_MIN_HEALTHY_FANOUT, len(desired_outbound))
+    maintained_outbound_links = 0
     for peer_hash in desired_outbound:
+        link_id = _active_overlay_link_id_by_peer_hash.get(peer_hash)
+        state = get_overlay_link_state(link_id) if link_id else None
+        if state is not None:
+            maintained_outbound_links += 1
+            continue
+        if _overlay_peer_inbound_full(peer_hash):
+            _active_overlay_neighbors.pop(peer_hash, None)
+            _candidate_peers.pop(peer_hash, None)
+            verbose_presence_log(
+                "[presence_bridge] target=presence-reticulum overlay_sync_skip_outbound "
+                f"peer={peer_hash} reason=peer_inbound_full"
+            )
+            continue
+        if maintained_outbound_links >= target_outbound_links:
+            continue
         if peer_hash not in _known_peers:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
         state = _ensure_overlay_link(
@@ -6031,6 +6575,7 @@ def _sync_overlay_links() -> None:
             # state. Keep the fanout lease and let explicit closes or real send
             # failures decide whether the peer is dead.
             continue
+        maintained_outbound_links += 1
     for peer_hash, link_id in list(_active_overlay_link_id_by_peer_hash.items()):
         if peer_hash in desired:
             continue
@@ -6061,6 +6606,17 @@ def _sync_overlay_links() -> None:
             _teardown_overlay_link_id(link_id, "dedup_orphan")
 
 
+def _run_overlay_sync_maintenance(reason: str = "overlay_sync_state") -> None:
+    try:
+        _sync_overlay_links()
+        _maybe_announce_local_destination_low_verified_overlay_peers()
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_sync_maintenance_failed "
+            f"reason={reason} err={exc}"
+        )
+
+
 def _resolve_sender_peer_destination_hash(sender_hex: str) -> str:
     """Map wire `r` (destination hash hex) to peer key in _known_peers; recall fallback."""
     sender_hex = str(sender_hex or "").strip().lower()
@@ -6073,6 +6629,33 @@ def _resolve_sender_peer_destination_hash(sender_hex: str) -> str:
     if ensure_known_peer_from_recall(sender_hex, "inbound"):
         return sender_hex
     return ""
+
+
+def _presence_message_seen_recently(
+    message_id: str,
+    origin_peer_hash: str,
+    sender_hash: str,
+    now: float,
+) -> bool:
+    message_id = str(message_id or "").strip()
+    origin_peer_hash = str(origin_peer_hash or "").strip().lower()
+    sender_hash = str(sender_hash or "").strip().lower()
+    if not message_id:
+        return False
+    # The same presence envelope can arrive through several overlay peers. Dedupe
+    # by the original sender and envelope id before queueing it to Electron.
+    cache_key = f"{origin_peer_hash or sender_hash}:{message_id}"
+    expired_before = now - _RECENT_PRESENCE_MESSAGE_ID_TTL_SECONDS
+    for cached_id, seen_at in list(_recent_presence_message_ids.items()):
+        if seen_at < expired_before:
+            _recent_presence_message_ids.pop(cached_id, None)
+    seen = cache_key in _recent_presence_message_ids
+    _recent_presence_message_ids[cache_key] = now
+    if len(_recent_presence_message_ids) > _RECENT_PRESENCE_MESSAGE_ID_LIMIT:
+        overflow = len(_recent_presence_message_ids) - _RECENT_PRESENCE_MESSAGE_ID_LIMIT
+        for cached_id in list(_recent_presence_message_ids.keys())[:overflow]:
+            _recent_presence_message_ids.pop(cached_id, None)
+    return seen
 
 
 def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = None) -> bool:
@@ -6127,6 +6710,14 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
         log(f"[presence_bridge] ignored unknown presence packet type={message_type}")
         return False
 
+    now = time.time()
+    if _presence_message_seen_recently(message_id, origin_peer_hash, sender_hash, now):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum duplicate_presence_ignored "
+            f"envelope_id={message_id} sender={sender_hash} origin={origin_peer_hash}"
+        )
+        return False
+
     _note_presence_pressure("decoded:presence", message_type)
     envelope = {
         "id": message_id,
@@ -6154,7 +6745,6 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
                 "ts_seed_until": None,
             },
         )
-        now = time.time()
         st["last_seen_inbound"] = now
         lease = st.get("ts_seed_until")
         if isinstance(lease, (int, float)) and now < float(lease):
@@ -6319,11 +6909,11 @@ def on_overlay_link_closed(link) -> None:
         reason,
         closed_by_reticulum=True,
     )
-    if peer_hash and _overlay_timeout_close_should_keep_peer(state, reason, now):
+    if peer_hash and _overlay_recent_activity_close_should_keep_peer(state, reason, now):
         age = _overlay_link_recent_activity_age_seconds(state, now)
-        _note_overlay_peer_alive(peer_hash, "recent_timeout_activity")
+        _note_overlay_peer_alive(peer_hash, "recent_close_activity")
         verbose_presence_log(
-            "[presence_bridge] target=presence-reticulum overlay_timeout_kept_peer "
+            "[presence_bridge] target=presence-reticulum overlay_close_kept_peer "
             f"peer={peer_hash} recent_activity_age_ms={int((age or 0.0) * 1000.0)}"
         )
         return
@@ -7141,10 +7731,10 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
                     "reason": str(decoded.get("reason") or "sender_rejected_auth"),
                 },
             )
-            try:
-                link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=qchat-file-reticulum sender_rejected_auth transfer={state.get('transferId') or ''}",
+            )
         return
     if decoded.get("type") not in (
         "QCHAT_FILE_LINK_AUTH",
@@ -7342,11 +7932,10 @@ def _qchat_file_receiver_transfer_done(peer_hash: str, transfer_id: str) -> None
             link = link_state.get("link")
             link_state["completed"] = True
             remove_qchat_file_link(link_id)
-            try:
-                if link is not None:
-                    link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=qchat-file-reticulum receiver_transfer_done transfer={transfer_id}",
+            )
 
 
 def _qchat_file_resource_transfer_id(resource) -> str:
@@ -7657,11 +8246,10 @@ def _qchat_file_close_success_link_after_grace(link, state: Dict[str, Any]) -> N
         remove_qchat_file_link(link_id_done)
 
     def close_link() -> None:
-        try:
-            if link is not None:
-                link.teardown()
-        except Exception:
-            pass
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=qchat-file-reticulum success_grace_close transfer={state.get('transferId') or ''}",
+        )
 
     timer = threading.Timer(_QCHAT_FILE_SUCCESS_LINK_CLOSE_GRACE_SECONDS, close_link)
     timer.daemon = True
@@ -8058,10 +8646,10 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
                     link_id_done = get_qchat_file_link_id(link)
                     if link_id_done:
                         remove_qchat_file_link(link_id_done)
-                    try:
-                        link.teardown()
-                    except Exception:
-                        pass
+                    _teardown_reticulum_link_bounded(
+                        link,
+                        f"target=qchat-file-reticulum chunk_ack_timeout transfer={transfer_id}",
+                    )
 
                 timer = threading.Timer(_QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS, ack_timeout)
                 timer.daemon = True
@@ -8080,10 +8668,10 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
             link_id_done = get_qchat_file_link_id(link)
             if link_id_done:
                 remove_qchat_file_link(link_id_done)
-            try:
-                link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=qchat-file-reticulum send_failed transfer={transfer_id}",
+            )
             return
 
     def on_progress(resource) -> None:
@@ -8161,10 +8749,10 @@ def _send_qchat_file_auth_message(link, state: Dict[str, Any], log_label: str) -
                         "error": "Sender did not authorize the file transfer",
                     },
                 )
-                try:
-                    link.teardown()
-                except Exception:
-                    pass
+                _teardown_reticulum_link_bounded(
+                    link,
+                    f"target=qchat-file-reticulum sender_auth_timeout transfer={state.get('transferId') or ''}",
+                )
 
             timer = threading.Timer(45.0, auth_timeout)
             timer.daemon = True
@@ -8694,7 +9282,6 @@ def on_outgoing_overlay_link_established(link) -> None:
     now = time.time()
     state["established"] = True
     state["established_at"] = now
-    state["last_activity_at"] = now
     try:
         if _identity is not None:
             link.identify(_identity)
@@ -8707,6 +9294,7 @@ def on_outgoing_overlay_link_established(link) -> None:
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _note_overlay_peer_alive(ph_out, "link_established")
         _register_active_overlay_for_peer(ph_out, link_id)
+        _enqueue_latest_presence_announce_replay(ph_out, "link_established")
     if not _overlay_link_is_current(link_id, link):
         return
     _flush_overlay_link_pending(link_id)
@@ -8733,7 +9321,6 @@ def _send_wire_to_overlay_peer(
         )
         if ok:
             now = time.time()
-            state["last_activity_at"] = now
             state["last_send_ok_at"] = now
         else:
             _queue_overlay_packet(state, traffic, wire_bytes)
@@ -8782,13 +9369,144 @@ def _send_wire_to_established_overlay_peer(
     )
     if ok and _overlay_link_is_current(link_id, link):
         now = time.time()
-        state["last_activity_at"] = now
         state["last_send_ok_at"] = now
         emit_overlay_link_state(link_id, state, traffic)
         return True
     if _overlay_link_is_current(link_id, link):
         emit_overlay_link_state(link_id, state, traffic)
     return False
+
+
+def _enqueue_latest_presence_announce_replay(peer_hash: str, reason: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    wire_bytes = _last_presence_announce_wire
+    if not wire_bytes:
+        return False
+    lane = _presence_fanout_lane_for_peer(peer_key)
+    queued = _enqueue_scheduler_task(
+        lane,
+        f"presence_announce_replay:{_last_presence_announce_id or 'unknown'}:{peer_key[:8]}",
+        _fanout_presence_wire_to_peer,
+        peer_key,
+        wire_bytes,
+        "presence_announce_replay",
+        _last_presence_announce_id,
+        drop_oldest=True,
+    )
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum presence_announce_replay_queued "
+        f"peer={peer_key} reason={reason} envelope_id={_last_presence_announce_id or 'n/a'} "
+        f"queued={str(bool(queued)).lower()}"
+    )
+    return bool(queued)
+
+
+def _presence_fanout_lane_for_peer(peer_hash: str) -> str:
+    try:
+        shard = int(str(peer_hash or "")[:8], 16) % _SCHEDULER_PRESENCE_FANOUT_SHARDS
+    except Exception:
+        shard = 0
+    return f"presence-fanout-{shard}"
+
+
+def _mark_presence_peer_send_timeout(peer_hash: str, envelope_id: str) -> None:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return
+    link_id = ""
+    with _state_lock:
+        link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+    log(
+        "[presence_bridge] target=presence-reticulum presence_peer_send_timeout "
+        f"peer={peer_key} envelope_id={envelope_id or 'n/a'} "
+        f"timeout_ms={int(_PRESENCE_PEER_SEND_TIMEOUT_SECONDS * 1000)} "
+        f"link={link_id or 'none'}"
+    )
+
+
+def _send_presence_wire_to_peer_bounded(
+    peer_hash: str,
+    wire_bytes: bytes,
+    traffic: str,
+    envelope_id: str = "",
+) -> Optional[bool]:
+    done = threading.Event()
+    result: Dict[str, Any] = {"ok": False}
+
+    def run() -> None:
+        try:
+            result["ok"] = _send_wire_to_established_overlay_peer(
+                peer_hash,
+                wire_bytes,
+                traffic,
+            )
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = str(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=run,
+        name=f"presence-send-{str(peer_hash or '')[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    if not done.wait(_PRESENCE_PEER_SEND_TIMEOUT_SECONDS):
+        _mark_presence_peer_send_timeout(peer_hash, envelope_id)
+        return None
+    if result.get("error"):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum presence_peer_send_exception "
+            f"peer={peer_hash} envelope_id={envelope_id or 'n/a'} err={result.get('error')}"
+        )
+    return bool(result.get("ok"))
+
+
+def _fanout_presence_wire_to_peer(
+    peer_hash: str,
+    wire_bytes: bytes,
+    traffic: str,
+    envelope_id: str = "",
+) -> None:
+    ok = _send_presence_wire_to_peer_bounded(peer_hash, wire_bytes, traffic, envelope_id)
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum async_presence_peer_done "
+        f"traffic={traffic} envelope_id={envelope_id or 'n/a'} "
+        f"peer={peer_hash} sent={str(ok is True).lower()} "
+        f"timed_out={str(ok is None).lower()}"
+    )
+
+
+def _enqueue_presence_fanout_tasks(
+    peer_hashes: List[str],
+    wire_bytes: bytes,
+    traffic: str,
+    envelope_id: str = "",
+) -> Tuple[bool, int]:
+    queued_count = 0
+    for peer_hash in peer_hashes:
+        lane = _presence_fanout_lane_for_peer(peer_hash)
+        if _enqueue_scheduler_task(
+            lane,
+            f"{traffic}:{envelope_id or 'unknown'}:{peer_hash[:8]}",
+            _fanout_presence_wire_to_peer,
+            peer_hash,
+            wire_bytes,
+            traffic,
+            envelope_id,
+            drop_oldest=True,
+        ):
+            queued_count += 1
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum async_presence_fanout_queued "
+        f"traffic={traffic} envelope_id={envelope_id or 'n/a'} "
+        f"peers={len(peer_hashes)} queued={queued_count} "
+        f"fanout_hashes={','.join(peer_hashes)}"
+    )
+    return queued_count == len(peer_hashes), queued_count
 
 
 def make_presence_wire(
@@ -8832,11 +9550,21 @@ def make_presence_wire(
 def announce_local_destination(reason: str = "unspecified") -> None:
     if _destination is None:
         return
-    _destination.announce(app_data=b"presence")
+    with _state_lock:
+        inbound_full = (
+            len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
+            or len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS
+        )
+    app_data = (
+        _PRESENCE_ANNOUNCE_APP_DATA_FULL
+        if inbound_full
+        else _PRESENCE_ANNOUNCE_APP_DATA_OPEN
+    )
+    _destination.announce(app_data=app_data)
     log(
         "[presence_bridge] rns destination announce "
         f"at={_log_clock_time()} "
-        f"reason={reason} "
+        f"reason={reason} inbound_full={'yes' if inbound_full else 'no'} "
         + destination_hash_hex(_destination.hash)
     )
 
@@ -8914,8 +9642,11 @@ def send_presence_wire_to_peer(peer_hash: str, peer_identity, wire_bytes: bytes)
     now = time.time()
     try:
         outbound = build_outbound_destination(peer_identity)
-        packet = RNS.Packet(outbound, wire_bytes, create_receipt=False)
-        result = packet.send()
+        result, _send_duration_ms = _send_packet_to_destination_bounded(
+            outbound,
+            wire_bytes,
+            f"target=presence-reticulum direct_presence_send peer={peer_hash}",
+        )
         if peer_hash not in _peer_lifecycle:
             _peer_lifecycle[peer_hash] = {
                 "last_seen_inbound": None,
@@ -8924,7 +9655,7 @@ def send_presence_wire_to_peer(peer_hash: str, peer_identity, wire_bytes: bytes)
                 "ts_seed_until": None,
             }
         st = _peer_lifecycle[peer_hash]
-        if result is False:
+        if result is not True:
             st["last_send_ok"] = None
             verbose_presence_log(
                 f"[presence_bridge] target=presence-reticulum send_failed peer={peer_hash}"
@@ -9023,6 +9754,10 @@ def _ensure_audio_link_lifecycle_fields(state: Dict[str, Any]) -> Dict[str, Any]
         state["generation"] = 0
     if "closing" not in state:
         state["closing"] = False
+    if "consecutive_send_timeouts" not in state:
+        state["consecutive_send_timeouts"] = 0
+    if "send_timeout_backoff_until" not in state:
+        state["send_timeout_backoff_until"] = 0.0
     return state
 
 
@@ -9076,10 +9811,22 @@ def _teardown_audio_link_id(link_id: str, reason: str) -> None:
             link.set_link_closed_callback(None)
         except Exception:
             pass
-        try:
-            link.teardown()
-        except Exception:
-            pass
+        completed, _result, error = _run_with_timeout(
+            f"audio-link-teardown-{str(link_id or '')[:8]}",
+            _AUDIO_LINK_TEARDOWN_TIMEOUT_SECONDS,
+            link.teardown,
+        )
+        if not completed:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_link_teardown_timeout "
+                f"link={link_id} reason={reason} "
+                f"timeout_ms={int(_AUDIO_LINK_TEARDOWN_TIMEOUT_SECONDS * 1000)}"
+            )
+        elif error:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_link_teardown_exception "
+                f"link={link_id} reason={reason} err={error}"
+            )
     emit_audio_link_closed(link_id, reason)
 
 
@@ -9252,6 +9999,137 @@ def _audio_link_generation_matches(link_id: str, generation: int) -> bool:
         if state is None or state.get("closing") is True:
             return False
         return int(state.get("generation") or 0) == int(generation)
+
+
+def _mark_audio_link_send_timeout(link_id: str, reason: str) -> None:
+    link_key = str(link_id or "").strip()
+    if not link_key:
+        return
+    now = time.time()
+    peer_key = ""
+    timeout_count = 1
+    recent_rx = False
+    with _state_lock:
+        state = _audio_links_by_id.get(link_key)
+        if state is not None:
+            _ensure_audio_link_lifecycle_fields(state)
+            peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+            timeout_count = int(state.get("consecutive_send_timeouts") or 0) + 1
+            state["consecutive_send_timeouts"] = timeout_count
+            state["last_send_timeout_at"] = now
+            state["send_timeout_backoff_until"] = now + _AUDIO_LINK_SEND_TIMEOUT_BACKOFF_SECONDS
+            last_rx_at = state.get("last_rx_at")
+            recent_rx = (
+                isinstance(last_rx_at, (int, float))
+                and now - float(last_rx_at) <= _AUDIO_LINK_SEND_TIMEOUT_RECENT_RX_GRACE_SECONDS
+            )
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_send_timeout "
+        f"link={link_key} peer={peer_key or 'unknown'} reason={reason} "
+        f"timeout_ms={int(_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS * 1000)} "
+        f"consecutive={timeout_count} recent_rx={str(recent_rx).lower()}"
+    )
+    if timeout_count >= _AUDIO_LINK_SEND_TIMEOUTS_BEFORE_TEARDOWN and not recent_rx:
+        _teardown_audio_link_id(link_key, f"{reason}_timeout")
+
+
+def _run_with_timeout(name: str, timeout_seconds: float, fn: Callable[[], Any]) -> Tuple[bool, Any, Optional[str]]:
+    done = threading.Event()
+    result: Dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            result["value"] = fn()
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, name=name[:64], daemon=True)
+    thread.start()
+    if not done.wait(timeout_seconds):
+        return False, None, None
+    return True, result.get("value"), result.get("error")
+
+
+def _teardown_reticulum_link_bounded(
+    link: Any,
+    log_target: str,
+    timeout_seconds: float = _LINK_TEARDOWN_TIMEOUT_SECONDS,
+) -> bool:
+    if link is None:
+        return True
+    completed, _result, error = _run_with_timeout(
+        f"link-teardown-{str(id(link))[-8:]}",
+        timeout_seconds,
+        link.teardown,
+    )
+    if not completed:
+        log(
+            f"[presence_bridge] {log_target} link_teardown_timeout "
+            f"timeout_ms={int(timeout_seconds * 1000)}"
+        )
+        return False
+    if error:
+        log(f"[presence_bridge] {log_target} link_teardown_exception err={error}")
+        return False
+    return True
+
+
+def _send_packet_to_destination_bounded(
+    destination: Any,
+    wire_bytes: bytes,
+    log_target: str,
+    timeout_seconds: float = _LINK_PACKET_SEND_TIMEOUT_SECONDS,
+) -> Tuple[Optional[bool], float]:
+    packet = RNS.Packet(destination, wire_bytes, create_receipt=False)
+    send_start = time.monotonic()
+    completed, result, error = _run_with_timeout(
+        f"destination-packet-send-{str(id(destination))[-8:]}",
+        timeout_seconds,
+        packet.send,
+    )
+    send_duration_ms = _note_rns_send_duration(send_start)
+    if not completed:
+        log(
+            f"[presence_bridge] {log_target} packet_send_timeout "
+            f"timeout_ms={int(timeout_seconds * 1000)}"
+        )
+        return None, send_duration_ms
+    if error:
+        log(f"[presence_bridge] {log_target} packet_send_exception err={error}")
+        return False, send_duration_ms
+    return bool(result is not False), send_duration_ms
+
+
+def _send_packet_on_audio_link_bounded(
+    link_id: str,
+    link: Any,
+    wire_bytes: bytes,
+    reason: str,
+) -> Tuple[Optional[bool], float]:
+    now = time.time()
+    with _state_lock:
+        state = _audio_links_by_id.get(str(link_id or ""))
+        if state is not None:
+            _ensure_audio_link_lifecycle_fields(state)
+            backoff_until = state.get("send_timeout_backoff_until")
+            if isinstance(backoff_until, (int, float)) and now < float(backoff_until):
+                return None, 0.0
+    packet = RNS.Packet(link, wire_bytes, create_receipt=False)
+    send_start = time.monotonic()
+    completed, result, error = _run_with_timeout(
+        f"audio-packet-send-{str(link_id or '')[:8]}",
+        _AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
+        packet.send,
+    )
+    send_duration_ms = _note_rns_send_duration(send_start)
+    if not completed:
+        _mark_audio_link_send_timeout(link_id, reason)
+        return None, send_duration_ms
+    if error:
+        raise RuntimeError(error)
+    return bool(result is not False), send_duration_ms
 
 
 def remove_audio_link(link_id: str) -> Optional[Dict[str, Any]]:
@@ -9513,32 +10391,10 @@ def _handle_audio_link_establish_timeout(link_id: str) -> None:
     if current is None or current.get("established") is True:
         return
     peer_key = str(current.get("peerPresenceHash") or "").strip().lower()
-    link = current.get("link")
-    if link is not None:
-        try:
-            link.set_link_closed_callback(None)
-        except Exception:
-            pass
-        try:
-            link.teardown()
-        except Exception:
-            pass
-    removed = remove_audio_link(link_id)
-    if removed is None:
-        return
+    _teardown_audio_link_id(link_id, "establish_timeout")
     log(
         "[presence_bridge] target=reticulum-audio-link audio_link_establish_timeout "
         f"peer={peer_key} link={link_id}"
-    )
-    emit_event(
-        "group_audio_link_closed",
-        {
-            "linkId": link_id,
-            "peerPresenceHash": removed.get("peerPresenceHash") or "",
-            "peerDestinationHash": removed.get("peerDestinationHash") or "",
-            "incoming": removed.get("incoming") is True,
-            "reason": "establish_timeout",
-        },
     )
     _schedule_audio_link_retry(peer_key, "establish_timeout")
 
@@ -9793,6 +10649,7 @@ def _handle_audio_link_packet(message, packet) -> None:
                     state["peerPresenceHash"] = peer_presence_hash
                 state["last_rx_at"] = time.time()
                 state["last_activity_at"] = state["last_rx_at"]
+                state["consecutive_send_timeouts"] = 0
             if peer_presence_hash:
                 _register_active_audio_for_peer(peer_presence_hash, link_id)
                 canonical_id = _canonical_audio_link_id_for_peer(peer_presence_hash)
@@ -9856,6 +10713,7 @@ def _handle_audio_link_packet(message, packet) -> None:
                     state["peerPresenceHash"] = peer_presence_hash
                 state["last_rx_at"] = time.time()
                 state["last_activity_at"] = state["last_rx_at"]
+                state["consecutive_send_timeouts"] = 0
             if peer_presence_hash:
                 _register_active_audio_for_peer(peer_presence_hash, link_id)
         _emit_call_bridge_message(
@@ -9954,10 +10812,10 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
             f"peer={peer_key or 'unknown'} reason=link_pressure "
             f"links={pressure_links} max={_OVERLAY_MAX_TOTAL_LINKS}"
         )
-        try:
-            link.teardown()
-        except Exception:
-            pass
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=presence-reticulum overlay_inbound_reject peer={peer_key or 'unknown'} reason=link_pressure",
+        )
         return ""
     if peer_key:
         if not _admit_overlay_peer_if_allowed(peer_key, f"inbound:{reason}", incoming=True):
@@ -9965,20 +10823,20 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
                 "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
                 f"peer={peer_key} reason={reason}"
             )
-            try:
-                link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=presence-reticulum overlay_inbound_reject peer={peer_key} reason={reason}",
+            )
             return ""
     elif not _overlay_unknown_inbound_allowed():
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
             f"peer=unknown reason={reason} active={len(_inbound_overlay_neighbors)}"
         )
-        try:
-            link.teardown()
-        except Exception:
-            pass
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=presence-reticulum overlay_inbound_reject peer=unknown reason={reason}",
+        )
         return ""
     link_id = str(uuid.uuid4())
     now = time.time()
@@ -10260,9 +11118,10 @@ def ensure_started(config_dir: str):
         RNS.Transport.register_announce_handler(_announce_handler)
         ensure_transport_monitor_started()
         ensure_rns_callback_scheduler_monitor_started()
-        install_rns_shared_frame_probe()
-        install_rns_transport_inbound_probe()
-        install_rns_link_receive_probe()
+        if _RNS_INTERNAL_TIMING_PROBES_ENABLED:
+            install_rns_shared_frame_probe()
+            install_rns_transport_inbound_probe()
+            install_rns_link_receive_probe()
         return _destination
 
 
@@ -10301,7 +11160,8 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
         return
 
     try:
-        global _last_presence_wire, _rns_auth_announced, _last_no_verified_peers_announce_at
+        global _last_presence_wire, _last_presence_announce_wire, _last_presence_announce_id
+        global _rns_auth_announced, _last_no_verified_peers_announce_at
         env_type = envelope.get("type") if isinstance(envelope.get("type"), str) else ""
         if env_type == "PRESENCE_OFFLINE":
             _rns_announce_on_auth_session_end()
@@ -10320,6 +11180,12 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
 
         wire_bytes = make_presence_wire(envelope, _OVERLAY_DEFAULT_HOPS)
         _last_presence_wire = wire_bytes
+        if env_type == "PRESENCE_ANNOUNCE":
+            _last_presence_announce_wire = wire_bytes
+            _last_presence_announce_id = str(envelope.get("id") or "")
+        elif env_type == "PRESENCE_OFFLINE":
+            _last_presence_announce_wire = None
+            _last_presence_announce_id = ""
         peer_hashes = _snapshot_established_overlay_neighbor_hashes()
         local_hex = destination_hash_hex(_destination.hash)
         env_type = envelope.get("type") if isinstance(envelope.get("type"), str) else ""
@@ -10333,21 +11199,35 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
             f"type={env_type} peer_addr={env_addr} "
             f"fanout_hashes={','.join(peer_hashes)}"
         )
-        sent_peer_hashes: list[str] = []
-        for peer_hash in peer_hashes:
-            if _send_wire_to_established_overlay_peer(
-                peer_hash,
-                wire_bytes,
-                "presence_publish",
-            ):
-                sent_peer_hashes.append(peer_hash)
+        envelope_id = str(envelope.get("id") or "")
+        queued, queued_count = _enqueue_presence_fanout_tasks(
+            peer_hashes,
+            wire_bytes,
+            "presence_publish",
+            envelope_id,
+        )
+        if not queued:
+            emit_resp(
+                req_id,
+                False,
+                payload={
+                    "code": "scheduler_queue_full",
+                    "lane": "presence-fanout",
+                    "queuedPeers": queued_count,
+                    "fanoutPeers": len(peer_hashes),
+                },
+                error="Reticulum scheduler lane is full: presence-fanout",
+            )
+            return
         emit_resp(
             req_id,
             True,
             payload={
-                "fanoutPeers": len(sent_peer_hashes),
-                "fanoutHashes": sent_peer_hashes,
+                "fanoutPeers": len(peer_hashes),
+                "fanoutHashes": peer_hashes,
                 "localPresenceHash": local_hex,
+                "fanoutQueued": True,
+                "queuedPeers": queued_count,
             },
         )
     except Exception as exc:
@@ -10383,20 +11263,34 @@ def handle_forward_presence(req_id: str, payload: Dict[str, Any]) -> None:
             origin_sender_hash=origin_sender_hash,
         )
         peer_hashes = _snapshot_established_overlay_neighbor_hashes(exclude_hashes)
-        sent_peer_hashes: list[str] = []
-        for peer_hash in peer_hashes:
-            if _send_wire_to_established_overlay_peer(
-                peer_hash,
-                wire_bytes,
-                "presence_forward",
-            ):
-                sent_peer_hashes.append(peer_hash)
+        envelope_id = str(envelope.get("id") or "")
+        queued, queued_count = _enqueue_presence_fanout_tasks(
+            peer_hashes,
+            wire_bytes,
+            "presence_forward",
+            envelope_id,
+        )
+        if not queued:
+            emit_resp(
+                req_id,
+                False,
+                payload={
+                    "code": "scheduler_queue_full",
+                    "lane": "presence-fanout",
+                    "queuedPeers": queued_count,
+                    "fanoutPeers": len(peer_hashes),
+                },
+                error="Reticulum scheduler lane is full: presence-fanout",
+            )
+            return
         emit_resp(
             req_id,
             True,
             payload={
-                "fanoutPeers": len(sent_peer_hashes),
-                "fanoutHashes": sent_peer_hashes,
+                "fanoutPeers": len(peer_hashes),
+                "fanoutHashes": peer_hashes,
+                "fanoutQueued": True,
+                "queuedPeers": queued_count,
             },
         )
     except Exception as exc:
@@ -10409,9 +11303,18 @@ def handle_overlay_sync_state(req_id: str, payload: Dict[str, Any]) -> None:
     verified = verified_raw if isinstance(verified_raw, list) else []
     active = active_raw if isinstance(active_raw, list) else []
     _set_verified_overlay_peers(verified, [str(h) for h in active])
-    _sync_overlay_links()
-    _maybe_announce_local_destination_low_verified_overlay_peers()
-    emit_resp(req_id, True)
+    queued = _enqueue_scheduler_task(
+        "link-management",
+        "overlay-sync-maintenance",
+        _run_overlay_sync_maintenance,
+        "overlay_sync_state",
+        drop_oldest=True,
+    )
+    emit_resp(
+        req_id,
+        True,
+        payload={"maintenanceQueued": bool(queued)},
+    )
 
 
 def handle_overlay_note_candidate_failure(req_id: str, payload: Dict[str, Any]) -> None:
@@ -10846,10 +11749,10 @@ def handle_reject_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
                 ).encode("utf-8"),
                 f"target=qchat-file-reticulum auth_result_reject transfer={transfer_id}",
             )
-            try:
-                link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=qchat-file-reticulum auth_result_reject_close transfer={transfer_id}",
+            )
         emit_resp(req_id, True)
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
@@ -11460,15 +12363,8 @@ def handle_close_group_audio_link(req_id: str, payload: Dict[str, Any]) -> None:
         return
     if is_current_outgoing:
         _set_audio_link_desired(peer_key, False)
-    link = state.get("link")
     try:
-        if link is not None:
-            try:
-                link.set_link_closed_callback(None)
-            except Exception:
-                pass
-            link.teardown()
-        emit_audio_link_closed(link_id, close_reason or "local_close")
+        _teardown_audio_link_id(link_id, close_reason or "local_close")
         emit_resp(req_id, True)
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
@@ -11484,21 +12380,12 @@ def handle_reset_group_audio_peer_state(req_id: str, payload: Dict[str, Any]) ->
     _set_audio_link_desired(peer_key, False)
     with _state_lock:
         links_to_close = [
-            (link_id, state.get("link"))
+            link_id
             for link_id, state in list(_audio_links_by_id.items())
             if str(state.get("peerPresenceHash") or "").strip().lower() == peer_key
         ]
-    for link_id, link in links_to_close:
-        try:
-            if link is not None:
-                try:
-                    link.set_link_closed_callback(None)
-                except Exception:
-                    pass
-                link.teardown()
-        except Exception:
-            pass
-        emit_audio_link_closed(link_id, "peer_state_reset")
+    for link_id in links_to_close:
+        _teardown_audio_link_id(link_id, "peer_state_reset")
         closed += 1
 
     with _state_lock:
@@ -11721,8 +12608,20 @@ def handle_send_group_audio_link_heartbeat(req_id: str, payload: Dict[str, Any])
         )
         return
     try:
-        packet = RNS.Packet(link, encoded["wire_bytes"], create_receipt=False)
-        result = packet.send()
+        result, _send_duration_ms = _send_packet_on_audio_link_bounded(
+            resolved_link_id,
+            link,
+            encoded["wire_bytes"],
+            "audio_heartbeat",
+        )
+        if result is None:
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "packet_send_timeout"},
+                error="Packet send timed out",
+            )
+            return
         if result is False:
             emit_resp(
                 req_id,
@@ -11732,6 +12631,7 @@ def handle_send_group_audio_link_heartbeat(req_id: str, payload: Dict[str, Any])
             )
             return
         state["last_activity_at"] = time.time()
+        state["consecutive_send_timeouts"] = 0
         emit_resp(req_id, True, payload={"linkId": resolved_link_id})
     except Exception as exc:
         emit_resp(
@@ -11917,6 +12817,10 @@ def main() -> None:
         pass
     try:
         _json_event_queue.put_nowait(None)
+    except queue.Full:
+        pass
+    try:
+        _json_priority_event_queue.put_nowait(None)
     except queue.Full:
         pass
     stdout_thread.join(timeout=10.0)

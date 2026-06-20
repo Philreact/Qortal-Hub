@@ -382,6 +382,8 @@ try {
         p2pOutboundOverlayPeers?: number;
         p2pInboundOverlayPeers?: number;
         p2pActiveOverlayPeers?: number;
+        p2pReceivingOverlayPeers?: number;
+        p2pReceivingOverlayPeersStableMs?: number;
         verifiedOverlayPeerCount?: number;
       }>,
     reticulumGetConfigEditorInfo: () =>
@@ -447,6 +449,8 @@ try {
         p2pOutboundOverlayPeers?: number;
         p2pInboundOverlayPeers?: number;
         p2pActiveOverlayPeers?: number;
+        p2pReceivingOverlayPeers?: number;
+        p2pReceivingOverlayPeersStableMs?: number;
         verifiedOverlayPeerCount?: number;
       }) => void
     ) => {

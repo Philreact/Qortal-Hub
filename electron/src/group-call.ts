@@ -1635,7 +1635,6 @@ export class GroupCallManager extends EventEmitter {
   private lastStage5FlushBoostAtMs = 0;
   private lastStage5FlushBoostPacketFailures = 0;
 
-  private presenceExpiredHandler: (address: string) => void;
   private onReticulumGroupCallMessage:
     | ((
         wire: Record<string, unknown>,
@@ -1682,15 +1681,6 @@ export class GroupCallManager extends EventEmitter {
         reason: string;
       }) => void)
     | null = null;
-  private onPresenceUpdated:
-    | (({ address, online }: { address: string; online: boolean }) => void)
-    | null = null;
-  private presenceEvictionTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
-  private static readonly PRESENCE_EVICTION_GRACE_MS = 12_000;
-  private static readonly TRANSPORT_HEALTH_STALE_MS = 15_000;
   private transportHealthByRoom = new Map<
     string,
     { reportedAtMs: number; healthyPeerAddresses: Set<string> }
@@ -1967,10 +1957,6 @@ export class GroupCallManager extends EventEmitter {
     super();
     this.presence = presence;
     this.reticulumBridge = reticulumBridge ?? null;
-
-    this.presenceExpiredHandler = (address: string) => {
-      this.schedulePresenceEviction(address);
-    };
   }
 
   private rememberReticulumPeerPresenceHash(
@@ -2347,31 +2333,6 @@ export class GroupCallManager extends EventEmitter {
 
     this.verifyPool.start();
 
-    // Hook into presence-updated to detect abrupt disconnects (with grace period)
-    // Store reference so stop() can properly remove it.
-    this.onPresenceUpdated = ({
-      address,
-      online,
-    }: {
-      address: string;
-      online: boolean;
-    }) => {
-      if (!online) {
-        this.presenceExpiredHandler(address);
-      } else {
-        // Peer came back online — cancel any pending eviction timer
-        const timer = this.presenceEvictionTimers.get(address);
-        if (timer !== undefined) {
-          loggerLog(
-            `[GCall] ${address} back online — cancelling eviction timer`
-          );
-          clearTimeout(timer);
-          this.presenceEvictionTimers.delete(address);
-        }
-      }
-    };
-    this.presence.on('presence-updated', this.onPresenceUpdated);
-
     this.qortalSpectatorSweepTimer = setInterval(() => {
       if (this.watchedQortalGroupNumericIds.size === 0) {
         return;
@@ -2397,11 +2358,6 @@ export class GroupCallManager extends EventEmitter {
     this.started = false;
     this.verifyPool.stop();
     this.detachReticulumBridgeListeners();
-    if (this.onPresenceUpdated)
-      this.presence.off('presence-updated', this.onPresenceUpdated);
-    for (const timer of this.presenceEvictionTimers.values())
-      clearTimeout(timer);
-    this.presenceEvictionTimers.clear();
     this.localAddresses.clear();
     this.localAddressesBySource.clear();
     this.participantNodeIds.clear();
@@ -10551,62 +10507,4 @@ export class GroupCallManager extends EventEmitter {
     };
   }
 
-  private schedulePresenceEviction(address: string): void {
-    if (this.presenceEvictionTimers.has(address)) return;
-
-    let inCall = false;
-    for (const [, room] of this.rooms) {
-      if (room.participants.has(address)) {
-        inCall = true;
-        break;
-      }
-    }
-    if (!inCall) return;
-
-    loggerLog(
-      `[GCall] Presence offline for ${address} — starting ${GroupCallManager.PRESENCE_EVICTION_GRACE_MS}ms grace timer`
-    );
-    const timer = setTimeout(() => {
-      this.presenceEvictionTimers.delete(address);
-      if (this.presence.isAddressOnline(address)) {
-        loggerLog(`[GCall] ${address} recovered — skipping eviction`);
-        return;
-      }
-
-      const now = Date.now();
-      let delayedByHealthyTransport = false;
-      for (const [roomId, room] of this.rooms) {
-        if (!room.participants.has(address)) continue;
-        const transportHealth = this.transportHealthByRoom.get(roomId);
-        if (
-          shouldDelayPresenceEvictionForHealthyTransport({
-            lastReportAtMs: transportHealth?.reportedAtMs,
-            healthyPeerAddresses:
-              transportHealth?.healthyPeerAddresses ?? new Set(),
-            address,
-            nowMs: now,
-            staleAfterMs: GroupCallManager.TRANSPORT_HEALTH_STALE_MS,
-          })
-        ) {
-          delayedByHealthyTransport = true;
-          loggerLog(
-            `[GCall] Grace period expired for ${address} in ${roomId} — delaying eviction because transport health is still recent`
-          );
-          continue;
-        }
-        loggerLog(
-          `[GCall] Grace period expired for ${address} — evicting from ${roomId}`
-        );
-        this.handleLeave(roomId, address, true);
-      }
-
-      if (
-        delayedByHealthyTransport &&
-        !this.presence.isAddressOnline(address)
-      ) {
-        this.schedulePresenceEviction(address);
-      }
-    }, GroupCallManager.PRESENCE_EVICTION_GRACE_MS);
-    this.presenceEvictionTimers.set(address, timer);
-  }
 }

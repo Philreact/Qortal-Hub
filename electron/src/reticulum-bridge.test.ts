@@ -689,6 +689,9 @@ describe('ReticulumBridge group audio support', () => {
       overlayLinksConnected: 0,
       overlayLinksOutboundConnected: 0,
       overlayLinksInboundConnected: 0,
+      overlayLinksReceivingConnected: 0,
+      overlayLinksReceivingStableMs: 0,
+      reason: undefined,
     });
     expect(seen).toEqual([
       {
@@ -704,6 +707,9 @@ describe('ReticulumBridge group audio support', () => {
         overlayLinksConnected: 0,
         overlayLinksOutboundConnected: 0,
         overlayLinksInboundConnected: 0,
+        overlayLinksReceivingConnected: 0,
+        overlayLinksReceivingStableMs: 0,
+        reason: undefined,
       },
     ]);
     expect(persistReticulumSharedTransportState).toHaveBeenCalledWith({
@@ -910,6 +916,7 @@ describe('ReticulumBridge group audio support', () => {
         reason: 'closed',
         queuedPackets: 0,
         closedByReticulum: true,
+        lastActivityAgeMs: 1_000,
       },
     });
     internal.handleFrame({
@@ -940,7 +947,7 @@ describe('ReticulumBridge group audio support', () => {
     });
 
     expect(seen).toEqual([
-      { peerHash: 'peer-hash', reason: 'closed', lastActivityAgeMs: null },
+      { peerHash: 'peer-hash', reason: 'closed', lastActivityAgeMs: 1_000 },
       { peerHash: 'peer-hash-2', reason: 'closed', lastActivityAgeMs: null },
     ]);
   });

@@ -15,7 +15,7 @@ vi.mock('./reticulum-daemon', () => ({
 
 vi.mock('./reticulum-bridge', () => ({
   startReticulumBridge: vi.fn(),
-  stopReticulumBridge: vi.fn(),
+  stopReticulumBridgeAndWait: vi.fn(),
 }));
 
 import { error as loggerError, log as loggerLog } from './logger';
@@ -26,7 +26,10 @@ import {
   startBundledReticulumDaemon,
   waitForReticulumSharedInstanceReady,
 } from './reticulum-daemon';
-import { startReticulumBridge, stopReticulumBridge } from './reticulum-bridge';
+import {
+  startReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 import { startReticulumForAppLaunch } from './reticulum-launch';
 
 describe('startReticulumForAppLaunch', () => {
@@ -105,7 +108,7 @@ describe('startReticulumForAppLaunch', () => {
       timeoutError
     );
     expect(restartBundledReticulumDaemonAndWaitReady).not.toHaveBeenCalled();
-    expect(stopReticulumBridge).not.toHaveBeenCalled();
+    expect(stopReticulumBridgeAndWait).not.toHaveBeenCalled();
   });
 
   it('does not restart shared rnsd when another live app instance owns it', async () => {
@@ -174,7 +177,7 @@ describe('startReticulumForAppLaunch', () => {
       '[Reticulum] Launch readiness wait failed; continuing with bridge startup:',
       restartError
     );
-    expect(stopReticulumBridge).toHaveBeenCalledTimes(1);
+    expect(stopReticulumBridgeAndWait).toHaveBeenCalledTimes(1);
     expect(startReticulumBridge).toHaveBeenCalledTimes(1);
     expect(restartBundledReticulumDaemonAndWaitReady).toHaveBeenCalledTimes(1);
   });
@@ -190,7 +193,7 @@ describe('startReticulumForAppLaunch', () => {
     await startReticulumForAppLaunch(2_345);
 
     expect(waitForReticulumSharedInstanceReady).toHaveBeenCalledWith(750);
-    expect(stopReticulumBridge).toHaveBeenCalledTimes(1);
+    expect(stopReticulumBridgeAndWait).toHaveBeenCalledTimes(1);
     expect(restartBundledReticulumDaemonAndWaitReady).toHaveBeenCalledTimes(1);
     expect(startBundledReticulumDaemon).not.toHaveBeenCalled();
     expect(loggerError).toHaveBeenCalledWith(

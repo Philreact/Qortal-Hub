@@ -2,84 +2,56 @@ import { describe, expect, it } from 'vitest';
 import { computeP2pHealth } from './p2pHealth';
 
 describe('computeP2pHealth', () => {
-  it('bad when no remote hubs or no sendable peers', () => {
+  it('bad when no receiving peers', () => {
+    expect(
+      computeP2pHealth({
+        onlineRemoteHubInterfaces: 2,
+        p2pReceivingOverlayPeers: 0,
+        p2pReceivingOverlayPeersStableMs: 0,
+      })
+    ).toBe('bad');
+  });
+
+  it('low when receiving peer count or stable time is below good thresholds', () => {
     expect(
       computeP2pHealth({
         onlineRemoteHubInterfaces: 0,
-        p2pOutboundOverlayPeers: 2,
-        p2pInboundOverlayPeers: 2,
-      })
-    ).toBe('bad');
-    expect(
-      computeP2pHealth({
-        onlineRemoteHubInterfaces: 2,
-        p2pOutboundOverlayPeers: 0,
-        p2pInboundOverlayPeers: 0,
-      })
-    ).toBe('bad');
-  });
-
-  it('low when not bad but below good thresholds', () => {
-    expect(
-      computeP2pHealth({
-        onlineRemoteHubInterfaces: 1,
-        p2pOutboundOverlayPeers: 2,
-        p2pInboundOverlayPeers: 2,
+        p2pReceivingOverlayPeers: 2,
+        p2pReceivingOverlayPeersStableMs: 60_000,
       })
     ).toBe('low');
     expect(
       computeP2pHealth({
         onlineRemoteHubInterfaces: 2,
-        p2pOutboundOverlayPeers: 1,
-        p2pInboundOverlayPeers: 0,
+        p2pReceivingOverlayPeers: 3,
+        p2pReceivingOverlayPeersStableMs: 29_999,
       })
     ).toBe('low');
   });
 
-  it('good when at least 2 hubs and 2 sendable peers', () => {
+  it('good when receiving from at least 3 peers for at least 30 seconds', () => {
     expect(
       computeP2pHealth({
-        onlineRemoteHubInterfaces: 2,
-        p2pOutboundOverlayPeers: 2,
-        p2pInboundOverlayPeers: 2,
-      })
-    ).toBe('good');
-    expect(
-      computeP2pHealth({
-        onlineRemoteHubInterfaces: 3,
-        p2pOutboundOverlayPeers: 5,
-        p2pInboundOverlayPeers: 4,
+        onlineRemoteHubInterfaces: 0,
+        p2pReceivingOverlayPeers: 3,
+        p2pReceivingOverlayPeersStableMs: 30_000,
       })
     ).toBe('good');
     expect(
       computeP2pHealth({
         onlineRemoteHubInterfaces: 2,
-        p2pOutboundOverlayPeers: 0,
-        p2pInboundOverlayPeers: 4,
-      })
-    ).toBe('good');
-    expect(
-      computeP2pHealth({
-        onlineRemoteHubInterfaces: 2,
-        p2pOutboundOverlayPeers: 2,
-        p2pInboundOverlayPeers: 1,
-      })
-    ).toBe('good');
-    expect(
-      computeP2pHealth({
-        onlineRemoteHubInterfaces: 2,
-        p2pOutboundOverlayPeers: 4,
-        p2pInboundOverlayPeers: 0,
+        p2pReceivingOverlayPeers: 4,
+        p2pReceivingOverlayPeersStableMs: 45_000,
       })
     ).toBe('good');
   });
 
-  it('falls back to active overlay peers when directional counts are absent', () => {
+  it('does not use old active overlay peers when receiving counts are absent', () => {
     expect(
       computeP2pHealth({
         onlineRemoteHubInterfaces: 2,
         p2pActiveOverlayPeers: 2,
       })
-    ).toBe('good');
+    ).toBe('bad');
   });
 });

@@ -40,7 +40,8 @@ export const RETICULUM_OVERLAY_MAX_NEIGHBORS =
   RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS;
 /** Keep a verified overlay peer around briefly after link loss while retrying fanout. */
 export const RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS = 2 * 60_000;
-const RETICULUM_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_MS = 30_000;
+const RETICULUM_LINK_CLOSE_BASE_COOLDOWN_MS = 60_000;
+const RETICULUM_LINK_CLOSE_REPEAT_COOLDOWN_MS = 5 * 60_000;
 const RETICULUM_CANDIDATE_PROOF_WINDOW_MS = 90_000;
 const RETICULUM_CANDIDATE_FAILURE_LIMIT = 2;
 
@@ -264,6 +265,8 @@ type VerifiedReticulumPeer = {
   lastSeen: number;
   verifiedAt: number;
   linkClosedAt: number | null;
+  linkCloseCount: number;
+  linkCooldownUntil: number | null;
 };
 
 export type ReticulumVerifiedPeerSnapshot = {
@@ -890,7 +893,7 @@ export class PresenceManager extends EventEmitter {
     if (route.kind === 'reticulum') {
       this.markReticulumOverlayPeerVerified(
         route.destinationHash,
-        'presence',
+        route.viaDestinationHash ? 'presence-relayed' : 'presence-direct',
         address,
         now
       );
@@ -1133,7 +1136,7 @@ export class PresenceManager extends EventEmitter {
     destinationHash: string,
     reason?: string,
     now: number = Date.now(),
-    details: { lastActivityAgeMs?: number | null } = {}
+    _details: { lastActivityAgeMs?: number | null } = {}
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
@@ -1141,20 +1144,6 @@ export class PresenceManager extends EventEmitter {
     const wasVerified = Boolean(existingVerified);
     const wasActive = this.activeReticulumNeighborHashes.includes(hash);
     if (!wasVerified && !wasActive) return;
-    const reasonKey = String(reason ?? '').toLowerCase();
-    const lastActivityAgeMs = details.lastActivityAgeMs;
-    const keepActiveForRecentTimeout =
-      wasVerified &&
-      reasonKey.includes('timeout') &&
-      typeof lastActivityAgeMs === 'number' &&
-      Number.isFinite(lastActivityAgeMs) &&
-      lastActivityAgeMs <= RETICULUM_LINK_TIMEOUT_RECENT_ACTIVITY_GRACE_MS;
-    if (keepActiveForRecentTimeout) {
-      loggerLog(
-        `[Presence] Reticulum overlay fanout peer retained sender_hash=${hash}${reason ? ` reason=${reason}` : ''} last_activity_age_ms=${Math.max(0, Math.floor(lastActivityAgeMs))} verified_retained=yes`
-      );
-      return;
-    }
     this.activeReticulumNeighborHashes = this.activeReticulumNeighborHashes.filter(
       (activeHash) => activeHash !== hash
     );
@@ -1162,14 +1151,21 @@ export class PresenceManager extends EventEmitter {
       (activeHash) => activeHash !== hash
     );
     if (existingVerified) {
+      const nextCloseCount = existingVerified.linkCloseCount + 1;
+      const cooldownMs =
+        nextCloseCount <= 1
+          ? RETICULUM_LINK_CLOSE_BASE_COOLDOWN_MS
+          : RETICULUM_LINK_CLOSE_REPEAT_COOLDOWN_MS;
       this.verifiedReticulumPeers.set(hash, {
         ...existingVerified,
         lastSeen: existingVerified.lastSeen,
         linkClosedAt: now,
+        linkCloseCount: nextCloseCount,
+        linkCooldownUntil: now + cooldownMs,
       });
     }
     loggerLog(
-      `[Presence] Reticulum overlay fanout peer removed sender_hash=${hash}${reason ? ` reason=${reason}` : ''}${wasVerified ? ' verified_retained=yes' : ''}`
+      `[Presence] Reticulum overlay fanout peer removed sender_hash=${hash}${reason ? ` reason=${reason}` : ''}${wasVerified ? ' verified_retained=yes' : ''}${existingVerified ? ` close_count=${existingVerified.linkCloseCount + 1}` : ''}`
     );
     const neighborsChanged = this.recomputeReticulumActiveNeighbors(now);
     if (wasVerified || wasActive || neighborsChanged) {
@@ -1512,14 +1508,20 @@ export class PresenceManager extends EventEmitter {
     const existing = this.verifiedReticulumPeers.get(hash);
     if (existing) {
       const wasClosed = existing.linkClosedAt !== null;
+      const canClearClosedState =
+        !wasClosed ||
+        source !== 'presence-relayed' ||
+        (existing.linkCooldownUntil !== null && now >= existing.linkCooldownUntil);
       this.verifiedReticulumPeers.set(hash, {
         destinationHash: hash,
         address: existing.address || address,
         lastSeen: now,
         verifiedAt: existing.verifiedAt,
-        linkClosedAt: null,
+        linkClosedAt: canClearClosedState ? null : existing.linkClosedAt,
+        linkCloseCount: canClearClosedState ? 0 : existing.linkCloseCount,
+        linkCooldownUntil: canClearClosedState ? null : existing.linkCooldownUntil,
       });
-      if (wasClosed) {
+      if (wasClosed && canClearClosedState) {
         this.recomputeReticulumActiveNeighbors(now);
         this.emitReticulumOverlayChanged();
       }
@@ -1531,6 +1533,8 @@ export class PresenceManager extends EventEmitter {
       lastSeen: now,
       verifiedAt: now,
       linkClosedAt: null,
+      linkCloseCount: 0,
+      linkCooldownUntil: null,
     });
     this.recomputeReticulumActiveNeighbors(now);
     this.emit('reticulum-peer-verified', {
@@ -1565,17 +1569,28 @@ export class PresenceManager extends EventEmitter {
     }
   }
 
+  private isReticulumPeerFanoutEligible(
+    peer: VerifiedReticulumPeer,
+    now: number
+  ): boolean {
+    if (peer.linkClosedAt !== null) return false;
+    return peer.linkCooldownUntil === null || now >= peer.linkCooldownUntil;
+  }
+
   private recomputeReticulumActiveNeighbors(now: number): boolean {
     const nextVerified = this.activeReticulumNeighborHashes.filter(
-      (hash) =>
-        !this.isSelfReticulumHash(hash) && this.verifiedReticulumPeers.has(hash)
+      (hash) => {
+        if (this.isSelfReticulumHash(hash)) return false;
+        const peer = this.verifiedReticulumPeers.get(hash);
+        return Boolean(peer && this.isReticulumPeerFanoutEligible(peer, now));
+      }
     );
     if (nextVerified.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
       const seen = new Set(nextVerified.map((hash) => hash.toLowerCase()));
       const waitingVerified = [...this.verifiedReticulumPeers.values()]
         .filter(
           (peer) =>
-            peer.linkClosedAt === null &&
+            this.isReticulumPeerFanoutEligible(peer, now) &&
             !seen.has(peer.destinationHash.toLowerCase())
         )
         .sort((a, b) => {

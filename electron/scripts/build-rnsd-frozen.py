@@ -292,6 +292,17 @@ def copy_runtime_sources(electron_root: Path, output_dir: Path) -> None:
     print(f"Wrote {output_dir / 'mesh-network.passphrase'}")
 
 
+def remove_python_cache_artifacts(output_dir: Path) -> None:
+    for pycache_dir in output_dir.rglob("__pycache__"):
+        if pycache_dir.is_dir():
+            shutil.rmtree(pycache_dir)
+            print(f"Removed {pycache_dir}")
+    for pyc_file in output_dir.rglob("*.pyc"):
+        if pyc_file.is_file():
+            pyc_file.unlink()
+            print(f"Removed {pyc_file}")
+
+
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     electron_root = script_dir.parent
@@ -337,6 +348,7 @@ def main() -> None:
             entry_script=entry_script,
         )
     copy_runtime_sources(electron_root, args.output_dir)
+    remove_python_cache_artifacts(args.output_dir)
 
     marker = args.output_dir / "BUNDLE_READY"
     marker.write_text(

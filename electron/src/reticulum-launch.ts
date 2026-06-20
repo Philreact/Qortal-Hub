@@ -6,7 +6,10 @@ import {
   startBundledReticulumDaemon,
   waitForReticulumSharedInstanceReady,
 } from './reticulum-daemon';
-import { startReticulumBridge, stopReticulumBridge } from './reticulum-bridge';
+import {
+  startReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 
 const RETICULUM_EXISTING_SHARED_PREFLIGHT_MS = 750;
 
@@ -30,7 +33,7 @@ async function tryStartBridgeWithExistingSharedInstance(
     await startReticulumBridge();
     return true;
   } catch (bridgeError) {
-    stopReticulumBridge();
+    await stopReticulumBridgeAndWait();
     if (isReticulumSharedDaemonOwnedByAnotherLiveInstance()) {
       loggerError(
         '[Reticulum] Existing shared instance is owned by another live app instance, but bridge startup failed:',
@@ -75,7 +78,7 @@ async function waitForAnyReticulumReadiness(timeoutMs?: number): Promise<void> {
         '[Reticulum] Bridge startup failed after shared readiness timeout; restarting rnsd:',
         bridgeError
       );
-      stopReticulumBridge();
+      await stopReticulumBridgeAndWait();
     }
     await restartBundledReticulumDaemonAndWaitReady(timeoutMs, {
       forceKillOnStopTimeout: true,
