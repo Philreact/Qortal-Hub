@@ -32,6 +32,7 @@ _reticulum = None
 _identity = None
 _destination = None
 _announce_handler = None
+_reticulum_config_dir = ""
 _known_peers: Dict[str, Any] = {}
 _candidate_peers: Dict[str, Dict[str, Any]] = {}
 _verified_overlay_peers: Dict[str, Dict[str, Any]] = {}
@@ -134,6 +135,16 @@ RNS_ANNOUNCE_INTERVAL_SEC = 15 * 60
 _rns_auth_announced: bool = False
 _rns_periodic_announce_timer: Optional[threading.Timer] = None
 _last_no_verified_peers_announce_at: float = 0.0
+
+_OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME = "overlay-good-outbound-cache.json"
+_OVERLAY_GOOD_OUTBOUND_CACHE_VERSION = 1
+_OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS = 32
+_OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS = 2 * 60 * 60.0
+_OVERLAY_GOOD_OUTBOUND_CACHE_WRITE_MIN_SECONDS = 30.0
+_overlay_good_outbound_cache: Dict[str, Dict[str, Any]] = {}
+_overlay_good_outbound_cache_loaded = False
+_overlay_good_outbound_cache_dirty = False
+_overlay_good_outbound_cache_last_write_at = 0.0
 
 
 def qortal_base58_decode(s: str) -> bytes:
@@ -3891,6 +3902,195 @@ def verbose_presence_log(message: str) -> None:
         log(message)
 
 
+def _overlay_good_outbound_cache_path() -> str:
+    if not _reticulum_config_dir:
+        return ""
+    return os.path.join(_reticulum_config_dir, _OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME)
+
+
+def _overlay_good_cache_float(value: Any, fallback: float = 0.0) -> float:
+    if not isinstance(value, (int, float)):
+        return fallback
+    try:
+        out = float(value)
+    except Exception:
+        return fallback
+    if not math.isfinite(out):
+        return fallback
+    return out
+
+
+def _overlay_good_cache_int(value: Any, fallback: int = 0) -> int:
+    if not isinstance(value, (int, float)):
+        return fallback
+    try:
+        out = int(value)
+    except Exception:
+        return fallback
+    return out
+
+
+def _prune_overlay_good_outbound_cache(now: Optional[float] = None) -> None:
+    if now is None:
+        now = time.time()
+    expired = [
+        peer_hash
+        for peer_hash, entry in _overlay_good_outbound_cache.items()
+        if not isinstance(entry, dict)
+        or not _valid_presence_destination_hash_hex(peer_hash)
+        or now - _overlay_good_cache_float(entry.get("last_rx_at")) > _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS
+    ]
+    for peer_hash in expired:
+        _overlay_good_outbound_cache.pop(peer_hash, None)
+    if len(_overlay_good_outbound_cache) <= _OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS:
+        return
+    ranked = sorted(
+        _overlay_good_outbound_cache.items(),
+        key=lambda item: (
+            -_overlay_good_cache_float((item[1] or {}).get("last_rx_at")),
+            -_overlay_good_cache_int((item[1] or {}).get("rx_count")),
+            item[0],
+        ),
+    )
+    keep = {peer_hash for peer_hash, _entry in ranked[:_OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS]}
+    for peer_hash in list(_overlay_good_outbound_cache.keys()):
+        if peer_hash not in keep:
+            _overlay_good_outbound_cache.pop(peer_hash, None)
+
+
+def _flush_overlay_good_outbound_cache(force: bool = False) -> None:
+    global _overlay_good_outbound_cache_dirty, _overlay_good_outbound_cache_last_write_at
+    if not _overlay_good_outbound_cache_dirty and not force:
+        return
+    path = _overlay_good_outbound_cache_path()
+    if not path:
+        return
+    now = time.time()
+    if not force and now - _overlay_good_outbound_cache_last_write_at < _OVERLAY_GOOD_OUTBOUND_CACHE_WRITE_MIN_SECONDS:
+        return
+    _prune_overlay_good_outbound_cache(now)
+    payload = {
+        "version": _OVERLAY_GOOD_OUTBOUND_CACHE_VERSION,
+        "updatedAt": now,
+        "peers": [
+            {
+                "peerHash": peer_hash,
+                "lastRxAt": _overlay_good_cache_float(entry.get("last_rx_at")),
+                "firstRxAt": _overlay_good_cache_float(
+                    entry.get("first_rx_at"),
+                    _overlay_good_cache_float(entry.get("last_rx_at")),
+                ),
+                "rxCount": _overlay_good_cache_int(entry.get("rx_count")),
+            }
+            for peer_hash, entry in sorted(
+                _overlay_good_outbound_cache.items(),
+                key=lambda item: (-_overlay_good_cache_float((item[1] or {}).get("last_rx_at")), item[0]),
+            )
+        ],
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+        os.replace(tmp_path, path)
+        _overlay_good_outbound_cache_last_write_at = now
+        _overlay_good_outbound_cache_dirty = False
+    except Exception as exc:
+        log(f"[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_write_failed err={exc}")
+
+
+def _load_overlay_good_outbound_cache() -> None:
+    global _overlay_good_outbound_cache_loaded, _overlay_good_outbound_cache_dirty
+    if _overlay_good_outbound_cache_loaded:
+        return
+    _overlay_good_outbound_cache_loaded = True
+    path = _overlay_good_outbound_cache_path()
+    if not path or not os.path.exists(path):
+        return
+    now = time.time()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            parsed = json.load(fh)
+    except Exception as exc:
+        log(f"[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_read_failed err={exc}")
+        return
+    peers = parsed.get("peers") if isinstance(parsed, dict) else None
+    if not isinstance(peers, list):
+        return
+    loaded = 0
+    for item in peers:
+        if not isinstance(item, dict):
+            continue
+        peer_hash = str(item.get("peerHash") or "").strip().lower()
+        last_rx_at = _coerce_epoch_seconds(item.get("lastRxAt"))
+        if not _valid_presence_destination_hash_hex(peer_hash) or last_rx_at is None:
+            continue
+        if now - last_rx_at > _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS:
+            _overlay_good_outbound_cache_dirty = True
+            continue
+        first_rx_at = _coerce_epoch_seconds(item.get("firstRxAt")) or last_rx_at
+        _overlay_good_outbound_cache[peer_hash] = {
+            "first_rx_at": first_rx_at,
+            "last_rx_at": last_rx_at,
+            "rx_count": max(1, _overlay_good_cache_int(item.get("rxCount"), 1)),
+        }
+        loaded += 1
+    _prune_overlay_good_outbound_cache(now)
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_loaded "
+        f"peers={loaded} retained={len(_overlay_good_outbound_cache)}"
+    )
+    if _overlay_good_outbound_cache_dirty:
+        _flush_overlay_good_outbound_cache(force=True)
+
+
+def _note_good_outbound_overlay_rx(peer_hash: str) -> None:
+    global _overlay_good_outbound_cache_dirty
+    peer_key = str(peer_hash or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return
+    local_hex = _local_presence_hash_hex()
+    if local_hex and peer_key == local_hex:
+        return
+    now = time.time()
+    entry = _overlay_good_outbound_cache.get(peer_key) or {}
+    entry["first_rx_at"] = float(entry.get("first_rx_at") or now)
+    entry["last_rx_at"] = now
+    entry["rx_count"] = int(entry.get("rx_count") or 0) + 1
+    _overlay_good_outbound_cache[peer_key] = entry
+    _overlay_good_outbound_cache_dirty = True
+    _flush_overlay_good_outbound_cache()
+
+
+def _seed_overlay_good_outbound_cache_candidates() -> None:
+    _load_overlay_good_outbound_cache()
+    if not _overlay_good_outbound_cache:
+        return
+    now = time.time()
+    seeded = 0
+    for peer_hash, entry in sorted(
+        _overlay_good_outbound_cache.items(),
+        key=lambda item: (-_overlay_good_cache_float((item[1] or {}).get("last_rx_at")), item[0]),
+    ):
+        if seeded >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            break
+        last_rx_at = _coerce_epoch_seconds(entry.get("last_rx_at"))
+        if last_rx_at is None or now - last_rx_at > _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS:
+            continue
+        if not _overlay_peer_available_for_new_outbound(peer_hash):
+            continue
+        if peer_hash not in _known_peers:
+            ensure_known_peer_from_recall(peer_hash, "bootstrap_cache")
+        _mark_candidate_peer(peer_hash, "bootstrap_cache")
+        seeded += 1
+    if seeded:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_seeded "
+            f"candidates={seeded}"
+        )
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -7171,6 +7371,8 @@ def _handle_overlay_link_packet(message, packet) -> None:
                 previous_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
                 state["peerPresenceHash"] = peer_hash
                 _note_overlay_peer_alive(peer_hash, "rx_presence")
+                if state.get("incoming") is not True:
+                    _note_good_outbound_overlay_rx(peer_hash)
                 _register_active_overlay_for_peer(peer_hash, link_id)
                 emit_reason = (
                     "rx_presence_identified"
@@ -10269,13 +10471,14 @@ def on_hub_packet_received(data, packet) -> None:
 
 def ensure_started(config_dir: str):
     global _reticulum, _identity, _destination
-    global _announce_handler
+    global _announce_handler, _reticulum_config_dir
 
     with _state_lock:
         if _destination is not None:
             return _destination
 
         os.makedirs(config_dir, exist_ok=True)
+        _reticulum_config_dir = config_dir
         _reticulum = RNS.Reticulum(
             configdir=config_dir,
             logdest=RNS.LOG_FILE,
@@ -10329,6 +10532,7 @@ def handle_start(req_id: str, payload: Dict[str, Any]) -> None:
             payload={"destinationHash": presence_hex},
         )
         log(f"[presence_bridge] build={PRESENCE_BRIDGE_BUILD}")
+        _seed_overlay_good_outbound_cache_candidates()
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
 
@@ -10512,6 +10716,7 @@ def handle_overlay_note_candidate_failure(req_id: str, payload: Dict[str, Any]) 
 
 
 def handle_stop(req_id: str) -> None:
+    _flush_overlay_good_outbound_cache(force=True)
     _rns_announce_on_auth_session_end()
     emit_resp(req_id, True)
 
