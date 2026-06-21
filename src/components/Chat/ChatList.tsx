@@ -290,7 +290,12 @@ export const ChatList = ({
           (message.signature || message.tempSignature)
       );
 
-    if (totalMessages.length === 0) return;
+    if (totalMessages.length === 0) {
+      setMessages([]);
+      setShowScrollButton(false);
+      setShowScrollDownButton(false);
+      return;
+    }
 
     setMessages(totalMessages);
 
@@ -325,7 +330,7 @@ export const ChatList = ({
         hasLoadedInitialRef.current = true;
       }
     }, 500);
-  }, [initialMessages, tempMessages]);
+  }, [chatIdentity, initialMessages, tempMessages]);
 
   const scrollToBottom = (initialMsgs?: unknown[], divideIndex?: number) => {
     const index = initialMsgs ? initialMsgs.length - 1 : messages.length - 1;

@@ -715,6 +715,63 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps mentioned message hints under the Reticulum wire limit', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+    });
+    const mentionHash = hashReticulumChatMentionAddress('QmentionedAddress');
+    const channelId = 'ch-00000000-0000-4000-8000-000000000000';
+    const event = signedEvent({
+      groupId: 91,
+      channelId,
+      mentionAddressHashes: [mentionHash],
+    });
+    manager.setLocalGroupMemberships([91]);
+    (manager as any).db.upsertChannel({
+      groupId: 91,
+      channelId,
+      name: 'mentions',
+      position: 1,
+      archived: false,
+      createdBy: event.authorAddress,
+      createdAt: event.timestamp,
+      updatedAt: event.timestamp,
+    });
+    expect((manager as any).db.getChannel(91, channelId)?.channelId).toBe(channelId);
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+
+    expect(manager.getHistory(91, event.channelId, 10)[0]).toMatchObject({
+      eventId: event.eventId,
+      mentionAddressHashes: [mentionHash],
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'event_hint',
+      g: 91,
+      h: expect.objectContaining({
+        id: event.eventId,
+        ph: event.payloadHash,
+      }),
+    });
+    expect((sent[0] as any).h.mh).toBeUndefined();
+    expect(byteLengthUtf8JsonWithBridgeSender(sent[0])).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
   it('treats local persistence as send success when live fanout has no route', async () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

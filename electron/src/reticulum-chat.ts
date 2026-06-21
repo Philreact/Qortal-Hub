@@ -86,7 +86,7 @@ export interface ReticulumChatEventHintWire {
   ts: number;
   et: ReticulumChatEventType;
   ph: string;
-  mh: string[];
+  mh?: string[];
 }
 
 export interface ReticulumChatEventOffer {
@@ -378,7 +378,6 @@ function eventHintToWire(hint: ReticulumChatEventHint): ReticulumChatEventHintWi
     ts: hint.timestamp,
     et: hint.eventType,
     ph: hint.payloadHash,
-    mh: hint.mentionAddressHashes,
   };
 }
 
