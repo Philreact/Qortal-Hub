@@ -2185,7 +2185,7 @@ describe('reticulum chat manager', () => {
       k: 'sync_req',
       g: 48,
       mode: 'latest',
-      limit: 100,
+      limit: 25,
     });
     manager.close();
   });
@@ -2217,7 +2217,7 @@ describe('reticulum chat manager', () => {
       g: 49,
       mode: 'after',
       ts: 45_000,
-      limit: 100,
+      limit: 25,
     });
     manager.close();
   });
@@ -2422,7 +2422,7 @@ describe('reticulum chat manager', () => {
       mode: 'after',
       ts: 20_002,
       id: 'event-page-2',
-      limit: 100,
+      limit: 25,
     });
     manager.close();
   });
@@ -2483,7 +2483,7 @@ describe('reticulum chat manager', () => {
       mode: 'before',
       ts: 30_002,
       id: 'event-history-2',
-      limit: 100,
+      limit: 25,
     });
     manager.close();
   });

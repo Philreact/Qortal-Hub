@@ -313,7 +313,7 @@ export class ReticulumChatDatabase {
     `);
     this.stmtGetEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND channel_id = ? AND timestamp >= ?
+      WHERE group_id = ? AND channel_id = ? AND timestamp > ?
       ORDER BY timestamp ASC, event_id ASC
       LIMIT ?
     `);
@@ -783,21 +783,22 @@ export class ReticulumChatDatabase {
       : (normalizedChannelId == null
           ? (this.db.prepare(`
               SELECT * FROM reticulum_chat_events
-              WHERE group_id = ? AND timestamp >= ?
+              WHERE group_id = ? AND timestamp > ?
               ORDER BY timestamp ASC, event_id ASC
               LIMIT ?
             `).all(groupId, afterTimestamp, limit) as EventRow[])
           : (this.stmtGetEventsAfter.all(groupId, normalizedChannelId, afterTimestamp, limit) as EventRow[]));
+    const matchesAfter = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (normalizedChannelId != null && normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
+      if (!afterEventId) return event.timestamp > afterTimestamp;
+      return event.timestamp > afterTimestamp ||
+        (event.timestamp === afterTimestamp && event.eventId > afterEventId);
+    };
     return this.mergeWindowEvents(
-      sqliteRows.map(rowToEvent),
+      sqliteRows.map(rowToEvent).filter(matchesAfter),
       [...this.memoryEvents.values()]
-        .filter((event) => {
-          if (event.groupId !== groupId) return false;
-          if (normalizedChannelId != null && normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
-          if (!afterEventId) return event.timestamp >= afterTimestamp;
-          return event.timestamp > afterTimestamp ||
-            (event.timestamp === afterTimestamp && event.eventId > afterEventId);
-        })
+        .filter(matchesAfter)
         .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId))
         .slice(0, limit),
       limit
@@ -842,16 +843,17 @@ export class ReticulumChatDatabase {
               ORDER BY timestamp ASC, event_id ASC
             `).all(groupId, beforeTimestamp, limit) as EventRow[])
           : (this.stmtGetEventsBefore.all(groupId, normalizedChannelId, beforeTimestamp, limit) as EventRow[]));
+    const matchesBefore = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (normalizedChannelId != null && normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
+      if (!beforeEventId) return event.timestamp < beforeTimestamp;
+      return event.timestamp < beforeTimestamp ||
+        (event.timestamp === beforeTimestamp && event.eventId < beforeEventId);
+    };
     return this.mergeWindowEvents(
-      sqliteRows.map(rowToEvent),
+      sqliteRows.map(rowToEvent).filter(matchesBefore),
       [...this.memoryEvents.values()]
-        .filter((event) => {
-          if (event.groupId !== groupId) return false;
-          if (normalizedChannelId != null && normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
-          if (!beforeEventId) return event.timestamp < beforeTimestamp;
-          return event.timestamp < beforeTimestamp ||
-            (event.timestamp === beforeTimestamp && event.eventId < beforeEventId);
-        })
+        .filter(matchesBefore)
         .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
         .slice(0, limit),
       limit

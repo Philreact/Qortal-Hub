@@ -247,7 +247,7 @@ const RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS = 30_000;
 const RETICULUM_CHAT_TYPING_TTL_MS = 8_000;
 const RETICULUM_CHAT_TYPING_REFRESH_MS = 3_000;
 const RETICULUM_CHAT_SYNC_LIMIT = 200;
-const RETICULUM_CHAT_DEFAULT_SYNC_WINDOW = 100;
+const RETICULUM_CHAT_DEFAULT_SYNC_WINDOW = 25;
 const RETICULUM_CHAT_AUTHOR_HEAD_LIMIT = 100;
 const RETICULUM_CHAT_AUTHOR_GAP_LIMIT = 50;
 const RETICULUM_CHAT_SYNC_OVERLAP_MS = 5_000;
@@ -1212,13 +1212,6 @@ export class ReticulumChatManager extends EventEmitter {
             groupId,
             RETICULUM_CHAT_AUTHOR_HEAD_LIMIT
           );
-          void this.sendToPeer(
-            peerPresenceHash || senderDestinationHash,
-            this.buildAuthorHeadsReqWire(groupId)
-          );
-          for (const syncWire of this.buildSyncReqWires(groupId)) {
-            void this.sendToPeer(peerPresenceHash || senderDestinationHash, syncWire);
-          }
         }
         return;
       case 'unsub':
