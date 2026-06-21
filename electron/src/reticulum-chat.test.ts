@@ -2713,6 +2713,99 @@ describe('reticulum chat manager', () => {
     adminManager.close();
   });
 
+  it('applies categories and clears channel category assignments', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([81]);
+
+    const applyMetadata = async (
+      eventId: string,
+      eventType: ReticulumChatEvent['eventType'],
+      payload: Record<string, unknown>,
+      channelId = 'general'
+    ) => {
+      const event = signedEvent({
+        eventId,
+        groupId: 81,
+        channelId,
+        eventType,
+        encryptedPayload: JSON.stringify(payload),
+      });
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+      await expect(
+        manager.applyChannelMetadataEvent(event.eventId, payload)
+      ).resolves.toBe(true);
+    };
+
+    await applyMetadata('event-category-create', 'category_create', {
+      categoryId: 'cat-team',
+      name: 'team',
+      position: 0,
+    });
+    expect(manager.getCategories(81)).toContainEqual(
+      expect.objectContaining({ categoryId: 'cat-team', name: 'team' })
+    );
+
+    await applyMetadata(
+      'event-channel-create-with-category',
+      'channel_create',
+      {
+        channelId: 'support',
+        categoryId: 'cat-team',
+        name: 'support',
+        position: 0,
+      },
+      'support'
+    );
+    expect(manager.getChannels(81, true)).toContainEqual(
+      expect.objectContaining({ channelId: 'support', categoryId: 'cat-team' })
+    );
+
+    await applyMetadata(
+      'event-channel-clear-category',
+      'channel_update',
+      {
+        channelId: 'support',
+        categoryId: '',
+        name: 'support',
+        position: 0,
+      },
+      'support'
+    );
+    expect(
+      manager.getChannels(81, true).find((channel) => channel.channelId === 'support')
+    ).toMatchObject({ channelId: 'support', categoryId: undefined });
+
+    await applyMetadata(
+      'event-channel-move-back-to-category',
+      'channel_update',
+      {
+        channelId: 'support',
+        categoryId: 'cat-team',
+        name: 'support',
+        position: 0,
+      },
+      'support'
+    );
+    await applyMetadata('event-category-delete', 'category_delete', {
+      categoryId: 'cat-team',
+    });
+
+    expect(manager.getCategories(81)).toEqual([]);
+    expect(
+      manager.getChannels(81, true).find((channel) => channel.channelId === 'support')
+    ).toMatchObject({ channelId: 'support', categoryId: undefined });
+    manager.close();
+  });
+
   it('returns channel metadata history across all group channels', () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

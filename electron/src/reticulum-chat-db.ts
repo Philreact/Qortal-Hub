@@ -10,10 +10,21 @@ export const RETICULUM_CHAT_DEFAULT_CHANNEL_ID = 'general';
 export type ReticulumGroupChannel = {
   channelId: string;
   groupId: number;
+  categoryId?: string;
   name: string;
   description?: string;
   position: number;
   archived: boolean;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ReticulumGroupCategory = {
+  categoryId: string;
+  groupId: number;
+  name: string;
+  position: number;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -98,6 +109,14 @@ export function normalizeReticulumChatChannelId(value: unknown): string {
     normalized === RETICULUM_CHAT_DEFAULT_CHANNEL_ID
     ? normalized
     : RETICULUM_CHAT_DEFAULT_CHANNEL_ID;
+}
+
+export function normalizeReticulumChatCategoryId(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLowerCase();
+  return /^cat-[a-z0-9][a-z0-9-]{0,54}[a-z0-9]$/.test(normalized)
+    ? normalized
+    : '';
 }
 
 function parseMentionAddressHashes(value: unknown): string[] {
@@ -206,6 +225,7 @@ export class ReticulumChatDatabase {
   private memoryEvents = new Map<string, ReticulumChatEvent>();
   private memorySearchText = new Map<string, string>();
   private memoryChannels = new Map<string, ReticulumGroupChannel>();
+  private memoryCategories = new Map<string, ReticulumGroupCategory>();
   private memoryMentions = new Map<
     string,
     Array<{
@@ -259,6 +279,11 @@ export class ReticulumChatDatabase {
   private stmtUpsertChannel: Statement;
   private stmtGetChannels: Statement;
   private stmtGetChannel: Statement;
+  private stmtUpsertCategory: Statement;
+  private stmtGetCategories: Statement;
+  private stmtGetCategory: Statement;
+  private stmtDeleteCategory: Statement;
+  private stmtClearChannelCategory: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -304,7 +329,10 @@ export class ReticulumChatDatabase {
             'channel_update',
             'channel_archive',
             'channel_restore',
-            'channel_reorder'
+            'channel_reorder',
+            'category_create',
+            'category_update',
+            'category_delete'
           )
         ORDER BY timestamp DESC, event_id DESC
         LIMIT ?
@@ -498,9 +526,9 @@ export class ReticulumChatDatabase {
     `);
     this.stmtUpsertChannel = this.db.prepare(`
       INSERT OR REPLACE INTO reticulum_chat_channels
-        (group_id, channel_id, name, description, position, archived, created_by, created_at, updated_at)
+        (group_id, channel_id, category_id, name, description, position, archived, created_by, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.stmtGetChannels = this.db.prepare(`
       SELECT * FROM reticulum_chat_channels
@@ -512,6 +540,28 @@ export class ReticulumChatDatabase {
       WHERE group_id = ? AND channel_id = ?
       LIMIT 1
     `);
+    this.stmtUpsertCategory = this.db.prepare(`
+      INSERT OR REPLACE INTO reticulum_chat_categories
+        (group_id, category_id, name, position, created_by, created_at, updated_at)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtGetCategories = this.db.prepare(`
+      SELECT * FROM reticulum_chat_categories
+      WHERE group_id = ?
+      ORDER BY position ASC, name ASC, category_id ASC
+    `);
+    this.stmtGetCategory = this.db.prepare(`
+      SELECT * FROM reticulum_chat_categories
+      WHERE group_id = ? AND category_id = ?
+      LIMIT 1
+    `);
+    this.stmtDeleteCategory = this.db.prepare(
+      'DELETE FROM reticulum_chat_categories WHERE group_id = ? AND category_id = ?'
+    );
+    this.stmtClearChannelCategory = this.db.prepare(
+      'UPDATE reticulum_chat_channels SET category_id = NULL WHERE group_id = ? AND category_id = ?'
+    );
     this.backfillSearchIndex();
   }
 
@@ -745,6 +795,9 @@ export class ReticulumChatDatabase {
       'channel_archive',
       'channel_restore',
       'channel_reorder',
+      'category_create',
+      'category_update',
+      'category_delete',
     ]);
     return this.mergeWindowEvents(
       (this.stmtGetChannelMetadataEvents.all(groupId, maxLimit) as EventRow[]).map(rowToEvent),
@@ -971,6 +1024,7 @@ export class ReticulumChatDatabase {
     const rows = this.stmtGetChannels.all(groupId) as Array<{
       group_id: number;
       channel_id: string;
+      category_id: string | null;
       name: string;
       description: string | null;
       position: number;
@@ -982,6 +1036,7 @@ export class ReticulumChatDatabase {
     const channels = rows.map((row) => ({
       groupId: row.group_id,
       channelId: normalizeReticulumChatChannelId(row.channel_id),
+      ...(normalizeReticulumChatCategoryId(row.category_id) ? { categoryId: normalizeReticulumChatCategoryId(row.category_id) } : {}),
       name: normalizeReticulumChatChannelId(row.name),
       ...(row.description ? { description: row.description } : {}),
       position: row.position,
@@ -1024,6 +1079,7 @@ export class ReticulumChatDatabase {
     const normalizedChannel: ReticulumGroupChannel = {
       ...channel,
       channelId: normalizeReticulumChatChannelId(channel.channelId),
+      categoryId: normalizeReticulumChatCategoryId(channel.categoryId) || undefined,
       name: normalizeReticulumChatChannelId(channel.name),
       position: Math.max(0, Math.floor(channel.position)),
       archived: channel.archived === true,
@@ -1036,6 +1092,7 @@ export class ReticulumChatDatabase {
     const result = this.stmtUpsertChannel.run(
       normalizedChannel.groupId,
       normalizedChannel.channelId,
+      normalizedChannel.categoryId ?? null,
       normalizedChannel.name,
       normalizedChannel.description ?? null,
       normalizedChannel.position,
@@ -1058,6 +1115,109 @@ export class ReticulumChatDatabase {
       createdAt: 0,
       updatedAt: 0,
     };
+  }
+
+  getCategories(groupId: number): ReticulumGroupCategory[] {
+    const rows = this.stmtGetCategories.all(groupId) as Array<{
+      group_id: number;
+      category_id: string;
+      name: string;
+      position: number;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+    }>;
+    const categories = rows
+      .map((row) => ({
+        groupId: row.group_id,
+        categoryId: normalizeReticulumChatCategoryId(row.category_id),
+        name: normalizeReticulumChatChannelId(row.name),
+        position: Math.max(0, Math.floor(row.position)),
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
+      .filter((category) => !!category.categoryId);
+    for (const category of this.memoryCategories.values()) {
+      if (category.groupId !== groupId) continue;
+      const existingIndex = categories.findIndex(
+        (item) => item.categoryId === category.categoryId
+      );
+      if (existingIndex >= 0) {
+        categories[existingIndex] = category;
+      } else {
+        categories.push(category);
+      }
+    }
+    return categories.sort(
+      (a, b) => a.position - b.position || a.name.localeCompare(b.name)
+    );
+  }
+
+  getCategory(groupId: number, categoryId: string): ReticulumGroupCategory | null {
+    const normalizedCategoryId = normalizeReticulumChatCategoryId(categoryId);
+    if (!normalizedCategoryId) return null;
+    const row = this.stmtGetCategory.get(groupId, normalizedCategoryId) as
+      | {
+          group_id: number;
+          category_id: string;
+          name: string;
+          position: number;
+          created_by: string;
+          created_at: number;
+          updated_at: number;
+        }
+      | undefined;
+    const memory = this.memoryCategories.get(`${groupId}:${normalizedCategoryId}`);
+    if (memory) return memory;
+    if (!row) return null;
+    return {
+      groupId: row.group_id,
+      categoryId: normalizeReticulumChatCategoryId(row.category_id),
+      name: normalizeReticulumChatChannelId(row.name),
+      position: Math.max(0, Math.floor(row.position)),
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  upsertCategory(category: ReticulumGroupCategory): boolean {
+    const normalizedCategory: ReticulumGroupCategory = {
+      ...category,
+      categoryId: normalizeReticulumChatCategoryId(category.categoryId),
+      name: normalizeReticulumChatChannelId(category.name),
+      position: Math.max(0, Math.floor(category.position)),
+    };
+    if (!normalizedCategory.categoryId) return false;
+    this.memoryCategories.set(
+      `${normalizedCategory.groupId}:${normalizedCategory.categoryId}`,
+      normalizedCategory
+    );
+    const result = this.stmtUpsertCategory.run(
+      normalizedCategory.groupId,
+      normalizedCategory.categoryId,
+      normalizedCategory.name,
+      normalizedCategory.position,
+      normalizedCategory.createdBy,
+      normalizedCategory.createdAt,
+      normalizedCategory.updatedAt
+    );
+    return result.changes > 0;
+  }
+
+  deleteCategory(groupId: number, categoryId: string): boolean {
+    const normalizedCategoryId = normalizeReticulumChatCategoryId(categoryId);
+    if (!normalizedCategoryId) return false;
+    this.memoryCategories.delete(`${groupId}:${normalizedCategoryId}`);
+    for (const [key, channel] of this.memoryChannels.entries()) {
+      if (channel.groupId === groupId && channel.categoryId === normalizedCategoryId) {
+        this.memoryChannels.set(key, { ...channel, categoryId: undefined });
+      }
+    }
+    this.stmtClearChannelCategory.run(groupId, normalizedCategoryId);
+    const result = this.stmtDeleteCategory.run(groupId, normalizedCategoryId);
+    return result.changes > 0;
   }
 
   getChatSummaries(myAddress = ''): ReticulumGroupChatSummary[] {
@@ -1571,6 +1731,7 @@ export class ReticulumChatDatabase {
       CREATE TABLE IF NOT EXISTS reticulum_chat_channels (
         group_id INTEGER NOT NULL,
         channel_id TEXT NOT NULL,
+        category_id TEXT,
         name TEXT NOT NULL,
         description TEXT,
         position INTEGER NOT NULL,
@@ -1580,23 +1741,17 @@ export class ReticulumChatDatabase {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (group_id, channel_id)
       );
+      CREATE TABLE IF NOT EXISTS reticulum_chat_categories (
+        group_id INTEGER NOT NULL,
+        category_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, category_id)
+      );
     `);
-    this.ensureColumn(
-      'reticulum_chat_events',
-      'mention_address_hashes',
-      "TEXT NOT NULL DEFAULT '[]'"
-    );
-    this.ensureColumn('reticulum_chat_events', 'channel_id', "TEXT NOT NULL DEFAULT 'general'");
-    this.ensureColumn('reticulum_chat_mentions', 'channel_id', "TEXT NOT NULL DEFAULT 'general'");
-    this.ensureColumn('reticulum_chat_search_index', 'channel_id', "TEXT NOT NULL DEFAULT 'general'");
-  }
-
-  private ensureColumn(tableName: string, columnName: string, definition: string): void {
-    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
-      name?: string;
-    }>;
-    if (columns.some((column) => column.name === columnName)) return;
-    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
   private migrateReadWatermarksSchema(): void {

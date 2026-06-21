@@ -162,6 +162,7 @@ export function useReticulumGroupChat(
       const eventType = typeof event.eventType === 'string' ? event.eventType : '';
       if (
         !eventType.startsWith('channel_') &&
+        !eventType.startsWith('category_') &&
         typeof event.channelId === 'string' &&
         event.channelId !== normalizedChannelId
       ) {

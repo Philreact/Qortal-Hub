@@ -575,6 +575,7 @@ declare global {
         groupId: number,
         includeArchived?: boolean
       ) => Promise<unknown[]>;
+      getCategories: (groupId: number) => Promise<unknown[]>;
       applyChannelMetadata: (
         eventId: string,
         payload: unknown

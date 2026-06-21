@@ -1334,27 +1334,6 @@ export function GlobalChatWidget({
                                     error?.message || 'An error occurred'
                                   );
                                 });
-                              const reticulumTimestamp = Number(
-                                group?.reticulumChatSummary?.updatedAt ||
-                                  group?.reticulumChatSummary?.lastEvent
-                                    ?.timestamp ||
-                                  0
-                              );
-                              if (reticulumTimestamp > 0) {
-                                void window.reticulumChat
-                                  ?.markRead?.(
-                                    Number(group?.groupId),
-                                    'general',
-                                    reticulumTimestamp,
-                                    myAddress
-                                  )
-                                  .then(() => {
-                                    executeEvent(
-                                      'reticulum-chat-summaries-refresh',
-                                      {}
-                                    );
-                                  });
-                              }
                               setSelectedGroup(group);
                               getTimestampEnterChat();
                             }}

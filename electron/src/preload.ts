@@ -1410,6 +1410,11 @@ try {
           groupId,
           includeArchived
         ) as Promise<unknown[]>,
+      getCategories: async (groupId: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCategories',
+          groupId
+        ) as Promise<unknown[]>,
       applyChannelMetadata: async (eventId: string, payload: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:applyChannelMetadata',
@@ -1653,6 +1658,11 @@ try {
           'reticulumChat:getChannels',
           groupId,
           includeArchived
+        ) as Promise<unknown[]>,
+      getCategories: async (groupId: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCategories',
+          groupId
         ) as Promise<unknown[]>,
       applyChannelMetadata: async (eventId: string, payload: unknown) =>
         ipcRenderer.invoke(

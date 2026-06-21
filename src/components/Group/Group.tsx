@@ -2395,33 +2395,7 @@ export const Group = ({
     [adminsWithNames, notifyAdmin]
   );
 
-  const markReticulumGroupRead = useCallback((group: any) => {
-    const groupId = Number(group?.groupId);
-    const timestamp = Number(
-      group?.reticulumChatSummary?.updatedAt ||
-        group?.reticulumChatSummary?.lastEvent?.timestamp ||
-        0
-    );
-    if (!Number.isInteger(groupId) || groupId <= 0 || timestamp <= 0) return;
-    const channels = Array.isArray(group?.reticulumChatSummary?.channels)
-      ? group.reticulumChatSummary.channels
-      : [{ channelId: 'general', updatedAt: timestamp }];
-    void Promise.all(
-      channels.map((channel: any) =>
-        window.reticulumChat?.markRead?.(
-          groupId,
-          typeof channel?.channelId === 'string' ? channel.channelId : 'general',
-          Number(channel?.updatedAt || timestamp),
-          myAddress
-        )
-      )
-    ).then(() => {
-      executeEvent('reticulum-chat-summaries-refresh', {});
-    });
-  }, [myAddress]);
-
   const selectGroupFunc = useCallback((group) => {
-    markReticulumGroupRead(group);
     setMobileViewMode('group');
     setDesktopSideView('groups');
     initiatedGetMembers.current = false;
@@ -2449,7 +2423,7 @@ export const Group = ({
     setTimeout(() => {
       setSelectedGroup(group);
     }, 200);
-  }, [markReticulumGroupRead]);
+  }, []);
 
   const renderQChatTabContent = ({
     hide = false,

@@ -89,6 +89,7 @@ import {
   readReticulumChatHistoryFromDb,
   readReticulumChatChannelMetadataHistoryFromDb,
   readReticulumChatChannelsFromDb,
+  readReticulumChatCategoriesFromDb,
   readReticulumChatSummariesFromDb,
   readReticulumChatSyncStateFromDb,
   markReticulumChatReadInDb,
@@ -3835,6 +3836,13 @@ ipcMain.handle(
       : readReticulumChatChannelsFromDb(groupId, includeArchived === true);
   }
 );
+
+ipcMain.handle('reticulumChat:getCategories', async (_event, groupId: number) => {
+  const manager = getReticulumChatManager();
+  return manager
+    ? manager.getCategories(groupId)
+    : readReticulumChatCategoriesFromDb(groupId);
+});
 
 ipcMain.handle(
   'reticulumChat:applyChannelMetadata',

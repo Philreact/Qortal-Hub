@@ -14,7 +14,9 @@ import {
   type ReticulumChatAuthorHead,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
   normalizeReticulumChatChannelId,
+  normalizeReticulumChatCategoryId,
   type ReticulumGroupChannel,
+  type ReticulumGroupCategory,
   type ReticulumGroupChatSummary,
   type ReticulumChatSearchResult,
 } from './reticulum-chat-db';
@@ -47,7 +49,10 @@ export type ReticulumChatEventType =
   | 'channel_update'
   | 'channel_archive'
   | 'channel_restore'
-  | 'channel_reorder';
+  | 'channel_reorder'
+  | 'category_create'
+  | 'category_update'
+  | 'category_delete';
 
 export interface ReticulumChatEvent {
   eventId: string;
@@ -279,6 +284,9 @@ const VALID_EVENT_TYPES = new Set<ReticulumChatEventType>([
   'channel_archive',
   'channel_restore',
   'channel_reorder',
+  'category_create',
+  'category_update',
+  'category_delete',
 ]);
 
 const CHANNEL_METADATA_EVENT_TYPES = new Set<ReticulumChatEventType>([
@@ -287,6 +295,9 @@ const CHANNEL_METADATA_EVENT_TYPES = new Set<ReticulumChatEventType>([
   'channel_archive',
   'channel_restore',
   'channel_reorder',
+  'category_create',
+  'category_update',
+  'category_delete',
 ]);
 
 type ReticulumChatResourcePayload = {
@@ -1383,6 +1394,33 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return false;
     }
+    if (event.eventType.startsWith('category_')) {
+      const category = this.categoryFromMetadataPayload(event, payload);
+      if (!category) {
+        loggerWarn(
+          `[ReticulumChat] Ignoring category metadata event ${event.eventId}: invalid metadata payload`
+        );
+        return false;
+      }
+      const changed =
+        event.eventType === 'category_delete'
+          ? this.db.deleteCategory(category.groupId, category.categoryId)
+          : this.db.upsertCategory(category);
+      if (
+        !changed &&
+        event.eventType !== 'category_delete' &&
+        !this.db.getCategory(category.groupId, category.categoryId)
+      ) {
+        loggerWarn(
+          `[ReticulumChat] Failed to persist category metadata event ${event.eventId}:`,
+          category
+        );
+        return false;
+      }
+      this.emitSummaryChanged(event.groupId, event);
+      return true;
+    }
+
     const channel = this.channelFromMetadataPayload(event, payload);
     if (!channel) {
       loggerWarn(
@@ -1407,6 +1445,11 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getChannels(groupId, includeArchived);
   }
 
+  getCategories(groupId: number): ReticulumGroupCategory[] {
+    this.assertGroupId(groupId);
+    return this.db.getCategories(groupId);
+  }
+
   private async tryApplyPublicChannelMetadata(event: ReticulumChatEvent): Promise<void> {
     if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return;
     try {
@@ -1428,6 +1471,7 @@ export class ReticulumChatManager extends EventEmitter {
     const existing = this.db.getChannel(event.groupId, channelId);
     const now = event.timestamp;
     const name = normalizeReticulumChatChannelId(data.name ?? channelId);
+    const categoryId = normalizeReticulumChatCategoryId(data.categoryId);
     const description =
       typeof data.description === 'string' && data.description.trim()
         ? data.description.trim().slice(0, 240)
@@ -1445,15 +1489,64 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (event.eventType === 'channel_reorder') {
       if (!existing) return null;
-      return { ...existing, position, updatedAt: now };
+      return {
+        ...existing,
+        ...(Object.prototype.hasOwnProperty.call(data, 'categoryId')
+          ? { categoryId: categoryId || undefined }
+          : {}),
+        position,
+        updatedAt: now,
+      };
     }
     return {
       groupId: event.groupId,
       channelId,
+      ...(Object.prototype.hasOwnProperty.call(data, 'categoryId')
+        ? { categoryId: categoryId || undefined }
+        : { categoryId: existing?.categoryId }),
       name,
       ...(description ? { description } : {}),
       position,
       archived: existing?.archived ?? false,
+      createdBy: existing?.createdBy || event.authorAddress,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+  }
+
+  private categoryFromMetadataPayload(
+    event: ReticulumChatEvent,
+    payload: unknown
+  ): ReticulumGroupCategory | null {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const data = payload as Record<string, unknown>;
+    const categoryId = normalizeReticulumChatCategoryId(data.categoryId);
+    if (!categoryId) return null;
+    const existing = this.db.getCategory(event.groupId, categoryId);
+    const now = event.timestamp;
+    const name = normalizeReticulumChatChannelId(data.name ?? categoryId.replace(/^cat-/, ''));
+    const position = Number.isFinite(Number(data.position))
+      ? Math.max(0, Math.floor(Number(data.position)))
+      : existing?.position ?? 1000;
+    if (event.eventType === 'category_delete') {
+      if (!existing) {
+        return {
+          groupId: event.groupId,
+          categoryId,
+          name,
+          position,
+          createdBy: event.authorAddress,
+          createdAt: now,
+          updatedAt: now,
+        };
+      }
+      return { ...existing, updatedAt: now };
+    }
+    return {
+      groupId: event.groupId,
+      categoryId,
+      name,
+      position,
       createdBy: existing?.createdBy || event.authorAddress,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
@@ -3066,6 +3159,18 @@ export function readReticulumChatChannelsFromDb(
   try {
     if (!Number.isInteger(groupId) || groupId <= 0) return [];
     return db.getChannels(groupId, includeArchived);
+  } finally {
+    db.close();
+  }
+}
+
+export function readReticulumChatCategoriesFromDb(
+  groupId: number
+): ReticulumGroupCategory[] {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    return db.getCategories(groupId);
   } finally {
     db.close();
   }

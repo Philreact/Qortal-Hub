@@ -42,6 +42,7 @@ export const groupAnnouncementsAtom = atomWithReset({});
 export const groupChatTimestampsAtom = atomWithReset({});
 export type ReticulumChatSummaryAtomEntry = {
   groupId: number;
+  channelId?: string;
   lastEvent?: {
     authorAddress?: string;
     encryptedPayload?: string;
@@ -50,7 +51,10 @@ export type ReticulumChatSummaryAtomEntry = {
     timestamp?: number;
   } | null;
   unreadCount?: number;
+  mentionCount?: number;
+  hasUnreadMention?: boolean;
   updatedAt?: number;
+  channels?: ReticulumChatSummaryAtomEntry[];
 };
 export const reticulumChatSummariesAtom = atomWithReset<
   Record<string, ReticulumChatSummaryAtomEntry>
