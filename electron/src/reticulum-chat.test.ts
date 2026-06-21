@@ -44,6 +44,7 @@ function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChat
   const event: ReticulumChatEvent = {
     eventId: overrides.eventId ?? `event-${Math.random().toString(16).slice(2)}`,
     groupId: overrides.groupId ?? 7,
+    channelId: overrides.channelId ?? 'general',
     authorAddress: overrides.authorAddress ?? deriveAddressFromPublicKey(publicKey),
     authorPublicKey: overrides.authorPublicKey ?? publicKey,
     authorSeq: overrides.authorSeq ?? 1,
@@ -79,6 +80,7 @@ function signedAuthorEvents(
     const event: ReticulumChatEvent = {
       eventId: overrides.eventId ?? `event-${Math.random().toString(16).slice(2)}`,
       groupId: overrides.groupId ?? 7,
+      channelId: overrides.channelId ?? 'general',
       authorAddress,
       authorPublicKey: publicKey,
       authorSeq: overrides.authorSeq ?? 1,
@@ -2590,6 +2592,107 @@ describe('reticulum chat manager', () => {
         g: 77,
       })
     );
+    manager.close();
+  });
+
+  it('applies channel metadata only when the author is a group admin', async () => {
+    const payload = {
+      channelId: 'support',
+      name: 'support',
+      position: 1,
+    };
+    const nonAdminEvent = signedEvent({
+      eventId: 'event-channel-non-admin',
+      groupId: 78,
+      channelId: 'support',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    const nonAdminManager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    nonAdminManager.setLocalGroupMemberships([78]);
+    expect((nonAdminManager as any).db.insertEvent(nonAdminEvent, true)).toBe(true);
+    await expect(
+      nonAdminManager.applyChannelMetadataEvent(nonAdminEvent.eventId, payload)
+    ).resolves.toBe(false);
+    expect(nonAdminManager.getChannels(78, true).map((channel) => channel.channelId)).toEqual([
+      'general',
+    ]);
+    nonAdminManager.close();
+
+    const adminEvent = signedEvent({
+      eventId: 'event-channel-admin',
+      groupId: 79,
+      channelId: 'support',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    const adminManager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    adminManager.setLocalGroupMemberships([79]);
+    expect((adminManager as any).db.insertEvent(adminEvent, true)).toBe(true);
+    await expect(
+      adminManager.applyChannelMetadataEvent(adminEvent.eventId, payload)
+    ).resolves.toBe(true);
+    expect(adminManager.getChannels(79, true).map((channel) => channel.channelId)).toContain(
+      'support'
+    );
+    adminManager.close();
+  });
+
+  it('returns channel metadata history across all group channels', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+    });
+    const metadataEvent = signedEvent({
+      eventId: 'event-channel-metadata-cross-channel',
+      groupId: 80,
+      channelId: 'support',
+      eventType: 'channel_create',
+      timestamp: 10_000,
+      encryptedPayload: JSON.stringify({
+        channelId: 'support',
+        name: 'support',
+        position: 1,
+      }),
+    });
+    const messageEvent = signedEvent({
+      eventId: 'event-general-message',
+      groupId: 80,
+      channelId: 'general',
+      eventType: 'message',
+      timestamp: 11_000,
+    });
+    expect((manager as any).db.insertEvent(metadataEvent, true)).toBe(true);
+    expect((manager as any).db.insertEvent(messageEvent, true)).toBe(true);
+
+    expect(manager.getHistory(80, 'general', 10).map((item) => item.eventId)).toEqual([
+      messageEvent.eventId,
+    ]);
+    expect(manager.getChannelMetadataHistory(80, 10).map((item) => item.eventId)).toEqual([
+      metadataEvent.eventId,
+    ]);
     manager.close();
   });
 

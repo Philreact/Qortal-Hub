@@ -81,7 +81,14 @@ const addPrimaryNamesToEvents = async (
   });
 };
 
-export function useReticulumGroupChat(groupId?: number | string | null) {
+export function useReticulumGroupChat(
+  groupId?: number | string | null,
+  channelId = 'general'
+) {
+  const normalizedChannelId =
+    typeof channelId === 'string' && channelId.trim()
+      ? channelId.trim().toLowerCase()
+      : 'general';
   const numericGroupId =
     typeof groupId === 'string' ? Number(groupId) : (groupId ?? null);
   const validGroupId =
@@ -136,7 +143,9 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
     if (!enabled || validGroupId == null) return;
     let cancelled = false;
     void window.reticulumChat?.subscribeGroup?.(validGroupId);
-    void window.reticulumChat?.getHistory?.(validGroupId, 200).then(async (history) => {
+    void window.reticulumChat?.subscribeChannel?.(validGroupId, normalizedChannelId);
+    setEvents([]);
+    void window.reticulumChat?.getHistory?.(validGroupId, normalizedChannelId, 200).then(async (history) => {
       if (cancelled || !Array.isArray(history)) return;
       const enriched = await addPrimaryNamesToEvents(
         history as ReticulumChatHookEvent[],
@@ -150,10 +159,19 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
     const offEvent = window.reticulumChat?.onEvent?.((payload) => {
       const event = payload?.event as ReticulumChatHookEvent;
       if (!event || event.groupId !== validGroupId) return;
+      const eventType = typeof event.eventType === 'string' ? event.eventType : '';
+      if (
+        !eventType.startsWith('channel_') &&
+        typeof event.channelId === 'string' &&
+        event.channelId !== normalizedChannelId
+      ) {
+        return;
+      }
       enqueueIncomingEvent(event);
     });
     const offTyping = window.reticulumChat?.onTyping?.((payload) => {
       if (payload.groupId !== validGroupId) return;
+      if (payload.channelId !== normalizedChannelId) return;
       setTyping((prev) => ({
         ...prev,
         [payload.authorAddress]: payload.active,
@@ -170,8 +188,9 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
       primaryNameCacheRef.current.clear();
       offEvent?.();
       offTyping?.();
+      void window.reticulumChat?.unsubscribeChannel?.(validGroupId, normalizedChannelId);
     };
-  }, [enabled, enqueueIncomingEvent, validGroupId]);
+  }, [enabled, enqueueIncomingEvent, normalizedChannelId, validGroupId]);
 
   const publishEvent = useCallback(
     async (event: unknown) => {
@@ -185,7 +204,12 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
         };
       if (result?.success) {
         const chatEvent = event as ReticulumChatHookEvent;
-        if (Number(chatEvent?.groupId) === validGroupId) {
+        if (
+          Number(chatEvent?.groupId) === validGroupId &&
+          ((typeof chatEvent?.channelId === 'string' &&
+            chatEvent.channelId === normalizedChannelId) ||
+            chatEvent?.channelId == null)
+        ) {
           const enriched = await addPrimaryNamesToEvents(
             [chatEvent],
             primaryNameCacheRef.current
@@ -195,7 +219,7 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
       }
       return result;
     },
-    [enabled, validGroupId]
+    [enabled, normalizedChannelId, validGroupId]
   );
 
   const sendTyping = useCallback(
@@ -206,6 +230,7 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
       return (
         (await window.reticulumChat?.sendTyping?.(
           validGroupId,
+          normalizedChannelId,
           authorAddress,
           active
         )) ?? {
@@ -214,7 +239,7 @@ export function useReticulumGroupChat(groupId?: number | string | null) {
         }
       );
     },
-    [enabled, validGroupId]
+    [enabled, normalizedChannelId, validGroupId]
   );
 
   return {

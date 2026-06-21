@@ -1219,6 +1219,7 @@ try {
       onTyping: (
         cb: (payload: {
           chatId: string;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
@@ -1238,6 +1239,7 @@ try {
         chatId: string,
         cb: (payload: {
           chatId: string;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
@@ -1343,6 +1345,18 @@ try {
           success: boolean;
           error?: string;
         }>,
+      subscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:subscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
+      unsubscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
       unsubscribeGroup: async (groupId: number) =>
         ipcRenderer.invoke(
           'reticulumChat:unsubscribeGroup',
@@ -1355,12 +1369,14 @@ try {
         }>,
       sendTyping: async (
         groupId: number,
+        channelId: string,
         authorAddress: string,
         active: boolean
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:sendTyping',
           groupId,
+          channelId,
           authorAddress,
           active
         ) as Promise<{ success: boolean; error?: string }>,
@@ -1375,12 +1391,31 @@ try {
           manifest,
           eventId
         ) as Promise<{ success: boolean; error?: string }>,
-      getHistory: async (groupId: number, limit?: number) =>
+      getHistory: async (groupId: number, channelId?: string, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
           groupId,
+          channelId,
           limit
         ) as Promise<unknown[]>,
+      getChannelMetadataHistory: async (groupId: number, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataHistory',
+          groupId,
+          limit
+        ) as Promise<unknown[]>,
+      getChannels: async (groupId: number, includeArchived?: boolean) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannels',
+          groupId,
+          includeArchived
+        ) as Promise<unknown[]>,
+      applyChannelMetadata: async (eventId: string, payload: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:applyChannelMetadata',
+          eventId,
+          payload
+        ) as Promise<{ success: boolean }>,
       getSyncState: async (groupId: number) =>
         ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
           Record<string, number>
@@ -1391,7 +1426,7 @@ try {
         >,
       search: async (
         query: string,
-        options?: { groupIds?: number[]; limit?: number }
+        options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:search',
@@ -1422,12 +1457,14 @@ try {
         ) as Promise<{ success: boolean }>,
       markRead: async (
         groupId: number,
+        channelId: string,
         upToTimestamp: number,
         myAddress?: string
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:markRead',
           groupId,
+          channelId,
           upToTimestamp,
           myAddress
         ) as Promise<{ success: boolean }>,
@@ -1503,6 +1540,7 @@ try {
       onTyping: (
         cb: (payload: {
           groupId: number;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
@@ -1511,6 +1549,7 @@ try {
           cb(
             payload as {
               groupId: number;
+              channelId: string;
               authorAddress: string;
               active: boolean;
             }
@@ -1550,6 +1589,18 @@ try {
           success: boolean;
           error?: string;
         }>,
+      subscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:subscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
+      unsubscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
       unsubscribeGroup: async (groupId: number) =>
         ipcRenderer.invoke(
           'reticulumChat:unsubscribeGroup',
@@ -1562,12 +1613,14 @@ try {
         }>,
       sendTyping: async (
         groupId: number,
+        channelId: string,
         authorAddress: string,
         active: boolean
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:sendTyping',
           groupId,
+          channelId,
           authorAddress,
           active
         ) as Promise<{ success: boolean; error?: string }>,
@@ -1582,12 +1635,31 @@ try {
           manifest,
           eventId
         ) as Promise<{ success: boolean; error?: string }>,
-      getHistory: async (groupId: number, limit?: number) =>
+      getHistory: async (groupId: number, channelId?: string, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
           groupId,
+          channelId,
           limit
         ) as Promise<unknown[]>,
+      getChannelMetadataHistory: async (groupId: number, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataHistory',
+          groupId,
+          limit
+        ) as Promise<unknown[]>,
+      getChannels: async (groupId: number, includeArchived?: boolean) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannels',
+          groupId,
+          includeArchived
+        ) as Promise<unknown[]>,
+      applyChannelMetadata: async (eventId: string, payload: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:applyChannelMetadata',
+          eventId,
+          payload
+        ) as Promise<{ success: boolean }>,
       getSyncState: async (groupId: number) =>
         ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
           Record<string, number>
@@ -1598,7 +1670,7 @@ try {
         >,
       search: async (
         query: string,
-        options?: { groupIds?: number[]; limit?: number }
+        options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:search',
@@ -1629,12 +1701,14 @@ try {
         ) as Promise<{ success: boolean }>,
       markRead: async (
         groupId: number,
+        channelId: string,
         upToTimestamp: number,
         myAddress?: string
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:markRead',
           groupId,
+          channelId,
           upToTimestamp,
           myAddress
         ) as Promise<{ success: boolean }>,
@@ -1710,6 +1784,7 @@ try {
       onTyping: (
         cb: (payload: {
           groupId: number;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
@@ -1718,6 +1793,7 @@ try {
           cb(
             payload as {
               groupId: number;
+              channelId: string;
               authorAddress: string;
               active: boolean;
             }

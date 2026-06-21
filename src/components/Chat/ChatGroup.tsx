@@ -48,9 +48,15 @@ import {
 } from '../../utils/events';
 import {
   Box,
+  Button,
   ButtonBase,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   Portal,
+  TextField,
   Tooltip,
   Typography,
   useTheme,
@@ -78,7 +84,7 @@ import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
-import { getGroupMembers } from '../Group/groupApi';
+import { getGroupAdminsAddress, getGroupMembers } from '../Group/groupApi';
 
 type PendingReticulumResourceFile = {
   filePath?: string;
@@ -91,6 +97,28 @@ type PendingReticulumResourceFile = {
   width?: number;
   height?: number;
 };
+
+type ReticulumGroupChannel = {
+  channelId: string;
+  groupId: number;
+  name: string;
+  description?: string;
+  position: number;
+  archived: boolean;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+const DEFAULT_RETICULUM_CHANNEL_ID = 'general';
+
+const normalizeReticulumChannelName = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
 
 const uid = new ShortUniqueId({ length: 5 });
 const uidImages = new ShortUniqueId({ length: 12 });
@@ -230,6 +258,16 @@ export const ChatGroup = ({
   const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
     PendingReticulumResourceFile[]
   >([]);
+  const [reticulumChannels, setReticulumChannels] = useState<
+    ReticulumGroupChannel[]
+  >([]);
+  const [selectedReticulumChannelId, setSelectedReticulumChannelId] = useState(
+    DEFAULT_RETICULUM_CHANNEL_ID
+  );
+  const [isReticulumChannelAdmin, setIsReticulumChannelAdmin] = useState(false);
+  const [isCreateReticulumChannelOpen, setIsCreateReticulumChannelOpen] = useState(false);
+  const [newReticulumChannelName, setNewReticulumChannelName] = useState('');
+  const [newReticulumChannelError, setNewReticulumChannelError] = useState('');
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
   const hasInitializedWebsocket = useRef(false);
   const socketRef = useRef(null); // WebSocket reference
@@ -241,13 +279,18 @@ export const ChatGroup = ({
     enabled: reticulumChatEnabled,
     events: reticulumChatEvents,
     publishEvent: publishReticulumChatEvent,
-  } = useReticulumGroupChat(selectedGroup);
+  } = useReticulumGroupChat(selectedGroup, selectedReticulumChannelId);
+  const reticulumChatQueueId =
+    reticulumChatEnabled && selectedGroup
+      ? `${selectedGroup}:${selectedReticulumChannelId}`
+      : selectedGroup;
   const reticulumChatEnabledRef = useRef(false);
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
   const lastReadTimestamp = useRef(null);
   const handleUpdateRef = useRef(null);
   const iframeRef = useRef(null);
   const appliedReticulumEventIdsRef = useRef<Set<string>>(new Set());
+  const appliedReticulumChannelMetadataEventIdsRef = useRef<Set<string>>(new Set());
   const [windowSize, setWindowSize] = useState(() =>
     typeof window !== 'undefined'
       ? {
@@ -439,6 +482,63 @@ export const ChatGroup = ({
     getTimestampEnterChat(selectedGroup);
   }, [selectedGroup, isActive]);
 
+  const refreshReticulumChannels = useCallback(async () => {
+    const groupId = Number(selectedGroup);
+    if (!Number.isInteger(groupId) || groupId <= 0) {
+      setReticulumChannels([]);
+      setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
+      return;
+    }
+    const channels = await window.reticulumChat?.getChannels?.(groupId);
+    const parsedChannels = Array.isArray(channels)
+      ? (channels as ReticulumGroupChannel[])
+      : [];
+    const visibleChannels = parsedChannels.length
+      ? parsedChannels.filter((channel) => !channel.archived)
+      : [
+          {
+            channelId: DEFAULT_RETICULUM_CHANNEL_ID,
+            groupId,
+            name: DEFAULT_RETICULUM_CHANNEL_ID,
+            position: 0,
+            archived: false,
+            createdBy: '',
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        ];
+    setReticulumChannels(visibleChannels);
+    setSelectedReticulumChannelId((current) =>
+      visibleChannels.some((channel) => channel.channelId === current)
+        ? current
+        : DEFAULT_RETICULUM_CHANNEL_ID
+    );
+  }, [selectedGroup]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !selectedGroup) return;
+    void refreshReticulumChannels();
+  }, [refreshReticulumChannels, reticulumChatEnabled, selectedGroup]);
+
+  useEffect(() => {
+    const groupId = Number(selectedGroup);
+    if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
+      setIsReticulumChannelAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    void getGroupAdminsAddress(groupId)
+      .then((admins) => {
+        if (!cancelled) setIsReticulumChannelAdmin(admins.includes(myAddress));
+      })
+      .catch(() => {
+        if (!cancelled) setIsReticulumChannelAdmin(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [myAddress, reticulumChatEnabled, selectedGroup]);
+
   useEffect(() => {
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) {
@@ -530,20 +630,20 @@ export const ChatGroup = ({
   };
 
   const tempMessages = useMemo(() => {
-    if (!selectedGroup) return [];
-    if (queueChats[selectedGroup]) {
-      return queueChats[selectedGroup]?.filter((item) => !item?.chatReference);
+    if (!reticulumChatQueueId) return [];
+    if (queueChats[reticulumChatQueueId]) {
+      return queueChats[reticulumChatQueueId]?.filter((item) => !item?.chatReference);
     }
     return [];
-  }, [selectedGroup, queueChats]);
+  }, [queueChats, reticulumChatQueueId]);
 
   const tempChatReferences = useMemo(() => {
-    if (!selectedGroup) return [];
-    if (queueChats[selectedGroup]) {
-      return queueChats[selectedGroup]?.filter((item) => !!item?.chatReference);
+    if (!reticulumChatQueueId) return [];
+    if (queueChats[reticulumChatQueueId]) {
+      return queueChats[reticulumChatQueueId]?.filter((item) => !!item?.chatReference);
     }
     return [];
-  }, [selectedGroup, queueChats]);
+  }, [queueChats, reticulumChatQueueId]);
 
   const secretKeyRef = useRef(null);
 
@@ -555,7 +655,15 @@ export const ChatGroup = ({
 
   useEffect(() => {
     appliedReticulumEventIdsRef.current.clear();
+    appliedReticulumChannelMetadataEventIdsRef.current.clear();
   }, [selectedGroup]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled) return;
+    setMessages([]);
+    setChatReferences({});
+    appliedReticulumEventIdsRef.current.clear();
+  }, [reticulumChatEnabled, selectedReticulumChannelId]);
 
   const checkForFirstSecretKeyNotification = (messages) => {
     messages?.forEach((message) => {
@@ -1139,6 +1247,7 @@ export const ChatGroup = ({
     async ({
       encryptedPayload,
       eventType,
+      channelId,
       targetEventId,
       replyToEventId,
       mentionAddressHashes = [],
@@ -1150,7 +1259,13 @@ export const ChatGroup = ({
         | 'delete'
         | 'reaction_add'
         | 'reaction_remove'
-        | 'attachment_manifest';
+        | 'attachment_manifest'
+        | 'channel_create'
+        | 'channel_update'
+        | 'channel_archive'
+        | 'channel_restore'
+        | 'channel_reorder';
+      channelId?: string;
       targetEventId?: string;
       replyToEventId?: string;
       mentionAddressHashes?: string[];
@@ -1162,9 +1277,13 @@ export const ChatGroup = ({
       const timestamp = Date.now();
       const eventId = crypto.randomUUID?.() || `${timestamp}-${uid.rnd()}`;
       const payloadHash = await sha256Hex(encryptedPayload);
+      const eventChannelId =
+        normalizeReticulumChannelName(channelId || selectedReticulumChannelId) ||
+        DEFAULT_RETICULUM_CHANNEL_ID;
       const baseFields = {
         eventId,
         groupId,
+        channelId: eventChannelId,
         authorSeq: nextReticulumAuthorSeq(groupId, myAddress),
         timestamp,
         eventType,
@@ -1188,7 +1307,13 @@ export const ChatGroup = ({
       }
       return { ...result, event };
     },
-    [myAddress, publishReticulumChatEvent, reticulumChatEnabled, selectedGroup]
+    [
+      myAddress,
+      publishReticulumChatEvent,
+      reticulumChatEnabled,
+      selectedGroup,
+      selectedReticulumChannelId,
+    ]
   );
 
   const sendChatGroup = async ({
@@ -1233,7 +1358,7 @@ export const ChatGroup = ({
 
   const applyReticulumChatItem = useCallback((item) => {
     if (!item || isChatSenderBlocked(item)) return;
-    const processed = processWithNewMessages([item], selectedGroup);
+      const processed = processWithNewMessages([item], reticulumChatQueueId);
     const nextItem = processed?.[0] || item;
     const targetReference = nextItem.chatReference;
     const itemType =
@@ -1310,15 +1435,25 @@ export const ChatGroup = ({
       }
       return [...prev, nextItem];
     });
-  }, [isChatSenderBlocked, processWithNewMessages, selectedGroup]);
+  }, [isChatSenderBlocked, processWithNewMessages, reticulumChatQueueId]);
 
   const convertReticulumEventToChatItem = useCallback(
     async (event) => {
       if (!event || Number(event.groupId) !== Number(selectedGroup)) return null;
+      const eventChannelId =
+        normalizeReticulumChannelName(event.channelId || DEFAULT_RETICULUM_CHANNEL_ID) ||
+        DEFAULT_RETICULUM_CHANNEL_ID;
+      const isChannelMetadataEvent =
+        typeof event.eventType === 'string' &&
+        event.eventType.startsWith('channel_');
+      if (!isChannelMetadataEvent && eventChannelId !== selectedReticulumChannelId) {
+        return null;
+      }
       const baseItem = {
         signature: event.eventId,
         id: event.eventId,
         groupId: event.groupId,
+        channelId: eventChannelId,
         sender: event.authorAddress,
         senderName:
           event.senderName ||
@@ -1347,6 +1482,21 @@ export const ChatGroup = ({
         decryptedData = decrypted?.[0]?.decryptedData;
       }
       if (!decryptedData) return null;
+      if (isChannelMetadataEvent) {
+        const eventId = typeof event.eventId === 'string' ? event.eventId : '';
+        if (eventId && appliedReticulumChannelMetadataEventIdsRef.current.has(eventId)) {
+          return null;
+        }
+        const result = await window.reticulumChat?.applyChannelMetadata?.(
+          event.eventId,
+          decryptedData
+        );
+        if (result?.success) {
+          if (eventId) appliedReticulumChannelMetadataEventIdsRef.current.add(eventId);
+          await refreshReticulumChannels();
+        }
+        return null;
+      }
       const normalizedText = normalizeChatHtmlContent(
         decryptedData.message || decryptedData.messageText
       );
@@ -1441,7 +1591,15 @@ export const ChatGroup = ({
         unread: event.authorAddress === myAddress ? false : true,
       };
     },
-    [isPrivate, myAddress, myName, resolveMentionedAddresses, selectedGroup]
+    [
+      isPrivate,
+      myAddress,
+      myName,
+      refreshReticulumChannels,
+      resolveMentionedAddresses,
+      selectedGroup,
+      selectedReticulumChannelId,
+    ]
   );
 
   useEffect(() => {
@@ -1469,6 +1627,34 @@ export const ChatGroup = ({
   ]);
 
   useEffect(() => {
+    const groupId = Number(selectedGroup);
+    if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
+      return;
+    }
+    if (isPrivate !== false && !secretKey) return;
+    let cancelled = false;
+    void (async () => {
+      const history = await window.reticulumChat?.getChannelMetadataHistory?.(groupId, 500);
+      if (cancelled || !Array.isArray(history)) return;
+      for (const event of history) {
+        if (cancelled) return;
+        await convertReticulumEventToChatItem(event);
+      }
+      if (!cancelled) await refreshReticulumChannels();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    convertReticulumEventToChatItem,
+    isPrivate,
+    refreshReticulumChannels,
+    reticulumChatEnabled,
+    secretKey,
+    selectedGroup,
+  ]);
+
+  useEffect(() => {
     if (
       !reticulumChatEnabled ||
       !isActive ||
@@ -1481,18 +1667,30 @@ export const ChatGroup = ({
     if (!Number.isInteger(groupId) || groupId <= 0) return;
     const latestTimestamp = reticulumChatEvents.reduce((latest, event: any) => {
       if (Number(event?.groupId) !== groupId) return latest;
+      const eventChannelId =
+        normalizeReticulumChannelName(event?.channelId || DEFAULT_RETICULUM_CHANNEL_ID) ||
+        DEFAULT_RETICULUM_CHANNEL_ID;
+      if (eventChannelId !== selectedReticulumChannelId) return latest;
       const timestamp = Number(event?.timestamp);
       return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
     }, 0);
     if (latestTimestamp <= 0) return;
     void window.reticulumChat?.markRead?.(
       groupId,
+      selectedReticulumChannelId,
       latestTimestamp,
       myAddress
     ).then(() => {
       executeEvent('reticulum-chat-summaries-refresh', {});
     });
-  }, [isActive, myAddress, reticulumChatEnabled, reticulumChatEvents, selectedGroup]);
+  }, [
+    isActive,
+    myAddress,
+    reticulumChatEnabled,
+    reticulumChatEvents,
+    selectedGroup,
+    selectedReticulumChannelId,
+  ]);
 
   const clearEditorContent = () => {
     if (editorRef.current) {
@@ -1948,7 +2146,7 @@ export const ChatGroup = ({
           },
           chatReference,
         };
-        addToQueue(sendMessageFunc, messageObj, 'chat', selectedGroup);
+        addToQueue(sendMessageFunc, messageObj, 'chat', reticulumChatQueueId);
         if (!onEditMessage) {
           setTimeout(() => {
             executeEvent('sent-new-message-group', {});
@@ -2190,7 +2388,7 @@ export const ChatGroup = ({
           },
           chatReference: chatMessage.signature,
         };
-        addToQueue(sendMessageFunc, messageObj, 'chat-reaction', selectedGroup);
+        addToQueue(sendMessageFunc, messageObj, 'chat-reaction', reticulumChatQueueId);
         // send chat message
       } catch (error) {
         const errorMsg = error?.message || error;
@@ -2333,6 +2531,96 @@ export const ChatGroup = ({
     ]
   );
 
+  const publishReticulumChannelMetadata = useCallback(
+    async (
+      eventType: 'channel_create' | 'channel_update' | 'channel_archive',
+      payload: Record<string, unknown>
+    ) => {
+      if (!reticulumChatEnabled || !isReticulumChannelAdmin) return;
+      const secretKeyObject = await getSecretKey(false, true);
+      const payloadText =
+        isPrivate === false
+          ? JSON.stringify(payload)
+          : await encryptChatMessage(await objectToBase64(payload), secretKeyObject);
+      const result = await publishReticulumGroupChatEvent({
+        encryptedPayload: payloadText,
+        eventType,
+        channelId:
+          typeof payload.channelId === 'string'
+            ? payload.channelId
+            : DEFAULT_RETICULUM_CHANNEL_ID,
+      });
+      if (result?.event) {
+        void window.reticulumChat?.applyChannelMetadata?.(
+          result.event.eventId,
+          payload
+        ).then(() => {
+          void refreshReticulumChannels();
+        });
+      }
+    },
+    [
+      encryptChatMessage,
+      getSecretKey,
+      isPrivate,
+      isReticulumChannelAdmin,
+      publishReticulumGroupChatEvent,
+      refreshReticulumChannels,
+      reticulumChatEnabled,
+    ]
+  );
+
+  const openCreateReticulumChannelDialog = useCallback(() => {
+    setNewReticulumChannelName('');
+    setNewReticulumChannelError('');
+    setIsCreateReticulumChannelOpen(true);
+  }, []);
+
+  const closeCreateReticulumChannelDialog = useCallback(() => {
+    setIsCreateReticulumChannelOpen(false);
+    setNewReticulumChannelName('');
+    setNewReticulumChannelError('');
+  }, []);
+
+  const createReticulumChannel = useCallback(async () => {
+    const name = normalizeReticulumChannelName(newReticulumChannelName);
+    if (!name) {
+      setNewReticulumChannelError('Use lowercase letters, numbers, and hyphens');
+      return;
+    }
+    if (reticulumChannels.some((channel) => channel.name === name)) {
+      setNewReticulumChannelError('Channel already exists');
+      return;
+    }
+    const channelId =
+      name === DEFAULT_RETICULUM_CHANNEL_ID
+        ? DEFAULT_RETICULUM_CHANNEL_ID
+        : `ch-${crypto.randomUUID?.() || `${Date.now()}-${uid.rnd()}`}`;
+    await publishReticulumChannelMetadata('channel_create', {
+      channelId,
+      name,
+      position: reticulumChannels.length,
+    });
+    setSelectedReticulumChannelId(channelId);
+    closeCreateReticulumChannelDialog();
+  }, [
+    closeCreateReticulumChannelDialog,
+    newReticulumChannelName,
+    publishReticulumChannelMetadata,
+    reticulumChannels,
+  ]);
+
+  const archiveReticulumChannel = useCallback(
+    async (channel: ReticulumGroupChannel) => {
+      if (channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID) return;
+      await publishReticulumChannelMetadata('channel_archive', {
+        channelId: channel.channelId,
+      });
+      setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
+    },
+    [publishReticulumChannelMetadata]
+  );
+
   return (
     <div
       style={{
@@ -2348,8 +2636,140 @@ export const ChatGroup = ({
         width: '100%',
       }}
     >
+      <Box
+        sx={{
+          display: 'flex',
+          flex: 1,
+          minHeight: 0,
+          width: '100%',
+        }}
+      >
+        {reticulumChatEnabled && (
+          <Box
+            sx={{
+              borderRight: `1px solid ${theme.palette.divider}`,
+              flexShrink: 0,
+              mr: 1.5,
+              overflowY: 'auto',
+              pr: 1.5,
+              width: { xs: 132, sm: 180, md: 220 },
+            }}
+          >
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                justifyContent: 'space-between',
+                mb: 1,
+              }}
+            >
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                }}
+              >
+                Text channels
+              </Typography>
+              {isReticulumChannelAdmin && (
+                <Tooltip title="Create channel">
+                  <IconButton size="small" onClick={openCreateReticulumChannelDialog}>
+                    +
+                  </IconButton>
+                </Tooltip>
+              )}
+            </Box>
+            {reticulumChannels.map((channel) => {
+              const selected = channel.channelId === selectedReticulumChannelId;
+              return (
+                <ButtonBase
+                  key={channel.channelId}
+                  onClick={() => {
+                    setSelectedReticulumChannelId(channel.channelId);
+                    setMessages([]);
+                    setChatReferences({});
+                    appliedReticulumEventIdsRef.current.clear();
+                  }}
+                  sx={{
+                    alignItems: 'center',
+                    borderRadius: '6px',
+                    color: selected ? 'text.primary' : 'text.secondary',
+                    display: 'flex',
+                    fontSize: 14,
+                    fontWeight: selected ? 700 : 500,
+                    justifyContent: 'space-between',
+                    mb: 0.5,
+                    px: 1,
+                    py: 0.75,
+                    textAlign: 'left',
+                    width: '100%',
+                    backgroundColor: selected ? 'action.selected' : 'transparent',
+                    '&:hover': {
+                      backgroundColor: 'action.hover',
+                    },
+                  }}
+                >
+                  <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    # {channel.name || channel.channelId}
+                  </Box>
+                  {isReticulumChannelAdmin &&
+                    channel.channelId !== DEFAULT_RETICULUM_CHANNEL_ID && (
+                      <Box
+                        component="span"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void archiveReticulumChannel(channel);
+                        }}
+                        sx={{
+                          color: 'text.disabled',
+                          fontSize: 12,
+                          ml: 1,
+                          '&:hover': { color: 'error.main' },
+                        }}
+                      >
+                        x
+                      </Box>
+                    )}
+                </ButtonBase>
+              );
+            })}
+          </Box>
+        )}
+
+        <Box
+          sx={{
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            minHeight: 0,
+            minWidth: 0,
+          }}
+        >
+          {reticulumChatEnabled && (
+            <Typography
+              sx={{
+                borderBottom: `1px solid ${theme.palette.divider}`,
+                flexShrink: 0,
+                fontSize: 18,
+                fontWeight: 700,
+                mb: 1,
+                pb: 1,
+              }}
+            >
+              #{' '}
+              {reticulumChannels.find(
+                (channel) => channel.channelId === selectedReticulumChannelId
+              )?.name || selectedReticulumChannelId}
+            </Typography>
+          )}
       <ChatList
-        chatId={selectedGroup}
+        chatId={
+          reticulumChatEnabled
+            ? `${selectedGroup}:${selectedReticulumChannelId}`
+            : selectedGroup
+        }
         chatReferences={chatReferences}
         enableMentions
         handleReaction={handleReaction}
@@ -2744,6 +3164,44 @@ export const ChatGroup = ({
           </Box>
         </Box>
       )}
+        </Box>
+      </Box>
+
+      <Dialog
+        open={isCreateReticulumChannelOpen}
+        onClose={closeCreateReticulumChannelDialog}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Create text channel</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            margin="dense"
+            label="Channel name"
+            value={newReticulumChannelName}
+            error={Boolean(newReticulumChannelError)}
+            helperText={newReticulumChannelError || 'Example: support-chat'}
+            onChange={(event) => {
+              setNewReticulumChannelName(event.target.value);
+              if (newReticulumChannelError) setNewReticulumChannelError('');
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void createReticulumChannel();
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeCreateReticulumChannelDialog}>Cancel</Button>
+          <Button variant="contained" onClick={() => void createReticulumChannel()}>
+            Create
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {(isResizingQManager || isOpenQManager !== null) && (
         <Portal>

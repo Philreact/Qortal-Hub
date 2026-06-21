@@ -87,10 +87,13 @@ import {
   stopReticulumChatManager,
   getReticulumChatManager,
   readReticulumChatHistoryFromDb,
+  readReticulumChatChannelMetadataHistoryFromDb,
+  readReticulumChatChannelsFromDb,
   readReticulumChatSummariesFromDb,
   readReticulumChatSyncStateFromDb,
   markReticulumChatReadInDb,
   searchReticulumChatFromDb,
+  applyReticulumChatChannelMetadataInDb,
   indexReticulumChatSearchTextInDb,
   deleteReticulumChatSearchTextInDb,
   replaceReticulumChatMentionsInDb,
@@ -2387,6 +2390,7 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
   const reticulumChat = startReticulumChatManager(bridgeTransport ?? null, undefined, {
     signLocalFields: signReticulumChatControlFields,
     validateGroupMember: validateQortalGroupMember,
+    validateGroupAdmin: validateQortalGroupAdmin,
     resourceStore: getReticulumResourceStore(),
   });
   attachReticulumChatListeners(reticulumChat);
@@ -2772,6 +2776,45 @@ async function validateQortalGroupMember(
     return result === true;
   } catch (err) {
     loggerWarn('[ReticulumChat] Selected-node group membership validation failed:', err);
+    return false;
+  }
+}
+
+async function validateQortalGroupAdmin(
+  groupId: number,
+  address: string
+): Promise<boolean> {
+  const normalizedAddress = address.trim();
+  if (!Number.isInteger(groupId) || groupId <= 0 || !normalizedAddress) {
+    return false;
+  }
+  const main = myCapacitorApp.getMainWindow();
+  if (!main || main.isDestroyed()) return false;
+  const payloadJson = JSON.stringify({
+    groupId,
+    address: normalizedAddress,
+  });
+  try {
+    const result = await main.webContents.executeJavaScript(
+      `(async () => {
+        const payload = ${payloadJson};
+        const rows = await window.sendMessage(
+          'validateGroupAdmins',
+          { groupId: payload.groupId, addresses: [payload.address] },
+          10000
+        ).catch(() => null);
+        return Array.isArray(rows) && rows.some((item) =>
+          item &&
+          typeof item === 'object' &&
+          item.address === payload.address &&
+          item.isAdmin === true
+        );
+      })()`,
+      true
+    );
+    return result === true;
+  } catch (err) {
+    loggerWarn('[ReticulumChat] Selected-node group admin validation failed:', err);
     return false;
   }
 }
@@ -3403,6 +3446,41 @@ ipcMain.handle('reticulumChat:subscribeGroup', async (_event, groupId: number) =
 });
 
 ipcMain.handle(
+  'reticulumChat:subscribeChannel',
+  async (_event, groupId: number, channelId: string) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      manager.subscribeChannel(groupId, channelId);
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum channel subscribe failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:unsubscribeChannel',
+  async (_event, groupId: number, channelId: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    manager.unsubscribeChannel(groupId, channelId);
+    return { success: true };
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:unsubscribeGroup',
   async (_event, groupId: number) => {
     const manager = getReticulumChatManager();
@@ -3434,7 +3512,13 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:sendTyping',
-  async (_event, groupId: number, authorAddress: string, active: boolean) => {
+  async (
+    _event,
+    groupId: number,
+    channelIdOrAuthorAddress: string,
+    authorAddressOrActive: string | boolean,
+    activeMaybe?: boolean
+  ) => {
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) {
       return { success: false, error: 'Reticulum chat is disabled' };
@@ -3444,7 +3528,17 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     try {
-      manager.sendTyping(groupId, authorAddress, active);
+      const channelId =
+        typeof activeMaybe === 'boolean' ? channelIdOrAuthorAddress : 'general';
+      const authorAddress =
+        typeof activeMaybe === 'boolean'
+          ? String(authorAddressOrActive || '')
+          : channelIdOrAuthorAddress;
+      const active =
+        typeof activeMaybe === 'boolean'
+          ? activeMaybe
+          : authorAddressOrActive === true;
+      manager.sendTyping(groupId, channelId, authorAddress, active);
       return { success: true };
     } catch (err) {
       return {
@@ -3703,11 +3797,54 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:getHistory',
+  async (
+    _event,
+    groupId: number,
+    channelIdOrLimit?: string | number,
+    limitMaybe?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    const channelId =
+      typeof channelIdOrLimit === 'string' && channelIdOrLimit
+        ? channelIdOrLimit
+        : 'general';
+    const limit =
+      typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
+    return manager
+      ? manager.getHistory(groupId, channelId, limit)
+      : readReticulumChatHistoryFromDb(groupId, channelId, limit);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getChannelMetadataHistory',
   async (_event, groupId: number, limit?: number) => {
     const manager = getReticulumChatManager();
     return manager
-      ? manager.getHistory(groupId, limit)
-      : readReticulumChatHistoryFromDb(groupId, limit);
+      ? manager.getChannelMetadataHistory(groupId, limit)
+      : readReticulumChatChannelMetadataHistoryFromDb(groupId, limit);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getChannels',
+  async (_event, groupId: number, includeArchived?: boolean) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.getChannels(groupId, includeArchived === true)
+      : readReticulumChatChannelsFromDb(groupId, includeArchived === true);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:applyChannelMetadata',
+  async (_event, eventId: string, payload: unknown) => {
+    if (typeof eventId !== 'string' || !eventId) return { success: false };
+    const manager = getReticulumChatManager();
+    const applied = manager
+      ? await manager.applyChannelMetadataEvent(eventId, payload)
+      : await applyReticulumChatChannelMetadataInDb(eventId, payload);
+    return { success: applied };
   }
 );
 
@@ -3731,7 +3868,7 @@ ipcMain.handle(
   async (
     _event,
     query: string,
-    options?: { groupIds?: number[]; limit?: number }
+    options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
   ) => {
     const safeQuery = typeof query === 'string' ? query : '';
     const safeOptions = options && typeof options === 'object' ? options : {};
@@ -3803,15 +3940,30 @@ ipcMain.handle(
   async (
     _event,
     groupId: number,
-    upToTimestamp: number,
+    channelIdOrTimestamp: string | number,
+    upToTimestamp?: string | number,
     myAddress?: string
   ) => {
-    const address = typeof myAddress === 'string' ? myAddress : '';
+    const channelId =
+      typeof channelIdOrTimestamp === 'string'
+        ? channelIdOrTimestamp
+        : 'general';
+    const timestamp =
+      typeof channelIdOrTimestamp === 'number'
+        ? channelIdOrTimestamp
+        : Number(upToTimestamp);
+    const address =
+      typeof channelIdOrTimestamp === 'number'
+        ? typeof upToTimestamp === 'string'
+          ? upToTimestamp
+          : myAddress
+        : myAddress;
+    const normalizedAddress = typeof address === 'string' ? address : '';
     const manager = getReticulumChatManager();
     if (manager) {
-      manager.markRead(groupId, upToTimestamp, address);
+      manager.markRead(groupId, channelId, timestamp, normalizedAddress);
     } else {
-      markReticulumChatReadInDb(groupId, upToTimestamp, address);
+      markReticulumChatReadInDb(groupId, channelId, timestamp, normalizedAddress);
     }
     return { success: true };
   }

@@ -1344,6 +1344,7 @@ export function GlobalChatWidget({
                                 void window.reticulumChat
                                   ?.markRead?.(
                                     Number(group?.groupId),
+                                    'general',
                                     reticulumTimestamp,
                                     myAddress
                                   )

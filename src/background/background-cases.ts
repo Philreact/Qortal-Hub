@@ -239,6 +239,57 @@ export async function validateGroupMembersCase(request, event) {
   }
 }
 
+export async function validateGroupAdminsCase(request, event) {
+  try {
+    const groupId = Number(request?.payload?.groupId);
+    const addresses = Array.isArray(request?.payload?.addresses)
+      ? request.payload.addresses
+          .map((address) => (typeof address === 'string' ? address.trim() : ''))
+          .filter(Boolean)
+      : [];
+    if (!Number.isInteger(groupId) || groupId <= 0 || addresses.length === 0) {
+      throw new Error('Invalid groupId or addresses');
+    }
+    const validApi = await getBaseApi();
+    const response = await fetch(
+      `${validApi.replace(/\/+$/u, '')}/groups/members/${groupId}?limit=0&onlyAdmins=true`
+    );
+    if (!response.ok) {
+      throw new Error(`Group admin validation failed: ${response.status}`);
+    }
+    const result = await response.json();
+    const adminAddresses = new Set(
+      Array.isArray(result?.members)
+        ? result.members
+            .map((member) => (typeof member?.member === 'string' ? member.member : ''))
+            .filter(Boolean)
+        : []
+    );
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupAdmins',
+        payload: addresses.map((address) => ({
+          address,
+          isAdmin: adminAddresses.has(address),
+        })),
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupAdmins',
+        error: error?.message,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
 export async function nameCase(request, event) {
   try {
     const response = await getNameInfo();

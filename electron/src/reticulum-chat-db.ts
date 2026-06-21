@@ -5,6 +5,19 @@ import * as path from 'path';
 import type { ReticulumChatEvent } from './reticulum-chat';
 
 export const RETICULUM_CHAT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+export const RETICULUM_CHAT_DEFAULT_CHANNEL_ID = 'general';
+
+export type ReticulumGroupChannel = {
+  channelId: string;
+  groupId: number;
+  name: string;
+  description?: string;
+  position: number;
+  archived: boolean;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+};
 
 export type ReticulumChatAuthorHead = {
   authorAddress: string;
@@ -15,11 +28,22 @@ export type ReticulumChatAuthorHead = {
 
 export type ReticulumChatSummary = {
   groupId: number;
+  channelId: string;
   lastEvent: ReticulumChatEvent | null;
   unreadCount: number;
   mentionCount: number;
   hasUnreadMention: boolean;
   updatedAt: number;
+};
+
+export type ReticulumGroupChatSummary = {
+  groupId: number;
+  lastEvent: ReticulumChatEvent | null;
+  unreadCount: number;
+  mentionCount: number;
+  hasUnreadMention: boolean;
+  updatedAt: number;
+  channels: ReticulumChatSummary[];
 };
 
 export type ReticulumChatSearchResult = {
@@ -30,6 +54,7 @@ export type ReticulumChatSearchResult = {
 type EventRow = {
   event_id: string;
   group_id: number;
+  channel_id: string;
   author_address: string;
   author_public_key: string;
   author_seq: number;
@@ -51,6 +76,7 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
   return {
     eventId: row.event_id,
     groupId: row.group_id,
+    channelId: normalizeReticulumChatChannelId(row.channel_id),
     authorAddress: row.author_address,
     authorPublicKey: row.author_public_key,
     authorSeq: row.author_seq,
@@ -63,6 +89,15 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
     mentionAddressHashes: parseMentionAddressHashes(row.mention_address_hashes),
     signature: row.signature,
   };
+}
+
+export function normalizeReticulumChatChannelId(value: unknown): string {
+  if (typeof value !== 'string') return RETICULUM_CHAT_DEFAULT_CHANNEL_ID;
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/.test(normalized) ||
+    normalized === RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+    ? normalized
+    : RETICULUM_CHAT_DEFAULT_CHANNEL_ID;
 }
 
 function parseMentionAddressHashes(value: unknown): string[] {
@@ -170,11 +205,13 @@ export class ReticulumChatDatabase {
   private db: DB;
   private memoryEvents = new Map<string, ReticulumChatEvent>();
   private memorySearchText = new Map<string, string>();
+  private memoryChannels = new Map<string, ReticulumGroupChannel>();
   private memoryMentions = new Map<
     string,
     Array<{
       groupId: number;
       mentionedAddress: string;
+      channelId: string;
       authorAddress: string;
       timestamp: number;
       readAt: number;
@@ -189,6 +226,7 @@ export class ReticulumChatDatabase {
   private stmtGetEvent: Statement;
   private stmtHasEvent: Statement;
   private stmtGetRecentEvents: Statement;
+  private stmtGetChannelMetadataEvents: Statement;
   private stmtGetEventsAfter: Statement;
   private stmtGetEventsAfterCursor: Statement;
   private stmtGetEventsBefore: Statement;
@@ -199,6 +237,7 @@ export class ReticulumChatDatabase {
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
   private stmtGetKnownGroups: Statement;
+  private stmtGetKnownChannels: Statement;
   private stmtGetLastDisplayEvent: Statement;
   private stmtCountUnreadDisplayEvents: Statement;
   private stmtGetWatermark: Statement;
@@ -217,6 +256,9 @@ export class ReticulumChatDatabase {
   private stmtUpsertSearchText: Statement;
   private stmtDeleteSearchText: Statement;
   private stmtSearchEvents: Statement;
+  private stmtUpsertChannel: Statement;
+  private stmtGetChannels: Statement;
+  private stmtGetChannel: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -231,12 +273,12 @@ export class ReticulumChatDatabase {
         (event_id, group_id, author_address, author_public_key, author_seq,
          timestamp, event_type, target_event_id, reply_to_event_id,
          encrypted_payload, payload_hash, mention_address_hashes, signature, own_event,
-         last_served_at, stored_at, wire_bytes)
+         last_served_at, stored_at, wire_bytes, channel_id)
       VALUES
         (@event_id, @group_id, @author_address, @author_public_key, @author_seq,
          @timestamp, @event_type, @target_event_id, @reply_to_event_id,
          @encrypted_payload, @payload_hash, @mention_address_hashes, @signature, @own_event,
-         @last_served_at, @stored_at, @wire_bytes)
+         @last_served_at, @stored_at, @wire_bytes, @channel_id)
     `);
     this.stmtGetEvent = this.db.prepare(
       'SELECT * FROM reticulum_chat_events WHERE event_id = ? LIMIT 1'
@@ -247,7 +289,23 @@ export class ReticulumChatDatabase {
     this.stmtGetRecentEvents = this.db.prepare(`
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
+        WHERE group_id = ? AND channel_id = ?
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY timestamp ASC, event_id ASC
+    `);
+    this.stmtGetChannelMetadataEvents = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
         WHERE group_id = ?
+          AND event_type IN (
+            'channel_create',
+            'channel_update',
+            'channel_archive',
+            'channel_restore',
+            'channel_reorder'
+          )
         ORDER BY timestamp DESC, event_id DESC
         LIMIT ?
       )
@@ -255,20 +313,20 @@ export class ReticulumChatDatabase {
     `);
     this.stmtGetEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND timestamp >= ?
+      WHERE group_id = ? AND channel_id = ? AND timestamp >= ?
       ORDER BY timestamp ASC, event_id ASC
       LIMIT ?
     `);
     this.stmtGetEventsAfterCursor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?))
+      WHERE group_id = ? AND channel_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?))
       ORDER BY timestamp ASC, event_id ASC
       LIMIT ?
     `);
     this.stmtGetEventsBefore = this.db.prepare(`
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
-        WHERE group_id = ? AND timestamp < ?
+      WHERE group_id = ? AND channel_id = ? AND timestamp < ?
         ORDER BY timestamp DESC, event_id DESC
         LIMIT ?
       )
@@ -277,7 +335,7 @@ export class ReticulumChatDatabase {
     this.stmtGetEventsBeforeCursor = this.db.prepare(`
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
-        WHERE group_id = ? AND (timestamp < ? OR (timestamp = ? AND event_id < ?))
+      WHERE group_id = ? AND channel_id = ? AND (timestamp < ? OR (timestamp = ? AND event_id < ?))
         ORDER BY timestamp DESC, event_id DESC
         LIMIT ?
       )
@@ -324,9 +382,14 @@ export class ReticulumChatDatabase {
       SELECT DISTINCT group_id FROM reticulum_chat_events
       ORDER BY group_id ASC
     `);
+    this.stmtGetKnownChannels = this.db.prepare(`
+      SELECT DISTINCT channel_id FROM reticulum_chat_events
+      WHERE group_id = ?
+      ORDER BY channel_id ASC
+    `);
     this.stmtGetLastDisplayEvent = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND event_type IN ('message', 'attachment_manifest')
+      WHERE group_id = ? AND channel_id = ? AND event_type IN ('message', 'attachment_manifest')
       ORDER BY timestamp DESC, event_id DESC
       LIMIT 1
     `);
@@ -334,22 +397,23 @@ export class ReticulumChatDatabase {
       SELECT COUNT(*) AS cnt
       FROM reticulum_chat_events
       WHERE group_id = ?
+        AND channel_id = ?
         AND event_type IN ('message', 'attachment_manifest')
         AND timestamp > ?
         AND author_address != ?
     `);
     this.stmtGetWatermark = this.db.prepare(
-      'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ? AND address = ?'
+      'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ? AND channel_id = ? AND address = ?'
     );
     this.stmtUpsertWatermark = this.db.prepare(`
-      INSERT INTO reticulum_chat_read_watermarks (group_id, address, timestamp)
-      VALUES (?, ?, ?)
-      ON CONFLICT(group_id, address) DO UPDATE SET timestamp = excluded.timestamp
+      INSERT INTO reticulum_chat_read_watermarks (group_id, channel_id, address, timestamp)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(group_id, channel_id, address) DO UPDATE SET timestamp = excluded.timestamp
     `);
     this.stmtUpsertMention = this.db.prepare(`
       INSERT INTO reticulum_chat_mentions
-        (event_id, group_id, mentioned_address, author_address, timestamp, read_at)
-      VALUES (?, ?, ?, ?, ?, 0)
+        (event_id, group_id, channel_id, mentioned_address, author_address, timestamp, read_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
       ON CONFLICT(event_id, mentioned_address) DO UPDATE SET
         group_id = excluded.group_id,
         author_address = excluded.author_address,
@@ -362,6 +426,7 @@ export class ReticulumChatDatabase {
       SELECT COUNT(*) AS cnt
       FROM reticulum_chat_mentions
       WHERE group_id = ?
+        AND channel_id = ?
         AND mentioned_address = ?
         AND author_address != ?
         AND timestamp > ?
@@ -371,6 +436,7 @@ export class ReticulumChatDatabase {
       UPDATE reticulum_chat_mentions
       SET read_at = ?
       WHERE group_id = ?
+        AND channel_id = ?
         AND mentioned_address = ?
         AND timestamp <= ?
         AND read_at = 0
@@ -394,10 +460,11 @@ export class ReticulumChatDatabase {
     );
     this.stmtUpsertSearchMirror = this.db.prepare(`
       INSERT INTO reticulum_chat_search_index
-        (event_id, group_id, author_address, timestamp, event_type, search_text)
-      VALUES (?, ?, ?, ?, ?, ?)
+        (event_id, group_id, channel_id, author_address, timestamp, event_type, search_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(event_id) DO UPDATE SET
         group_id = excluded.group_id,
+        channel_id = excluded.channel_id,
         author_address = excluded.author_address,
         timestamp = excluded.timestamp,
         event_type = excluded.event_type,
@@ -415,8 +482,8 @@ export class ReticulumChatDatabase {
     );
     this.stmtUpsertSearchText = this.db.prepare(`
       INSERT INTO reticulum_chat_search_fts
-        (event_id, group_id, author_address, timestamp, event_type, search_text)
-      VALUES (?, ?, ?, ?, ?, ?)
+        (event_id, group_id, channel_id, author_address, timestamp, event_type, search_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     this.stmtDeleteSearchText = this.db.prepare(
       'DELETE FROM reticulum_chat_search_fts WHERE event_id = ?'
@@ -428,6 +495,22 @@ export class ReticulumChatDatabase {
       WHERE reticulum_chat_search_fts MATCH ?
       ORDER BY rank
       LIMIT ?
+    `);
+    this.stmtUpsertChannel = this.db.prepare(`
+      INSERT OR REPLACE INTO reticulum_chat_channels
+        (group_id, channel_id, name, description, position, archived, created_by, created_at, updated_at)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtGetChannels = this.db.prepare(`
+      SELECT * FROM reticulum_chat_channels
+      WHERE group_id = ?
+      ORDER BY position ASC, name ASC, channel_id ASC
+    `);
+    this.stmtGetChannel = this.db.prepare(`
+      SELECT * FROM reticulum_chat_channels
+      WHERE group_id = ? AND channel_id = ?
+      LIMIT 1
     `);
     this.backfillSearchIndex();
   }
@@ -441,6 +524,7 @@ export class ReticulumChatDatabase {
     const result = this.stmtInsertEvent.run({
       event_id: event.eventId,
       group_id: event.groupId,
+      channel_id: normalizeReticulumChatChannelId(event.channelId),
       author_address: event.authorAddress,
       author_public_key: event.authorPublicKey,
       author_seq: event.authorSeq,
@@ -501,6 +585,7 @@ export class ReticulumChatDatabase {
     this.stmtUpsertSearchMirror.run(
       event.eventId,
       event.groupId,
+      normalizeReticulumChatChannelId(event.channelId),
       event.authorAddress,
       event.timestamp,
       event.eventType,
@@ -509,6 +594,7 @@ export class ReticulumChatDatabase {
     this.stmtUpsertSearchText.run(
       event.eventId,
       event.groupId,
+      normalizeReticulumChatChannelId(event.channelId),
       event.authorAddress,
       event.timestamp,
       event.eventType,
@@ -550,6 +636,7 @@ export class ReticulumChatDatabase {
       event.eventId,
       uniqueMentionedAddresses.map((mentionedAddress) => ({
         groupId: event.groupId,
+        channelId: normalizeReticulumChatChannelId(event.channelId),
         mentionedAddress,
         authorAddress: event.authorAddress,
         timestamp: event.timestamp,
@@ -559,9 +646,10 @@ export class ReticulumChatDatabase {
     const tx = this.db.transaction(() => {
       this.stmtDeleteMentionsForEvent.run(event.eventId);
       for (const mentionedAddress of uniqueMentionedAddresses) {
-        this.stmtUpsertMention.run(
+          this.stmtUpsertMention.run(
           event.eventId,
           event.groupId,
+          normalizeReticulumChatChannelId(event.channelId),
           mentionedAddress,
           event.authorAddress,
           event.timestamp
@@ -581,7 +669,7 @@ export class ReticulumChatDatabase {
 
   searchEvents(
     query: string,
-    options: { groupIds?: number[]; limit?: number } = {}
+    options: { groupIds?: number[]; channelIds?: string[]; limit?: number } = {}
   ): ReticulumChatSearchResult[] {
     const ftsQuery = buildFtsQuery(query);
     if (!ftsQuery) return [];
@@ -592,6 +680,10 @@ export class ReticulumChatDatabase {
       .slice(0, 500);
     const queryLimit = groupIds.length > 0 ? Math.max(limit * 10, 200) : limit;
     const allowedGroups = groupIds.length > 0 ? new Set(groupIds) : null;
+    const channelIds = (options.channelIds ?? [])
+      .map(normalizeReticulumChatChannelId)
+      .filter(Boolean);
+    const allowedChannels = channelIds.length > 0 ? new Set(channelIds) : null;
     const rows = this.stmtSearchEvents.all(ftsQuery, queryLimit) as Array<{
       event_id: string;
       snippet?: string;
@@ -601,47 +693,107 @@ export class ReticulumChatDatabase {
       const event = this.getEvent(row.event_id);
       if (!event) continue;
       if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
+      if (allowedChannels && !allowedChannels.has(normalizeReticulumChatChannelId(event.channelId))) continue;
       results.push({ event, snippet: row.snippet ?? '' });
       if (results.length >= limit) break;
     }
     if (results.length > 0) return results;
-    const mirrorResults = this.searchEventsMirror(terms, allowedGroups, limit);
+    const mirrorResults = this.searchEventsMirror(terms, allowedGroups, allowedChannels, limit);
     return mirrorResults.length > 0
       ? mirrorResults
-      : this.searchEventsMemory(terms, allowedGroups, limit);
+      : this.searchEventsMemory(terms, allowedGroups, allowedChannels, limit);
   }
 
-  getRecentEvents(groupId: number, limit: number): ReticulumChatEvent[] {
+  getRecentEvents(groupId: number, limit: number, channelId: string | null = null): ReticulumChatEvent[] {
+    const normalizedChannelId = channelId == null ? null : normalizeReticulumChatChannelId(channelId);
+    if (normalizedChannelId == null) {
+      const rows = this.db
+        .prepare(`
+          SELECT * FROM (
+            SELECT * FROM reticulum_chat_events
+            WHERE group_id = ?
+            ORDER BY timestamp DESC, event_id DESC
+            LIMIT ?
+          )
+          ORDER BY timestamp ASC, event_id ASC
+        `)
+        .all(groupId, limit) as EventRow[];
+      return this.mergeWindowEvents(
+        rows.map(rowToEvent),
+        [...this.memoryEvents.values()]
+          .filter((event) => event.groupId === groupId)
+          .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
+          .slice(0, limit),
+        limit
+      );
+    }
     return this.mergeWindowEvents(
-      (this.stmtGetRecentEvents.all(groupId, limit) as EventRow[]).map(rowToEvent),
+      (this.stmtGetRecentEvents.all(groupId, normalizedChannelId, limit) as EventRow[]).map(rowToEvent),
       [...this.memoryEvents.values()]
-        .filter((event) => event.groupId === groupId)
+        .filter((event) => event.groupId === groupId && normalizeReticulumChatChannelId(event.channelId) === normalizedChannelId)
         .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
         .slice(0, limit),
       limit
     );
   }
 
+  getChannelMetadataEvents(groupId: number, limit: number): ReticulumChatEvent[] {
+    const maxLimit = Math.max(1, Math.min(500, limit));
+    const metadataTypes = new Set([
+      'channel_create',
+      'channel_update',
+      'channel_archive',
+      'channel_restore',
+      'channel_reorder',
+    ]);
+    return this.mergeWindowEvents(
+      (this.stmtGetChannelMetadataEvents.all(groupId, maxLimit) as EventRow[]).map(rowToEvent),
+      [...this.memoryEvents.values()]
+        .filter((event) => event.groupId === groupId && metadataTypes.has(event.eventType))
+        .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
+        .slice(0, maxLimit),
+      maxLimit
+    ).filter((event) => metadataTypes.has(event.eventType));
+  }
+
   getEventsAfter(
     groupId: number,
     afterTimestamp: number,
     limit: number,
-    afterEventId?: string
+    afterEventId?: string,
+    channelId: string | null = null
   ): ReticulumChatEvent[] {
+    const normalizedChannelId = channelId == null ? null : normalizeReticulumChatChannelId(channelId);
     const sqliteRows = afterEventId
-      ? (this.stmtGetEventsAfterCursor.all(
-          groupId,
-          afterTimestamp,
-          afterTimestamp,
-          afterEventId,
-          limit
-        ) as EventRow[])
-      : (this.stmtGetEventsAfter.all(groupId, afterTimestamp, limit) as EventRow[]);
+      ? (normalizedChannelId == null
+          ? (this.db.prepare(`
+              SELECT * FROM reticulum_chat_events
+              WHERE group_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?))
+              ORDER BY timestamp ASC, event_id ASC
+              LIMIT ?
+            `).all(groupId, afterTimestamp, afterTimestamp, afterEventId, limit) as EventRow[])
+          : (this.stmtGetEventsAfterCursor.all(
+              groupId,
+              normalizedChannelId,
+              afterTimestamp,
+              afterTimestamp,
+              afterEventId,
+              limit
+            ) as EventRow[]))
+      : (normalizedChannelId == null
+          ? (this.db.prepare(`
+              SELECT * FROM reticulum_chat_events
+              WHERE group_id = ? AND timestamp >= ?
+              ORDER BY timestamp ASC, event_id ASC
+              LIMIT ?
+            `).all(groupId, afterTimestamp, limit) as EventRow[])
+          : (this.stmtGetEventsAfter.all(groupId, normalizedChannelId, afterTimestamp, limit) as EventRow[]));
     return this.mergeWindowEvents(
       sqliteRows.map(rowToEvent),
       [...this.memoryEvents.values()]
         .filter((event) => {
           if (event.groupId !== groupId) return false;
+          if (normalizedChannelId != null && normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
           if (!afterEventId) return event.timestamp >= afterTimestamp;
           return event.timestamp > afterTimestamp ||
             (event.timestamp === afterTimestamp && event.eventId > afterEventId);
@@ -656,22 +808,46 @@ export class ReticulumChatDatabase {
     groupId: number,
     beforeTimestamp: number,
     limit: number,
-    beforeEventId?: string
+    beforeEventId?: string,
+    channelId: string | null = null
   ): ReticulumChatEvent[] {
+    const normalizedChannelId = channelId == null ? null : normalizeReticulumChatChannelId(channelId);
     const sqliteRows = beforeEventId
-      ? (this.stmtGetEventsBeforeCursor.all(
-          groupId,
-          beforeTimestamp,
-          beforeTimestamp,
-          beforeEventId,
-          limit
-        ) as EventRow[])
-      : (this.stmtGetEventsBefore.all(groupId, beforeTimestamp, limit) as EventRow[]);
+      ? (normalizedChannelId == null
+          ? (this.db.prepare(`
+              SELECT * FROM (
+                SELECT * FROM reticulum_chat_events
+                WHERE group_id = ? AND (timestamp < ? OR (timestamp = ? AND event_id < ?))
+                ORDER BY timestamp DESC, event_id DESC
+                LIMIT ?
+              )
+              ORDER BY timestamp ASC, event_id ASC
+            `).all(groupId, beforeTimestamp, beforeTimestamp, beforeEventId, limit) as EventRow[])
+          : (this.stmtGetEventsBeforeCursor.all(
+              groupId,
+              normalizedChannelId,
+              beforeTimestamp,
+              beforeTimestamp,
+              beforeEventId,
+              limit
+            ) as EventRow[]))
+      : (normalizedChannelId == null
+          ? (this.db.prepare(`
+              SELECT * FROM (
+                SELECT * FROM reticulum_chat_events
+                WHERE group_id = ? AND timestamp < ?
+                ORDER BY timestamp DESC, event_id DESC
+                LIMIT ?
+              )
+              ORDER BY timestamp ASC, event_id ASC
+            `).all(groupId, beforeTimestamp, limit) as EventRow[])
+          : (this.stmtGetEventsBefore.all(groupId, normalizedChannelId, beforeTimestamp, limit) as EventRow[]));
     return this.mergeWindowEvents(
       sqliteRows.map(rowToEvent),
       [...this.memoryEvents.values()]
         .filter((event) => {
           if (event.groupId !== groupId) return false;
+          if (normalizedChannelId != null && normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
           if (!beforeEventId) return event.timestamp < beforeTimestamp;
           return event.timestamp < beforeTimestamp ||
             (event.timestamp === beforeTimestamp && event.eventId < beforeEventId);
@@ -789,160 +965,326 @@ export class ReticulumChatDatabase {
     return out;
   }
 
-  getChatSummaries(myAddress = ''): ReticulumChatSummary[] {
+  getChannels(groupId: number, includeArchived = false): ReticulumGroupChannel[] {
+    const rows = this.stmtGetChannels.all(groupId) as Array<{
+      group_id: number;
+      channel_id: string;
+      name: string;
+      description: string | null;
+      position: number;
+      archived: number;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+    }>;
+    const channels = rows.map((row) => ({
+      groupId: row.group_id,
+      channelId: normalizeReticulumChatChannelId(row.channel_id),
+      name: normalizeReticulumChatChannelId(row.name),
+      ...(row.description ? { description: row.description } : {}),
+      position: row.position,
+      archived: row.archived === 1,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+    for (const channel of this.memoryChannels.values()) {
+      if (channel.groupId !== groupId) continue;
+      const existingIndex = channels.findIndex(
+        (item) => item.channelId === channel.channelId
+      );
+      if (existingIndex >= 0) {
+        channels[existingIndex] = channel;
+      } else {
+        channels.push(channel);
+      }
+    }
+    if (!channels.some((channel) => channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID)) {
+      channels.unshift(this.defaultChannel(groupId));
+    }
+    return channels
+      .filter((channel) => includeArchived || !channel.archived)
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  }
+
+  getChannel(groupId: number, channelId: string): ReticulumGroupChannel | null {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    if (normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
+      const row = this.stmtGetChannel.get(groupId, normalizedChannelId) as any;
+      if (!row) return this.defaultChannel(groupId);
+    }
+    return this.getChannels(groupId, true).find(
+      (channel) => channel.channelId === normalizedChannelId
+    ) ?? null;
+  }
+
+  upsertChannel(channel: ReticulumGroupChannel): boolean {
+    const normalizedChannel: ReticulumGroupChannel = {
+      ...channel,
+      channelId: normalizeReticulumChatChannelId(channel.channelId),
+      name: normalizeReticulumChatChannelId(channel.name),
+      position: Math.max(0, Math.floor(channel.position)),
+      archived: channel.archived === true,
+      description: channel.description?.trim() || undefined,
+    };
+    this.memoryChannels.set(
+      `${normalizedChannel.groupId}:${normalizedChannel.channelId}`,
+      normalizedChannel
+    );
+    const result = this.stmtUpsertChannel.run(
+      normalizedChannel.groupId,
+      normalizedChannel.channelId,
+      normalizedChannel.name,
+      normalizedChannel.description ?? null,
+      normalizedChannel.position,
+      normalizedChannel.archived ? 1 : 0,
+      normalizedChannel.createdBy,
+      normalizedChannel.createdAt,
+      normalizedChannel.updatedAt
+    );
+    return result.changes > 0;
+  }
+
+  private defaultChannel(groupId: number): ReticulumGroupChannel {
+    return {
+      groupId,
+      channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      name: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      position: 0,
+      archived: false,
+      createdBy: '',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+  }
+
+  getChatSummaries(myAddress = ''): ReticulumGroupChatSummary[] {
     const rows = this.stmtGetKnownGroups.all() as Array<{ group_id: number }>;
     const groupIds = new Set(rows.map((row) => row.group_id));
     for (const event of this.memoryEvents.values()) {
       groupIds.add(event.groupId);
     }
 
-    const summaries: ReticulumChatSummary[] = [];
+    const summaries: ReticulumGroupChatSummary[] = [];
     for (const groupId of groupIds) {
-      const recentEvents = this.getRecentEvents(groupId, 500);
-      const events = recentEvents.filter(
-        (event) =>
-          event.eventType === 'message' ||
-          event.eventType === 'attachment_manifest'
+      const channelIds = this.getSummaryChannelIds(groupId);
+      const channelSummaries = channelIds
+        .map((channelId) => this.getChannelSummary(groupId, channelId, myAddress))
+        .filter((summary): summary is ReticulumChatSummary => !!summary);
+      if (channelSummaries.length === 0) continue;
+      const lastChannel = channelSummaries.reduce((latest, current) =>
+        current.updatedAt > latest.updatedAt ? current : latest
       );
-      const memoryLast = events[events.length - 1] ?? null;
-      const row = this.stmtGetLastDisplayEvent.get(groupId) as
-        | EventRow
-        | undefined;
-      const sqliteLast = row ? rowToEvent(row) : null;
-      const lastEvent =
-        memoryLast && (!sqliteLast || memoryLast.timestamp >= sqliteLast.timestamp)
-          ? memoryLast
-          : sqliteLast;
-      if (!lastEvent) continue;
-
-      const watermark = this.getReadWatermark(groupId, myAddress);
-      const unreadRow = this.stmtCountUnreadDisplayEvents.get(
-        groupId,
-        watermark,
-        myAddress
-      ) as { cnt?: number } | undefined;
-      const unreadCount =
-        typeof unreadRow?.cnt === 'number' && Number.isFinite(unreadRow.cnt)
-          ? unreadRow.cnt
-          : 0;
-      let memoryUnreadCount = 0;
-      if (myAddress) {
-        for (const event of this.memoryEvents.values()) {
-          if (
-            event.groupId === groupId &&
-            (event.eventType === 'message' ||
-              event.eventType === 'attachment_manifest') &&
-            event.timestamp > watermark &&
-            event.authorAddress !== myAddress
-          ) {
-            memoryUnreadCount += 1;
-          }
-        }
-      }
-      const mentionRow = myAddress
-        ? (this.stmtCountUnreadMentions.get(
-            groupId,
-            myAddress,
-            myAddress,
-            watermark
-          ) as { cnt?: number } | undefined)
-        : undefined;
-      const mentionCount =
-        typeof mentionRow?.cnt === 'number' && Number.isFinite(mentionRow.cnt)
-          ? mentionRow.cnt
-          : 0;
-      let memoryMentionCount = 0;
-      const myMentionHash = myAddress
-        ? hashReticulumChatMentionAddress(myAddress)
-        : '';
-      let eventMentionHashCount = 0;
-      const effectiveMentionEvents = new Map<string, ReticulumChatEvent>();
-      for (const event of recentEvents) {
-        if (
-          event.eventType === 'message' ||
-          event.eventType === 'attachment_manifest'
-        ) {
-          effectiveMentionEvents.set(event.eventId, event);
-          continue;
-        }
-        if (event.eventType === 'edit' && event.targetEventId) {
-          effectiveMentionEvents.set(event.targetEventId, event);
-          continue;
-        }
-        if (event.eventType === 'delete' && event.targetEventId) {
-          effectiveMentionEvents.delete(event.targetEventId);
-        }
-      }
-      const countEventMentionHash = (event: ReticulumChatEvent) => {
-        if (
-          !myMentionHash ||
-          event.authorAddress === myAddress ||
-          event.timestamp <= watermark ||
-          (event.eventType !== 'message' &&
-            event.eventType !== 'attachment_manifest' &&
-            event.eventType !== 'edit') ||
-          !event.mentionAddressHashes?.includes(myMentionHash)
-        ) {
-          return;
-        }
-        eventMentionHashCount += 1;
-      };
-      for (const event of effectiveMentionEvents.values()) {
-        countEventMentionHash(event);
-      }
-      if (myAddress) {
-        for (const mentions of this.memoryMentions.values()) {
-          for (const mention of mentions) {
-            if (
-              mention.groupId === groupId &&
-              mention.mentionedAddress === myAddress &&
-              mention.authorAddress !== myAddress &&
-              mention.timestamp > watermark &&
-              mention.readAt === 0
-            ) {
-              memoryMentionCount += 1;
-            }
-          }
-        }
-      }
-      const totalMentionCount = Math.max(
-        mentionCount,
-        memoryMentionCount,
-        eventMentionHashCount
+      const unreadCount = channelSummaries.reduce(
+        (total, summary) => total + summary.unreadCount,
+        0
+      );
+      const mentionCount = channelSummaries.reduce(
+        (total, summary) => total + summary.mentionCount,
+        0
       );
 
       summaries.push({
         groupId,
-        lastEvent,
-        unreadCount: Math.max(unreadCount, memoryUnreadCount),
-        mentionCount: totalMentionCount,
-        hasUnreadMention: totalMentionCount > 0,
-        updatedAt: lastEvent.timestamp,
+        lastEvent: lastChannel.lastEvent,
+        unreadCount,
+        mentionCount,
+        hasUnreadMention: mentionCount > 0,
+        updatedAt: lastChannel.updatedAt,
+        channels: channelSummaries.sort((a, b) => b.updatedAt - a.updatedAt),
       });
     }
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  markRead(groupId: number, upToTimestamp: number, myAddress = ''): void {
-    const timestamp = Number(upToTimestamp);
-    if (!Number.isFinite(timestamp) || timestamp <= 0) return;
-    const address = typeof myAddress === 'string' ? myAddress.trim() : '';
-    const current = this.getReadWatermark(groupId, address);
-    if (timestamp > current) {
-      this.memoryReadWatermarks.set(
-        this.readWatermarkKey(groupId, address),
-        timestamp
-      );
-      this.stmtUpsertWatermark.run(groupId, address, timestamp);
+  private getSummaryChannelIds(groupId: number): string[] {
+    const channels = new Set<string>([RETICULUM_CHAT_DEFAULT_CHANNEL_ID]);
+    for (const row of this.stmtGetKnownChannels.all(groupId) as Array<{ channel_id?: string }>) {
+      channels.add(normalizeReticulumChatChannelId(row.channel_id));
+    }
+    for (const channel of this.getChannels(groupId, true)) {
+      channels.add(channel.channelId);
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId === groupId) channels.add(normalizeReticulumChatChannelId(event.channelId));
+    }
+    return [...channels];
+  }
+
+  private getChannelSummary(
+    groupId: number,
+    channelId: string,
+    myAddress = ''
+  ): ReticulumChatSummary | null {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const recentEvents = this.getRecentEvents(groupId, 500, normalizedChannelId);
+    const events = recentEvents.filter(
+      (event) =>
+        event.eventType === 'message' ||
+        event.eventType === 'attachment_manifest'
+    );
+    const memoryLast = events[events.length - 1] ?? null;
+    const row = this.stmtGetLastDisplayEvent.get(groupId, normalizedChannelId) as
+      | EventRow
+      | undefined;
+    const sqliteLast = row ? rowToEvent(row) : null;
+    const lastEvent =
+      memoryLast && (!sqliteLast || memoryLast.timestamp >= sqliteLast.timestamp)
+        ? memoryLast
+        : sqliteLast;
+    if (!lastEvent) return null;
+
+    const watermark = this.getReadWatermark(groupId, normalizedChannelId, myAddress);
+    const unreadRow = this.stmtCountUnreadDisplayEvents.get(
+      groupId,
+      normalizedChannelId,
+      watermark,
+      myAddress
+    ) as { cnt?: number } | undefined;
+    const unreadCount =
+      typeof unreadRow?.cnt === 'number' && Number.isFinite(unreadRow.cnt)
+        ? unreadRow.cnt
+        : 0;
+    let memoryUnreadCount = 0;
+    if (myAddress) {
+      for (const event of this.memoryEvents.values()) {
+        if (
+          event.groupId === groupId &&
+          normalizeReticulumChatChannelId(event.channelId) === normalizedChannelId &&
+          (event.eventType === 'message' ||
+            event.eventType === 'attachment_manifest') &&
+          event.timestamp > watermark &&
+          event.authorAddress !== myAddress
+        ) {
+          memoryUnreadCount += 1;
+        }
+      }
+    }
+    const mentionRow = myAddress
+      ? (this.stmtCountUnreadMentions.get(
+          groupId,
+          normalizedChannelId,
+          myAddress,
+          myAddress,
+          watermark
+        ) as { cnt?: number } | undefined)
+      : undefined;
+    const mentionCount =
+      typeof mentionRow?.cnt === 'number' && Number.isFinite(mentionRow.cnt)
+        ? mentionRow.cnt
+        : 0;
+    let memoryMentionCount = 0;
+    const myMentionHash = myAddress
+      ? hashReticulumChatMentionAddress(myAddress)
+      : '';
+    let eventMentionHashCount = 0;
+    const effectiveMentionEvents = new Map<string, ReticulumChatEvent>();
+    for (const event of recentEvents) {
+      if (
+        event.eventType === 'message' ||
+        event.eventType === 'attachment_manifest'
+      ) {
+        effectiveMentionEvents.set(event.eventId, event);
+        continue;
+      }
+      if (event.eventType === 'edit' && event.targetEventId) {
+        effectiveMentionEvents.set(event.targetEventId, event);
+        continue;
+      }
+      if (event.eventType === 'delete' && event.targetEventId) {
+        effectiveMentionEvents.delete(event.targetEventId);
+      }
+    }
+    const countEventMentionHash = (event: ReticulumChatEvent) => {
+      if (
+        !myMentionHash ||
+        event.authorAddress === myAddress ||
+        event.timestamp <= watermark ||
+        (event.eventType !== 'message' &&
+          event.eventType !== 'attachment_manifest' &&
+          event.eventType !== 'edit') ||
+        !event.mentionAddressHashes?.includes(myMentionHash)
+      ) {
+        return;
+      }
+      eventMentionHashCount += 1;
+    };
+    for (const event of effectiveMentionEvents.values()) {
+      countEventMentionHash(event);
     }
     if (myAddress) {
-      this.stmtMarkMentionsRead.run(Date.now(), groupId, myAddress, timestamp);
+      for (const mentions of this.memoryMentions.values()) {
+        for (const mention of mentions) {
+          if (
+            mention.groupId === groupId &&
+            mention.channelId === normalizedChannelId &&
+            mention.mentionedAddress === myAddress &&
+            mention.authorAddress !== myAddress &&
+            mention.timestamp > watermark &&
+            mention.readAt === 0
+          ) {
+            memoryMentionCount += 1;
+          }
+        }
+      }
+    }
+    const totalMentionCount = Math.max(
+      mentionCount,
+      memoryMentionCount,
+      eventMentionHashCount
+    );
+    return {
+      groupId,
+      channelId: normalizedChannelId,
+      lastEvent,
+      unreadCount: Math.max(unreadCount, memoryUnreadCount),
+      mentionCount: totalMentionCount,
+      hasUnreadMention: totalMentionCount > 0,
+      updatedAt: lastEvent.timestamp,
+    };
+  }
+
+  markRead(
+    groupId: number,
+    channelIdOrTimestamp: string | number,
+    upToTimestampOrAddress?: string | number,
+    myAddress = ''
+  ): void {
+    const channelId =
+      typeof channelIdOrTimestamp === 'string'
+        ? channelIdOrTimestamp
+        : RETICULUM_CHAT_DEFAULT_CHANNEL_ID;
+    const timestamp = Number(
+      typeof channelIdOrTimestamp === 'number'
+        ? channelIdOrTimestamp
+        : upToTimestampOrAddress
+    );
+    const effectiveAddress =
+      typeof channelIdOrTimestamp === 'number'
+        ? typeof upToTimestampOrAddress === 'string'
+          ? upToTimestampOrAddress
+          : myAddress
+        : myAddress;
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const address = typeof effectiveAddress === 'string' ? effectiveAddress.trim() : '';
+    const current = this.getReadWatermark(groupId, normalizedChannelId, address);
+    if (timestamp > current) {
+      this.memoryReadWatermarks.set(
+        this.readWatermarkKey(groupId, normalizedChannelId, address),
+        timestamp
+      );
+      this.stmtUpsertWatermark.run(groupId, normalizedChannelId, address, timestamp);
+    }
+    if (address) {
+      this.stmtMarkMentionsRead.run(Date.now(), groupId, normalizedChannelId, address, timestamp);
       const readAt = Date.now();
       for (const mentions of this.memoryMentions.values()) {
         for (const mention of mentions) {
           if (
             mention.groupId === groupId &&
-            mention.mentionedAddress === myAddress &&
+            mention.channelId === normalizedChannelId &&
+            mention.mentionedAddress === address &&
             mention.timestamp <= timestamp &&
             mention.readAt === 0
           ) {
@@ -953,13 +1295,14 @@ export class ReticulumChatDatabase {
     }
   }
 
-  getReadWatermark(groupId: number, address = ''): number {
+  getReadWatermark(groupId: number, channelId: string, address = ''): number {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const normalizedAddress = typeof address === 'string' ? address.trim() : '';
     const memoryWatermark =
       this.memoryReadWatermarks.get(
-        this.readWatermarkKey(groupId, normalizedAddress)
+        this.readWatermarkKey(groupId, normalizedChannelId, normalizedAddress)
       ) ?? 0;
-    const row = this.stmtGetWatermark.get(groupId, normalizedAddress) as
+    const row = this.stmtGetWatermark.get(groupId, normalizedChannelId, normalizedAddress) as
       | { timestamp?: number }
       | undefined;
     const sqliteWatermark =
@@ -971,21 +1314,11 @@ export class ReticulumChatDatabase {
       return exactWatermark;
     }
     if (!normalizedAddress) return 0;
-    const legacyMemoryWatermark =
-      this.memoryReadWatermarks.get(this.readWatermarkKey(groupId, '')) ?? 0;
-    const legacyRow = this.stmtGetWatermark.get(groupId, '') as
-      | { timestamp?: number }
-      | undefined;
-    const legacySqliteWatermark =
-      typeof legacyRow?.timestamp === 'number' &&
-      Number.isFinite(legacyRow.timestamp)
-        ? legacyRow.timestamp
-        : 0;
-    return Math.max(legacyMemoryWatermark, legacySqliteWatermark);
+    return 0;
   }
 
-  private readWatermarkKey(groupId: number, address: string): string {
-    return `${groupId}:${address}`;
+  private readWatermarkKey(groupId: number, channelId: string, address: string): string {
+    return `${groupId}:${normalizeReticulumChatChannelId(channelId)}:${address}`;
   }
 
   getMissingEvents(
@@ -1076,6 +1409,7 @@ export class ReticulumChatDatabase {
   private searchEventsMirror(
     terms: string[],
     allowedGroups: Set<number> | null,
+    allowedChannels: Set<string> | null,
     limit: number
   ): ReticulumChatSearchResult[] {
     const firstTerm = terms[0];
@@ -1091,6 +1425,12 @@ export class ReticulumChatDatabase {
       const event = this.getEvent(row.event_id);
       if (!event) continue;
       if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
+      if (
+        allowedChannels &&
+        !allowedChannels.has(normalizeReticulumChatChannelId(event.channelId))
+      ) {
+        continue;
+      }
       results.push({
         event,
         snippet: buildPlainSnippet(row.search_text, terms),
@@ -1103,6 +1443,7 @@ export class ReticulumChatDatabase {
   private searchEventsMemory(
     terms: string[],
     allowedGroups: Set<number> | null,
+    allowedChannels: Set<string> | null,
     limit: number
   ): ReticulumChatSearchResult[] {
     const results: ReticulumChatSearchResult[] = [];
@@ -1111,6 +1452,12 @@ export class ReticulumChatDatabase {
     );
     for (const event of events) {
       if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
+      if (
+        allowedChannels &&
+        !allowedChannels.has(normalizeReticulumChatChannelId(event.channelId))
+      ) {
+        continue;
+      }
       const text =
         this.memorySearchText.get(event.eventId) ??
         searchTextFromPayload(event.encryptedPayload);
@@ -1156,6 +1503,7 @@ export class ReticulumChatDatabase {
       CREATE TABLE IF NOT EXISTS reticulum_chat_events (
         event_id TEXT PRIMARY KEY,
         group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL DEFAULT 'general',
         author_address TEXT NOT NULL,
         author_public_key TEXT NOT NULL,
         author_seq INTEGER NOT NULL,
@@ -1175,18 +1523,20 @@ export class ReticulumChatDatabase {
       CREATE UNIQUE INDEX IF NOT EXISTS reticulum_chat_author_seq_idx
         ON reticulum_chat_events (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_group_time_idx
-        ON reticulum_chat_events (group_id, timestamp, author_seq);
+        ON reticulum_chat_events (group_id, channel_id, timestamp, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
       CREATE TABLE IF NOT EXISTS reticulum_chat_read_watermarks (
         group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL DEFAULT 'general',
         address TEXT NOT NULL DEFAULT '',
         timestamp INTEGER NOT NULL,
-        PRIMARY KEY (group_id, address)
+        PRIMARY KEY (group_id, channel_id, address)
       );
       CREATE TABLE IF NOT EXISTS reticulum_chat_mentions (
         event_id TEXT NOT NULL,
         group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL DEFAULT 'general',
         mentioned_address TEXT NOT NULL,
         author_address TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
@@ -1194,33 +1544,49 @@ export class ReticulumChatDatabase {
         PRIMARY KEY (event_id, mentioned_address)
       );
       CREATE INDEX IF NOT EXISTS reticulum_chat_mentions_unread_idx
-        ON reticulum_chat_mentions (group_id, mentioned_address, read_at, timestamp);
+        ON reticulum_chat_mentions (group_id, channel_id, mentioned_address, read_at, timestamp);
       CREATE TABLE IF NOT EXISTS reticulum_chat_search_index (
         event_id TEXT PRIMARY KEY,
         group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL DEFAULT 'general',
         author_address TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
         event_type TEXT NOT NULL,
         search_text TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS reticulum_chat_search_group_time_idx
-        ON reticulum_chat_search_index (group_id, timestamp);
+        ON reticulum_chat_search_index (group_id, channel_id, timestamp);
       CREATE VIRTUAL TABLE IF NOT EXISTS reticulum_chat_search_fts USING fts5(
         event_id UNINDEXED,
         group_id UNINDEXED,
+        channel_id UNINDEXED,
         author_address UNINDEXED,
         timestamp UNINDEXED,
         event_type UNINDEXED,
         search_text,
         tokenize = 'unicode61'
       );
+      CREATE TABLE IF NOT EXISTS reticulum_chat_channels (
+        group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        position INTEGER NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, channel_id)
+      );
     `);
-    this.migrateReadWatermarksSchema();
     this.ensureColumn(
       'reticulum_chat_events',
       'mention_address_hashes',
       "TEXT NOT NULL DEFAULT '[]'"
     );
+    this.ensureColumn('reticulum_chat_events', 'channel_id', "TEXT NOT NULL DEFAULT 'general'");
+    this.ensureColumn('reticulum_chat_mentions', 'channel_id', "TEXT NOT NULL DEFAULT 'general'");
+    this.ensureColumn('reticulum_chat_search_index', 'channel_id', "TEXT NOT NULL DEFAULT 'general'");
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {

@@ -1363,7 +1363,11 @@ export const Group = ({
       if (cancelled || enabled !== true) return;
       for (const groupId of groupIds) {
         if (cancelled) return;
-        const history = await window.reticulumChat?.getHistory?.(groupId, 50);
+        const history = await window.reticulumChat?.getHistory?.(
+          groupId,
+          'general',
+          50
+        );
         if (cancelled || !Array.isArray(history)) continue;
         for (const event of history as ReticulumBackgroundEvent[]) {
           if (cancelled) return;
@@ -2399,7 +2403,19 @@ export const Group = ({
         0
     );
     if (!Number.isInteger(groupId) || groupId <= 0 || timestamp <= 0) return;
-    void window.reticulumChat?.markRead?.(groupId, timestamp, myAddress).then(() => {
+    const channels = Array.isArray(group?.reticulumChatSummary?.channels)
+      ? group.reticulumChatSummary.channels
+      : [{ channelId: 'general', updatedAt: timestamp }];
+    void Promise.all(
+      channels.map((channel: any) =>
+        window.reticulumChat?.markRead?.(
+          groupId,
+          typeof channel?.channelId === 'string' ? channel.channelId : 'general',
+          Number(channel?.updatedAt || timestamp),
+          myAddress
+        )
+      )
+    ).then(() => {
       executeEvent('reticulum-chat-summaries-refresh', {});
     });
   }, [myAddress]);

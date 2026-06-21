@@ -110,6 +110,7 @@ import {
   updateNameCase,
   userInfoCase,
   validApiCase,
+  validateGroupAdminsCase,
   validateGroupMembersCase,
   versionCase,
   voteOnPollCase,
@@ -3255,6 +3256,9 @@ function setupMessageListener() {
         break;
       case 'validateGroupMembers':
         validateGroupMembersCase(request, event);
+        break;
+      case 'validateGroupAdmins':
+        validateGroupAdminsCase(request, event);
         break;
       case 'name':
         nameCase(request, event);

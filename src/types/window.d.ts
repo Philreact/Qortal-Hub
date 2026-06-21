@@ -537,6 +537,14 @@ declare global {
       subscribeGroup: (
         groupId: number
       ) => Promise<{ success: boolean; error?: string }>;
+      subscribeChannel: (
+        groupId: number,
+        channelId: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      unsubscribeChannel: (
+        groupId: number,
+        channelId: string
+      ) => Promise<{ success: boolean; error?: string }>;
       unsubscribeGroup: (
         groupId: number
       ) => Promise<{ success: boolean; error?: string }>;
@@ -545,6 +553,7 @@ declare global {
       ) => Promise<{ success: boolean; error?: string }>;
       sendTyping: (
         groupId: number,
+        channelId: string,
         authorAddress: string,
         active: boolean
       ) => Promise<{ success: boolean; error?: string }>;
@@ -553,12 +562,28 @@ declare global {
         manifest: unknown,
         eventId?: string
       ) => Promise<{ success: boolean; error?: string }>;
-      getHistory: (groupId: number, limit?: number) => Promise<unknown[]>;
+      getHistory: (
+        groupId: number,
+        channelId?: string,
+        limit?: number
+      ) => Promise<unknown[]>;
+      getChannelMetadataHistory: (
+        groupId: number,
+        limit?: number
+      ) => Promise<unknown[]>;
+      getChannels: (
+        groupId: number,
+        includeArchived?: boolean
+      ) => Promise<unknown[]>;
+      applyChannelMetadata: (
+        eventId: string,
+        payload: unknown
+      ) => Promise<{ success: boolean }>;
       getSyncState: (groupId: number) => Promise<Record<string, number>>;
       getSummaries: (myAddress?: string) => Promise<unknown[]>;
       search: (
         query: string,
-        options?: { groupIds?: number[]; limit?: number }
+        options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
       ) => Promise<unknown[]>;
       indexSearchText: (
         eventId: string,
@@ -576,6 +601,7 @@ declare global {
       ) => Promise<{ success: boolean }>;
       markRead: (
         groupId: number,
+        channelId: string,
         upToTimestamp: number,
         myAddress?: string
       ) => Promise<{ success: boolean }>;
@@ -591,6 +617,7 @@ declare global {
       onTyping: (
         cb: (payload: {
           groupId: number;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
