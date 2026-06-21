@@ -22,10 +22,11 @@ from typing import IO, Any, Callable, Dict, List, Optional, Set, Tuple
 
 import RNS
 
-APP_NAMESPACE = "qortal-hub"
+APP_NAMESPACE = "qortal-hub-test"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v1"
+PRESENCE_VERSION = "v1-test"
 IDENTITY_FILENAME = "presence-bridge.identity"
+disable_bootstrap = True
 
 _state_lock = threading.RLock()
 _reticulum = None
@@ -4064,6 +4065,9 @@ def _note_good_outbound_overlay_rx(peer_hash: str) -> None:
 
 
 def _seed_overlay_good_outbound_cache_candidates() -> None:
+    if disable_bootstrap:
+        log("[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_seed_skipped disabled=true")
+        return
     _load_overlay_good_outbound_cache()
     if not _overlay_good_outbound_cache:
         return
