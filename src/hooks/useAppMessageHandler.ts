@@ -37,6 +37,7 @@ export function useAppMessageHandler(
       } else if (message.action === 'NOTIFICATION_OPEN_GROUP') {
         executeEvent('openGroupMessage', {
           from: message.payload?.from,
+          channelId: message.payload?.channelId,
         });
       } else if (message.action === 'NOTIFICATION_OPEN_ANNOUNCEMENT_GROUP') {
         executeEvent('openGroupAnnouncement', {

@@ -503,6 +503,8 @@ export const ChatGroup = ({
   hideView,
   isActive,
   isPrivate,
+  notificationReticulumChannelId,
+  onReticulumChannelSelected,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
@@ -1032,6 +1034,30 @@ export const ChatGroup = ({
     setChatReferences({});
     appliedReticulumEventIdsRef.current.clear();
   }, [reticulumChatEnabled, selectedReticulumChannelId]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !notificationReticulumChannelId) return;
+    if (
+      reticulumChannels.some(
+        (channel) => channel.channelId === notificationReticulumChannelId
+      )
+    ) {
+      setSelectedReticulumChannelId(notificationReticulumChannelId);
+    }
+  }, [
+    notificationReticulumChannelId,
+    reticulumChannels,
+    reticulumChatEnabled,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled) return;
+    onReticulumChannelSelected?.(selectedReticulumChannelId);
+  }, [
+    onReticulumChannelSelected,
+    reticulumChatEnabled,
+    selectedReticulumChannelId,
+  ]);
 
   const checkForFirstSecretKeyNotification = (messages) => {
     messages?.forEach((message) => {

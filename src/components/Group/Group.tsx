@@ -144,15 +144,34 @@ export { validateSecretKey } from './groupValidation';
 
 type ReticulumBackgroundEvent = {
   authorAddress?: string;
+  authorPrimaryName?: string;
+  channelId?: string;
   encryptedPayload?: string;
   eventId?: string;
   eventType?: string;
   groupId?: number;
   targetEventId?: string;
+  timestamp?: number;
+};
+
+type ReticulumNotificationSummary = {
+  groupId?: number;
+  channelId?: string;
+  lastEvent?: ReticulumBackgroundEvent | null;
+  unreadCount?: number;
+  mentionCount?: number;
+  hasUnreadMention?: boolean;
+  updatedAt?: number;
+  channels?: ReticulumNotificationSummary[];
 };
 
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX = 10_000;
+const RETICULUM_OS_NOTIFICATION_EVENT_TYPES = new Set([
+  'message',
+  'attachment_manifest',
+]);
+const RETICULUM_OS_NOTIFICATION_MAX_TRACKED = 500;
 
 const getGroupIdFromGroupLike = (group: unknown): number | null => {
   if (!group || typeof group !== 'object') return null;
@@ -203,6 +222,18 @@ const reticulumTextFromPayload = (payload: unknown): string => {
     .replace(/\s+/g, ' ')
     .trim();
 };
+
+const parseReticulumPublicPayload = (value: unknown): unknown => {
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+};
+
+const reticulumChannelDisplayName = (channelId?: string): string =>
+  `#${String(channelId || 'general').replace(/^#/, '')}`;
 
 const reticulumMentionedAddressesFromPayload = (payload: unknown): string[] => {
   if (!payload || typeof payload !== 'object') return [];
@@ -344,8 +375,15 @@ export const Group = ({
   const [hideCommonKeyPopup, setHideCommonKeyPopup] = useState(false);
   const [isLoadingGroupMessage, setIsLoadingGroupMessage] = useState('');
   const setMutedGroups = useSetAtom(mutedGroupsAtom);
+  const mutedGroups = useAtomValue(mutedGroupsAtom);
   const memberGroupsForReticulum = useAtomValue(memberGroupsAtom);
   const [memberGroupsLoadedAddress, setMemberGroupsLoadedAddress] = useState('');
+  const [
+    notificationReticulumChannelId,
+    setNotificationReticulumChannelId,
+  ] = useState('');
+  const [activeReticulumChannelId, setActiveReticulumChannelId] =
+    useState('general');
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
@@ -372,6 +410,11 @@ export const Group = ({
   >(new Map());
   const reticulumSummariesRefreshTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousReticulumSummariesRef = useRef<Record<string, any> | null>(
+    null
+  );
+  const notifiedReticulumEventIdsRef = useRef<Set<string>>(new Set());
+  const activeReticulumChannelIdRef = useRef('general');
   const pruneReticulumBackgroundProcessedEvents = useCallback(() => {
     const now = Date.now();
     const map = reticulumBackgroundProcessedEventIdsRef.current;
@@ -622,6 +665,10 @@ export const Group = ({
   useEffect(() => {
     selectedDirectRef.current = selectedDirect;
   }, [selectedDirect]);
+  useEffect(() => {
+    activeReticulumChannelIdRef.current =
+      activeReticulumChannelId || 'general';
+  }, [activeReticulumChannelId]);
 
   useEffect(() => {
     secretKeyRef.current = secretKey;
@@ -779,10 +826,185 @@ export const Group = ({
     }
   }, []);
 
+  const fireReticulumChatNotification = useCallback(
+    async ({
+      channelId,
+      event,
+      groupId,
+      hasMention,
+    }: {
+      channelId: string;
+      event: ReticulumBackgroundEvent;
+      groupId: number;
+      hasMention: boolean;
+    }) => {
+      if (typeof window === 'undefined' || !('Notification' in window)) return;
+      const disabled = await window
+        .sendMessage('getUserSettings', {
+          key: 'disable-push-notifications',
+        })
+        .catch(() => false);
+      if (disabled) return;
+      if (window.Notification.permission === 'default') {
+        await window.Notification.requestPermission().catch(() => null);
+      }
+      if (window.Notification.permission !== 'granted') return;
+
+      const group = memberGroupsRef.current?.find(
+        (item: any) => Number(item?.groupId) === groupId
+      );
+      const groupName =
+        group?.groupName || group?.name || `Group ${String(groupId)}`;
+      const channelName = reticulumChannelDisplayName(channelId);
+      const groupProperty = groupsPropertiesRef.current?.[String(groupId)] as
+        | { isOpen?: boolean }
+        | undefined;
+      const isPublicGroup = groupProperty?.isOpen === true;
+      const author =
+        event.authorPrimaryName ||
+        event.authorAddress ||
+        (hasMention ? 'Someone' : 'New message');
+      let preview = '';
+      if (isPublicGroup) {
+        const payload = parseReticulumPublicPayload(event.encryptedPayload);
+        preview = reticulumTextFromPayload(payload).slice(0, 140);
+      }
+      const title = hasMention
+        ? `Mention in ${groupName} / ${channelName}`
+        : `New message in ${groupName} / ${channelName}`;
+      const body = isPublicGroup && preview
+        ? `${author}: ${preview}`
+        : hasMention
+          ? `You were mentioned in ${groupName}`
+          : `You have a new message in ${groupName}`;
+      const notification = new window.Notification(title, {
+        body,
+        icon: window.location.origin + '/qortal192.png',
+        data: { groupId, channelId, eventId: event.eventId },
+      });
+      notification.onclick = () => {
+        if (typeof window?.electronAPI?.focusWindow === 'function') {
+          window.electronAPI.focusWindow();
+        }
+        setNotificationReticulumChannelId(channelId);
+        executeEvent('openGroupMessage', {
+          from: groupId,
+          channelId,
+        });
+        notification.close();
+      };
+      setTimeout(() => notification.close(), 10000);
+    },
+    []
+  );
+
+  const maybeFireReticulumChatNotification = useCallback(
+    async (
+      previous: Record<string, any> | null,
+      next: Record<string, any>
+    ) => {
+      if (!previous || !myAddressRef.current) return;
+      const muted = Array.isArray(mutedGroups)
+        ? mutedGroups.map((groupId) => String(groupId))
+        : [];
+      const candidates: Array<{
+        channelId: string;
+        event: ReticulumBackgroundEvent;
+        groupId: number;
+        hasMention: boolean;
+        timestamp: number;
+      }> = [];
+      for (const summary of Object.values(next) as ReticulumNotificationSummary[]) {
+        const groupId = Number(summary?.groupId);
+        if (!Number.isInteger(groupId) || groupId <= 0) continue;
+        if (muted.includes(String(groupId))) continue;
+        const previousSummary = previous[String(groupId)] as
+          | ReticulumNotificationSummary
+          | undefined;
+        const previousChannels = Array.isArray(previousSummary?.channels)
+          ? previousSummary.channels
+          : [];
+        const channels = Array.isArray(summary?.channels)
+          ? summary.channels
+          : summary?.channelId
+            ? [summary]
+            : [];
+        for (const channel of channels) {
+          const event = channel?.lastEvent;
+          const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
+          const eventType = typeof event?.eventType === 'string' ? event.eventType : '';
+          const channelId = String(
+            channel?.channelId || event?.channelId || 'general'
+          );
+          if (!eventId || !RETICULUM_OS_NOTIFICATION_EVENT_TYPES.has(eventType)) {
+            continue;
+          }
+          if (event?.authorAddress === myAddressRef.current) continue;
+          if (notifiedReticulumEventIdsRef.current.has(eventId)) continue;
+          const previousChannel =
+            previousChannels.find(
+              (item) => String(item?.channelId || 'general') === channelId
+            ) ||
+            (String(previousSummary?.channelId || '') === channelId
+              ? previousSummary
+              : null);
+          if (previousChannel?.lastEvent?.eventId === eventId) continue;
+          const unreadCount = Math.max(0, Number(channel?.unreadCount) || 0);
+          const previousUnreadCount = Math.max(
+            0,
+            Number(previousChannel?.unreadCount) || 0
+          );
+          const mentionCount = Math.max(0, Number(channel?.mentionCount) || 0);
+          const previousMentionCount = Math.max(
+            0,
+            Number(previousChannel?.mentionCount) || 0
+          );
+          if (
+            unreadCount <= 0 ||
+            (unreadCount <= previousUnreadCount &&
+              mentionCount <= previousMentionCount)
+          ) {
+            continue;
+          }
+          const isViewingThisChannel =
+            Number(selectedGroupRef.current?.groupId) === groupId &&
+            groupSectionRef.current === 'chat' &&
+            activeReticulumChannelIdRef.current === channelId &&
+            (desktopViewModeRef.current === 'chat' ||
+              qChatTabActiveRef.current ||
+              mobileViewModeRef.current === 'chat');
+          if (isViewingThisChannel) continue;
+          candidates.push({
+            channelId,
+            event,
+            groupId,
+            hasMention:
+              channel?.hasUnreadMention === true ||
+              mentionCount > previousMentionCount,
+            timestamp: Number(event?.timestamp || channel?.updatedAt || 0),
+          });
+        }
+      }
+      const newest = candidates.sort((a, b) => b.timestamp - a.timestamp)[0];
+      if (!newest?.event?.eventId) return;
+      notifiedReticulumEventIdsRef.current.add(newest.event.eventId);
+      if (
+        notifiedReticulumEventIdsRef.current.size >
+        RETICULUM_OS_NOTIFICATION_MAX_TRACKED
+      ) {
+        const [oldest] = notifiedReticulumEventIdsRef.current;
+        if (oldest) notifiedReticulumEventIdsRef.current.delete(oldest);
+      }
+      await fireReticulumChatNotification(newest);
+    },
+    [fireReticulumChatNotification, mutedGroups]
+  );
+
   const refreshReticulumChatSummaries = useCallback(async () => {
     try {
       const enabled = await window.reticulumChat?.isEnabled?.();
       if (!enabled) {
+        previousReticulumSummariesRef.current = null;
         setReticulumChatSummaries({});
         return;
       }
@@ -797,11 +1019,18 @@ export const Group = ({
         acc[String(groupId)] = summary;
         return acc;
       }, {} as Record<string, any>);
+      const previous = previousReticulumSummariesRef.current;
+      previousReticulumSummariesRef.current = next;
       setReticulumChatSummaries(next);
+      void maybeFireReticulumChatNotification(previous, next);
     } catch (error) {
       console.error('[ReticulumChat] Failed to refresh group summaries:', error);
     }
-  }, [myAddress, setReticulumChatSummaries]);
+  }, [
+    maybeFireReticulumChatNotification,
+    myAddress,
+    setReticulumChatSummaries,
+  ]);
 
   const scheduleReticulumChatSummariesRefresh = useCallback(() => {
     if (reticulumSummariesRefreshTimerRef.current) {
@@ -815,6 +1044,8 @@ export const Group = ({
 
   useEffect(() => {
     myAddressRef.current = myAddress || '';
+    previousReticulumSummariesRef.current = null;
+    notifiedReticulumEventIdsRef.current.clear();
   }, [myAddress]);
 
   useEffect(() => {
@@ -2063,6 +2294,11 @@ export const Group = ({
       if (isLoadingOpenSectionFromNotification.current) return;
 
       const groupId = e.detail?.from;
+      const channelId =
+        typeof e.detail?.channelId === 'string' ? e.detail.channelId : '';
+      if (channelId) {
+        setNotificationReticulumChannelId(channelId);
+      }
       const findGroup = memberGroupsRef.current?.find(
         (group: any) => +group?.groupId === +groupId
       );
@@ -2594,6 +2830,18 @@ export const Group = ({
                   }
                   triedToFetchSecretKey={triedToFetchSecretKey}
                   getTimestampEnterChatParent={getTimestampEnterChat}
+                  notificationReticulumChannelId={
+                    notificationReticulumChannelId
+                  }
+                  onReticulumChannelSelected={(channelId) => {
+                    setActiveReticulumChannelId(channelId || 'general');
+                    if (
+                      notificationReticulumChannelId &&
+                      notificationReticulumChannelId === channelId
+                    ) {
+                      setNotificationReticulumChannelId('');
+                    }
+                  }}
                 />
               )}
               {isPrivate &&
