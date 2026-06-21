@@ -252,27 +252,27 @@ export async function validateGroupAdminsCase(request, event) {
     }
     const validApi = await getBaseApi();
     const response = await fetch(
-      `${validApi.replace(/\/+$/u, '')}/groups/members/${groupId}?limit=0&onlyAdmins=true`
+      `${validApi.replace(/\/+$/u, '')}/groups/members/${groupId}/validate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(addresses),
+      }
     );
     if (!response.ok) {
       throw new Error(`Group admin validation failed: ${response.status}`);
     }
     const result = await response.json();
-    const adminAddresses = new Set(
-      Array.isArray(result?.members)
-        ? result.members
-            .map((member) => (typeof member?.member === 'string' ? member.member : ''))
-            .filter(Boolean)
-        : []
-    );
     event.source.postMessage(
       {
         requestId: request.requestId,
         action: 'validateGroupAdmins',
-        payload: addresses.map((address) => ({
-          address,
-          isAdmin: adminAddresses.has(address),
-        })),
+        payload: Array.isArray(result)
+          ? result.map((item) => ({
+              address: typeof item?.address === 'string' ? item.address : '',
+              isAdmin: item?.isAdmin === true,
+            }))
+          : [],
         type: 'backgroundMessageResponse',
       },
       event.origin

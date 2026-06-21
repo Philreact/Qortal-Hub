@@ -1739,6 +1739,10 @@ export const ChatGroup = ({
       const targetReference = nextItem.chatReference;
       const itemType =
         nextItem?.eventType || nextItem?.decryptedData?.type || nextItem?.type;
+      const isReactionItem =
+        itemType === 'reaction' ||
+        itemType === 'reaction_add' ||
+        itemType === 'reaction_remove';
 
       if (targetReference && itemType === 'delete') {
         setMessages((prev) =>
@@ -1765,7 +1769,7 @@ export const ChatGroup = ({
 
       if (
         targetReference &&
-        (itemType === 'edit' || nextItem?.isEdited || itemType === 'reaction')
+        (itemType === 'edit' || nextItem?.isEdited || isReactionItem)
       ) {
         setChatReferences((prev) => {
           const organized = { ...prev };
