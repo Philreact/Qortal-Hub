@@ -5960,7 +5960,6 @@ def _overlay_teardown_should_demote(reason: str) -> bool:
         "link_pressure",
         "link_pressure_inbound",
         "link_pressure_outbound",
-        "unestablished_timeout",
     }:
         return False
     return True
@@ -5975,6 +5974,58 @@ def _overlay_link_recent_activity_age_seconds(state: Dict[str, Any], now: float)
     if recent_at <= 0.0:
         return None
     return max(0.0, now - recent_at)
+
+
+def _overlay_link_recent_rx_age_seconds(state: Dict[str, Any], now: float) -> Optional[float]:
+    last_rx_at = state.get("last_rx_at")
+    if not isinstance(last_rx_at, (int, float)):
+        return None
+    return max(0.0, now - float(last_rx_at))
+
+
+def _overlay_link_is_good_outbound_rx(state: Dict[str, Any], now: float) -> bool:
+    if state.get("incoming") is True:
+        return False
+    if state.get("established") is not True:
+        return False
+    if state.get("link") is None:
+        return False
+    age = _overlay_link_recent_rx_age_seconds(state, now)
+    return age is not None and age <= _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS
+
+
+def _retain_recent_rx_outbound_peer(peer_hash: str, state: Dict[str, Any], reason: str, now: float) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key or not _overlay_link_is_good_outbound_rx(state, now):
+        return False
+    evicted_peer = ""
+    if peer_key not in _active_overlay_neighbors and len(_active_overlay_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        candidates: list[tuple[float, str]] = []
+        for existing_peer, seen_at in _active_overlay_neighbors.items():
+            existing_key = str(existing_peer or "").strip().lower()
+            if not existing_key or existing_key == peer_key:
+                continue
+            existing_link_id = _active_overlay_link_id_by_peer_hash.get(existing_key) or ""
+            existing_state = _overlay_links_by_id.get(existing_link_id) if existing_link_id else None
+            if existing_state is not None and _overlay_link_is_good_outbound_rx(existing_state, now):
+                continue
+            sort_ts = float(seen_at) if isinstance(seen_at, (int, float)) else 0.0
+            candidates.append((sort_ts, existing_key))
+        if candidates:
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            evicted_peer = candidates[0][1]
+            _active_overlay_neighbors.pop(evicted_peer, None)
+    if peer_key in _active_overlay_neighbors or len(_active_overlay_neighbors) < _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        _active_overlay_neighbors[peer_key] = now
+    age = _overlay_link_recent_rx_age_seconds(state, now)
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum overlay_prune_keep_recent_rx "
+        f"peer={peer_key} reason={reason} "
+        f"last_rx_age_ms={int((age or 0.0) * 1000.0)} "
+        f"outbound={len(_active_overlay_neighbors)}"
+        f"{f' evicted_peer={evicted_peer}' if evicted_peer else ''}"
+    )
+    return True
 
 
 def _overlay_recent_activity_close_should_keep_peer(
@@ -6550,6 +6601,8 @@ def _sync_overlay_links() -> None:
         state = get_overlay_link_state(link_id)
         if state is None:
             _active_overlay_link_id_by_peer_hash.pop(peer_hash, None)
+            continue
+        if _retain_recent_rx_outbound_peer(peer_hash, state, "pruned", time.time()):
             continue
         _teardown_overlay_link_id(link_id, "pruned")
     for peer_hash in list(desired):
@@ -8423,7 +8476,6 @@ def on_outgoing_overlay_link_established(link) -> None:
     emit_overlay_link_state(link_id, state, "established")
     ph_out = str(state.get("peerPresenceHash") or "").strip().lower()
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
-        _note_overlay_peer_alive(ph_out, "link_established")
         _register_active_overlay_for_peer(ph_out, link_id)
         _enqueue_latest_presence_announce_replay(ph_out, "link_established")
     if not _overlay_link_is_current(link_id, link):
@@ -8682,10 +8734,7 @@ def announce_local_destination(reason: str = "unspecified") -> None:
     if _destination is None:
         return
     with _state_lock:
-        inbound_full = (
-            len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
-            or len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS
-        )
+        inbound_full = len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
     app_data = (
         _PRESENCE_ANNOUNCE_APP_DATA_FULL
         if inbound_full
@@ -10006,12 +10055,20 @@ def _schedule_inbound_classify_fallback(link) -> None:
             or get_qchat_file_link_id(link) is not None
         ):
             return
+        peer_hash = str(_incoming_unified_peer_hash_by_object.get(link_key) or "").strip().lower()
+        if not _valid_presence_destination_hash_hex(peer_hash):
+            peer_hash = ""
+        reason = "classify_timeout_identity" if peer_hash else "classify_timeout"
         log(
             "[presence_bridge] WARNING inbound_link_classify_timeout defaulting_to_overlay "
-            f"link_obj={link_key}"
+            f"link_obj={link_key} peer={peer_hash or 'unknown'} reason={reason}"
         )
         try:
-            _register_incoming_overlay_link(link)
+            _register_incoming_overlay_link(
+                link,
+                peer_hash,
+                reason,
+            )
         except Exception as exc:
             log(f"[presence_bridge] inbound_link_classify_timeout err={exc}")
 
