@@ -13,6 +13,7 @@ import { buildPresenceSignedFields, getPresenceManager } from './presence';
 import {
   getReticulumBridgeIdentityPath,
   getReticulumConfigDir,
+  getReticulumSourceEnvExtra,
   persistReticulumSharedTransportState,
   resolveReticulumPythonLaunch,
   type ReticulumBridgeState,
@@ -2707,8 +2708,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
     const identityPath = getReticulumBridgeIdentityPath();
     fs.mkdirSync(path.dirname(identityPath), { recursive: true });
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...getReticulumSourceEnvExtra(),
       ...(launch.envExtra ?? {}),
       PYTHONUNBUFFERED: '1',
       QORTAL_RNS_LINK_TRACE: app.isPackaged
@@ -2718,7 +2720,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
     };
     loggerLog(
-      `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE}`
+      `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
 
     const child = spawn(launch.cmd, launch.args, {
