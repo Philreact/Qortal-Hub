@@ -15,7 +15,6 @@ import {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const HEARTBEAT_INTERVAL_MS = 25_000;
 const IDLE_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 const IDLE_CHECK_INTERVAL_MS = 60_000;    // check once per minute
 const CLIENT_VERSION = '1.0.0';
@@ -158,10 +157,11 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   const setIsIdle = useSetAtom(isIdleAtom);
 
   const sessionIdRef = useRef<string | null>(null);
-  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatActiveRef = useRef(false);
   const idleCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingPresenceBootstrapRef = useRef<Promise<boolean> | null>(null);
   const hasAnnouncedRef = useRef(false);
+  const heartbeatInFlightRef = useRef(false);
   // Ref-only idle tracking — no state, no re-renders for the timer itself.
   const lastActivityRef = useRef<number>(Date.now());
   const isIdleRef = useRef<boolean>(false);
@@ -192,9 +192,9 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   // ── Stable helpers ────────────────────────────────────────────────────────
 
   const stopHeartbeat = useCallback(() => {
-    if (heartbeatRef.current !== null) {
-      clearInterval(heartbeatRef.current);
-      heartbeatRef.current = null;
+    if (heartbeatActiveRef.current) {
+      heartbeatActiveRef.current = false;
+      window.presence?.stopHeartbeatScheduler?.().catch(() => {});
     }
   }, []);
 
@@ -264,6 +264,7 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   }, [getEffectiveStatus]);
 
   const sendHeartbeat = useCallback(async (): Promise<boolean> => {
+    if (heartbeatInFlightRef.current) return false;
     const ui = userInfoRef.current;
     const sessionId = sessionIdRef.current;
     const statusVal = getEffectiveStatus();
@@ -271,6 +272,7 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     if (!hasAnnouncedRef.current) return false;
     if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence) return false;
     const status = statusVal;
+    heartbeatInFlightRef.current = true;
     try {
       const timestamp = Date.now();
       const signedFields = {
@@ -295,12 +297,14 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     } catch (err) {
       console.error('[Presence] Heartbeat failed:', err);
       return false;
+    } finally {
+      heartbeatInFlightRef.current = false;
     }
   }, [getEffectiveStatus]);
 
   const announceWhenRemoteHubsReady = useCallback(
     (shouldCancel: () => boolean): Promise<boolean> => {
-      if (heartbeatRef.current !== null && getEffectiveStatus() !== 'offline') {
+      if (heartbeatActiveRef.current && getEffectiveStatus() !== 'offline') {
         return Promise.resolve(true);
       }
       const pending = pendingPresenceBootstrapRef.current;
@@ -313,7 +317,8 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
         const announced = await sendAnnounce();
         if (!announced) return false;
         stopHeartbeat();
-        heartbeatRef.current = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+        await window.presence?.startHeartbeatScheduler?.();
+        heartbeatActiveRef.current = true;
         return true;
       })();
 
@@ -327,6 +332,13 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     },
     [getEffectiveStatus, sendAnnounce, sendHeartbeat, stopHeartbeat]
   );
+
+  useEffect(() => {
+    if (!window.presence?.onHeartbeatRequested) return;
+    return window.presence.onHeartbeatRequested(() => {
+      void sendHeartbeat();
+    });
+  }, [sendHeartbeat]);
 
   // ── Idle detection ────────────────────────────────────────────────────────
   //

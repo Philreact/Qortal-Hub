@@ -441,6 +441,10 @@ declare global {
       announce: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
       /** Send a periodic heartbeat (every 25 s) to keep the session alive. */
       heartbeat: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
+      /** Start the main-process heartbeat scheduler. */
+      startHeartbeatScheduler?: () => Promise<{ success: boolean }>;
+      /** Stop the main-process heartbeat scheduler. */
+      stopHeartbeatScheduler?: () => Promise<{ success: boolean }>;
       /** Announce that the local user is going offline. */
       offline: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
       /** Check whether an address currently has an active session. */
@@ -474,6 +478,8 @@ declare global {
       onCleared: (cb: () => void) => () => void;
       /** Subscribe to the "presence transport ready" event (fired after transport start or wake recovery). */
       onStarted: (cb: () => void) => () => void;
+      /** Subscribe to heartbeat ticks emitted by the main process. */
+      onHeartbeatRequested?: (cb: () => void) => () => void;
     };
 
     /** Decentralized STUN bootstrap + ICE server list (Electron preload + main). */

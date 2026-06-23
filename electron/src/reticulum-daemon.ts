@@ -122,7 +122,15 @@ export function getReticulumSourceEnvExtra(): Record<string, string> {
     QORTAL_RNS_LOCAL_TRACE_DELAY_MS:
       process.env.QORTAL_RNS_LOCAL_TRACE_DELAY_MS ?? '80',
     QORTAL_RNS_LOCAL_TRACE_FRAMES:
-      process.env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '1',
+      process.env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0',
+    QORTAL_RNS_LOCAL_TRACE_DEST_GAPS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_DEST_GAPS ?? '0',
+    QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? '100',
+    QORTAL_RNS_LOCAL_RX_QUEUE_ERROR_AGE_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_QUEUE_ERROR_AGE_MS ?? '500',
+    QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? '50',
   };
   return extra;
 }
@@ -3134,7 +3142,7 @@ function startBundledReticulumDaemonLocked(): void {
       ? plan.args
       : [...plan.args, '--service'];
     loggerLog(
-      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
+      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS=${env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? 'n/a'} QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS=${env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? 'n/a'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
     const subprocess = spawn(plan.cmd, launchArgs, {
       cwd: plan.cwd,

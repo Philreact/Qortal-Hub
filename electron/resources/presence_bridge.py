@@ -26,7 +26,7 @@ APP_NAMESPACE = "qortal-hub-test"
 PRESENCE_ASPECT = "presence"
 PRESENCE_VERSION = "v1-test"
 IDENTITY_FILENAME = "presence-bridge.identity"
-disable_bootstrap = False
+disable_bootstrap = True
 
 _state_lock = threading.RLock()
 _reticulum = None
@@ -219,6 +219,7 @@ _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE = "GAC"
 _GROUP_AUDIO_BINARY_MAGIC = b"QGAU"
 _GROUP_AUDIO_BINARY_VERSION = 1
 _GROUP_AUDIO_BINARY_HEADER_BYTES = 9
+_AUDIO_LINK_TRACE_EVERY_FRAMES = 250
 _audio_links_by_id: Dict[str, Dict[str, Any]] = {}
 _audio_link_ids_by_object: Dict[int, str] = {}
 _outgoing_audio_link_id_by_peer_hash: Dict[str, str] = {}
@@ -294,6 +295,7 @@ _AUDIO_LINK_ESTABLISH_TIMEOUT_SECONDS = 12.0
 _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS = 4
 _AUDIO_LINK_RETRY_MIN_SECONDS = 1.0
 _AUDIO_LINK_RETRY_MAX_SECONDS = 20.0
+_AUDIO_LINK_RECOVERY_REARM_DEBOUNCE_SECONDS = 2.0
 _PACKET_PATH_WARMING_TIMEOUTS_BEFORE_FAILING = 2
 _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
@@ -3274,6 +3276,8 @@ def _process_audio_batch(frames: list) -> None:
             snapshot = _snapshot_audio_link_for_send(link_id, peer_key_hint)
             send_link_id = str(snapshot.get("linkId") or link_id) if snapshot is not None else link_id
             if snapshot is None:
+                if peer_key_hint:
+                    _rearm_audio_link_recovery(peer_key_hint, "send_no_canonical_link")
                 emit_event(
                     "group_audio_send_failed",
                     {
@@ -3286,11 +3290,14 @@ def _process_audio_batch(frames: list) -> None:
                 )
                 continue
             if snapshot.get("ready") is not True:
+                snapshot_peer_key = str(snapshot.get("peerPresenceHash") or peer_key_hint)
+                if snapshot_peer_key:
+                    _rearm_audio_link_recovery(snapshot_peer_key, "send_audio_link_not_ready")
                 emit_event(
                     "group_audio_send_failed",
                     {
                         "linkId": send_link_id,
-                        "peerPresenceHash": str(snapshot.get("peerPresenceHash") or ""),
+                        "peerPresenceHash": snapshot_peer_key,
                         "reason": str(snapshot.get("reason") or "audio_link_not_ready"),
                         "code": str(snapshot.get("reason") or "audio_link_not_ready"),
                         "transport": "link",
@@ -10023,7 +10030,44 @@ def _ensure_audio_link_lifecycle_fields(state: Dict[str, Any]) -> Dict[str, Any]
         state["consecutive_send_timeouts"] = 0
     if "send_timeout_backoff_until" not in state:
         state["send_timeout_backoff_until"] = 0.0
+    if "media_send_seq" not in state:
+        state["media_send_seq"] = 0
+    if "media_rx_seq" not in state:
+        state["media_rx_seq"] = 0
+    if "last_media_send_trace_at" not in state:
+        state["last_media_send_trace_at"] = 0.0
+    if "last_media_rx_trace_at" not in state:
+        state["last_media_rx_trace_at"] = 0.0
     return state
+
+
+def _reticulum_link_status_name(link: Any) -> str:
+    if link is None:
+        return "none"
+    status = getattr(link, "status", None)
+    try:
+        status_int = int(status)
+    except Exception:
+        return str(status or "unknown")
+    labels = {
+        getattr(RNS.Link, "PENDING", object()): "PENDING",
+        getattr(RNS.Link, "HANDSHAKE", object()): "HANDSHAKE",
+        getattr(RNS.Link, "ACTIVE", object()): "ACTIVE",
+        getattr(RNS.Link, "STALE", object()): "STALE",
+        getattr(RNS.Link, "CLOSED", object()): "CLOSED",
+    }
+    return str(labels.get(status_int) or status_int)
+
+
+def _audio_link_trace_should_log(state: Dict[str, Any], key: str, seq: int) -> bool:
+    if seq <= 3 or seq % _AUDIO_LINK_TRACE_EVERY_FRAMES == 0:
+        return True
+    now = time.time()
+    last = state.get(key)
+    if not isinstance(last, (int, float)) or now - float(last) >= 10.0:
+        state[key] = now
+        return True
+    return False
 
 
 def _audio_link_activity_ts(state: Dict[str, Any]) -> float:
@@ -10232,6 +10276,7 @@ def _snapshot_audio_link_for_send(
     peer_key_hint: str = "",
 ) -> Optional[Dict[str, Any]]:
     with _state_lock:
+        requested_link_id = str(link_id or "")
         state = _audio_links_by_id.get(link_id)
         peer_key_hint = str(peer_key_hint or "").strip().lower()
         if state is None:
@@ -10241,20 +10286,50 @@ def _snapshot_audio_link_for_send(
             if not canonical_id:
                 canonical_id = _outgoing_audio_link_id_by_peer_hash.get(peer_key_hint) if peer_key_hint else ""
             if not canonical_id:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or 'none'} peer_hint={_short_route(peer_key_hint)} "
+                    "reason=no_canonical_link"
+                )
                 return None
             state = _audio_links_by_id.get(canonical_id)
             if state is None:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or 'none'} peer_hint={_short_route(peer_key_hint)} "
+                    f"canonical={canonical_id} reason=canonical_missing"
+                )
                 return None
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                f"requested={requested_link_id or 'none'} replacement={canonical_id} "
+                f"peer_hint={_short_route(peer_key_hint)} reason=requested_missing"
+            )
             link_id = canonical_id
         _ensure_audio_link_lifecycle_fields(state)
         if state.get("closing") is True:
             fallback_peer_key = str(state.get("peerPresenceHash") or peer_key_hint).strip().lower()
             fallback_id = _best_established_audio_link_id_for_peer(fallback_peer_key)
             if not fallback_id or fallback_id == link_id:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or link_id or 'none'} peer_hint={_short_route(fallback_peer_key)} "
+                    f"reason=closing_no_fallback closing={link_id}"
+                )
                 return None
             fallback_state = _audio_links_by_id.get(fallback_id)
             if fallback_state is None:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or link_id or 'none'} peer_hint={_short_route(fallback_peer_key)} "
+                    f"fallback={fallback_id} reason=fallback_missing"
+                )
                 return None
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                f"requested={requested_link_id or link_id or 'none'} replacement={fallback_id} "
+                f"peer_hint={_short_route(fallback_peer_key)} reason=requested_closing"
+            )
             state = fallback_state
             link_id = fallback_id
             _ensure_audio_link_lifecycle_fields(state)
@@ -10267,6 +10342,11 @@ def _snapshot_audio_link_for_send(
                 and canonical_state.get("closing") is not True
                 and canonical_state.get("established") is True
             ):
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                    f"requested={requested_link_id or link_id or 'none'} replacement={canonical_id} "
+                    f"peer={_short_route(peer_key)} reason=active_canonical"
+                )
                 state = canonical_state
                 link_id = canonical_id
                 _ensure_audio_link_lifecycle_fields(state)
@@ -10275,10 +10355,23 @@ def _snapshot_audio_link_for_send(
             if fallback_id and fallback_id != link_id:
                 fallback_state = _audio_links_by_id.get(fallback_id)
                 if fallback_state is not None:
+                    log(
+                        "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                        f"requested={requested_link_id or link_id or 'none'} replacement={fallback_id} "
+                        f"peer={_short_route(peer_key)} reason=requested_unestablished"
+                    )
                     state = fallback_state
                     link_id = fallback_id
                     _ensure_audio_link_lifecycle_fields(state)
         if state.get("established") is not True:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_not_ready "
+                f"requested={requested_link_id or link_id or 'none'} link={link_id} "
+                f"peer={_short_route(state.get('peerPresenceHash'))} "
+                f"manager_state={state.get('manager_state') or 'unknown'} "
+                f"established={str(state.get('established') is True).lower()} "
+                f"closing={str(state.get('closing') is True).lower()}"
+            )
             return {
                 "ready": False,
                 "linkId": link_id,
@@ -10287,6 +10380,11 @@ def _snapshot_audio_link_for_send(
             }
         link = state.get("link")
         if link is None:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                f"requested={requested_link_id or link_id or 'none'} link={link_id} "
+                f"peer={_short_route(state.get('peerPresenceHash'))} reason=missing_link_object"
+            )
             return None
         return {
             "ready": True,
@@ -10416,14 +10514,42 @@ def _send_packet_on_audio_link_bounded(
     reason: str,
 ) -> Tuple[Optional[bool], float]:
     now = time.time()
+    seq = 0
+    peer_key = ""
+    destination_key = ""
+    incoming = False
+    generation = 0
+    should_trace = False
     with _state_lock:
         state = _audio_links_by_id.get(str(link_id or ""))
         if state is not None:
             _ensure_audio_link_lifecycle_fields(state)
             backoff_until = state.get("send_timeout_backoff_until")
             if isinstance(backoff_until, (int, float)) and now < float(backoff_until):
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_media_send_blocked "
+                    f"link={link_id} reason=send_backoff status={_reticulum_link_status_name(link)} "
+                    f"backoff_ms={int(max(0.0, float(backoff_until) - now) * 1000)}"
+                )
                 return None, 0.0
+            state["media_send_seq"] = int(state.get("media_send_seq") or 0) + 1
+            seq = int(state.get("media_send_seq") or 0)
+            peer_key = str(state.get("peerPresenceHash") or "")
+            destination_key = str(state.get("peerDestinationHash") or "")
+            incoming = state.get("incoming") is True
+            generation = int(state.get("generation") or 0)
+            should_trace = _audio_link_trace_should_log(state, "last_media_send_trace_at", seq)
     packet = RNS.Packet(link, wire_bytes, create_receipt=False)
+    packet_hash = getattr(packet, "packet_hash", None)
+    packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+    if should_trace:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_attempt "
+            f"link={link_id} seq={seq} bytes={len(wire_bytes)} reason={reason} "
+            f"status={_reticulum_link_status_name(link)} incoming={str(incoming).lower()} "
+            f"generation={generation} peer={_short_route(peer_key)} dest={_short_route(destination_key)} "
+            f"packet={_short_route(packet_hash_hex)}"
+        )
     send_start = time.monotonic()
     completed, result, error = _run_with_timeout(
         f"audio-packet-send-{str(link_id or '')[:8]}",
@@ -10432,10 +10558,28 @@ def _send_packet_on_audio_link_bounded(
     )
     send_duration_ms = _note_rns_send_duration(send_start)
     if not completed:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_timeout "
+            f"link={link_id} seq={seq} duration_ms={send_duration_ms:.3f} "
+            f"status={_reticulum_link_status_name(link)} packet={_short_route(packet_hash_hex)}"
+        )
         _mark_audio_link_send_timeout(link_id, reason)
         return None, send_duration_ms
     if error:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_exception "
+            f"link={link_id} seq={seq} duration_ms={send_duration_ms:.3f} "
+            f"status={_reticulum_link_status_name(link)} packet={_short_route(packet_hash_hex)} "
+            f"err={error}"
+        )
         raise RuntimeError(error)
+    if should_trace or result is False:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_result "
+            f"link={link_id} seq={seq} ok={str(result is not False).lower()} "
+            f"duration_ms={send_duration_ms:.3f} status={_reticulum_link_status_name(link)} "
+            f"packet={_short_route(packet_hash_hex)}"
+        )
     return bool(result is not False), send_duration_ms
 
 
@@ -10460,6 +10604,21 @@ def remove_audio_link(link_id: str) -> Optional[Dict[str, Any]]:
                     _active_audio_link_id_by_peer_hash.pop(peer_hash, None)
     if state is None:
         return None
+    link = state.get("link")
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_removed "
+        f"link={link_id} peer={_short_route(state.get('peerPresenceHash'))} "
+        f"dest={_short_route(state.get('peerDestinationHash'))} "
+        f"incoming={str(state.get('incoming') is True).lower()} "
+        f"established={str(state.get('established') is True).lower()} "
+        f"closing={str(state.get('closing') is True).lower()} "
+        f"manager_state={state.get('manager_state') or 'unknown'} "
+        f"generation={int(state.get('generation') or 0)} "
+        f"media_send_seq={int(state.get('media_send_seq') or 0)} "
+        f"media_rx_seq={int(state.get('media_rx_seq') or 0)} "
+        f"rns_status={_reticulum_link_status_name(link)} "
+        f"teardown_reason={getattr(link, 'teardown_reason', None)}"
+    )
     timer = state.pop("establish_timeout_timer", None)
     if timer is not None:
         try:
@@ -10481,6 +10640,7 @@ def _get_audio_link_desired_state(peer_key: str) -> Dict[str, Any]:
             "retry_timer": None,
             "last_open_attempt_at": None,
             "last_failure_reason": "",
+            "last_recovery_rearm_at": 0.0,
             "max_attempts_emitted": False,
         }
         _audio_link_desired_by_peer_hash[peer_key] = state
@@ -10525,6 +10685,38 @@ def _audio_link_attempts_exhausted(desired: Optional[Dict[str, Any]]) -> bool:
     if desired is None:
         return False
     return int(desired.get("attempts") or 0) >= _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS
+
+
+def _rearm_audio_link_recovery(peer_key: str, reason: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    if _has_viable_audio_link_for_peer(peer_key):
+        return False
+    with _state_lock:
+        desired = _audio_link_desired_by_peer_hash.get(peer_key)
+        if desired is None or desired.get("desired") is not True:
+            return False
+        now = time.time()
+        last_rearm_at = desired.get("last_recovery_rearm_at")
+        if isinstance(last_rearm_at, (int, float)) and (
+            now - float(last_rearm_at)
+        ) < _AUDIO_LINK_RECOVERY_REARM_DEBOUNCE_SECONDS:
+            return False
+        attempts = int(desired.get("attempts") or 0)
+        was_exhausted = attempts >= _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS
+        desired["attempts"] = 0
+        desired["retry_delay"] = _AUDIO_LINK_RETRY_MIN_SECONDS
+        desired["last_failure_reason"] = reason
+        desired["max_attempts_emitted"] = False
+        desired["last_recovery_rearm_at"] = now
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_recovery_rearmed "
+        f"peer={peer_key} reason={reason} previous_attempts={attempts} "
+        f"was_exhausted={str(was_exhausted).lower()}"
+    )
+    _schedule_audio_link_retry(peer_key, reason, immediate=True)
+    return True
 
 
 def _emit_audio_link_attempts_exhausted(peer_key: str, reason: str, desired: Dict[str, Any]) -> None:
@@ -10853,7 +11045,19 @@ def emit_audio_link_established(link_id: str) -> None:
 def emit_audio_link_closed(link_id: str, reason: str = "") -> None:
     state = remove_audio_link(link_id)
     if state is None:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_closed_unknown "
+            f"link={link_id} reason={reason}"
+        )
         return
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_closed_emit "
+        f"link={link_id} reason={reason} peer={_short_route(state.get('peerPresenceHash'))} "
+        f"dest={_short_route(state.get('peerDestinationHash'))} "
+        f"incoming={str(state.get('incoming') is True).lower()} "
+        f"media_send_seq={int(state.get('media_send_seq') or 0)} "
+        f"media_rx_seq={int(state.get('media_rx_seq') or 0)}"
+    )
     emit_event(
         "group_audio_link_closed",
         {
@@ -10871,24 +11075,41 @@ def emit_audio_link_closed(link_id: str, reason: str = "") -> None:
 def on_audio_link_closed(link) -> None:
     link_id = get_audio_link_id(link)
     if link_id is None:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_closed_unmapped "
+            f"rns_status={_reticulum_link_status_name(link)} "
+            f"teardown_reason={getattr(link, 'teardown_reason', None)}"
+        )
         return
     if not _link_manager_generation_current("audio", link_id, link):
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_closed_stale_generation "
+            f"link={link_id} rns_status={_reticulum_link_status_name(link)} "
+            f"teardown_reason={getattr(link, 'teardown_reason', None)}"
+        )
         return
     state = get_audio_link_state(link_id)
     peer_key = ""
     incoming = False
+    was_established = False
     if state is not None:
         peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
         incoming = state.get("incoming") is True
+        was_established = state.get("established") is True
     teardown_reason = getattr(link, "teardown_reason", None)
     reason = str(teardown_reason) if teardown_reason is not None else "closed"
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_closed_callback "
+        f"link={link_id} reason={reason} peer={_short_route(peer_key)} "
+        f"incoming={str(incoming).lower()} rns_status={_reticulum_link_status_name(link)}"
+    )
     emit_audio_link_closed(link_id, reason)
-    if (
-        not incoming
-        and reason not in ("local_close", "peer_state_reset")
-        and not _has_viable_audio_link_for_peer(peer_key)
-    ):
-        _schedule_audio_link_retry(peer_key, f"closed:{reason}")
+    if reason not in ("local_close", "peer_state_reset") and not _has_viable_audio_link_for_peer(peer_key):
+        recovery_reason = f"closed:{reason}"
+        if was_established:
+            _rearm_audio_link_recovery(peer_key, recovery_reason)
+        elif not incoming:
+            _schedule_audio_link_retry(peer_key, recovery_reason)
 
 
 def on_audio_link_remote_identified(link, identity) -> None:
@@ -10915,11 +11136,26 @@ def _handle_audio_link_packet(message, packet) -> None:
     link = getattr(packet, "link", None)
     link_id = get_audio_link_id(link) if link is not None else None
     if link_id is None:
+        packet_hash = getattr(packet, "packet_hash", None)
+        packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_rx_unmapped "
+            f"status={_reticulum_link_status_name(link)} packet={_short_route(packet_hash_hex)} "
+            f"bytes={len(message) if isinstance(message, (bytes, bytearray)) else 0}"
+        )
         return
     if link is not None and not _link_manager_generation_current("audio", link_id, link):
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_rx_stale_generation "
+            f"link={link_id} status={_reticulum_link_status_name(link)}"
+        )
         return
     state = get_audio_link_state(link_id)
     if state is None:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_rx_unknown_state "
+            f"link={link_id} status={_reticulum_link_status_name(link)}"
+        )
         return
     probe = _audio_link_receive_probe_by_packet_id.pop(id(packet), None)
     if isinstance(probe, dict):
@@ -10987,6 +11223,33 @@ def _handle_audio_link_packet(message, packet) -> None:
     decoded_audio = _decode_group_audio_wire(message)
     if decoded_audio is not None:
         room_id, sender_call_hash, raw_audio = decoded_audio
+        with _state_lock:
+            state_for_trace = _audio_links_by_id.get(link_id)
+            if state_for_trace is not None:
+                _ensure_audio_link_lifecycle_fields(state_for_trace)
+                state_for_trace["media_rx_seq"] = int(state_for_trace.get("media_rx_seq") or 0) + 1
+                rx_seq = int(state_for_trace.get("media_rx_seq") or 0)
+                rx_should_trace = _audio_link_trace_should_log(
+                    state_for_trace,
+                    "last_media_rx_trace_at",
+                    rx_seq,
+                )
+            else:
+                rx_seq = 0
+                rx_should_trace = True
+        if rx_should_trace:
+            packet_hash = getattr(packet, "packet_hash", None)
+            packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_media_rx_callback "
+                f"link={link_id} seq={rx_seq} room={room_id or 'n/a'} "
+                f"bytes={len(raw_audio)} status={_reticulum_link_status_name(link)} "
+                f"incoming={str(state.get('incoming') is True).lower()} "
+                f"generation={int(state.get('generation') or 0)} "
+                f"peer={_short_route(state.get('peerPresenceHash'))} "
+                f"dest={_short_route(sender_call_hash or state.get('peerDestinationHash'))} "
+                f"packet={_short_route(packet_hash_hex)}"
+            )
         if sender_call_hash:
             peer_presence_hash = _resolve_sender_peer_destination_hash(sender_call_hash)
             with _state_lock:

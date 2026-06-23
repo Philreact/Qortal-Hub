@@ -874,6 +874,7 @@ export class ElectronCapacitorApp {
 
     // If we close the main window with the splashscreen enabled we need to destroy the ref.
     this.MainWindow.on('closed', () => {
+      stopPresenceMainHeartbeatScheduler();
       if (
         this.SplashScreen?.getSplashWindow() &&
         !this.SplashScreen.getSplashWindow().isDestroyed()
@@ -2105,6 +2106,35 @@ function broadcastToSet(
   }
 }
 
+const PRESENCE_MAIN_HEARTBEAT_INTERVAL_MS = 25_000;
+let presenceMainHeartbeatTimer: NodeJS.Timeout | null = null;
+
+function stopPresenceMainHeartbeatScheduler(): void {
+  if (presenceMainHeartbeatTimer) {
+    clearInterval(presenceMainHeartbeatTimer);
+    presenceMainHeartbeatTimer = null;
+    loggerLog('[Presence] Main heartbeat scheduler stopped');
+  }
+}
+
+function sendPresenceMainHeartbeatRequest(): void {
+  const mainWindow = myCapacitorApp.getMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    stopPresenceMainHeartbeatScheduler();
+    return;
+  }
+  mainWindow.webContents.send('presence:heartbeat-request');
+}
+
+function startPresenceMainHeartbeatScheduler(): void {
+  if (presenceMainHeartbeatTimer) return;
+  presenceMainHeartbeatTimer = setInterval(
+    sendPresenceMainHeartbeatRequest,
+    PRESENCE_MAIN_HEARTBEAT_INTERVAL_MS
+  );
+  loggerLog('[Presence] Main heartbeat scheduler started interval_ms=25000');
+}
+
 export function notifyPresenceTransportReady(): void {
   broadcastToSet(presenceUpdateSubscribers, 'presence:started', {});
 }
@@ -2953,11 +2983,22 @@ ipcMain.handle('presence:heartbeat', async (_event, envelope: unknown) => {
 ipcMain.handle('presence:offline', async (_event, envelope: unknown) => {
   try {
     const ok = await handleLocalPresenceEnvelope(envelope);
+    if (ok) stopPresenceMainHeartbeatScheduler();
     return { success: ok };
   } catch (err) {
     loggerError('[Presence] offline error:', err);
     return { success: false, error: (err as Error).message };
   }
+});
+
+ipcMain.handle('presence:heartbeatSchedulerStart', async () => {
+  startPresenceMainHeartbeatScheduler();
+  return { success: true };
+});
+
+ipcMain.handle('presence:heartbeatSchedulerStop', async () => {
+  stopPresenceMainHeartbeatScheduler();
+  return { success: true };
 });
 
 ipcMain.handle('presence:getStatus', async (_event, address: string) => {
