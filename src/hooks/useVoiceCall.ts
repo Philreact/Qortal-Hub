@@ -324,6 +324,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const callIpcHandlerRef = useRef<
     (event: string, payload: unknown) => Promise<void>
   >(async () => {});
+  const unmountVoiceCallCleanupRef = useRef<() => void>(() => {});
   const applyDecryptedRoomKeyRef = useRef<
     (
       payload: {
@@ -919,6 +920,33 @@ export function useVoiceCall(): UseVoiceCallReturn {
       .catch(() => {});
     return reticulumTeardownChainRef.current;
   }, [teardownReticulumMediaInner]);
+
+  useEffect(() => {
+    unmountVoiceCallCleanupRef.current = () => {
+      clearDurationTimer();
+      const id = callIdRef.current;
+      const state = callStateRef.current;
+      const needsHangup =
+        Boolean(id) &&
+        (state === 'connected' || state === 'calling' || state === 'ringing');
+      if (needsHangup && id) {
+        const timestamp = Date.now();
+        void signPresenceFields(
+          { type: 'CALL_HANGUP', callId: id, timestamp },
+          publicKeyRef.current
+        )
+          .then(({ signature, publicKey }) =>
+            (window as any).call?.hangup(id, signature, publicKey, timestamp)
+          )
+          .catch(() => {})
+          .finally(() => {
+            enqueueTeardownReticulumMedia();
+          });
+        return;
+      }
+      enqueueTeardownReticulumMedia();
+    };
+  }, [clearDurationTimer, enqueueTeardownReticulumMedia]);
 
   const endCall = useCallback(
     async (sendHangup = false) => {
@@ -2343,30 +2371,9 @@ export function useVoiceCall(): UseVoiceCallReturn {
 
   useEffect(() => {
     return () => {
-      clearDurationTimer();
-      const id = callIdRef.current;
-      const state = callStateRef.current;
-      const needsHangup =
-        Boolean(id) &&
-        (state === 'connected' || state === 'calling' || state === 'ringing');
-      if (needsHangup && id) {
-        const timestamp = Date.now();
-        void signPresenceFields(
-          { type: 'CALL_HANGUP', callId: id, timestamp },
-          publicKeyRef.current
-        )
-          .then(({ signature, publicKey }) =>
-            (window as any).call?.hangup(id, signature, publicKey, timestamp)
-          )
-          .catch(() => {})
-          .finally(() => {
-            enqueueTeardownReticulumMedia();
-          });
-        return;
-      }
-      enqueueTeardownReticulumMedia();
+      unmountVoiceCallCleanupRef.current();
     };
-  }, [clearDurationTimer, enqueueTeardownReticulumMedia]);
+  }, []);
 
   const startupStageKey =
     callState === 'connected'

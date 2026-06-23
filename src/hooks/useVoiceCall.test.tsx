@@ -535,6 +535,121 @@ describe('useVoiceCall', () => {
     );
   });
 
+  it('does not hang up a connected call when teardown dependencies refresh', async () => {
+    let callEventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+
+    const callApi = {
+      onEvent: vi.fn(
+        (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+          callEventHandler = cb;
+          return vi.fn();
+        }
+      ),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      accept: vi.fn(async () => ({ success: true })),
+      hangup: vi.fn(async () => ({ success: true })),
+    };
+    const join = vi.fn(async () => ({
+      success: true,
+      callSessionId: 'call-session',
+      mediaSessionGeneration: 1,
+    }));
+    const leave = vi.fn(async () => ({ success: true }));
+
+    Object.assign(window as any, {
+      AudioContext: class MockAudioContext {
+        state: AudioContextState = 'running';
+        sampleRate = 48_000;
+        baseLatency = 0;
+        currentTime = 0;
+        destination = {};
+        constructor(_: AudioContextOptions) {}
+        createGain = vi.fn(mockAudioGain);
+        createOscillator = vi.fn(mockAudioOscillator);
+        resume = vi.fn(async () => {});
+        close = vi.fn(async () => {
+          this.state = 'closed';
+        });
+      },
+      call: callApi,
+      groupCall: {
+        onEvent: vi.fn(() => vi.fn()),
+        join,
+        leave,
+        setLocalAddresses: vi.fn(async () => {}),
+        requestPeerMediaRecovery: vi.fn(async () => ({ success: true })),
+        sendKeyRequest: vi.fn(async () => ({ success: true })),
+      },
+      electronAPI: {
+        ...electronApiWithGoodReadiness(),
+        reticulumGetLocalDestinationHash: vi.fn(async () => ({
+          destinationHash: 'a'.repeat(32),
+        })),
+        reticulumGetLocalIdentityPublicKeyBase64: vi.fn(async () => ({
+          publicKeyBase64: 'cmV0aWN1bHVtLWlkZW50aXR5',
+        })),
+      },
+      sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+    });
+
+    const myAddr = 'Qme';
+    const peerAddr = 'Qbuddy';
+    const chatId = buildDirectVoiceCallChatId(myAddr, peerAddr);
+    const store = createStore();
+    store.set(userInfoAtom, { address: myAddr, publicKey: 'pub' });
+    store.set(blockedAddressesAtom, {});
+    store.set(dmFriendsByAddressAtom, {
+      [peerAddr]: { publicKey: 'pk', addedAt: 1 },
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+
+    const { result, rerender, unmount } = renderHook(() => useVoiceCall(), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await callEventHandler?.('call:incoming', {
+        callId: 'call-ok',
+        fromAddress: peerAddr,
+        chatId,
+      });
+    });
+
+    await act(async () => {
+      await result.current.acceptCall();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitFor(() => expect(result.current.callState).toBe('connected'));
+    callApi.hangup.mockClear();
+    leave.mockClear();
+
+    await act(async () => {
+      store.set(userInfoAtom, { address: myAddr, publicKey: 'pub-rotated' });
+      rerender();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(result.current.callState).toBe('connected');
+    expect(callApi.hangup).not.toHaveBeenCalled();
+    expect(leave).not.toHaveBeenCalled();
+
+    unmount();
+
+    await waitFor(() =>
+      expect(callApi.hangup).toHaveBeenCalledWith(
+        'call-ok',
+        'sig',
+        'pub-rotated',
+        expect.any(Number)
+      )
+    );
+  });
+
   it('resends the DM room key when the outbound peer requests it', async () => {
     let callEventHandler:
       | ((event: string, payload: unknown) => void | Promise<void>)
