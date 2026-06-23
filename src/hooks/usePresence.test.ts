@@ -68,7 +68,9 @@ describe('usePresence', () => {
     const announce = vi.fn(async () => ({ success: true }));
     const heartbeat = vi.fn(async () => ({ success: true }));
     const offline = vi.fn(async () => ({ success: true }));
+    const startHeartbeatScheduler = vi.fn(async () => ({ success: true }));
     let onlineRemoteHubInterfaces = 0;
+    let heartbeatRequestedHandler: (() => void) | undefined;
 
     Object.assign(window as any, {
       sendMessage: vi.fn(async () => ({ signature: 'sig' })),
@@ -86,6 +88,7 @@ describe('usePresence', () => {
         announce,
         heartbeat,
         offline,
+        startHeartbeatScheduler,
         getStatus: vi.fn(async () => ({ online: false, lastSeen: null, sessions: [] })),
         getOnlineAddresses: vi.fn(async () => []),
         getAllOnline: vi.fn(async () => []),
@@ -93,6 +96,10 @@ describe('usePresence', () => {
         onCleared: vi.fn(() => vi.fn()),
         onStarted: vi.fn((cb: () => void) => {
           startedHandler = cb;
+          return vi.fn();
+        }),
+        onHeartbeatRequested: vi.fn((cb: () => void) => {
+          heartbeatRequestedHandler = cb;
           return vi.fn();
         }),
       },
@@ -133,9 +140,11 @@ describe('usePresence', () => {
     });
 
     expect(announce).toHaveBeenCalledTimes(1);
+    expect(startHeartbeatScheduler).toHaveBeenCalledTimes(1);
+    expect(heartbeat).not.toHaveBeenCalled();
 
     await act(async () => {
-      vi.advanceTimersByTime(25_000);
+      heartbeatRequestedHandler?.();
       await Promise.resolve();
       await Promise.resolve();
     });

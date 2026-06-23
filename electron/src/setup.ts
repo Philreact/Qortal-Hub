@@ -767,6 +767,7 @@ export class ElectronCapacitorApp {
         nodeIntegration: true,
         contextIsolation: true,
         preload: preloadPath,
+        backgroundThrottling: false,
         additionalArguments: [
           `--hub-p2p-seeds=${seedsB64}`,
           `--window-role=${MAIN_WINDOW_ROLE}`,
@@ -2118,6 +2119,7 @@ function sendPresenceMainHeartbeatRequest(): void {
     stopPresenceMainHeartbeatScheduler();
     return;
   }
+  loggerLog('[Presence] Main heartbeat scheduler tick');
   mainWindow.webContents.send('presence:heartbeat-request');
 }
 
@@ -2773,6 +2775,7 @@ ipcMain.handle('presence:offline', async (_event, envelope: unknown) => {
 });
 
 ipcMain.handle('presence:heartbeatSchedulerStart', async () => {
+  loggerLog('[Presence] Main heartbeat scheduler start requested');
   startPresenceMainHeartbeatScheduler();
   return { success: true };
 });

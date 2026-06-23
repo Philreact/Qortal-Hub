@@ -317,7 +317,21 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
         const announced = await sendAnnounce();
         if (!announced) return false;
         stopHeartbeat();
-        await window.presence?.startHeartbeatScheduler?.();
+        const startScheduler = window.presence?.startHeartbeatScheduler;
+        if (typeof startScheduler !== 'function') {
+          console.error('[Presence] Heartbeat scheduler API is unavailable.');
+          heartbeatActiveRef.current = false;
+          return false;
+        }
+        const schedulerResult = await startScheduler();
+        if (!schedulerResult?.success) {
+          console.error(
+            '[Presence] Heartbeat scheduler failed to start:',
+            schedulerResult
+          );
+          heartbeatActiveRef.current = false;
+          return false;
+        }
         heartbeatActiveRef.current = true;
         return true;
       })();
@@ -336,6 +350,7 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   useEffect(() => {
     if (!window.presence?.onHeartbeatRequested) return;
     return window.presence.onHeartbeatRequested(() => {
+      console.log('[Presence] Heartbeat requested by main scheduler.');
       void sendHeartbeat();
     });
   }, [sendHeartbeat]);
