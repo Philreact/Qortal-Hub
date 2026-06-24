@@ -116,7 +116,7 @@ export function getReticulumSourceEnvExtra(): Record<string, string> {
     : '';
   const extra: Record<string, string> = {
     PYTHONPATH: `${sourceDir}${existingPythonPath}`,
-    QORTAL_RNS_LOCAL_TRACE: process.env.QORTAL_RNS_LOCAL_TRACE ?? '1',
+    QORTAL_RNS_LOCAL_TRACE: process.env.QORTAL_RNS_LOCAL_TRACE ?? '0',
     QORTAL_RNS_LOCAL_TRACE_GAP_MS:
       process.env.QORTAL_RNS_LOCAL_TRACE_GAP_MS ?? '320',
     QORTAL_RNS_LOCAL_TRACE_DELAY_MS:
@@ -2303,9 +2303,7 @@ function probeReticulumVersion(
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
     };
     if (plan.mode === 'frozen') {
       const result = spawnSync(plan.cmd, ['--version'], {
@@ -3134,9 +3132,7 @@ function startBundledReticulumDaemonLocked(): void {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
     };
     const launchArgs = plan.args.includes('--service')
       ? plan.args

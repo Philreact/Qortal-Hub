@@ -346,6 +346,7 @@ const GC_RETICULUM_AUDIO_LINK_ESTABLISH_INITIAL_STALE_MS = 15_000;
 const GC_RETICULUM_AUDIO_LINK_ESTABLISH_STALE_MS = 45_000;
 const GC_RETICULUM_AUDIO_LINK_STICKY_MS = 15_000;
 const GC_RETICULUM_AUDIO_DUPLICATE_LINK_CLOSE_GRACE_MS = 7_500;
+const GC_RETICULUM_AUDIO_MEDIA_TARGET_LEASE_MS = 30_000;
 /**
  * During first contact, let the deterministic link owner open first. If that
  * does not produce an incoming/established link quickly, the non-owner falls
@@ -1614,6 +1615,10 @@ export class GroupCallManager extends EventEmitter {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private reticulumAudioMediaTargetLeaseByAddress = new Map<
+    string,
+    { untilMs: number; rooms: Set<string> }
+  >();
   private reticulumAudioFlushScheduled = false;
   private reticulumAudioFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private reticulumAudioTimingLogLastByKey = new Map<string, number>();
@@ -2379,6 +2384,7 @@ export class GroupCallManager extends EventEmitter {
       clearTimeout(timer);
     }
     this.reticulumAudioTopologyGraceTimersByAddress.clear();
+    this.reticulumAudioMediaTargetLeaseByAddress.clear();
     this.reticulumAudioFlushScheduled = false;
     if (this.reticulumAudioFlushTimer) {
       clearTimeout(this.reticulumAudioFlushTimer);
@@ -4997,6 +5003,80 @@ export class GroupCallManager extends EventEmitter {
     this.reticulumAudioTopologyGraceTimersByAddress.set(address, timer);
   }
 
+  private refreshReticulumAudioMediaTargetLease(
+    roomId: string,
+    address: string,
+    now = Date.now()
+  ): void {
+    address = address.trim();
+    if (!roomId || !address || this.localAddresses.has(address)) return;
+    const room = this.rooms.get(roomId);
+    if (!room || !room.participants.has(address)) return;
+    let hasLocalParticipant = false;
+    for (const localAddress of this.localAddresses) {
+      if (room.participants.has(localAddress)) {
+        hasLocalParticipant = true;
+        break;
+      }
+    }
+    if (!hasLocalParticipant) return;
+    const current = this.reticulumAudioMediaTargetLeaseByAddress.get(address);
+    const untilMs = now + GC_RETICULUM_AUDIO_MEDIA_TARGET_LEASE_MS;
+    if (current) {
+      current.untilMs = Math.max(current.untilMs, untilMs);
+      current.rooms.add(roomId);
+      return;
+    }
+    this.reticulumAudioMediaTargetLeaseByAddress.set(address, {
+      untilMs,
+      rooms: new Set([roomId]),
+    });
+  }
+
+  private refreshReticulumAudioMediaTargetLeases(
+    roomId: string,
+    addresses: readonly string[],
+    now = Date.now()
+  ): void {
+    for (const rawAddress of addresses) {
+      this.refreshReticulumAudioMediaTargetLease(
+        roomId,
+        rawAddress.trim(),
+        now
+      );
+    }
+  }
+
+  private pruneReticulumAudioMediaTargetLeases(now = Date.now()): void {
+    for (const [address, lease] of [
+      ...this.reticulumAudioMediaTargetLeaseByAddress,
+    ]) {
+      for (const roomId of [...lease.rooms]) {
+        const room = this.rooms.get(roomId);
+        if (!room || !room.participants.has(address)) {
+          lease.rooms.delete(roomId);
+        }
+      }
+      if (lease.rooms.size === 0 || lease.untilMs <= now) {
+        this.reticulumAudioMediaTargetLeaseByAddress.delete(address);
+      }
+    }
+  }
+
+  private getReticulumAudioMediaTargetLeaseRooms(
+    address: string,
+    now = Date.now()
+  ): Set<string> {
+    const lease = this.reticulumAudioMediaTargetLeaseByAddress.get(address);
+    if (!lease || lease.untilMs <= now) return new Set();
+    const rooms = new Set<string>();
+    for (const roomId of lease.rooms) {
+      const room = this.rooms.get(roomId);
+      if (room?.participants.has(address)) rooms.add(roomId);
+    }
+    return rooms;
+  }
+
   private isOnlyRemoteParticipantInRoom(
     roomId: string,
     address: string
@@ -6223,6 +6303,12 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return true;
     }
+    if (
+      this.isReticulumAudioOpenDeferred(address) ||
+      this.shouldDeferReticulumAudioOpenForOwnerGrace(address, state, now)
+    ) {
+      return true;
+    }
     const staleLinkId = state.linkId;
     state.linkEstablishLastAttemptAtMs = now;
     state.linkEstablishRetryDelayMs = Math.min(
@@ -6626,8 +6712,37 @@ export class GroupCallManager extends EventEmitter {
   ): Promise<void> {
     const bridge = this.reticulumBridge;
     const state = this.reticulumAudioPeersByAddress.get(address);
+    const now = Date.now();
     if (this.isReticulumAudioOpenDeferred(address)) {
       return;
+    }
+    if (
+      state &&
+      state.linkId &&
+      !state.established &&
+      state.linkEstablishLastAttemptAtMs >= 0
+    ) {
+      const pendingLinkAgeMs = now - state.linkEstablishLastAttemptAtMs;
+      const establishStaleMs =
+        state.linkEstablishedCount === 0
+          ? GC_RETICULUM_AUDIO_LINK_ESTABLISH_INITIAL_STALE_MS
+          : GC_RETICULUM_AUDIO_LINK_ESTABLISH_STALE_MS;
+      if (pendingLinkAgeMs >= establishStaleMs) {
+        const staleLinkId = state.linkId;
+        state.linkStaleCloseCount++;
+        this.markReticulumAudioLinkUnready(
+          address,
+          staleLinkId,
+          'open-stale-unestablished'
+        );
+        this.closeReticulumAudioLinkQuietly(
+          staleLinkId,
+          'open-stale-unestablished'
+        );
+        loggerLog(
+          `[GCall] Reticulum audio stale pending link cleared address=${address} linkId=${staleLinkId} pendingAgeMs=${Math.max(0, pendingLinkAgeMs)} reason=open-stale-unestablished`
+        );
+      }
     }
     if (
       !bridge ||
@@ -6646,7 +6761,9 @@ export class GroupCallManager extends EventEmitter {
     state.linkEstablishLastAttemptAtMs = Date.now();
     state.linkOpenAttempts++;
     const result: ReticulumOpenAudioLinkResult =
-      await bridge.openGroupAudioLink(state.peerPresenceHash);
+      await bridge.openGroupAudioLink(state.peerPresenceHash, {
+        activeCall: true,
+      });
     const latest = this.reticulumAudioPeersByAddress.get(address);
     if (!latest) return;
     latest.opening = false;
@@ -7928,6 +8045,7 @@ export class GroupCallManager extends EventEmitter {
 
   private syncReticulumAudioLinks(): void {
     const now = Date.now();
+    this.pruneReticulumAudioMediaTargetLeases(now);
     const desiredByAddress = new Map<
       string,
       { peerPresenceHash: string; rooms: Set<string> }
@@ -7946,6 +8064,26 @@ export class GroupCallManager extends EventEmitter {
           rooms: new Set([room.roomId]),
         });
       }
+    }
+    for (const [address, lease] of this.reticulumAudioMediaTargetLeaseByAddress) {
+      if (lease.untilMs <= now || this.localAddresses.has(address)) continue;
+      const leaseRooms = this.getReticulumAudioMediaTargetLeaseRooms(address, now);
+      if (leaseRooms.size === 0) continue;
+      const peerPresenceHash = this.resolveReticulumPeerPresenceHash(address);
+      if (!peerPresenceHash) continue;
+      const existing = desiredByAddress.get(address);
+      if (existing) {
+        for (const roomId of leaseRooms) existing.rooms.add(roomId);
+        continue;
+      }
+      desiredByAddress.set(address, {
+        peerPresenceHash,
+        rooms: leaseRooms,
+      });
+      this.logReticulumFailureThrottled(
+        `audio-media-target-lease:${address}`,
+        `[GCall] Retaining Reticulum audio link during media target lease address=${address} rooms=${leaseRooms.size} leaseMs=${Math.max(0, lease.untilMs - now)} reason=active-media-target-lease`
+      );
     }
 
     for (const [address, state] of [...this.reticulumAudioPeersByAddress]) {
@@ -8165,6 +8303,7 @@ export class GroupCallManager extends EventEmitter {
         },
       };
     }
+    this.refreshReticulumAudioMediaTargetLease(roomId, toAddress);
     const state = this.ensureReticulumAudioPeerState(roomId, toAddress);
     if (!state) {
       const buffered = this.bufferReticulumAudioAwaitingRoute(
@@ -8258,6 +8397,7 @@ export class GroupCallManager extends EventEmitter {
     if (!bridge) {
       return { ok: false, reason: 'bridge-unavailable' };
     }
+    this.refreshReticulumAudioMediaTargetLeases(roomId, toAddresses);
     const routes: ReticulumAudioDataPlaneRoute[] = [];
     let skippedRecoveringRoutes = 0;
     let skippedUnreadyRoutes = 0;
@@ -8383,6 +8523,7 @@ export class GroupCallManager extends EventEmitter {
           : diagnostics;
         continue;
       }
+      this.refreshReticulumAudioMediaTargetLease(roomId, toAddress);
       const state = this.ensureReticulumAudioPeerState(roomId, toAddress);
       if (!state) {
         const buffered = this.bufferReticulumAudioAwaitingRoute(

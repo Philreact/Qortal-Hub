@@ -1532,7 +1532,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   async openGroupAudioLink(
-    peerPresenceHash: string
+    peerPresenceHash: string,
+    opts?: { activeCall?: boolean }
   ): Promise<ReticulumOpenAudioLinkResult> {
     try {
       await this.start();
@@ -1550,6 +1551,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     try {
       const resp = await this.sendCommand('open_group_audio_link', {
         peerPresenceHash,
+        ...(opts?.activeCall === true ? { activeCall: true } : {}),
       });
       if (!resp.ok) {
         return {
@@ -2713,9 +2715,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       ...getReticulumSourceEnvExtra(),
       ...(launch.envExtra ?? {}),
       PYTHONUNBUFFERED: '1',
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
       QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
     };

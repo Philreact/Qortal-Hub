@@ -22,9 +22,9 @@ from typing import IO, Any, Callable, Dict, List, Optional, Set, Tuple
 
 import RNS
 
-APP_NAMESPACE = "qortal-hub-test"
+APP_NAMESPACE = "qortal-hub"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v1-test"
+PRESENCE_VERSION = "v1"
 IDENTITY_FILENAME = "presence-bridge.identity"
 disable_bootstrap = True
 
@@ -296,6 +296,7 @@ _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS = 4
 _AUDIO_LINK_RETRY_MIN_SECONDS = 1.0
 _AUDIO_LINK_RETRY_MAX_SECONDS = 20.0
 _AUDIO_LINK_RECOVERY_REARM_DEBOUNCE_SECONDS = 2.0
+_AUDIO_LINK_ACTIVE_CALL_REARM_SECONDS = 10.0
 _PACKET_PATH_WARMING_TIMEOUTS_BEFORE_FAILING = 2
 _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
@@ -10196,6 +10197,9 @@ def _register_active_audio_for_peer(peer_key: str, link_id: str) -> Optional[Dic
         state["peerPresenceHash"] = peer_key
         if not state.get("peerDestinationHash"):
             state["peerDestinationHash"] = peer_key
+        if state.get("established") is not True or state.get("closing") is True:
+            _outgoing_audio_link_id_by_peer_hash[peer_key] = link_id
+            return state
         existing_id = _active_audio_link_id_by_peer_hash.get(peer_key)
         if existing_id == link_id:
             _outgoing_audio_link_id_by_peer_hash[peer_key] = link_id
@@ -10228,10 +10232,22 @@ def _canonical_audio_link_id_for_peer(peer_key: str) -> str:
         return ""
     with _state_lock:
         active = _active_audio_link_id_by_peer_hash.get(peer_key) or ""
-        if active and active in _audio_links_by_id:
+        active_state = _audio_links_by_id.get(active) if active else None
+        if (
+            active_state is not None
+            and active_state.get("closing") is not True
+            and active_state.get("established") is True
+        ):
             return active
+        if active:
+            _active_audio_link_id_by_peer_hash.pop(peer_key, None)
         outgoing = _outgoing_audio_link_id_by_peer_hash.get(peer_key) or ""
-        if outgoing and outgoing in _audio_links_by_id:
+        outgoing_state = _audio_links_by_id.get(outgoing) if outgoing else None
+        if (
+            outgoing_state is not None
+            and outgoing_state.get("closing") is not True
+            and outgoing_state.get("established") is True
+        ):
             _active_audio_link_id_by_peer_hash[peer_key] = outgoing
             return outgoing
     return ""
@@ -10266,8 +10282,9 @@ def _best_established_audio_link_id_for_peer(peer_key: str) -> str:
                 best_link_id = candidate_link_id
                 best_state = state
         if best_link_id:
-            _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
             _outgoing_audio_link_id_by_peer_hash[peer_key] = best_link_id
+            if best_state is not None and best_state.get("established") is True:
+                _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
     return best_link_id
 
 
@@ -10687,6 +10704,35 @@ def _audio_link_attempts_exhausted(desired: Optional[Dict[str, Any]]) -> bool:
     return int(desired.get("attempts") or 0) >= _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS
 
 
+def _maybe_rearm_audio_link_attempts_for_active_call(
+    peer_key: str,
+    desired: Dict[str, Any],
+    reason: str,
+) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key or desired.get("desired") is not True:
+        return False
+    now = time.time()
+    with _state_lock:
+        attempts = int(desired.get("attempts") or 0)
+        if attempts < _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS:
+            return False
+        last_open_attempt_at = desired.get("last_open_attempt_at")
+        if isinstance(last_open_attempt_at, (int, float)) and (
+            now - float(last_open_attempt_at)
+        ) < _AUDIO_LINK_ACTIVE_CALL_REARM_SECONDS:
+            return False
+        desired["attempts"] = 0
+        desired["retry_delay"] = _AUDIO_LINK_RETRY_MIN_SECONDS
+        desired["last_failure_reason"] = reason
+        desired["max_attempts_emitted"] = False
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_active_call_rearmed "
+        f"peer={peer_key} reason={reason} previous_attempts={attempts}"
+    )
+    return True
+
+
 def _rearm_audio_link_recovery(peer_key: str, reason: str) -> bool:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
@@ -10807,8 +10853,9 @@ def _best_viable_audio_link_id_for_peer(peer_key: str) -> str:
                 best_link_id = candidate_link_id
                 best_state = state
         if best_link_id:
-            _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
             _outgoing_audio_link_id_by_peer_hash[peer_key] = best_link_id
+            if best_state is not None and best_state.get("established") is True:
+                _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
     return best_link_id
 
 
@@ -10903,6 +10950,7 @@ def _open_group_audio_link_for_peer(
     peer_key: str,
     *,
     retry_reason: str = "open",
+    active_call: bool = False,
 ) -> Tuple[bool, Dict[str, Any], str]:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
@@ -10932,7 +10980,14 @@ def _open_group_audio_link_for_peer(
             "linkId": viable_link_id,
             "established": existing.get("established") is True if existing is not None else False,
         }, ""
-    if _audio_link_attempts_exhausted(desired):
+    if _audio_link_attempts_exhausted(desired) and not (
+        active_call
+        and _maybe_rearm_audio_link_attempts_for_active_call(
+            peer_key,
+            desired,
+            f"active_call:{retry_reason}",
+        )
+    ):
         _emit_audio_link_attempts_exhausted(peer_key, retry_reason, desired)
         return False, {
             "code": "max_establish_attempts",
@@ -11001,7 +11056,6 @@ def _open_group_audio_link_for_peer(
             _audio_links_by_id[link_id] = audio_state
             _audio_link_ids_by_object[id(link)] = link_id
             _outgoing_audio_link_id_by_peer_hash[peer_key] = link_id
-            _active_audio_link_id_by_peer_hash[peer_key] = link_id
             _set_link_manager_generation(link, audio_state)
         _schedule_audio_link_establish_timeout(link_id)
         log(
@@ -12686,6 +12740,7 @@ def handle_open_group_audio_link(req_id: str, payload: Dict[str, Any]) -> None:
     ok, resp_payload, error = _open_group_audio_link_for_peer(
         peer_hash.strip().lower(),
         retry_reason="command",
+        active_call=payload.get("activeCall") is True,
     )
     emit_resp(req_id, ok, payload=resp_payload, error=error or None)
 
