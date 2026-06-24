@@ -26,12 +26,14 @@ APP_NAMESPACE = "qortal-hub-test"
 PRESENCE_ASPECT = "presence"
 PRESENCE_VERSION = "v1-test"
 IDENTITY_FILENAME = "presence-bridge.identity"
+disable_bootstrap = True
 
 _state_lock = threading.RLock()
 _reticulum = None
 _identity = None
 _destination = None
 _announce_handler = None
+_reticulum_config_dir = ""
 _known_peers: Dict[str, Any] = {}
 _candidate_peers: Dict[str, Dict[str, Any]] = {}
 _verified_overlay_peers: Dict[str, Dict[str, Any]] = {}
@@ -52,6 +54,7 @@ _last_presence_wire: Optional[bytes] = None
 _last_presence_announce_wire: Optional[bytes] = None
 _last_presence_announce_id = ""
 _last_transport_state: Optional[Dict[str, Any]] = None
+_last_overlay_zero_fanout_recovery_at: float = 0.0
 _transport_monitor_thread: Optional[threading.Thread] = None
 _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
 _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.MDU))
@@ -85,11 +88,16 @@ _OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
+_OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 60.0
 _OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
+_OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS = 0.75
+_OVERLAY_ANNOUNCE_RETRY_DEBOUNCE_SECONDS = 2.0
+_OVERLAY_CLOSE_DIAGNOSTIC_WINDOW_SECONDS = 5 * 60.0
+_OVERLAY_REPLAY_CLOSE_ASSOCIATION_SECONDS = 5.0
 _PRESENCE_ANNOUNCE_APP_DATA_OPEN = b"presence"
 _PRESENCE_ANNOUNCE_APP_DATA_FULL = b"presence-full"
 _PEER_INBOUND_FULL_HINT_TTL_SECONDS = 2 * 60.0
@@ -99,6 +107,18 @@ _AUDIO_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
 _OVERLAY_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
 _LINK_PACKET_SEND_TIMEOUT_SECONDS = 2.5
 _LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
+_LINK_STATE_IDLE = "IDLE"
+_LINK_STATE_PATH_WAIT = "PATH_WAIT"
+_LINK_STATE_CONNECTING = "CONNECTING"
+_LINK_STATE_ESTABLISHED = "ESTABLISHED"
+_LINK_STATE_DEGRADED = "DEGRADED"
+_LINK_STATE_CLOSING = "CLOSING"
+_LINK_STATE_BACKOFF = "BACKOFF"
+_LINK_STATE_DEAD = "DEAD"
+_OVERLAY_RECONCILE_MAX_OPENS = 2
+_OVERLAY_RECONCILE_MAX_CLOSES = 4
+_OVERLAY_RECONCILE_MAX_DEDUPES = 4
+_OVERLAY_RECONCILE_MAX_SECONDS = 0.050
 _AUDIO_LINK_SEND_TIMEOUTS_BEFORE_TEARDOWN = 4
 _AUDIO_LINK_SEND_TIMEOUT_RECENT_RX_GRACE_SECONDS = 10.0
 _AUDIO_LINK_SEND_TIMEOUT_BACKOFF_SECONDS = 0.75
@@ -134,6 +154,17 @@ RNS_ANNOUNCE_INTERVAL_SEC = 15 * 60
 _rns_auth_announced: bool = False
 _rns_periodic_announce_timer: Optional[threading.Timer] = None
 _last_no_verified_peers_announce_at: float = 0.0
+
+_OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME = "overlay-good-outbound-cache.json"
+_OVERLAY_GOOD_OUTBOUND_CACHE_VERSION = 1
+_OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS = 32
+_OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS = 2 * 60 * 60.0
+_OVERLAY_GOOD_OUTBOUND_CACHE_WRITE_MIN_SECONDS = 30.0
+_overlay_good_outbound_cache: Dict[str, Dict[str, Any]] = {}
+_overlay_good_outbound_cache_lock = threading.RLock()
+_overlay_good_outbound_cache_loaded = False
+_overlay_good_outbound_cache_dirty = False
+_overlay_good_outbound_cache_last_write_at = 0.0
 
 
 def qortal_base58_decode(s: str) -> bytes:
@@ -188,6 +219,7 @@ _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE = "GAC"
 _GROUP_AUDIO_BINARY_MAGIC = b"QGAU"
 _GROUP_AUDIO_BINARY_VERSION = 1
 _GROUP_AUDIO_BINARY_HEADER_BYTES = 9
+_AUDIO_LINK_TRACE_EVERY_FRAMES = 250
 _audio_links_by_id: Dict[str, Dict[str, Any]] = {}
 _audio_link_ids_by_object: Dict[int, str] = {}
 _outgoing_audio_link_id_by_peer_hash: Dict[str, str] = {}
@@ -196,6 +228,11 @@ _audio_link_desired_by_peer_hash: Dict[str, Dict[str, Any]] = {}
 _overlay_links_by_id: Dict[str, Dict[str, Any]] = {}
 _overlay_link_ids_by_object: Dict[int, str] = {}
 _active_overlay_link_id_by_peer_hash: Dict[str, str] = {}
+_overlay_open_pending_by_peer_hash: Set[str] = set()
+_overlay_close_pending_link_ids: Set[str] = set()
+_overlay_dedup_pending_by_peer_hash: Set[str] = set()
+_overlay_announce_retry_last_at_by_peer_hash: Dict[str, float] = {}
+_overlay_close_diagnostics: "deque[Tuple[float, str, bool, bool]]" = deque(maxlen=512)
 _qchat_file_links_by_id: Dict[str, Dict[str, Any]] = {}
 _qchat_file_link_ids_by_object: Dict[int, str] = {}
 _outgoing_qchat_file_link_id_by_peer_hash: Dict[str, str] = {}
@@ -281,6 +318,8 @@ _AUDIO_LINK_ESTABLISH_TIMEOUT_SECONDS = 12.0
 _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS = 4
 _AUDIO_LINK_RETRY_MIN_SECONDS = 1.0
 _AUDIO_LINK_RETRY_MAX_SECONDS = 20.0
+_AUDIO_LINK_RECOVERY_REARM_DEBOUNCE_SECONDS = 2.0
+_AUDIO_LINK_ACTIVE_CALL_REARM_SECONDS = 10.0
 _PACKET_PATH_WARMING_TIMEOUTS_BEFORE_FAILING = 2
 _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
@@ -290,6 +329,10 @@ _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS = 80.0
 _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "control-send": 256,
     "link-management": 128,
+    "overlay-control": 64,
+    "overlay-io-0": 32,
+    "overlay-io-1": 32,
+    "audio-control": 64,
     "path-management": 128,
     "file-transfer": 64,
 }
@@ -410,6 +453,9 @@ _audio_rns_shared_frame_interface_last = ""
 _audio_rns_shared_frame_interface_worst = ""
 _audio_media_route_stats: Dict[str, Dict[str, Any]] = {}
 _audio_link_receive_probe_by_packet_id: Dict[int, Dict[str, Any]] = {}
+_audio_stage_counters_by_link_id: Dict[str, Dict[str, Any]] = {}
+_audio_stage_counters_by_destination_hash: Dict[str, Dict[str, Any]] = {}
+_audio_stage_link_id_by_destination_hash: Dict[str, str] = {}
 _audio_rns_raw_inbound_probe_by_packet_hash: Dict[bytes, Dict[str, Any]] = {}
 _audio_rns_raw_inbound_last_wall_ms_by_destination_hash: Dict[str, int] = {}
 _audio_rns_shared_frame_probe_by_packet_hash: Dict[bytes, Dict[str, Any]] = {}
@@ -430,6 +476,7 @@ _AUDIO_SLOW_RNS_SEND_LOG_THRESHOLD_MS = 40.0
 _AUDIO_TIMING_DELAY_LOG_THRESHOLD_MS = 80.0
 _AUDIO_TIMING_GAP_LOG_THRESHOLD_MS = 320.0
 _AUDIO_TIMING_LOG_THROTTLE_SECONDS = 2.0
+_AUDIO_STAGE_COUNTER_LOG_INTERVAL_MS = 5000
 _AUDIO_PATH_PRESSURE_LOG_INTERVAL_MS = 5000
 _AUDIO_EXECUTOR_STALL_LOG_THRESHOLD_MS = 120.0
 _AUDIO_PROCESS_BATCH_LOG_THRESHOLD_MS = 80.0
@@ -437,6 +484,7 @@ _AUDIO_EXECUTOR_COMMAND_LOG_THRESHOLD_MS = 80.0
 _audio_queue_state_last_emit = 0.0
 _audio_queue_state_dirty = False
 _bridge_pressure_last_log_at = 0.0
+_audio_stage_counter_last_log_at_ms = 0
 _rns_interface_pressure_last_log_at = 0.0
 _RNS_INTERFACE_PRESSURE_LOG_INTERVAL_SECONDS = 15.0
 _presence_pressure_window_started_at = time.monotonic()
@@ -716,6 +764,24 @@ def _format_bridge_pressure_counts(counts: Dict[str, int]) -> str:
     return ",".join(f"{key}:{value}" for key, value in sorted(counts.items()))
 
 
+def _overlay_close_diagnostic_counts(now_wall: float) -> Tuple[int, int, int]:
+    cutoff = now_wall - _OVERLAY_CLOSE_DIAGNOSTIC_WINDOW_SECONDS
+    destination_closed = 0
+    replay_associated = 0
+    announce_retry_associated = 0
+    with _state_lock:
+        while _overlay_close_diagnostics and _overlay_close_diagnostics[0][0] < cutoff:
+            _overlay_close_diagnostics.popleft()
+        for _ts, reason, replay_close, announce_retry_close in _overlay_close_diagnostics:
+            if reason == "destination_closed":
+                destination_closed += 1
+                if replay_close:
+                    replay_associated += 1
+                if announce_retry_close:
+                    announce_retry_associated += 1
+    return destination_closed, replay_associated, announce_retry_associated
+
+
 def _format_scheduler_active_tasks(now: float) -> str:
     parts: list[str] = []
     with _state_lock:
@@ -770,6 +836,10 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         coalesced_event_q = len(_json_event_coalesced_by_key)
     lane_depths: Dict[str, int] = {}
     slow_counts: Dict[str, int] = {}
+    now_wall = time.time()
+    overlay_destination_closes, overlay_replay_closes, overlay_announce_retry_closes = (
+        _overlay_close_diagnostic_counts(now_wall)
+    )
     with _state_lock:
         lanes = set(_SCHEDULER_QUEUE_MAX_BY_LANE.keys()) | set(_scheduler_queues.keys()) | set(_scheduler_stats.keys())
         for lane in lanes:
@@ -817,6 +887,7 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         or any(depth > 0 for depth in lane_depths.values())
         or file_links > 0
         or rns_gap_pressure
+        or overlay_destination_closes > 0
     )
     if not force and not has_pressure:
         return
@@ -839,8 +910,12 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         f"rns_gap_max_parts=scheduler:{int(rns_scheduler_gap_ms_max)},"
         f"raw:{int(rns_raw_gap_ms_max)},shared:{int(rns_shared_gap_ms_max)} "
         f"rns_gap_total_median_ms=raw:{raw_gap_median_ms},shared:{shared_gap_median_ms} "
-        f"rns_gap_total_samples=raw:{raw_gap_sample_count},shared:{shared_gap_sample_count}"
+        f"rns_gap_total_samples=raw:{raw_gap_sample_count},shared:{shared_gap_sample_count} "
+        f"overlay_destination_closed_5m={overlay_destination_closes} "
+        f"overlay_replay_destination_closed_5m={overlay_replay_closes} "
+        f"overlay_announce_retry_destination_closed_5m={overlay_announce_retry_closes}"
     )
+    _maybe_log_audio_stage_counters(_now_wall_ms())
     if rns_gap_ms_window >= _BRIDGE_PRESSURE_RNS_GAP_THRESHOLD_MS:
         _maybe_log_rns_interface_pressure(
             rns_gap_ms_window,
@@ -1331,6 +1406,139 @@ def _interface_label(interface: Any) -> str:
 def _short_route(value: Any, limit: int = 16) -> str:
     text = str(value or "").strip()
     return text[:limit] if text else "n/a"
+
+
+def _merge_audio_stage_counters_locked(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    for key, value in source.items():
+        if key.endswith("Count") or key.endswith("Window"):
+            target[key] = int(target.get(key) or 0) + int(value or 0)
+        elif key.endswith("AtMs"):
+            target[key] = max(int(target.get(key) or 0), int(value or 0))
+        elif key.startswith("last") and value:
+            target[key] = value
+
+
+def _bind_audio_stage_destination_to_link_locked(destination_hash: str, link_id: str) -> None:
+    destination_key = str(destination_hash or "").strip().lower()
+    link_key = str(link_id or "").strip()
+    if not destination_key or not link_key:
+        return
+    _audio_stage_link_id_by_destination_hash[destination_key] = link_key
+    pending = _audio_stage_counters_by_destination_hash.pop(destination_key, None)
+    if pending is not None:
+        target = _audio_stage_counters_by_link_id.setdefault(link_key, {})
+        _merge_audio_stage_counters_locked(target, pending)
+
+
+def _note_audio_stage_counter(
+    stage: str,
+    *,
+    link_id: str = "",
+    destination_hash: str = "",
+    packet_hash: str = "",
+    byte_count: int = 0,
+    wall_ms: Optional[int] = None,
+) -> None:
+    stage_key = str(stage or "").strip()
+    if not stage_key:
+        return
+    now_ms = wall_ms if isinstance(wall_ms, int) and wall_ms > 0 else _now_wall_ms()
+    link_key = str(link_id or "").strip()
+    destination_key = str(destination_hash or "").strip().lower()
+    packet_key = str(packet_hash or "").strip().lower()
+    with _state_lock:
+        if destination_key:
+            mapped_link_id = _audio_stage_link_id_by_destination_hash.get(destination_key)
+            if mapped_link_id and not link_key:
+                link_key = mapped_link_id
+        if link_key and destination_key:
+            _bind_audio_stage_destination_to_link_locked(destination_key, link_key)
+        if link_key:
+            counters = _audio_stage_counters_by_link_id.setdefault(link_key, {})
+        elif destination_key:
+            counters = _audio_stage_counters_by_destination_hash.setdefault(destination_key, {})
+        else:
+            return
+        count_key = f"{stage_key}Count"
+        window_key = f"{stage_key}Window"
+        last_key = f"{stage_key}LastAtMs"
+        counters[count_key] = int(counters.get(count_key) or 0) + 1
+        counters[window_key] = int(counters.get(window_key) or 0) + 1
+        counters[last_key] = now_ms
+        counters["lastStage"] = stage_key
+        counters["lastStageAtMs"] = now_ms
+        if packet_key:
+            counters["lastPacket"] = packet_key
+        if destination_key:
+            counters["destinationHash"] = destination_key
+        if byte_count > 0:
+            byte_key = f"{stage_key}Bytes"
+            counters[byte_key] = int(counters.get(byte_key) or 0) + max(0, int(byte_count or 0))
+
+
+def _maybe_log_audio_stage_counters(now_ms: Optional[int] = None, force: bool = False) -> None:
+    global _audio_stage_counter_last_log_at_ms
+    current_ms = now_ms if isinstance(now_ms, int) and now_ms > 0 else _now_wall_ms()
+    if (
+        not force
+        and _audio_stage_counter_last_log_at_ms > 0
+        and current_ms - _audio_stage_counter_last_log_at_ms < _AUDIO_STAGE_COUNTER_LOG_INTERVAL_MS
+    ):
+        return
+    rows: List[Tuple[str, str, str, bool, Dict[str, Any]]] = []
+    with _state_lock:
+        link_ids = set(_audio_stage_counters_by_link_id.keys()) | set(_audio_links_by_id.keys())
+        for link_key in sorted(link_ids):
+            state = _audio_links_by_id.get(link_key) or {}
+            counters = _audio_stage_counters_by_link_id.setdefault(link_key, {})
+            rows.append(
+                (
+                    link_key,
+                    str(state.get("peerPresenceHash") or ""),
+                    str(state.get("peerDestinationHash") or counters.get("destinationHash") or ""),
+                    state.get("incoming") is True,
+                    dict(counters),
+                )
+            )
+            for key in list(counters.keys()):
+                if key.endswith("Window"):
+                    counters[key] = 0
+        orphan_items = list(_audio_stage_counters_by_destination_hash.items())[:8]
+        for destination_key, counters in orphan_items:
+            rows.append((f"dest:{destination_key}", "", destination_key, False, dict(counters)))
+            for key in list(counters.keys()):
+                if key.endswith("Window"):
+                    counters[key] = 0
+    if not rows:
+        return
+    _audio_stage_counter_last_log_at_ms = current_ms
+    for link_key, peer_hash, destination_hash, incoming, counters in rows:
+        def count(name: str) -> int:
+            return int(counters.get(f"{name}Count") or 0)
+
+        def window(name: str) -> int:
+            return int(counters.get(f"{name}Window") or 0)
+
+        def age(name: str) -> str:
+            last_ms = int(counters.get(f"{name}LastAtMs") or 0)
+            return str(max(0, current_ms - last_ms)) if last_ms > 0 else "never"
+
+        log(
+            f"[presence_bridge] {_AUDIO_IPC_LOG} stage=rns-audio-stage-counters "
+            f"link={_short_route(link_key)} incoming={'yes' if incoming else 'no'} "
+            f"peer={_short_route(peer_hash)} dest={_short_route(destination_hash)} "
+            f"shared={count('shared')}/{window('shared')}/{age('shared')} "
+            f"raw={count('raw')}/{window('raw')}/{age('raw')} "
+            f"link_receive={count('link_receive')}/{window('link_receive')}/{age('link_receive')} "
+            f"callback_dispatch={count('callback_dispatch')}/{window('callback_dispatch')}/{age('callback_dispatch')} "
+            f"callback_start={count('callback_start')}/{window('callback_start')}/{age('callback_start')} "
+            f"bridge_rx={count('bridge_rx')}/{window('bridge_rx')}/{age('bridge_rx')} "
+            f"fd4={count('fd4')}/{window('fd4')}/{age('fd4')} "
+            f"decrypt_failed={count('decrypt_failed')}/{window('decrypt_failed')}/{age('decrypt_failed')} "
+            f"callback_missing={count('callback_missing')}/{window('callback_missing')}/{age('callback_missing')} "
+            f"last_stage={counters.get('lastStage') or 'none'} "
+            f"last_packet={_short_route(counters.get('lastPacket'))}"
+        )
 
 
 _GC_LINK_CONTROL_MAGIC = b"QGCCTL1\x00"
@@ -1824,6 +2032,13 @@ def _record_rns_shared_frame_probe(raw: Any, interface: Any) -> None:
         now_mono = time.monotonic()
         now_wall_ms = _now_wall_ms()
         interface_name = _interface_label(interface)
+        _note_audio_stage_counter(
+            "shared",
+            destination_hash=destination_hex,
+            packet_hash=bytes(packet_hash).hex(),
+            byte_count=len(raw),
+            wall_ms=now_wall_ms,
+        )
         with _state_lock:
             previous_ms = int(_audio_rns_shared_frame_last_wall_ms_by_destination_hash.get(destination_hex) or 0)
             frame_gap_ms = 0
@@ -1891,6 +2106,13 @@ def _record_rns_raw_inbound_probe(raw: Any, interface: Any) -> None:
         now_mono = time.monotonic()
         now_wall_ms = _now_wall_ms()
         interface_name = _interface_label(interface)
+        _note_audio_stage_counter(
+            "raw",
+            destination_hash=destination_hex,
+            packet_hash=bytes(packet_hash).hex(),
+            byte_count=len(raw),
+            wall_ms=now_wall_ms,
+        )
         shared_probe = None
         with _state_lock:
             shared_probe = _audio_rns_shared_frame_probe_by_packet_hash.pop(bytes(packet_hash), None)
@@ -2011,9 +2233,24 @@ def _qortal_link_receive_probe(
     stats = _get_audio_route_stats_for_link_id(link_id)
     if stats is None:
         return
+    packet_hash = getattr(packet, "packet_hash", None)
+    packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
     if stage == "receive_enter":
+        destination_hash = getattr(packet, "destination_hash", None)
+        destination_hex = (
+            bytes(destination_hash).hex()
+            if isinstance(destination_hash, (bytes, bytearray))
+            else ""
+        )
+        _note_audio_stage_counter(
+            "link_receive",
+            link_id=link_id,
+            destination_hash=destination_hex,
+            packet_hash=packet_hash_hex,
+            byte_count=len(getattr(packet, "data", b"") or b""),
+            wall_ms=now_wall_ms,
+        )
         raw_probe = None
-        packet_hash = getattr(packet, "packet_hash", None)
         if isinstance(packet_hash, (bytes, bytearray)):
             with _state_lock:
                 raw_probe = _audio_rns_raw_inbound_probe_by_packet_hash.pop(bytes(packet_hash), None)
@@ -2038,7 +2275,8 @@ def _qortal_link_receive_probe(
                     f"link={_short_route(link_id)} delay_ms={raw_to_link_ms:.3f} "
                     f"raw_gap_ms={raw_gap_ms:.3f} shared_gap_ms={shared_frame_gap_ms:.3f} "
                     f"shared_to_transport_ms={shared_to_transport_ms:.3f} "
-                    f"interface={interface_name or 'n/a'}",
+                    f"interface={interface_name or 'n/a'} "
+                    f"packet={_short_route(packet_hash_hex)}",
                 )
             _note_audio_route_bucketed_duration(
                 stats,
@@ -2085,7 +2323,9 @@ def _qortal_link_receive_probe(
                     link_id,
                     f"link={_short_route(link_id)} gap_ms={link_receive_gap_ms} "
                     f"peer={_short_route(stats.get('peerPresenceHash'))} "
-                    f"dest={_short_route(stats.get('peerDestinationHash'))}",
+                    f"dest={_short_route(stats.get('peerDestinationHash'))} "
+                    f"packet={_short_route(packet_hash_hex)} "
+                    f"raw_probe={'yes' if raw_probe is not None else 'no'}",
                 )
         _note_audio_route_gap(
             stats,
@@ -2102,17 +2342,33 @@ def _qortal_link_receive_probe(
             "receiveEnterAtMs": now_wall_ms,
             "callbackDispatchMonotonic": 0.0,
             "callbackDispatchAtMs": 0,
+            "packetHash": packet_hash_hex,
         }
         _prune_audio_link_receive_probe_cache()
         _mark_audio_queue_state_dirty()
         return
     if stage == "callback_dispatch":
+        destination_hash = getattr(packet, "destination_hash", None)
+        destination_hex = (
+            bytes(destination_hash).hex()
+            if isinstance(destination_hash, (bytes, bytearray))
+            else ""
+        )
+        _note_audio_stage_counter(
+            "callback_dispatch",
+            link_id=link_id,
+            destination_hash=destination_hex,
+            packet_hash=packet_hash_hex,
+            byte_count=len(getattr(packet, "data", b"") or b""),
+            wall_ms=now_wall_ms,
+        )
         probe = _audio_link_receive_probe_by_packet_id.get(packet_id)
         if probe is None:
             probe = {
                 "linkId": link_id,
                 "receiveEnterMonotonic": 0.0,
                 "receiveEnterAtMs": 0,
+                "packetHash": packet_hash_hex,
             }
             _audio_link_receive_probe_by_packet_id[packet_id] = probe
             _prune_audio_link_receive_probe_cache()
@@ -2125,7 +2381,8 @@ def _qortal_link_receive_probe(
                     link_id,
                     f"link={_short_route(link_id)} delay_ms={dispatch_delay_ms:.3f} "
                     f"peer={_short_route(stats.get('peerPresenceHash'))} "
-                    f"dest={_short_route(stats.get('peerDestinationHash'))}",
+                    f"dest={_short_route(stats.get('peerDestinationHash'))} "
+                    f"packet={_short_route(packet_hash_hex or str(probe.get('packetHash') or ''))}",
                 )
             _note_audio_route_bucketed_duration(
                 stats,
@@ -2135,6 +2392,22 @@ def _qortal_link_receive_probe(
         probe["callbackDispatchMonotonic"] = now_mono
         probe["callbackDispatchAtMs"] = now_wall_ms
         _mark_audio_queue_state_dirty()
+        return
+    if stage in ("decrypt_failed", "callback_missing"):
+        destination_hash = getattr(packet, "destination_hash", None)
+        destination_hex = (
+            bytes(destination_hash).hex()
+            if isinstance(destination_hash, (bytes, bytearray))
+            else ""
+        )
+        _note_audio_stage_counter(
+            stage,
+            link_id=link_id,
+            destination_hash=destination_hex,
+            packet_hash=packet_hash_hex,
+            byte_count=len(getattr(packet, "data", b"") or b""),
+            wall_ms=now_wall_ms,
+        )
         return
     if stage == "callback_start":
         probe = _audio_link_receive_probe_by_packet_id.pop(packet_id, None)
@@ -2414,6 +2687,14 @@ def _note_audio_route_receive(
         stats["lastReceiveAtMs"] = now_ms
         stats["lastActivityAtMs"] = now_ms
         stats["lastRoomId"] = str(room_id or "")
+        if transport == "link":
+            _note_audio_stage_counter(
+                "bridge_rx",
+                link_id=route_key,
+                destination_hash=peer_destination_hash,
+                byte_count=max(0, int(byte_count or 0)),
+                wall_ms=now_ms,
+            )
         if fd4_enqueued is True:
             stats["fd4EnqueuedFrames"] = int(stats.get("fd4EnqueuedFrames") or 0) + 1
             fd4_ms = (
@@ -2421,6 +2702,14 @@ def _note_audio_route_receive(
                 if isinstance(fd4_enqueued_at_wall_ms, int) and fd4_enqueued_at_wall_ms > 0
                 else _now_wall_ms()
             )
+            if transport == "link":
+                _note_audio_stage_counter(
+                    "fd4",
+                    link_id=route_key,
+                    destination_hash=peer_destination_hash,
+                    byte_count=max(0, int(byte_count or 0)),
+                    wall_ms=fd4_ms,
+                )
             stats["lastFd4EnqueueAtMs"] = fd4_ms
             enqueue_delay_ms = max(0, fd4_ms - now_ms)
             if enqueue_delay_ms > int(stats.get("receiveToFd4EnqueueMsMax") or 0):
@@ -3012,6 +3301,8 @@ def _process_audio_batch(frames: list) -> None:
             snapshot = _snapshot_audio_link_for_send(link_id, peer_key_hint)
             send_link_id = str(snapshot.get("linkId") or link_id) if snapshot is not None else link_id
             if snapshot is None:
+                if peer_key_hint:
+                    _rearm_audio_link_recovery(peer_key_hint, "send_no_canonical_link")
                 emit_event(
                     "group_audio_send_failed",
                     {
@@ -3024,11 +3315,14 @@ def _process_audio_batch(frames: list) -> None:
                 )
                 continue
             if snapshot.get("ready") is not True:
+                snapshot_peer_key = str(snapshot.get("peerPresenceHash") or peer_key_hint)
+                if snapshot_peer_key:
+                    _rearm_audio_link_recovery(snapshot_peer_key, "send_audio_link_not_ready")
                 emit_event(
                     "group_audio_send_failed",
                     {
                         "linkId": send_link_id,
-                        "peerPresenceHash": str(snapshot.get("peerPresenceHash") or ""),
+                        "peerPresenceHash": snapshot_peer_key,
                         "reason": str(snapshot.get("reason") or "audio_link_not_ready"),
                         "code": str(snapshot.get("reason") or "audio_link_not_ready"),
                         "transport": "link",
@@ -3812,7 +4106,7 @@ def _scheduler_lane_for_command(action: Any) -> str:
         "close_group_audio_link",
         "reset_group_audio_peer_state",
     }:
-        return "link-management"
+        return "audio-control"
     if action_name in {"warm_group_audio_path"}:
         return "path-management"
     if action_name in {
@@ -3921,6 +4215,215 @@ def log(message: str) -> None:
 def verbose_presence_log(message: str) -> None:
     if _PRESENCE_BRIDGE_VERBOSE_LOGS:
         log(message)
+
+
+def _overlay_good_outbound_cache_path() -> str:
+    if not _reticulum_config_dir:
+        return ""
+    return os.path.join(_reticulum_config_dir, _OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME)
+
+
+def _overlay_good_cache_float(value: Any, fallback: float = 0.0) -> float:
+    if not isinstance(value, (int, float)):
+        return fallback
+    try:
+        out = float(value)
+    except Exception:
+        return fallback
+    if not math.isfinite(out):
+        return fallback
+    return out
+
+
+def _overlay_good_cache_int(value: Any, fallback: int = 0) -> int:
+    if not isinstance(value, (int, float)):
+        return fallback
+    try:
+        out = int(value)
+    except Exception:
+        return fallback
+    return out
+
+
+def _prune_overlay_good_outbound_cache(now: Optional[float] = None) -> None:
+    with _overlay_good_outbound_cache_lock:
+        if now is None:
+            now = time.time()
+        expired = [
+            peer_hash
+            for peer_hash, entry in _overlay_good_outbound_cache.items()
+            if not isinstance(entry, dict)
+            or not _valid_presence_destination_hash_hex(peer_hash)
+            or now - _overlay_good_cache_float(entry.get("last_rx_at")) > _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS
+        ]
+        for peer_hash in expired:
+            _overlay_good_outbound_cache.pop(peer_hash, None)
+        if len(_overlay_good_outbound_cache) <= _OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS:
+            return
+        ranked = sorted(
+            _overlay_good_outbound_cache.items(),
+            key=lambda item: (
+                -_overlay_good_cache_float((item[1] or {}).get("last_rx_at")),
+                -_overlay_good_cache_int((item[1] or {}).get("rx_count")),
+                item[0],
+            ),
+        )
+        keep = {peer_hash for peer_hash, _entry in ranked[:_OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS]}
+        for peer_hash in list(_overlay_good_outbound_cache.keys()):
+            if peer_hash not in keep:
+                _overlay_good_outbound_cache.pop(peer_hash, None)
+
+
+def _flush_overlay_good_outbound_cache(force: bool = False) -> None:
+    global _overlay_good_outbound_cache_dirty, _overlay_good_outbound_cache_last_write_at
+    tmp_path = ""
+    with _overlay_good_outbound_cache_lock:
+        if not _overlay_good_outbound_cache_dirty and not force:
+            return
+        path = _overlay_good_outbound_cache_path()
+        if not path:
+            return
+        now = time.time()
+        if not force and now - _overlay_good_outbound_cache_last_write_at < _OVERLAY_GOOD_OUTBOUND_CACHE_WRITE_MIN_SECONDS:
+            return
+        _prune_overlay_good_outbound_cache(now)
+        payload = {
+            "version": _OVERLAY_GOOD_OUTBOUND_CACHE_VERSION,
+            "updatedAt": now,
+            "peers": [
+                {
+                    "peerHash": peer_hash,
+                    "lastRxAt": _overlay_good_cache_float(entry.get("last_rx_at")),
+                    "firstRxAt": _overlay_good_cache_float(
+                        entry.get("first_rx_at"),
+                        _overlay_good_cache_float(entry.get("last_rx_at")),
+                    ),
+                    "rxCount": _overlay_good_cache_int(entry.get("rx_count")),
+                }
+                for peer_hash, entry in sorted(
+                    _overlay_good_outbound_cache.items(),
+                    key=lambda item: (-_overlay_good_cache_float((item[1] or {}).get("last_rx_at")), item[0]),
+                )
+            ],
+        }
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_path = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, separators=(",", ":"))
+            os.replace(tmp_path, path)
+            _overlay_good_outbound_cache_last_write_at = now
+            _overlay_good_outbound_cache_dirty = False
+        except Exception as exc:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    pass
+            log(f"[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_write_failed err={exc}")
+
+
+def _load_overlay_good_outbound_cache() -> None:
+    global _overlay_good_outbound_cache_loaded, _overlay_good_outbound_cache_dirty
+    with _overlay_good_outbound_cache_lock:
+        if _overlay_good_outbound_cache_loaded:
+            return
+        _overlay_good_outbound_cache_loaded = True
+    path = _overlay_good_outbound_cache_path()
+    if not path or not os.path.exists(path):
+        return
+    now = time.time()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            parsed = json.load(fh)
+    except Exception as exc:
+        log(f"[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_read_failed err={exc}")
+        return
+    peers = parsed.get("peers") if isinstance(parsed, dict) else None
+    if not isinstance(peers, list):
+        return
+    with _overlay_good_outbound_cache_lock:
+        loaded = 0
+        for item in peers:
+            if not isinstance(item, dict):
+                continue
+            peer_hash = str(item.get("peerHash") or "").strip().lower()
+            last_rx_at = _coerce_epoch_seconds(item.get("lastRxAt"))
+            if not _valid_presence_destination_hash_hex(peer_hash) or last_rx_at is None:
+                continue
+            if now - last_rx_at > _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS:
+                _overlay_good_outbound_cache_dirty = True
+                continue
+            first_rx_at = _coerce_epoch_seconds(item.get("firstRxAt")) or last_rx_at
+            _overlay_good_outbound_cache[peer_hash] = {
+                "first_rx_at": first_rx_at,
+                "last_rx_at": last_rx_at,
+                "rx_count": max(1, _overlay_good_cache_int(item.get("rxCount"), 1)),
+            }
+            loaded += 1
+        _prune_overlay_good_outbound_cache(now)
+        retained = len(_overlay_good_outbound_cache)
+        dirty = _overlay_good_outbound_cache_dirty
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_loaded "
+        f"peers={loaded} retained={retained}"
+    )
+    if dirty:
+        _flush_overlay_good_outbound_cache(force=True)
+
+
+def _note_good_outbound_overlay_rx(peer_hash: str) -> None:
+    global _overlay_good_outbound_cache_dirty
+    peer_key = str(peer_hash or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return
+    local_hex = _local_presence_hash_hex()
+    if local_hex and peer_key == local_hex:
+        return
+    with _overlay_good_outbound_cache_lock:
+        now = time.time()
+        entry = _overlay_good_outbound_cache.get(peer_key) or {}
+        entry["first_rx_at"] = float(entry.get("first_rx_at") or now)
+        entry["last_rx_at"] = now
+        entry["rx_count"] = int(entry.get("rx_count") or 0) + 1
+        _overlay_good_outbound_cache[peer_key] = entry
+        _overlay_good_outbound_cache_dirty = True
+    _flush_overlay_good_outbound_cache()
+
+
+def _seed_overlay_good_outbound_cache_candidates() -> None:
+    if disable_bootstrap:
+        log("[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_seed_skipped disabled=true")
+        return
+    _load_overlay_good_outbound_cache()
+    with _overlay_good_outbound_cache_lock:
+        cache_items = list(_overlay_good_outbound_cache.items())
+    if not cache_items:
+        return
+    now = time.time()
+    seeded = 0
+    for peer_hash, entry in sorted(
+        cache_items,
+        key=lambda item: (-_overlay_good_cache_float((item[1] or {}).get("last_rx_at")), item[0]),
+    ):
+        if seeded >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            break
+        last_rx_at = _coerce_epoch_seconds(entry.get("last_rx_at"))
+        if last_rx_at is None or now - last_rx_at > _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS:
+            continue
+        if not _overlay_peer_available_for_new_outbound(peer_hash):
+            continue
+        if peer_hash not in _known_peers:
+            ensure_known_peer_from_recall(peer_hash, "bootstrap_cache")
+        _mark_candidate_peer(peer_hash, "bootstrap_cache")
+        seeded += 1
+    if seeded:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_seeded "
+            f"candidates={seeded}"
+        )
 
 
 def as_bool(value: Any) -> bool:
@@ -4494,6 +4997,20 @@ def _note_overlay_peer_alive(peer_key: str, source: str) -> None:
         )
 
 
+def _clear_overlay_peer_failure_for_recovery(peer_key: str, reason: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    state = _overlay_peer_failures.pop(peer_key, None)
+    if state is None:
+        return False
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_peer_failure_reset "
+        f"peer={peer_key} source={reason}"
+    )
+    return True
+
+
 def _note_overlay_peer_failure(peer_key: str, reason: str) -> None:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key or not _overlay_failure_should_suppress(reason):
@@ -4764,8 +5281,7 @@ def _snapshot_established_overlay_neighbor_hashes(
             state = _overlay_links_by_id.get(link_id) if link_id else None
             if (
                 state is None
-                or state.get("established") is not True
-                or state.get("link") is None
+                or not _overlay_link_is_fanout_usable(state)
             ):
                 continue
             out.append(peer_key)
@@ -5004,6 +5520,63 @@ def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:
         f"reason={reason} selected={len(selected)} total={len(_active_overlay_neighbors)} "
         f"known_peers={len(_known_peers)} "
         f"fanout_hashes={','.join(selected)}"
+    )
+    return len(selected)
+
+
+def _recover_zero_overlay_fanout(reason: str) -> int:
+    """
+    Break the suppression deadlock after the overlay drains completely.
+
+    Suppression prevents churn while we still have usable peers. With zero
+    overlay links, it can also prevent recovery, so retry only the best known
+    peers and let normal RX-based verification decide whether they stay good.
+    """
+    global _active_overlay_neighbors
+    global _last_overlay_zero_fanout_recovery_at
+    if _overlay_links_by_id:
+        return 0
+    now = time.time()
+    if (
+        _last_overlay_zero_fanout_recovery_at > 0
+        and now - _last_overlay_zero_fanout_recovery_at
+        < _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS
+    ):
+        return 0
+    local_hex = _local_presence_hash_hex()
+    pool: Set[str] = set(_active_overlay_neighbors.keys())
+    pool.update(_verified_overlay_peers.keys())
+    pool.update(_candidate_peers.keys())
+    pool.update(_known_peers.keys())
+    candidates: list[str] = []
+    for raw_peer in pool:
+        peer_key = str(raw_peer or "").strip().lower()
+        if not _valid_presence_destination_hash_hex(peer_key):
+            continue
+        if local_hex and peer_key == local_hex:
+            continue
+        if _overlay_peer_inbound_full(peer_key):
+            continue
+        if peer_key not in _known_peers:
+            ensure_known_peer_from_recall(peer_key, "ts_seed")
+        if peer_key not in _known_peers:
+            continue
+        candidates.append(peer_key)
+    if not candidates:
+        return 0
+    candidates = sorted(set(candidates), key=_overlay_bootstrap_peer_sort_key)
+    selected = candidates[:_OVERLAY_PENDING_UNESTABLISHED_LIMIT]
+    _last_overlay_zero_fanout_recovery_at = now
+    cleared = 0
+    for peer_key in selected:
+        if _clear_overlay_peer_failure_for_recovery(peer_key, f"zero_fanout:{reason}"):
+            cleared += 1
+        _active_overlay_neighbors[peer_key] = now
+        _mark_candidate_peer(peer_key, f"zero_fanout:{reason}")
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_zero_fanout_recover "
+        f"reason={reason} selected={len(selected)} cleared_suppression={cleared} "
+        f"known_peers={len(_known_peers)} fanout_hashes={','.join(selected)}"
     )
     return len(selected)
 
@@ -5704,6 +6277,154 @@ def get_overlay_link_state(link_id: str) -> Optional[Dict[str, Any]]:
         return _overlay_links_by_id.get(link_id)
 
 
+def _ensure_managed_link_fields(
+    state: Dict[str, Any],
+    *,
+    kind: str,
+    desired_state: str = _LINK_STATE_IDLE,
+) -> Dict[str, Any]:
+    if "manager_kind" not in state:
+        state["manager_kind"] = kind
+    if "manager_state" not in state:
+        if state.get("established") is True:
+            state["manager_state"] = _LINK_STATE_ESTABLISHED
+        else:
+            state["manager_state"] = desired_state
+    if "generation" not in state:
+        state["generation"] = 0
+    if "last_failure_reason" not in state:
+        state["last_failure_reason"] = ""
+    if "backoff_until" not in state:
+        state["backoff_until"] = 0.0
+    return state
+
+
+def _managed_link_generation_matches(
+    kind: str,
+    link_id: str,
+    generation: int,
+    link: Any = None,
+) -> bool:
+    table = _overlay_links_by_id if kind == "overlay" else _audio_links_by_id
+    with _state_lock:
+        state = table.get(link_id)
+        if state is None:
+            return False
+        if link is not None and state.get("link") is not link:
+            return False
+        return int(state.get("generation") or 0) == int(generation)
+
+
+def _set_link_manager_generation(link: Any, state: Dict[str, Any]) -> None:
+    if link is None:
+        return
+    try:
+        setattr(link, "_qortal_manager_generation", int(state.get("generation") or 0))
+    except Exception:
+        pass
+
+
+def _link_manager_generation_current(kind: str, link_id: str, link: Any) -> bool:
+    generation = getattr(link, "_qortal_manager_generation", None)
+    if not isinstance(generation, int):
+        return True
+    return _managed_link_generation_matches(kind, link_id, generation, link)
+
+
+def _overlay_io_lane_for_peer(peer_hash: str) -> str:
+    try:
+        shard = int(str(peer_hash or "")[:8], 16) % 2
+    except Exception:
+        shard = 0
+    return f"overlay-io-{shard}"
+
+
+def _overlay_enqueue_open(
+    peer_hash: str,
+    reason: str,
+    *,
+    await_path: bool = False,
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    with _state_lock:
+        existing_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        existing = _overlay_links_by_id.get(existing_id) if existing_id else None
+        if existing is not None:
+            _ensure_managed_link_fields(existing, kind="overlay")
+            return False
+        if peer_key in _overlay_open_pending_by_peer_hash:
+            return False
+        _overlay_open_pending_by_peer_hash.add(peer_key)
+    queued = _enqueue_scheduler_task(
+        _overlay_io_lane_for_peer(peer_key),
+        f"overlay-open:{reason}:{peer_key[:8]}",
+        _overlay_open_job,
+        peer_key,
+        reason,
+        await_path,
+        drop_oldest=False,
+    )
+    if not queued:
+        with _state_lock:
+            _overlay_open_pending_by_peer_hash.discard(peer_key)
+    return bool(queued)
+
+
+def _overlay_enqueue_close(link_id: str, reason: str) -> bool:
+    link_key = str(link_id or "").strip()
+    if not link_key:
+        return False
+    peer_key = ""
+    with _state_lock:
+        state = _overlay_links_by_id.get(link_key)
+        if state is None:
+            _overlay_close_pending_link_ids.discard(link_key)
+            return False
+        _ensure_managed_link_fields(state, kind="overlay")
+        state["manager_state"] = _LINK_STATE_CLOSING
+        state["last_failure_reason"] = reason
+        peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+        if link_key in _overlay_close_pending_link_ids:
+            return False
+        _overlay_close_pending_link_ids.add(link_key)
+    queued = _enqueue_scheduler_task(
+        _overlay_io_lane_for_peer(peer_key or link_key),
+        f"overlay-close:{reason}:{link_key[:8]}",
+        _overlay_close_job,
+        link_key,
+        reason,
+        drop_oldest=False,
+    )
+    if not queued:
+        with _state_lock:
+            _overlay_close_pending_link_ids.discard(link_key)
+    return bool(queued)
+
+
+def _overlay_enqueue_dedup(peer_hash: str, reason: str = "dedup_same_peer") -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    with _state_lock:
+        if peer_key in _overlay_dedup_pending_by_peer_hash:
+            return False
+        _overlay_dedup_pending_by_peer_hash.add(peer_key)
+    queued = _enqueue_scheduler_task(
+        _overlay_io_lane_for_peer(peer_key),
+        f"overlay-dedup:{reason}:{peer_key[:8]}",
+        _overlay_dedup_job,
+        peer_key,
+        reason,
+        drop_oldest=False,
+    )
+    if not queued:
+        with _state_lock:
+            _overlay_dedup_pending_by_peer_hash.discard(peer_key)
+    return bool(queued)
+
+
 def _overlay_link_is_current(link_id: str, link: Any = None) -> bool:
     if not link_id:
         return False
@@ -5722,12 +6443,19 @@ def remove_overlay_link(link_id: str) -> Optional[Dict[str, Any]]:
     with _state_lock:
         state = _overlay_links_by_id.pop(link_id, None)
         if not state:
+            _overlay_close_pending_link_ids.discard(link_id)
             return None
+        _ensure_managed_link_fields(state, kind="overlay")
+        state["manager_state"] = _LINK_STATE_DEAD
+        state["generation"] = int(state.get("generation") or 0) + 1
+        _overlay_close_pending_link_ids.discard(link_id)
         link = state.get("link")
         if link is not None:
             _overlay_link_ids_by_object.pop(id(link), None)
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if peer_hash:
+            _overlay_open_pending_by_peer_hash.discard(peer_hash)
+            _overlay_dedup_pending_by_peer_hash.discard(peer_hash)
             existing = _active_overlay_link_id_by_peer_hash.get(peer_hash)
             state["_was_active_overlay"] = existing == link_id
             if existing == link_id:
@@ -5748,6 +6476,7 @@ def emit_overlay_link_state(
     last_rx_at = state.get("last_rx_at")
     last_send_ok_at = state.get("last_send_ok_at")
     last_activity_at = state.get("last_activity_at")
+    last_replay_at = state.get("last_replay_at")
 
     def age_ms(value: Any) -> Optional[int]:
         if not isinstance(value, (int, float)):
@@ -5764,6 +6493,15 @@ def emit_overlay_link_state(
             "reason": reason,
             "queuedPackets": len(state.get("pending_packets") or []),
             "closedByReticulum": closed_by_reticulum,
+            "managerState": str(state.get("manager_state") or ""),
+            "generation": int(state.get("generation") or 0),
+            "replayPending": state.get("replay_pending") is True,
+            "openReason": str(state.get("open_reason") or ""),
+            "lastReplayAgeMs": age_ms(last_replay_at),
+            "backoffMs": max(
+                0,
+                int((float(state.get("backoff_until") or 0.0) - now) * 1000.0),
+            ),
             "lastRxAt": (
                 float(last_rx_at) * 1000.0
                 if isinstance(last_rx_at, (int, float))
@@ -5803,11 +6541,22 @@ def _overlay_close_debug_line(link_id: str, state: Dict[str, Any], reason: str) 
     link = state.get("link")
     reticulum_status = getattr(link, "status", None) if link is not None else None
     was_active = state.get("_was_active_overlay") is True
+    last_replay_age = age_label("last_replay_at")
+    replay_recent = (
+        last_replay_age != "na"
+        and int(last_replay_age) <= int(_OVERLAY_REPLAY_CLOSE_ASSOCIATION_SECONDS * 1000)
+    )
     return (
         "[presence_bridge] target=presence-reticulum overlay_link_close_detail "
         f"link={link_id} peer={peer_hash} incoming={str(state.get('incoming') is True).lower()} "
         f"was_established={str(state.get('established') is True).lower()} "
         f"was_active={str(was_active).lower()} reason={reason} "
+        f"manager_state={state.get('manager_state') or ''} "
+        f"generation={int(state.get('generation') or 0)} "
+        f"open_reason={state.get('open_reason') or ''} "
+        f"announce_retry_created={str(state.get('announce_retry_created') is True).lower()} "
+        f"replay_recent={str(replay_recent).lower()} "
+        f"last_replay_age_ms={last_replay_age} "
         f"created_age_ms={age_label('created_at')} "
         f"established_age_ms={age_label('established_at')} "
         f"last_rx_age_ms={age_label('last_rx_at')} "
@@ -5829,6 +6578,22 @@ def _queue_overlay_packet(state: Dict[str, Any], traffic: str, wire_bytes: bytes
 
 
 def _send_packet_on_link(link, wire_bytes: bytes, log_target: str) -> bool:
+    def note_overlay_send_failure(reason: str) -> None:
+        link_id = get_overlay_link_id(link)
+        if not link_id:
+            return
+        with _state_lock:
+            state = _overlay_links_by_id.get(link_id)
+            if state is None:
+                return
+            _ensure_managed_link_fields(state, kind="overlay")
+            state["manager_state"] = _LINK_STATE_DEGRADED
+            state["last_failure_reason"] = reason
+            state["last_failure_at"] = time.time()
+            peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+        if peer_key:
+            _note_overlay_peer_failure(peer_key, reason)
+
     try:
         packet = RNS.Packet(link, wire_bytes, create_receipt=False)
         completed, result, error = _run_with_timeout(
@@ -5841,16 +6606,20 @@ def _send_packet_on_link(link, wire_bytes: bytes, log_target: str) -> bool:
                 f"[presence_bridge] {log_target} packet_send_timeout "
                 f"timeout_ms={int(_LINK_PACKET_SEND_TIMEOUT_SECONDS * 1000)}"
             )
+            note_overlay_send_failure("packet_send_timeout")
             return False
         if error:
             log(f"[presence_bridge] {log_target} packet_send_exception err={error}")
+            note_overlay_send_failure("packet_send_exception")
             return False
         if result is False:
             log(f"[presence_bridge] {log_target} packet_send_false")
+            note_overlay_send_failure("packet_send_false")
             return False
         return True
     except Exception as exc:
         log(f"[presence_bridge] {log_target} packet_send_exception err={exc}")
+        note_overlay_send_failure("packet_send_exception")
         return False
 
 
@@ -5899,24 +6668,43 @@ def _dedup_has_peer_hash(state: Dict[str, Any], peer_key: str) -> bool:
     return str(state.get("peerPresenceHash") or "").strip().lower() == peer_key
 
 
-def _overlay_link_pressure_sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[int, int, int, float, str]:
+def _overlay_link_pressure_sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[int, float, str]:
     link_id, state = item
+    now = time.time()
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_hash) if peer_hash else ""
     active = bool(active_link_id and active_link_id == link_id)
     established = state.get("established") is True
     identified = bool(peer_hash)
+    manager_state = str(state.get("manager_state") or "").upper()
     activity = _dedup_activity_ts(state)
     if activity <= 0.0:
         created_at = state.get("created_at")
         activity = float(created_at) if isinstance(created_at, (int, float)) else 0.0
-    return (
-        1 if established else 0,
-        1 if active else 0,
-        1 if identified else 0,
-        activity,
-        link_id,
+    rx_age = _overlay_link_recent_rx_age_seconds(state, now)
+    has_recent_rx = (
+        state.get("link") is not None
+        and rx_age is not None
+        and rx_age <= _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS
     )
+    if not identified:
+        category = 0
+    elif not established:
+        category = 1
+    elif manager_state in {
+        _LINK_STATE_DEGRADED,
+        _LINK_STATE_BACKOFF,
+        _LINK_STATE_CLOSING,
+        _LINK_STATE_DEAD,
+    }:
+        category = 2
+    elif not active:
+        category = 3
+    elif not has_recent_rx:
+        category = 4
+    else:
+        category = 5
+    return (category, activity, link_id)
 
 
 def _prune_overlay_link_pressure(reason: str = "link_pressure", reserve_slots: int = 0) -> None:
@@ -5929,7 +6717,7 @@ def _prune_overlay_link_pressure(reason: str = "link_pressure", reserve_slots: i
         candidates = sorted(_overlay_links_by_id.items(), key=_overlay_link_pressure_sort_key)
         victim_ids = [link_id for link_id, _state in candidates[:excess]]
     for link_id in victim_ids:
-        _teardown_overlay_link_id(link_id, reason)
+        _overlay_enqueue_close(link_id, reason)
 
 
 def _dedup_pick_keep_link(
@@ -5992,7 +6780,6 @@ def _overlay_teardown_should_demote(reason: str) -> bool:
         "link_pressure",
         "link_pressure_inbound",
         "link_pressure_outbound",
-        "unestablished_timeout",
     }:
         return False
     return True
@@ -6007,6 +6794,74 @@ def _overlay_link_recent_activity_age_seconds(state: Dict[str, Any], now: float)
     if recent_at <= 0.0:
         return None
     return max(0.0, now - recent_at)
+
+
+def _overlay_link_recent_rx_age_seconds(state: Dict[str, Any], now: float) -> Optional[float]:
+    last_rx_at = state.get("last_rx_at")
+    if not isinstance(last_rx_at, (int, float)):
+        return None
+    return max(0.0, now - float(last_rx_at))
+
+
+def _overlay_link_is_good_outbound_rx(state: Dict[str, Any], now: float) -> bool:
+    if state.get("incoming") is True:
+        return False
+    if state.get("established") is not True:
+        return False
+    if state.get("link") is None:
+        return False
+    age = _overlay_link_recent_rx_age_seconds(state, now)
+    return age is not None and age <= _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS
+
+
+def _overlay_link_is_fanout_usable(state: Dict[str, Any]) -> bool:
+    if state.get("established") is not True:
+        return False
+    if state.get("link") is None:
+        return False
+    manager_state = str(state.get("manager_state") or "").upper()
+    if manager_state in {
+        _LINK_STATE_DEGRADED,
+        _LINK_STATE_CLOSING,
+        _LINK_STATE_BACKOFF,
+        _LINK_STATE_DEAD,
+    }:
+        return False
+    return True
+
+
+def _retain_recent_rx_outbound_peer(peer_hash: str, state: Dict[str, Any], reason: str, now: float) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key or not _overlay_link_is_good_outbound_rx(state, now):
+        return False
+    evicted_peer = ""
+    if peer_key not in _active_overlay_neighbors and len(_active_overlay_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        candidates: list[tuple[float, str]] = []
+        for existing_peer, seen_at in _active_overlay_neighbors.items():
+            existing_key = str(existing_peer or "").strip().lower()
+            if not existing_key or existing_key == peer_key:
+                continue
+            existing_link_id = _active_overlay_link_id_by_peer_hash.get(existing_key) or ""
+            existing_state = _overlay_links_by_id.get(existing_link_id) if existing_link_id else None
+            if existing_state is not None and _overlay_link_is_good_outbound_rx(existing_state, now):
+                continue
+            sort_ts = float(seen_at) if isinstance(seen_at, (int, float)) else 0.0
+            candidates.append((sort_ts, existing_key))
+        if candidates:
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            evicted_peer = candidates[0][1]
+            _active_overlay_neighbors.pop(evicted_peer, None)
+    if peer_key in _active_overlay_neighbors or len(_active_overlay_neighbors) < _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        _active_overlay_neighbors[peer_key] = now
+    age = _overlay_link_recent_rx_age_seconds(state, now)
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum overlay_prune_keep_recent_rx "
+        f"peer={peer_key} reason={reason} "
+        f"last_rx_age_ms={int((age or 0.0) * 1000.0)} "
+        f"outbound={len(_active_overlay_neighbors)}"
+        f"{f' evicted_peer={evicted_peer}' if evicted_peer else ''}"
+    )
+    return True
 
 
 def _overlay_recent_activity_close_should_keep_peer(
@@ -6057,10 +6912,21 @@ def _overlay_unknown_inbound_allowed() -> bool:
 
 
 def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
+    now = time.time()
     state = remove_overlay_link(link_id)
     if state is None:
         return
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    last_replay_at = state.get("last_replay_at")
+    replay_associated = (
+        isinstance(last_replay_at, (int, float))
+        and now - float(last_replay_at) <= _OVERLAY_REPLAY_CLOSE_ASSOCIATION_SECONDS
+    )
+    announce_retry_associated = state.get("announce_retry_created") is True
+    with _state_lock:
+        _overlay_close_diagnostics.append(
+            (now, reason, bool(replay_associated), bool(announce_retry_associated))
+        )
     verbose_presence_log(_overlay_close_debug_line(link_id, state, reason))
     link = state.get("link")
     if link is not None:
@@ -6084,6 +6950,47 @@ def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
     emit_overlay_link_state(link_id, state, reason)
     if peer_hash and _overlay_teardown_should_demote(reason):
         _demote_overlay_fanout_peer(peer_hash, f"link_teardown:{reason}")
+
+
+def _overlay_open_job(peer_key: str, reason: str, await_path: bool = False) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return
+    try:
+        state = _ensure_overlay_link(peer_key, await_path=await_path, open_reason=reason)
+        if state is None:
+            _note_overlay_peer_failure(peer_key, f"open_failed:{reason}")
+            return
+        _ensure_managed_link_fields(state, kind="overlay", desired_state=_LINK_STATE_CONNECTING)
+        if state.get("established") is True:
+            state["manager_state"] = _LINK_STATE_ESTABLISHED
+        else:
+            state["manager_state"] = _LINK_STATE_CONNECTING
+    finally:
+        with _state_lock:
+            _overlay_open_pending_by_peer_hash.discard(peer_key)
+
+
+def _overlay_close_job(link_id: str, reason: str) -> None:
+    link_key = str(link_id or "").strip()
+    if not link_key:
+        return
+    try:
+        _teardown_overlay_link_id(link_key, reason)
+    finally:
+        with _state_lock:
+            _overlay_close_pending_link_ids.discard(link_key)
+
+
+def _overlay_dedup_job(peer_key: str, reason: str = "dedup_same_peer") -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return
+    try:
+        _dedup_overlay_links_for_peer(peer_key, reason=reason)
+    finally:
+        with _state_lock:
+            _overlay_dedup_pending_by_peer_hash.discard(peer_key)
 
 
 def _maybe_prune_stale_overlay_links() -> None:
@@ -6124,7 +7031,7 @@ def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[D
     state_for_direction = get_overlay_link_state(link_id)
     incoming = bool(state_for_direction and state_for_direction.get("incoming") is True)
     if not _admit_overlay_peer_if_allowed(peer_key, "register_active", incoming=incoming):
-        _teardown_overlay_link_id(link_id, "admission_rejected")
+        _overlay_enqueue_close(link_id, "admission_rejected")
         return None
     lose_id: Optional[str] = None
     with _state_lock:
@@ -6161,7 +7068,7 @@ def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[D
                 f"peer={peer_key} link={keep_id} incoming={str(keep_state.get('incoming') is True).lower()} "
                 f"established={str(keep_state.get('established') is True).lower()}"
             )
-        _teardown_overlay_link_id(lose_id, "dedup_same_peer")
+        _overlay_enqueue_close(lose_id, "dedup_same_peer")
     return keep_state
 
 
@@ -6227,7 +7134,7 @@ def _dedup_overlay_links_for_peer(
             "[presence_bridge] target=presence-reticulum overlay_link_duplicate_teardown "
             f"peer={peer_key} keep={keep_id} teardown={lose_id}"
         )
-        _teardown_overlay_link_id(lose_id, reason)
+        _overlay_enqueue_close(lose_id, reason)
     return keep_state
 
 
@@ -6261,6 +7168,7 @@ def _flush_overlay_link_pending(link_id: str) -> None:
 def _ensure_overlay_link(
     peer_hash: str,
     await_path: bool = True,
+    open_reason: str = "open",
 ) -> Optional[Dict[str, Any]]:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
@@ -6277,6 +7185,7 @@ def _ensure_overlay_link(
         if existing_link_id:
             existing = _overlay_links_by_id.get(existing_link_id)
             if existing is not None:
+                _ensure_managed_link_fields(existing, kind="overlay")
                 return existing
             _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
     if _overlay_peer_inbound_full(peer_key):
@@ -6338,6 +7247,7 @@ def _ensure_overlay_link(
             if existing_link_id:
                 existing = _overlay_links_by_id.get(existing_link_id)
                 if existing is not None:
+                    _ensure_managed_link_fields(existing, kind="overlay")
                     log(
                         "[presence_bridge] target=presence-reticulum "
                         f"overlay_link_reuse_{'incoming' if existing.get('incoming') is True else 'outgoing'} "
@@ -6347,13 +7257,13 @@ def _ensure_overlay_link(
                 _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
             if outbound is None:
                 return None
-        _prune_overlay_link_pressure("link_pressure_outbound", reserve_slots=1)
         with _state_lock:
             if len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS:
                 log(
-                    "[presence_bridge] target=presence-reticulum overlay_link_rejected_pressure "
+                    "[presence_bridge] target=presence-reticulum overlay_open_deferred_pressure "
                     f"peer={peer_key} links={len(_overlay_links_by_id)} max={_OVERLAY_MAX_TOTAL_LINKS}"
                 )
+                _prune_overlay_link_pressure("link_pressure_outbound", reserve_slots=1)
                 return None
         link_id = str(uuid.uuid4())
         link = RNS.Link(
@@ -6394,9 +7304,17 @@ def _ensure_overlay_link(
                     "established": False,
                     "created_at": now,
                     "pending_packets": deque(maxlen=_OVERLAY_PENDING_PACKET_LIMIT),
+                    "open_reason": str(open_reason or "open"),
+                    "announce_retry_created": str(open_reason or "").startswith("announce"),
+                    "manager_kind": "overlay",
+                    "manager_state": _LINK_STATE_CONNECTING,
+                    "generation": 0,
+                    "last_failure_reason": "",
+                    "backoff_until": 0.0,
                 }
                 _overlay_links_by_id[link_id] = state
                 _overlay_link_ids_by_object[id(link)] = link_id
+                _set_link_manager_generation(link, state)
         if teardown_new_link:
             _teardown_reticulum_link_bounded(
                 link,
@@ -6450,10 +7368,18 @@ def _retry_pending_overlay_connect_on_announce(peer_hash: str) -> None:
             f"peer={peer_key} reason=peer_suppressed"
         )
         return
-    link = None
     existing_link_id = ""
-    stale_state: Optional[Dict[str, Any]] = None
+    existing_age = 0.0
+    stale = False
+    now = time.time()
     with _state_lock:
+        last_retry_at = float(_overlay_announce_retry_last_at_by_peer_hash.get(peer_key) or 0.0)
+        if now - last_retry_at < _OVERLAY_ANNOUNCE_RETRY_DEBOUNCE_SECONDS:
+            verbose_presence_log(
+                "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce_suppressed "
+                f"peer={peer_key} reason=debounce"
+            )
+            return
         existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
         if not existing_link_id:
             return
@@ -6463,30 +7389,38 @@ def _retry_pending_overlay_connect_on_announce(peer_hash: str) -> None:
             return
         if existing.get("incoming") is True or existing.get("established") is True:
             return
-        link = existing.get("link")
-        if link is not None:
-            try:
-                link.set_link_closed_callback(None)
-            except Exception:
-                pass
-        stale_state = remove_overlay_link(existing_link_id)
-    if link is not None:
-        _teardown_reticulum_link_bounded(
-            link,
-            f"target=presence-reticulum overlay_link_retry_previous peer={peer_key}",
+        created_at = existing.get("created_at")
+        existing_age = now - float(created_at) if isinstance(created_at, (int, float)) else 0.0
+        existing["path_refreshed_at"] = now
+        existing["last_announce_retry_at"] = now
+        _overlay_announce_retry_last_at_by_peer_hash[peer_key] = now
+        stale = existing_age >= _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS
+    if not stale:
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce_kept "
+            f"peer={peer_key} link={existing_link_id} age_ms={int(existing_age * 1000.0)}"
         )
-    if stale_state is not None:
-        stale_state["established"] = False
-        emit_overlay_link_state(existing_link_id, stale_state, "announce_retry")
-        log(
-            "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce "
-            f"peer={peer_key} previous_link={existing_link_id}"
-        )
-    _enqueue_scheduler_task(
-        "link-management",
-        "overlay-link-retry-on-announce",
-        _ensure_overlay_link,
+        return
+    if not _overlay_enqueue_close(existing_link_id, "announce_retry_stale"):
+        return
+    with _state_lock:
+        _overlay_open_pending_by_peer_hash.add(peer_key)
+    queued = _enqueue_scheduler_task(
+        _overlay_io_lane_for_peer(peer_key),
+        f"overlay-reopen-after-announce:{peer_key[:8]}",
+        _overlay_open_job,
         peer_key,
+        "announce_retry_stale",
+        True,
+        drop_oldest=False,
+    )
+    if not queued:
+        with _state_lock:
+            _overlay_open_pending_by_peer_hash.discard(peer_key)
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_link_retry_on_announce "
+        f"peer={peer_key} previous_link={existing_link_id} age_ms={int(existing_age * 1000.0)} "
+        f"queued={str(bool(queued)).lower()}"
     )
 
 
@@ -6515,7 +7449,10 @@ def _retry_pending_audio_connect_on_announce(peer_hash: str) -> None:
                 link.set_link_closed_callback(None)
             except Exception:
                 pass
-            _teardown_reticulum_link_bounded(
+            _enqueue_scheduler_task(
+                "audio-control",
+                f"audio-link-raw-teardown:announce:{peer_key[:8]}",
+                _teardown_reticulum_link_bounded,
                 link,
                 f"target=reticulum-audio-link audio_link_retry_previous peer={peer_key}",
             )
@@ -6541,17 +7478,67 @@ def _retry_pending_audio_connect_on_announce(peer_hash: str) -> None:
 
 
 def _sync_overlay_links() -> None:
-    _maybe_prune_stale_overlay_links()
-    _prune_overlay_link_pressure("link_pressure")
+    started = time.monotonic()
+    now = time.time()
+    opens = 0
+    closes = 0
+    dedupes = 0
+
+    def budget_available() -> bool:
+        return (time.monotonic() - started) < _OVERLAY_RECONCILE_MAX_SECONDS
+
+    stale_ids: List[Tuple[str, str]] = []
+    pressure_ids: List[str] = []
+    with _state_lock:
+        for link_id, state in list(_overlay_links_by_id.items()):
+            _ensure_managed_link_fields(state, kind="overlay")
+            if state.get("established") is not True:
+                created_at = state.get("created_at")
+                if (
+                    isinstance(created_at, (int, float))
+                    and now - float(created_at) > _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS
+                ):
+                    state["manager_state"] = _LINK_STATE_BACKOFF
+                    state["last_failure_reason"] = "unestablished_timeout"
+                    stale_ids.append((link_id, "unestablished_timeout"))
+                continue
+            last_rx = state.get("last_rx_at")
+            if not isinstance(last_rx, (int, float)):
+                last_rx = state.get("established_at") or state.get("created_at")
+            if isinstance(last_rx, (int, float)) and now - float(last_rx) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
+                state["manager_state"] = _LINK_STATE_DEGRADED
+                state["last_failure_reason"] = "rx_idle_timeout"
+                stale_ids.append((link_id, "rx_idle_timeout"))
+        excess = len(_overlay_links_by_id) - _OVERLAY_MAX_TOTAL_LINKS
+        if excess > 0:
+            candidates = sorted(_overlay_links_by_id.items(), key=_overlay_link_pressure_sort_key)
+            pressure_ids = [link_id for link_id, _state in candidates[:excess]]
+    for link_id, reason in stale_ids:
+        if closes >= _OVERLAY_RECONCILE_MAX_CLOSES or not budget_available():
+            break
+        if _overlay_enqueue_close(link_id, reason):
+            closes += 1
+    for link_id in pressure_ids:
+        if closes >= _OVERLAY_RECONCILE_MAX_CLOSES or not budget_available():
+            break
+        if _overlay_enqueue_close(link_id, "link_pressure"):
+            closes += 1
+
     _bootstrap_overlay_neighbors_if_degraded("sync")
+    _recover_zero_overlay_fanout("sync")
     desired_outbound = set(_active_overlay_neighbors.keys())
     desired = desired_outbound | set(_inbound_overlay_neighbors.keys())
-    target_outbound_links = min(_OVERLAY_MIN_HEALTHY_FANOUT, len(desired_outbound))
+    target_outbound_links = min(_OVERLAY_MAX_OUTBOUND_NEIGHBORS, len(desired_outbound))
     maintained_outbound_links = 0
     for peer_hash in desired_outbound:
         link_id = _active_overlay_link_id_by_peer_hash.get(peer_hash)
         state = get_overlay_link_state(link_id) if link_id else None
         if state is not None:
+            maintained_outbound_links += 1
+            continue
+        with _state_lock:
+            open_pending = peer_hash in _overlay_open_pending_by_peer_hash
+        if open_pending:
             maintained_outbound_links += 1
             continue
         if _overlay_peer_inbound_full(peer_hash):
@@ -6566,16 +7553,11 @@ def _sync_overlay_links() -> None:
             continue
         if peer_hash not in _known_peers:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
-        state = _ensure_overlay_link(
-            peer_hash,
-            await_path=False,
-        )
-        if state is None:
-            # A sync pass can run while Reticulum is still resolving recall/path
-            # state. Keep the fanout lease and let explicit closes or real send
-            # failures decide whether the peer is dead.
+        if opens >= _OVERLAY_RECONCILE_MAX_OPENS or not budget_available():
             continue
-        maintained_outbound_links += 1
+        if _overlay_enqueue_open(peer_hash, "sync", await_path=False):
+            opens += 1
+            maintained_outbound_links += 1
     for peer_hash, link_id in list(_active_overlay_link_id_by_peer_hash.items()):
         if peer_hash in desired:
             continue
@@ -6583,10 +7565,20 @@ def _sync_overlay_links() -> None:
         if state is None:
             _active_overlay_link_id_by_peer_hash.pop(peer_hash, None)
             continue
-        _teardown_overlay_link_id(link_id, "pruned")
+        if _retain_recent_rx_outbound_peer(peer_hash, state, "pruned", time.time()):
+            continue
+        if closes >= _OVERLAY_RECONCILE_MAX_CLOSES or not budget_available():
+            continue
+        if _overlay_enqueue_close(link_id, "pruned"):
+            closes += 1
     for peer_hash in list(desired):
-        _dedup_overlay_links_for_peer(peer_hash, reason="dedup_same_peer")
+        if dedupes >= _OVERLAY_RECONCILE_MAX_DEDUPES or not budget_available():
+            break
+        if _overlay_enqueue_dedup(peer_hash, reason="dedup_same_peer"):
+            dedupes += 1
     for link_id, state in list(_overlay_links_by_id.items()):
+        if closes >= _OVERLAY_RECONCILE_MAX_CLOSES or not budget_available():
+            break
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if not peer_hash:
             if (
@@ -6595,21 +7587,47 @@ def _sync_overlay_links() -> None:
                     _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS
                 )
             ):
-                _teardown_overlay_link_id(link_id, "pruned_unknown_full")
+                if _overlay_enqueue_close(link_id, "pruned_unknown_full"):
+                    closes += 1
             continue
         active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_hash)
         if active_link_id == link_id:
             continue
         if peer_hash not in desired:
-            _teardown_overlay_link_id(link_id, "pruned_orphan")
+            if _overlay_enqueue_close(link_id, "pruned_orphan"):
+                closes += 1
         elif active_link_id:
-            _teardown_overlay_link_id(link_id, "dedup_orphan")
+            if _overlay_enqueue_close(link_id, "dedup_orphan"):
+                closes += 1
+    if (
+        opens >= _OVERLAY_RECONCILE_MAX_OPENS
+        or closes >= _OVERLAY_RECONCILE_MAX_CLOSES
+        or dedupes >= _OVERLAY_RECONCILE_MAX_DEDUPES
+        or not budget_available()
+    ):
+        _enqueue_scheduler_task(
+            "overlay-control",
+            "overlay-sync-maintenance-continuation",
+            _run_overlay_sync_maintenance,
+            "overlay_sync_continuation",
+            drop_oldest=True,
+        )
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum overlay_manager_reconcile "
+        f"reason=sync opens={opens} closes={closes} dedupes={dedupes} "
+        f"duration_ms={(time.monotonic() - started) * 1000.0:.3f}"
+    )
 
 
 def _run_overlay_sync_maintenance(reason: str = "overlay_sync_state") -> None:
     try:
         _sync_overlay_links()
-        _maybe_announce_local_destination_low_verified_overlay_peers()
+        _enqueue_scheduler_task(
+            "path-management",
+            "overlay-low-health-announce",
+            _maybe_announce_local_destination_low_verified_overlay_peers,
+            drop_oldest=True,
+        )
     except Exception as exc:
         log(
             "[presence_bridge] target=presence-reticulum overlay_sync_maintenance_failed "
@@ -6894,6 +7912,8 @@ def on_overlay_link_closed(link) -> None:
     link_id = get_overlay_link_id(link)
     if link_id is None:
         return
+    if not _link_manager_generation_current("overlay", link_id, link):
+        return
     teardown_reason = getattr(link, "teardown_reason", None)
     reason = _overlay_teardown_reason_name(teardown_reason)
     now = time.time()
@@ -6901,6 +7921,16 @@ def on_overlay_link_closed(link) -> None:
     if state is None:
         return
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    last_replay_at = state.get("last_replay_at")
+    replay_associated = (
+        isinstance(last_replay_at, (int, float))
+        and now - float(last_replay_at) <= _OVERLAY_REPLAY_CLOSE_ASSOCIATION_SECONDS
+    )
+    announce_retry_associated = state.get("announce_retry_created") is True
+    with _state_lock:
+        _overlay_close_diagnostics.append(
+            (now, reason, bool(replay_associated), bool(announce_retry_associated))
+        )
     verbose_presence_log(_overlay_close_debug_line(link_id, state, reason))
     state["established"] = False
     emit_overlay_link_state(
@@ -6925,6 +7955,8 @@ def on_overlay_link_remote_identified(link, identity) -> None:
     link_id = get_overlay_link_id(link)
     if link_id is None:
         return
+    if not _link_manager_generation_current("overlay", link_id, link):
+        return
     state = get_overlay_link_state(link_id)
     if state is None:
         return
@@ -6937,14 +7969,14 @@ def on_overlay_link_remote_identified(link, identity) -> None:
                 "[presence_bridge] target=presence-reticulum overlay_remote_identified_self "
                 f"link={link_id} expected={expected or 'unknown'}"
             )
-            _teardown_overlay_link_id(link_id, "remote_identified_self")
+            _overlay_enqueue_close(link_id, "remote_identified_self")
             return
         if expected and derived_peer_hash != expected:
             log(
                 "[presence_bridge] target=presence-reticulum overlay_remote_identified_mismatch "
                 f"link={link_id} expected={expected} derived={derived_peer_hash}"
             )
-            _teardown_overlay_link_id(link_id, "remote_identified_mismatch")
+            _overlay_enqueue_close(link_id, "remote_identified_mismatch")
             return
     peer_hash = find_peer_hash_for_identity(identity)
     if peer_hash:
@@ -6971,7 +8003,7 @@ def on_overlay_link_remote_identified(link, identity) -> None:
     if ph_reg and _valid_presence_destination_hash_hex(ph_reg):
         _note_overlay_peer_alive(ph_reg, "remote_identified")
         _register_active_overlay_for_peer(ph_reg, link_id)
-        _dedup_overlay_links_for_peer(ph_reg, preferred_link_id=link_id)
+        _overlay_enqueue_dedup(ph_reg, reason="dedup_same_peer")
 
 
 def _audio_overlay_promotion_allowed(peer_key: str) -> bool:
@@ -7110,6 +8142,8 @@ def _handle_overlay_link_packet(message, packet) -> None:
     link_id = get_overlay_link_id(link) if link is not None else None
     if link_id is None:
         return
+    if link is not None and not _link_manager_generation_current("overlay", link_id, link):
+        return
     state = get_overlay_link_state(link_id)
     if state is None:
         return
@@ -7156,6 +8190,10 @@ def _handle_overlay_link_packet(message, packet) -> None:
     _note_presence_pressure("source:overlay")
     state["last_activity_at"] = time.time()
     state["last_rx_at"] = time.time()
+    _ensure_managed_link_fields(state, kind="overlay")
+    state["manager_state"] = _LINK_STATE_ESTABLISHED
+    state["last_failure_reason"] = ""
+    state["backoff_until"] = 0.0
     t = decoded.get("t")
     if isinstance(t, str) and t.startswith("PRESENCE_"):
         if _emit_presence_message(decoded, link_id):
@@ -7164,6 +8202,8 @@ def _handle_overlay_link_packet(message, packet) -> None:
                 previous_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
                 state["peerPresenceHash"] = peer_hash
                 _note_overlay_peer_alive(peer_hash, "rx_presence")
+                if state.get("incoming") is not True:
+                    _note_good_outbound_overlay_rx(peer_hash)
                 _register_active_overlay_for_peer(peer_hash, link_id)
                 emit_reason = (
                     "rx_presence_identified"
@@ -7171,7 +8211,7 @@ def _handle_overlay_link_packet(message, packet) -> None:
                     else "rx_presence"
                 )
                 emit_overlay_link_state(link_id, state, emit_reason)
-                _dedup_overlay_links_for_peer(peer_hash, preferred_link_id=link_id)
+                _overlay_enqueue_dedup(peer_hash, reason="dedup_same_peer")
         return
     _emit_call_bridge_message(
         decoded,
@@ -9266,7 +10306,98 @@ def configure_overlay_link(link, link_id: str) -> None:
     link.set_packet_callback(on_overlay_link_packet)
     link.set_remote_identified_callback(on_overlay_link_remote_identified)
     _configure_overlay_link_resources(link)
-    _overlay_link_ids_by_object[id(link)] = link_id
+    with _state_lock:
+        state = _overlay_links_by_id.get(link_id)
+        if state is not None:
+            _ensure_managed_link_fields(state, kind="overlay")
+            _set_link_manager_generation(link, state)
+        _overlay_link_ids_by_object[id(link)] = link_id
+
+
+def _run_delayed_presence_announce_replay(peer_hash: str, link_id: str, generation: int, reason: str) -> None:
+    peer_key = str(peer_hash or "").strip().lower()
+    link_key = str(link_id or "").strip()
+    skip_reason = ""
+    with _state_lock:
+        state = _overlay_links_by_id.get(link_key)
+        active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) if peer_key else ""
+        if state is None:
+            skip_reason = "missing_link"
+        elif not _managed_link_generation_matches("overlay", link_key, generation):
+            skip_reason = "stale_generation"
+        elif active_link_id != link_key:
+            skip_reason = "not_active_link"
+        elif state.get("established") is not True:
+            skip_reason = "not_established"
+        elif not _overlay_link_is_fanout_usable(state):
+            skip_reason = "not_usable"
+        elif _overlay_peer_is_suppressed(peer_key):
+            skip_reason = "peer_suppressed"
+        elif str(state.get("last_failure_reason") or "").lower() == "destination_closed":
+            skip_reason = "destination_closed"
+        else:
+            state["replay_pending"] = False
+            state["last_replay_reason"] = reason
+    if skip_reason:
+        with _state_lock:
+            state = _overlay_links_by_id.get(link_key)
+            if state is not None:
+                state["replay_pending"] = False
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum presence_announce_replay_skipped "
+            f"peer={peer_key or 'unknown'} link={link_key or 'unknown'} "
+            f"generation={generation} reason={skip_reason}"
+        )
+        return
+    queued = _enqueue_latest_presence_announce_replay(peer_key, reason)
+    if queued:
+        with _state_lock:
+            state = _overlay_links_by_id.get(link_key)
+            if state is not None and int(state.get("generation") or 0) == int(generation):
+                state["last_replay_at"] = time.time()
+                state["last_replay_reason"] = reason
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum presence_announce_replay_delayed "
+        f"peer={peer_key} link={link_key} generation={generation} "
+        f"queued={str(bool(queued)).lower()} reason={reason}"
+    )
+
+
+def _schedule_delayed_presence_announce_replay(peer_hash: str, link_id: str, reason: str) -> None:
+    peer_key = str(peer_hash or "").strip().lower()
+    link_key = str(link_id or "").strip()
+    if not peer_key or not link_key:
+        return
+    with _state_lock:
+        state = _overlay_links_by_id.get(link_key)
+        if state is None:
+            return
+        _ensure_managed_link_fields(state, kind="overlay")
+        generation = int(state.get("generation") or 0)
+        state["replay_pending"] = True
+        state["replay_scheduled_at"] = time.time()
+        state["replay_scheduled_reason"] = reason
+
+    def fire() -> None:
+        _enqueue_scheduler_task(
+            "overlay-control",
+            f"presence-replay-delayed:{peer_key[:8]}",
+            _run_delayed_presence_announce_replay,
+            peer_key,
+            link_key,
+            generation,
+            reason,
+            drop_oldest=False,
+        )
+
+    timer = threading.Timer(_OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS, fire)
+    timer.daemon = True
+    timer.start()
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum presence_announce_replay_scheduled "
+        f"peer={peer_key} link={link_key} generation={generation} "
+        f"delay_ms={int(_OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS * 1000)} reason={reason}"
+    )
 
 
 def on_outgoing_overlay_link_established(link) -> None:
@@ -9276,12 +10407,16 @@ def on_outgoing_overlay_link_established(link) -> None:
     state = get_overlay_link_state(link_id)
     if state is None:
         return
+    if not _link_manager_generation_current("overlay", link_id, link):
+        return
     if not _overlay_link_is_current(link_id, link):
         return
     configure_overlay_link(link, link_id)
     now = time.time()
+    _ensure_managed_link_fields(state, kind="overlay")
     state["established"] = True
     state["established_at"] = now
+    state["manager_state"] = _LINK_STATE_ESTABLISHED
     try:
         if _identity is not None:
             link.identify(_identity)
@@ -9292,9 +10427,8 @@ def on_outgoing_overlay_link_established(link) -> None:
     emit_overlay_link_state(link_id, state, "established")
     ph_out = str(state.get("peerPresenceHash") or "").strip().lower()
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
-        _note_overlay_peer_alive(ph_out, "link_established")
         _register_active_overlay_for_peer(ph_out, link_id)
-        _enqueue_latest_presence_announce_replay(ph_out, "link_established")
+        _schedule_delayed_presence_announce_replay(ph_out, link_id, "link_established")
     if not _overlay_link_is_current(link_id, link):
         return
     _flush_overlay_link_pending(link_id)
@@ -9303,13 +10437,18 @@ def on_outgoing_overlay_link_established(link) -> None:
 def _send_wire_to_overlay_peer(
     peer_hash: str, wire_bytes: bytes, traffic: str, queue_if_pending: bool = True
 ) -> bool:
-    state = _ensure_overlay_link(
-        peer_hash,
-        await_path=False,
-    )
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    with _state_lock:
+        link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        state = _overlay_links_by_id.get(link_id) if link_id else None
+        if state is not None:
+            _ensure_managed_link_fields(state, kind="overlay")
     if state is None:
+        _overlay_enqueue_open(peer_key, f"send:{traffic}", await_path=False)
         log(
-            f"[presence_bridge] target=presence-reticulum overlay_link_missing peer={peer_hash} traffic={traffic}"
+            f"[presence_bridge] target=presence-reticulum overlay_link_missing peer={peer_key} traffic={traffic}"
         )
         return False
     link = state.get("link")
@@ -9317,7 +10456,7 @@ def _send_wire_to_overlay_peer(
         ok = _send_packet_on_link(
             link,
             wire_bytes,
-            f"target=presence-reticulum overlay_link_send peer={peer_hash} traffic={traffic}",
+            f"target=presence-reticulum overlay_link_send peer={peer_key} traffic={traffic}",
         )
         if ok:
             now = time.time()
@@ -9331,7 +10470,7 @@ def _send_wire_to_overlay_peer(
     if queue_if_pending:
         _queue_overlay_packet(state, traffic, wire_bytes)
         emit_overlay_link_state(
-            _active_overlay_link_id_by_peer_hash.get(peer_hash, ""),
+            _active_overlay_link_id_by_peer_hash.get(peer_key, ""),
             state,
             f"queued:{traffic}",
         )
@@ -9349,8 +10488,8 @@ def _send_wire_to_established_overlay_peer(
         link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
         state = _overlay_links_by_id.get(link_id) if link_id else None
         link = state.get("link") if state is not None else None
-        established = state is not None and state.get("established") is True
-    if not link_id or state is None or link is None or not established:
+        usable = state is not None and _overlay_link_is_fanout_usable(state)
+    if not link_id or state is None or link is None or not usable:
         log(
             "[presence_bridge] target=presence-reticulum overlay_link_not_established "
             f"peer={peer_key} traffic={traffic}"
@@ -9418,6 +10557,13 @@ def _mark_presence_peer_send_timeout(peer_hash: str, envelope_id: str) -> None:
     link_id = ""
     with _state_lock:
         link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        state = _overlay_links_by_id.get(link_id) if link_id else None
+        if state is not None:
+            _ensure_managed_link_fields(state, kind="overlay")
+            state["manager_state"] = _LINK_STATE_DEGRADED
+            state["last_failure_reason"] = "presence_peer_send_timeout"
+            state["last_failure_at"] = time.time()
+    _note_overlay_peer_failure(peer_key, "presence_peer_send_timeout")
     log(
         "[presence_bridge] target=presence-reticulum presence_peer_send_timeout "
         f"peer={peer_key} envelope_id={envelope_id or 'n/a'} "
@@ -9551,10 +10697,7 @@ def announce_local_destination(reason: str = "unspecified") -> None:
     if _destination is None:
         return
     with _state_lock:
-        inbound_full = (
-            len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
-            or len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS
-        )
+        inbound_full = len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
     app_data = (
         _PRESENCE_ANNOUNCE_APP_DATA_FULL
         if inbound_full
@@ -9748,17 +10891,53 @@ def get_audio_link_id(link: Any) -> Optional[str]:
 
 
 def _ensure_audio_link_lifecycle_fields(state: Dict[str, Any]) -> Dict[str, Any]:
+    _ensure_managed_link_fields(state, kind="audio", desired_state=_LINK_STATE_CONNECTING)
     if "send_lock" not in state:
         state["send_lock"] = threading.RLock()
-    if "generation" not in state:
-        state["generation"] = 0
     if "closing" not in state:
         state["closing"] = False
     if "consecutive_send_timeouts" not in state:
         state["consecutive_send_timeouts"] = 0
     if "send_timeout_backoff_until" not in state:
         state["send_timeout_backoff_until"] = 0.0
+    if "media_send_seq" not in state:
+        state["media_send_seq"] = 0
+    if "media_rx_seq" not in state:
+        state["media_rx_seq"] = 0
+    if "last_media_send_trace_at" not in state:
+        state["last_media_send_trace_at"] = 0.0
+    if "last_media_rx_trace_at" not in state:
+        state["last_media_rx_trace_at"] = 0.0
     return state
+
+
+def _reticulum_link_status_name(link: Any) -> str:
+    if link is None:
+        return "none"
+    status = getattr(link, "status", None)
+    try:
+        status_int = int(status)
+    except Exception:
+        return str(status or "unknown")
+    labels = {
+        getattr(RNS.Link, "PENDING", object()): "PENDING",
+        getattr(RNS.Link, "HANDSHAKE", object()): "HANDSHAKE",
+        getattr(RNS.Link, "ACTIVE", object()): "ACTIVE",
+        getattr(RNS.Link, "STALE", object()): "STALE",
+        getattr(RNS.Link, "CLOSED", object()): "CLOSED",
+    }
+    return str(labels.get(status_int) or status_int)
+
+
+def _audio_link_trace_should_log(state: Dict[str, Any], key: str, seq: int) -> bool:
+    if seq <= 3 or seq % _AUDIO_LINK_TRACE_EVERY_FRAMES == 0:
+        return True
+    now = time.time()
+    last = state.get(key)
+    if not isinstance(last, (int, float)) or now - float(last) >= 10.0:
+        state[key] = now
+        return True
+    return False
 
 
 def _audio_link_activity_ts(state: Dict[str, Any]) -> float:
@@ -9811,6 +10990,11 @@ def _teardown_audio_link_id(link_id: str, reason: str) -> None:
             link.set_link_closed_callback(None)
         except Exception:
             pass
+        if state is not None:
+            with _state_lock:
+                _ensure_audio_link_lifecycle_fields(state)
+                state["manager_state"] = _LINK_STATE_CLOSING
+                state["last_failure_reason"] = reason
         completed, _result, error = _run_with_timeout(
             f"audio-link-teardown-{str(link_id or '')[:8]}",
             _AUDIO_LINK_TEARDOWN_TIMEOUT_SECONDS,
@@ -9830,6 +11014,43 @@ def _teardown_audio_link_id(link_id: str, reason: str) -> None:
     emit_audio_link_closed(link_id, reason)
 
 
+def _enqueue_audio_link_teardown(link_id: str, reason: str) -> bool:
+    link_key = str(link_id or "").strip()
+    if not link_key:
+        return False
+    with _state_lock:
+        state = _audio_links_by_id.get(link_key)
+        if state is None:
+            return False
+        _ensure_audio_link_lifecycle_fields(state)
+        if state.get("closing") is True:
+            return True
+        state["closing"] = True
+        state["manager_state"] = _LINK_STATE_CLOSING
+        state["last_failure_reason"] = reason
+    queued = bool(
+        _enqueue_scheduler_task(
+            "audio-control",
+            f"audio-link-close:{reason}:{link_key[:8]}",
+            _teardown_audio_link_id,
+            link_key,
+            reason,
+            drop_oldest=False,
+        )
+    )
+    if not queued:
+        with _state_lock:
+            state = _audio_links_by_id.get(link_key)
+            if state is not None:
+                state["closing"] = False
+                state["manager_state"] = (
+                    _LINK_STATE_ESTABLISHED
+                    if state.get("established") is True
+                    else _LINK_STATE_CONNECTING
+                )
+    return queued
+
+
 def _register_active_audio_for_peer(peer_key: str, link_id: str) -> Optional[Dict[str, Any]]:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key or not _valid_presence_destination_hash_hex(peer_key):
@@ -9845,6 +11066,9 @@ def _register_active_audio_for_peer(peer_key: str, link_id: str) -> Optional[Dic
         state["peerPresenceHash"] = peer_key
         if not state.get("peerDestinationHash"):
             state["peerDestinationHash"] = peer_key
+        if state.get("established") is not True or state.get("closing") is True:
+            _outgoing_audio_link_id_by_peer_hash[peer_key] = link_id
+            return state
         existing_id = _active_audio_link_id_by_peer_hash.get(peer_key)
         if existing_id == link_id:
             _outgoing_audio_link_id_by_peer_hash[peer_key] = link_id
@@ -9867,7 +11091,7 @@ def _register_active_audio_for_peer(peer_key: str, link_id: str) -> Optional[Dic
             "[presence_bridge] target=reticulum-audio-link audio_link_duplicate_teardown "
             f"peer={peer_key} keep={keep_id} teardown={lose_id}"
         )
-        _teardown_audio_link_id(lose_id, "dedup_same_peer")
+        _enqueue_audio_link_teardown(lose_id, "dedup_same_peer")
     return keep_state
 
 
@@ -9877,10 +11101,22 @@ def _canonical_audio_link_id_for_peer(peer_key: str) -> str:
         return ""
     with _state_lock:
         active = _active_audio_link_id_by_peer_hash.get(peer_key) or ""
-        if active and active in _audio_links_by_id:
+        active_state = _audio_links_by_id.get(active) if active else None
+        if (
+            active_state is not None
+            and active_state.get("closing") is not True
+            and active_state.get("established") is True
+        ):
             return active
+        if active:
+            _active_audio_link_id_by_peer_hash.pop(peer_key, None)
         outgoing = _outgoing_audio_link_id_by_peer_hash.get(peer_key) or ""
-        if outgoing and outgoing in _audio_links_by_id:
+        outgoing_state = _audio_links_by_id.get(outgoing) if outgoing else None
+        if (
+            outgoing_state is not None
+            and outgoing_state.get("closing") is not True
+            and outgoing_state.get("established") is True
+        ):
             _active_audio_link_id_by_peer_hash[peer_key] = outgoing
             return outgoing
     return ""
@@ -9915,8 +11151,9 @@ def _best_established_audio_link_id_for_peer(peer_key: str) -> str:
                 best_link_id = candidate_link_id
                 best_state = state
         if best_link_id:
-            _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
             _outgoing_audio_link_id_by_peer_hash[peer_key] = best_link_id
+            if best_state is not None and best_state.get("established") is True:
+                _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
     return best_link_id
 
 
@@ -9925,6 +11162,7 @@ def _snapshot_audio_link_for_send(
     peer_key_hint: str = "",
 ) -> Optional[Dict[str, Any]]:
     with _state_lock:
+        requested_link_id = str(link_id or "")
         state = _audio_links_by_id.get(link_id)
         peer_key_hint = str(peer_key_hint or "").strip().lower()
         if state is None:
@@ -9934,20 +11172,50 @@ def _snapshot_audio_link_for_send(
             if not canonical_id:
                 canonical_id = _outgoing_audio_link_id_by_peer_hash.get(peer_key_hint) if peer_key_hint else ""
             if not canonical_id:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or 'none'} peer_hint={_short_route(peer_key_hint)} "
+                    "reason=no_canonical_link"
+                )
                 return None
             state = _audio_links_by_id.get(canonical_id)
             if state is None:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or 'none'} peer_hint={_short_route(peer_key_hint)} "
+                    f"canonical={canonical_id} reason=canonical_missing"
+                )
                 return None
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                f"requested={requested_link_id or 'none'} replacement={canonical_id} "
+                f"peer_hint={_short_route(peer_key_hint)} reason=requested_missing"
+            )
             link_id = canonical_id
         _ensure_audio_link_lifecycle_fields(state)
         if state.get("closing") is True:
             fallback_peer_key = str(state.get("peerPresenceHash") or peer_key_hint).strip().lower()
             fallback_id = _best_established_audio_link_id_for_peer(fallback_peer_key)
             if not fallback_id or fallback_id == link_id:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or link_id or 'none'} peer_hint={_short_route(fallback_peer_key)} "
+                    f"reason=closing_no_fallback closing={link_id}"
+                )
                 return None
             fallback_state = _audio_links_by_id.get(fallback_id)
             if fallback_state is None:
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                    f"requested={requested_link_id or link_id or 'none'} peer_hint={_short_route(fallback_peer_key)} "
+                    f"fallback={fallback_id} reason=fallback_missing"
+                )
                 return None
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                f"requested={requested_link_id or link_id or 'none'} replacement={fallback_id} "
+                f"peer_hint={_short_route(fallback_peer_key)} reason=requested_closing"
+            )
             state = fallback_state
             link_id = fallback_id
             _ensure_audio_link_lifecycle_fields(state)
@@ -9960,6 +11228,11 @@ def _snapshot_audio_link_for_send(
                 and canonical_state.get("closing") is not True
                 and canonical_state.get("established") is True
             ):
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                    f"requested={requested_link_id or link_id or 'none'} replacement={canonical_id} "
+                    f"peer={_short_route(peer_key)} reason=active_canonical"
+                )
                 state = canonical_state
                 link_id = canonical_id
                 _ensure_audio_link_lifecycle_fields(state)
@@ -9968,10 +11241,23 @@ def _snapshot_audio_link_for_send(
             if fallback_id and fallback_id != link_id:
                 fallback_state = _audio_links_by_id.get(fallback_id)
                 if fallback_state is not None:
+                    log(
+                        "[presence_bridge] target=reticulum-audio-link audio_send_route_substituted "
+                        f"requested={requested_link_id or link_id or 'none'} replacement={fallback_id} "
+                        f"peer={_short_route(peer_key)} reason=requested_unestablished"
+                    )
                     state = fallback_state
                     link_id = fallback_id
                     _ensure_audio_link_lifecycle_fields(state)
         if state.get("established") is not True:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_not_ready "
+                f"requested={requested_link_id or link_id or 'none'} link={link_id} "
+                f"peer={_short_route(state.get('peerPresenceHash'))} "
+                f"manager_state={state.get('manager_state') or 'unknown'} "
+                f"established={str(state.get('established') is True).lower()} "
+                f"closing={str(state.get('closing') is True).lower()}"
+            )
             return {
                 "ready": False,
                 "linkId": link_id,
@@ -9980,6 +11266,11 @@ def _snapshot_audio_link_for_send(
             }
         link = state.get("link")
         if link is None:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_send_route_lookup_failed "
+                f"requested={requested_link_id or link_id or 'none'} link={link_id} "
+                f"peer={_short_route(state.get('peerPresenceHash'))} reason=missing_link_object"
+            )
             return None
         return {
             "ready": True,
@@ -10030,7 +11321,7 @@ def _mark_audio_link_send_timeout(link_id: str, reason: str) -> None:
         f"consecutive={timeout_count} recent_rx={str(recent_rx).lower()}"
     )
     if timeout_count >= _AUDIO_LINK_SEND_TIMEOUTS_BEFORE_TEARDOWN and not recent_rx:
-        _teardown_audio_link_id(link_key, f"{reason}_timeout")
+        _enqueue_audio_link_teardown(link_key, f"{reason}_timeout")
 
 
 def _run_with_timeout(name: str, timeout_seconds: float, fn: Callable[[], Any]) -> Tuple[bool, Any, Optional[str]]:
@@ -10109,14 +11400,42 @@ def _send_packet_on_audio_link_bounded(
     reason: str,
 ) -> Tuple[Optional[bool], float]:
     now = time.time()
+    seq = 0
+    peer_key = ""
+    destination_key = ""
+    incoming = False
+    generation = 0
+    should_trace = False
     with _state_lock:
         state = _audio_links_by_id.get(str(link_id or ""))
         if state is not None:
             _ensure_audio_link_lifecycle_fields(state)
             backoff_until = state.get("send_timeout_backoff_until")
             if isinstance(backoff_until, (int, float)) and now < float(backoff_until):
+                log(
+                    "[presence_bridge] target=reticulum-audio-link audio_media_send_blocked "
+                    f"link={link_id} reason=send_backoff status={_reticulum_link_status_name(link)} "
+                    f"backoff_ms={int(max(0.0, float(backoff_until) - now) * 1000)}"
+                )
                 return None, 0.0
+            state["media_send_seq"] = int(state.get("media_send_seq") or 0) + 1
+            seq = int(state.get("media_send_seq") or 0)
+            peer_key = str(state.get("peerPresenceHash") or "")
+            destination_key = str(state.get("peerDestinationHash") or "")
+            incoming = state.get("incoming") is True
+            generation = int(state.get("generation") or 0)
+            should_trace = _audio_link_trace_should_log(state, "last_media_send_trace_at", seq)
     packet = RNS.Packet(link, wire_bytes, create_receipt=False)
+    packet_hash = getattr(packet, "packet_hash", None)
+    packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+    if should_trace:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_attempt "
+            f"link={link_id} seq={seq} bytes={len(wire_bytes)} reason={reason} "
+            f"status={_reticulum_link_status_name(link)} incoming={str(incoming).lower()} "
+            f"generation={generation} peer={_short_route(peer_key)} dest={_short_route(destination_key)} "
+            f"packet={_short_route(packet_hash_hex)}"
+        )
     send_start = time.monotonic()
     completed, result, error = _run_with_timeout(
         f"audio-packet-send-{str(link_id or '')[:8]}",
@@ -10125,10 +11444,28 @@ def _send_packet_on_audio_link_bounded(
     )
     send_duration_ms = _note_rns_send_duration(send_start)
     if not completed:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_timeout "
+            f"link={link_id} seq={seq} duration_ms={send_duration_ms:.3f} "
+            f"status={_reticulum_link_status_name(link)} packet={_short_route(packet_hash_hex)}"
+        )
         _mark_audio_link_send_timeout(link_id, reason)
         return None, send_duration_ms
     if error:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_exception "
+            f"link={link_id} seq={seq} duration_ms={send_duration_ms:.3f} "
+            f"status={_reticulum_link_status_name(link)} packet={_short_route(packet_hash_hex)} "
+            f"err={error}"
+        )
         raise RuntimeError(error)
+    if should_trace or result is False:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_result "
+            f"link={link_id} seq={seq} ok={str(result is not False).lower()} "
+            f"duration_ms={send_duration_ms:.3f} status={_reticulum_link_status_name(link)} "
+            f"packet={_short_route(packet_hash_hex)}"
+        )
     return bool(result is not False), send_duration_ms
 
 
@@ -10138,6 +11475,7 @@ def remove_audio_link(link_id: str) -> Optional[Dict[str, Any]]:
         if state is not None:
             _ensure_audio_link_lifecycle_fields(state)
             state["closing"] = True
+            state["manager_state"] = _LINK_STATE_DEAD
             state["generation"] = int(state.get("generation") or 0) + 1
             link = state.get("link")
             if link is not None:
@@ -10152,6 +11490,21 @@ def remove_audio_link(link_id: str) -> Optional[Dict[str, Any]]:
                     _active_audio_link_id_by_peer_hash.pop(peer_hash, None)
     if state is None:
         return None
+    link = state.get("link")
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_removed "
+        f"link={link_id} peer={_short_route(state.get('peerPresenceHash'))} "
+        f"dest={_short_route(state.get('peerDestinationHash'))} "
+        f"incoming={str(state.get('incoming') is True).lower()} "
+        f"established={str(state.get('established') is True).lower()} "
+        f"closing={str(state.get('closing') is True).lower()} "
+        f"manager_state={state.get('manager_state') or 'unknown'} "
+        f"generation={int(state.get('generation') or 0)} "
+        f"media_send_seq={int(state.get('media_send_seq') or 0)} "
+        f"media_rx_seq={int(state.get('media_rx_seq') or 0)} "
+        f"rns_status={_reticulum_link_status_name(link)} "
+        f"teardown_reason={getattr(link, 'teardown_reason', None)}"
+    )
     timer = state.pop("establish_timeout_timer", None)
     if timer is not None:
         try:
@@ -10173,6 +11526,7 @@ def _get_audio_link_desired_state(peer_key: str) -> Dict[str, Any]:
             "retry_timer": None,
             "last_open_attempt_at": None,
             "last_failure_reason": "",
+            "last_recovery_rearm_at": 0.0,
             "max_attempts_emitted": False,
         }
         _audio_link_desired_by_peer_hash[peer_key] = state
@@ -10217,6 +11571,67 @@ def _audio_link_attempts_exhausted(desired: Optional[Dict[str, Any]]) -> bool:
     if desired is None:
         return False
     return int(desired.get("attempts") or 0) >= _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS
+
+
+def _maybe_rearm_audio_link_attempts_for_active_call(
+    peer_key: str,
+    desired: Dict[str, Any],
+    reason: str,
+) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key or desired.get("desired") is not True:
+        return False
+    now = time.time()
+    with _state_lock:
+        attempts = int(desired.get("attempts") or 0)
+        if attempts < _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS:
+            return False
+        last_open_attempt_at = desired.get("last_open_attempt_at")
+        if isinstance(last_open_attempt_at, (int, float)) and (
+            now - float(last_open_attempt_at)
+        ) < _AUDIO_LINK_ACTIVE_CALL_REARM_SECONDS:
+            return False
+        desired["attempts"] = 0
+        desired["retry_delay"] = _AUDIO_LINK_RETRY_MIN_SECONDS
+        desired["last_failure_reason"] = reason
+        desired["max_attempts_emitted"] = False
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_active_call_rearmed "
+        f"peer={peer_key} reason={reason} previous_attempts={attempts}"
+    )
+    return True
+
+
+def _rearm_audio_link_recovery(peer_key: str, reason: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    if _has_viable_audio_link_for_peer(peer_key):
+        return False
+    with _state_lock:
+        desired = _audio_link_desired_by_peer_hash.get(peer_key)
+        if desired is None or desired.get("desired") is not True:
+            return False
+        now = time.time()
+        last_rearm_at = desired.get("last_recovery_rearm_at")
+        if isinstance(last_rearm_at, (int, float)) and (
+            now - float(last_rearm_at)
+        ) < _AUDIO_LINK_RECOVERY_REARM_DEBOUNCE_SECONDS:
+            return False
+        attempts = int(desired.get("attempts") or 0)
+        was_exhausted = attempts >= _AUDIO_LINK_MAX_ESTABLISH_ATTEMPTS
+        desired["attempts"] = 0
+        desired["retry_delay"] = _AUDIO_LINK_RETRY_MIN_SECONDS
+        desired["last_failure_reason"] = reason
+        desired["max_attempts_emitted"] = False
+        desired["last_recovery_rearm_at"] = now
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_recovery_rearmed "
+        f"peer={peer_key} reason={reason} previous_attempts={attempts} "
+        f"was_exhausted={str(was_exhausted).lower()}"
+    )
+    _schedule_audio_link_retry(peer_key, reason, immediate=True)
+    return True
 
 
 def _emit_audio_link_attempts_exhausted(peer_key: str, reason: str, desired: Dict[str, Any]) -> None:
@@ -10307,8 +11722,9 @@ def _best_viable_audio_link_id_for_peer(peer_key: str) -> str:
                 best_link_id = candidate_link_id
                 best_state = state
         if best_link_id:
-            _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
             _outgoing_audio_link_id_by_peer_hash[peer_key] = best_link_id
+            if best_state is not None and best_state.get("established") is True:
+                _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
     return best_link_id
 
 
@@ -10348,7 +11764,7 @@ def _schedule_audio_link_retry(peer_key: str, reason: str, immediate: bool = Fal
         if _has_viable_audio_link_for_peer(peer_key):
             return
         _enqueue_scheduler_task(
-            "link-management",
+            "audio-control",
             f"audio-link-retry:{reason}",
             _open_group_audio_link_for_peer,
             peer_key,
@@ -10373,7 +11789,7 @@ def _schedule_audio_link_establish_timeout(link_id: str) -> None:
 
     def fire() -> None:
         _enqueue_scheduler_task(
-            "link-management",
+            "audio-control",
             "audio-link-establish-timeout",
             _handle_audio_link_establish_timeout,
             link_id,
@@ -10403,6 +11819,7 @@ def _open_group_audio_link_for_peer(
     peer_key: str,
     *,
     retry_reason: str = "open",
+    active_call: bool = False,
 ) -> Tuple[bool, Dict[str, Any], str]:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
@@ -10432,7 +11849,14 @@ def _open_group_audio_link_for_peer(
             "linkId": viable_link_id,
             "established": existing.get("established") is True if existing is not None else False,
         }, ""
-    if _audio_link_attempts_exhausted(desired):
+    if _audio_link_attempts_exhausted(desired) and not (
+        active_call
+        and _maybe_rearm_audio_link_attempts_for_active_call(
+            peer_key,
+            desired,
+            f"active_call:{retry_reason}",
+        )
+    ):
         _emit_audio_link_attempts_exhausted(peer_key, retry_reason, desired)
         return False, {
             "code": "max_establish_attempts",
@@ -10490,13 +11914,18 @@ def _open_group_audio_link_for_peer(
             "created_at": time.time(),
             "open_reason": retry_reason,
             "open_attempt": desired["attempts"],
+            "manager_kind": "audio",
+            "manager_state": _LINK_STATE_CONNECTING,
+            "generation": 0,
+            "last_failure_reason": "",
+            "backoff_until": 0.0,
         }
         _ensure_audio_link_lifecycle_fields(audio_state)
         with _state_lock:
             _audio_links_by_id[link_id] = audio_state
             _audio_link_ids_by_object[id(link)] = link_id
             _outgoing_audio_link_id_by_peer_hash[peer_key] = link_id
-            _active_audio_link_id_by_peer_hash[peer_key] = link_id
+            _set_link_manager_generation(link, audio_state)
         _schedule_audio_link_establish_timeout(link_id)
         log(
             "[presence_bridge] target=reticulum-audio-link audio_link_opening "
@@ -10530,6 +11959,8 @@ def emit_audio_link_established(link_id: str) -> None:
             "peerPresenceHash": state.get("peerPresenceHash") or "",
             "peerDestinationHash": state.get("peerDestinationHash") or "",
             "incoming": state.get("incoming") is True,
+            "managerState": str(state.get("manager_state") or ""),
+            "generation": int(state.get("generation") or 0),
         },
     )
 
@@ -10537,7 +11968,19 @@ def emit_audio_link_established(link_id: str) -> None:
 def emit_audio_link_closed(link_id: str, reason: str = "") -> None:
     state = remove_audio_link(link_id)
     if state is None:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_closed_unknown "
+            f"link={link_id} reason={reason}"
+        )
         return
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_closed_emit "
+        f"link={link_id} reason={reason} peer={_short_route(state.get('peerPresenceHash'))} "
+        f"dest={_short_route(state.get('peerDestinationHash'))} "
+        f"incoming={str(state.get('incoming') is True).lower()} "
+        f"media_send_seq={int(state.get('media_send_seq') or 0)} "
+        f"media_rx_seq={int(state.get('media_rx_seq') or 0)}"
+    )
     emit_event(
         "group_audio_link_closed",
         {
@@ -10546,6 +11989,8 @@ def emit_audio_link_closed(link_id: str, reason: str = "") -> None:
             "peerDestinationHash": state.get("peerDestinationHash") or "",
             "incoming": state.get("incoming") is True,
             "reason": reason,
+            "managerState": str(state.get("manager_state") or ""),
+            "generation": int(state.get("generation") or 0),
         },
     )
 
@@ -10553,27 +11998,48 @@ def emit_audio_link_closed(link_id: str, reason: str = "") -> None:
 def on_audio_link_closed(link) -> None:
     link_id = get_audio_link_id(link)
     if link_id is None:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_closed_unmapped "
+            f"rns_status={_reticulum_link_status_name(link)} "
+            f"teardown_reason={getattr(link, 'teardown_reason', None)}"
+        )
+        return
+    if not _link_manager_generation_current("audio", link_id, link):
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_closed_stale_generation "
+            f"link={link_id} rns_status={_reticulum_link_status_name(link)} "
+            f"teardown_reason={getattr(link, 'teardown_reason', None)}"
+        )
         return
     state = get_audio_link_state(link_id)
     peer_key = ""
     incoming = False
+    was_established = False
     if state is not None:
         peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
         incoming = state.get("incoming") is True
+        was_established = state.get("established") is True
     teardown_reason = getattr(link, "teardown_reason", None)
     reason = str(teardown_reason) if teardown_reason is not None else "closed"
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_closed_callback "
+        f"link={link_id} reason={reason} peer={_short_route(peer_key)} "
+        f"incoming={str(incoming).lower()} rns_status={_reticulum_link_status_name(link)}"
+    )
     emit_audio_link_closed(link_id, reason)
-    if (
-        not incoming
-        and reason not in ("local_close", "peer_state_reset")
-        and not _has_viable_audio_link_for_peer(peer_key)
-    ):
-        _schedule_audio_link_retry(peer_key, f"closed:{reason}")
+    if reason not in ("local_close", "peer_state_reset") and not _has_viable_audio_link_for_peer(peer_key):
+        recovery_reason = f"closed:{reason}"
+        if was_established:
+            _rearm_audio_link_recovery(peer_key, recovery_reason)
+        elif not incoming:
+            _schedule_audio_link_retry(peer_key, recovery_reason)
 
 
 def on_audio_link_remote_identified(link, identity) -> None:
     link_id = get_audio_link_id(link)
     if link_id is None:
+        return
+    if not _link_manager_generation_current("audio", link_id, link):
         return
     state = get_audio_link_state(link_id)
     if state is None:
@@ -10593,12 +12059,37 @@ def _handle_audio_link_packet(message, packet) -> None:
     link = getattr(packet, "link", None)
     link_id = get_audio_link_id(link) if link is not None else None
     if link_id is None:
+        packet_hash = getattr(packet, "packet_hash", None)
+        packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_rx_unmapped "
+            f"status={_reticulum_link_status_name(link)} packet={_short_route(packet_hash_hex)} "
+            f"bytes={len(message) if isinstance(message, (bytes, bytearray)) else 0}"
+        )
+        return
+    if link is not None and not _link_manager_generation_current("audio", link_id, link):
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_rx_stale_generation "
+            f"link={link_id} status={_reticulum_link_status_name(link)}"
+        )
         return
     state = get_audio_link_state(link_id)
     if state is None:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_rx_unknown_state "
+            f"link={link_id} status={_reticulum_link_status_name(link)}"
+        )
         return
     probe = _audio_link_receive_probe_by_packet_id.pop(id(packet), None)
     if isinstance(probe, dict):
+        _note_audio_stage_counter(
+            "callback_start",
+            link_id=link_id,
+            destination_hash=str(state.get("peerDestinationHash") or ""),
+            packet_hash=str(probe.get("packetHash") or ""),
+            byte_count=len(message) if isinstance(message, (bytes, bytearray)) else 0,
+            wall_ms=received_at_wall_ms,
+        )
         stats = _get_audio_route_stats_for_link_id(
             link_id,
             incoming=state.get("incoming") is True,
@@ -10606,6 +12097,7 @@ def _handle_audio_link_packet(message, packet) -> None:
         if stats is not None:
             dispatch_mono = float(probe.get("callbackDispatchMonotonic") or 0.0)
             enter_mono = float(probe.get("receiveEnterMonotonic") or 0.0)
+            probe_packet_hash = str(probe.get("packetHash") or "")
             if dispatch_mono > 0:
                 dispatch_to_start_ms = (callback_started_monotonic - dispatch_mono) * 1000.0
                 if dispatch_to_start_ms >= _AUDIO_TIMING_DELAY_LOG_THRESHOLD_MS:
@@ -10614,7 +12106,8 @@ def _handle_audio_link_packet(message, packet) -> None:
                         link_id,
                         f"link={_short_route(link_id)} delay_ms={dispatch_to_start_ms:.3f} "
                         f"peer={_short_route(state.get('peerPresenceHash'))} "
-                        f"dest={_short_route(state.get('peerDestinationHash'))}",
+                        f"dest={_short_route(state.get('peerDestinationHash'))} "
+                        f"packet={_short_route(probe_packet_hash)}",
                     )
                 _note_audio_route_bucketed_duration(
                     stats,
@@ -10630,7 +12123,8 @@ def _handle_audio_link_packet(message, packet) -> None:
                         link_id,
                         f"link={_short_route(link_id)} delay_ms={receive_to_start_ms:.3f} "
                         f"peer={_short_route(state.get('peerPresenceHash'))} "
-                        f"dest={_short_route(state.get('peerDestinationHash'))}",
+                        f"dest={_short_route(state.get('peerDestinationHash'))} "
+                        f"packet={_short_route(probe_packet_hash)}",
                     )
                 _note_audio_route_bucketed_duration(
                     stats,
@@ -10638,9 +12132,47 @@ def _handle_audio_link_packet(message, packet) -> None:
                     max_key="linkReceiveToCallbackStartMsMax",
                 )
             _mark_audio_queue_state_dirty()
+    else:
+        packet_hash = getattr(packet, "packet_hash", None)
+        packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+        _note_audio_stage_counter(
+            "callback_start",
+            link_id=link_id,
+            destination_hash=str(state.get("peerDestinationHash") or ""),
+            packet_hash=packet_hash_hex,
+            byte_count=len(message) if isinstance(message, (bytes, bytearray)) else 0,
+            wall_ms=received_at_wall_ms,
+        )
     decoded_audio = _decode_group_audio_wire(message)
     if decoded_audio is not None:
         room_id, sender_call_hash, raw_audio = decoded_audio
+        with _state_lock:
+            state_for_trace = _audio_links_by_id.get(link_id)
+            if state_for_trace is not None:
+                _ensure_audio_link_lifecycle_fields(state_for_trace)
+                state_for_trace["media_rx_seq"] = int(state_for_trace.get("media_rx_seq") or 0) + 1
+                rx_seq = int(state_for_trace.get("media_rx_seq") or 0)
+                rx_should_trace = _audio_link_trace_should_log(
+                    state_for_trace,
+                    "last_media_rx_trace_at",
+                    rx_seq,
+                )
+            else:
+                rx_seq = 0
+                rx_should_trace = True
+        if rx_should_trace:
+            packet_hash = getattr(packet, "packet_hash", None)
+            packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_media_rx_callback "
+                f"link={link_id} seq={rx_seq} room={room_id or 'n/a'} "
+                f"bytes={len(raw_audio)} status={_reticulum_link_status_name(link)} "
+                f"incoming={str(state.get('incoming') is True).lower()} "
+                f"generation={int(state.get('generation') or 0)} "
+                f"peer={_short_route(state.get('peerPresenceHash'))} "
+                f"dest={_short_route(sender_call_hash or state.get('peerDestinationHash'))} "
+                f"packet={_short_route(packet_hash_hex)}"
+            )
         if sender_call_hash:
             peer_presence_hash = _resolve_sender_peer_destination_hash(sender_call_hash)
             with _state_lock:
@@ -10743,6 +12275,7 @@ def configure_audio_link(link, link_id: str) -> None:
         state = _audio_links_by_id.get(link_id)
         if state is not None:
             _ensure_audio_link_lifecycle_fields(state)
+            _set_link_manager_generation(link, state)
         _audio_link_ids_by_object[id(link)] = link_id
 
 
@@ -10753,11 +12286,14 @@ def on_outgoing_audio_link_established(link) -> None:
     state = get_audio_link_state(link_id)
     if state is None:
         return
+    if not _link_manager_generation_current("audio", link_id, link):
+        return
     configure_audio_link(link, link_id)
     with _state_lock:
         _ensure_audio_link_lifecycle_fields(state)
         state["established"] = True
         state["established_at"] = time.time()
+        state["manager_state"] = _LINK_STATE_ESTABLISHED
         timer = state.pop("establish_timeout_timer", None)
     if timer is not None:
         try:
@@ -10800,30 +12336,24 @@ def _cancel_inbound_classify_timer(link_key: int) -> None:
 def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "incoming") -> str:
     peer_key = str(peer_hash or "").strip().lower()
     _prune_overlay_link_pressure("link_pressure_inbound", reserve_slots=1)
-    pressure_reject = False
-    pressure_links = 0
     with _state_lock:
-        if len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS:
-            pressure_reject = True
-            pressure_links = len(_overlay_links_by_id)
-    if pressure_reject:
+        pressure_links = len(_overlay_links_by_id)
+    if pressure_links >= _OVERLAY_MAX_TOTAL_LINKS:
         verbose_presence_log(
-            "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
-            f"peer={peer_key or 'unknown'} reason=link_pressure "
+            "[presence_bridge] target=presence-reticulum overlay_inbound_pressure_cleanup "
+            f"peer={peer_key or 'unknown'} reason={reason} "
             f"links={pressure_links} max={_OVERLAY_MAX_TOTAL_LINKS}"
         )
-        _teardown_reticulum_link_bounded(
-            link,
-            f"target=presence-reticulum overlay_inbound_reject peer={peer_key or 'unknown'} reason=link_pressure",
-        )
-        return ""
     if peer_key:
         if not _admit_overlay_peer_if_allowed(peer_key, f"inbound:{reason}", incoming=True):
             verbose_presence_log(
                 "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
                 f"peer={peer_key} reason={reason}"
             )
-            _teardown_reticulum_link_bounded(
+            _enqueue_scheduler_task(
+                _overlay_io_lane_for_peer(peer_key),
+                f"overlay-inbound-reject:admission:{peer_key[:8]}",
+                _teardown_reticulum_link_bounded,
                 link,
                 f"target=presence-reticulum overlay_inbound_reject peer={peer_key} reason={reason}",
             )
@@ -10833,7 +12363,10 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
             "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
             f"peer=unknown reason={reason} active={len(_inbound_overlay_neighbors)}"
         )
-        _teardown_reticulum_link_bounded(
+        _enqueue_scheduler_task(
+            _overlay_io_lane_for_peer("unknown"),
+            "overlay-inbound-reject:unknown",
+            _teardown_reticulum_link_bounded,
             link,
             f"target=presence-reticulum overlay_inbound_reject peer=unknown reason={reason}",
         )
@@ -10850,6 +12383,13 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
         "pending_packets": deque(maxlen=_OVERLAY_PENDING_PACKET_LIMIT),
         "last_activity_at": now,
         "last_rx_at": None,
+        "open_reason": f"inbound:{reason}",
+        "announce_retry_created": False,
+        "manager_kind": "overlay",
+        "manager_state": _LINK_STATE_ESTABLISHED,
+        "generation": 0,
+        "last_failure_reason": "",
+        "backoff_until": 0.0,
     }
     with _state_lock:
         _overlay_links_by_id[link_id] = state
@@ -10875,12 +12415,20 @@ def _schedule_inbound_classify_fallback(link) -> None:
             or get_qchat_file_link_id(link) is not None
         ):
             return
+        peer_hash = str(_incoming_unified_peer_hash_by_object.get(link_key) or "").strip().lower()
+        if not _valid_presence_destination_hash_hex(peer_hash):
+            peer_hash = ""
+        reason = "classify_timeout_identity" if peer_hash else "classify_timeout"
         log(
             "[presence_bridge] WARNING inbound_link_classify_timeout defaulting_to_overlay "
-            f"link_obj={link_key}"
+            f"link_obj={link_key} peer={peer_hash or 'unknown'} reason={reason}"
         )
         try:
-            _register_incoming_overlay_link(link)
+            _register_incoming_overlay_link(
+                link,
+                peer_hash,
+                reason,
+            )
         except Exception as exc:
             log(f"[presence_bridge] inbound_link_classify_timeout err={exc}")
 
@@ -11085,13 +12633,14 @@ def on_hub_packet_received(data, packet) -> None:
 
 def ensure_started(config_dir: str):
     global _reticulum, _identity, _destination
-    global _announce_handler
+    global _announce_handler, _reticulum_config_dir
 
     with _state_lock:
         if _destination is not None:
             return _destination
 
         os.makedirs(config_dir, exist_ok=True)
+        _reticulum_config_dir = config_dir
         _reticulum = RNS.Reticulum(
             configdir=config_dir,
             logdest=RNS.LOG_FILE,
@@ -11145,6 +12694,7 @@ def handle_start(req_id: str, payload: Dict[str, Any]) -> None:
             payload={"destinationHash": presence_hex},
         )
         log(f"[presence_bridge] build={PRESENCE_BRIDGE_BUILD}")
+        _seed_overlay_good_outbound_cache_candidates()
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
 
@@ -11304,7 +12854,7 @@ def handle_overlay_sync_state(req_id: str, payload: Dict[str, Any]) -> None:
     active = active_raw if isinstance(active_raw, list) else []
     _set_verified_overlay_peers(verified, [str(h) for h in active])
     queued = _enqueue_scheduler_task(
-        "link-management",
+        "overlay-control",
         "overlay-sync-maintenance",
         _run_overlay_sync_maintenance,
         "overlay_sync_state",
@@ -11328,6 +12878,7 @@ def handle_overlay_note_candidate_failure(req_id: str, payload: Dict[str, Any]) 
 
 
 def handle_stop(req_id: str) -> None:
+    _flush_overlay_good_outbound_cache(force=True)
     _rns_announce_on_auth_session_end()
     emit_resp(req_id, True)
 
@@ -11371,7 +12922,7 @@ def _prepare_group_signal_peer(peer_hash: str) -> Optional[Dict[str, Any]]:
         _nudge_overlay_path_for_peer(peer_key)
         ensure_known_peer_from_recall(peer_key, "ts_seed")
     if not _overlay_peer_is_admitted(peer_key):
-        _ensure_overlay_link(peer_key)
+        _overlay_enqueue_open(peer_key, "group_signal_prepare", await_path=True)
     if peer_key not in _known_peers:
         return {
             "payload": {"code": "unknown_peer_presence_hash"},
@@ -11435,7 +12986,7 @@ def _prepare_call_signal_peer(peer_hash: str) -> Optional[Dict[str, Any]]:
         _nudge_overlay_path_for_peer(peer_key)
         ensure_known_peer_from_recall(peer_key, "ts_seed")
     if not _overlay_peer_is_admitted(peer_key):
-        _ensure_overlay_link(peer_key)
+        _overlay_enqueue_open(peer_key, "call_signal_prepare", await_path=True)
     if peer_key not in _known_peers:
         return {
             "payload": {"code": "unknown_peer_presence_hash"},
@@ -12322,6 +13873,7 @@ def handle_open_group_audio_link(req_id: str, payload: Dict[str, Any]) -> None:
     ok, resp_payload, error = _open_group_audio_link_for_peer(
         peer_hash.strip().lower(),
         retry_reason="command",
+        active_call=payload.get("activeCall") is True,
     )
     emit_resp(req_id, ok, payload=resp_payload, error=error or None)
 
@@ -12363,11 +13915,20 @@ def handle_close_group_audio_link(req_id: str, payload: Dict[str, Any]) -> None:
         return
     if is_current_outgoing:
         _set_audio_link_desired(peer_key, False)
-    try:
-        _teardown_audio_link_id(link_id, close_reason or "local_close")
-        emit_resp(req_id, True)
-    except Exception as exc:
-        emit_resp(req_id, False, error=str(exc))
+    queued = _enqueue_audio_link_teardown(link_id, close_reason or "local_close")
+    if queued:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_close_queued "
+            f"peer={peer_key or 'unknown'} link={link_id} reason={close_reason or 'local_close'}"
+        )
+        emit_resp(req_id, True, payload={"queued": True})
+        return
+    emit_resp(
+        req_id,
+        False,
+        payload={"code": "audio_control_queue_full"},
+        error="Unable to queue audio link close",
+    )
 
 
 def handle_reset_group_audio_peer_state(req_id: str, payload: Dict[str, Any]) -> None:
@@ -12385,14 +13946,18 @@ def handle_reset_group_audio_peer_state(req_id: str, payload: Dict[str, Any]) ->
             if str(state.get("peerPresenceHash") or "").strip().lower() == peer_key
         ]
     for link_id in links_to_close:
-        _teardown_audio_link_id(link_id, "peer_state_reset")
-        closed += 1
+        if _enqueue_audio_link_teardown(link_id, "peer_state_reset"):
+            closed += 1
 
     with _state_lock:
         _call_media_path_state.pop(peer_key, None)
         _peer_lifecycle.pop(peer_key, None)
     _mark_audio_queue_state_dirty()
-    emit_resp(req_id, True, payload={"closedLinks": closed})
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_reset_queued "
+        f"peer={peer_key} links={len(links_to_close)} queued={closed}"
+    )
+    emit_resp(req_id, True, payload={"closedLinks": closed, "queued": closed})
 
 
 def handle_get_local_identity_public_key(req_id: str, payload: Dict[str, Any]) -> None:

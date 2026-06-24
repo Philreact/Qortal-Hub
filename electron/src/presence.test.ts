@@ -308,6 +308,77 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     );
   });
 
+  it('keeps verified fanout stable and uses latest announce candidates as backfill', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_100);
+    const manager = new PresenceManager();
+    const verified = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS);
+
+    manager.noteReticulumCandidateDiscovered('candidate-older', 'announce', 10_000);
+    manager.noteReticulumCandidateDiscovered('candidate-newer', 'announce', 10_100);
+
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(verified);
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual(verified);
+
+    manager.noteReticulumOverlayLinkClosed(verified[0], 'closed');
+
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(verified.slice(1));
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([
+      ...verified.slice(1),
+      'candidate-newer',
+    ]);
+
+    manager.noteReticulumOverlayLinkClosed('candidate-newer', 'destination_closed');
+
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(verified.slice(1));
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([
+      ...verified.slice(1),
+      'candidate-older',
+    ]);
+    vi.useRealTimers();
+  });
+
+  it('alternates verified retries and latest announce candidates for open slots', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(20_100);
+    const manager = new PresenceManager();
+    const verified = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 2);
+
+    manager.noteReticulumCandidateDiscovered('candidate-older', 'announce', 20_000);
+    manager.noteReticulumCandidateDiscovered('candidate-newer', 'announce', 20_100);
+
+    manager.noteReticulumOverlayLinkClosed(verified[0], 'closed');
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([
+      ...verified.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),
+      verified[RETICULUM_OVERLAY_MAX_NEIGHBORS + 1],
+    ]);
+
+    manager.noteReticulumOverlayLinkClosed(verified[1], 'closed');
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([
+      ...verified.slice(2, RETICULUM_OVERLAY_MAX_NEIGHBORS),
+      verified[RETICULUM_OVERLAY_MAX_NEIGHBORS + 1],
+      'candidate-newer',
+    ]);
+
+    manager.noteReticulumOverlayLinkClosed(verified[2], 'closed');
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([
+      ...verified.slice(3, RETICULUM_OVERLAY_MAX_NEIGHBORS),
+      verified[RETICULUM_OVERLAY_MAX_NEIGHBORS + 1],
+      verified[RETICULUM_OVERLAY_MAX_NEIGHBORS],
+      'candidate-newer',
+    ]);
+
+    manager.noteReticulumOverlayLinkClosed(verified[3], 'closed');
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([
+      ...verified.slice(4, RETICULUM_OVERLAY_MAX_NEIGHBORS),
+      verified[RETICULUM_OVERLAY_MAX_NEIGHBORS + 1],
+      verified[RETICULUM_OVERLAY_MAX_NEIGHBORS],
+      'candidate-newer',
+      'candidate-older',
+    ]);
+    vi.useRealTimers();
+  });
+
   it('keeps a recently closed verified peer retained but out of active fanout', () => {
     const manager = new PresenceManager();
     const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);

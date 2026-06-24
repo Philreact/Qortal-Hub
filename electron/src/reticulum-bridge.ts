@@ -13,6 +13,7 @@ import { buildPresenceSignedFields, getPresenceManager } from './presence';
 import {
   getReticulumBridgeIdentityPath,
   getReticulumConfigDir,
+  getReticulumSourceEnvExtra,
   persistReticulumSharedTransportState,
   resolveReticulumPythonLaunch,
   type ReticulumBridgeState,
@@ -513,7 +514,7 @@ export type ReticulumConnectivitySnapshot = {
   meshListenOnline?: boolean;
   /** Recently receiving RNS.Link sessions used for Reticulum presence/signaling overlay (not group audio). */
   overlayLinksConnected?: number;
-  /** Established outbound overlay peers this node can send fanout to. */
+  /** Recently receiving outbound overlay peers this node can send fanout to. */
   overlayLinksOutboundConnected?: number;
   /** Recently receiving inbound overlay peers feeding this node data. */
   overlayLinksInboundConnected?: number;
@@ -1676,7 +1677,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   async openGroupAudioLink(
-    peerPresenceHash: string
+    peerPresenceHash: string,
+    opts?: { activeCall?: boolean }
   ): Promise<ReticulumOpenAudioLinkResult> {
     try {
       await this.start();
@@ -1694,6 +1696,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     try {
       const resp = await this.sendCommand('open_group_audio_link', {
         peerPresenceHash,
+        ...(opts?.activeCall === true ? { activeCall: true } : {}),
       });
       if (!resp.ok) {
         return {
@@ -2614,6 +2617,24 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return snap.incoming ? this.isOverlaySnapshotRecentlyLive(snap, now) : true;
   }
 
+  private isOverlaySnapshotReceiving(
+    snap: ReticulumOverlayLinkSnapshot,
+    now = Date.now()
+  ): boolean {
+    return Boolean(
+      snap.lastRxAt && now - snap.lastRxAt <= P2P_HEALTH_RECEIVE_WINDOW_MS
+    );
+  }
+
+  private isOverlaySnapshotRxLive(
+    snap: ReticulumOverlayLinkSnapshot,
+    now = Date.now()
+  ): boolean {
+    return Boolean(
+      snap.lastRxAt && now - snap.lastRxAt <= OVERLAY_LINK_RX_IDLE_TIMEOUT_MS
+    );
+  }
+
   /** Unique live overlay peers (by presence hash); links without hash yet count separately. */
   private getEstablishedOverlayPeerCount(): number {
     this.pruneStaleOverlayLinkSnapshots();
@@ -2632,16 +2653,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   getOverlayLinkDirectionCounts(): { outbound: number; inbound: number } {
     this.pruneStaleOverlayLinkSnapshots();
     const now = Date.now();
+    const localHash = this.localPresenceDestinationHash?.trim().toLowerCase();
     const outbound = new Set<string>();
     const inbound = new Set<string>();
     for (const snap of this.overlayLinkSnapshots.values()) {
+      if (!this.isOverlaySnapshotRxLive(snap, now)) continue;
       const k = snap.peerPresenceHash.trim().toLowerCase();
       if (!k) continue;
-      if (snap.incoming) {
-        if (this.isOverlaySnapshotRecentlyLive(snap, now)) inbound.add(k);
-      } else {
-        outbound.add(k);
-      }
+      if (localHash && k === localHash) continue;
+      if (snap.incoming) inbound.add(k);
+      else outbound.add(k);
     }
     return { outbound: outbound.size, inbound: inbound.size };
   }
@@ -2651,9 +2672,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const localHash = this.localPresenceDestinationHash?.trim().toLowerCase();
     const receiving = new Set<string>();
     for (const snap of this.overlayLinkSnapshots.values()) {
-      if (!snap.lastRxAt || now - snap.lastRxAt > P2P_HEALTH_RECEIVE_WINDOW_MS) {
-        continue;
-      }
+      if (!this.isOverlaySnapshotReceiving(snap, now)) continue;
       const peerKey = snap.peerPresenceHash.trim().toLowerCase();
       if (!peerKey) continue;
       if (localHash && peerKey === localHash) continue;
@@ -2836,18 +2855,17 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
     const identityPath = getReticulumBridgeIdentityPath();
     fs.mkdirSync(path.dirname(identityPath), { recursive: true });
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...getReticulumSourceEnvExtra(),
       ...(launch.envExtra ?? {}),
       PYTHONUNBUFFERED: '1',
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
       QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
     };
     loggerLog(
-      `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE}`
+      `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
 
     const child = spawn(launch.cmd, launch.args, {

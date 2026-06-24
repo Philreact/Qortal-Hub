@@ -65,6 +65,7 @@ const RNS_MODULE = 'RNS.Utilities.rnsd';
 const FROZEN_DIR_NAME = 'reticulum';
 const RUNTIME_DIR_NAME = 'reticulum-runtime';
 const NESTED_VENV = 'venv';
+const DEV_RETICULUM_SOURCE_DIR = '/home/qortal/Desktop/Reticulum';
 const RETICULUM_SHARED_INSTANCE_BASE_PORT = 37428;
 const RETICULUM_CONTROL_BASE_PORT = 37429;
 const RETICULUM_CONFIG_FILENAME = 'config';
@@ -102,6 +103,37 @@ const QCHAT_FILE_COMPLETED_CACHE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const QCHAT_FILE_SIGNATURE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const QCHAT_FILE_SIGNATURE_MAX_FUTURE_SKEW_MS = 2 * 60 * 1000;
 const QCHAT_FILE_BRIDGE_ATTACH_RETRY_MS = 3_000;
+
+export function getReticulumSourceEnvExtra(): Record<string, string> {
+  const sourceDir = String(
+    process.env.QORTAL_RETICULUM_SOURCE_DIR ??
+      (!app.isPackaged ? DEV_RETICULUM_SOURCE_DIR : '')
+  ).trim();
+  if (!sourceDir) return {};
+  if (!fs.existsSync(path.join(sourceDir, 'RNS', '__init__.py'))) return {};
+  const existingPythonPath = process.env.PYTHONPATH
+    ? path.delimiter + process.env.PYTHONPATH
+    : '';
+  const extra: Record<string, string> = {
+    PYTHONPATH: `${sourceDir}${existingPythonPath}`,
+    QORTAL_RNS_LOCAL_TRACE: process.env.QORTAL_RNS_LOCAL_TRACE ?? '0',
+    QORTAL_RNS_LOCAL_TRACE_GAP_MS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_GAP_MS ?? '320',
+    QORTAL_RNS_LOCAL_TRACE_DELAY_MS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_DELAY_MS ?? '80',
+    QORTAL_RNS_LOCAL_TRACE_FRAMES:
+      process.env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0',
+    QORTAL_RNS_LOCAL_TRACE_DEST_GAPS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_DEST_GAPS ?? '0',
+    QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? '100',
+    QORTAL_RNS_LOCAL_RX_QUEUE_ERROR_AGE_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_QUEUE_ERROR_AGE_MS ?? '500',
+    QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? '50',
+  };
+  return extra;
+}
 
 export type ReticulumDaemonMode = 'frozen' | 'venv' | 'system' | null;
 export type ReticulumAppInstanceRecord = {
@@ -2273,12 +2305,10 @@ function probeReticulumVersion(
   plan: Extract<LaunchPlan, { cmd: string }>
 ): string | null {
   try {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
     };
     if (plan.mode === 'frozen') {
       const result = spawnSync(plan.cmd, ['--version'], {
@@ -2330,17 +2360,27 @@ function resolveLaunchPlan(): LaunchPlan {
 
   const runtimeDir = getReticulumRuntimeSearchDir();
   const venvRoot = resolveVenvRoot(runtimeDir);
+  const reticulumSourceEnv = getReticulumSourceEnvExtra();
 
   if (venvRoot) {
     const rnsd = resolveRnsdScript(venvRoot);
     const py = resolvePythonExecutable(venvRoot);
+    if (reticulumSourceEnv.PYTHONPATH && py && canImportRNS(py, venvRoot)) {
+      return {
+        cmd: py,
+        args: ['-m', RNS_MODULE, ...extraArgs],
+        cwd: venvRoot,
+        mode: 'venv',
+        envExtra: { ...reticulumSourceEnv, PYTHONNOUSERSITE: '1' },
+      };
+    }
     if (rnsd) {
       return {
         cmd: rnsd,
         args: [...extraArgs],
         cwd: venvRoot,
         mode: 'venv',
-        envExtra: { PYTHONNOUSERSITE: '1' },
+        envExtra: { ...reticulumSourceEnv, PYTHONNOUSERSITE: '1' },
       };
     }
     if (py && canImportRNS(py, venvRoot)) {
@@ -2349,7 +2389,7 @@ function resolveLaunchPlan(): LaunchPlan {
         args: ['-m', RNS_MODULE, ...extraArgs],
         cwd: venvRoot,
         mode: 'venv',
-        envExtra: { PYTHONNOUSERSITE: '1' },
+        envExtra: { ...reticulumSourceEnv, PYTHONNOUSERSITE: '1' },
       };
     }
     loggerLog(
@@ -2385,6 +2425,7 @@ function resolveLaunchPlan(): LaunchPlan {
       args: ['-m', RNS_MODULE, ...extraArgs],
       cwd: process.cwd(),
       mode: 'system',
+      envExtra: getReticulumSourceEnvExtra(),
     };
   }
 
@@ -2411,7 +2452,7 @@ export function resolveReticulumPythonLaunch(
         args: [scriptPath, ...scriptArgs],
         cwd: venvRoot,
         mode: 'venv',
-        envExtra: { PYTHONNOUSERSITE: '1' },
+        envExtra: { ...getReticulumSourceEnvExtra(), PYTHONNOUSERSITE: '1' },
       };
     }
   }
@@ -2443,6 +2484,7 @@ export function resolveReticulumPythonLaunch(
       args: [scriptPath, ...scriptArgs],
       cwd: process.cwd(),
       mode: 'system',
+      envExtra: getReticulumSourceEnvExtra(),
     };
   }
 
@@ -3092,22 +3134,16 @@ function startBundledReticulumDaemonLocked(): void {
   }
 
   try {
-    const serviceLogMode =
-      String(process.env.QORTAL_RNS_SHARED_TIMING_LOGS ?? '')
-        .trim()
-        .toLowerCase() === '1';
-    const launchArgs = serviceLogMode
-      ? [...plan.args, '--service']
-      : plan.args;
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
     };
+    const launchArgs = plan.args.includes('--service')
+      ? plan.args
+      : [...plan.args, '--service'];
     loggerLog(
-      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE}`
+      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS=${env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? 'n/a'} QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS=${env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? 'n/a'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
     const subprocess = spawn(plan.cmd, launchArgs, {
       cwd: plan.cwd,

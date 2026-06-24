@@ -112,14 +112,9 @@ import type { GcEnvelope } from './group-call';
 import {
   getReticulumBridge,
   startReticulumBridge,
-  stopReticulumBridgeAndWait,
   type ReticulumOverlayVerifiedPeer,
 } from './reticulum-bridge';
-import {
-  attachReticulumStatusBridgeEvents,
-  isReticulumSharedDaemonOwnedByAnotherLiveInstance,
-  restartBundledReticulumDaemonAndWaitReady,
-} from './reticulum-daemon';
+import { attachReticulumStatusBridgeEvents } from './reticulum-daemon';
 import {
   startReticulumMeshCoordinator,
   stopReticulumMeshCoordinator,
@@ -962,6 +957,7 @@ export class ElectronCapacitorApp {
         nodeIntegration: true,
         contextIsolation: true,
         preload: preloadPath,
+        backgroundThrottling: false,
         additionalArguments: [
           `--hub-p2p-seeds=${seedsB64}`,
           `--window-role=${MAIN_WINDOW_ROLE}`,
@@ -1064,6 +1060,7 @@ export class ElectronCapacitorApp {
 
     // If we close the main window with the splashscreen enabled we need to destroy the ref.
     this.MainWindow.on('closed', () => {
+      stopPresenceMainHeartbeatScheduler();
       if (
         this.SplashScreen?.getSplashWindow() &&
         !this.SplashScreen.getSplashWindow().isDestroyed()
@@ -2299,6 +2296,36 @@ function broadcastToSet(
   }
 }
 
+const PRESENCE_MAIN_HEARTBEAT_INTERVAL_MS = 25_000;
+let presenceMainHeartbeatTimer: NodeJS.Timeout | null = null;
+
+function stopPresenceMainHeartbeatScheduler(): void {
+  if (presenceMainHeartbeatTimer) {
+    clearInterval(presenceMainHeartbeatTimer);
+    presenceMainHeartbeatTimer = null;
+    loggerLog('[Presence] Main heartbeat scheduler stopped');
+  }
+}
+
+function sendPresenceMainHeartbeatRequest(): void {
+  const mainWindow = myCapacitorApp.getMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    stopPresenceMainHeartbeatScheduler();
+    return;
+  }
+  loggerLog('[Presence] Main heartbeat scheduler tick');
+  mainWindow.webContents.send('presence:heartbeat-request');
+}
+
+function startPresenceMainHeartbeatScheduler(): void {
+  if (presenceMainHeartbeatTimer) return;
+  presenceMainHeartbeatTimer = setInterval(
+    sendPresenceMainHeartbeatRequest,
+    PRESENCE_MAIN_HEARTBEAT_INTERVAL_MS
+  );
+  loggerLog('[Presence] Main heartbeat scheduler started interval_ms=25000');
+}
+
 export function notifyPresenceTransportReady(): void {
   broadcastToSet(presenceUpdateSubscribers, 'presence:started', {});
 }
@@ -2387,7 +2414,6 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     pm = startPresenceManager(transports);
     attachPresenceListeners(pm);
   }
-
   const reticulumChat = startReticulumChatManager(bridgeTransport ?? null, undefined, {
     signLocalFields: signReticulumChatControlFields,
     validateGroupMember: validateQortalGroupMember,
@@ -2395,7 +2421,6 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     resourceStore: getReticulumResourceStore(),
   });
   attachReticulumChatListeners(reticulumChat);
-  startReticulumPresenceHealthWatchdog();
   startReticulumOverlayMaintenanceSync();
 
   const callMgr = getCallManager();
@@ -2533,17 +2558,6 @@ let presenceUpdateFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let lateReticulumRecoveryCleanup: (() => void) | null = null;
 const RETICULUM_OVERLAY_SYNC_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000];
 const RETICULUM_OVERLAY_MAINTENANCE_SYNC_MS = 25_000;
-const RETICULUM_HEALTH_CHECK_MS = 30_000;
-const RETICULUM_HEALTH_STALE_INBOUND_MS = 2 * 60_000;
-const RETICULUM_HEALTH_BRIDGE_RESTART_MS = 5 * 60_000;
-const RETICULUM_HEALTH_SOFT_COOLDOWN_MS = 2 * 60_000;
-const RETICULUM_HEALTH_BRIDGE_RESTART_COOLDOWN_MS = 5 * 60_000;
-const RETICULUM_HEALTH_TIMEOUT_THRESHOLD = 3;
-const RETICULUM_HEALTH_MIN_FANOUT = 8;
-const RETICULUM_HEALTH_MIN_VERIFIED = 3;
-const RETICULUM_HEALTH_WINDOWS_TIMEOUT_FAILURE_THRESHOLD = 2;
-const RETICULUM_HEALTH_WINDOWS_DAEMON_ESCALATION_THRESHOLD = 2;
-const RETICULUM_HEALTH_WINDOWS_DAEMON_RESTART_COOLDOWN_MS = 15 * 60_000;
 const RETICULUM_CHAT_SUBSCRIPTION_REPLAY_DEBOUNCE_MS = 1_000;
 let reticulumOverlaySyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let reticulumOverlaySyncSequence = 0;
@@ -2551,13 +2565,6 @@ let reticulumOverlaySyncInFlight = false;
 let reticulumOverlaySyncPending = false;
 let reticulumOverlayMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
 let reticulumChatSubscriptionReplayTimer: ReturnType<typeof setTimeout> | null = null;
-let reticulumHealthTimer: ReturnType<typeof setInterval> | null = null;
-let reticulumHealthRecoveryInFlight = false;
-let reticulumHealthLastSoftRecoveryAt = 0;
-let reticulumHealthLastBridgeRestartAt = 0;
-let reticulumHealthWindowsTimeoutFailures = 0;
-let reticulumHealthWindowsBridgeTimeoutRestarts = 0;
-let reticulumHealthWindowsLastDaemonRestartAt = 0;
 
 function flushPresenceUpdates(): void {
   if (presenceUpdateFlushTimer) {
@@ -2897,200 +2904,6 @@ export async function replayReticulumCachedPresence(
   return ok;
 }
 
-function startReticulumPresenceHealthWatchdog(): void {
-  if (reticulumHealthTimer) return;
-  reticulumHealthTimer = setInterval(() => {
-    void checkReticulumPresenceHealth().catch((err) => {
-      loggerWarn('[ReticulumHealth] Watchdog check failed:', err);
-      void recoverWindowsReticulumBridgeCommandTimeout(err);
-    });
-  }, RETICULUM_HEALTH_CHECK_MS);
-  reticulumHealthTimer.unref?.();
-  loggerLog('[ReticulumHealth] Presence watchdog started');
-}
-
-function isReticulumBridgeCommandTimeout(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.message.startsWith('Reticulum bridge request timed out:') ||
-      error.message.startsWith('Reticulum bridge command queue is full:') ||
-      error.message.startsWith('Reticulum scheduler lane is full:') ||
-      error.message.startsWith('Reticulum bridge command backlog:'))
-  );
-}
-
-async function restartLocalReticulumBridgeForHealth(
-  reason: string,
-  replayReason: string
-): Promise<void> {
-  loggerWarn(`[ReticulumHealth] Restarting local bridge reason=${reason}`);
-  await stopReticulumBridgeAndWait();
-  const restarted = await startReticulumBridge();
-  attachReticulumStatusBridgeEvents(restarted);
-  await ensureReticulumManagersStarted();
-  await replayReticulumCachedPresence(replayReason, true);
-  reticulumHealthWindowsTimeoutFailures = 0;
-}
-
-async function recoverWindowsReticulumBridgeCommandTimeout(
-  error: unknown
-): Promise<void> {
-  if (
-    process.platform !== 'win32' ||
-    isQuitting ||
-    reticulumHealthRecoveryInFlight ||
-    !isReticulumBridgeCommandTimeout(error)
-  ) {
-    return;
-  }
-
-  reticulumHealthWindowsTimeoutFailures += 1;
-  if (
-    reticulumHealthWindowsTimeoutFailures <
-    RETICULUM_HEALTH_WINDOWS_TIMEOUT_FAILURE_THRESHOLD
-  ) {
-    return;
-  }
-  reticulumHealthWindowsTimeoutFailures = 0;
-  reticulumHealthRecoveryInFlight = true;
-
-  try {
-    const now = Date.now();
-    const canEscalateDaemon =
-      reticulumHealthWindowsBridgeTimeoutRestarts >=
-        RETICULUM_HEALTH_WINDOWS_DAEMON_ESCALATION_THRESHOLD &&
-      now - reticulumHealthWindowsLastDaemonRestartAt >=
-        RETICULUM_HEALTH_WINDOWS_DAEMON_RESTART_COOLDOWN_MS &&
-      !isReticulumSharedDaemonOwnedByAnotherLiveInstance();
-
-    if (canEscalateDaemon) {
-      reticulumHealthWindowsLastDaemonRestartAt = now;
-      reticulumHealthWindowsBridgeTimeoutRestarts = 0;
-      loggerWarn(
-        '[ReticulumHealth] Windows command timeouts persisted after local bridge restarts; restarting owned shared daemon'
-      );
-      await stopReticulumBridgeAndWait();
-      await restartBundledReticulumDaemonAndWaitReady(60_000, {
-        forceKillOnStopTimeout: true,
-      });
-      const restarted = await startReticulumBridge();
-      attachReticulumStatusBridgeEvents(restarted);
-      await ensureReticulumManagersStarted();
-      await replayReticulumCachedPresence(
-        'health:windows-daemon-restart',
-        true
-      );
-      reticulumHealthWindowsTimeoutFailures = 0;
-      return;
-    }
-
-    reticulumHealthWindowsBridgeTimeoutRestarts += 1;
-    await restartLocalReticulumBridgeForHealth(
-      'windows-command-timeout',
-      'health:windows-command-timeout'
-    );
-  } catch (restartError) {
-    loggerWarn(
-      '[ReticulumHealth] Windows command-timeout recovery failed:',
-      restartError
-    );
-    registerLateReticulumBridgeRecovery();
-  } finally {
-    reticulumHealthRecoveryInFlight = false;
-  }
-}
-
-async function checkReticulumPresenceHealth(): Promise<void> {
-  if (isQuitting || reticulumHealthRecoveryInFlight) return;
-  const manager = getPresenceManager();
-  const bridge = getReticulumBridge();
-  if (!manager || !bridge || bridge.getState() !== 'ready') return;
-  if (!manager.getLastLocalEnvelope()) return;
-
-  const now = Date.now();
-  const health = bridge.getPresenceHealthSnapshot();
-  const verifiedCount = manager.getReticulumVerifiedPeers().length;
-  const fanoutCount = manager.getReticulumActiveNeighborHashes().length;
-  const inboundAge =
-    health.lastInboundPresenceAt > 0
-      ? now - health.lastInboundPresenceAt
-      : Number.POSITIVE_INFINITY;
-  const publishOkAge =
-    health.lastPresencePublishOkAt > 0
-      ? now - health.lastPresencePublishOkAt
-      : Number.POSITIVE_INFINITY;
-  const staleInbound = inboundAge >= RETICULUM_HEALTH_STALE_INBOUND_MS;
-  const zeroFanout =
-    health.lastPresenceFanoutPeers === 0 ||
-    (verifiedCount > 0 && fanoutCount === 0);
-  const observedFanout =
-    typeof health.lastPresenceFanoutPeers === 'number'
-      ? health.lastPresenceFanoutPeers
-      : fanoutCount;
-  const lowFanout =
-    observedFanout > 0 && observedFanout < RETICULUM_HEALTH_MIN_FANOUT;
-  const lowVerified = verifiedCount < RETICULUM_HEALTH_MIN_VERIFIED;
-  const degradedOverlay = zeroFanout || lowFanout || (lowVerified && lowFanout);
-  const repeatedTimeouts =
-    health.recentOverlayLinkTimeouts >= RETICULUM_HEALTH_TIMEOUT_THRESHOLD;
-  const neverPublished = health.lastPresencePublishOkAt <= 0;
-  const needsSoftRecovery =
-    neverPublished ||
-    degradedOverlay ||
-    (repeatedTimeouts && (degradedOverlay || staleInbound)) ||
-    (staleInbound && health.lastPresenceFanoutPeers === null);
-
-  if (!needsSoftRecovery) {
-    reticulumHealthWindowsTimeoutFailures = 0;
-    reticulumHealthWindowsBridgeTimeoutRestarts = 0;
-    return;
-  }
-
-  const hardStale =
-    staleInbound &&
-    (degradedOverlay || repeatedTimeouts) &&
-    publishOkAge >= RETICULUM_HEALTH_BRIDGE_RESTART_MS;
-
-  if (
-    hardStale &&
-    now - reticulumHealthLastBridgeRestartAt >=
-      RETICULUM_HEALTH_BRIDGE_RESTART_COOLDOWN_MS &&
-    now - reticulumHealthLastSoftRecoveryAt >= 60_000
-  ) {
-    reticulumHealthLastBridgeRestartAt = now;
-    reticulumHealthRecoveryInFlight = true;
-    loggerWarn(
-      `[ReticulumHealth] Restarting local bridge stale_inbound_ms=${Number.isFinite(inboundAge) ? inboundAge : 'never'} publish_ok_ms=${Number.isFinite(publishOkAge) ? publishOkAge : 'never'} fanout_peers=${health.lastPresenceFanoutPeers ?? 'n/a'} verified=${verifiedCount} active_fanout=${fanoutCount} low_fanout=${lowFanout ? 'yes' : 'no'} low_verified=${lowVerified ? 'yes' : 'no'} link_timeouts=${health.recentOverlayLinkTimeouts}`
-    );
-    try {
-      await restartLocalReticulumBridgeForHealth(
-        'stale-presence-health',
-        'health:bridge-restart'
-      );
-    } catch (err) {
-      loggerWarn('[ReticulumHealth] Local bridge restart failed:', err);
-      registerLateReticulumBridgeRecovery();
-    } finally {
-      reticulumHealthRecoveryInFlight = false;
-    }
-    return;
-  }
-
-  if (
-    now - reticulumHealthLastSoftRecoveryAt <
-    RETICULUM_HEALTH_SOFT_COOLDOWN_MS
-  ) {
-    return;
-  }
-
-  reticulumHealthLastSoftRecoveryAt = now;
-  loggerLog(
-    `[ReticulumHealth] Soft replay stale_inbound_ms=${Number.isFinite(inboundAge) ? inboundAge : 'never'} fanout_peers=${health.lastPresenceFanoutPeers ?? 'n/a'} verified=${verifiedCount} active_fanout=${fanoutCount} low_fanout=${lowFanout ? 'yes' : 'no'} low_verified=${lowVerified ? 'yes' : 'no'} link_timeouts=${health.recentOverlayLinkTimeouts}`
-  );
-  await replayReticulumCachedPresence('health:soft', true);
-  reticulumHealthWindowsTimeoutFailures = 0;
-}
-
 export function attachPresenceListeners(
   manager: ReturnType<typeof getPresenceManager>
 ): void {
@@ -3189,7 +3002,6 @@ export function registerLateReticulumBridgeRecovery(): void {
     loggerLog(
       '[ReticulumBridge] Bridge became ready after startup timeout; updating presence transport and rebinding call/group-call/chat managers'
     );
-    startReticulumPresenceHealthWatchdog();
     startReticulumOverlayMaintenanceSync();
 
     let pm = getPresenceManager();
@@ -3305,11 +3117,23 @@ ipcMain.handle('presence:heartbeat', async (_event, envelope: unknown) => {
 ipcMain.handle('presence:offline', async (_event, envelope: unknown) => {
   try {
     const ok = await handleLocalPresenceEnvelope(envelope);
+    if (ok) stopPresenceMainHeartbeatScheduler();
     return { success: ok };
   } catch (err) {
     loggerError('[Presence] offline error:', err);
     return { success: false, error: (err as Error).message };
   }
+});
+
+ipcMain.handle('presence:heartbeatSchedulerStart', async () => {
+  loggerLog('[Presence] Main heartbeat scheduler start requested');
+  startPresenceMainHeartbeatScheduler();
+  return { success: true };
+});
+
+ipcMain.handle('presence:heartbeatSchedulerStop', async () => {
+  stopPresenceMainHeartbeatScheduler();
+  return { success: true };
 });
 
 ipcMain.handle('presence:getStatus', async (_event, address: string) => {

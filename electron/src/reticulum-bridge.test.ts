@@ -822,6 +822,91 @@ describe('ReticulumBridge group audio support', () => {
     ]);
   });
 
+  it('reports outbound and inbound overlay counts from the RX idle window, not health window', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(200_000);
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'overlay_link_state',
+      payload: {
+        linkId: 'outbound-receiving',
+        peerPresenceHash: 'outbound-rx-peer',
+        incoming: false,
+        established: true,
+        reason: 'presence_forward',
+        queuedPackets: 0,
+        closedByReticulum: false,
+        lastRxAt: 190_000,
+      },
+    });
+    internal.handleFrame({
+      type: 'event',
+      event: 'overlay_link_state',
+      payload: {
+        linkId: 'outbound-rx-outside-health-window',
+        peerPresenceHash: 'outbound-rx-idle-peer',
+        incoming: false,
+        established: true,
+        reason: 'presence_forward',
+        queuedPackets: 0,
+        closedByReticulum: false,
+        lastRxAt: 140_000,
+      },
+    });
+    internal.handleFrame({
+      type: 'event',
+      event: 'overlay_link_state',
+      payload: {
+        linkId: 'outbound-send-only',
+        peerPresenceHash: 'outbound-send-only-peer',
+        incoming: false,
+        established: true,
+        reason: 'presence_announce_replay',
+        queuedPackets: 0,
+        closedByReticulum: false,
+      },
+    });
+    internal.handleFrame({
+      type: 'event',
+      event: 'overlay_link_state',
+      payload: {
+        linkId: 'inbound-receiving',
+        peerPresenceHash: 'inbound-rx-peer',
+        incoming: true,
+        established: true,
+        reason: 'presence_forward',
+        queuedPackets: 0,
+        closedByReticulum: false,
+        lastRxAt: 195_000,
+      },
+    });
+    internal.handleFrame({
+      type: 'event',
+      event: 'overlay_link_state',
+      payload: {
+        linkId: 'inbound-stale-rx',
+        peerPresenceHash: 'inbound-stale-peer',
+        incoming: true,
+        established: true,
+        reason: 'presence_announce_replay',
+        queuedPackets: 0,
+        closedByReticulum: false,
+        lastRxAt: 100_000,
+        lastActivityAgeMs: 1_000,
+      },
+    });
+
+    expect(bridge.getConnectivitySnapshot()).toMatchObject({
+      overlayLinksOutboundConnected: 2,
+      overlayLinksInboundConnected: 1,
+      overlayLinksReceivingConnected: 2,
+    });
+
+    nowSpy.mockRestore();
+  });
+
   it('keeps overlay snapshots alive when recent send activity is reported', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

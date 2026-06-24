@@ -671,10 +671,11 @@ export class PresenceManager extends EventEmitter {
   /** Verified overlay peers admitted into the outbound fanout set. */
   private activeReticulumNeighborHashes: string[] = [];
   /**
-   * Reticulum publish/forward fanout: verified neighbors first, then candidate
-   * backfill up to {@link RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS} for bootstrap.
+   * Reticulum publish/forward fanout: retained verified peers first, then open
+   * slots alternate between verified retries and unverified announcement trials.
    */
   private activeReticulumPublishHashes: string[] = [];
+  private reticulumBackfillNextSource: 'verified' | 'candidate' = 'verified';
 
   /** Local Reticulum destination hash (lowercase hex); set when Reticulum transport is ready. */
   private localReticulumDestinationHash: string | null = null;
@@ -1142,7 +1143,9 @@ export class PresenceManager extends EventEmitter {
     if (!hash) return;
     const existingVerified = this.verifiedReticulumPeers.get(hash);
     const wasVerified = Boolean(existingVerified);
-    const wasActive = this.activeReticulumNeighborHashes.includes(hash);
+    const wasActive =
+      this.activeReticulumNeighborHashes.includes(hash) ||
+      this.activeReticulumPublishHashes.includes(hash);
     if (!wasVerified && !wasActive) return;
     this.activeReticulumNeighborHashes = this.activeReticulumNeighborHashes.filter(
       (activeHash) => activeHash !== hash
@@ -1150,6 +1153,9 @@ export class PresenceManager extends EventEmitter {
     this.activeReticulumPublishHashes = this.activeReticulumPublishHashes.filter(
       (activeHash) => activeHash !== hash
     );
+    if (!existingVerified) {
+      this.reticulumCandidates.delete(hash);
+    }
     if (existingVerified) {
       const nextCloseCount = existingVerified.linkCloseCount + 1;
       const cooldownMs =
@@ -1578,33 +1584,101 @@ export class PresenceManager extends EventEmitter {
   }
 
   private recomputeReticulumActiveNeighbors(now: number): boolean {
+    const candidateByHash = new Map(
+      [...this.reticulumCandidates.values()]
+        .filter(
+          (c) =>
+            !this.isSelfReticulumHash(c.destinationHash) &&
+            now <= c.proofDeadlineAt
+        )
+        .map((c) => [c.destinationHash.toLowerCase(), c])
+    );
+    const eligibleVerified = [...this.verifiedReticulumPeers.values()]
+      .filter(
+        (peer) =>
+          this.isReticulumPeerFanoutEligible(peer, now) &&
+          !this.isSelfReticulumHash(peer.destinationHash)
+      )
+      .sort((a, b) => {
+        return (
+          b.lastSeen - a.lastSeen ||
+          b.verifiedAt - a.verifiedAt
+        );
+      });
+    const eligibleVerifiedByHash = new Map(
+      eligibleVerified.map((peer) => [peer.destinationHash.toLowerCase(), peer])
+    );
     const nextVerified = this.activeReticulumNeighborHashes.filter(
       (hash) => {
         if (this.isSelfReticulumHash(hash)) return false;
-        const peer = this.verifiedReticulumPeers.get(hash);
-        return Boolean(peer && this.isReticulumPeerFanoutEligible(peer, now));
+        return eligibleVerifiedByHash.has(hash.toLowerCase());
       }
     );
-    if (nextVerified.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
-      const seen = new Set(nextVerified.map((hash) => hash.toLowerCase()));
-      const waitingVerified = [...this.verifiedReticulumPeers.values()]
-        .filter(
-          (peer) =>
-            this.isReticulumPeerFanoutEligible(peer, now) &&
-            !seen.has(peer.destinationHash.toLowerCase())
-        )
-        .sort((a, b) => {
-          return (
-            b.lastSeen - a.lastSeen ||
-            b.verifiedAt - a.verifiedAt
-          );
-        });
-      for (const peer of waitingVerified) {
-        if (nextVerified.length >= RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) break;
-        if (this.isSelfReticulumHash(peer.destinationHash)) continue;
-        nextVerified.push(peer.destinationHash);
-        seen.add(peer.destinationHash.toLowerCase());
+
+    const seen = new Set(nextVerified.map((h) => h.toLowerCase()));
+    const publish: string[] = [...nextVerified];
+
+    for (const hash of this.activeReticulumPublishHashes) {
+      if (publish.length >= RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) break;
+      const key = hash.toLowerCase();
+      if (seen.has(key) || this.isSelfReticulumHash(hash)) continue;
+      const verified = eligibleVerifiedByHash.get(key);
+      if (verified) {
+        publish.push(verified.destinationHash);
+        nextVerified.push(verified.destinationHash);
+        seen.add(key);
+        continue;
       }
+      const candidate = candidateByHash.get(key);
+      if (candidate) {
+        publish.push(candidate.destinationHash);
+        seen.add(key);
+      }
+    }
+
+    const takeVerified = () => {
+      const peer = eligibleVerified.find(
+        (p) => !seen.has(p.destinationHash.toLowerCase())
+      );
+      if (!peer) return false;
+      const hadCandidate = [...candidateByHash.values()].some(
+        (c) => !seen.has(c.destinationHash.toLowerCase())
+      );
+      nextVerified.push(peer.destinationHash);
+      publish.push(peer.destinationHash);
+      seen.add(peer.destinationHash.toLowerCase());
+      if (hadCandidate) {
+        this.reticulumBackfillNextSource = 'candidate';
+      }
+      return true;
+    };
+    const takeCandidate = () => {
+      const candidate = [...candidateByHash.values()]
+        .filter((c) => !seen.has(c.destinationHash.toLowerCase()))
+        .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+      if (!candidate) return false;
+      const hadVerified = eligibleVerified.some(
+        (p) => !seen.has(p.destinationHash.toLowerCase())
+      );
+      publish.push(candidate.destinationHash);
+      seen.add(candidate.destinationHash.toLowerCase());
+      if (hadVerified) {
+        this.reticulumBackfillNextSource = 'verified';
+      }
+      return true;
+    };
+    while (publish.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
+      const preferred =
+        this.reticulumBackfillNextSource === 'verified'
+          ? takeVerified
+          : takeCandidate;
+      const fallback =
+        this.reticulumBackfillNextSource === 'verified'
+          ? takeCandidate
+          : takeVerified;
+      if (preferred()) continue;
+      if (fallback()) continue;
+      break;
     }
 
     const verifiedChanged =
@@ -1614,24 +1688,6 @@ export class PresenceManager extends EventEmitter {
       );
     if (verifiedChanged) {
       this.activeReticulumNeighborHashes = nextVerified;
-    }
-
-    const seen = new Set(nextVerified.map((h) => h.toLowerCase()));
-    const publish: string[] = [...nextVerified];
-    if (publish.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
-      const cand = [...this.reticulumCandidates.values()]
-        .filter(
-          (c) =>
-            !this.isSelfReticulumHash(c.destinationHash) &&
-            now <= c.proofDeadlineAt &&
-            !seen.has(c.destinationHash.toLowerCase())
-        )
-        .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-      for (const c of cand) {
-        if (publish.length >= RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) break;
-        publish.push(c.destinationHash);
-        seen.add(c.destinationHash.toLowerCase());
-      }
     }
     const publishChanged =
       publish.length !== this.activeReticulumPublishHashes.length ||

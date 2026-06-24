@@ -1006,6 +1006,14 @@ try {
     heartbeat: async (envelope: unknown) =>
       ipcRenderer.invoke('presence:heartbeat', envelope),
 
+    /** Start the main-process heartbeat scheduler. */
+    startHeartbeatScheduler: async () =>
+      ipcRenderer.invoke('presence:heartbeatSchedulerStart'),
+
+    /** Stop the main-process heartbeat scheduler. */
+    stopHeartbeatScheduler: async () =>
+      ipcRenderer.invoke('presence:heartbeatSchedulerStop'),
+
     /** Announce that the local user is going offline. */
     offline: async (envelope: unknown) =>
       ipcRenderer.invoke('presence:offline', envelope),
@@ -1082,6 +1090,14 @@ try {
       const handler = () => cb();
       ipcRenderer.on('presence:started', handler);
       return () => ipcRenderer.removeListener('presence:started', handler);
+    },
+
+    /** Subscribe to main-process heartbeat ticks. */
+    onHeartbeatRequested: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('presence:heartbeat-request', handler);
+      return () =>
+        ipcRenderer.removeListener('presence:heartbeat-request', handler);
     },
   });
 
