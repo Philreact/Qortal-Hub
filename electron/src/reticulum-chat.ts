@@ -272,6 +272,11 @@ const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
 const RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT = RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
+const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
+const RETICULUM_CHAT_CONTROL_DEDUP_MAX = 4096;
+const RETICULUM_CHAT_SYNC_REQUEST_DEBOUNCE_MS = 3_000;
+const RETICULUM_CHAT_SYNC_CONTINUATION_DEBOUNCE_MS = 30_000;
+const RETICULUM_CHAT_SYNC_CONTINUATION_MAX = 4096;
 const VALID_EVENT_TYPES = new Set<ReticulumChatEventType>([
   'message',
   'edit',
@@ -756,6 +761,9 @@ export class ReticulumChatManager extends EventEmitter {
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private observedDbEventIds = new Set<string>();
+  private recentInboundControlWires = new Map<string, number>();
+  private recentServedSyncRequests = new Map<string, number>();
+  private recentSyncContinuations = new Map<string, number>();
   private localNotifyWatcher: fs.FSWatcher | null = null;
   private localNotifyTimer: ReturnType<typeof setTimeout> | null = null;
   private localNotifyScanInterval: ReturnType<typeof setInterval> | null = null;
@@ -1205,6 +1213,141 @@ export class ReticulumChatManager extends EventEmitter {
     this.emitSummaryChanged(groupId);
   }
 
+  private peerKey(peerPresenceHash: string, senderDestinationHash = ''): string {
+    return (peerPresenceHash || senderDestinationHash).trim().toLowerCase();
+  }
+
+  private compactRecentMap(map: Map<string, number>, ttlMs: number, maxEntries: number): void {
+    const now = this.now();
+    for (const [key, timestamp] of map) {
+      if (now - timestamp > ttlMs) map.delete(key);
+    }
+    while (map.size > maxEntries) {
+      const oldestKey = map.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      map.delete(oldestKey);
+    }
+  }
+
+  private markRecentOrDuplicate(
+    map: Map<string, number>,
+    key: string,
+    ttlMs: number,
+    maxEntries: number
+  ): boolean {
+    const now = this.now();
+    const lastSeenAt = map.get(key);
+    if (lastSeenAt != null && now - lastSeenAt <= ttlMs) {
+      return true;
+    }
+    map.set(key, now);
+    if (map.size > maxEntries) this.compactRecentMap(map, ttlMs, maxEntries);
+    return false;
+  }
+
+  private hashControlPayload(value: unknown): string {
+    return nodeCrypto
+      .createHash('sha256')
+      .update(JSON.stringify(value) ?? '', 'utf8')
+      .digest('hex')
+      .slice(0, 24);
+  }
+
+  private shouldDropDuplicateInboundControlWire(
+    wire: Record<string, unknown>,
+    groupId: number,
+    peerHash: string
+  ): boolean {
+    if (!peerHash) return false;
+    const kind = typeof wire.k === 'string' ? wire.k : '';
+    if (
+      kind !== 'sync_hints' &&
+      kind !== 'author_heads' &&
+      kind !== 'author_heads_req'
+    ) {
+      return false;
+    }
+    const key = `${peerHash}:${groupId}:${kind}:${this.hashControlPayload(wire)}`;
+    return this.markRecentOrDuplicate(
+      this.recentInboundControlWires,
+      key,
+      RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS,
+      RETICULUM_CHAT_CONTROL_DEDUP_MAX
+    );
+  }
+
+  private shouldServeSyncRequest(
+    wire: Record<string, unknown>,
+    groupId: number,
+    peerHash: string
+  ): boolean {
+    if (!peerHash) return true;
+    const key = `${peerHash}:${groupId}:sync_req:${this.hashControlPayload({
+      mode: typeof wire.mode === 'string' ? wire.mode : '',
+      ts: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : null,
+      id: typeof wire.id === 'string' ? wire.id : '',
+      limit: this.normalizeSyncLimit(wire.limit),
+      seqs: typeof wire.seqs === 'object' && wire.seqs ? wire.seqs : null,
+    })}`;
+    return !this.markRecentOrDuplicate(
+      this.recentServedSyncRequests,
+      key,
+      RETICULUM_CHAT_SYNC_REQUEST_DEBOUNCE_MS,
+      RETICULUM_CHAT_CONTROL_DEDUP_MAX
+    );
+  }
+
+  private shouldServeAuthorGapRequest(
+    wire: Record<string, unknown>,
+    groupId: number,
+    peerHash: string
+  ): boolean {
+    if (!peerHash) return true;
+    const key = `${peerHash}:${groupId}:author_gap_req:${this.hashControlPayload({
+      author: typeof wire.a === 'string' ? wire.a : '',
+      after: Number.isFinite(Number(wire.after)) ? Number(wire.after) : null,
+      limit: this.normalizeSyncLimit(wire.limit),
+    })}`;
+    return !this.markRecentOrDuplicate(
+      this.recentServedSyncRequests,
+      key,
+      RETICULUM_CHAT_SYNC_REQUEST_DEBOUNCE_MS,
+      RETICULUM_CHAT_CONTROL_DEDUP_MAX
+    );
+  }
+
+  private shouldRequestSyncContinuation(
+    peerHash: string,
+    groupId: number,
+    direction: 'after' | 'before',
+    timestamp: number,
+    eventId: string
+  ): boolean {
+    if (!peerHash || !eventId) return true;
+    const key = `${peerHash}:${groupId}:${direction}:${timestamp}:${eventId}`;
+    return !this.markRecentOrDuplicate(
+      this.recentSyncContinuations,
+      key,
+      RETICULUM_CHAT_SYNC_CONTINUATION_DEBOUNCE_MS,
+      RETICULUM_CHAT_SYNC_CONTINUATION_MAX
+    );
+  }
+
+  private shouldRequestAuthorHeadsContinuation(
+    peerHash: string,
+    groupId: number,
+    nextOffset: number
+  ): boolean {
+    if (!peerHash) return true;
+    const key = `${peerHash}:${groupId}:author_heads:${nextOffset}`;
+    return !this.markRecentOrDuplicate(
+      this.recentSyncContinuations,
+      key,
+      RETICULUM_CHAT_SYNC_CONTINUATION_DEBOUNCE_MS,
+      RETICULUM_CHAT_SYNC_CONTINUATION_MAX
+    );
+  }
+
   handleWire(
     wire: Record<string, unknown>,
     peerPresenceHash = '',
@@ -1213,28 +1356,30 @@ export class ReticulumChatManager extends EventEmitter {
     if (wire.t !== 'RCHAT' || typeof wire.k !== 'string') return;
     const groupId = Number(wire.g);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
+    const peerHash = this.peerKey(peerPresenceHash, senderDestinationHash);
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
 
     switch (wire.k) {
       case 'sub':
-        this.notePeerSubscription(peerPresenceHash || senderDestinationHash, groupId, true);
+        this.notePeerSubscription(peerHash, groupId, true);
         if (this.subscribedGroups.has(groupId)) {
           void this.sendAuthorHeadsToPeer(
-            peerPresenceHash || senderDestinationHash,
+            peerHash,
             groupId,
             RETICULUM_CHAT_AUTHOR_HEAD_LIMIT
           );
         }
         return;
       case 'unsub':
-        this.notePeerSubscription(peerPresenceHash || senderDestinationHash, groupId, false);
+        this.notePeerSubscription(peerHash, groupId, false);
         return;
       case 'event_hint':
-        this.handleEventHint(eventHintFromWire(groupId, wire.h), peerPresenceHash || senderDestinationHash);
+        this.handleEventHint(eventHintFromWire(groupId, wire.h), peerHash);
         return;
       case 'hint':
         if (this.subscribedGroups.has(groupId)) {
           for (const syncWire of this.buildSyncReqWires(groupId)) {
-            void this.sendToPeer(peerPresenceHash || senderDestinationHash, syncWire);
+            void this.sendToPeer(peerHash, syncWire);
           }
         }
         return;
@@ -1242,31 +1387,33 @@ export class ReticulumChatManager extends EventEmitter {
         void this.handleEventResourceRequest(
           groupId,
           wire.q,
-          peerPresenceHash || senderDestinationHash
+          peerHash
         );
         return;
       case 'event_offer':
-        this.handleEventOffer(eventOfferFromWire(groupId, wire.o), peerPresenceHash || senderDestinationHash);
+        this.handleEventOffer(eventOfferFromWire(groupId, wire.o), peerHash);
         return;
       case 'resource_req':
         void this.handleGenericResourceRequest(
           groupId,
           wire.q,
-          peerPresenceHash || senderDestinationHash
+          peerHash
         );
         return;
       case 'resource_offer':
         this.handleGenericResourceOffer(
           resourceOfferFromWire(groupId, wire.o),
-          peerPresenceHash || senderDestinationHash
+          peerHash
         );
         return;
       case 'author_gap_req':
-        this.handleAuthorGapReq(groupId, wire, peerPresenceHash || senderDestinationHash);
+        if (this.shouldServeAuthorGapRequest(wire, groupId, peerHash)) {
+          this.handleAuthorGapReq(groupId, wire, peerHash);
+        }
         return;
       case 'author_heads_req':
         void this.sendAuthorHeadsToPeer(
-          peerPresenceHash || senderDestinationHash,
+          peerHash,
           groupId,
           this.normalizeSyncLimit(wire.limit),
           this.normalizeAuthorHeadOffset(wire.offset)
@@ -1274,22 +1421,24 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       case 'author_heads':
         if (!Array.isArray(wire.heads)) return;
-        this.handleAuthorHeads(groupId, wire.heads, peerPresenceHash || senderDestinationHash);
+        this.handleAuthorHeads(groupId, wire.heads, peerHash);
         if (
           wire.more === true &&
           this.subscribedGroups.has(groupId) &&
           typeof wire.nextOffset === 'number' &&
           Number.isInteger(wire.nextOffset) &&
-          wire.nextOffset > 0
+          wire.nextOffset > 0 &&
+          this.shouldRequestAuthorHeadsContinuation(peerHash, groupId, wire.nextOffset)
         ) {
           void this.sendToPeer(
-            peerPresenceHash || senderDestinationHash,
+            peerHash,
             this.buildAuthorHeadsReqWire(groupId, wire.nextOffset)
           );
         }
         return;
       case 'sync_req': {
         if (!this.canServeGroupHistory(groupId)) return;
+        if (!this.shouldServeSyncRequest(wire, groupId, peerHash)) return;
         const syncLimit = this.normalizeSyncLimit(wire.limit);
         const events = this.getEventsForSyncRequest(
           groupId,
@@ -1298,7 +1447,7 @@ export class ReticulumChatManager extends EventEmitter {
         );
         if (events.length) this.db.markServed(events.map((e) => e.eventId));
         void this.sendSyncHintsToPeer(
-          peerPresenceHash || senderDestinationHash,
+          peerHash,
           groupId,
           events,
           syncLimit,
@@ -1309,7 +1458,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'sync_hints':
         if (!Array.isArray(wire.hints)) return;
         for (const hint of wire.hints) {
-          this.handleEventHint(eventHintFromWire(groupId, hint), peerPresenceHash || senderDestinationHash);
+          this.handleEventHint(eventHintFromWire(groupId, hint), peerHash);
         }
         if (
           wire.more === true &&
@@ -1317,9 +1466,10 @@ export class ReticulumChatManager extends EventEmitter {
           typeof wire.nextTs === 'number' &&
           Number.isFinite(wire.nextTs) &&
           typeof wire.nextId === 'string' &&
-          wire.nextId
+          wire.nextId &&
+          this.shouldRequestSyncContinuation(peerHash, groupId, 'after', wire.nextTs, wire.nextId)
         ) {
-          void this.sendToPeer(peerPresenceHash || senderDestinationHash, {
+          void this.sendToPeer(peerHash, {
             t: 'RCHAT',
             k: 'sync_req',
             g: groupId,
@@ -1335,9 +1485,10 @@ export class ReticulumChatManager extends EventEmitter {
           typeof wire.prevTs === 'number' &&
           Number.isFinite(wire.prevTs) &&
           typeof wire.prevId === 'string' &&
-          wire.prevId
+          wire.prevId &&
+          this.shouldRequestSyncContinuation(peerHash, groupId, 'before', wire.prevTs, wire.prevId)
         ) {
-          void this.sendToPeer(peerPresenceHash || senderDestinationHash, {
+          void this.sendToPeer(peerHash, {
             t: 'RCHAT',
             k: 'sync_req',
             g: groupId,
@@ -2352,7 +2503,7 @@ export class ReticulumChatManager extends EventEmitter {
     const wire: ReticulumChatResourceRequestWire = {
       fh: manifest.fileHash,
       r: chunkIndexesToRanges(chunkIndexes),
-      cf: true,
+      ...(chunkIndexes.length === 0 ? { cf: true } : {}),
       pk: signed.authorPublicKey,
       ts: timestamp,
       sig: signed.signature,

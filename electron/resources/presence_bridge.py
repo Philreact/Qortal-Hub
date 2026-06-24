@@ -26,7 +26,7 @@ APP_NAMESPACE = "qortal-hub-test"
 PRESENCE_ASPECT = "presence"
 PRESENCE_VERSION = "v1-test"
 IDENTITY_FILENAME = "presence-bridge.identity"
-disable_bootstrap = True
+disable_bootstrap = False
 
 _state_lock = threading.RLock()
 _reticulum = None

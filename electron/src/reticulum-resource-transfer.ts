@@ -834,11 +834,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const attempts = state.chunkAttempts.get(index) ?? 0;
       return attempts < RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS;
     });
-    if ((state.chunkAttempts.get(-1) ?? 0) > 0) {
-      this.emitProgress(state, false, undefined, true);
-      this.downloads.delete(state.fileHash);
-      return;
-    }
     if (missing.length === 0) {
       try {
         this.resourceStore.assembleResource(state.fileHash);
@@ -850,19 +845,22 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     let delivered = false;
-    const requestChunks = missing.length > 0 ? [missing[0]] : [];
     const availablePeers = [...state.peerHashes]
       .map((peer) => peer.trim().toLowerCase())
       .filter((peer) => peer && !this.peerHasActiveOrPendingAcceptForResource(peer, state.fileHash));
+    const targetedAssignments = this.assignMissingChunksToPeers(state, missing, availablePeers);
+    const requestedChunkIndexes = new Set<number>();
     for (const peerKey of availablePeers) {
+      const requestChunks = targetedAssignments.get(peerKey);
+      if (!requestChunks || requestChunks.length === 0) continue;
       const requests = await this.buildRequestPayloads(state, requestChunks);
       if (requests.length === 0) {
         loggerWarn(
-          `[${this.loggerPrefix}] Could not build targeted complete-file request fileHash=${state.fileHash}`
+          `[${this.loggerPrefix}] Could not build targeted chunk request fileHash=${state.fileHash} peer=${peerKey}`
         );
       }
       for (const request of requests) {
-        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:complete`;
+        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${requestChunks.join(',')}`;
         const now = this.now();
         if (now - (this.requestedResources.get(throttleKey) ?? 0) < RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS) {
           continue;
@@ -871,36 +869,45 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         const result = await this.sendRequestToPeer(peerKey, state.contextId, request);
         if (result.ok) {
           delivered = true;
+          for (const chunkIndex of requestChunks) requestedChunkIndexes.add(chunkIndex);
         } else {
           const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
           loggerWarn(
-            `[${this.loggerPrefix}] Targeted complete-file request failed fileHash=${state.fileHash} peer=${peerKey}:`,
+            `[${this.loggerPrefix}] Targeted chunk request failed fileHash=${state.fileHash} peer=${peerKey} chunks=${requestChunks.join(',')}:`,
             failed.error ?? failed.reason
           );
         }
       }
     }
     if (!delivered) {
+      const requestChunks = this.takeContiguousChunkRun(
+        missing,
+        missing[0],
+        RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS
+      );
       const requests = await this.buildRequestPayloads(state, requestChunks);
       if (requests.length === 0) {
         loggerWarn(
-          `[${this.loggerPrefix}] Could not build complete-file fanout request fileHash=${state.fileHash}`
+          `[${this.loggerPrefix}] Could not build chunk fanout request fileHash=${state.fileHash}`
         );
       }
       for (const request of requests) {
         const result = await this.fanoutRequest(state.contextId, request);
         if (result.ok) {
           delivered = true;
+          for (const chunkIndex of requestChunks) requestedChunkIndexes.add(chunkIndex);
         } else {
           const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
           loggerWarn(
-            `[${this.loggerPrefix}] Complete-file fanout request failed fileHash=${state.fileHash}:`,
+            `[${this.loggerPrefix}] Chunk fanout request failed fileHash=${state.fileHash} chunks=${requestChunks.join(',')}:`,
             failed.error ?? failed.reason
           );
         }
       }
     }
-    state.chunkAttempts.set(-1, (state.chunkAttempts.get(-1) ?? 0) + 1);
+    for (const chunkIndex of requestedChunkIndexes) {
+      state.chunkAttempts.set(chunkIndex, (state.chunkAttempts.get(chunkIndex) ?? 0) + 1);
+    }
     state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_COMPLETE_FILE_RESPONSE_TIMEOUT_MS;
     if (!delivered) {
       this.emitProgress(state, false, undefined, true);
@@ -1563,9 +1570,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.releaseOfferChunksInFlight(state, offer);
         this.releaseFullTransfer(state, offer);
         if (!success && isFullFileOffer) {
-          this.clearPendingOffersForFile(offer.fileHash, offer.transferId);
-          this.emitProgress(state, false, undefined, true);
-          this.downloads.delete(offer.fileHash);
+          this.emitProgress(state);
+          state.nextRequestAt = 0;
+          this.scheduleDownload(0);
         }
       }
     }
@@ -1602,6 +1609,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         return;
       }
       this.emitProgress(state);
+      state.nextRequestAt = 0;
+      this.scheduleDownload(0);
     }
   }
 
