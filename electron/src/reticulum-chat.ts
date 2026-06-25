@@ -1097,10 +1097,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!accepted) {
       return { ok: false, reason: 'send-command-failed', error: 'Invalid event' };
     }
-    const liveBatch = this.buildEventBatchWire(event.groupId, channelId, [event], false);
-    const fanoutResult = liveBatch
-      ? await this.fanout(liveBatch)
-      : await this.fanout(this.buildGroupDigestWire(event.groupId));
+    const fanoutResult = await this.fanoutPublishedEvent(event, channelId);
     if (!fanoutResult.ok) {
       const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
@@ -1782,6 +1779,31 @@ export class ReticulumChatManager extends EventEmitter {
       await this.offerEventResource(peerHash, groupId, event.eventId);
     }
     await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
+  }
+
+  private async fanoutPublishedEvent(
+    event: ReticulumChatEvent,
+    channelId: string
+  ): Promise<ReticulumSendResult> {
+    const liveBatch = this.buildEventBatchWire(event.groupId, channelId, [event], false);
+    if (liveBatch) return this.fanout(liveBatch);
+
+    const interestedPeers = this.getInterestedPeers(event.groupId);
+    let offeredCount = 0;
+    let lastOfferFailure: Exclude<ReticulumSendResult, { ok: true }> | null = null;
+    for (const peerHash of interestedPeers) {
+      const result = await this.offerEventResource(peerHash, event.groupId, event.eventId);
+      if (result.ok) {
+        offeredCount += 1;
+      } else {
+        lastOfferFailure = result as Exclude<ReticulumSendResult, { ok: true }>;
+      }
+    }
+
+    const digestResult = await this.fanout(this.buildGroupDigestWire(event.groupId));
+    if (offeredCount > 0) return { ok: true };
+    if (interestedPeers.length > 0 && lastOfferFailure) return lastOfferFailure;
+    return digestResult;
   }
 
   private async sendFeedPageToPeer(
@@ -2833,18 +2855,31 @@ export class ReticulumChatManager extends EventEmitter {
     await this.offerEventResource(peerHash, groupId, request.id);
   }
 
-  private async offerEventResource(peerHash: string, groupId: number, eventId: string): Promise<void> {
+  private async offerEventResource(
+    peerHash: string,
+    groupId: number,
+    eventId: string
+  ): Promise<ReticulumSendResult> {
     const peerKey = peerHash.trim().toLowerCase();
-    if (!peerKey || !this.bridge) return;
-    if (!this.localGroupIds.has(groupId)) return;
+    if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
+    if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
+    if (!this.localGroupIds.has(groupId)) {
+      return { ok: false, reason: 'send-command-failed', error: 'Not a local group member' };
+    }
     const event = this.db.getEvent(eventId);
-    if (!event || event.groupId !== groupId) return;
+    if (!event || event.groupId !== groupId) {
+      return { ok: false, reason: 'send-command-failed', error: 'Event not found for group' };
+    }
     const authorIsMember = await this.isValidatedGroupMember(
       event.groupId,
       event.authorAddress
     );
-    if (!authorIsMember) return;
-    if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') return;
+    if (!authorIsMember) {
+      return { ok: false, reason: 'send-command-failed', error: 'Event author is not a group member' };
+    }
+    if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
+      return { ok: false, reason: 'send-command-failed', error: 'Bridge chat resource send unavailable' };
+    }
     const blob = serializeReticulumChatEvent(event);
     const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
     const transferId = nodeCrypto.randomBytes(8).toString('hex');
@@ -2874,8 +2909,8 @@ export class ReticulumChatManager extends EventEmitter {
       },
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
-    if (!registered.ok) return;
-    await this.sendToPeer(peerKey, { t: 'RCHAT', k: 'event_offer', g: groupId, o: eventOfferToWire(offer) });
+    if (!registered.ok) return registered;
+    return this.sendToPeer(peerKey, { t: 'RCHAT', k: 'event_offer', g: groupId, o: eventOfferToWire(offer) });
   }
 
   private handleEventOffer(candidate: unknown, peerHash: string): void {

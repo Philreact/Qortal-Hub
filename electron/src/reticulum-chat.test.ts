@@ -725,6 +725,64 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('publishes oversized live events as event resource offers to subscribed peers', async () => {
+    const fanout: Record<string, unknown>[] = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([9]);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [9], mode: 'active' },
+      'peer-a'
+    );
+
+    const event = signedEvent({ groupId: 9, timestamp: 100_000 });
+    const result = await manager.publishEvent(event);
+
+    expect(result.ok).toBe(true);
+    expect(resources).toHaveLength(1);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          t: 'RCHAT',
+          k: 'event_offer',
+          g: 9,
+          o: expect.objectContaining({ id: event.eventId }),
+        }),
+      })
+    );
+    expect(fanout).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 9,
+      })
+    );
+    expect(direct.some(({ wire }) => JSON.stringify(wire).includes('encryptedPayload'))).toBe(false);
+    manager.close();
+  });
+
   it('keeps mentioned message digest fanout under the Reticulum wire limit', async () => {
     const sent: Record<string, unknown>[] = [];
     const bridge = {
