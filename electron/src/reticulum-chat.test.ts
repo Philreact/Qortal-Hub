@@ -32,6 +32,7 @@ import {
 } from './reticulum-wire-size';
 import { ReticulumResourceStore, RETICULUM_RESOURCE_MIN_CHUNK_SIZE } from './reticulum-resource-store';
 import {
+  RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
   RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT,
   RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
 } from './reticulum-resource-transfer';
@@ -1958,7 +1959,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('serves a requested resource chunk as one efficient Resource offer', async () => {
+  it('serves requested resource chunks as bounded independent Resource offers', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-bundle-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const chunks = Array.from(
@@ -2031,28 +2032,38 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(offeredResources).toHaveLength(1);
-    expect(offeredResources[0]?.resourceType).toBe('reticulum_group_resource_chunk');
-    expect((offeredResources[0]?.metadata as any).chunkBundle).toBe(true);
-    expect((offeredResources[0]?.metadata as any).rangeStartChunk).toBe(0);
-    expect((offeredResources[0]?.metadata as any).chunkCount).toBe(
-      RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT
+    expect(offeredResources).toHaveLength(RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT);
+    expect(offeredResources.map((payload) => payload.resourceType)).toEqual(
+      Array.from(
+        { length: RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT },
+        () => 'reticulum_group_resource_chunk'
+      )
     );
-    expect((offeredResources[0]?.metadata as any).chunkRanges).toEqual([
-      [0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT],
-    ]);
-    expect(offeredResources[0]?.size).toBe(
-      RETICULUM_RESOURCE_MIN_CHUNK_SIZE * RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkBundle)).toEqual(
+      Array.from({ length: RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT }, () => undefined)
     );
-    expect(offerWires).toHaveLength(1);
-    expect((offerWires[0]?.o as any).ci).toBeUndefined();
-    expect((offerWires[0]?.o as any).ch).toBeUndefined();
-    expect((offerWires[0]?.o as any).br).toEqual([
-      [0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT],
-    ]);
-    expect(byteLengthUtf8JsonWithBridgeSender(offerWires[0])).toBeLessThanOrEqual(
-      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkIndex)).toEqual(
+      chunks.map((_, index) => index)
     );
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkHash)).toEqual(
+      manifest.chunkHashes
+    );
+    expect(offeredResources.map((payload) => payload.size)).toEqual(
+      chunks.map(() => RETICULUM_RESOURCE_MIN_CHUNK_SIZE)
+    );
+    expect(offerWires).toHaveLength(RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT);
+    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual(
+      chunks.map((_, index) => index)
+    );
+    expect(offerWires.map((wire) => (wire.o as any).ch)).toEqual(manifest.chunkHashes);
+    expect(offerWires.map((wire) => (wire.o as any).br)).toEqual(
+      chunks.map(() => undefined)
+    );
+    for (const offerWire of offerWires) {
+      expect(byteLengthUtf8JsonWithBridgeSender(offerWire)).toBeLessThanOrEqual(
+        RT_RETICULUM_MAX_WIRE_JSON_BYTES
+      );
+    }
     manager.close();
     resourceStore.close();
   });
@@ -2442,7 +2453,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('keeps only one active or queued resource transfer per peer and releases stale active transfers', async () => {
+  it('keeps bounded parallel resource transfers per peer and releases stale active transfers', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-one-peer-link-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -2515,11 +2526,11 @@ describe('reticulum chat manager', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(1);
+    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: 1,
+      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
       pendingTransfers: 0,
-      inFlightChunkCount: 1,
+      inFlightChunkCount: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
     });
 
     now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
@@ -2542,7 +2553,7 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(2);
+    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER + 1);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       activeTransfers: 1,
       pendingTransfers: 0,
@@ -2551,25 +2562,33 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('allows one active transfer per peer per resource so an image is not blocked by a large file', async () => {
+  it('keeps active transfer limits scoped per resource so an image is not blocked by a large file', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-peer-resource-link-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
       rootDir: path.join(tempRoot, 'resources'),
       now: () => 100_000,
     });
-    const largeChunk = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 14);
+    const largeChunks = [14, 15, 16, 17].map((value) =>
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, value)
+    );
     const imageChunk = Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, 15);
-    const largeHash = nodeCrypto.createHash('sha256').update(largeChunk).digest('hex');
+    const largeChunkHashes = largeChunks.map((chunk) =>
+      nodeCrypto.createHash('sha256').update(chunk).digest('hex')
+    );
+    const largeHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat(largeChunks))
+      .digest('hex');
     const imageHash = nodeCrypto.createHash('sha256').update(imageChunk).digest('hex');
     const largeManifest = {
       namespace: 'reticulum-chat-file',
       ownerId: '82:sender',
       fileName: 'large.bin',
       mimeType: 'application/octet-stream',
-      sizeBytes: largeChunk.length,
+      sizeBytes: largeChunks.reduce((total, chunk) => total + chunk.length, 0),
       chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
-      chunkHashes: [largeHash],
+      chunkHashes: largeChunkHashes,
       fileHash: largeHash,
       encrypted: false,
       createdAt: 100_000,
@@ -2611,10 +2630,18 @@ describe('reticulum chat manager', () => {
 
     await expect(manager.requestResource(82, largeManifest)).resolves.toMatchObject({ ok: true });
     await expect(manager.requestResource(82, imageManifest)).resolves.toMatchObject({ ok: true });
-    for (const offer of [
-      { x: 'large-transfer', fh: largeHash, s: largeChunk.length, ci: 0, ch: largeHash, cs: largeChunk.length },
+    const offers = [
+      ...largeChunks.map((chunk, index) => ({
+        x: `large-transfer-${index}`,
+        fh: largeHash,
+        s: chunk.length,
+        ci: index,
+        ch: largeChunkHashes[index],
+        cs: chunk.length,
+      })),
       { x: 'image-transfer', fh: imageHash, s: imageChunk.length, ci: 0, ch: imageHash, cs: imageChunk.length },
-    ]) {
+    ];
+    for (const offer of offers) {
       manager.handleWire(
         {
           t: 'RCHAT',
@@ -2627,11 +2654,11 @@ describe('reticulum chat manager', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(2);
+    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER + 1);
     expect(manager.getResourceDownloadStatus(largeHash)).toMatchObject({
-      activeTransfers: 1,
+      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
       pendingTransfers: 0,
-      inFlightChunkCount: 1,
+      inFlightChunkCount: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
     });
     expect(manager.getResourceDownloadStatus(imageHash)).toMatchObject({
       activeTransfers: 1,
