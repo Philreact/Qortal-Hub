@@ -1644,11 +1644,7 @@ export class ReticulumChatDatabase {
   }
 
   getChatSummaries(myAddress = ''): ReticulumGroupChatSummary[] {
-    const rows = this.stmtGetKnownGroups.all() as Array<{ group_id: number }>;
-    const groupIds = new Set(rows.map((row) => row.group_id));
-    for (const event of this.memoryEvents.values()) {
-      groupIds.add(event.groupId);
-    }
+    const groupIds = new Set(this.getKnownGroupIds());
 
     const summaries: ReticulumGroupChatSummary[] = [];
     for (const groupId of groupIds) {
@@ -1680,6 +1676,21 @@ export class ReticulumChatDatabase {
       });
     }
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  getKnownGroupIds(): number[] {
+    const groupIds = new Set<number>();
+    const rows = this.stmtGetKnownGroups.all() as Array<{ group_id: number }>;
+    for (const row of rows) {
+      const groupId = Number(row.group_id);
+      if (Number.isInteger(groupId) && groupId > 0) groupIds.add(groupId);
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (Number.isInteger(event.groupId) && event.groupId > 0) {
+        groupIds.add(event.groupId);
+      }
+    }
+    return [...groupIds].sort((a, b) => a - b);
   }
 
   private getSummaryChannelIds(groupId: number): string[] {

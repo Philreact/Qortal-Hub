@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -660,6 +660,18 @@ describe('reticulum chat database', () => {
       'event-head-page-1',
     ]);
   });
+
+  it('returns known group ids from persisted and memory events', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    db.insertEvent(signedEvent({ eventId: 'known-group-persisted', groupId: 62 }), true);
+    (db as any).memoryEvents.set(
+      'known-group-memory',
+      signedEvent({ eventId: 'known-group-memory', groupId: 63 })
+    );
+
+    expect(db.getKnownGroupIds()).toEqual([62, 63]);
+  });
 });
 
 describe('reticulum chat manager', () => {
@@ -999,6 +1011,50 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
     expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 9,
+      c: 'general',
+      limit: 25,
+    });
+    manager.close();
+  });
+
+  it('requests cursorless repair from the beginning even when local history exists', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([9]);
+    await manager.publishEvent(signedEvent({ groupId: 9, timestamp: 90_000 }));
+    manager.subscribeGroup(9);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 9,
+        channels: [],
+        digestHash: 'e'.repeat(64),
+      },
+      'peer'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
+    expect(direct.find((wire) => wire.k === 'feed_req')).toEqual({
       t: 'RCHAT',
       k: 'feed_req',
       g: 9,
@@ -2147,6 +2203,49 @@ describe('reticulum chat manager', () => {
       latest: { id: event.eventId, ts: event.timestamp },
     });
     manager.close();
+  });
+
+  it('restores persisted groups as background subscriptions on startup', async () => {
+    const knownGroups = vi
+      .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
+      .mockReturnValue([58]);
+    const direct: Record<string, unknown>[] = [];
+    const fanout: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+
+    try {
+      expect(manager.getSubscriptions()).toEqual([58]);
+      expect(fanout).toContainEqual({ t: 'RCHAT', k: 'group_sub', groups: [58], mode: 'summary' });
+      manager.handleWire(
+        { t: 'RCHAT', k: 'group_sub', groups: [58], mode: 'summary' },
+        'peer'
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(direct).toContainEqual(expect.objectContaining({
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 58,
+      }));
+    } finally {
+      manager.close();
+      knownGroups.mockRestore();
+    }
   });
 
   it('active channel subscription still emits digest, not before/after sync requests', async () => {

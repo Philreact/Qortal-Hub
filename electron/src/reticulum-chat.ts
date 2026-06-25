@@ -786,6 +786,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceTransfer = this.createResourceTransfer();
     fs.mkdirSync(this.localNotifyDir, { recursive: true });
     this.attachBridge(this.bridge);
+    this.restorePersistedGroupSubscriptions();
   }
 
   setBridge(bridge: ReticulumBridge | null): void {
@@ -981,6 +982,19 @@ export class ReticulumChatManager extends EventEmitter {
 
   getSubscriptions(): number[] {
     return [...this.subscribedGroups].sort((a, b) => a - b);
+  }
+
+  private restorePersistedGroupSubscriptions(): void {
+    const groupIds = this.db.getKnownGroupIds();
+    if (groupIds.length === 0) return;
+    for (const groupId of groupIds) {
+      this.localGroupIds.add(groupId);
+      this.subscribedGroups.add(groupId);
+    }
+    this.startLocalNotificationWatcher();
+    this.startSubscriptionRefreshTimer();
+    this.enqueueSubscriptionFanouts([this.buildHelloWire()]);
+    this.refreshSubscriptions();
   }
 
   subscribeGroup(groupId: number): void {
@@ -1503,12 +1517,13 @@ export class ReticulumChatManager extends EventEmitter {
         : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID];
       for (const channelId of repairChannelIds) {
         const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
+        const afterCursor = remoteGroupLatest ? localLatest : null;
         void this.sendToPeer(peerHash, {
           t: 'RCHAT',
           k: 'feed_req',
           g: groupId,
           c: channelId,
-          ...(localLatest ? { after: this.cursorToWire(localLatest) } : {}),
+          ...(afterCursor ? { after: this.cursorToWire(afterCursor) } : {}),
           limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
         });
       }
