@@ -2309,6 +2309,18 @@ function probeReticulumVersion(
       ...process.env,
       ...(plan.envExtra ?? {}),
       QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
+      RNS_RESOURCE_WINDOW: process.env.RNS_RESOURCE_WINDOW ?? '32',
+      RNS_RESOURCE_WINDOW_MIN: process.env.RNS_RESOURCE_WINDOW_MIN ?? '16',
+      RNS_RESOURCE_WINDOW_MAX_SLOW: process.env.RNS_RESOURCE_WINDOW_MAX_SLOW ?? '64',
+      RNS_RESOURCE_WINDOW_MAX_VERY_SLOW:
+        process.env.RNS_RESOURCE_WINDOW_MAX_VERY_SLOW ?? '16',
+      RNS_RESOURCE_WINDOW_MAX_FAST: process.env.RNS_RESOURCE_WINDOW_MAX_FAST ?? '256',
+      RNS_RESOURCE_FAST_RATE_THRESHOLD:
+        process.env.RNS_RESOURCE_FAST_RATE_THRESHOLD ?? '1',
+      RNS_RESOURCE_WINDOW_FLEXIBILITY:
+        process.env.RNS_RESOURCE_WINDOW_FLEXIBILITY ?? '16',
+      RNS_RESOURCE_MAX_EFFICIENT_SIZE:
+        process.env.RNS_RESOURCE_MAX_EFFICIENT_SIZE ?? String(8 * 1024 * 1024),
     };
     if (plan.mode === 'frozen') {
       const result = spawnSync(plan.cmd, ['--version'], {
@@ -3143,7 +3155,7 @@ function startBundledReticulumDaemonLocked(): void {
       ? plan.args
       : [...plan.args, '--service'];
     loggerLog(
-      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS=${env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? 'n/a'} QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS=${env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? 'n/a'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
+      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS=${env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? 'n/a'} QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS=${env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? 'n/a'} RNS_RESOURCE_WINDOW=${env.RNS_RESOURCE_WINDOW} RNS_RESOURCE_WINDOW_MAX_FAST=${env.RNS_RESOURCE_WINDOW_MAX_FAST} RNS_RESOURCE_MAX_EFFICIENT_SIZE=${env.RNS_RESOURCE_MAX_EFFICIENT_SIZE} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
     const subprocess = spawn(plan.cmd, launchArgs, {
       cwd: plan.cwd,
