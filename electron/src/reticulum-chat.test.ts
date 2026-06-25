@@ -691,7 +691,7 @@ describe('reticulum chat manager', () => {
     });
   }
 
-  it('publishes durable events as bounded digest when the event batch would exceed the wire limit', async () => {
+  it('publishes durable events as bounded digest when no peers are subscribed', async () => {
     const sent: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -761,6 +761,7 @@ describe('reticulum chat manager', () => {
 
     expect(result.ok).toBe(true);
     expect(resources).toHaveLength(1);
+    expect(fanout.find((wire) => wire.k === 'event_batch')).toBeUndefined();
     expect(direct).toContainEqual(
       expect.objectContaining({
         peer: 'peer-a',
@@ -1113,17 +1114,7 @@ describe('reticulum chat manager', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
-    expect(direct.some((wire) => ['event_batch', 'event_offer', 'group_digest'].includes(String(wire.k)))).toBe(true);
-    const batch = direct.find((wire) => wire.k === 'event_batch') as any;
-    if (batch) {
-      expect(batch).toMatchObject({
-        t: 'RCHAT',
-        k: 'event_batch',
-        g: 9,
-        c: '*',
-      });
-      expect(batch.batch.events.map((item: ReticulumChatEvent) => item.eventId)).toContain(event.eventId);
-    }
+    expect(direct.some((wire) => ['event_offer', 'group_digest'].includes(String(wire.k)))).toBe(true);
     const digest = direct.find((wire) => wire.k === 'group_digest') as any;
     if (digest) {
       expect(digest.latest).toEqual({ id: event.eventId, ts: event.timestamp });
@@ -2635,7 +2626,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('responds to feed requests with bounded event batches or resource offers', async () => {
+  it('responds to feed requests with resource offers and a digest', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -2645,6 +2636,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -2661,9 +2653,10 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(direct).toHaveLength(1);
-    expect(['event_batch', 'event_offer', 'group_digest']).toContain(direct[0].k);
-    expect(byteLengthUtf8JsonWithBridgeSender(direct[0])).toBeLessThanOrEqual(
+    expect(direct.some((wire) => wire.k === 'event_offer')).toBe(true);
+    expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    expect(Math.max(...direct.map((wire) => byteLengthUtf8JsonWithBridgeSender(wire)))).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     manager.close();
@@ -2679,6 +2672,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -2713,9 +2707,10 @@ describe('reticulum chat manager', () => {
     expect((manager as any).db.getGroupFeedPageAfter(50, null, 10).map((event: ReticulumChatEvent) => event.eventId)).toEqual([
       'event-group-feed-channel',
     ]);
-    expect(direct).toHaveLength(1);
-    expect(['event_batch', 'event_offer', 'group_digest']).toContain(direct[0].k);
-    expect(direct[0]).toMatchObject({ t: 'RCHAT', g: 50 });
+    expect(direct.some((wire) => wire.k === 'event_offer')).toBe(true);
+    expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    expect(direct).toEqual(expect.arrayContaining([expect.objectContaining({ t: 'RCHAT', g: 50 })]));
     manager.close();
   });
 
@@ -2729,6 +2724,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -2756,7 +2752,9 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(direct.some((wire) => wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
+    expect(direct.some((wire) => wire.k === 'event_offer')).toBe(true);
+    expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
     manager.close();
   });
 
@@ -2795,15 +2793,8 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(direct.some((wire) => wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
-    if (direct.some((wire) => wire.k === 'event_batch')) {
-      const continuationFrame = direct.find((wire) => wire.k === 'event_batch') as any;
-      expect(continuationFrame).toMatchObject({
-        t: 'RCHAT',
-        k: 'event_batch',
-        g: 51,
-      });
-    }
+    expect(direct.some((wire) => wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
     manager.close();
   });
 
@@ -2842,7 +2833,7 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(direct.some((wire) => wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
+    expect(direct.some((wire) => wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
     manager.close();
   });
 
@@ -2919,15 +2910,11 @@ describe('reticulum chat manager', () => {
       before: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
     }));
     const repairResponse = direct.find((wire) =>
-      wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest'
+      wire.k === 'event_offer' || wire.k === 'group_digest'
     ) as any;
     expect(repairResponse?.k).toBeTruthy();
-    if (repairResponse.k === 'event_batch') {
-      expect(repairResponse.batch?.dir).toBe('before');
-      expect(repairResponse.batch?.events?.map((event: ReticulumChatEvent) => event.eventId)).toContain(
-        olderLocal.eventId
-      );
-    } else if (repairResponse.k === 'event_offer') {
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    if (repairResponse.k === 'event_offer') {
       expect(repairResponse.o?.id).toBe(olderLocal.eventId);
     }
     getLatestSpy.mockRestore();
@@ -3005,16 +2992,11 @@ describe('reticulum chat manager', () => {
       before: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
     }));
     const repairResponse = direct.find((wire) =>
-      wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest'
+      wire.k === 'event_offer' || wire.k === 'group_digest'
     ) as any;
     expect(repairResponse?.k).toBeTruthy();
-    if (repairResponse.k === 'event_batch') {
-      expect(repairResponse.c).toBe('*');
-      expect(repairResponse.batch?.dir).toBe('before');
-      expect(repairResponse.batch?.events?.map((event: ReticulumChatEvent) => event.eventId)).toContain(
-        olderLocal.eventId
-      );
-    } else if (repairResponse.k === 'event_offer') {
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    if (repairResponse.k === 'event_offer') {
       expect(repairResponse.o?.id).toBe(olderLocal.eventId);
     }
     getLatestSpy.mockRestore();
@@ -3100,7 +3082,7 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(direct.some((wire) => wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
+    expect(direct.some((wire) => wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
     manager.close();
   });
 

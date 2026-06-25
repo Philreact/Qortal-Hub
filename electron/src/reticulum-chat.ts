@@ -187,7 +187,6 @@ export type ReticulumChatProtocolFeature =
   | 'digest'
   | 'feed_req'
   | 'range_req'
-  | 'event_batch'
   | 'resource_v2';
 
 export type ReticulumChatDigestWire = {
@@ -278,7 +277,6 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'digest',
   'feed_req',
   'range_req',
-  'event_batch',
   'resource_v2',
 ];
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 25;
@@ -1115,7 +1113,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!fanoutResult.ok) {
       const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
-        `[ReticulumChat] Stored event ${event.eventId} locally, but live event batch fanout failed:`,
+        `[ReticulumChat] Stored event ${event.eventId} locally, but live event delivery failed:`,
         failed.error ?? failed.reason
       );
     }
@@ -1827,27 +1825,30 @@ export class ReticulumChatManager extends EventEmitter {
     hasMore: boolean,
     direction: 'after' | 'before' | 'range' = 'after'
   ): Promise<void> {
-    const batch =
-      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-        ? this.buildGroupEventBatchWire(groupId, events, hasMore, direction)
-        : this.buildEventBatchWire(groupId, channelId, events, hasMore, direction);
-    if (batch) {
-      await this.sendToPeer(peerHash, batch);
-      return;
-    }
     for (const event of events) {
       await this.offerEventResource(peerHash, groupId, event.eventId);
+    }
+    if (hasMore && events.length > 0) {
+      const ordered = [...events].sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+      const cursorEvent = direction === 'before' ? ordered[0] : ordered[ordered.length - 1];
+      if (cursorEvent) {
+        await this.sendToPeer(peerHash, {
+          t: 'RCHAT',
+          k: 'feed_req',
+          g: groupId,
+          c: channelId,
+          [direction === 'before' ? 'before' : 'after']: this.cursorToWire(this.eventCursor(cursorEvent)),
+          limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+        });
+      }
     }
     await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
   }
 
   private async fanoutPublishedEvent(
     event: ReticulumChatEvent,
-    channelId: string
+    _channelId: string
   ): Promise<ReticulumSendResult> {
-    const liveBatch = this.buildEventBatchWire(event.groupId, channelId, [event], false);
-    if (liveBatch) return this.fanout(liveBatch);
-
     const interestedPeers = this.getInterestedPeers(event.groupId);
     let offeredCount = 0;
     let lastOfferFailure: Exclude<ReticulumSendResult, { ok: true }> | null = null;
@@ -2482,70 +2483,7 @@ export class ReticulumChatManager extends EventEmitter {
     return latest;
   }
 
-  private buildEventBatchWire(
-    groupId: number,
-    channelId: string,
-    events: ReticulumChatEvent[],
-    hasMore: boolean,
-    direction: 'after' | 'before' | 'range' = 'after'
-  ): ReticulumChatWire | null {
-    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
-    const ordered = [...events]
-      .filter((event) => event.groupId === groupId && normalizeReticulumChatChannelId(event.channelId) === normalizedChannelId)
-      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
-    const batch: ReticulumChatEventBatchWire = {
-      ...(ordered[0] ? { start: this.cursorToWire(this.eventCursor(ordered[0])) } : {}),
-      ...(ordered[ordered.length - 1] ? { end: this.cursorToWire(this.eventCursor(ordered[ordered.length - 1])) } : {}),
-      dir: direction,
-      more: hasMore,
-      wh: this.db.computeWindowHash(ordered),
-      events: ordered,
-    };
-    const wire: ReticulumChatWire = {
-      t: 'RCHAT',
-      k: 'event_batch',
-      g: groupId,
-      c: normalizedChannelId,
-      batch,
-    };
-    return wireFitsReticulum(wire) ? wire : null;
-  }
-
-  private buildGroupEventBatchWire(
-    groupId: number,
-    events: ReticulumChatEvent[],
-    hasMore: boolean,
-    direction: 'after' | 'before' | 'range' = 'after'
-  ): ReticulumChatWire | null {
-    const ordered = [...events]
-      .filter((event) => event.groupId === groupId)
-      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
-    const batch: ReticulumChatEventBatchWire = {
-      ...(ordered[0] ? { start: this.cursorToWire(this.eventCursor(ordered[0])) } : {}),
-      ...(ordered[ordered.length - 1] ? { end: this.cursorToWire(this.eventCursor(ordered[ordered.length - 1])) } : {}),
-      dir: direction,
-      more: hasMore,
-      wh: this.db.computeWindowHash(ordered),
-      events: ordered,
-    };
-    const wire: ReticulumChatWire = {
-      t: 'RCHAT',
-      k: 'event_batch',
-      g: groupId,
-      c: RETICULUM_CHAT_ALL_CHANNELS_ID,
-      batch,
-    };
-    return wireFitsReticulum(wire) ? wire : null;
-  }
-
   private buildEventHintWire(event: ReticulumChatEvent): ReticulumChatWire {
-    const batch = this.buildEventBatchWire(
-      event.groupId,
-      normalizeReticulumChatChannelId(event.channelId),
-      [event],
-      false
-    );
-    if (batch) return batch;
     return {
       t: 'RCHAT',
       k: 'group_digest',
