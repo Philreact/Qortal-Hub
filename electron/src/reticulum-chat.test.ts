@@ -920,6 +920,82 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('requests known feeds when a newer group digest has no channel rows', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    const event = signedEvent({ groupId: 9, timestamp: 90_000 });
+    manager.setLocalGroupMemberships([9]);
+    manager.subscribeGroup(9);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 9,
+        latest: {
+          id: event.eventId,
+          ts: event.timestamp,
+        },
+        channels: [],
+      },
+      'peer'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
+    expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 9,
+      c: 'general',
+      limit: 25,
+    });
+    manager.close();
+  });
+
+  it('builds reduced channel digest variants for tight wire packets', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+      } as any,
+    });
+    const latest = { eventId: 'latest-event', feedTimestamp: 10_000 };
+    const variants = (manager as any).buildDigestChannelWireVariants({
+      groupId: 9,
+      channelId: 'ch-digest-packing-test',
+      latestCursor: latest,
+      oldestCursor: { eventId: 'oldest-event', feedTimestamp: 1_000 },
+      visibleWindowHash: 'a'.repeat(64),
+    });
+
+    expect(variants[0]).toMatchObject({
+      c: 'ch-digest-packing-test',
+      latest: { id: latest.eventId, ts: latest.feedTimestamp },
+      oldest: { id: 'oldest-event', ts: 1_000 },
+      wh: 'a'.repeat(64),
+    });
+    expect(variants).toContainEqual({
+      c: 'ch-digest-packing-test',
+      latest: { id: latest.eventId, ts: latest.feedTimestamp },
+    });
+    manager.close();
+  });
+
   it('serves oversized feed results as event resource offers', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const resources: unknown[] = [];

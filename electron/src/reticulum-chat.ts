@@ -1412,14 +1412,16 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     if (!Array.isArray(wire.channels)) return;
+    const remoteGroupLatest = this.cursorFromWire(wire.latest);
     this.db.upsertPeerGroupState(
       peerHash,
       groupId,
-      this.cursorFromWire(wire.latest),
+      remoteGroupLatest,
       typeof wire.digestHash === 'string' ? wire.digestHash : '',
       this.now()
     );
     const channels = wire.channels.slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
+    let requestedFromChannelDigest = false;
     for (const rawChannel of channels) {
       if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) continue;
       const channel = rawChannel as Partial<ReticulumChatDigestWire>;
@@ -1440,6 +1442,28 @@ export class ReticulumChatManager extends EventEmitter {
       if (!remoteLatest) continue;
       const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
       if (!localLatest || this.compareCursors(remoteLatest, localLatest) > 0) {
+        void this.sendToPeer(peerHash, {
+          t: 'RCHAT',
+          k: 'feed_req',
+          g: groupId,
+          c: channelId,
+          ...(localLatest ? { after: this.cursorToWire(localLatest) } : {}),
+          limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+        });
+        requestedFromChannelDigest = true;
+      }
+    }
+    const localGroupLatest = this.getGroupLatestCursor(groupId);
+    if (
+      !requestedFromChannelDigest &&
+      remoteGroupLatest &&
+      (!localGroupLatest || this.compareCursors(remoteGroupLatest, localGroupLatest) > 0)
+    ) {
+      for (const channel of this.db
+        .getChannels(groupId, true)
+        .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP)) {
+        const channelId = normalizeReticulumChatChannelId(channel.channelId);
+        const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
         void this.sendToPeer(peerHash, {
           t: 'RCHAT',
           k: 'feed_req',
@@ -2074,12 +2098,32 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private buildDigestChannelWire(channel: ReticulumChatChannelDigest): ReticulumChatDigestWire {
+    const latest = this.cursorToWire(channel.latestCursor);
+    const oldest = this.cursorToWire(channel.oldestCursor);
     return {
       c: channel.channelId,
-      ...(this.cursorToWire(channel.latestCursor) ? { latest: this.cursorToWire(channel.latestCursor) } : {}),
-      ...(this.cursorToWire(channel.oldestCursor) ? { oldest: this.cursorToWire(channel.oldestCursor) } : {}),
+      ...(latest ? { latest } : {}),
+      ...(oldest ? { oldest } : {}),
       ...(channel.visibleWindowHash ? { wh: channel.visibleWindowHash } : {}),
     };
+  }
+
+  private buildDigestChannelWireVariants(channel: ReticulumChatChannelDigest): ReticulumChatDigestWire[] {
+    const full = this.buildDigestChannelWire(channel);
+    const variants: ReticulumChatDigestWire[] = [full];
+    if (full.wh) {
+      const { wh: _wh, ...withoutWindowHash } = full;
+      variants.push(withoutWindowHash);
+    }
+    if (full.oldest || full.wh) {
+      variants.push({
+        c: full.c,
+        ...(full.latest ? { latest: full.latest } : {}),
+      });
+    }
+    return variants.filter((variant, index, all) =>
+      all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(variant)) === index
+    );
   }
 
   private buildGroupDigestWire(
@@ -2090,20 +2134,24 @@ export class ReticulumChatManager extends EventEmitter {
     const page = this.db.getChannelDigestPage(groupId, limit, offset);
     const channelWires: ReticulumChatDigestWire[] = [];
     for (const channel of page.channels) {
-      const next = [...channelWires, this.buildDigestChannelWire(channel)];
-      const candidate: ReticulumChatWire = {
-        t: 'RCHAT',
-        k: 'group_digest',
-        g: groupId,
-        latest: this.cursorToWire(this.getGroupLatestCursor(groupId)),
-        channels: next,
-        ...(page.hasMore ? { more: true, nextOffset: page.nextOffset } : {}),
-      };
-      if (wireFitsReticulum(candidate)) {
-        channelWires.splice(0, channelWires.length, ...next);
-      } else {
-        break;
+      let accepted: ReticulumChatDigestWire | null = null;
+      for (const channelWire of this.buildDigestChannelWireVariants(channel)) {
+        const next = [...channelWires, channelWire];
+        const candidate: ReticulumChatWire = {
+          t: 'RCHAT',
+          k: 'group_digest',
+          g: groupId,
+          latest: this.cursorToWire(this.getGroupLatestCursor(groupId)),
+          channels: next,
+          ...(page.hasMore ? { more: true, nextOffset: page.nextOffset } : {}),
+        };
+        if (wireFitsReticulum(candidate)) {
+          accepted = channelWire;
+          break;
+        }
       }
+      if (!accepted) break;
+      channelWires.push(accepted);
     }
     const digestHash = nodeCrypto
       .createHash('sha256')
