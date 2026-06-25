@@ -4120,6 +4120,15 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         return;
       }
       case 'qchat_file_transfer': {
+        const resourceType = String(frame.payload?.resourceType ?? '');
+        if (resourceType.startsWith('reticulum_resource')) {
+          this.emit('reticulum-resource', frame.payload ?? {});
+          return;
+        }
+        if (resourceType === 'reticulum_chat_resource') {
+          this.emit('reticulum-chat-resource', frame.payload ?? {});
+          return;
+        }
         this.emit('qchat-file-transfer', frame.payload ?? {});
         return;
       }
@@ -4398,12 +4407,12 @@ export async function stopReticulumBridgeAndWait(): Promise<void> {
     return;
   }
   bridgeInstance = null;
-  let stopPromise: Promise<void>;
-  stopPromise = bridge.stopAndWait().finally(() => {
-    if (bridgeStopPromise === stopPromise) {
+  const stopPromise = bridge.stopAndWait();
+  const trackedStopPromise = stopPromise.finally(() => {
+    if (bridgeStopPromise === trackedStopPromise) {
       bridgeStopPromise = null;
     }
   });
-  bridgeStopPromise = stopPromise;
-  await stopPromise;
+  bridgeStopPromise = trackedStopPromise;
+  await trackedStopPromise;
 }

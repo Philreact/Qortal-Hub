@@ -10225,6 +10225,7 @@ def on_qchat_file_resource_concluded(resource) -> None:
                             "peerPresenceHash": peer_hash,
                             "fileName": pending.get("fileName"),
                             "size": size,
+                            "resourceType": pending.get("resourceType") or "qchat-dm-file",
                             **_qchat_file_progress_payload(pending, progress, size),
                         },
                     )
@@ -13167,7 +13168,12 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "resourceType": resource_type,
         },
     )
-    links_to_open = 1 if stream_mode else min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
+    # Reticulum resource transfers are already chunk-scheduled by the JS
+    # resource manager; opening parallel links here duplicates the same offer.
+    if stream_mode or resource_type in (_RETICULUM_CHAT_RESOURCE_TYPE, _RETICULUM_RESOURCE_TYPE):
+        links_to_open = 1
+    else:
+        links_to_open = min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
     for _ in range(links_to_open):
         state = {
             "peerPresenceHash": peer_hash,

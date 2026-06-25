@@ -651,6 +651,35 @@ describe('ReticulumBridge group audio support', () => {
     ]);
   });
 
+  it('routes legacy qchat_file_transfer frames for generic Reticulum resources to resource listeners', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    const qchatEvents: unknown[] = [];
+    const resourceEvents: unknown[] = [];
+
+    bridge.on('qchat-file-transfer', (payload) => qchatEvents.push(payload));
+    bridge.on('reticulum-resource', (payload) => resourceEvents.push(payload));
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'qchat_file_transfer',
+      payload: {
+        transferId: 'transfer-1',
+        resourceType: 'reticulum_resource',
+        status: 'received',
+      },
+    });
+
+    expect(qchatEvents).toEqual([]);
+    expect(resourceEvents).toEqual([
+      {
+        transferId: 'transfer-1',
+        resourceType: 'reticulum_resource',
+        status: 'received',
+      },
+    ]);
+  });
+
   it('tracks transport reachability snapshots from bridge events', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;
