@@ -303,6 +303,7 @@ const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
+const RETICULUM_CHAT_ALL_CHANNELS_ID = '*';
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_MS = RETICULUM_CHAT_BACKGROUND_DIGEST_REFRESH_MS;
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS = 10_000;
 const RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS = 2 * 60_000;
@@ -1512,11 +1513,18 @@ export class ReticulumChatManager extends EventEmitter {
       const channelsToRepair = this.db
         .getChannels(groupId, true)
         .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
-      const repairChannelIds = channelsToRepair.length
-        ? channelsToRepair.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
-        : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID];
+      const repairChannelIds = remoteGroupLatest
+        ? (
+            channelsToRepair.length
+              ? channelsToRepair.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
+              : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID]
+          )
+        : [RETICULUM_CHAT_ALL_CHANNELS_ID];
       for (const channelId of repairChannelIds) {
-        const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
+        const localLatest =
+          channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+            ? null
+            : this.db.getLatestFeedCursor(groupId, channelId);
         const afterCursor = remoteGroupLatest ? localLatest : null;
         void this.sendToPeer(peerHash, {
           t: 'RCHAT',
@@ -1552,13 +1560,25 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     if (!this.canServeGroupHistory(groupId)) return;
     if (!this.shouldServeControlRequest(wire, groupId, peerHash)) return;
-    const channelId = normalizeReticulumChatChannelId(wire.c);
+    const channelId =
+      wire.c === RETICULUM_CHAT_ALL_CHANNELS_ID
+        ? RETICULUM_CHAT_ALL_CHANNELS_ID
+        : normalizeReticulumChatChannelId(wire.c);
     const limit = this.normalizeFeedLimit(wire.limit);
     const before = this.cursorFromWire(wire.before);
     const after = before ? null : this.cursorFromWire(wire.after);
-    const events = before
-      ? this.db.getFeedPageBefore(groupId, channelId, before, limit + 1)
-      : this.db.getFeedPageAfter(groupId, channelId, after, limit + 1);
+    const events =
+      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+        ? (
+            before
+              ? this.db.getGroupFeedPageBefore(groupId, before, limit + 1)
+              : this.db.getGroupFeedPageAfter(groupId, after, limit + 1)
+          )
+        : (
+            before
+              ? this.db.getFeedPageBefore(groupId, channelId, before, limit + 1)
+              : this.db.getFeedPageAfter(groupId, channelId, after, limit + 1)
+          );
     const hasMore = events.length > limit;
     const visibleEvents = before && hasMore
       ? events.slice(events.length - limit)
@@ -1616,7 +1636,10 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
-    const channelId = normalizeReticulumChatChannelId(wire.c);
+    const allChannels = wire.c === RETICULUM_CHAT_ALL_CHANNELS_ID;
+    const channelId = allChannels
+      ? RETICULUM_CHAT_ALL_CHANNELS_ID
+      : normalizeReticulumChatChannelId(wire.c);
     const batch = wire.batch && typeof wire.batch === 'object' && !Array.isArray(wire.batch)
       ? wire.batch as Partial<ReticulumChatEventBatchWire>
       : null;
@@ -1626,7 +1649,10 @@ export class ReticulumChatManager extends EventEmitter {
     for (const candidate of incomingEvents) {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
       const event = candidate as ReticulumChatEvent;
-      if (event.groupId !== groupId || normalizeReticulumChatChannelId(event.channelId) !== channelId) {
+      if (
+        event.groupId !== groupId ||
+        (!allChannels && normalizeReticulumChatChannelId(event.channelId) !== channelId)
+      ) {
         this.notePeerViolation(peerHash, 'event_batch_out_of_bounds');
         continue;
       }
@@ -1663,13 +1689,14 @@ export class ReticulumChatManager extends EventEmitter {
     const start = this.cursorFromWire(batch.start);
     const end = this.cursorFromWire(batch.end);
     if (
+      !allChannels &&
       start &&
       end &&
       typeof batch.wh === 'string' &&
       batch.wh === this.db.computeWindowHash(validWindowEvents)
     ) {
       this.db.upsertVerifiedWindow(groupId, channelId, start, end, batch.wh, this.now());
-    } else if (validWindowEvents.length > 0) {
+    } else if (!allChannels && validWindowEvents.length > 0) {
       this.notePeerViolation(peerHash, 'event_batch_window_hash_mismatch');
     }
     if (batch.more === true) {
@@ -1696,7 +1723,10 @@ export class ReticulumChatManager extends EventEmitter {
     hasMore: boolean,
     direction: 'after' | 'before' | 'range' = 'after'
   ): Promise<void> {
-    const batch = this.buildEventBatchWire(groupId, channelId, events, hasMore, direction);
+    const batch =
+      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+        ? this.buildGroupEventBatchWire(groupId, events, hasMore, direction)
+        : this.buildEventBatchWire(groupId, channelId, events, hasMore, direction);
     if (batch) {
       await this.sendToPeer(peerHash, batch);
       return;
@@ -2266,6 +2296,33 @@ export class ReticulumChatManager extends EventEmitter {
       k: 'event_batch',
       g: groupId,
       c: normalizedChannelId,
+      batch,
+    };
+    return wireFitsReticulum(wire) ? wire : null;
+  }
+
+  private buildGroupEventBatchWire(
+    groupId: number,
+    events: ReticulumChatEvent[],
+    hasMore: boolean,
+    direction: 'after' | 'before' | 'range' = 'after'
+  ): ReticulumChatWire | null {
+    const ordered = [...events]
+      .filter((event) => event.groupId === groupId)
+      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+    const batch: ReticulumChatEventBatchWire = {
+      ...(ordered[0] ? { start: this.cursorToWire(this.eventCursor(ordered[0])) } : {}),
+      ...(ordered[ordered.length - 1] ? { end: this.cursorToWire(this.eventCursor(ordered[ordered.length - 1])) } : {}),
+      dir: direction,
+      more: hasMore,
+      wh: this.db.computeWindowHash(ordered),
+      events: ordered,
+    };
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'event_batch',
+      g: groupId,
+      c: RETICULUM_CHAT_ALL_CHANNELS_ID,
       batch,
     };
     return wireFitsReticulum(wire) ? wire : null;

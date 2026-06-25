@@ -1014,7 +1014,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'feed_req',
       g: 9,
-      c: 'general',
+      c: '*',
       limit: 25,
     });
     manager.close();
@@ -1058,7 +1058,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'feed_req',
       g: 9,
-      c: 'general',
+      c: '*',
       limit: 25,
     });
     manager.close();
@@ -1291,6 +1291,50 @@ describe('reticulum chat manager', () => {
       })
     );
     expect(manager.getHistory(72, 10).map((item) => item.eventId)).toContain(event.eventId);
+    manager.close();
+  });
+
+  it('accepts group-wide event batches without filtering events to general', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const event = signedEvent({
+      eventId: 'event-group-wide-import-channel',
+      groupId: 72,
+      channelId: 'ch-00000000-0000-4000-8000-000000000000',
+      timestamp: 50_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: 72,
+        c: '*',
+        batch: {
+          start: { id: event.eventId, ts: event.timestamp },
+          end: { id: event.eventId, ts: event.timestamp },
+          dir: 'after',
+          more: false,
+          wh: (manager as any).db.computeWindowHash([event]),
+          events: [event],
+        },
+      },
+      'peer'
+    );
+
+    expect(manager.getHistory(72, event.channelId, 10).map((item) => item.eventId)).toEqual([
+      event.eventId,
+    ]);
     manager.close();
   });
 
@@ -2319,6 +2363,56 @@ describe('reticulum chat manager', () => {
     expect(byteLengthUtf8JsonWithBridgeSender(direct[0])).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
+    manager.close();
+  });
+
+  it('responds to group-wide feed requests without filtering to general', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([50]);
+    (manager as any).db.upsertChannel({
+      groupId: 50,
+      channelId: 'ch-00000000-0000-4000-8000-000000000000',
+      name: 'channel',
+      position: 0,
+      archived: false,
+      createdBy: 'Qcreator',
+      createdAt: 10_000,
+      updatedAt: 10_000,
+    });
+    await manager.publishEvent(signedEvent({
+      eventId: 'event-group-feed-channel',
+      groupId: 50,
+      channelId: 'ch-00000000-0000-4000-8000-000000000000',
+      timestamp: 11_000,
+    }));
+    direct.length = 0;
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'feed_req', g: 50, c: '*', limit: 10 },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect((manager as any).db.getGroupFeedPageAfter(50, null, 10).map((event: ReticulumChatEvent) => event.eventId)).toEqual([
+      'event-group-feed-channel',
+    ]);
+    expect(direct).toHaveLength(1);
+    expect(['event_batch', 'event_offer', 'group_digest']).toContain(direct[0].k);
+    expect(direct[0]).toMatchObject({ t: 'RCHAT', g: 50 });
     manager.close();
   });
 

@@ -266,6 +266,9 @@ export class ReticulumChatDatabase {
   private stmtGetEventsAfterCursor: Statement;
   private stmtGetEventsBefore: Statement;
   private stmtGetEventsBeforeCursor: Statement;
+  private stmtGetGroupEventsAfter: Statement;
+  private stmtGetGroupEventsAfterCursor: Statement;
+  private stmtGetGroupEventsBeforeCursor: Statement;
   private stmtGetAuthorMaxSeq: Statement;
   private stmtGetAuthorEventsAfter: Statement;
   private stmtGetAuthorHeads: Statement;
@@ -389,6 +392,27 @@ export class ReticulumChatDatabase {
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
       WHERE group_id = ? AND channel_id = ? AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
+        ORDER BY feed_timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY feed_timestamp ASC, event_id ASC
+    `);
+    this.stmtGetGroupEventsAfter = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ? AND feed_timestamp > ?
+      ORDER BY feed_timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtGetGroupEventsAfterCursor = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ? AND (feed_timestamp > ? OR (feed_timestamp = ? AND event_id > ?))
+      ORDER BY feed_timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtGetGroupEventsBeforeCursor = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ? AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
         ORDER BY feed_timestamp DESC, event_id DESC
         LIMIT ?
       )
@@ -1181,6 +1205,67 @@ export class ReticulumChatDatabase {
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
       if (normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        cursor
+      ) < 0;
+    };
+    return this.mergeWindowEvents(
+      rows.map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
+  }
+
+  getGroupFeedPageAfter(
+    groupId: number,
+    cursor: ReticulumChatFeedCursor | null,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const effectiveCursor = cursor ?? { feedTimestamp: -1, eventId: '' };
+    const rows = cursor
+      ? this.stmtGetGroupEventsAfterCursor.all(
+          groupId,
+          effectiveCursor.feedTimestamp,
+          effectiveCursor.feedTimestamp,
+          effectiveCursor.eventId,
+          safeLimit
+        )
+      : this.stmtGetGroupEventsAfter.all(
+          groupId,
+          effectiveCursor.feedTimestamp,
+          safeLimit
+        );
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        effectiveCursor
+      ) > 0;
+    };
+    return this.mergeWindowEvents(
+      (rows as EventRow[]).map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
+  }
+
+  getGroupFeedPageBefore(
+    groupId: number,
+    cursor: ReticulumChatFeedCursor,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.stmtGetGroupEventsBeforeCursor.all(
+      groupId,
+      cursor.feedTimestamp,
+      cursor.feedTimestamp,
+      cursor.eventId,
+      safeLimit
+    ) as EventRow[];
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
       return this.compareFeedCursors(
         { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
         cursor
