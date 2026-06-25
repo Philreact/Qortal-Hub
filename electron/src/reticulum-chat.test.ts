@@ -773,13 +773,7 @@ describe('reticulum chat manager', () => {
         }),
       })
     );
-    expect(fanout).toContainEqual(
-      expect.objectContaining({
-        t: 'RCHAT',
-        k: 'group_digest',
-        g: 9,
-      })
-    );
+    expect(fanout.find((wire) => wire.k === 'group_digest')).toBeUndefined();
     expect(direct.some(({ wire }) => JSON.stringify(wire).includes('encryptedPayload'))).toBe(false);
     manager.close();
   });
@@ -940,6 +934,50 @@ describe('reticulum chat manager', () => {
     }));
 
     expect(fallbackExcludes).toEqual([]);
+    manager.close();
+  });
+
+  it('falls back to digest fanout when only some targeted event offers succeed', async () => {
+    const fanout: Record<string, unknown>[] = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (peer: string, message: Record<string, unknown>) => {
+        direct.push({ peer, wire: message });
+        if (peer === 'peer-a') return { ok: true as const };
+        return { ok: false as const, reason: 'no-route' as const, error: 'No overlay route' };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    manager.setLocalGroupMemberships([71]);
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [71], mode: 'active' }, 'peer-a');
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [71], mode: 'active' }, 'peer-b');
+
+    const result = await manager.publishEvent(signedEvent({
+      eventId: 'event-partial-targeted-fallback',
+      groupId: 71,
+      authorSeq: 1,
+      timestamp: 100_000,
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(direct.filter(({ wire }) => wire.k === 'event_offer')).toHaveLength(2);
+    expect(fanout).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'group_digest',
+      g: 71,
+    }));
     manager.close();
   });
 
@@ -2692,8 +2730,8 @@ describe('reticulum chat manager', () => {
     now += 31_000;
     manager.subscribeChannel(56, 'general');
 
-    expect(sent.filter((wire) => wire.k === 'group_sub').length).toBeGreaterThan(groupSubCountAfterFirst);
-    expect(sent.filter((wire) => wire.k === 'group_digest').length).toBeGreaterThan(digestCountAfterFirst);
+    expect(sent.filter((wire) => wire.k === 'group_sub')).toHaveLength(groupSubCountAfterFirst);
+    expect(sent.filter((wire) => wire.k === 'group_digest')).toHaveLength(digestCountAfterFirst);
     manager.close();
   });
 
@@ -2736,7 +2774,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('reopening an already-restored group still sends an active digest', async () => {
+  it('reopening an already-restored channel still sends one active digest', async () => {
     const knownGroups = vi
       .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
       .mockReturnValue([716]);
@@ -2761,7 +2799,7 @@ describe('reticulum chat manager', () => {
       sent.length = 0;
       now += 31_000;
 
-      manager.subscribeGroup(716);
+      manager.subscribeChannel(716, 'general');
 
       expect(sent).toContainEqual({
         t: 'RCHAT',

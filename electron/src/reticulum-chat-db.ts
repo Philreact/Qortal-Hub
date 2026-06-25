@@ -81,6 +81,16 @@ export type ReticulumChatSearchResult = {
   snippet: string;
 };
 
+type ReticulumChatMissingRangeRow = {
+  group_id: number;
+  author_address: string;
+  from_seq: number;
+  to_seq: number;
+  preferred_peer?: string | null;
+  attempts?: number;
+  next_attempt_at?: number;
+};
+
 type EventRow = {
   event_id: string;
   group_id: number;
@@ -319,6 +329,11 @@ export class ReticulumChatDatabase {
   private stmtUpsertPeerChannelState: Statement;
   private stmtUpsertVerifiedWindow: Statement;
   private stmtUpsertMissingRange: Statement;
+  private stmtGetMissingRangesForSeq: Statement;
+  private stmtGetAllMissingRanges: Statement;
+  private stmtGetPresentSeqsInRange: Statement;
+  private stmtDeleteMissingRange: Statement;
+  private stmtInsertMissingRangeRaw: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -740,6 +755,43 @@ export class ReticulumChatDatabase {
         preferred_peer = excluded.preferred_peer,
         next_attempt_at = MIN(rchat_missing_ranges.next_attempt_at, excluded.next_attempt_at)
     `);
+    this.stmtGetMissingRangesForSeq = this.db.prepare(`
+      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_ranges
+      WHERE group_id = ?
+        AND author_address = ?
+        AND from_seq <= ?
+        AND to_seq >= ?
+      ORDER BY from_seq ASC, to_seq ASC
+    `);
+    this.stmtGetAllMissingRanges = this.db.prepare(`
+      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_ranges
+      ORDER BY group_id ASC, author_address ASC, from_seq ASC
+    `);
+    this.stmtGetPresentSeqsInRange = this.db.prepare(`
+      SELECT author_seq
+      FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND author_address = ?
+        AND author_seq >= ?
+        AND author_seq <= ?
+      ORDER BY author_seq ASC
+    `);
+    this.stmtDeleteMissingRange = this.db.prepare(`
+      DELETE FROM rchat_missing_ranges
+      WHERE group_id = ?
+        AND author_address = ?
+        AND from_seq = ?
+        AND to_seq = ?
+    `);
+    this.stmtInsertMissingRangeRaw = this.db.prepare(`
+      INSERT OR IGNORE INTO rchat_missing_ranges
+        (group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
+      VALUES
+        (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, @attempts, @next_attempt_at)
+    `);
+    this.pruneSatisfiedMissingRanges();
     this.backfillSearchIndex();
   }
 
@@ -776,6 +828,7 @@ export class ReticulumChatDatabase {
     });
     const inserted = result.changes > 0;
     if (inserted) {
+      this.clearMissingRangesForEvent(event);
       this.memoryEvents.set(event.eventId, event);
       this.memoryMeta.set(event.eventId, {
         ownEvent,
@@ -1434,6 +1487,84 @@ export class ReticulumChatDatabase {
       to_seq: to,
       preferred_peer: peer || null,
       next_attempt_at: nextAttemptAt,
+    });
+  }
+
+  private clearMissingRangesForEvent(event: ReticulumChatEvent): void {
+    const rows = this.stmtGetMissingRangesForSeq.all(
+      event.groupId,
+      event.authorAddress,
+      event.authorSeq,
+      event.authorSeq
+    ) as ReticulumChatMissingRangeRow[];
+    if (rows.length === 0) return;
+    this.rewriteMissingRanges(rows, (row) => new Set([event.authorSeq]));
+  }
+
+  private pruneSatisfiedMissingRanges(): void {
+    const rows = this.stmtGetAllMissingRanges.all() as ReticulumChatMissingRangeRow[];
+    if (rows.length === 0) return;
+    this.rewriteMissingRanges(rows, (row) => {
+      const presentRows = this.stmtGetPresentSeqsInRange.all(
+        row.group_id,
+        row.author_address,
+        row.from_seq,
+        row.to_seq
+      ) as Array<{ author_seq?: number }>;
+      return new Set(
+        presentRows
+          .map((present) => Number(present.author_seq))
+          .filter((seq) => Number.isInteger(seq))
+      );
+    });
+  }
+
+  private rewriteMissingRanges(
+    rows: ReticulumChatMissingRangeRow[],
+    presentSeqsForRow: (row: ReticulumChatMissingRangeRow) => Set<number>
+  ): void {
+    const tx = this.db.transaction((rangeRows: ReticulumChatMissingRangeRow[]) => {
+      for (const row of rangeRows) {
+        const groupId = Number(row.group_id);
+        const authorAddress = typeof row.author_address === 'string' ? row.author_address : '';
+        const fromSeq = Math.max(1, Math.floor(Number(row.from_seq)));
+        const toSeq = Math.max(fromSeq, Math.floor(Number(row.to_seq)));
+        if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress) continue;
+        const presentSeqs = presentSeqsForRow(row);
+        if (presentSeqs.size === 0) continue;
+        this.stmtDeleteMissingRange.run(groupId, authorAddress, fromSeq, toSeq);
+        let segmentStart = fromSeq;
+        const sortedPresentSeqs = [...presentSeqs]
+          .filter((seq) => Number.isInteger(seq) && seq >= fromSeq && seq <= toSeq)
+          .sort((a, b) => a - b);
+        for (const seq of sortedPresentSeqs) {
+          if (segmentStart <= seq - 1) {
+            this.insertMissingRangeRaw(row, segmentStart, seq - 1);
+          }
+          segmentStart = seq + 1;
+        }
+        if (segmentStart <= toSeq) {
+          this.insertMissingRangeRaw(row, segmentStart, toSeq);
+        }
+      }
+    });
+    tx(rows);
+  }
+
+  private insertMissingRangeRaw(
+    row: ReticulumChatMissingRangeRow,
+    fromSeq: number,
+    toSeq: number
+  ): void {
+    if (fromSeq > toSeq) return;
+    this.stmtInsertMissingRangeRaw.run({
+      group_id: row.group_id,
+      author_address: row.author_address,
+      from_seq: fromSeq,
+      to_seq: toSeq,
+      preferred_peer: row.preferred_peer ?? null,
+      attempts: Number.isInteger(row.attempts) ? row.attempts : 0,
+      next_attempt_at: Number.isInteger(row.next_attempt_at) ? row.next_attempt_at : 0,
     });
   }
 
