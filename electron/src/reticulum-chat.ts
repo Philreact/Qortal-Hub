@@ -1438,11 +1438,12 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     if (!Array.isArray(wire.channels)) return;
     const remoteGroupLatest = this.cursorFromWire(wire.latest);
+    const remoteDigestHash = typeof wire.digestHash === 'string' ? wire.digestHash : '';
     this.db.upsertPeerGroupState(
       peerHash,
       groupId,
       remoteGroupLatest,
-      typeof wire.digestHash === 'string' ? wire.digestHash : '',
+      remoteDigestHash,
       this.now()
     );
     const channels = wire.channels.slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
@@ -1479,15 +1480,28 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     const localGroupLatest = this.getGroupLatestCursor(groupId);
+    const localDigestWire = this.buildGroupDigestWire(groupId);
+    const localDigestHash =
+      localDigestWire.k === 'group_digest' && typeof localDigestWire.digestHash === 'string'
+        ? localDigestWire.digestHash
+        : '';
+    const remoteDigestNeedsRepair =
+      !!remoteDigestHash && remoteDigestHash !== localDigestHash;
     if (
       !requestedFromChannelDigest &&
-      remoteGroupLatest &&
-      (!localGroupLatest || this.compareCursors(remoteGroupLatest, localGroupLatest) > 0)
+      (
+        (remoteGroupLatest &&
+          (!localGroupLatest || this.compareCursors(remoteGroupLatest, localGroupLatest) > 0)) ||
+        (!remoteGroupLatest && remoteDigestNeedsRepair)
+      )
     ) {
-      for (const channel of this.db
+      const channelsToRepair = this.db
         .getChannels(groupId, true)
-        .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP)) {
-        const channelId = normalizeReticulumChatChannelId(channel.channelId);
+        .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
+      const repairChannelIds = channelsToRepair.length
+        ? channelsToRepair.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
+        : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID];
+      for (const channelId of repairChannelIds) {
         const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
         void this.sendToPeer(peerHash, {
           t: 'RCHAT',

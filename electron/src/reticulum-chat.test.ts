@@ -966,6 +966,84 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('requests default feed when a digest hash differs but no cursor details are present', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([9]);
+    manager.subscribeGroup(9);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 9,
+        channels: [],
+        digestHash: 'f'.repeat(64),
+      },
+      'peer'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
+    expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 9,
+      c: 'general',
+      limit: 25,
+    });
+    manager.close();
+  });
+
+  it('does not request repair for a matching empty digest hash with no cursor details', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([9]);
+    manager.subscribeGroup(9);
+    direct.length = 0;
+    const localDigest = (manager as any).buildGroupDigestWire(9);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 9,
+        channels: [],
+        digestHash: localDigest.digestHash,
+      },
+      'peer'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
+    manager.close();
+  });
+
   it('builds reduced channel digest variants for tight wire packets', () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
