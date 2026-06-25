@@ -434,7 +434,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         size: manifest.sizeBytes,
         sha256: manifest.fileHash,
         resourceType: this.resourceType,
-        streamMode: true,
         metadata: {
           logicalResourceType: this.resourceType,
           eventId: request.eventId ?? '',
@@ -463,7 +462,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         sizeBytes: manifest.sizeBytes,
         fileName,
         mimeType: manifest.mimeType,
-        streamMode: true,
       };
       this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
       loggerLog(
@@ -514,7 +512,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       size: bundle.sizeBytes,
       sha256: bundle.bundleHash,
       resourceType: this.chunkResourceType,
-      streamMode: true,
       metadata: {
         logicalResourceType: this.chunkResourceType,
         eventId: request.eventId ?? '',
@@ -549,7 +546,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       fileName,
       mimeType: manifest.mimeType,
       bundleHash: bundle.bundleHash,
-      streamMode: true,
       chunks: bundle.chunks,
       temporaryPath: bundle.path,
     };
@@ -759,6 +755,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (this.schedulerActive) return;
     this.schedulerActive = true;
     try {
+      this.cleanupStaleAccepts(false);
       const now = this.now();
       let nextDelay: number | null = null;
       for (const state of this.downloads.values()) {

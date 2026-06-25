@@ -9773,15 +9773,22 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
                     },
                 )
 
-        resource_data = _qchat_file_read_chunk(file_path, 0, size)
-        RNS.Resource(
-            resource_data,
-            link,
-            metadata=metadata,
-            auto_compress=False,
-            callback=on_done,
-            progress_callback=on_progress,
-        )
+        resource_file = open(file_path, "rb")
+        try:
+            RNS.Resource(
+                resource_file,
+                link,
+                metadata=metadata,
+                auto_compress=False,
+                callback=on_done,
+                progress_callback=on_progress,
+            )
+        except Exception:
+            try:
+                resource_file.close()
+            except Exception:
+                pass
+            raise
         state["resource_started"] = True
         return True
 
@@ -13347,7 +13354,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
     file_name = str(payload.get("fileName") or "").strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
     resource_type = str(payload.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
-    stream_mode = payload.get("streamMode") is True
+    stream_mode = (payload.get("streamMode") is True) and not _qchat_file_is_managed_resource_type(resource_type)
     try:
         size = int(payload.get("size") or 0)
     except Exception:
@@ -13440,7 +13447,7 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
     file_name = str(payload.get("fileName") or os.path.basename(file_path)).strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
     resource_type = str(payload.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
-    stream_mode = payload.get("streamMode") is True
+    stream_mode = (payload.get("streamMode") is True) and not _qchat_file_is_managed_resource_type(resource_type)
     try:
         expires_at_ms = float(payload.get("expiresAt") or 0)
     except Exception:

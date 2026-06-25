@@ -1867,7 +1867,7 @@ describe('reticulum chat manager', () => {
         bundleHash: chunkHashes[0],
       }),
     ]);
-    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([true]);
+    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([undefined]);
     expect(offerWires.map((wire) => (wire.o as any).br)).toEqual([[[0, 1]]]);
     expect(offerWires.map((wire) => (wire.o as any).bh)).toEqual([chunkHashes[0]]);
     expect(offerWires.every((wire) => wire.k === 'resource_offer')).toBe(true);
@@ -1875,7 +1875,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('serves a requested complete resource chunk as a streamed bundle offer', async () => {
+  it('serves a requested complete resource chunk as a resource bundle offer', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const sourceBytes = Buffer.concat([
@@ -1951,7 +1951,7 @@ describe('reticulum chat manager', () => {
     expect(offeredResources.map((payload) => (payload.metadata as any).bundleHash)).toEqual(
       [manifest.chunkHashes[0]]
     );
-    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([true]);
+    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([undefined]);
     expect(offeredResources.map((payload) => payload.size)).toEqual([
       RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
     ]);
@@ -1965,7 +1965,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('serves requested resource chunks as one bounded streamed range bundle', async () => {
+  it('serves requested resource chunks as one bounded resource range bundle', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-bundle-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const chunks = Array.from(
@@ -2042,7 +2042,7 @@ describe('reticulum chat manager', () => {
     expect(offeredResources.map((payload) => payload.resourceType)).toEqual([
       'reticulum_group_resource_chunk',
     ]);
-    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([true]);
+    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([undefined]);
     expect(offeredResources.map((payload) => (payload.metadata as any).chunkBundle)).toEqual([
       true,
     ]);
