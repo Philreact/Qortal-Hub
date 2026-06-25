@@ -21,7 +21,11 @@ import {
   type ReticulumGroupChatSummary,
   type ReticulumChatSearchResult,
 } from './reticulum-chat-db';
-import type { ReticulumBridge, ReticulumSendResult } from './reticulum-bridge';
+import type {
+  ReticulumBridge,
+  ReticulumSendFailureReason,
+  ReticulumSendResult,
+} from './reticulum-bridge';
 import { log as loggerLog, warn as loggerWarn } from './logger';
 import {
   byteLengthUtf8JsonWithBridgeSender,
@@ -170,6 +174,15 @@ type ReticulumChatLocalSignature = {
   signature: string;
 };
 
+type ReticulumChatControlRetryItem = {
+  key: string;
+  wire: ReticulumChatWire;
+  peerHash?: string;
+  excludePeerPresenceHashes?: string[];
+  attempts: number;
+  nextAttemptAt: number;
+};
+
 export type ReticulumChatProtocolFeature =
   | 'digest'
   | 'feed_req'
@@ -301,6 +314,10 @@ const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_MAX = 4096;
+const RETICULUM_CHAT_CONTROL_RETRY_MS = 3_000;
+const RETICULUM_CHAT_CONTROL_RETRY_TICK_MS = 250;
+const RETICULUM_CHAT_CONTROL_RETRY_MAX_ATTEMPTS = 10;
+const RETICULUM_CHAT_CONTROL_RETRY_MAX = 512;
 const VALID_EVENT_TYPES = new Set<ReticulumChatEventType>([
   'message',
   'edit',
@@ -730,6 +747,9 @@ export class ReticulumChatManager extends EventEmitter {
   private requestedEventPulls = new Map<string, number>();
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
   private eventPullQueueTimer: ReturnType<typeof setTimeout> | null = null;
+  private controlRetryQueue = new Map<string, ReticulumChatControlRetryItem>();
+  private controlRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private controlRetryActive = false;
   private subscriptionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionFanoutQueue: ReticulumChatWire[] = [];
   private subscriptionFanoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -927,6 +947,11 @@ export class ReticulumChatManager extends EventEmitter {
       clearTimeout(this.eventPullQueueTimer);
       this.eventPullQueueTimer = null;
     }
+    if (this.controlRetryTimer) {
+      clearTimeout(this.controlRetryTimer);
+      this.controlRetryTimer = null;
+    }
+    this.controlRetryQueue.clear();
     this.resourceTransfer?.close();
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
     this.typingTimers.clear();
@@ -3107,6 +3132,17 @@ export class ReticulumChatManager extends EventEmitter {
     wire: ReticulumChatWire,
     excludePeerPresenceHashes: string[] = []
   ): Promise<ReticulumSendResult> {
+    const result = await this.fanoutOnce(wire, excludePeerPresenceHashes);
+    if (result.ok === false && this.shouldRetryControlSend(wire, result.reason)) {
+      this.enqueueControlRetry({ wire, excludePeerPresenceHashes });
+    }
+    return result;
+  }
+
+  private async fanoutOnce(
+    wire: ReticulumChatWire,
+    excludePeerPresenceHashes: string[] = []
+  ): Promise<ReticulumSendResult> {
     if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
     if (!wireFitsReticulum(wire)) {
       return {
@@ -3122,6 +3158,14 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private async sendToPeer(peerHash: string, wire: ReticulumChatWire): Promise<ReticulumSendResult> {
+    const result = await this.sendToPeerOnce(peerHash, wire);
+    if (result.ok === false && this.shouldRetryControlSend(wire, result.reason)) {
+      this.enqueueControlRetry({ peerHash: peerHash.trim().toLowerCase(), wire });
+    }
+    return result;
+  }
+
+  private async sendToPeerOnce(peerHash: string, wire: ReticulumChatWire): Promise<ReticulumSendResult> {
     const key = peerHash.trim().toLowerCase();
     if (!key || !this.bridge) return { ok: false, reason: 'unknown-peer-presence-hash' };
     if (!wireFitsReticulum(wire)) {
@@ -3135,6 +3179,125 @@ export class ReticulumChatManager extends EventEmitter {
       return { ok: false, reason: 'send-command-failed', error: 'Bridge chat send unavailable' };
     }
     return this.bridge.sendReticulumChatDetailed(key, wire);
+  }
+
+  private shouldRetryControlSend(
+    wire: ReticulumChatWire,
+    reason: ReticulumSendFailureReason
+  ): boolean {
+    if (!this.isRetryableControlWire(wire)) return false;
+    return (
+      reason === 'no-route' ||
+      reason === 'packet-send-false' ||
+      reason === 'bridge-not-ready' ||
+      reason === 'bridge-timeout' ||
+      reason === 'bridge-exception' ||
+      reason === 'bridge-overloaded' ||
+      reason === 'bridge-not-started'
+    );
+  }
+
+  private isRetryableControlWire(wire: ReticulumChatWire): boolean {
+    switch (wire.k) {
+      case 'hello':
+      case 'group_sub':
+      case 'group_digest':
+      case 'feed_req':
+      case 'range_req':
+      case 'event_req':
+      case 'event_offer':
+      case 'event_batch':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private controlRetryKey(item: {
+    wire: ReticulumChatWire;
+    peerHash?: string;
+    excludePeerPresenceHashes?: string[];
+  }): string {
+    const target = item.peerHash
+      ? `peer:${item.peerHash.trim().toLowerCase()}`
+      : `fanout:${[...(item.excludePeerPresenceHashes ?? [])].map((hash) => hash.trim().toLowerCase()).sort().join(',')}`;
+    return `${target}:${this.hashControlPayload(item.wire)}`;
+  }
+
+  private enqueueControlRetry(item: {
+    wire: ReticulumChatWire;
+    peerHash?: string;
+    excludePeerPresenceHashes?: string[];
+  }): void {
+    const key = this.controlRetryKey(item);
+    const now = this.now();
+    const existing = this.controlRetryQueue.get(key);
+    if (existing) {
+      existing.wire = item.wire;
+      existing.peerHash = item.peerHash?.trim().toLowerCase();
+      existing.excludePeerPresenceHashes = item.excludePeerPresenceHashes;
+      existing.nextAttemptAt = Math.min(existing.nextAttemptAt, now + RETICULUM_CHAT_CONTROL_RETRY_MS);
+      this.scheduleControlRetryQueue(RETICULUM_CHAT_CONTROL_RETRY_TICK_MS);
+      return;
+    }
+    if (this.controlRetryQueue.size >= RETICULUM_CHAT_CONTROL_RETRY_MAX) {
+      const oldestKey = this.controlRetryQueue.keys().next().value as string | undefined;
+      if (oldestKey) this.controlRetryQueue.delete(oldestKey);
+    }
+    this.controlRetryQueue.set(key, {
+      key,
+      wire: item.wire,
+      peerHash: item.peerHash?.trim().toLowerCase(),
+      excludePeerPresenceHashes: item.excludePeerPresenceHashes,
+      attempts: 0,
+      nextAttemptAt: now + RETICULUM_CHAT_CONTROL_RETRY_MS,
+    });
+    this.scheduleControlRetryQueue(RETICULUM_CHAT_CONTROL_RETRY_TICK_MS);
+  }
+
+  private scheduleControlRetryQueue(delayMs: number): void {
+    if (this.controlRetryTimer) return;
+    this.controlRetryTimer = setTimeout(() => {
+      this.controlRetryTimer = null;
+      void this.drainControlRetryQueue();
+    }, Math.max(0, delayMs));
+    this.controlRetryTimer.unref?.();
+  }
+
+  private async drainControlRetryQueue(): Promise<void> {
+    if (this.controlRetryActive) return;
+    this.controlRetryActive = true;
+    try {
+      const now = this.now();
+      for (const item of [...this.controlRetryQueue.values()]) {
+        if (item.nextAttemptAt > now) continue;
+        item.attempts += 1;
+        const result = item.peerHash
+          ? await this.sendToPeerOnce(item.peerHash, item.wire)
+          : await this.fanoutOnce(item.wire, item.excludePeerPresenceHashes ?? []);
+        if (result.ok) {
+          this.controlRetryQueue.delete(item.key);
+          continue;
+        }
+        if (result.ok === false && (
+          item.attempts >= RETICULUM_CHAT_CONTROL_RETRY_MAX_ATTEMPTS ||
+          !this.shouldRetryControlSend(item.wire, result.reason)
+        )) {
+          this.controlRetryQueue.delete(item.key);
+          loggerWarn(
+            `[ReticulumChat] Control retry dropped kind=${item.wire.k} attempts=${item.attempts}:`,
+            result.error ?? result.reason
+          );
+          continue;
+        }
+        item.nextAttemptAt = this.now() + RETICULUM_CHAT_CONTROL_RETRY_MS;
+      }
+    } finally {
+      this.controlRetryActive = false;
+      if (this.controlRetryQueue.size > 0) {
+        this.scheduleControlRetryQueue(RETICULUM_CHAT_CONTROL_RETRY_TICK_MS);
+      }
+    }
   }
 
   private attachBridge(bridge: ReticulumBridge | null): void {

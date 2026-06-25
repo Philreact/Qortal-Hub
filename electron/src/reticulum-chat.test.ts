@@ -996,6 +996,52 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('retries control fanout when the overlay route is not ready', async () => {
+    let now = 100_000;
+    const sent: Record<string, unknown>[][] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(messages);
+        if (sent.length === 1) {
+          return {
+            ok: false as const,
+            reason: 'no-route' as const,
+            error: 'No overlay route',
+          };
+        }
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+
+    const result = await (manager as any).fanout({
+      t: 'RCHAT',
+      k: 'group_digest',
+      g: 9,
+      latest: { id: 'event-latest', ts: 90_000 },
+      channels: [],
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'no-route' });
+    expect(sent).toHaveLength(1);
+
+    now += 3_001;
+    await (manager as any).drainControlRetryQueue();
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1][0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'group_digest',
+      g: 9,
+    });
+    manager.close();
+  });
+
   it('serves oversized feed results as event resource offers', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const resources: unknown[] = [];
