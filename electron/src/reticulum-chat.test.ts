@@ -1130,7 +1130,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('retries control fanout when the overlay route is not ready', async () => {
+  it('does not retry summary fanout when the overlay route is not ready', async () => {
     let now = 100_000;
     const sent: Record<string, unknown>[][] = [];
     const bridge = {
@@ -1167,11 +1167,53 @@ describe('reticulum chat manager', () => {
     now += 3_001;
     await (manager as any).drainControlRetryQueue();
 
+    expect(sent).toHaveLength(1);
+    manager.close();
+  });
+
+  it('retries repair fanout when the overlay route is not ready', async () => {
+    let now = 90_000;
+    const sent: Record<string, unknown>[][] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(messages);
+        if (sent.length === 1) {
+          return {
+            ok: false as const,
+            reason: 'no-route' as const,
+            error: 'No overlay route',
+          };
+        }
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+
+    const result = await (manager as any).fanout({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 9,
+      c: 'general',
+      limit: 25,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'no-route' });
+    expect(sent).toHaveLength(1);
+
+    now += 3_001;
+    await (manager as any).drainControlRetryQueue();
+
     expect(sent).toHaveLength(2);
     expect(sent[1][0]).toMatchObject({
       t: 'RCHAT',
-      k: 'group_digest',
+      k: 'feed_req',
       g: 9,
+      c: 'general',
     });
     manager.close();
   });
@@ -2329,6 +2371,41 @@ describe('reticulum chat manager', () => {
     expect(sent.filter((wire) => wire.k === 'sync_req')).toEqual([]);
     expect(sent).toContainEqual(expect.objectContaining({ t: 'RCHAT', k: 'group_sub', groups: [56], mode: 'active' }));
     expect(sent).toContainEqual(expect.objectContaining({ t: 'RCHAT', k: 'group_digest', g: 56 }));
+    manager.close();
+  });
+
+  it('collapses repeated active channel subscription fanouts inside the debounce window', async () => {
+    let now = 80_000;
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([56]);
+
+    manager.subscribeChannel(56, 'general');
+    const groupSubCountAfterFirst = sent.filter((wire) => wire.k === 'group_sub').length;
+    const digestCountAfterFirst = sent.filter((wire) => wire.k === 'group_digest').length;
+    manager.subscribeChannel(56, 'general');
+    manager.subscribeChannel(56, 'general');
+
+    expect(sent.filter((wire) => wire.k === 'group_sub')).toHaveLength(groupSubCountAfterFirst);
+    expect(sent.filter((wire) => wire.k === 'group_digest')).toHaveLength(digestCountAfterFirst);
+
+    now += 31_000;
+    manager.subscribeChannel(56, 'general');
+
+    expect(sent.filter((wire) => wire.k === 'group_sub').length).toBeGreaterThan(groupSubCountAfterFirst);
+    expect(sent.filter((wire) => wire.k === 'group_digest').length).toBeGreaterThan(digestCountAfterFirst);
     manager.close();
   });
 

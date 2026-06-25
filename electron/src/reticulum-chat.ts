@@ -309,6 +309,8 @@ const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS = 10_000;
 const RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_SIZE = 8;
 const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_INTERVAL_MS = 200;
+const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS = 30_000;
+const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
 const RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT = RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
@@ -753,9 +755,12 @@ export class ReticulumChatManager extends EventEmitter {
   private controlRetryActive = false;
   private subscriptionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionFanoutQueue: ReticulumChatWire[] = [];
+  private subscriptionFanoutQueuedKeys = new Set<string>();
+  private subscriptionFanoutLastSentAt = new Map<string, number>();
   private subscriptionFanoutTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionFanoutSentInBatch = 0;
   private eventPullQueueActive = false;
+  private recentGroupRepairRequests = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
@@ -1510,30 +1515,32 @@ export class ReticulumChatManager extends EventEmitter {
         (!remoteGroupLatest && remoteDigestNeedsRepair)
       )
     ) {
-      const channelsToRepair = this.db
-        .getChannels(groupId, true)
-        .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
-      const repairChannelIds = remoteGroupLatest
-        ? (
-            channelsToRepair.length
-              ? channelsToRepair.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
-              : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID]
-          )
-        : [RETICULUM_CHAT_ALL_CHANNELS_ID];
-      for (const channelId of repairChannelIds) {
-        const localLatest =
-          channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-            ? null
-            : this.db.getLatestFeedCursor(groupId, channelId);
-        const afterCursor = remoteGroupLatest ? localLatest : null;
-        void this.sendToPeer(peerHash, {
-          t: 'RCHAT',
-          k: 'feed_req',
-          g: groupId,
-          c: channelId,
-          ...(afterCursor ? { after: this.cursorToWire(afterCursor) } : {}),
-          limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-        });
+      if (this.shouldRequestGroupRepair(peerHash, groupId)) {
+        const channelsToRepair = this.db
+          .getChannels(groupId, true)
+          .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
+        const repairChannelIds = remoteGroupLatest
+          ? (
+              channelsToRepair.length
+                ? channelsToRepair.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
+                : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID]
+            )
+          : [RETICULUM_CHAT_ALL_CHANNELS_ID];
+        for (const channelId of repairChannelIds) {
+          const localLatest =
+            channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+              ? null
+              : this.db.getLatestFeedCursor(groupId, channelId);
+          const afterCursor = remoteGroupLatest ? localLatest : null;
+          void this.sendToPeer(peerHash, {
+            t: 'RCHAT',
+            k: 'feed_req',
+            g: groupId,
+            c: channelId,
+            ...(afterCursor ? { after: this.cursorToWire(afterCursor) } : {}),
+            limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+          });
+        }
       }
     }
     if (
@@ -3101,19 +3108,34 @@ export class ReticulumChatManager extends EventEmitter {
 
   private clearSubscriptionFanoutQueue(): void {
     this.subscriptionFanoutQueue = [];
+    this.subscriptionFanoutQueuedKeys.clear();
     this.subscriptionFanoutSentInBatch = 0;
     this.stopSubscriptionFanoutTimer();
   }
 
   private enqueueSubscriptionFanouts(wires: ReticulumChatWire[]): void {
-    this.subscriptionFanoutQueue.push(...wires);
+    const now = this.now();
+    for (const wire of wires) {
+      const key = this.subscriptionFanoutKey(wire);
+      if (!key) continue;
+      if (this.subscriptionFanoutQueuedKeys.has(key)) continue;
+      const lastSentAt = this.subscriptionFanoutLastSentAt.get(key) ?? 0;
+      if (now - lastSentAt < RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS) continue;
+      this.subscriptionFanoutQueuedKeys.add(key);
+      this.subscriptionFanoutQueue.push(wire);
+    }
     this.drainSubscriptionFanoutQueue();
   }
 
   private removeQueuedSubscriptionFanouts(groupId: number): void {
-    this.subscriptionFanoutQueue = this.subscriptionFanoutQueue.filter(
-      (wire) => !this.getWireGroupIds(wire).includes(groupId)
-    );
+    this.subscriptionFanoutQueue = this.subscriptionFanoutQueue.filter((wire) => {
+      const remove = this.getWireGroupIds(wire).includes(groupId);
+      if (remove) {
+        const key = this.subscriptionFanoutKey(wire);
+        if (key) this.subscriptionFanoutQueuedKeys.delete(key);
+      }
+      return !remove;
+    });
   }
 
   private scheduleSubscriptionFanoutDrain(): void {
@@ -3133,6 +3155,8 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       const wire = this.subscriptionFanoutQueue.shift();
       if (!wire) break;
+      const key = this.subscriptionFanoutKey(wire);
+      if (key) this.subscriptionFanoutQueuedKeys.delete(key);
       const groups = this.getWireGroupIds(wire);
       if (
         groups.length > 0 &&
@@ -3141,6 +3165,7 @@ export class ReticulumChatManager extends EventEmitter {
         continue;
       }
       this.subscriptionFanoutSentInBatch += 1;
+      if (key) this.subscriptionFanoutLastSentAt.set(key, this.now());
       void this.fanout(wire);
     }
     if (this.subscriptionFanoutQueue.length > 0 || this.subscriptionFanoutSentInBatch > 0) {
@@ -3177,6 +3202,27 @@ export class ReticulumChatManager extends EventEmitter {
     if ('g' in wire && Number.isInteger(wire.g) && wire.g > 0) return [wire.g];
     if (wire.k === 'group_sub') return wire.groups.filter((groupId) => Number.isInteger(groupId) && groupId > 0);
     return [];
+  }
+
+  private subscriptionFanoutKey(wire: ReticulumChatWire): string {
+    if (wire.k === 'hello') return 'hello';
+    if (wire.k === 'group_sub') {
+      const groups = wire.groups
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
+        .sort((a, b) => a - b);
+      return `group_sub:${wire.mode}:${groups.join(',')}`;
+    }
+    if (wire.k === 'group_digest') return `group_digest:${wire.g}:${this.hashControlPayload(wire)}`;
+    return this.hashControlPayload(wire);
+  }
+
+  private shouldRequestGroupRepair(peerHash: string, groupId: number): boolean {
+    const key = `${peerHash.trim().toLowerCase()}:${groupId}`;
+    const now = this.now();
+    const lastRequestedAt = this.recentGroupRepairRequests.get(key) ?? 0;
+    if (now - lastRequestedAt < RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS) return false;
+    this.recentGroupRepairRequests.set(key, now);
+    return true;
   }
 
   private notePeerSubscription(peerHash: string, groupId: number, active: boolean): void {
@@ -3285,9 +3331,6 @@ export class ReticulumChatManager extends EventEmitter {
 
   private isRetryableControlWire(wire: ReticulumChatWire): boolean {
     switch (wire.k) {
-      case 'hello':
-      case 'group_sub':
-      case 'group_digest':
       case 'feed_req':
       case 'range_req':
       case 'event_req':
