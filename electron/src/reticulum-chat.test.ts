@@ -3233,6 +3233,100 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('repairs bidirectionally when digest hashes differ and local latest is newer', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([58]);
+    manager.subscribeGroup(58);
+    (manager as any).db.upsertChannel({
+      groupId: 58,
+      channelId: 'general',
+      name: 'general',
+      position: 0,
+      archived: false,
+      createdBy: 'test',
+      createdAt: 30_000,
+      updatedAt: 30_000,
+    });
+    const [olderLocal, latestLocal] = signedAuthorEvents([
+      {
+        eventId: 'event-bidirectional-local-old',
+        groupId: 58,
+        authorSeq: 1,
+        timestamp: 30_000,
+      },
+      {
+        eventId: 'event-bidirectional-local-latest',
+        groupId: 58,
+        authorSeq: 2,
+        timestamp: 50_000,
+      },
+    ]);
+    expect((manager as any).db.insertEvent(olderLocal, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latestLocal, true)).toBe(true);
+    expect(manager.getHistory(58, 'general', 10).map((event) => event.eventId)).toContain(
+      latestLocal.eventId
+    );
+    const remoteLatest = { id: 'event-bidirectional-remote-missing', ts: 40_000 };
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 58,
+        latest: remoteLatest,
+        channels: [
+          {
+            c: 'general',
+            latest: remoteLatest,
+          },
+        ],
+        digestHash: 'different-remote-digest-hash',
+      },
+      'peer-bidirectional-mismatch'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(direct).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'event_req',
+      g: 58,
+      q: expect.objectContaining({ id: remoteLatest.id }),
+    }));
+    expect(direct).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 58,
+      c: '*',
+      before: remoteLatest,
+    }));
+    expect(direct).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'event_offer',
+      g: 58,
+      o: expect.objectContaining({ id: latestLocal.eventId }),
+    }));
+    expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    manager.close();
+  });
+
   it('continues backward feed pages with a before cursor', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
