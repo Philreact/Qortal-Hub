@@ -310,6 +310,7 @@ const RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_SIZE = 8;
 const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_INTERVAL_MS = 200;
 const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS = 30_000;
+const RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS = 10 * 60 * 1_000;
 const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
 const RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT = RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT;
@@ -759,6 +760,7 @@ export class ReticulumChatManager extends EventEmitter {
   private subscriptionFanoutLastSentAt = new Map<string, number>();
   private subscriptionFanoutTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionFanoutSentInBatch = 0;
+  private subscriptionDigestRefreshOffset = 0;
   private eventPullQueueActive = false;
   private recentGroupRepairRequests = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
@@ -766,6 +768,7 @@ export class ReticulumChatManager extends EventEmitter {
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private observedDbEventIds = new Set<string>();
+  private activeDigestGroups = new Map<number, number>();
   private recentInboundControlWires = new Map<string, number>();
   private recentServedSyncRequests = new Map<string, number>();
   private peerProtocolViolations = new Map<string, ReticulumChatPeerViolationRecord>();
@@ -1016,7 +1019,10 @@ export class ReticulumChatManager extends EventEmitter {
     this.subscribedGroups.add(groupId);
     this.startLocalNotificationWatcher();
     this.startSubscriptionRefreshTimer();
-    if (alreadySubscribed) return;
+    if (alreadySubscribed) {
+      this.announceActiveGroupSubscription(groupId);
+      return;
+    }
     this.announceGroupSubscription(groupId);
   }
 
@@ -1031,6 +1037,14 @@ export class ReticulumChatManager extends EventEmitter {
       this.buildHelloWire(),
       { t: 'RCHAT', k: 'group_sub', groups: [groupId], mode: 'summary' },
       this.buildGroupDigestWire(groupId),
+    ]);
+  }
+
+  private announceActiveGroupSubscription(groupId: number): void {
+    if (!this.subscribedGroups.has(groupId) || !this.localGroupIds.has(groupId)) return;
+    this.enqueueSubscriptionFanouts([
+      { t: 'RCHAT', k: 'group_sub', groups: [groupId], mode: 'active' },
+      this.buildGroupDigestWire(groupId, 0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP),
     ]);
   }
 
@@ -2171,6 +2185,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private markGroupHistoryObserved(groupId: number): void {
+    this.activeDigestGroups.set(groupId, this.now());
     for (const event of this.db.getRecentEvents(groupId, 500, null)) {
       this.observedDbEventIds.add(event.eventId);
     }
@@ -3393,10 +3408,49 @@ export class ReticulumChatManager extends EventEmitter {
       const page = groups.slice(offset, offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE);
       if (page.length) wires.push({ t: 'RCHAT', k: 'group_sub', groups: page, mode: 'summary' });
     }
-    for (const groupId of groups.slice(0, RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE)) {
+    for (const groupId of this.getDigestRefreshGroups(groups)) {
       wires.push(this.buildGroupDigestWire(groupId));
     }
     this.enqueueSubscriptionFanouts(wires);
+  }
+
+  private getDigestRefreshGroups(groups: number[]): number[] {
+    const now = this.now();
+    for (const [groupId, observedAt] of this.activeDigestGroups) {
+      if (
+        now - observedAt > RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS ||
+        !this.subscribedGroups.has(groupId) ||
+        !this.localGroupIds.has(groupId)
+      ) {
+        this.activeDigestGroups.delete(groupId);
+      }
+    }
+
+    const groupSet = new Set(groups);
+    const activeGroups = [...this.activeDigestGroups.entries()]
+      .filter(([groupId]) => groupSet.has(groupId))
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+      .map(([groupId]) => groupId)
+      .slice(0, RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE);
+
+    const slots = RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE - activeGroups.length;
+    if (slots <= 0) return activeGroups;
+
+    const activeSet = new Set(activeGroups);
+    const backgroundGroups = groups.filter((groupId) => !activeSet.has(groupId));
+    if (backgroundGroups.length === 0) {
+      this.subscriptionDigestRefreshOffset = 0;
+      return activeGroups;
+    }
+
+    const start = this.subscriptionDigestRefreshOffset % backgroundGroups.length;
+    const count = Math.min(slots, backgroundGroups.length);
+    const rotated: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      rotated.push(backgroundGroups[(start + index) % backgroundGroups.length]);
+    }
+    this.subscriptionDigestRefreshOffset = (start + Math.max(1, count)) % backgroundGroups.length;
+    return [...activeGroups, ...rotated];
   }
 
   private getWireGroupIds(wire: ReticulumChatWire): number[] {

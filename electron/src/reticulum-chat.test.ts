@@ -2515,6 +2515,90 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('reopening an already-restored group still sends an active digest', async () => {
+    const knownGroups = vi
+      .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
+      .mockReturnValue([716]);
+    let now = 80_000;
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+
+    try {
+      expect(manager.getSubscriptions()).toEqual([716]);
+      sent.length = 0;
+      now += 31_000;
+
+      manager.subscribeGroup(716);
+
+      expect(sent).toContainEqual({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [716],
+        mode: 'active',
+      });
+      expect(sent).toContainEqual(expect.objectContaining({
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 716,
+      }));
+    } finally {
+      manager.close();
+      knownGroups.mockRestore();
+    }
+  });
+
+  it('rotates background digest refreshes beyond the first digest page', async () => {
+    const groupIds = Array.from({ length: 25 }, (_value, index) => index + 1);
+    const knownGroups = vi
+      .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
+      .mockReturnValue(groupIds);
+    let now = 80_000;
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      sent.length = 0;
+      now += 31_000;
+
+      manager.reannounceSubscriptions();
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      const digestGroupIds = sent
+        .filter((wire) => wire.k === 'group_digest')
+        .map((wire) => Number(wire.g));
+      expect(digestGroupIds).toContain(21);
+      expect(digestGroupIds).toContain(25);
+    } finally {
+      manager.close();
+      knownGroups.mockRestore();
+    }
+  });
+
   it('does not repeatedly serve digests for duplicate inbound group_sub controls', async () => {
     let now = 80_000;
     const direct: Record<string, unknown>[] = [];
