@@ -285,6 +285,9 @@ _QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS = 90.0
 _QCHAT_FILE_CHANNEL_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
 _QCHAT_FILE_CHUNK_DIAG_MIN_INTERVAL_SECONDS = 5.0
 _QCHAT_FILE_CHUNK_DIAG_MIN_DELTA = 0.05
+_STDOUT_RESP_BATCH_MAX = 32
+_STDOUT_EVENT_BATCH_MAX = 128
+_STDOUT_BATCH_MAX_BYTES = 1024 * 1024
 _QCHAT_FILE_RESERVED_METADATA_KEYS = {
     "kind",
     "resourceType",
@@ -3692,7 +3695,10 @@ def _stdout_writer_loop() -> None:
     resp_closed = False
     event_closed = False
 
-    def write_event_frame(frame: Dict[str, Any]) -> None:
+    def encode_resp_frame(frame: Dict[str, Any]) -> str:
+        return json.dumps(frame, separators=(",", ":")) + "\n"
+
+    def encode_event_frame(frame: Dict[str, Any]) -> str:
         if isinstance(frame, dict):
             now_mono = time.monotonic()
             queued_mono = float(frame.get("_queuedAtMono") or 0.0)
@@ -3713,41 +3719,87 @@ def _stdout_writer_loop() -> None:
                     f"queue_depth_before={int(frame.get('_eventQueueDepthBefore') or 0)} "
                     f"queue_depth_after={depth_after}",
                 )
-        sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
+        return json.dumps(frame, separators=(",", ":")) + "\n"
+
+    def write_lines(lines: list[str]) -> None:
+        if not lines:
+            return
+        sys.stdout.write("".join(lines))
         sys.stdout.flush()
 
-    while True:
-        if not resp_closed:
+    def append_line(lines: list[str], line: str, bytes_so_far: int) -> int:
+        lines.append(line)
+        return bytes_so_far + len(line)
+
+    def drain_resp_lines(max_lines: int, max_bytes: int) -> list[str]:
+        nonlocal resp_closed
+        lines: list[str] = []
+        bytes_so_far = 0
+        while not resp_closed and len(lines) < max_lines and bytes_so_far < max_bytes:
             try:
                 frame = _json_resp_queue.get_nowait()
             except queue.Empty:
-                frame = None
-            else:
-                if frame is None:
-                    resp_closed = True
-                else:
-                    sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
-                    sys.stdout.flush()
-                    continue
+                break
+            if frame is None:
+                resp_closed = True
+                break
+            bytes_so_far = append_line(lines, encode_resp_frame(frame), bytes_so_far)
+        return lines
+
+    def next_event_frame_nonblocking() -> Optional[Dict[str, Any]]:
+        nonlocal event_closed
+        if event_closed:
+            return None
+        try:
+            frame = _json_priority_event_queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            if frame is not None:
+                return frame
+
+        frame = _pop_coalesced_json_event_line()
+        if frame is not None:
+            return frame
+
+        try:
+            frame = _json_event_queue.get_nowait()
+        except queue.Empty:
+            return None
+        if frame is None:
+            event_closed = True
+            return None
+        return frame
+
+    def drain_event_lines(max_lines: int, max_bytes: int) -> list[str]:
+        lines: list[str] = []
+        bytes_so_far = 0
+        while not event_closed and len(lines) < max_lines and bytes_so_far < max_bytes:
+            frame = next_event_frame_nonblocking()
+            if frame is None:
+                break
+            bytes_so_far = append_line(lines, encode_event_frame(frame), bytes_so_far)
+        return lines
+
+    while True:
+        resp_lines = drain_resp_lines(
+            _STDOUT_RESP_BATCH_MAX,
+            _STDOUT_BATCH_MAX_BYTES,
+        )
+        if resp_lines:
+            write_lines(resp_lines)
+            continue
 
         if resp_closed and event_closed:
             break
 
-        if not event_closed:
-            try:
-                frame = _json_priority_event_queue.get_nowait()
-            except queue.Empty:
-                frame = None
-            else:
-                if frame is None:
-                    continue
-                write_event_frame(frame)
-                continue
-
-            frame = _pop_coalesced_json_event_line()
-            if frame is not None:
-                write_event_frame(frame)
-                continue
+        event_lines = drain_event_lines(
+            _STDOUT_EVENT_BATCH_MAX,
+            _STDOUT_BATCH_MAX_BYTES,
+        )
+        if event_lines:
+            write_lines(event_lines)
+            continue
 
         if not resp_closed:
             try:
@@ -3758,8 +3810,7 @@ def _stdout_writer_loop() -> None:
                 if frame is None:
                     resp_closed = True
                 else:
-                    sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
-                    sys.stdout.flush()
+                    write_lines([encode_resp_frame(frame)])
                     continue
 
         if event_closed:
@@ -3776,7 +3827,14 @@ def _stdout_writer_loop() -> None:
         if frame is None:
             event_closed = True
             continue
-        write_event_frame(frame)
+        lines = [encode_event_frame(frame)]
+        lines.extend(
+            drain_event_lines(
+                max(0, _STDOUT_EVENT_BATCH_MAX - 1),
+                max(0, _STDOUT_BATCH_MAX_BYTES - len(lines[0])),
+            )
+        )
+        write_lines(lines)
 
 
 def _audio_binary_out_writer_loop() -> None:
