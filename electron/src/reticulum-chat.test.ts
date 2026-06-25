@@ -1526,6 +1526,104 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('requests exact author range repair for already-stored sequence holes on peer subscription', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const [first, third] = signedAuthorEvents([
+      { eventId: 'event-known-sub-gap-1', groupId: 72, authorSeq: 1, timestamp: 90_000 },
+      { eventId: 'event-known-sub-gap-3', groupId: 72, authorSeq: 3, timestamp: 91_000 },
+    ]);
+    expect((manager as any).db.insertEvent(first, false)).toBe(true);
+    expect((manager as any).db.insertEvent(third, false)).toBe(true);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [72],
+        mode: 'active',
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'range_req',
+          ranges: [expect.objectContaining({ a: first.authorAddress, from: 2, to: 2 })],
+        }),
+      })
+    );
+    manager.close();
+  });
+
+  it('falls back to fanout when targeted author range repair cannot use the peer route', async () => {
+    const fanoutWires: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (wires: Record<string, unknown>[]) => {
+        fanoutWires.push(...wires);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({
+        ok: false as const,
+        reason: 'no-overlay-route' as const,
+      }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const [first, third] = signedAuthorEvents([
+      { eventId: 'event-known-fallback-gap-1', groupId: 72, authorSeq: 1, timestamp: 90_000 },
+      { eventId: 'event-known-fallback-gap-3', groupId: 72, authorSeq: 3, timestamp: 91_000 },
+    ]);
+    expect((manager as any).db.insertEvent(first, false)).toBe(true);
+    expect((manager as any).db.insertEvent(third, false)).toBe(true);
+    fanoutWires.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [72],
+        mode: 'active',
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(fanoutWires).toContainEqual(
+      expect.objectContaining({
+        k: 'range_req',
+        ranges: [expect.objectContaining({ a: first.authorAddress, from: 2, to: 2 })],
+      })
+    );
+    manager.close();
+  });
+
   it('accepts group-wide event batches without filtering events to general', async () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

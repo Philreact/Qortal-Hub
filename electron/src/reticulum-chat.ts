@@ -1455,6 +1455,7 @@ export class ReticulumChatManager extends EventEmitter {
       .slice(0, RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE);
     for (const groupId of groups) {
       this.notePeerSubscription(peerHash, groupId, true);
+      this.requestKnownAuthorGaps(groupId, peerHash, 'group_sub');
       if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) {
         continue;
       }
@@ -1819,14 +1820,12 @@ export class ReticulumChatManager extends EventEmitter {
       peerHash,
       this.now()
     );
-    if (!peerHash.trim()) return;
-    void this.sendToPeer(peerHash, {
-      t: 'RCHAT',
-      k: 'range_req',
-      g: event.groupId,
-      ranges: [{ a: event.authorAddress, from: fromSeq, to: toSeq }],
-      limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-    });
+    this.sendAuthorRangeRepairRequests(
+      event.groupId,
+      peerHash,
+      [{ a: event.authorAddress, from: fromSeq, to: toSeq }],
+      'incoming_event_gap'
+    );
   }
 
   private shouldRequestAuthorGapRepair(peerHash: string, groupId: number): boolean {
@@ -1868,14 +1867,43 @@ export class ReticulumChatManager extends EventEmitter {
     loggerLog(
       `[ReticulumChat] Requesting author gap repair group=${groupId} peer=${peer.slice(0, 16)} gaps=${ranges.length} reason=${reason}`
     );
-    void this.sendToPeer(peer, {
-      t: 'RCHAT',
-      k: 'range_req',
-      g: groupId,
-      ranges,
-      limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-    });
+    this.sendAuthorRangeRepairRequests(groupId, peer, ranges, reason);
     return true;
+  }
+
+  private sendAuthorRangeRepairRequests(
+    groupId: number,
+    peerHash: string,
+    ranges: Array<{ a: string; from: number; to: number }>,
+    reason: string
+  ): void {
+    const peer = peerHash.trim().toLowerCase();
+    for (const range of ranges) {
+      const wire: ReticulumChatWire = {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: groupId,
+        ranges: [range],
+        limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+      };
+      if (!wireFitsReticulum(wire)) {
+        loggerWarn(
+          `[ReticulumChat] Skipping oversized author gap repair group=${groupId} author=${range.a} from=${range.from} to=${range.to} reason=${reason}`
+        );
+        continue;
+      }
+      if (!peer) {
+        void this.fanout(wire);
+        continue;
+      }
+      void this.sendToPeer(peer, wire).then((result) => {
+        if (result.ok !== false) return;
+        loggerWarn(
+          `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${result.reason}; falling back to fanout`
+        );
+        void this.fanout(wire);
+      });
+    }
   }
 
   private async sendEventBatchOrResourceDigest(
