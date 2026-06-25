@@ -411,7 +411,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         return;
       }
     }
-    if (request.requireCompleteFile) {
+    if (request.requireCompleteFile && manifest.chunkHashes.length === 0) {
       let filePath = '';
       try {
         filePath = this.resourceStore.assembleResource(manifest.fileHash);
@@ -473,7 +473,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       }
       return;
     }
-    const requestedIndexes = Array.isArray(request.chunkIndexes)
+    const requestedIndexes = Array.isArray(request.chunkIndexes) && request.chunkIndexes.length > 0
       ? request.chunkIndexes
       : manifest.chunkHashes
           .map((_, index) => index)

@@ -288,6 +288,19 @@ _QCHAT_FILE_CHUNK_DIAG_MIN_DELTA = 0.05
 _STDOUT_RESP_BATCH_MAX = 32
 _STDOUT_EVENT_BATCH_MAX = 128
 _STDOUT_BATCH_MAX_BYTES = 1024 * 1024
+
+
+def _qchat_file_is_managed_resource_type(resource_type: str) -> bool:
+    return str(resource_type or "").strip() in (
+        _RETICULUM_CHAT_RESOURCE_TYPE,
+        _RETICULUM_RESOURCE_TYPE,
+    )
+
+
+def _qchat_file_should_bridge_chunk_resource(resource_type: str, stream_mode: bool) -> bool:
+    if stream_mode:
+        return False
+    return not _qchat_file_is_managed_resource_type(resource_type)
 _QCHAT_FILE_RESERVED_METADATA_KEYS = {
     "kind",
     "resourceType",
@@ -9615,6 +9628,154 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
     if not state.get("send_root"):
         state["send_root"] = state
     root = state.get("send_root") if isinstance(state.get("send_root"), dict) else state
+    if not _qchat_file_should_bridge_chunk_resource(resource_type, state.get("streamMode") is True):
+        root["transferId"] = transfer_id
+        root["peerPresenceHash"] = peer_hash
+        root["fileName"] = file_name
+        root["size"] = size
+        root["resourceType"] = resource_type
+        root["active_chunks"] = {
+            0: {
+                "size": size,
+                "progress": 0.0,
+                "started_at": time.monotonic(),
+            }
+        }
+        _qchat_file_emit(
+            "sending",
+            {
+                "transferId": transfer_id,
+                "peerPresenceHash": peer_hash,
+                "fileName": file_name,
+                "size": size,
+                "resourceType": resource_type,
+                **_qchat_file_progress_payload(root, 0.0, size),
+            },
+        )
+        log(
+            "[presence_bridge] qchat file resource starting "
+            f"transfer={transfer_id} peer={peer_hash[:16]} exact=true "
+            f"resource_size={size} resource_type={resource_type}"
+        )
+        metadata = {
+            "kind": resource_type,
+            "resourceType": resource_type,
+            "transferId": transfer_id,
+            "fileName": file_name,
+            "size": size,
+            "sha256": sha256,
+        }
+        extra_metadata = root.get("metadata") if isinstance(root.get("metadata"), dict) else state.get("metadata")
+        if isinstance(extra_metadata, dict):
+            for key, value in extra_metadata.items():
+                metadata_key = str(key)
+                if metadata_key in _QCHAT_FILE_RESERVED_METADATA_KEYS:
+                    metadata[f"app_{metadata_key}"] = value
+                else:
+                    metadata[metadata_key] = value
+
+        def on_done(resource) -> None:
+            status = "sent" if getattr(resource, "status", None) == RNS.Resource.COMPLETE else "failed"
+            resource_status = getattr(resource, "status", None)
+            elapsed = 0.0
+            active_for_elapsed = root.get("active_chunks")
+            if isinstance(active_for_elapsed, dict):
+                active_chunk = active_for_elapsed.get(0)
+                if isinstance(active_chunk, dict):
+                    started_at = float(active_chunk.get("started_at") or 0)
+                    if started_at > 0:
+                        elapsed = max(0.0, time.monotonic() - started_at)
+            log(
+                "[presence_bridge] qchat file resource send concluded "
+                f"transfer={transfer_id} peer={peer_hash[:16]} exact=true "
+                f"resource_size={size} status={status} resource_status={resource_status} "
+                f"elapsed_ms={int(elapsed * 1000)}"
+            )
+            if status == "sent":
+                root["completed"] = True
+                root["sent_bytes"] = size
+                active = root.get("active_chunks")
+                if isinstance(active, dict):
+                    active.pop(0, None)
+                with _state_lock:
+                    _qchat_file_pending_sends_by_transfer.pop(transfer_id, None)
+                _qchat_file_emit(
+                    "sent",
+                    {
+                        "transferId": transfer_id,
+                        "peerPresenceHash": peer_hash,
+                        "fileName": file_name,
+                        "size": size,
+                        "resourceType": resource_type,
+                        **_qchat_file_progress_payload(root, 1.0, size),
+                    },
+                )
+                _qchat_file_close_success_link_after_grace(link, state)
+                return
+            active = root.get("active_chunks")
+            if isinstance(active, dict):
+                active.pop(0, None)
+            _qchat_file_emit(
+                "failed",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": file_name,
+                    "size": size,
+                    "resourceType": resource_type,
+                    "reason": "resource_send_failed",
+                    "resourceStatus": resource_status,
+                },
+            )
+            link_id_done = get_qchat_file_link_id(link)
+            if link_id_done:
+                remove_qchat_file_link(link_id_done)
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=qchat-file-reticulum send_failed transfer={transfer_id}",
+            )
+
+        def on_progress(resource) -> None:
+            try:
+                progress = float(resource.get_progress())
+            except Exception:
+                progress = 0.0
+            active = root.setdefault("active_chunks", {})
+            if isinstance(active, dict):
+                chunk = active.setdefault(0, {"size": size, "progress": 0.0})
+                if isinstance(chunk, dict):
+                    chunk["progress"] = progress
+            if _should_log_qchat_file_chunk_progress(root, "send:exact", progress):
+                log(
+                    "[presence_bridge] qchat file resource send progress "
+                    f"transfer={transfer_id} peer={peer_hash[:16]} exact=true "
+                    f"resource_size={size} progress={progress:.3f}"
+                )
+            if _should_emit_qchat_file_progress(root, progress):
+                _qchat_file_emit(
+                    "sending",
+                    {
+                        "transferId": transfer_id,
+                        "peerPresenceHash": peer_hash,
+                        "fileName": file_name,
+                        "size": size,
+                        "resourceType": resource_type,
+                        **_qchat_file_progress_payload(root, progress, size),
+                    },
+                )
+
+        resource_data = _qchat_file_read_chunk(file_path, 0, size)
+        RNS.Resource(
+            resource_data,
+            link,
+            metadata=metadata,
+            auto_compress=False,
+            callback=on_done,
+            progress_callback=on_progress,
+        )
+        state["resource_started"] = True
+        return True
+
     chunk_count = _qchat_file_chunk_count(size)
     with _state_lock:
         requested_chunk = state.pop("requestedChunkIndex", None)
@@ -10043,7 +10204,7 @@ def on_qchat_file_resource_started(resource) -> None:
     chunk_count = int(metadata.get("chunkCount") or 0) if isinstance(metadata, dict) else 0
     chunk_size = int(metadata.get("chunkSize") or 0) if isinstance(metadata, dict) else 0
     is_known_chunk = isinstance(metadata, dict) and metadata.get("chunked") is True and chunk_index >= 0
-    is_chunked_pending = isinstance(pending.get("completed_chunks"), set)
+    is_chunked_pending = pending.get("bridgeChunked") is True
     if is_known_chunk:
         lock = pending.get("chunk_lock")
         if lock is None:
@@ -10163,13 +10324,16 @@ def on_qchat_file_resource_concluded(resource) -> None:
     try:
         metadata = getattr(resource, "metadata", None)
         is_chunked = isinstance(metadata, dict) and metadata.get("chunked") is True
+        managed_resource = _qchat_file_is_managed_resource_type(
+            str(pending.get("resourceType") or "")
+        )
         if getattr(resource, "status", None) != RNS.Resource.COMPLETE:
             log(
                 "[presence_bridge] qchat file resource incomplete "
                 f"transfer={transfer_id} peer={peer_hash[:16]} "
                 f"resource_status={getattr(resource, 'status', None)}"
             )
-            if is_chunked and _qchat_file_retry_receive_chunk(
+            if is_chunked and not managed_resource and _qchat_file_retry_receive_chunk(
                 pending,
                 state,
                 peer_hash,
@@ -10178,7 +10342,7 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 "resource_incomplete",
             ):
                 return
-            if not is_chunked and _qchat_file_retry_unknown_receive_chunk(
+            if not is_chunked and not managed_resource and _qchat_file_retry_unknown_receive_chunk(
                 pending,
                 state,
                 peer_hash,
@@ -13179,6 +13343,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
     if not isinstance(auth_message, dict):
         emit_resp(req_id, False, error="Missing Reticulum link auth message")
         return
+    bridge_chunked = _qchat_file_should_bridge_chunk_resource(resource_type, stream_mode)
     try:
         if resource_type in (_RETICULUM_CHAT_RESOURCE_TYPE, _RETICULUM_RESOURCE_TYPE) and (not isinstance(pk_b64, str) or not pk_b64.strip()):
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
@@ -13205,6 +13370,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "sha256": sha256,
             "resourceType": resource_type,
             "streamMode": stream_mode,
+            "bridgeChunked": bridge_chunked,
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
@@ -13226,7 +13392,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "resourceType": resource_type,
         },
     )
-    links_to_open = 1 if stream_mode else min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
+    links_to_open = 1 if not bridge_chunked else min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
     for _ in range(links_to_open):
         state = {
             "peerPresenceHash": peer_hash,
@@ -13239,6 +13405,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "sha256": sha256,
             "resourceType": resource_type,
             "streamMode": stream_mode,
+            "bridgeChunked": bridge_chunked,
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
