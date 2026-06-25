@@ -306,10 +306,20 @@ def _qchat_file_is_managed_resource_type(resource_type: str) -> bool:
     )
 
 
+def _qchat_file_is_bridge_chunkable_managed_resource_type(resource_type: str) -> bool:
+    normalized = str(resource_type or "").strip()
+    if normalized == _RETICULUM_CHAT_RESOURCE_TYPE:
+        return False
+    return _qchat_file_is_managed_resource_type(normalized)
+
+
 def _qchat_file_should_bridge_chunk_resource(resource_type: str, stream_mode: bool) -> bool:
     if stream_mode:
         return False
-    return not _qchat_file_is_managed_resource_type(resource_type)
+    return (
+        not _qchat_file_is_managed_resource_type(resource_type)
+        or _qchat_file_is_bridge_chunkable_managed_resource_type(resource_type)
+    )
 _QCHAT_FILE_RESERVED_METADATA_KEYS = {
     "kind",
     "resourceType",
@@ -10358,7 +10368,7 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 f"transfer={transfer_id} peer={peer_hash[:16]} "
                 f"resource_status={getattr(resource, 'status', None)}"
             )
-            if is_chunked and not managed_resource and _qchat_file_retry_receive_chunk(
+            if is_chunked and _qchat_file_retry_receive_chunk(
                 pending,
                 state,
                 peer_hash,
