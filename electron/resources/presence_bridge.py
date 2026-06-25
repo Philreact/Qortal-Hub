@@ -291,9 +291,18 @@ _STDOUT_BATCH_MAX_BYTES = 1024 * 1024
 
 
 def _qchat_file_is_managed_resource_type(resource_type: str) -> bool:
-    return str(resource_type or "").strip() in (
+    normalized = str(resource_type or "").strip()
+    return normalized in (
         _RETICULUM_CHAT_RESOURCE_TYPE,
         _RETICULUM_RESOURCE_TYPE,
+        "reticulum_group_resource",
+        "reticulum_group_resource_chunk",
+    ) or (
+        normalized.startswith(f"{_RETICULUM_RESOURCE_TYPE}_")
+        or (
+            normalized.startswith("reticulum_")
+            and "_resource" in normalized
+        )
     )
 
 
@@ -10135,7 +10144,10 @@ def on_qchat_file_resource_advertised(resource) -> bool:
     ).strip().lower()
     if not peer_hash:
         return False
-    transfer_id_hint = _qchat_file_resource_transfer_id(resource)
+    transfer_id_hint = (
+        _qchat_file_resource_transfer_id(resource)
+        or str((state or {}).get("transferId") or "").strip()
+    )
     with _state_lock:
         pending = _qchat_file_expire_pending_receive(peer_hash, transfer_id_hint)
     if not pending:
@@ -10184,7 +10196,10 @@ def on_qchat_file_resource_started(resource) -> None:
         )
         or ""
     ).strip().lower()
-    transfer_id_hint = _qchat_file_resource_transfer_id(resource)
+    transfer_id_hint = (
+        _qchat_file_resource_transfer_id(resource)
+        or str((state or {}).get("transferId") or "").strip()
+    )
     with _state_lock:
         pending = _qchat_file_get_pending_receive(peer_hash, transfer_id_hint)
     if state is not None:
@@ -10307,7 +10322,10 @@ def on_qchat_file_resource_concluded(resource) -> None:
     if not peer_hash:
         log("[presence_bridge] qchat file resource concluded without peer hash")
         return
-    resource_transfer_id = _qchat_file_resource_transfer_id(resource)
+    resource_transfer_id = (
+        _qchat_file_resource_transfer_id(resource)
+        or str((state or {}).get("transferId") or "").strip()
+    )
     with _state_lock:
         pending = _qchat_file_get_pending_receive(peer_hash, resource_transfer_id)
     if not pending:
