@@ -37,6 +37,12 @@ export type ReticulumChatAuthorHead = {
   timestamp: number;
 };
 
+export type ReticulumChatAuthorSequenceGap = {
+  authorAddress: string;
+  fromSeq: number;
+  toSeq: number;
+};
+
 export type ReticulumChatFeedCursor = {
   eventId: string;
   feedTimestamp: number;
@@ -272,6 +278,7 @@ export class ReticulumChatDatabase {
   private stmtGetAuthorMaxSeq: Statement;
   private stmtGetAuthorEventsAfter: Statement;
   private stmtGetAuthorHeads: Statement;
+  private stmtGetAuthorSequenceGaps: Statement;
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
   private stmtGetKnownGroups: Statement;
@@ -442,6 +449,26 @@ export class ReticulumChatDatabase {
       ORDER BY e.timestamp DESC, e.event_id DESC
       LIMIT ?
       OFFSET ?
+    `);
+    this.stmtGetAuthorSequenceGaps = this.db.prepare(`
+      WITH ordered AS (
+        SELECT author_address,
+               author_seq,
+               LAG(author_seq) OVER (
+                 PARTITION BY author_address
+                 ORDER BY author_seq ASC
+               ) AS previous_seq
+        FROM reticulum_chat_events
+        WHERE group_id = ?
+      )
+      SELECT author_address,
+             previous_seq + 1 AS from_seq,
+             author_seq - 1 AS to_seq
+      FROM ordered
+      WHERE previous_seq IS NOT NULL
+        AND author_seq > previous_seq + 1
+      ORDER BY author_address ASC, from_seq ASC
+      LIMIT ?
     `);
     this.stmtGetMissingByAuthor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
@@ -1481,6 +1508,59 @@ export class ReticulumChatDatabase {
     return [...heads.values()]
       .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
       .slice(safeOffset)
+      .slice(0, maxLimit);
+  }
+
+  getAuthorSequenceGaps(
+    groupId: number,
+    limit: number
+  ): ReticulumChatAuthorSequenceGap[] {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    const maxLimit = Math.max(1, Math.floor(limit));
+    const gaps = new Map<string, ReticulumChatAuthorSequenceGap>();
+
+    for (const row of this.stmtGetAuthorSequenceGaps.all(groupId, maxLimit) as Array<{
+      author_address?: string;
+      from_seq?: number;
+      to_seq?: number;
+    }>) {
+      const authorAddress = typeof row.author_address === 'string' ? row.author_address : '';
+      const fromSeq = Number(row.from_seq);
+      const toSeq = Number(row.to_seq);
+      if (
+        !authorAddress ||
+        !Number.isInteger(fromSeq) ||
+        !Number.isInteger(toSeq) ||
+        toSeq < fromSeq
+      ) {
+        continue;
+      }
+      gaps.set(`${authorAddress}:${fromSeq}:${toSeq}`, { authorAddress, fromSeq, toSeq });
+    }
+
+    const memorySeqsByAuthor = new Map<string, number[]>();
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== groupId) continue;
+      const seqs = memorySeqsByAuthor.get(event.authorAddress) ?? [];
+      seqs.push(event.authorSeq);
+      memorySeqsByAuthor.set(event.authorAddress, seqs);
+    }
+    for (const [authorAddress, seqs] of memorySeqsByAuthor) {
+      seqs.sort((a, b) => a - b);
+      for (let index = 1; index < seqs.length; index += 1) {
+        const previousSeq = seqs[index - 1];
+        const currentSeq = seqs[index];
+        if (currentSeq <= previousSeq + 1) continue;
+        const fromSeq = previousSeq + 1;
+        const toSeq = currentSeq - 1;
+        gaps.set(`${authorAddress}:${fromSeq}:${toSeq}`, { authorAddress, fromSeq, toSeq });
+        if (gaps.size >= maxLimit) break;
+      }
+      if (gaps.size >= maxLimit) break;
+    }
+
+    return [...gaps.values()]
+      .sort((a, b) => a.authorAddress.localeCompare(b.authorAddress) || a.fromSeq - b.fromSeq)
       .slice(0, maxLimit);
   }
 

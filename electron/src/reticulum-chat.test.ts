@@ -1394,6 +1394,138 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('requests exact author range repair when downloaded event resources reveal gaps', async () => {
+    const acceptedTransfers: unknown[] = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+        acceptedTransfers.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const event = signedEvent({
+      eventId: 'event-resource-gap-repair',
+      groupId: 72,
+      authorSeq: 3,
+      timestamp: 100_000,
+    });
+    const blob = serializeReticulumChatEvent(event);
+    const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const resourcePath = path.join(path.dirname(tempDbPath()), 'event-resource-gap.json');
+    fs.writeFileSync(resourcePath, blob, 'utf8');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 72,
+        o: {
+          x: 'transfer-resource-gap-repair',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'peer-a'
+    );
+    expect(acceptedTransfers).toHaveLength(1);
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'transfer-resource-gap-repair',
+      peerPresenceHash: 'peer-a',
+      path: resourcePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'range_req',
+          ranges: [expect.objectContaining({ a: event.authorAddress, from: 1, to: 2 })],
+        }),
+      })
+    );
+    expect(manager.getHistory(72, 10).map((item) => item.eventId)).toContain(event.eventId);
+    manager.close();
+  });
+
+  it('requests exact author range repair for already-stored sequence holes on peer digest', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const [first, third] = signedAuthorEvents([
+      { eventId: 'event-known-gap-1', groupId: 72, authorSeq: 1, timestamp: 90_000 },
+      { eventId: 'event-known-gap-3', groupId: 72, authorSeq: 3, timestamp: 91_000 },
+    ]);
+    expect((manager as any).db.insertEvent(first, false)).toBe(true);
+    expect((manager as any).db.insertEvent(third, false)).toBe(true);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 72,
+        latest: { id: third.eventId, ts: third.timestamp },
+        channels: [
+          {
+            c: 'general',
+            latest: { id: third.eventId, ts: third.timestamp },
+            oldest: { id: first.eventId, ts: first.timestamp },
+            wh: nodeCrypto
+              .createHash('sha256')
+              .update(JSON.stringify([first.eventId, third.eventId]), 'utf8')
+              .digest('hex'),
+          },
+        ],
+        digestHash: 'peer-digest',
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'range_req',
+          ranges: [expect.objectContaining({ a: first.authorAddress, from: 2, to: 2 })],
+        }),
+      })
+    );
+    manager.close();
+  });
+
   it('accepts group-wide event batches without filtering events to general', async () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

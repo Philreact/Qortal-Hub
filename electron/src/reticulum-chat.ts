@@ -310,6 +310,7 @@ const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_BATCH_INTERVAL_MS = 200;
 const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS = 30_000;
 const RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS = 10 * 60 * 1_000;
 const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
+const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
 const RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT = RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
@@ -761,6 +762,7 @@ export class ReticulumChatManager extends EventEmitter {
   private subscriptionDigestRefreshOffset = 0;
   private eventPullQueueActive = false;
   private recentGroupRepairRequests = new Map<string, number>();
+  private recentAuthorGapRepairRequests = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
@@ -1479,6 +1481,7 @@ export class ReticulumChatManager extends EventEmitter {
       remoteDigestHash,
       this.now()
     );
+    this.requestKnownAuthorGaps(groupId, peerHash, 'group_digest');
     const channels = wire.channels.slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
     let requestedFromChannelDigest = false;
     let pushedFromChannelDigest = false;
@@ -1764,24 +1767,7 @@ export class ReticulumChatManager extends EventEmitter {
       }
       validWindowEvents.push(event);
       this.noteEventSourcePeer(event.eventId, peerHash);
-      const localMaxSeq = this.db.getAuthorMaxSeq(groupId, event.authorAddress);
-      if (event.authorSeq > localMaxSeq + 1) {
-        this.db.upsertMissingRange(
-          groupId,
-          event.authorAddress,
-          localMaxSeq + 1,
-          event.authorSeq - 1,
-          peerHash,
-          this.now()
-        );
-        void this.sendToPeer(peerHash, {
-          t: 'RCHAT',
-          k: 'range_req',
-          g: groupId,
-          ranges: [{ a: event.authorAddress, from: localMaxSeq + 1, to: event.authorSeq - 1 }],
-          limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-        });
-      }
+      this.requestMissingAuthorRangeBeforeAccept(event, peerHash);
       const inserted = this.acceptEvent(event, false);
       if (inserted) {
         this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
@@ -1815,6 +1801,81 @@ export class ReticulumChatManager extends EventEmitter {
         });
       }
     }
+  }
+
+  private requestMissingAuthorRangeBeforeAccept(
+    event: ReticulumChatEvent,
+    peerHash: string
+  ): void {
+    const localMaxSeq = this.db.getAuthorMaxSeq(event.groupId, event.authorAddress);
+    if (event.authorSeq <= localMaxSeq + 1) return;
+    const fromSeq = localMaxSeq + 1;
+    const toSeq = event.authorSeq - 1;
+    this.db.upsertMissingRange(
+      event.groupId,
+      event.authorAddress,
+      fromSeq,
+      toSeq,
+      peerHash,
+      this.now()
+    );
+    if (!peerHash.trim()) return;
+    void this.sendToPeer(peerHash, {
+      t: 'RCHAT',
+      k: 'range_req',
+      g: event.groupId,
+      ranges: [{ a: event.authorAddress, from: fromSeq, to: toSeq }],
+      limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+    });
+  }
+
+  private shouldRequestAuthorGapRepair(peerHash: string, groupId: number): boolean {
+    const key = `${peerHash.trim().toLowerCase()}:${groupId}`;
+    const now = this.now();
+    const lastRequestedAt = this.recentAuthorGapRepairRequests.get(key) ?? 0;
+    if (now - lastRequestedAt < RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS) return false;
+    this.recentAuthorGapRepairRequests.set(key, now);
+    return true;
+  }
+
+  private requestKnownAuthorGaps(
+    groupId: number,
+    peerHash: string,
+    reason: string
+  ): boolean {
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer || !this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) {
+      return false;
+    }
+    const gaps = this.db.getAuthorSequenceGaps(
+      groupId,
+      RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE
+    );
+    if (gaps.length === 0) return false;
+    if (!this.shouldRequestAuthorGapRepair(peer, groupId)) return false;
+    const now = this.now();
+    const ranges = gaps.map((gap) => {
+      this.db.upsertMissingRange(
+        groupId,
+        gap.authorAddress,
+        gap.fromSeq,
+        gap.toSeq,
+        peer,
+        now
+      );
+      return { a: gap.authorAddress, from: gap.fromSeq, to: gap.toSeq };
+    });
+    loggerLog(
+      `[ReticulumChat] Requesting author gap repair group=${groupId} peer=${peer.slice(0, 16)} gaps=${ranges.length} reason=${reason}`
+    );
+    void this.sendToPeer(peer, {
+      t: 'RCHAT',
+      k: 'range_req',
+      g: groupId,
+      ranges,
+      limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+    });
+    return true;
   }
 
   private async sendEventBatchOrResourceDigest(
@@ -3103,9 +3164,11 @@ export class ReticulumChatManager extends EventEmitter {
         this.retryEventPullAfterResourceFailure(offer, 'non_member_event_author');
         return;
       }
+      const event = parsed as ReticulumChatEvent;
+      const sourcePeerHash = offer.sourcePeerHash || payload.peerPresenceHash || '';
+      this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
       if (this.acceptEvent(parsed, false)) {
-        const event = parsed as ReticulumChatEvent;
-        this.noteEventSourcePeer(event.eventId, offer.sourcePeerHash || payload.peerPresenceHash || '');
+        this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
         this.emit('event', { event });
         const exclude = payload.peerPresenceHash ? [payload.peerPresenceHash] : [];
