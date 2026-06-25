@@ -1020,7 +1020,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('requests cursorless repair from the beginning even when local history exists', async () => {
+  it('pushes local history when a cursorless peer digest is behind local history', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -1037,7 +1037,8 @@ describe('reticulum chat manager', () => {
       now: () => 100_000,
     });
     manager.setLocalGroupMemberships([9]);
-    await manager.publishEvent(signedEvent({ groupId: 9, timestamp: 90_000 }));
+    const event = signedEvent({ groupId: 9, timestamp: 90_000 });
+    await manager.publishEvent(event);
     manager.subscribeGroup(9);
     direct.length = 0;
 
@@ -1053,14 +1054,22 @@ describe('reticulum chat manager', () => {
     );
 
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
-    expect(direct.find((wire) => wire.k === 'feed_req')).toEqual({
-      t: 'RCHAT',
-      k: 'feed_req',
-      g: 9,
-      c: '*',
-      limit: 25,
-    });
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
+    expect(direct.some((wire) => ['event_batch', 'event_offer', 'group_digest'].includes(String(wire.k)))).toBe(true);
+    const batch = direct.find((wire) => wire.k === 'event_batch') as any;
+    if (batch) {
+      expect(batch).toMatchObject({
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: 9,
+        c: '*',
+      });
+      expect(batch.batch.events.map((item: ReticulumChatEvent) => item.eventId)).toContain(event.eventId);
+    }
+    const digest = direct.find((wire) => wire.k === 'group_digest') as any;
+    if (digest) {
+      expect(digest.latest).toEqual({ id: event.eventId, ts: event.timestamp });
+    }
     manager.close();
   });
 

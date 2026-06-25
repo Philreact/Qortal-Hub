@@ -1468,6 +1468,7 @@ export class ReticulumChatManager extends EventEmitter {
     );
     const channels = wire.channels.slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
     let requestedFromChannelDigest = false;
+    let pushedFromChannelDigest = false;
     for (const rawChannel of channels) {
       if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) continue;
       const channel = rawChannel as Partial<ReticulumChatDigestWire>;
@@ -1497,6 +1498,9 @@ export class ReticulumChatManager extends EventEmitter {
           limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
         });
         requestedFromChannelDigest = true;
+      } else if (this.compareCursors(localLatest, remoteLatest) > 0) {
+        void this.sendFeedPageToPeer(peerHash, groupId, channelId, remoteLatest, 'after');
+        pushedFromChannelDigest = true;
       }
     }
     const localGroupLatest = this.getGroupLatestCursor(groupId);
@@ -1507,8 +1511,44 @@ export class ReticulumChatManager extends EventEmitter {
         : '';
     const remoteDigestNeedsRepair =
       !!remoteDigestHash && remoteDigestHash !== localDigestHash;
+    const remoteHasCursorDetail =
+      !!remoteGroupLatest ||
+      channels.some((rawChannel) => {
+        if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) return false;
+        return !!this.cursorFromWire((rawChannel as Partial<ReticulumChatDigestWire>).latest);
+      });
+    const remoteIsBehindGroup =
+      !!localGroupLatest &&
+      (
+        !remoteGroupLatest ||
+        this.compareCursors(localGroupLatest, remoteGroupLatest) > 0
+      );
     if (
       !requestedFromChannelDigest &&
+      !pushedFromChannelDigest &&
+      remoteIsBehindGroup &&
+      (
+        remoteDigestNeedsRepair ||
+        !remoteHasCursorDetail ||
+        (remoteGroupLatest && this.compareCursors(localGroupLatest, remoteGroupLatest) > 0)
+      )
+    ) {
+      const afterCursor = remoteGroupLatest ?? null;
+      void this.sendFeedPageToPeer(
+        peerHash,
+        groupId,
+        RETICULUM_CHAT_ALL_CHANNELS_ID,
+        afterCursor,
+        'after'
+      );
+      loggerLog(
+        `[ReticulumChat] Sync push group=${groupId} peer=${peerHash.slice(0, 16)} after=${afterCursor ? afterCursor.eventId : 'start'} reason=peer-behind`
+      );
+      pushedFromChannelDigest = true;
+    }
+    if (
+      !requestedFromChannelDigest &&
+      !pushedFromChannelDigest &&
       (
         (remoteGroupLatest &&
           (!localGroupLatest || this.compareCursors(remoteGroupLatest, localGroupLatest) > 0)) ||
@@ -1742,6 +1782,39 @@ export class ReticulumChatManager extends EventEmitter {
       await this.offerEventResource(peerHash, groupId, event.eventId);
     }
     await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
+  }
+
+  private async sendFeedPageToPeer(
+    peerHash: string,
+    groupId: number,
+    channelId: string,
+    after: ReticulumChatFeedCursor | null,
+    direction: 'after' | 'before' | 'range' = 'after'
+  ): Promise<void> {
+    const events =
+      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+        ? this.db.getGroupFeedPageAfter(
+            groupId,
+            after,
+            RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
+          )
+        : this.db.getFeedPageAfter(
+            groupId,
+            channelId,
+            after,
+            RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
+          );
+    const hasMore = events.length > RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS;
+    const visibleEvents = events.slice(0, RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS);
+    if (visibleEvents.length) this.db.markServed(visibleEvents.map((event) => event.eventId));
+    await this.sendEventBatchOrResourceDigest(
+      peerHash,
+      groupId,
+      channelId,
+      visibleEvents,
+      hasMore,
+      direction
+    );
   }
 
   private compareCursors(a: ReticulumChatFeedCursor, b: ReticulumChatFeedCursor): number {
