@@ -37,6 +37,19 @@ export type ReticulumChatAuthorHead = {
   timestamp: number;
 };
 
+export type ReticulumChatFeedCursor = {
+  eventId: string;
+  feedTimestamp: number;
+};
+
+export type ReticulumChatChannelDigest = {
+  groupId: number;
+  channelId: string;
+  latestCursor: ReticulumChatFeedCursor | null;
+  oldestCursor: ReticulumChatFeedCursor | null;
+  visibleWindowHash: string;
+};
+
 export type ReticulumChatSummary = {
   groupId: number;
   channelId: string;
@@ -70,6 +83,7 @@ type EventRow = {
   author_public_key: string;
   author_seq: number;
   timestamp: number;
+  feed_timestamp: number;
   event_type: string;
   target_event_id: string | null;
   reply_to_event_id: string | null;
@@ -80,6 +94,7 @@ type EventRow = {
   own_event: number;
   last_served_at: number;
   stored_at: number;
+  accepted_at: number;
   wire_bytes: number;
 };
 
@@ -284,6 +299,16 @@ export class ReticulumChatDatabase {
   private stmtGetCategory: Statement;
   private stmtDeleteCategory: Statement;
   private stmtClearChannelCategory: Statement;
+  private stmtGetLatestCursor: Statement;
+  private stmtGetOldestCursor: Statement;
+  private stmtGetChannelDigests: Statement;
+  private stmtGetFeedPageAfter: Statement;
+  private stmtGetFeedPageBefore: Statement;
+  private stmtGetAuthorEventsRange: Statement;
+  private stmtUpsertPeerGroupState: Statement;
+  private stmtUpsertPeerChannelState: Statement;
+  private stmtUpsertVerifiedWindow: Statement;
+  private stmtUpsertMissingRange: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -296,14 +321,14 @@ export class ReticulumChatDatabase {
     this.stmtInsertEvent = this.db.prepare(`
       INSERT OR IGNORE INTO reticulum_chat_events
         (event_id, group_id, author_address, author_public_key, author_seq,
-         timestamp, event_type, target_event_id, reply_to_event_id,
+         timestamp, feed_timestamp, event_type, target_event_id, reply_to_event_id,
          encrypted_payload, payload_hash, mention_address_hashes, signature, own_event,
-         last_served_at, stored_at, wire_bytes, channel_id)
+         last_served_at, stored_at, accepted_at, wire_bytes, channel_id)
       VALUES
         (@event_id, @group_id, @author_address, @author_public_key, @author_seq,
-         @timestamp, @event_type, @target_event_id, @reply_to_event_id,
+         @timestamp, @feed_timestamp, @event_type, @target_event_id, @reply_to_event_id,
          @encrypted_payload, @payload_hash, @mention_address_hashes, @signature, @own_event,
-         @last_served_at, @stored_at, @wire_bytes, @channel_id)
+         @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id)
     `);
     this.stmtGetEvent = this.db.prepare(
       'SELECT * FROM reticulum_chat_events WHERE event_id = ? LIMIT 1'
@@ -341,33 +366,33 @@ export class ReticulumChatDatabase {
     `);
     this.stmtGetEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND channel_id = ? AND timestamp > ?
-      ORDER BY timestamp ASC, event_id ASC
+      WHERE group_id = ? AND channel_id = ? AND feed_timestamp > ?
+      ORDER BY feed_timestamp ASC, event_id ASC
       LIMIT ?
     `);
     this.stmtGetEventsAfterCursor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND channel_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?))
-      ORDER BY timestamp ASC, event_id ASC
+      WHERE group_id = ? AND channel_id = ? AND (feed_timestamp > ? OR (feed_timestamp = ? AND event_id > ?))
+      ORDER BY feed_timestamp ASC, event_id ASC
       LIMIT ?
     `);
     this.stmtGetEventsBefore = this.db.prepare(`
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND channel_id = ? AND timestamp < ?
-        ORDER BY timestamp DESC, event_id DESC
+      WHERE group_id = ? AND channel_id = ? AND feed_timestamp < ?
+        ORDER BY feed_timestamp DESC, event_id DESC
         LIMIT ?
       )
-      ORDER BY timestamp ASC, event_id ASC
+      ORDER BY feed_timestamp ASC, event_id ASC
     `);
     this.stmtGetEventsBeforeCursor = this.db.prepare(`
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND channel_id = ? AND (timestamp < ? OR (timestamp = ? AND event_id < ?))
-        ORDER BY timestamp DESC, event_id DESC
+      WHERE group_id = ? AND channel_id = ? AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
+        ORDER BY feed_timestamp DESC, event_id DESC
         LIMIT ?
       )
-      ORDER BY timestamp ASC, event_id ASC
+      ORDER BY feed_timestamp ASC, event_id ASC
     `);
     this.stmtGetAuthorMaxSeq = this.db.prepare(`
       SELECT MAX(author_seq) AS seq
@@ -562,6 +587,108 @@ export class ReticulumChatDatabase {
     this.stmtClearChannelCategory = this.db.prepare(
       'UPDATE reticulum_chat_channels SET category_id = NULL WHERE group_id = ? AND category_id = ?'
     );
+    this.stmtGetLatestCursor = this.db.prepare(`
+      SELECT event_id, feed_timestamp
+      FROM reticulum_chat_events
+      WHERE group_id = ? AND channel_id = ?
+      ORDER BY feed_timestamp DESC, event_id DESC
+      LIMIT 1
+    `);
+    this.stmtGetOldestCursor = this.db.prepare(`
+      SELECT event_id, feed_timestamp
+      FROM reticulum_chat_events
+      WHERE group_id = ? AND channel_id = ?
+      ORDER BY feed_timestamp ASC, event_id ASC
+      LIMIT 1
+    `);
+    this.stmtGetChannelDigests = this.db.prepare(`
+      SELECT channel_id,
+             MIN(feed_timestamp) AS oldest_feed_timestamp,
+             MAX(feed_timestamp) AS latest_feed_timestamp,
+             COUNT(*) AS event_count
+      FROM reticulum_chat_events
+      WHERE group_id = ?
+      GROUP BY channel_id
+      ORDER BY latest_feed_timestamp DESC, channel_id ASC
+      LIMIT ?
+      OFFSET ?
+    `);
+    this.stmtGetFeedPageAfter = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND channel_id = ?
+        AND (feed_timestamp > ? OR (feed_timestamp = ? AND event_id > ?))
+      ORDER BY feed_timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtGetFeedPageBefore = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ?
+          AND channel_id = ?
+          AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
+        ORDER BY feed_timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY feed_timestamp ASC, event_id ASC
+    `);
+    this.stmtGetAuthorEventsRange = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND author_address = ?
+        AND author_seq >= ?
+        AND author_seq <= ?
+      ORDER BY author_seq ASC, feed_timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtUpsertPeerGroupState = this.db.prepare(`
+      INSERT INTO rchat_peer_group_state
+        (peer_hash, group_id, latest_event_id, latest_feed_timestamp, digest_hash, updated_at)
+      VALUES
+        (@peer_hash, @group_id, @latest_event_id, @latest_feed_timestamp, @digest_hash, @updated_at)
+      ON CONFLICT(peer_hash, group_id) DO UPDATE SET
+        latest_event_id = excluded.latest_event_id,
+        latest_feed_timestamp = excluded.latest_feed_timestamp,
+        digest_hash = excluded.digest_hash,
+        updated_at = excluded.updated_at
+    `);
+    this.stmtUpsertPeerChannelState = this.db.prepare(`
+      INSERT INTO rchat_peer_channel_state
+        (peer_hash, group_id, channel_id, latest_event_id, latest_feed_timestamp,
+         oldest_event_id, oldest_feed_timestamp, visible_window_hash, updated_at)
+      VALUES
+        (@peer_hash, @group_id, @channel_id, @latest_event_id, @latest_feed_timestamp,
+         @oldest_event_id, @oldest_feed_timestamp, @visible_window_hash, @updated_at)
+      ON CONFLICT(peer_hash, group_id, channel_id) DO UPDATE SET
+        latest_event_id = excluded.latest_event_id,
+        latest_feed_timestamp = excluded.latest_feed_timestamp,
+        oldest_event_id = excluded.oldest_event_id,
+        oldest_feed_timestamp = excluded.oldest_feed_timestamp,
+        visible_window_hash = excluded.visible_window_hash,
+        updated_at = excluded.updated_at
+    `);
+    this.stmtUpsertVerifiedWindow = this.db.prepare(`
+      INSERT INTO rchat_verified_windows
+        (group_id, channel_id, start_event_id, start_feed_timestamp,
+         end_event_id, end_feed_timestamp, window_hash, verified_at)
+      VALUES
+        (@group_id, @channel_id, @start_event_id, @start_feed_timestamp,
+         @end_event_id, @end_feed_timestamp, @window_hash, @verified_at)
+      ON CONFLICT(group_id, channel_id, start_event_id, end_event_id) DO UPDATE SET
+        start_feed_timestamp = excluded.start_feed_timestamp,
+        end_feed_timestamp = excluded.end_feed_timestamp,
+        window_hash = excluded.window_hash,
+        verified_at = excluded.verified_at
+    `);
+    this.stmtUpsertMissingRange = this.db.prepare(`
+      INSERT INTO rchat_missing_ranges
+        (group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
+      VALUES
+        (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
+      ON CONFLICT(group_id, author_address, from_seq, to_seq) DO UPDATE SET
+        preferred_peer = excluded.preferred_peer,
+        next_attempt_at = MIN(rchat_missing_ranges.next_attempt_at, excluded.next_attempt_at)
+    `);
     this.backfillSearchIndex();
   }
 
@@ -571,6 +698,7 @@ export class ReticulumChatDatabase {
 
   insertEvent(event: ReticulumChatEvent, ownEvent: boolean): boolean {
     const now = Date.now();
+    const feedTimestamp = this.normalizeFeedTimestamp(event.timestamp, now);
     const result = this.stmtInsertEvent.run({
       event_id: event.eventId,
       group_id: event.groupId,
@@ -579,6 +707,7 @@ export class ReticulumChatDatabase {
       author_public_key: event.authorPublicKey,
       author_seq: event.authorSeq,
       timestamp: event.timestamp,
+      feed_timestamp: feedTimestamp,
       event_type: event.eventType,
       target_event_id: event.targetEventId ?? null,
       reply_to_event_id: event.replyToEventId ?? null,
@@ -591,6 +720,7 @@ export class ReticulumChatDatabase {
       own_event: ownEvent ? 1 : 0,
       last_served_at: now,
       stored_at: now,
+      accepted_at: now,
       wire_bytes: eventWireBytes(event),
     });
     const inserted = result.changes > 0;
@@ -913,6 +1043,288 @@ export class ReticulumChatDatabase {
     );
   }
 
+  getLatestFeedCursor(
+    groupId: number,
+    channelId: string
+  ): ReticulumChatFeedCursor | null {
+    const row = this.stmtGetLatestCursor.get(
+      groupId,
+      normalizeReticulumChatChannelId(channelId)
+    ) as { event_id?: string; feed_timestamp?: number } | undefined;
+    if (!row?.event_id || !Number.isFinite(row.feed_timestamp)) return null;
+    let cursor: ReticulumChatFeedCursor = {
+      eventId: row.event_id,
+      feedTimestamp: Number(row.feed_timestamp),
+    };
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== groupId) continue;
+      if (normalizeReticulumChatChannelId(event.channelId) !== normalizeReticulumChatChannelId(channelId)) continue;
+      const next = { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) };
+      if (this.compareFeedCursors(next, cursor) > 0) cursor = next;
+    }
+    return cursor;
+  }
+
+  getOldestFeedCursor(
+    groupId: number,
+    channelId: string
+  ): ReticulumChatFeedCursor | null {
+    const row = this.stmtGetOldestCursor.get(
+      groupId,
+      normalizeReticulumChatChannelId(channelId)
+    ) as { event_id?: string; feed_timestamp?: number } | undefined;
+    if (!row?.event_id || !Number.isFinite(row.feed_timestamp)) return null;
+    let cursor: ReticulumChatFeedCursor = {
+      eventId: row.event_id,
+      feedTimestamp: Number(row.feed_timestamp),
+    };
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== groupId) continue;
+      if (normalizeReticulumChatChannelId(event.channelId) !== normalizeReticulumChatChannelId(channelId)) continue;
+      const next = { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) };
+      if (this.compareFeedCursors(next, cursor) < 0) cursor = next;
+    }
+    return cursor;
+  }
+
+  getChannelDigestPage(
+    groupId: number,
+    limit: number,
+    offset = 0
+  ): { channels: ReticulumChatChannelDigest[]; hasMore: boolean; nextOffset?: number } {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const rows = this.stmtGetChannelDigests.all(groupId, safeOffset + safeLimit + 1, 0) as Array<{
+      channel_id?: string;
+    }>;
+    const sqliteChannelIds = rows.map((row) => normalizeReticulumChatChannelId(row.channel_id));
+    const memoryChannelIds = [...this.memoryEvents.values()]
+      .filter((event) => event.groupId === groupId)
+      .map((event) => normalizeReticulumChatChannelId(event.channelId));
+    const allChannelIds = [...new Set([...sqliteChannelIds, ...memoryChannelIds])];
+    const channels = allChannelIds
+      .sort((a, b) => {
+        const cursorA = this.getLatestFeedCursor(groupId, a);
+        const cursorB = this.getLatestFeedCursor(groupId, b);
+        if (!cursorA && !cursorB) return a.localeCompare(b);
+        if (!cursorA) return 1;
+        if (!cursorB) return -1;
+        return this.compareFeedCursors(cursorB, cursorA) || a.localeCompare(b);
+      })
+      .slice(safeOffset, safeOffset + safeLimit)
+      .map((channelId) => {
+        const events = this.getRecentEvents(groupId, 25, channelId);
+        return {
+          groupId,
+          channelId,
+          latestCursor: this.getLatestFeedCursor(groupId, channelId),
+          oldestCursor: this.getOldestFeedCursor(groupId, channelId),
+          visibleWindowHash: this.computeWindowHash(events),
+        };
+      });
+    const hasMore = allChannelIds.length > safeOffset + channels.length;
+    return {
+      channels,
+      hasMore,
+      ...(hasMore ? { nextOffset: safeOffset + channels.length } : {}),
+    };
+  }
+
+  getFeedPageAfter(
+    groupId: number,
+    channelId: string,
+    cursor: ReticulumChatFeedCursor | null,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const effectiveCursor = cursor ?? { feedTimestamp: -1, eventId: '' };
+    const rows = this.stmtGetFeedPageAfter.all(
+      groupId,
+      normalizedChannelId,
+      effectiveCursor.feedTimestamp,
+      effectiveCursor.feedTimestamp,
+      effectiveCursor.eventId,
+      safeLimit
+    ) as EventRow[];
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        effectiveCursor
+      ) > 0;
+    };
+    return this.mergeWindowEvents(
+      rows.map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
+  }
+
+  getFeedPageBefore(
+    groupId: number,
+    channelId: string,
+    cursor: ReticulumChatFeedCursor,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const rows = this.stmtGetFeedPageBefore.all(
+      groupId,
+      normalizedChannelId,
+      cursor.feedTimestamp,
+      cursor.feedTimestamp,
+      cursor.eventId,
+      safeLimit
+    ) as EventRow[];
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        cursor
+      ) < 0;
+    };
+    return this.mergeWindowEvents(
+      rows.map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
+  }
+
+  getAuthorEventsRange(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeFrom = Math.max(1, Math.floor(fromSeq));
+    const safeTo = Math.max(safeFrom, Math.floor(toSeq));
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.stmtGetAuthorEventsRange.all(
+      groupId,
+      authorAddress,
+      safeFrom,
+      safeTo,
+      safeLimit
+    ) as EventRow[];
+    return this.mergeWindowEvents(
+      rows.map(rowToEvent),
+      [...this.memoryEvents.values()].filter(
+        (event) =>
+          event.groupId === groupId &&
+          event.authorAddress === authorAddress &&
+          event.authorSeq >= safeFrom &&
+          event.authorSeq <= safeTo
+      ),
+      safeLimit
+    ).sort((a, b) => a.authorSeq - b.authorSeq || a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+  }
+
+  computeWindowHash(events: ReticulumChatEvent[]): string {
+    const ids = [...new Set(events.map((event) => event.eventId))]
+      .sort((a, b) => {
+        const eventA = events.find((event) => event.eventId === a);
+        const eventB = events.find((event) => event.eventId === b);
+        if (!eventA || !eventB) return a.localeCompare(b);
+        return (
+          this.normalizeFeedTimestamp(eventA.timestamp) - this.normalizeFeedTimestamp(eventB.timestamp) ||
+          eventA.eventId.localeCompare(eventB.eventId)
+        );
+      });
+    return nodeCrypto
+      .createHash('sha256')
+      .update(JSON.stringify(ids), 'utf8')
+      .digest('hex');
+  }
+
+  upsertPeerGroupState(
+    peerHash: string,
+    groupId: number,
+    latestCursor: ReticulumChatFeedCursor | null,
+    digestHash = '',
+    updatedAt = Date.now()
+  ): void {
+    const key = peerHash.trim().toLowerCase();
+    if (!key || !Number.isInteger(groupId) || groupId <= 0) return;
+    this.stmtUpsertPeerGroupState.run({
+      peer_hash: key,
+      group_id: groupId,
+      latest_event_id: latestCursor?.eventId ?? null,
+      latest_feed_timestamp: latestCursor?.feedTimestamp ?? null,
+      digest_hash: digestHash || null,
+      updated_at: updatedAt,
+    });
+  }
+
+  upsertPeerChannelState(
+    peerHash: string,
+    state: ReticulumChatChannelDigest,
+    updatedAt = Date.now()
+  ): void {
+    const key = peerHash.trim().toLowerCase();
+    if (!key || !Number.isInteger(state.groupId) || state.groupId <= 0) return;
+    const channelId = normalizeReticulumChatChannelId(state.channelId);
+    this.stmtUpsertPeerChannelState.run({
+      peer_hash: key,
+      group_id: state.groupId,
+      channel_id: channelId,
+      latest_event_id: state.latestCursor?.eventId ?? null,
+      latest_feed_timestamp: state.latestCursor?.feedTimestamp ?? null,
+      oldest_event_id: state.oldestCursor?.eventId ?? null,
+      oldest_feed_timestamp: state.oldestCursor?.feedTimestamp ?? null,
+      visible_window_hash: state.visibleWindowHash || null,
+      updated_at: updatedAt,
+    });
+  }
+
+  upsertVerifiedWindow(
+    groupId: number,
+    channelId: string,
+    start: ReticulumChatFeedCursor,
+    end: ReticulumChatFeedCursor,
+    windowHash: string,
+    verifiedAt = Date.now()
+  ): void {
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    if (!windowHash) return;
+    this.stmtUpsertVerifiedWindow.run({
+      group_id: groupId,
+      channel_id: normalizeReticulumChatChannelId(channelId),
+      start_event_id: start.eventId,
+      start_feed_timestamp: start.feedTimestamp,
+      end_event_id: end.eventId,
+      end_feed_timestamp: end.feedTimestamp,
+      window_hash: windowHash,
+      verified_at: verifiedAt,
+    });
+  }
+
+  upsertMissingRange(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number,
+    preferredPeer = '',
+    nextAttemptAt = Date.now()
+  ): void {
+    const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const peer = typeof preferredPeer === 'string' ? preferredPeer.trim().toLowerCase() : '';
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
+    this.stmtUpsertMissingRange.run({
+      group_id: groupId,
+      author_address: author,
+      from_seq: from,
+      to_seq: to,
+      preferred_peer: peer || null,
+      next_attempt_at: nextAttemptAt,
+    });
+  }
+
   getAuthorMaxSeq(groupId: number, authorAddress: string): number {
     const row = this.stmtGetAuthorMaxSeq.get(groupId, authorAddress) as
       | { seq?: number }
@@ -1001,6 +1413,17 @@ export class ReticulumChatDatabase {
       })
       .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId))
       .slice(0, limit);
+  }
+
+  private compareFeedCursors(
+    a: ReticulumChatFeedCursor,
+    b: ReticulumChatFeedCursor
+  ): number {
+    return a.feedTimestamp - b.feedTimestamp || a.eventId.localeCompare(b.eventId);
+  }
+
+  private normalizeFeedTimestamp(timestamp: number, acceptedAt = Date.now()): number {
+    return Number.isFinite(timestamp) && timestamp >= 0 ? Math.floor(timestamp) : Math.floor(acceptedAt);
   }
 
   getSyncState(groupId: number): Record<string, number> {
@@ -1670,6 +2093,7 @@ export class ReticulumChatDatabase {
         author_public_key TEXT NOT NULL,
         author_seq INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
+        feed_timestamp INTEGER NOT NULL,
         event_type TEXT NOT NULL,
         target_event_id TEXT,
         reply_to_event_id TEXT,
@@ -1680,14 +2104,82 @@ export class ReticulumChatDatabase {
         own_event INTEGER NOT NULL DEFAULT 0,
         last_served_at INTEGER NOT NULL,
         stored_at INTEGER NOT NULL,
+        accepted_at INTEGER NOT NULL,
         wire_bytes INTEGER NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS reticulum_chat_author_seq_idx
         ON reticulum_chat_events (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_group_time_idx
         ON reticulum_chat_events (group_id, channel_id, timestamp, author_seq);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_feed
+        ON reticulum_chat_events (group_id, channel_id, feed_timestamp, event_id);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_author_seq
+        ON reticulum_chat_events (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
+      CREATE TABLE IF NOT EXISTS rchat_peer_group_state (
+        peer_hash TEXT NOT NULL,
+        group_id INTEGER NOT NULL,
+        latest_event_id TEXT,
+        latest_feed_timestamp INTEGER,
+        digest_hash TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (peer_hash, group_id)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_peer_channel_state (
+        peer_hash TEXT NOT NULL,
+        group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        latest_event_id TEXT,
+        latest_feed_timestamp INTEGER,
+        oldest_event_id TEXT,
+        oldest_feed_timestamp INTEGER,
+        visible_window_hash TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (peer_hash, group_id, channel_id)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_verified_windows (
+        group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        start_event_id TEXT NOT NULL,
+        start_feed_timestamp INTEGER NOT NULL,
+        end_event_id TEXT NOT NULL,
+        end_feed_timestamp INTEGER NOT NULL,
+        window_hash TEXT NOT NULL,
+        verified_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, channel_id, start_event_id, end_event_id)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_missing_ranges (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        preferred_peer TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (group_id, author_address, from_seq, to_seq)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        priority INTEGER NOT NULL,
+        group_id INTEGER NOT NULL,
+        channel_id TEXT,
+        peer_hash TEXT,
+        operation TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (dedupe_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_sync_queue_ready
+        ON rchat_sync_queue (priority, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_peer_channel_state
+        ON rchat_peer_channel_state (peer_hash, group_id, channel_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_peer_group_state
+        ON rchat_peer_group_state (peer_hash, group_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_ranges_ready
+        ON rchat_missing_ranges (group_id, author_address, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_verified_windows_lookup
+        ON rchat_verified_windows (group_id, channel_id, start_feed_timestamp, end_feed_timestamp);
       CREATE TABLE IF NOT EXISTS reticulum_chat_read_watermarks (
         group_id INTEGER NOT NULL,
         channel_id TEXT NOT NULL DEFAULT 'general',

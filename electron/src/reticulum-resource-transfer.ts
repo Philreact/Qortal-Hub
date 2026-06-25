@@ -1570,9 +1570,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.releaseOfferChunksInFlight(state, offer);
         this.releaseFullTransfer(state, offer);
         if (!success && isFullFileOffer) {
-          this.emitProgress(state);
-          state.nextRequestAt = 0;
-          this.scheduleDownload(0);
+          this.emitProgress(state, false, undefined, true);
+          this.downloads.delete(offer.fileHash);
         }
       }
     }
