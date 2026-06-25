@@ -975,7 +975,7 @@ describe('reticulum chat manager', () => {
       },
       'peer'
     );
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
     expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
       t: 'RCHAT',
@@ -1330,7 +1330,7 @@ describe('reticulum chat manager', () => {
       },
       'peer-a'
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(resources).toHaveLength(1);
     expect(direct).toContainEqual(
@@ -2476,6 +2476,81 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('reannounces subscriptions with one batched group_sub instead of one per group', async () => {
+    let now = 80_000;
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([56, 57, 58]);
+    manager.subscribeGroup(56);
+    manager.subscribeGroup(57);
+    manager.subscribeGroup(58);
+    sent.length = 0;
+
+    now += 31_000;
+    manager.reannounceSubscriptions();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const groupSubs = sent.filter((wire) => wire.k === 'group_sub');
+    expect(sent.filter((wire) => wire.k === 'hello')).toHaveLength(1);
+    expect(groupSubs).toHaveLength(1);
+    expect(groupSubs[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [56, 57, 58],
+      mode: 'summary',
+    });
+    expect(sent.filter((wire) => wire.k === 'group_digest')).toHaveLength(3);
+    manager.close();
+  });
+
+  it('does not repeatedly serve digests for duplicate inbound group_sub controls', async () => {
+    let now = 80_000;
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([56]);
+    manager.subscribeGroup(56);
+    const groupSub = { t: 'RCHAT', k: 'group_sub', groups: [56], mode: 'summary' };
+
+    manager.handleWire(groupSub, 'peer-hash');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    manager.handleWire(groupSub, 'peer-hash');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct.filter((wire) => wire.k === 'group_digest')).toHaveLength(1);
+
+    now += 31_000;
+    manager.handleWire(groupSub, 'peer-hash');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct.filter((wire) => wire.k === 'group_digest')).toHaveLength(2);
+    manager.close();
+  });
+
   it('responds to feed requests with bounded event batches or resource offers', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -2684,6 +2759,181 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(direct.some((wire) => wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
+    manager.close();
+  });
+
+  it('pushes and requests visible window repair when digest latest matches but window hash differs', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 90_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([54]);
+    manager.subscribeGroup(54);
+    const olderLocal = signedEvent({
+      eventId: 'event-visible-window-local',
+      groupId: 54,
+      timestamp: 30_000,
+    });
+    const latestShared = signedEvent({
+      eventId: 'event-visible-window-latest',
+      groupId: 54,
+      timestamp: 40_000,
+    });
+    expect((manager as any).db.insertEvent(olderLocal, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latestShared, true)).toBe(true);
+    const latestCursor = {
+      eventId: latestShared.eventId,
+      feedTimestamp: latestShared.timestamp,
+    };
+    const getLatestSpy = vi
+      .spyOn((manager as any).db, 'getLatestFeedCursor')
+      .mockReturnValue(latestCursor);
+    expect(
+      (manager as any).db.getFeedPageBefore(54, 'general', latestCursor, 10)
+        .map((event: ReticulumChatEvent) => event.eventId)
+    ).toContain(olderLocal.eventId);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 54,
+        latest: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
+        channels: [
+          {
+            c: 'general',
+            latest: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
+            oldest: { id: 'event-visible-window-remote', ts: 31_000 },
+            wh: 'different-remote-window-hash',
+          },
+        ],
+        digestHash: 'different-remote-digest-hash',
+      },
+      'peer-window-mismatch'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 54,
+      c: 'general',
+      before: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
+    }));
+    const repairResponse = direct.find((wire) =>
+      wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest'
+    ) as any;
+    expect(repairResponse?.k).toBeTruthy();
+    if (repairResponse.k === 'event_batch') {
+      expect(repairResponse.batch?.dir).toBe('before');
+      expect(repairResponse.batch?.events?.map((event: ReticulumChatEvent) => event.eventId)).toContain(
+        olderLocal.eventId
+      );
+    } else if (repairResponse.k === 'event_offer') {
+      expect(repairResponse.o?.id).toBe(olderLocal.eventId);
+    }
+    getLatestSpy.mockRestore();
+    manager.close();
+  });
+
+  it('uses group-wide backward repair when digest hashes differ and channel window hashes are omitted', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 90_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([55]);
+    manager.subscribeGroup(55);
+    const olderLocal = signedEvent({
+      eventId: 'event-group-window-local',
+      groupId: 55,
+      timestamp: 30_000,
+    });
+    const latestShared = signedEvent({
+      eventId: 'event-group-window-latest',
+      groupId: 55,
+      timestamp: 40_000,
+    });
+    expect((manager as any).db.insertEvent(olderLocal, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latestShared, true)).toBe(true);
+    const latestCursor = {
+      eventId: latestShared.eventId,
+      feedTimestamp: latestShared.timestamp,
+    };
+    const getLatestSpy = vi
+      .spyOn((manager as any).db, 'getLatestFeedCursor')
+      .mockReturnValue(latestCursor);
+    expect(
+      (manager as any).db.getGroupFeedPageBefore(55, latestCursor, 10)
+        .map((event: ReticulumChatEvent) => event.eventId)
+    ).toContain(olderLocal.eventId);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 55,
+        latest: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
+        channels: [
+          {
+            c: 'general',
+            latest: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
+          },
+        ],
+        digestHash: 'different-remote-digest-hash',
+      },
+      'peer-group-window-mismatch'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 55,
+      c: '*',
+      before: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
+    }));
+    const repairResponse = direct.find((wire) =>
+      wire.k === 'event_batch' || wire.k === 'event_offer' || wire.k === 'group_digest'
+    ) as any;
+    expect(repairResponse?.k).toBeTruthy();
+    if (repairResponse.k === 'event_batch') {
+      expect(repairResponse.c).toBe('*');
+      expect(repairResponse.batch?.dir).toBe('before');
+      expect(repairResponse.batch?.events?.map((event: ReticulumChatEvent) => event.eventId)).toContain(
+        olderLocal.eventId
+      );
+    } else if (repairResponse.k === 'event_offer') {
+      expect(repairResponse.o?.id).toBe(olderLocal.eventId);
+    }
+    getLatestSpy.mockRestore();
     manager.close();
   });
 
