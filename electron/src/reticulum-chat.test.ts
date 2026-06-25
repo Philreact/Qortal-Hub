@@ -990,6 +990,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -1038,6 +1039,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -1496,6 +1498,84 @@ describe('reticulum chat manager', () => {
         wire: expect.objectContaining({
           k: 'range_req',
           ranges: [expect.objectContaining({ a: event.authorAddress, from: 1, to: 2 })],
+        }),
+      })
+    );
+    expect(manager.getHistory(72, 10).map((item) => item.eventId)).toContain(event.eventId);
+    manager.close();
+  });
+
+  it('requests the next feed page after importing a continuation event resource', async () => {
+    const acceptedTransfers: unknown[] = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+        acceptedTransfers.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const event = signedEvent({
+      eventId: 'event-resource-continuation',
+      groupId: 72,
+      authorSeq: 1,
+      timestamp: 100_000,
+    });
+    const blob = serializeReticulumChatEvent(event);
+    const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const resourcePath = path.join(path.dirname(tempDbPath()), 'event-resource-continuation.json');
+    fs.writeFileSync(resourcePath, blob, 'utf8');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 72,
+        o: {
+          x: 'transfer-resource-continuation',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+          fc: 'general',
+          fd: 'a',
+          fid: event.eventId,
+          fts: event.timestamp,
+        },
+      },
+      'peer-a'
+    );
+    expect(acceptedTransfers).toHaveLength(1);
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'transfer-resource-continuation',
+      peerPresenceHash: 'peer-a',
+      path: resourcePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'feed_req',
+          g: 72,
+          c: 'general',
+          after: { ts: event.timestamp, id: event.eventId },
+          limit: 25,
         }),
       })
     );
@@ -3136,6 +3216,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -3161,7 +3242,17 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(direct.some((wire) => wire.k === 'event_offer' || wire.k === 'group_digest')).toBe(true);
+    const eventOffer = direct.find((wire) => wire.k === 'event_offer') as Record<string, any> | undefined;
+    expect(eventOffer).toBeDefined();
+    expect(eventOffer?.o).toMatchObject({
+      id: 'event-page-2',
+      fc: 'general',
+      fd: 'a',
+      fid: 'event-page-2',
+      fts: 20_002,
+    });
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
+    expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
     manager.close();
   });
@@ -3176,6 +3267,7 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

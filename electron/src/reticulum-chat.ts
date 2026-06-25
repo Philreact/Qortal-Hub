@@ -95,6 +95,11 @@ export interface ReticulumChatEventOffer {
   payloadHash: string;
   wireHash: string;
   sizeBytes: number;
+  continuation?: {
+    channelId: string;
+    direction: 'after' | 'before';
+    cursor: ReticulumChatFeedCursor;
+  };
   sourcePeerHash?: string;
   senderReticulumDestinationHash?: string;
   senderReticulumIdentityPublicKeyBase64?: string;
@@ -106,6 +111,10 @@ export interface ReticulumChatEventOfferWire {
   ph: string;
   wh: string;
   s: number;
+  fc?: string;
+  fd?: 'a' | 'b';
+  fid?: string;
+  fts?: number;
 }
 
 export interface ReticulumChatEventRequestWire {
@@ -308,6 +317,7 @@ const RETICULUM_CHAT_PULL_RETRY_MS = 5_000;
 const RETICULUM_CHAT_PULL_MAX_ATTEMPTS = 8;
 const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
+const RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY = 4;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
 const RETICULUM_CHAT_ALL_CHANNELS_ID = '*';
@@ -451,12 +461,37 @@ function eventOfferToWire(offer: ReticulumChatEventOffer): ReticulumChatEventOff
     ph: offer.payloadHash,
     wh: offer.wireHash,
     s: offer.sizeBytes,
+    ...(offer.continuation
+      ? {
+          fc: offer.continuation.channelId,
+          fd: offer.continuation.direction === 'before' ? 'b' : 'a',
+          fid: offer.continuation.cursor.eventId,
+          fts: offer.continuation.cursor.feedTimestamp,
+        }
+      : {}),
   };
 }
 
 function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventOffer | null {
   if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return null;
   const o = wire as Partial<ReticulumChatEventOfferWire>;
+  const continuation =
+    typeof o.fc === 'string' &&
+    (o.fd === 'a' || o.fd === 'b') &&
+    typeof o.fid === 'string' &&
+    Number.isFinite(Number(o.fts))
+      ? {
+          channelId:
+            o.fc === RETICULUM_CHAT_ALL_CHANNELS_ID
+              ? RETICULUM_CHAT_ALL_CHANNELS_ID
+              : normalizeReticulumChatChannelId(o.fc),
+          direction: o.fd === 'b' ? 'before' as const : 'after' as const,
+          cursor: {
+            eventId: o.fid,
+            feedTimestamp: Number(o.fts),
+          },
+        }
+      : undefined;
   return {
     transferId: String(o.x || ''),
     eventId: String(o.id || ''),
@@ -464,6 +499,7 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
     payloadHash: String(o.ph || ''),
     wireHash: String(o.wh || ''),
     sizeBytes: Number(o.s || 0),
+    ...(continuation ? { continuation } : {}),
   };
 }
 
@@ -1953,22 +1989,31 @@ export class ReticulumChatManager extends EventEmitter {
     hasMore: boolean,
     direction: 'after' | 'before' | 'range' = 'after'
   ): Promise<void> {
-    for (const event of events) {
-      await this.offerEventResource(peerHash, groupId, event.eventId);
-    }
-    if (hasMore && events.length > 0) {
-      const ordered = [...events].sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
-      const cursorEvent = direction === 'before' ? ordered[0] : ordered[ordered.length - 1];
-      if (cursorEvent) {
-        await this.sendToPeer(peerHash, {
-          t: 'RCHAT',
-          k: 'feed_req',
-          g: groupId,
-          c: channelId,
-          [direction === 'before' ? 'before' : 'after']: this.cursorToWire(this.eventCursor(cursorEvent)),
-          limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-        });
-      }
+    const ordered = [...events].sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+    const cursorEvent = hasMore && direction !== 'range' && ordered.length > 0
+      ? direction === 'before'
+        ? ordered[0]
+        : ordered[ordered.length - 1]
+      : null;
+    const continuation = cursorEvent
+      ? {
+          channelId,
+          direction,
+          cursor: this.eventCursor(cursorEvent),
+        }
+      : null;
+    for (let i = 0; i < events.length; i += RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY) {
+      const batch = events.slice(i, i + RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY);
+      await Promise.all(
+        batch.map((event) =>
+          this.offerEventResource(
+            peerHash,
+            groupId,
+            event.eventId,
+            continuation && event.eventId === cursorEvent?.eventId ? continuation : undefined
+          )
+        )
+      );
     }
     await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
   }
@@ -3099,7 +3144,8 @@ export class ReticulumChatManager extends EventEmitter {
   private async offerEventResource(
     peerHash: string,
     groupId: number,
-    eventId: string
+    eventId: string,
+    continuation?: ReticulumChatEventOffer['continuation']
   ): Promise<ReticulumSendResult> {
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
@@ -3132,6 +3178,7 @@ export class ReticulumChatManager extends EventEmitter {
       payloadHash: event.payloadHash,
       wireHash,
       sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      ...(continuation ? { continuation } : {}),
     };
     const registered = await this.bridge.sendReticulumChatResourceDetailed({
       allowedRecipientAddress: peerKey,
@@ -3151,7 +3198,18 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
     if (!registered.ok) return registered;
-    return this.sendToPeer(peerKey, { t: 'RCHAT', k: 'event_offer', g: groupId, o: eventOfferToWire(offer) });
+    let offerWire = eventOfferToWire(offer);
+    let wire: ReticulumChatWire = { t: 'RCHAT', k: 'event_offer', g: groupId, o: offerWire };
+    if (continuation && !wireFitsReticulum(wire)) {
+      const compactOffer = { ...offer };
+      delete compactOffer.continuation;
+      offerWire = eventOfferToWire(compactOffer);
+      wire = { t: 'RCHAT', k: 'event_offer', g: groupId, o: offerWire };
+      loggerWarn(
+        `[ReticulumChat] Dropping oversized event offer continuation group=${groupId} channel=${continuation.channelId} event=${event.eventId}`
+      );
+    }
+    return this.sendToPeer(peerKey, wire);
   }
 
   private handleEventOffer(candidate: unknown, peerHash: string): void {
@@ -3187,6 +3245,17 @@ export class ReticulumChatManager extends EventEmitter {
     if (typeof offer.payloadHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.payloadHash)) return false;
     if (typeof offer.wireHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.wireHash)) return false;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;
+    if (offer.continuation) {
+      if (offer.continuation.direction !== 'after' && offer.continuation.direction !== 'before') return false;
+      if (typeof offer.continuation.channelId !== 'string' || !offer.continuation.channelId) return false;
+      if (
+        typeof offer.continuation.cursor?.eventId !== 'string' ||
+        offer.continuation.cursor.eventId.length < 8 ||
+        !Number.isFinite(offer.continuation.cursor.feedTimestamp)
+      ) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -3305,6 +3374,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
         this.emit('event', { event });
+        this.requestFeedContinuationFromOffer(offer, event, sourcePeerHash);
         const exclude = payload.peerPresenceHash ? [payload.peerPresenceHash] : [];
         void this.sendEventHintToInterestedPeers(event, exclude).then((targetedPeers) => {
           void this.fanout(this.buildEventHintWire(event), [...exclude, ...targetedPeers]);
@@ -3318,6 +3388,37 @@ export class ReticulumChatManager extends EventEmitter {
     } finally {
       this.resourceOffers.delete(payload.transferId);
     }
+  }
+
+  private requestFeedContinuationFromOffer(
+    offer: ReticulumChatEventOffer,
+    event: ReticulumChatEvent,
+    peerHash: string
+  ): void {
+    const continuation = offer.continuation;
+    const peer = peerHash.trim().toLowerCase();
+    if (!continuation || !peer) return;
+    if (event.eventId !== continuation.cursor.eventId) return;
+    if (event.groupId !== offer.groupId) return;
+    if (!this.localGroupIds.has(event.groupId) || !this.subscribedGroups.has(event.groupId)) return;
+    if (
+      continuation.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+      normalizeReticulumChatChannelId(event.channelId) !== continuation.channelId
+    ) {
+      return;
+    }
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: event.groupId,
+      c: continuation.channelId,
+      [continuation.direction]: this.cursorToWire(continuation.cursor),
+      limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+    };
+    loggerLog(
+      `[ReticulumChat] Requesting feed continuation group=${event.groupId} channel=${continuation.channelId} peer=${peer.slice(0, 16)} direction=${continuation.direction} cursor=${continuation.cursor.eventId}`
+    );
+    void this.sendToPeer(peer, wire);
   }
 
   private canAcceptInboundEventResource(candidate: unknown): candidate is ReticulumChatEvent {
