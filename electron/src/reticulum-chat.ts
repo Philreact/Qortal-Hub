@@ -1995,13 +1995,14 @@ export class ReticulumChatManager extends EventEmitter {
         ? ordered[0]
         : ordered[ordered.length - 1]
       : null;
-    const continuation = cursorEvent
-      ? {
-          channelId,
-          direction,
-          cursor: this.eventCursor(cursorEvent),
-        }
-      : null;
+    const continuation: ReticulumChatEventOffer['continuation'] | undefined =
+      cursorEvent && direction !== 'range'
+        ? {
+            channelId,
+            direction,
+            cursor: this.eventCursor(cursorEvent),
+          }
+        : undefined;
     for (let i = 0; i < events.length; i += RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY) {
       const batch = events.slice(i, i + RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY);
       await Promise.all(
