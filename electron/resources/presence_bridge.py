@@ -276,7 +276,7 @@ _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
 _RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
-_QCHAT_FILE_CHUNK_SIZE = 256 * 1024
+_QCHAT_FILE_CHUNK_SIZE = 1024 * 1024
 _QCHAT_FILE_PARALLEL_LINKS = 10
 _QCHAT_FILE_CHUNK_MAX_ATTEMPTS = 4
 _QCHAT_FILE_UNKNOWN_CHUNK_MAX_FAILURES = 24
@@ -13168,12 +13168,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "resourceType": resource_type,
         },
     )
-    # Reticulum resource transfers are already chunk-scheduled by the JS
-    # resource manager; opening parallel links here duplicates the same offer.
-    if stream_mode or resource_type in (_RETICULUM_CHAT_RESOURCE_TYPE, _RETICULUM_RESOURCE_TYPE):
-        links_to_open = 1
-    else:
-        links_to_open = min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
+    links_to_open = 1 if stream_mode else min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
     for _ in range(links_to_open):
         state = {
             "peerPresenceHash": peer_hash,
