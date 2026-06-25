@@ -214,6 +214,36 @@ def _call_wire_json_bytes(out: Dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _reticulum_chat_digest_fingerprint(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    if msg.get("t") != _RETICULUM_CHAT_WIRE_TYPE or msg.get("k") != "group_digest":
+        return None
+    group_id = str(msg.get("g") or "").strip()
+    if not group_id:
+        return None
+    latest = msg.get("latest")
+    latest_id = ""
+    latest_ts = ""
+    if isinstance(latest, dict):
+        latest_id = str(latest.get("id") or "")
+        latest_ts = str(latest.get("ts") or "")
+    digest_hash = str(msg.get("digestHash") or "")
+    more = "1" if msg.get("more") is True else "0"
+    next_offset = str(msg.get("nextOffset") or "")
+    fingerprint = "|".join((digest_hash, latest_id, latest_ts, more, next_offset))
+    return group_id, fingerprint
+
+
+def _reticulum_chat_prune_digest_fanout_recent(now: float) -> None:
+    cutoff = now - _RETICULUM_CHAT_DIGEST_DEDUPE_TTL_SECONDS
+    stale_keys = [
+        key
+        for key, sent_at in _reticulum_chat_digest_fanout_recent.items()
+        if sent_at < cutoff
+    ]
+    for key in stale_keys:
+        _reticulum_chat_digest_fanout_recent.pop(key, None)
+
+
 _GROUP_AUDIO_WIRE_TYPE = "GCA"
 _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE = "GAC"
 _GROUP_AUDIO_BINARY_MAGIC = b"QGAU"
@@ -538,6 +568,8 @@ _GROUP_CALL_WIRE_TYPES = frozenset(
     }
 )
 _RETICULUM_CHAT_WIRE_TYPE = "RCHAT"
+_RETICULUM_CHAT_DIGEST_DEDUPE_TTL_SECONDS = 5 * 60.0
+_reticulum_chat_digest_fanout_recent: Dict[Tuple[str, str, str], float] = {}
 _AUDIO_LINK_WIRE_TYPES = frozenset(
     {_GROUP_AUDIO_HEARTBEAT_WIRE_TYPE}
 )
@@ -13779,6 +13811,8 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
     try:
         encoded_frames = []
         message_types = []
+        message_keys = []
+        message_digest_fingerprints = []
         for msg in messages:
             encoded = _encode_group_signal_wire(msg)
             if not encoded.get("ok"):
@@ -13790,7 +13824,43 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                 )
                 return
             encoded_frames.append(encoded["wire_bytes"])
-            message_types.append(str(msg.get("k") or "?"))
+            message_type = str(msg.get("k") or "?")
+            message_types.append(message_type)
+            digest_fingerprint = _reticulum_chat_digest_fingerprint(msg)
+            message_digest_fingerprints.append(digest_fingerprint)
+            if message_type == "group_digest":
+                latest = msg.get("latest")
+                latest_id = (
+                    str(latest.get("id") or "")[:12]
+                    if isinstance(latest, dict)
+                    else ""
+                )
+                digest_hash = str(msg.get("digestHash") or "")[:12]
+                message_keys.append(
+                    "group_digest:"
+                    f"g={msg.get('g')}:"
+                    f"h={digest_hash or '-'}:"
+                    f"latest={latest_id or '-'}"
+                )
+            elif message_type == "group_sub":
+                groups = msg.get("groups")
+                group_ids = (
+                    ",".join(str(group_id) for group_id in groups[:8])
+                    if isinstance(groups, list)
+                    else ""
+                )
+                more = (
+                    "+"
+                    if isinstance(groups, list) and len(groups) > 8
+                    else ""
+                )
+                message_keys.append(
+                    f"group_sub:mode={msg.get('mode')}:groups={group_ids}{more}"
+                )
+            elif "g" in msg:
+                message_keys.append(f"{message_type}:g={msg.get('g')}")
+            else:
+                message_keys.append(message_type)
 
         peer_hashes = _resolve_overlay_neighbor_hashes(
             exclude_hashes,
@@ -13814,25 +13884,57 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
             )
             return
 
+        now_mono = time.monotonic()
+        _reticulum_chat_prune_digest_fanout_recent(now_mono)
         log(
             "[presence_bridge] target=reticulum-chat fanout "
             f"peers={len(peer_hashes)} exclude_hashes={','.join(exclude_hashes)} "
             f"fanout_hashes={','.join(peer_hashes)} "
-            f"message_types={','.join(message_types)}"
+            f"message_types={','.join(message_types)} "
+            f"message_keys={','.join(message_keys)}"
         )
 
         delivered_peer_hashes: list[str] = []
+        suppressed_duplicate_digests = 0
+        suppressed_digest_keys: list[str] = []
         for peer_hash in peer_hashes:
             peer_delivered_all_frames = True
-            for wire_bytes in encoded_frames:
+            for index, wire_bytes in enumerate(encoded_frames):
+                digest_fingerprint = (
+                    message_digest_fingerprints[index]
+                    if index < len(message_digest_fingerprints)
+                    else None
+                )
+                dedupe_key: Optional[Tuple[str, str, str]] = None
+                if digest_fingerprint is not None:
+                    group_id, fingerprint = digest_fingerprint
+                    dedupe_key = (peer_hash, group_id, fingerprint)
+                    last_sent_at = _reticulum_chat_digest_fanout_recent.get(dedupe_key)
+                    if (
+                        last_sent_at is not None
+                        and now_mono - last_sent_at < _RETICULUM_CHAT_DIGEST_DEDUPE_TTL_SECONDS
+                    ):
+                        suppressed_duplicate_digests += 1
+                        if len(suppressed_digest_keys) < 12:
+                            suppressed_digest_keys.append(f"{peer_hash[:8]}:g={group_id}")
+                        continue
                 if not _send_wire_to_overlay_peer(
                     peer_hash,
                     wire_bytes,
                     "reticulum_chat_fanout",
                 ):
                     peer_delivered_all_frames = False
+                elif dedupe_key is not None:
+                    _reticulum_chat_digest_fanout_recent[dedupe_key] = now_mono
             if peer_delivered_all_frames:
                 delivered_peer_hashes.append(peer_hash)
+
+        if suppressed_duplicate_digests:
+            log(
+                "[presence_bridge] target=reticulum-chat fanout_duplicate_digest_suppressed "
+                f"count={suppressed_duplicate_digests} "
+                f"peer_groups={','.join(suppressed_digest_keys)}"
+            )
 
         if delivered_peer_hashes:
             emit_resp(

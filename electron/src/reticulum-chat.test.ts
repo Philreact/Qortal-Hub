@@ -2894,6 +2894,106 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('requests the peer continuation page when an inbound digest has more channels', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 80_000,
+    });
+    manager.setLocalGroupMemberships([56]);
+    manager.subscribeGroup(56);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 56,
+        channels: [],
+        more: true,
+        nextOffset: 16,
+        digestHash: 'remote-page-0',
+      },
+      'peer-hash'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(direct).toContainEqual({
+      t: 'RCHAT',
+      k: 'digest_req',
+      g: 56,
+      offset: 16,
+      limit: 16,
+    });
+    expect(direct.some((wire) => wire.k === 'group_digest')).toBe(false);
+    manager.close();
+  });
+
+  it('serves the requested group digest continuation page', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 80_000,
+    });
+    manager.setLocalGroupMemberships([57]);
+    for (let index = 0; index < 20; index += 1) {
+      const channelId = `channel-${String(index).padStart(2, '0')}`;
+      (manager as any).db.upsertChannel({
+        groupId: 57,
+        channelId,
+        name: channelId,
+        position: index,
+        archived: false,
+        createdBy: 'Qcreator',
+        createdAt: 10_000,
+        updatedAt: 10_000,
+      });
+      await manager.publishEvent(signedEvent({
+        groupId: 57,
+        channelId,
+        timestamp: 10_000 + index,
+      }));
+    }
+    direct.length = 0;
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'digest_req', g: 57, offset: 16, limit: 16 },
+      'peer-hash'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const digest = direct.find((wire) => wire.k === 'group_digest') as any;
+    expect(digest).toBeDefined();
+    const firstPage = (manager as any).buildGroupDigestWire(57, 0, 16) as any;
+    const firstPageChannels = new Set(firstPage.channels.map((channel: any) => channel.c));
+    const continuationChannels = digest.channels.map((channel: any) => channel.c);
+    expect(digest.g).toBe(57);
+    expect(digest.channels.length).toBeGreaterThan(0);
+    expect(digest.channels.length).toBeLessThanOrEqual(4);
+    expect(continuationChannels.every((channelId: string) => !firstPageChannels.has(channelId))).toBe(true);
+    expect(byteLengthUtf8JsonWithBridgeSender(digest)).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
+    manager.close();
+  });
+
   it('responds to feed requests with resource offers and a digest', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
