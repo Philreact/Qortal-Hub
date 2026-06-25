@@ -147,6 +147,7 @@ export interface ReticulumChatResourceOffer {
   chunkHash?: string;
   chunkSize?: number;
   bundleHash?: string;
+  streamMode?: boolean;
   chunkIndexes?: number[];
   chunks?: Array<{
     index: number;
@@ -166,6 +167,7 @@ export interface ReticulumChatResourceOfferWire {
   ch?: string;
   cs?: number;
   bh?: string;
+  sm?: 1;
   br?: Array<[number, number]>;
 }
 
@@ -513,6 +515,7 @@ function resourceOfferToWire(offer: ReticulumChatResourceOffer): ReticulumChatRe
     ...(offer.chunkHash ? { ch: offer.chunkHash } : {}),
     ...(Number.isInteger(offer.chunkSize) ? { cs: offer.chunkSize } : {}),
     ...(offer.bundleHash ? { bh: offer.bundleHash } : {}),
+    ...(offer.streamMode === true ? { sm: 1 as const } : {}),
     ...(Array.isArray(offer.chunks) && offer.chunks.length > 0
       ? {
           br: chunkIndexesToRanges(offer.chunks.map((chunk) => chunk.index)),
@@ -536,6 +539,7 @@ function resourceOfferFromWire(groupId: number, wire: unknown): ReticulumChatRes
     ...(typeof o.ch === 'string' && o.ch ? { chunkHash: o.ch } : {}),
     ...(Number.isInteger(o.cs) ? { chunkSize: Number(o.cs) } : {}),
     ...(typeof o.bh === 'string' && o.bh ? { bundleHash: o.bh } : {}),
+    ...(o.sm === 1 ? { streamMode: true } : {}),
     ...(Array.isArray(o.br)
       ? {
           chunkIndexes: chunkRangesToIndexes(o.br) ?? [],
@@ -935,6 +939,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
       ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
       ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
+      ...(offer.streamMode === true ? { streamMode: true } : {}),
       ...(offer.chunkIndexes ? { chunkIndexes: offer.chunkIndexes } : {}),
       ...(offer.chunks ? { chunks: offer.chunks } : {}),
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
@@ -956,6 +961,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
       ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
       ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
+      ...(offer.streamMode === true ? { streamMode: true } : {}),
       ...(offer.chunkIndexes ? { chunkIndexes: offer.chunkIndexes } : {}),
       ...(offer.chunks ? { chunks: offer.chunks } : {}),
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
@@ -3017,6 +3023,18 @@ export class ReticulumChatManager extends EventEmitter {
     chunkIndexes: number[]
   ): Promise<ReticulumChatResourceRequestWire[]> {
     const batches: ReticulumChatResourceRequestWire[] = [];
+    if (chunkIndexes.length === 0) {
+      const request = await this.buildSignedResourceRequestWire(
+        groupId,
+        manifest,
+        eventId,
+        []
+      );
+      return request &&
+        wireFitsReticulum({ t: 'RCHAT', k: 'resource_req', g: groupId, q: request })
+        ? [request]
+        : [];
+    }
     let remaining = [...chunkIndexes];
     while (remaining.length > 0) {
       let count = Math.min(RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT, remaining.length);

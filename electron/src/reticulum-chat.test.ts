@@ -1861,19 +1861,21 @@ describe('reticulum chat manager', () => {
 
     expect(offeredResources.map((payload) => payload.metadata)).toEqual([
       expect.objectContaining({
-        chunkIndex: 0,
-        chunkHash: chunkHashes[0],
-        chunkSize: chunk0.length,
+        chunkBundle: true,
+        chunkCount: 1,
+        chunkRanges: [[0, 1]],
+        bundleHash: chunkHashes[0],
       }),
     ]);
-    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual([0]);
-    expect(offerWires.map((wire) => (wire.o as any).ch)).toEqual([chunkHashes[0]]);
+    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([true]);
+    expect(offerWires.map((wire) => (wire.o as any).br)).toEqual([[[0, 1]]]);
+    expect(offerWires.map((wire) => (wire.o as any).bh)).toEqual([chunkHashes[0]]);
     expect(offerWires.every((wire) => wire.k === 'resource_offer')).toBe(true);
     manager.close();
     resourceStore.close();
   });
 
-  it('serves a complete resource as requested chunk offers, not one full resource transfer', async () => {
+  it('serves a requested complete resource chunk as a streamed bundle offer', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const sourceBytes = Buffer.concat([
@@ -1940,18 +1942,22 @@ describe('reticulum chat manager', () => {
     expect(offeredResources.map((payload) => payload.resourceType)).toEqual([
       'reticulum_group_resource_chunk',
     ]);
-    expect(offeredResources.map((payload) => (payload.metadata as any).chunkIndex)).toEqual([
-      0,
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkBundle)).toEqual([
+      true,
     ]);
-    expect(offeredResources.map((payload) => (payload.metadata as any).chunkHash)).toEqual(
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkRanges)).toEqual([
+      [[0, 1]],
+    ]);
+    expect(offeredResources.map((payload) => (payload.metadata as any).bundleHash)).toEqual(
       [manifest.chunkHashes[0]]
     );
+    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([true]);
     expect(offeredResources.map((payload) => payload.size)).toEqual([
       RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
     ]);
     expect(offerWires).toHaveLength(1);
-    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual([0]);
-    expect(offerWires.map((wire) => (wire.o as any).ch)).toEqual([manifest.chunkHashes[0]]);
+    expect(offerWires.map((wire) => (wire.o as any).br)).toEqual([[[0, 1]]]);
+    expect(offerWires.map((wire) => (wire.o as any).bh)).toEqual([manifest.chunkHashes[0]]);
     expect(offerWires.map((wire) => (wire.o as any).s)).toEqual([
       RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
     ]);
@@ -1959,7 +1965,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('serves requested resource chunks as bounded independent Resource offers', async () => {
+  it('serves requested resource chunks as one bounded streamed range bundle', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-bundle-offer-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const chunks = Array.from(
@@ -2032,33 +2038,25 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(offeredResources).toHaveLength(RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT);
-    expect(offeredResources.map((payload) => payload.resourceType)).toEqual(
-      Array.from(
-        { length: RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT },
-        () => 'reticulum_group_resource_chunk'
-      )
-    );
-    expect(offeredResources.map((payload) => (payload.metadata as any).chunkBundle)).toEqual(
-      Array.from({ length: RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT }, () => undefined)
-    );
-    expect(offeredResources.map((payload) => (payload.metadata as any).chunkIndex)).toEqual(
-      chunks.map((_, index) => index)
-    );
-    expect(offeredResources.map((payload) => (payload.metadata as any).chunkHash)).toEqual(
-      manifest.chunkHashes
-    );
-    expect(offeredResources.map((payload) => payload.size)).toEqual(
-      chunks.map(() => RETICULUM_RESOURCE_MIN_CHUNK_SIZE)
-    );
-    expect(offerWires).toHaveLength(RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT);
-    expect(offerWires.map((wire) => (wire.o as any).ci)).toEqual(
-      chunks.map((_, index) => index)
-    );
-    expect(offerWires.map((wire) => (wire.o as any).ch)).toEqual(manifest.chunkHashes);
-    expect(offerWires.map((wire) => (wire.o as any).br)).toEqual(
-      chunks.map(() => undefined)
-    );
+    expect(offeredResources).toHaveLength(1);
+    expect(offeredResources.map((payload) => payload.resourceType)).toEqual([
+      'reticulum_group_resource_chunk',
+    ]);
+    expect(offeredResources.map((payload) => payload.streamMode)).toEqual([true]);
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkBundle)).toEqual([
+      true,
+    ]);
+    expect(offeredResources.map((payload) => (payload.metadata as any).chunkRanges)).toEqual([
+      [[0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT]],
+    ]);
+    expect(offeredResources.map((payload) => payload.size)).toEqual([
+      chunks.length * RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+    ]);
+    expect(offerWires).toHaveLength(1);
+    expect(offerWires.map((wire) => (wire.o as any).br)).toEqual([
+      [[0, RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT]],
+    ]);
+    expect(typeof (offerWires[0].o as any).bh).toBe('string');
     for (const offerWire of offerWires) {
       expect(byteLengthUtf8JsonWithBridgeSender(offerWire)).toBeLessThanOrEqual(
         RT_RETICULUM_MAX_WIRE_JSON_BYTES
@@ -2292,7 +2290,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('fails a complete-file download when the active full transfer goes stale', async () => {
+  it('retries a complete-file download when the active full transfer goes stale', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-stale-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -2356,11 +2354,11 @@ describe('reticulum chat manager', () => {
 
     now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      active: false,
+      active: true,
       activeTransfers: 0,
       pendingTransfers: 0,
     });
-    expect(progressEvents).toContainEqual(
+    expect(progressEvents).not.toContainEqual(
       expect.objectContaining({
         fileHash,
         failed: true,
