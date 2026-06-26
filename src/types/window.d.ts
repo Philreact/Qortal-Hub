@@ -568,6 +568,9 @@ declare global {
         manifest: unknown,
         eventId?: string
       ) => Promise<{ success: boolean; error?: string }>;
+      cancelResource: (
+        fileHash: string
+      ) => Promise<{ success: boolean; canceled?: boolean; error?: string }>;
       getHistory: (
         groupId: number,
         channelId?: string,
@@ -643,6 +646,7 @@ declare global {
           progress?: number;
           complete?: boolean;
           failed?: boolean;
+          canceled?: boolean;
         }) => void
       ) => () => void;
     };

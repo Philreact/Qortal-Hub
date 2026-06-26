@@ -604,6 +604,11 @@ _GROUP_CALL_WIRE_TYPES = frozenset(
 )
 _RETICULUM_CHAT_WIRE_TYPE = "RCHAT"
 _RETICULUM_CHAT_DIGEST_DEDUPE_TTL_SECONDS = 5 * 60.0
+_RETICULUM_CHAT_SOFT_FANOUT_TYPES = {
+    "hello",
+    "group_sub",
+    "group_digest",
+}
 _reticulum_chat_digest_fanout_recent: Dict[Tuple[str, str, str], float] = {}
 _AUDIO_LINK_WIRE_TYPES = frozenset(
     {_GROUP_AUDIO_HEARTBEAT_WIRE_TYPE}
@@ -4244,6 +4249,7 @@ def _scheduler_lane_for_command(action: Any) -> str:
         "send_reticulum_resource",
         "authorize_reticulum_resource",
         "reject_reticulum_resource",
+        "cancel_reticulum_resource",
     }:
         return "file-transfer"
     return "control-send"
@@ -9179,6 +9185,60 @@ def _qchat_file_abort_receive_transfer(peer_hash: str, transfer_id: str) -> None
             _qchat_file_close_link_now(link_state)
 
 
+def _qchat_file_cancel_transfer(transfer_id: str, peer_hash: str = "", reason: str = "cancelled") -> int:
+    transfer_key = transfer_id.strip()
+    peer_key = peer_hash.strip().lower()
+    if not transfer_key:
+        return 0
+    closed = 0
+    with _state_lock:
+        receive_pending = _qchat_file_accepts_by_transfer.get(transfer_key)
+        if receive_pending is not None:
+            _qchat_file_remove_pending_receive(
+                str(receive_pending.get("peerPresenceHash") or peer_key).strip().lower(),
+                transfer_key,
+            )
+        send_pending = _qchat_file_pending_sends_by_transfer.pop(transfer_key, None)
+        for pending in (receive_pending, send_pending):
+            if not isinstance(pending, dict):
+                continue
+            pending["cancelled"] = True
+            active_chunks = pending.get("active_chunks")
+            if isinstance(active_chunks, dict):
+                for chunk in list(active_chunks.values()):
+                    if not isinstance(chunk, dict):
+                        continue
+                    timer = chunk.pop("ack_timeout_timer", None) or chunk.pop("timer", None)
+                    if timer is not None:
+                        try:
+                            timer.cancel()
+                        except Exception:
+                            pass
+                active_chunks.clear()
+    for link_id, link_state in list(_qchat_file_links_by_id.items()):
+        if str(link_state.get("transferId") or "").strip() != transfer_key:
+            continue
+        if peer_key and str(link_state.get("peerPresenceHash") or "").strip().lower() != peer_key:
+            continue
+        link_state["cancelled"] = True
+        link_state["completed"] = True
+        _qchat_file_close_link_now(link_state)
+        closed += 1
+    log(
+        "[presence_bridge] qchat file transfer cancelled "
+        f"transfer={transfer_key} peer={peer_key[:16]} closed_links={closed} reason={reason}"
+    )
+    _qchat_file_emit(
+        "cancelled",
+        {
+            "transferId": transfer_key,
+            "peerPresenceHash": peer_key,
+            "reason": reason,
+        },
+    )
+    return closed
+
+
 def _qchat_file_close_link_now(state: Optional[Dict[str, Any]]) -> None:
     if state is None:
         return
@@ -13654,6 +13714,20 @@ def handle_reject_reticulum_resource(req_id: str, payload: Dict[str, Any]) -> No
     handle_reject_qchat_file_resource(req_id, payload)
 
 
+def handle_cancel_reticulum_resource(req_id: str, payload: Dict[str, Any]) -> None:
+    transfer_id = str(payload.get("transferId") or "").strip()
+    peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
+    reason = str(payload.get("reason") or "cancelled").strip() or "cancelled"
+    if not transfer_id:
+        emit_resp(req_id, False, error="Missing transferId")
+        return
+    try:
+        closed_links = _qchat_file_cancel_transfer(transfer_id, peer_hash, reason)
+        emit_resp(req_id, True, payload={"closedLinks": closed_links})
+    except Exception as exc:
+        emit_resp(req_id, False, error=str(exc))
+
+
 def handle_fanout_call(req_id: str, payload: Dict[str, Any]) -> None:
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages or any(
@@ -14123,20 +14197,36 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
             else:
                 message_keys.append(message_type)
 
-        peer_hashes = _resolve_overlay_neighbor_hashes(
+        soft_peer_hashes = _resolve_overlay_neighbor_hashes(
             exclude_hashes,
             established_only=False,
         )
-        if not peer_hashes:
+        if not soft_peer_hashes:
             _promote_recent_verified_overlay_neighbors(
                 "reticulum_chat_fanout",
                 set(exclude_hashes),
             )
-            peer_hashes = _resolve_overlay_neighbor_hashes(
+            soft_peer_hashes = _resolve_overlay_neighbor_hashes(
                 exclude_hashes,
                 established_only=False,
             )
-        if not peer_hashes:
+        reliable_peer_hashes = _resolve_overlay_neighbor_hashes(
+            exclude_hashes,
+            established_only=True,
+        )
+
+        reliable_indices = [
+            index
+            for index, message_type in enumerate(message_types)
+            if message_type not in _RETICULUM_CHAT_SOFT_FANOUT_TYPES
+        ]
+        soft_indices = [
+            index
+            for index, message_type in enumerate(message_types)
+            if message_type in _RETICULUM_CHAT_SOFT_FANOUT_TYPES
+        ]
+
+        if soft_indices and not soft_peer_hashes:
             emit_resp(
                 req_id,
                 False,
@@ -14144,23 +14234,42 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                 error="No overlay route",
             )
             return
+        if reliable_indices and not reliable_peer_hashes:
+            log(
+                "[presence_bridge] target=reticulum-chat reliable_fanout_no_established_route "
+                f"exclude_hashes={','.join(exclude_hashes)} "
+                f"message_types={','.join(message_types)} "
+                f"message_keys={','.join(message_keys)}"
+            )
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "no_established_route"},
+                error="No established overlay route",
+            )
+            return
 
         now_mono = time.monotonic()
         _reticulum_chat_prune_digest_fanout_recent(now_mono)
+        fanout_hashes = list(dict.fromkeys(soft_peer_hashes + reliable_peer_hashes))
         log(
             "[presence_bridge] target=reticulum-chat fanout "
-            f"peers={len(peer_hashes)} exclude_hashes={','.join(exclude_hashes)} "
-            f"fanout_hashes={','.join(peer_hashes)} "
+            f"peers={len(fanout_hashes)} soft_peers={len(soft_peer_hashes)} "
+            f"reliable_peers={len(reliable_peer_hashes)} "
+            f"exclude_hashes={','.join(exclude_hashes)} "
+            f"fanout_hashes={','.join(fanout_hashes)} "
             f"message_types={','.join(message_types)} "
             f"message_keys={','.join(message_keys)}"
         )
 
-        delivered_peer_hashes: list[str] = []
+        soft_delivered_peer_hashes: list[str] = []
+        reliable_delivered_peer_hashes: list[str] = []
         suppressed_duplicate_digests = 0
         suppressed_digest_keys: list[str] = []
-        for peer_hash in peer_hashes:
+        for peer_hash in soft_peer_hashes:
             peer_delivered_all_frames = True
-            for index, wire_bytes in enumerate(encoded_frames):
+            for index in soft_indices:
+                wire_bytes = encoded_frames[index]
                 digest_fingerprint = (
                     message_digest_fingerprints[index]
                     if index < len(message_digest_fingerprints)
@@ -14188,7 +14297,30 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                 elif dedupe_key is not None:
                     _reticulum_chat_digest_fanout_recent[dedupe_key] = now_mono
             if peer_delivered_all_frames:
-                delivered_peer_hashes.append(peer_hash)
+                soft_delivered_peer_hashes.append(peer_hash)
+
+        for peer_hash in reliable_peer_hashes:
+            peer_delivered_all_frames = True
+            for index in reliable_indices:
+                wire_bytes = encoded_frames[index]
+                if not _send_wire_to_established_overlay_peer(
+                    peer_hash,
+                    wire_bytes,
+                    "reticulum_chat_reliable_fanout",
+                ):
+                    peer_delivered_all_frames = False
+                    message_type = (
+                        message_types[index]
+                        if index < len(message_types) and message_types[index]
+                        else "?"
+                    )
+                    log(
+                        "[presence_bridge] target=reticulum-chat reliable_fanout_send_failed "
+                        f"peer_hash={peer_hash} message_type={message_type} "
+                        "error=Packet send returned False"
+                    )
+            if peer_delivered_all_frames:
+                reliable_delivered_peer_hashes.append(peer_hash)
 
         if suppressed_duplicate_digests:
             log(
@@ -14197,14 +14329,30 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                 f"peer_groups={','.join(suppressed_digest_keys)}"
             )
 
-        if delivered_peer_hashes:
+        soft_ok = not soft_indices or bool(soft_delivered_peer_hashes)
+        reliable_ok = not reliable_indices or bool(reliable_delivered_peer_hashes)
+        if soft_ok and reliable_ok:
+            delivered_peer_hashes = list(
+                dict.fromkeys(soft_delivered_peer_hashes + reliable_delivered_peer_hashes)
+            )
             emit_resp(
                 req_id,
                 True,
                 payload={
                     "fanoutPeers": len(delivered_peer_hashes),
                     "fanoutHashes": delivered_peer_hashes,
+                    "softFanoutPeers": len(soft_delivered_peer_hashes),
+                    "reliableFanoutPeers": len(reliable_delivered_peer_hashes),
                 },
+            )
+            return
+
+        if reliable_indices and not reliable_delivered_peer_hashes:
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "packet_send_false"},
+                error="Reliable overlay fanout had no successful delivery",
             )
             return
 
@@ -14623,6 +14771,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_authorize_reticulum_resource(req_id, payload)
     elif action == "reject_reticulum_resource":
         handle_reject_reticulum_resource(req_id, payload)
+    elif action == "cancel_reticulum_resource":
+        handle_cancel_reticulum_resource(req_id, payload)
     elif action == "fanout_call":
         handle_fanout_call(req_id, payload)
     elif action == "send_group_call":

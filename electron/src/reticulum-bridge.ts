@@ -206,6 +206,7 @@ type BridgeCmdFrame = {
     | 'send_reticulum_resource'
     | 'authorize_reticulum_resource'
     | 'reject_reticulum_resource'
+    | 'cancel_reticulum_resource'
     | 'fanout_call'
     | 'send_group_call'
     | 'fanout_group_call'
@@ -1559,6 +1560,14 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     reason: string;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('reject_reticulum_resource', payload);
+  }
+
+  async cancelReticulumResourceDetailed(payload: {
+    transferId: string;
+    peerPresenceHash?: string;
+    reason?: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('cancel_reticulum_resource', payload);
   }
 
   async fanoutCallDetailed(
@@ -4309,6 +4318,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       | 'send_reticulum_resource'
       | 'authorize_reticulum_resource'
       | 'reject_reticulum_resource'
+      | 'cancel_reticulum_resource'
       | 'fanout_call'
       | 'send_group_call'
       | 'fanout_group_call'
@@ -4366,7 +4376,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       return 'unknown-peer-presence-hash';
     if (code === 'wire_too_large') return 'wire-too-large';
     if (code === 'packet_send_false') return 'packet-send-false';
-    if (code === 'no_route') return 'no-route';
+    if (code === 'no_route' || code === 'no_established_route') return 'no-route';
     if (code === 'unknown_link_id') return 'unknown-link-id';
     if (code === 'audio_link_not_ready') return 'audio-link-not-ready';
     if (code === 'audio_payload_too_large') return 'audio-payload-too-large';

@@ -32,6 +32,8 @@ export type ReticulumResourceTransferRequest = {
   chunkIndexes?: number[];
   requireCompleteFile?: boolean;
   requesterAddress?: string;
+  requesterPeerHash?: string;
+  relayRequestId?: string;
 };
 
 export type ReticulumResourceTransferOffer = {
@@ -55,7 +57,9 @@ export type ReticulumResourceTransferOffer = {
     offset: number;
   }>;
   sourcePeerHash?: string;
+  relayRequestId?: string;
   temporaryPath?: string;
+  receiveTemporaryPath?: string;
 };
 
 export type ReticulumResourceTransferPayload = {
@@ -83,6 +87,7 @@ export type ReticulumResourceTransferProgress = {
   progress?: number;
   complete?: boolean;
   failed?: boolean;
+  canceled?: boolean;
 };
 
 export type ReticulumResourceDownloadRuntimeStatus = {
@@ -391,6 +396,87 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.scheduleDownload(0);
   }
 
+  cancelResource(fileHash: string, reason = 'user_cancelled'): boolean {
+    const blobId = String(fileHash || '').trim().toLowerCase();
+    if (!blobId) return false;
+    const state = this.downloads.get(blobId);
+    const transferIds = new Set<string>();
+    for (const [transferId, offer] of this.offers.entries()) {
+      if (offer.fileHash.toLowerCase() === blobId) {
+        transferIds.add(transferId);
+      }
+    }
+    if (!state && transferIds.size === 0) return false;
+
+    if (state) {
+      const completedChunks = Math.max(
+        0,
+        state.manifest.chunkHashes.length - this.getMissingChunkIndexes(state.manifest).length
+      );
+      const progressPayload: ReticulumResourceTransferProgress = {
+        contextId: state.contextId,
+        eventId: state.eventId,
+        fileHash: state.fileHash,
+        completedChunks,
+        totalChunks: state.manifest.chunkHashes.length,
+        progress:
+          state.manifest.chunkHashes.length > 0
+            ? completedChunks / state.manifest.chunkHashes.length
+            : 0,
+        complete: false,
+        failed: false,
+        canceled: true,
+      };
+      this.emit('progress', progressPayload);
+      this.onProgress?.(progressPayload);
+      state.inFlightChunks.clear();
+      state.chunkAttempts.clear();
+      delete state.fullTransfer;
+      this.downloads.delete(blobId);
+    }
+    this.resourceStore.discardResourceData(blobId);
+
+    for (const key of [...this.requestedResources.keys()]) {
+      if (key.includes(blobId)) this.requestedResources.delete(key);
+    }
+
+    for (let index = this.pendingAccepts.length - 1; index >= 0; index -= 1) {
+      const transferId = this.pendingAccepts[index];
+      if (!transferIds.has(transferId)) continue;
+      this.pendingAccepts.splice(index, 1);
+      this.pendingAcceptQueuedAt.delete(transferId);
+    }
+
+    for (const transferId of transferIds) {
+      const offer = this.offers.get(transferId);
+      if (offer) this.cleanupTemporaryOfferFile(offer);
+      this.offers.delete(transferId);
+      this.transferSpeedSamples.delete(transferId);
+      this.activeAccepts.delete(transferId);
+      this.activeAcceptStartedAt.delete(transferId);
+      const cancelPromise = this.bridge?.cancelReticulumResourceDetailed?.({
+        transferId,
+        peerPresenceHash: offer?.sourcePeerHash,
+        reason,
+      });
+      if (cancelPromise) {
+        void cancelPromise.catch((err) => {
+          loggerWarn(
+            `[${this.loggerPrefix}] Failed to cancel bridge resource transfer=${transferId}:`,
+            err
+          );
+        });
+      }
+    }
+
+    loggerLog(
+      `[${this.loggerPrefix}] resource_download_cancelled fileHash=${blobId} ` +
+        `transfers=${transferIds.size} reason=${reason}`
+    );
+    void this.processAcceptQueue();
+    return true;
+  }
+
   async handleRequest(
     contextId: number,
     request: ReticulumResourceTransferRequest,
@@ -398,6 +484,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   ): Promise<void> {
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey || !this.bridge) return;
+    const recipientPeerKey = (request.requesterPeerHash || peerKey).trim().toLowerCase();
+    if (!recipientPeerKey) return;
     const manifest = this.resourceStore.getManifest(request.fileHash);
     if (!manifest || manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) {
       loggerWarn(
@@ -427,7 +515,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const transferId = nodeCrypto.randomBytes(8).toString('hex');
       const fileName = manifest.fileName || `${manifest.fileHash}.bin`;
       const registered = await this.bridge.sendReticulumResourceDetailed({
-        allowedRecipientAddress: peerKey,
+        allowedRecipientAddress: recipientPeerKey,
         transferId,
         filePath,
         fileName,
@@ -462,6 +550,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         sizeBytes: manifest.sizeBytes,
         fileName,
         mimeType: manifest.mimeType,
+        ...(request.relayRequestId ? { relayRequestId: request.relayRequestId } : {}),
       };
       this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
       loggerLog(
@@ -505,7 +594,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const fileName = `${manifest.fileHash}.range-${firstChunk}-${bundle.chunks.length}.bundle`;
     const chunkRanges = chunkIndexesToRanges(bundle.chunks.map((chunk) => chunk.index));
     const registered = await this.bridge.sendReticulumResourceDetailed({
-      allowedRecipientAddress: peerKey,
+      allowedRecipientAddress: recipientPeerKey,
       transferId,
       filePath: bundle.path,
       fileName,
@@ -548,6 +637,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       bundleHash: bundle.bundleHash,
       chunks: bundle.chunks,
       temporaryPath: bundle.path,
+      ...(request.relayRequestId ? { relayRequestId: request.relayRequestId } : {}),
     };
     this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
     loggerLog(
@@ -584,6 +674,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     const normalizedOffer = this.normalizeChunkBundleOffer(offer, manifest);
     if (!normalizedOffer) return;
+    const sourcePeerKey = (normalizedOffer.sourcePeerHash || peerKey).trim().toLowerCase();
+    if (!sourcePeerKey) return;
     if (this.canAcceptOffer) {
       const allowed = await this.canAcceptOffer(normalizedOffer.contextId, normalizedOffer, manifest);
       if (!allowed) {
@@ -611,7 +703,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const localChunk = this.resourceStore.getChunk(normalizedOffer.fileHash, normalizedOffer.chunkIndex);
       if (localChunk?.status === 'complete' && localChunk.localPath) return;
       if (download && download.inFlightChunks.has(normalizedOffer.chunkIndex)) return;
-      if (this.peerHasMaxActiveOrPendingAcceptsForResource(peerKey, normalizedOffer.fileHash)) return;
+      if (this.peerHasMaxActiveOrPendingAcceptsForResource(sourcePeerKey, normalizedOffer.fileHash)) return;
     } else if (Array.isArray(normalizedOffer.chunks) && normalizedOffer.chunks.length > 0) {
       if (!this.isValidChunkBundleOffer(normalizedOffer, manifest)) {
         loggerWarn(
@@ -632,7 +724,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         );
         return;
       }
-      if (this.peerHasMaxActiveOrPendingAcceptsForResource(peerKey, normalizedOffer.fileHash)) return;
+      if (this.peerHasMaxActiveOrPendingAcceptsForResource(sourcePeerKey, normalizedOffer.fileHash)) return;
     } else {
       if (normalizedOffer.sizeBytes !== manifest.sizeBytes) {
         loggerWarn(
@@ -647,35 +739,35 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         // Missing data is expected for active downloads.
       }
       if (download?.fullTransfer) return;
-      if (this.peerHasActiveOrPendingAcceptForResource(peerKey, normalizedOffer.fileHash)) return;
+      if (this.peerHasActiveOrPendingAcceptForResource(sourcePeerKey, normalizedOffer.fileHash)) return;
     }
     const trackedOffer: ReticulumResourceTransferOffer = {
       ...normalizedOffer,
       fileName: normalizedOffer.fileName || manifest.fileName,
       mimeType: normalizedOffer.mimeType || manifest.mimeType,
-      sourcePeerHash: peerKey,
+      sourcePeerHash: sourcePeerKey,
     };
     this.offers.set(normalizedOffer.transferId, trackedOffer);
     if (download && normalizedOffer.chunkIndex != null) {
-      download.peerHashes.add(peerKey);
+      download.peerHashes.add(sourcePeerKey);
       let peers = download.chunkPeers.get(normalizedOffer.chunkIndex);
       if (!peers) {
         peers = new Set<string>();
         download.chunkPeers.set(normalizedOffer.chunkIndex, peers);
       }
-      peers.add(peerKey);
+      peers.add(sourcePeerKey);
     } else if (download && Array.isArray(normalizedOffer.chunks)) {
-      download.peerHashes.add(peerKey);
+      download.peerHashes.add(sourcePeerKey);
       for (const chunk of normalizedOffer.chunks) {
         let peers = download.chunkPeers.get(chunk.index);
         if (!peers) {
           peers = new Set<string>();
           download.chunkPeers.set(chunk.index, peers);
         }
-        peers.add(peerKey);
+        peers.add(sourcePeerKey);
       }
     } else if (download) {
-      download.peerHashes.add(peerKey);
+      download.peerHashes.add(sourcePeerKey);
     }
     this.enqueueAccept(normalizedOffer.transferId);
   }
@@ -1394,6 +1486,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       offer.fileHash,
       path.extname(offer.fileName) || '.bin'
     );
+    offer.receiveTemporaryPath = savePath;
     const isChunkTransfer =
       offer.chunkIndex != null || (Array.isArray(offer.chunks) && offer.chunks.length > 0);
     const chunkRanges = offerChunkRanges(offer);
@@ -2032,6 +2125,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
 
   private cleanupTemporaryOfferFile(offer: ReticulumResourceTransferOffer): void {
     this.cleanupTemporaryPath(offer.temporaryPath);
+    this.cleanupTemporaryPath(offer.receiveTemporaryPath);
+    delete offer.temporaryPath;
+    delete offer.receiveTemporaryPath;
   }
 
   private cleanupTemporaryPath(filePath: string | undefined): void {

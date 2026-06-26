@@ -3408,6 +3408,23 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle('reticulumChat:cancelResource', async (_event, fileHash: string) => {
+  const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+  if (!hash) return { success: false, error: 'Invalid file hash' };
+  const manager = getReticulumChatManager();
+  if (!manager) {
+    return { success: false, error: 'Reticulum chat manager is not running' };
+  }
+  try {
+    return { success: true, canceled: manager.cancelResource(hash) };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Reticulum resource cancel failed',
+    };
+  }
+});
+
 ipcMain.handle(
   'reticulumResource:importBase64',
   async (

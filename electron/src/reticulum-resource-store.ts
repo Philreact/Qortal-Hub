@@ -405,6 +405,38 @@ export class ReticulumResourceStore {
     }
   }
 
+  discardResourceData(fileHash: string): void {
+    const manifest = this.getManifest(fileHash);
+    if (!manifest) return;
+    const row = this.stmtGetResource.get(manifest.fileHash) as ResourceRow | undefined;
+    const chunks = this.getChunks(manifest.fileHash);
+    const now = this.now();
+    for (const chunk of chunks) {
+      if (chunk.localPath) {
+        fs.rmSync(chunk.localPath, { force: true });
+      }
+      this.stmtUpsertChunk.run({
+        file_hash: manifest.fileHash,
+        chunk_index: chunk.chunkIndex,
+        chunk_hash: chunk.chunkHash,
+        size_bytes: chunk.sizeBytes,
+        status: 'missing',
+        local_path: null,
+        updated_at: now,
+      });
+    }
+    if (row?.assembled_path) {
+      fs.rmSync(row.assembled_path, { force: true });
+    }
+    fs.rmSync(this.chunksDir(manifest.fileHash), { recursive: true, force: true });
+    if (!manifest.encrypted) {
+      fs.rmSync(path.dirname(this.assembledPath(manifest)), { recursive: true, force: true });
+    } else {
+      fs.rmSync(this.assembledPath(manifest), { force: true });
+    }
+    this.stmtUpdateResourceStatus.run('pending', null, now, manifest.fileHash);
+  }
+
   assembleResource(fileHash: string): string {
     const manifest = this.getManifest(fileHash);
     if (!manifest) throw new Error('Unknown resource manifest');

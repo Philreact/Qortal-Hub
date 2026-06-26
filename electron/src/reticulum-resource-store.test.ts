@@ -166,6 +166,38 @@ describe('reticulum resource store', () => {
     fs.writeFileSync(tempPath, Buffer.from('ok'));
     expect(fs.readFileSync(tempPath, 'utf8')).toBe('ok');
   });
+
+  it('discards downloaded chunk data while keeping the manifest retryable', () => {
+    const { store } = tempStore();
+    stores.push(store);
+    const first = Buffer.from('a'.repeat(16 * 1024));
+    const second = Buffer.from('b'.repeat(16 * 1024));
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'test.feature',
+      fileName: 'payload.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: first.length + second.length,
+      chunkSize: first.length,
+      chunkHashes: [cryptoHash(first), cryptoHash(second)],
+      fileHash: cryptoHash(Buffer.concat([first, second])),
+      encrypted: false,
+      createdAt: 100_000,
+    };
+
+    store.storeManifest(manifest);
+    store.storeChunk(manifest.fileHash, 0, first);
+    const chunkPath = store.getChunk(manifest.fileHash, 0)?.localPath;
+    expect(chunkPath && fs.existsSync(chunkPath)).toBe(true);
+
+    store.discardResourceData(manifest.fileHash);
+
+    expect(store.getManifest(manifest.fileHash)?.fileHash).toBe(manifest.fileHash);
+    expect(store.getChunks(manifest.fileHash)).toEqual([
+      expect.objectContaining({ chunkIndex: 0, status: 'missing', localPath: null }),
+      expect.objectContaining({ chunkIndex: 1, status: 'missing', localPath: null }),
+    ]);
+    expect(chunkPath && fs.existsSync(chunkPath)).toBe(false);
+  });
 });
 
 function cryptoHash(value: Buffer): string {

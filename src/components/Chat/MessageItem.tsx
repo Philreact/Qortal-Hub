@@ -39,6 +39,7 @@ import EditIcon from '@mui/icons-material/Edit';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
+import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import TextStyle from '@tiptap/extension-text-style';
 import level0Img from '../../assets/badges/level-0.png';
 import level1Img from '../../assets/badges/level-1.png';
@@ -751,6 +752,16 @@ export const MessageItemComponent = ({
       if (typeof payload.latestChunkUpdatedAt === 'number' && payload.latestChunkUpdatedAt > 0) {
         setFileResourceLastChunkAt(payload.latestChunkUpdatedAt);
       }
+      if (payload.canceled) {
+        setFileResourceStatus('idle');
+        setFileResourceProgress(null);
+        setFileResourceBytes(null);
+        setFileResourceRuntime(null);
+        setFileResourceFullFileTransfer(false);
+        setFileResourceStartedAt(null);
+        setFileResourceLastChunkAt(null);
+        return;
+      }
       if (payload.complete) {
         setFileResourceStatus('ready');
         setFileResourceProgress(100);
@@ -856,6 +867,18 @@ export const MessageItemComponent = ({
     reticulumResourceGroupId,
     markFileResourceReadyIfComplete,
   ]);
+
+  const cancelReticulumFileResource = useCallback(async () => {
+    if (!reticulumFileResourceId) return;
+    setFileResourceStatus('idle');
+    setFileResourceProgress(null);
+    setFileResourceBytes(null);
+    setFileResourceRuntime(null);
+    setFileResourceFullFileTransfer(false);
+    setFileResourceStartedAt(null);
+    setFileResourceLastChunkAt(null);
+    await window.reticulumChat?.cancelResource?.(reticulumFileResourceId);
+  }, [reticulumFileResourceId]);
 
   const saveReticulumFileResource = useCallback(async () => {
     if (!reticulumFileResourceId) return;
@@ -1803,24 +1826,37 @@ export const MessageItemComponent = ({
                     />
                   )}
                 </Box>
-                <Button
-                  size="small"
-                  variant="contained"
-                  startIcon={<DownloadRoundedIcon />}
-                  disabled={
-                    fileResourceStatus === 'downloading' || fileResourceStatus === 'saving'
-                  }
-                  onClick={() => {
-                    void saveReticulumFileResource();
-                  }}
-                  sx={{ flexShrink: 0, textTransform: 'none' }}
-                >
-                  {fileResourceStatus === 'ready'
-                    ? 'Save'
-                    : fileResourceStatus === 'error'
-                      ? 'Retry'
-                      : 'Download'}
-                </Button>
+                {fileResourceStatus === 'downloading' ? (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="inherit"
+                    startIcon={<CancelRoundedIcon />}
+                    onClick={() => {
+                      void cancelReticulumFileResource();
+                    }}
+                    sx={{ flexShrink: 0, textTransform: 'none' }}
+                  >
+                    Cancel
+                  </Button>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<DownloadRoundedIcon />}
+                    disabled={fileResourceStatus === 'saving'}
+                    onClick={() => {
+                      void saveReticulumFileResource();
+                    }}
+                    sx={{ flexShrink: 0, textTransform: 'none' }}
+                  >
+                    {fileResourceStatus === 'ready'
+                      ? 'Save'
+                      : fileResourceStatus === 'error'
+                        ? 'Retry'
+                        : 'Download'}
+                  </Button>
+                )}
               </Box>
             )}
 

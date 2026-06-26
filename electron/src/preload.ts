@@ -1407,6 +1407,11 @@ try {
           manifest,
           eventId
         ) as Promise<{ success: boolean; error?: string }>,
+      cancelResource: async (fileHash: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:cancelResource',
+          fileHash
+        ) as Promise<{ success: boolean; canceled?: boolean; error?: string }>,
       getHistory: async (groupId: number, channelId?: string, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
@@ -1656,6 +1661,11 @@ try {
           manifest,
           eventId
         ) as Promise<{ success: boolean; error?: string }>,
+      cancelResource: async (fileHash: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:cancelResource',
+          fileHash
+        ) as Promise<{ success: boolean; canceled?: boolean; error?: string }>,
       getHistory: async (groupId: number, channelId?: string, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
