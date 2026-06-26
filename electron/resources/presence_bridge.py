@@ -236,6 +236,38 @@ def _reticulum_chat_digest_fingerprint(msg: Dict[str, Any]) -> Optional[Tuple[st
     return group_id, fingerprint
 
 
+def _reticulum_chat_wire_log_details(msg: Dict[str, Any]) -> str:
+    message_type = str(msg.get("k") or "?")
+    if message_type == "group_digest":
+        latest = msg.get("latest")
+        latest_id = ""
+        latest_ts = ""
+        if isinstance(latest, dict):
+            latest_id = str(latest.get("id") or "")[:12]
+            latest_ts = str(latest.get("ts") or "")
+        details = [
+            f"g={msg.get('g')}",
+            f"digest={str(msg.get('digestHash') or '-')[:12]}",
+            f"latest_id={latest_id or '-'}",
+            f"latest_ts={latest_ts or '-'}",
+            f"channels={len(msg.get('channels')) if isinstance(msg.get('channels'), list) else 0}",
+        ]
+        if msg.get("more") is True:
+            details.append(f"more=true")
+            details.append(f"nextOffset={msg.get('nextOffset')}")
+        return " ".join(details)
+    if message_type == "group_sub":
+        groups = msg.get("groups")
+        if isinstance(groups, list):
+            group_ids = ",".join(str(group_id) for group_id in groups[:12])
+            more = "+" if len(groups) > 12 else ""
+            return f"mode={msg.get('mode')} groups={group_ids}{more} group_count={len(groups)} origin={str(msg.get('o') or '-')[:16]} hops={msg.get('h', 0)}"
+        return f"mode={msg.get('mode')} groups=invalid origin={str(msg.get('o') or '-')[:16]} hops={msg.get('h', 0)}"
+    if "g" in msg:
+        return f"g={msg.get('g')}"
+    return ""
+
+
 def _reticulum_chat_prune_digest_fanout_recent(now: float) -> None:
     cutoff = now - _RETICULUM_CHAT_DIGEST_DEDUPE_TTL_SECONDS
     stale_keys = [
@@ -8176,8 +8208,11 @@ def _emit_call_bridge_message(
         if link_id:
             payload["linkId"] = link_id
         emit_event("reticulum_chat_message", payload)
+        chat_details = _reticulum_chat_wire_log_details(message)
         log(
-            f"[presence_bridge] received reticulum_chat_message k={message.get('k')} sender_r={sender_call_hash[:16] if sender_call_hash else ''} size={len(_call_wire_json_bytes(message))}"
+            f"[presence_bridge] received reticulum_chat_message k={message.get('k')} "
+            f"sender_r={sender_call_hash[:16] if sender_call_hash else ''} "
+            f"size={len(_call_wire_json_bytes(message))} {chat_details}".rstrip()
         )
         return True
     event_name = (
