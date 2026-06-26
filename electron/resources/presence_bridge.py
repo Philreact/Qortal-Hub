@@ -86,6 +86,8 @@ _OVERLAY_DEFAULT_HOPS = 4
 _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 5.0
 _OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
 _DIRECT_LINK_PATH_PROVEN_SECONDS = 30.0
+_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
+_HARD_PATH_DROP_COOLDOWN_SECONDS = 30.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
@@ -5849,6 +5851,21 @@ def _request_fresh_link_path(
     return resolved
 
 
+def _lifecycle_state_for_peer(peer_key: str) -> Optional[Dict[str, Any]]:
+    peer = str(peer_key or "").strip().lower()
+    if not peer:
+        return None
+    return _peer_lifecycle.setdefault(
+        peer,
+        {
+            "last_seen_inbound": None,
+            "last_send_ok": None,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        },
+    )
+
+
 def _nudge_overlay_path_for_peer(peer_key: str) -> None:
     """
     Ask Reticulum to resolve a destination we need for overlay group_signal fanout.
@@ -6182,17 +6199,34 @@ def _nudge_overlay_link_path(
     *,
     await_seconds: float = 0.0,
 ) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
     if _reticulum_has_path(destination_hash):
         if _peer_has_recent_direct_activity(peer_key):
             return True
-        return _request_fresh_link_path(
-            destination_hash,
-            peer_key,
-            target="presence-reticulum",
-            reason="overlay_link_cached_path_unproven",
-            await_seconds=await_seconds,
-            force_refresh=True,
-        )
+        now = time.time()
+        st = _lifecycle_state_for_peer(peer_key)
+        last_nudge = st.get("last_unproven_cached_path_nudge_at") if st is not None else None
+        if not (
+            isinstance(last_nudge, (int, float))
+            and (now - float(last_nudge)) < _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS
+        ):
+            try:
+                RNS.Transport.request_path(destination_hash)
+                if st is not None:
+                    st["last_request_path_at"] = now
+                    st["last_unproven_cached_path_nudge_at"] = now
+                log(
+                    "[presence_bridge] target=presence-reticulum "
+                    "overlay_link_cached_path_unproven "
+                    f"peer={peer_key} action=keep_and_nudge"
+                )
+            except Exception as exc:
+                log(
+                    "[presence_bridge] target=presence-reticulum "
+                    "overlay_link_cached_path_unproven_nudge_failed "
+                    f"peer={peer_key}: {exc}"
+                )
+        return True
 
     now = time.time()
     st = _peer_lifecycle.get(peer_key) or {}
@@ -6797,12 +6831,25 @@ def _maybe_drop_path_after_unestablished_link_close(
         destination_hash = bytes.fromhex(peer_hash)
     except Exception:
         return
+    now = time.time()
+    st = _lifecycle_state_for_peer(peer_hash)
+    last_drop = st.get("last_hard_path_drop_at") if st is not None else None
+    if isinstance(last_drop, (int, float)) and now - float(last_drop) < _HARD_PATH_DROP_COOLDOWN_SECONDS:
+        log(
+            f"[presence_bridge] target={target} cached_path_drop_skipped "
+            f"peer={peer_hash} reason=recent_hard_drop close_reason={reason} "
+            f"age_ms={int((now - float(last_drop)) * 1000.0)}"
+        )
+        return
     _drop_cached_reticulum_path(
         destination_hash,
         peer_hash,
         target,
         f"unestablished_link_closed:{reason}",
     )
+    if st is not None:
+        st["last_hard_path_drop_at"] = now
+        st["last_hard_path_drop_reason"] = f"unestablished_link_closed:{reason}"
 
 
 def _overlay_close_debug_line(link_id: str, state: Dict[str, Any], reason: str) -> str:
