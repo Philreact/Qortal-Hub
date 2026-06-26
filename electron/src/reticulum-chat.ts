@@ -2507,7 +2507,6 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
 
-    if (offeredCount > 0 && !lastOfferFailure) return { ok: true };
     const digestResult = await this.fanout(this.buildGroupDigestWire(event.groupId));
     if (digestResult.ok || offeredCount > 0) return { ok: true };
     if (interestedPeers.length > 0 && lastOfferFailure) return lastOfferFailure;

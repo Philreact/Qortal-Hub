@@ -32,9 +32,11 @@ import {
 } from './reticulum-wire-size';
 import { ReticulumResourceStore, RETICULUM_RESOURCE_MIN_CHUNK_SIZE } from './reticulum-resource-store';
 import {
+  ReticulumResourceTransferManager,
   RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
   RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT,
   RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
+  RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
 } from './reticulum-resource-transfer';
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
@@ -727,7 +729,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('publishes oversized live events as event resource offers to subscribed peers', async () => {
+  it('publishes oversized live events as event resource offers and digest discovery', async () => {
     const fanout: Record<string, unknown>[] = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const resources: unknown[] = [];
@@ -775,7 +777,14 @@ describe('reticulum chat manager', () => {
         }),
       })
     );
-    expect(fanout.find((wire) => wire.k === 'group_digest')).toBeUndefined();
+    expect(fanout.find((wire) => wire.k === 'group_digest')).toMatchObject({
+      t: 'RCHAT',
+      k: 'group_digest',
+      g: 9,
+      latest: {
+        id: event.eventId,
+      },
+    });
     expect(direct.some(({ wire }) => JSON.stringify(wire).includes('encryptedPayload'))).toBe(false);
     manager.close();
   });
@@ -2329,6 +2338,67 @@ describe('reticulum chat manager', () => {
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     manager.close();
+    resourceStore.close();
+  });
+
+  it('does not reset a throttled resource download retry when the same resource is requested again', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-throttle-repeat-'));
+    let nowMs = 100_000;
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => nowMs,
+    });
+    const chunkHashes = ['a'.repeat(64), 'b'.repeat(64)];
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: RETICULUM_RESOURCE_MIN_CHUNK_SIZE * 2,
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes,
+      fileHash: 'c'.repeat(64),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const bridge = {
+      getOverlayLinkSnapshots: () => [
+        {
+          peerPresenceHash: 'peer-a',
+          lastRxAt: nowMs - 31_000,
+        },
+      ],
+    };
+    const transfer = new ReticulumResourceTransferManager<Record<string, unknown>>({
+      bridge: bridge as any,
+      resourceStore,
+      now: () => nowMs,
+      buildRequestPayloads: async () => [{ request: true }],
+      sendRequestToPeer: async () => ({ ok: true as const }),
+      fanoutRequest: async () => ({ ok: true as const }),
+      sendOfferToPeer: async () => ({ ok: true as const }),
+    });
+
+    transfer.requestResource({
+      contextId: 78,
+      manifest,
+      candidatePeers: ['peer-a'],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const firstRetryAt = transfer.getDownloadStatus(manifest.fileHash).nextRequestAt;
+    expect(firstRetryAt).toBe(nowMs + RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS);
+
+    nowMs += 100;
+    transfer.requestResource({
+      contextId: 78,
+      manifest,
+      candidatePeers: ['peer-a'],
+    });
+
+    expect(transfer.getDownloadStatus(manifest.fileHash).nextRequestAt).toBe(firstRetryAt);
+    transfer.close();
     resourceStore.close();
   });
 

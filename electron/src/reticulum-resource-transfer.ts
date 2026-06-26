@@ -163,6 +163,8 @@ type ReticulumResourceDownloadState<TRequestWire> = {
   chunkPeers: Map<number, Set<string>>;
   inFlightChunks: Map<number, { transferId: string; startedAt: number }>;
   peerBlockChunkLimits: Map<string, number>;
+  peerBulkThrottleUntil: Map<string, number>;
+  peerBulkThrottleLoggedAt: Map<string, number>;
   fullTransfer?: { transferId: string; startedAt: number };
   nextRequestAt: number;
   featureData?: Record<string, unknown>;
@@ -383,6 +385,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     } catch {
       // Missing chunks are expected; continue into network retrieval.
     }
+    const existingDownload = this.downloads.get(blobId);
     const state = this.upsertDownload(
       options.contextId,
       manifest,
@@ -390,10 +393,14 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       options.candidatePeers ?? [],
       options.featureData
     );
-    state.chunkAttempts.delete(-1);
-    state.nextRequestAt = 0;
+    if (!existingDownload) {
+      state.chunkAttempts.delete(-1);
+      state.nextRequestAt = 0;
+    } else if (state.nextRequestAt <= this.now()) {
+      state.nextRequestAt = 0;
+    }
     this.emitProgress(state);
-    this.scheduleDownload(0);
+    this.scheduleDownload(Math.max(0, state.nextRequestAt - this.now()));
   }
 
   cancelResource(fileHash: string, reason = 'user_cancelled'): boolean {
@@ -823,6 +830,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       chunkPeers: new Map(),
       inFlightChunks: new Map(),
       peerBlockChunkLimits: new Map(),
+      peerBulkThrottleUntil: new Map(),
+      peerBulkThrottleLoggedAt: new Map(),
       nextRequestAt: 0,
       ...(featureData ? { featureData } : {}),
     };
@@ -906,7 +915,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       completeFileAttempts < 1 &&
       availablePeers.length > 0
     ) {
-      const peerKey = availablePeers.find((peer) => !this.shouldThrottlePeerForBulk(peer, state.fileHash));
+      const peerKey = availablePeers.find((peer) => !this.shouldThrottlePeerForBulk(state, peer));
       if (!peerKey) {
         state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS;
         this.emitProgress(state);
@@ -948,7 +957,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const requestedChunkIndexes = new Set<number>();
     let throttledPeerCount = 0;
     for (const peerKey of availablePeers) {
-      if (this.shouldThrottlePeerForBulk(peerKey, state.fileHash)) {
+      if (this.shouldThrottlePeerForBulk(state, peerKey)) {
         throttledPeerCount += 1;
         continue;
       }
@@ -1076,19 +1085,42 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     return lastRxAt > 0 ? Math.max(0, this.now() - lastRxAt) : null;
   }
 
-  private shouldThrottlePeerForBulk(peerHash: string, fileHash: string): boolean {
+  private shouldThrottlePeerForBulk(
+    state: ReticulumResourceDownloadState<TRequestWire>,
+    peerHash: string
+  ): boolean {
+    const peerKey = peerHash.trim().toLowerCase();
+    if (!peerKey) return false;
+    const now = this.now();
+    const throttledUntil = state.peerBulkThrottleUntil.get(peerKey) ?? 0;
+    if (throttledUntil > now) {
+      return true;
+    }
     const lastRxAgeMs = this.overlayPeerLastRxAgeMs(peerHash);
     if (
       lastRxAgeMs == null ||
       lastRxAgeMs < RETICULUM_RESOURCE_TRANSFER_OVERLAY_STALE_THROTTLE_MS
     ) {
+      state.peerBulkThrottleUntil.delete(peerKey);
+      state.peerBulkThrottleLoggedAt.delete(peerKey);
       return false;
     }
-    loggerLog(
-      `[${this.loggerPrefix}] resource_session_throttled fileHash=${fileHash} ` +
-        `peer=${peerHash.slice(0, 16)} overlayLastRxAgeMs=${Math.round(lastRxAgeMs)} ` +
-        `retryMs=${RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS}`
+    state.peerBulkThrottleUntil.set(
+      peerKey,
+      now + RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS
     );
+    const lastLoggedAt = state.peerBulkThrottleLoggedAt.get(peerKey) ?? 0;
+    if (
+      lastLoggedAt === 0 ||
+      now - lastLoggedAt >= RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS
+    ) {
+      state.peerBulkThrottleLoggedAt.set(peerKey, now);
+      loggerLog(
+        `[${this.loggerPrefix}] resource_session_throttled fileHash=${state.fileHash} ` +
+          `peer=${peerKey.slice(0, 16)} overlayLastRxAgeMs=${Math.round(lastRxAgeMs)} ` +
+          `retryMs=${RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS}`
+      );
+    }
     return true;
   }
 
