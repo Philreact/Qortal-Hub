@@ -5866,6 +5866,39 @@ def _lifecycle_state_for_peer(peer_key: str) -> Optional[Dict[str, Any]]:
     )
 
 
+def _nudge_cached_reticulum_path(
+    destination_hash: bytes,
+    peer_key: str,
+    *,
+    target: str,
+    reason: str,
+    cooldown_seconds: float,
+) -> bool:
+    peer = str(peer_key or "").strip().lower()
+    now = time.time()
+    st = _lifecycle_state_for_peer(peer)
+    last_nudge = st.get("last_cached_path_nudge_at") if st is not None else None
+    if isinstance(last_nudge, (int, float)) and now - float(last_nudge) < cooldown_seconds:
+        return False
+    try:
+        RNS.Transport.request_path(destination_hash)
+        if st is not None:
+            st["last_request_path_at"] = now
+            st["last_cached_path_nudge_at"] = now
+            st["last_cached_path_nudge_reason"] = reason
+        log(
+            f"[presence_bridge] target={target} cached_path_nudge "
+            f"peer={peer or destination_hash_hex(destination_hash)} reason={reason}"
+        )
+        return True
+    except Exception as exc:
+        log(
+            f"[presence_bridge] target={target} cached_path_nudge_failed "
+            f"peer={peer or destination_hash_hex(destination_hash)} reason={reason} err={exc}"
+        )
+        return False
+
+
 def _nudge_overlay_path_for_peer(peer_key: str) -> None:
     """
     Ask Reticulum to resolve a destination we need for overlay group_signal fanout.
@@ -6016,6 +6049,7 @@ def _ensure_call_media_path(
     reason: str = "send",
     await_seconds_override: Optional[float] = None,
     force_refresh_cached_path: bool = False,
+    nudge_cached_path: bool = False,
 ) -> tuple[str, bool]:
     global _audio_packet_path_requests, _audio_packet_path_resolutions, _audio_packet_path_timeouts
     state = _get_call_media_state(peer_hash)
@@ -6067,6 +6101,9 @@ def _ensure_call_media_path(
                 await_seconds,
                 log_context=f"call_media_path peer={peer_hash} reason={reason}",
                 force_refresh_cached_path=force_refresh_cached_path,
+                nudge_cached_path=nudge_cached_path,
+                peer_key=peer_hash,
+                target="reticulum-audio-link",
             )
         else:
             try:
@@ -6168,9 +6205,20 @@ def _request_and_await_destination_path(
     *,
     log_context: str,
     force_refresh_cached_path: bool = False,
+    nudge_cached_path: bool = False,
+    peer_key: str = "",
+    target: str = "presence-reticulum",
 ) -> tuple[bool, bool]:
     if _reticulum_has_path(destination_hash):
         if not force_refresh_cached_path:
+            if nudge_cached_path:
+                _nudge_cached_reticulum_path(
+                    destination_hash,
+                    peer_key,
+                    target=target,
+                    reason=f"{log_context}:cached_path_open",
+                    cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+                )
             return True, False
         _drop_cached_reticulum_path(
             destination_hash,
@@ -6203,29 +6251,13 @@ def _nudge_overlay_link_path(
     if _reticulum_has_path(destination_hash):
         if _peer_has_recent_direct_activity(peer_key):
             return True
-        now = time.time()
-        st = _lifecycle_state_for_peer(peer_key)
-        last_nudge = st.get("last_unproven_cached_path_nudge_at") if st is not None else None
-        if not (
-            isinstance(last_nudge, (int, float))
-            and (now - float(last_nudge)) < _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS
-        ):
-            try:
-                RNS.Transport.request_path(destination_hash)
-                if st is not None:
-                    st["last_request_path_at"] = now
-                    st["last_unproven_cached_path_nudge_at"] = now
-                log(
-                    "[presence_bridge] target=presence-reticulum "
-                    "overlay_link_cached_path_unproven "
-                    f"peer={peer_key} action=keep_and_nudge"
-                )
-            except Exception as exc:
-                log(
-                    "[presence_bridge] target=presence-reticulum "
-                    "overlay_link_cached_path_unproven_nudge_failed "
-                    f"peer={peer_key}: {exc}"
-                )
+        _nudge_cached_reticulum_path(
+            destination_hash,
+            peer_key,
+            target="presence-reticulum",
+            reason="overlay_link_cached_path_unproven",
+            cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+        )
         return True
 
     now = time.time()
@@ -8748,13 +8780,22 @@ def _parse_qchat_file_peer_identity(peer_hash: str, pk_b64: Any):
 
 
 def _request_qchat_file_path(destination_hash: bytes, peer_hash: str) -> bool:
+    if _reticulum_has_path(destination_hash):
+        _nudge_cached_reticulum_path(
+            destination_hash,
+            peer_hash,
+            target="qchat-file-reticulum",
+            reason="qchat_file_link_open_cached_path",
+            cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+        )
+        return True
     return _request_fresh_link_path(
         destination_hash,
         peer_hash,
         target="qchat-file-reticulum",
         reason="qchat_file_link_open",
         await_seconds=_QCHAT_FILE_LINK_OPEN_PATH_AWAIT_SECONDS,
-        force_refresh=True,
+        force_refresh=False,
     )
 
 
@@ -12392,7 +12433,8 @@ def _open_group_audio_link_for_peer(
             allow_wait=True,
             reason=f"open_link:{retry_reason}",
             await_seconds_override=_AUDIO_LINK_OPEN_PATH_AWAIT_SECONDS,
-            force_refresh_cached_path=True,
+            force_refresh_cached_path=False,
+            nudge_cached_path=True,
         )
         if not path_ready:
             desired["retry_delay"] = min(
