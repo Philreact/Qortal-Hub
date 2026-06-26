@@ -165,6 +165,83 @@ type ReticulumNotificationSummary = {
   channels?: ReticulumNotificationSummary[];
 };
 
+const getReticulumMentionBadgeCount = (
+  summaries: Record<string, ReticulumNotificationSummary>
+): number => {
+  return Object.values(summaries || {}).reduce((total, summary) => {
+    return total + Math.max(0, Number(summary?.mentionCount) || 0);
+  }, 0);
+};
+
+const getReticulumSummaryMentionCount = (
+  summary: ReticulumNotificationSummary | undefined
+): number => {
+  if (!summary) return 0;
+  return Math.max(0, Number(summary?.mentionCount) || 0);
+};
+
+const getReticulumChannelMentionCount = (
+  summary: ReticulumNotificationSummary | undefined,
+  channelId: string
+): number => {
+  if (!summary) return 0;
+  const targetChannelId = String(channelId || 'general');
+  const channels = Array.isArray(summary?.channels) ? summary.channels : [];
+  const channelSummary = channels.find(
+    (channel) => String(channel?.channelId || 'general') === targetChannelId
+  );
+  if (channelSummary) return getReticulumSummaryMentionCount(channelSummary);
+  if (String(summary?.channelId || '') === targetChannelId) {
+    return getReticulumSummaryMentionCount(summary);
+  }
+  return 0;
+};
+
+const getReticulumMentionBadgeStateForRefresh = (
+  previous: Record<string, ReticulumNotificationSummary> | null,
+  next: Record<string, ReticulumNotificationSummary>,
+  activeGroupId: number | null,
+  activeChannelId: string
+): {
+  count: number;
+  summaries: Record<string, ReticulumNotificationSummary>;
+} => {
+  if (!previous) return { count: getReticulumMentionBadgeCount(next), summaries: next };
+  const groupIds = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  let total = 0;
+  const summaries: Record<string, ReticulumNotificationSummary> = {};
+  for (const groupIdKey of groupIds) {
+    const previousSummary = previous[groupIdKey];
+    const nextSummary = next[groupIdKey];
+    const previousCount = getReticulumSummaryMentionCount(previousSummary);
+    const nextCount = getReticulumSummaryMentionCount(nextSummary);
+    if (nextCount >= previousCount) {
+      total += nextCount;
+      if (nextSummary) summaries[groupIdKey] = nextSummary;
+      continue;
+    }
+    const groupId = Number(groupIdKey);
+    const allowDrop =
+      Number.isInteger(groupId) &&
+      groupId === activeGroupId &&
+      activeChannelId
+        ? Math.max(
+            0,
+            getReticulumChannelMentionCount(previousSummary, activeChannelId) -
+              getReticulumChannelMentionCount(nextSummary, activeChannelId)
+          )
+        : 0;
+    const droppedCount = Math.min(previousCount - nextCount, allowDrop);
+    total += previousCount - droppedCount;
+    if (droppedCount >= previousCount - nextCount) {
+      if (nextSummary) summaries[groupIdKey] = nextSummary;
+    } else if (previousSummary) {
+      summaries[groupIdKey] = previousSummary;
+    }
+  }
+  return { count: total, summaries };
+};
+
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX = 10_000;
 const RETICULUM_OS_NOTIFICATION_EVENT_TYPES = new Set([
@@ -384,6 +461,7 @@ export const Group = ({
   ] = useState('');
   const [activeReticulumChannelId, setActiveReticulumChannelId] =
     useState('general');
+  const [reticulumReadEntryToken, setReticulumReadEntryToken] = useState(0);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
@@ -413,8 +491,13 @@ export const Group = ({
   const previousReticulumSummariesRef = useRef<Record<string, any> | null>(
     null
   );
+  const reticulumMentionBadgeSummariesRef =
+    useRef<Record<string, ReticulumNotificationSummary> | null>(null);
   const notifiedReticulumEventIdsRef = useRef<Set<string>>(new Set());
   const activeReticulumChannelIdRef = useRef('general');
+  const bumpReticulumReadEntryToken = useCallback(() => {
+    setReticulumReadEntryToken((token) => token + 1);
+  }, []);
   const pruneReticulumBackgroundProcessedEvents = useCallback(() => {
     const now = Date.now();
     const map = reticulumBackgroundProcessedEventIdsRef.current;
@@ -978,9 +1061,7 @@ export const Group = ({
             channelId,
             event,
             groupId,
-            hasMention:
-              channel?.hasUnreadMention === true ||
-              mentionCount > previousMentionCount,
+            hasMention: mentionCount > previousMentionCount,
             timestamp: Number(event?.timestamp || channel?.updatedAt || 0),
           });
         }
@@ -1005,12 +1086,16 @@ export const Group = ({
       const enabled = await window.reticulumChat?.isEnabled?.();
       if (!enabled) {
         previousReticulumSummariesRef.current = null;
+        reticulumMentionBadgeSummariesRef.current = null;
         setReticulumChatSummaries({});
+        void window.reticulumChat?.updateMentionBadge?.(0);
         return;
       }
       const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
       if (!Array.isArray(summaries)) {
+        reticulumMentionBadgeSummariesRef.current = null;
         setReticulumChatSummaries({});
+        void window.reticulumChat?.updateMentionBadge?.(0);
         return;
       }
       const next = summaries.reduce((acc, summary: any) => {
@@ -1022,6 +1107,14 @@ export const Group = ({
       const previous = previousReticulumSummariesRef.current;
       previousReticulumSummariesRef.current = next;
       setReticulumChatSummaries(next);
+      const badgeState = getReticulumMentionBadgeStateForRefresh(
+        reticulumMentionBadgeSummariesRef.current,
+        next,
+        getGroupIdFromGroupLike(selectedGroupRef.current),
+        activeReticulumChannelIdRef.current || 'general'
+      );
+      reticulumMentionBadgeSummariesRef.current = badgeState.summaries;
+      void window.reticulumChat?.updateMentionBadge?.(badgeState.count);
       void maybeFireReticulumChatNotification(previous, next);
     } catch (error) {
       console.error('[ReticulumChat] Failed to refresh group summaries:', error);
@@ -1046,6 +1139,10 @@ export const Group = ({
     myAddressRef.current = myAddress || '';
     previousReticulumSummariesRef.current = null;
     notifiedReticulumEventIdsRef.current.clear();
+    if (!myAddress) {
+      reticulumMentionBadgeSummariesRef.current = null;
+      void window.reticulumChat?.updateMentionBadge?.(0);
+    }
   }, [myAddress]);
 
   useEffect(() => {
@@ -1060,7 +1157,9 @@ export const Group = ({
       }
       reticulumSubscribedGroupIdsRef.current = new Set();
       void window.reticulumChat?.setLocalGroupMemberships?.([]);
+      reticulumMentionBadgeSummariesRef.current = null;
       setReticulumChatSummaries({});
+      void window.reticulumChat?.updateMentionBadge?.(0);
       return;
     }
 
@@ -1074,7 +1173,9 @@ export const Group = ({
           }
           reticulumSubscribedGroupIdsRef.current = new Set();
           void window.reticulumChat?.setLocalGroupMemberships?.([]);
+          reticulumMentionBadgeSummariesRef.current = null;
           setReticulumChatSummaries({});
+          void window.reticulumChat?.updateMentionBadge?.(0);
         }
         return;
       }
@@ -2306,6 +2407,7 @@ export const Group = ({
         isLoadingOpenSectionFromNotification.current = false;
         setChatMode('groups');
         setGroupSection('chat');
+        bumpReticulumReadEntryToken();
         openQChatTab();
         return;
       }
@@ -2330,6 +2432,7 @@ export const Group = ({
         setTriedToFetchSecretKey(false);
         setFirstSecretKeyInCreation(false);
         setGroupSection('chat');
+        bumpReticulumReadEntryToken();
         openQChatTab();
 
         window
@@ -2355,7 +2458,7 @@ export const Group = ({
         isLoadingOpenSectionFromNotification.current = false;
       }
     },
-    [selectedGroup?.groupId, getTimestampEnterChat]
+    [bumpReticulumReadEntryToken, selectedGroup?.groupId, getTimestampEnterChat]
   );
 
   useEffect(() => {
@@ -2567,6 +2670,7 @@ export const Group = ({
       }, 200);
     });
     setGroupSection('chat');
+    bumpReticulumReadEntryToken();
     setNewChat(false);
     setSelectedDirect(null);
     if (selectedGroupRef.current) {
@@ -2586,7 +2690,7 @@ export const Group = ({
         getTimestampEnterChat();
       }, 200);
     }
-  }, [getTimestampEnterChat]);
+  }, [bumpReticulumReadEntryToken, getTimestampEnterChat]);
 
   const loadingGroupSnackbarInfo = useMemo(
     () => ({
@@ -2654,12 +2758,13 @@ export const Group = ({
     setHideCommonKeyPopup(false);
     setFirstSecretKeyInCreation(false);
     setGroupSection('chat');
+    bumpReticulumReadEntryToken();
     setIsOpenDrawer(false);
     setIsForceShowCreationKeyPopup(false);
     setTimeout(() => {
       setSelectedGroup(group);
     }, 200);
-  }, []);
+  }, [bumpReticulumReadEntryToken]);
 
   const renderQChatTabContent = ({
     hide = false,
@@ -2834,14 +2939,22 @@ export const Group = ({
                     notificationReticulumChannelId
                   }
                   onReticulumChannelSelected={(channelId) => {
-                    setActiveReticulumChannelId(channelId || 'general');
+                    const normalizedChannelId = channelId || 'general';
+                    setActiveReticulumChannelId((previousChannelId) => {
+                      const previous = previousChannelId || 'general';
+                      if (previous !== normalizedChannelId) {
+                        bumpReticulumReadEntryToken();
+                      }
+                      return normalizedChannelId;
+                    });
                     if (
                       notificationReticulumChannelId &&
-                      notificationReticulumChannelId === channelId
+                      notificationReticulumChannelId === normalizedChannelId
                     ) {
                       setNotificationReticulumChannelId('');
                     }
                   }}
+                  reticulumReadEntryToken={reticulumReadEntryToken}
                 />
               )}
               {isPrivate &&

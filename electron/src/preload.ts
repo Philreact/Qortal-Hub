@@ -1498,6 +1498,11 @@ try {
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
           number[]
         >,
+      updateMentionBadge: async (mentionCount: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateMentionBadge',
+          mentionCount
+        ) as Promise<{ success: boolean }>,
       onEvent: (cb: (payload: { event: unknown }) => void) => {
         const handler = (_event: unknown, payload: unknown) => {
           cb(payload as { event: unknown });
@@ -1752,6 +1757,11 @@ try {
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
           number[]
         >,
+      updateMentionBadge: async (mentionCount: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateMentionBadge',
+          mentionCount
+        ) as Promise<{ success: boolean }>,
       onEvent: (cb: (payload: { event: unknown }) => void) => {
         const handler = (_event: unknown, payload: unknown) => {
           cb(payload as { event: unknown });

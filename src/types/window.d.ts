@@ -616,6 +616,9 @@ declare global {
         myAddress?: string
       ) => Promise<{ success: boolean }>;
       getSubscriptions: () => Promise<number[]>;
+      updateMentionBadge: (
+        mentionCount: number
+      ) => Promise<{ success: boolean }>;
       onEvent: (cb: (payload: { event: unknown }) => void) => () => void;
       onSummaryChanged: (
         cb: (payload: {

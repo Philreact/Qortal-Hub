@@ -505,6 +505,7 @@ export const ChatGroup = ({
   isPrivate,
   notificationReticulumChannelId,
   onReticulumChannelSelected,
+  reticulumReadEntryToken,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
@@ -1016,6 +1017,8 @@ export const ChatGroup = ({
   }, [queueChats, reticulumChatQueueId]);
 
   const secretKeyRef = useRef(null);
+  const reticulumReadWasActiveRef = useRef(false);
+  const lastReticulumReadEntryTokenRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (secretKey) {
@@ -2088,6 +2091,21 @@ export const ChatGroup = ({
       !selectedGroup ||
       reticulumChatEvents.length === 0
     ) {
+      if (!isActive) {
+        reticulumReadWasActiveRef.current = false;
+      }
+      return;
+    }
+    const readEntryToken =
+      typeof reticulumReadEntryToken === 'number'
+        ? reticulumReadEntryToken
+        : null;
+    const entryTokenChanged =
+      readEntryToken !== null &&
+      readEntryToken !== lastReticulumReadEntryTokenRef.current;
+    const wasAlreadyActive = reticulumReadWasActiveRef.current === true;
+    reticulumReadWasActiveRef.current = true;
+    if (!entryTokenChanged && !wasAlreadyActive) {
       return;
     }
     const groupId = Number(selectedGroup);
@@ -2103,6 +2121,9 @@ export const ChatGroup = ({
       return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
     }, 0);
     if (latestTimestamp <= 0) return;
+    if (entryTokenChanged) {
+      lastReticulumReadEntryTokenRef.current = readEntryToken;
+    }
     void window.reticulumChat
       ?.markRead?.(
         groupId,
@@ -2116,6 +2137,7 @@ export const ChatGroup = ({
   }, [
     isActive,
     myAddress,
+    reticulumReadEntryToken,
     reticulumChatEnabled,
     reticulumChatEvents,
     selectedGroup,

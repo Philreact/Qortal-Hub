@@ -707,6 +707,7 @@ export class ElectronCapacitorApp {
   private AudioSurfaceWindow: BrowserWindow | null = null;
   private SplashScreen: CapacitorSplashScreen | null = null;
   private TrayIcon: Tray | null = null;
+  private reticulumChatMentionBadgeCount = 0;
   private CapacitorFileConfig: CapacitorElectronConfig;
   private TrayMenuTemplate: (MenuItem | MenuItemConstructorOptions)[] = [
     new MenuItem({ label: 'Quit App', role: 'quit' }),
@@ -766,6 +767,29 @@ export class ElectronCapacitorApp {
 
   getAudioSurfaceWindow(): BrowserWindow | null {
     return this.AudioSurfaceWindow;
+  }
+
+  updateReticulumChatMentionBadge(count: number): void {
+    const badgeCount = Number.isFinite(count)
+      ? Math.max(0, Math.floor(count))
+      : 0;
+    this.reticulumChatMentionBadgeCount = badgeCount;
+    app.setBadgeCount(badgeCount);
+    this.updateTrayTooltip();
+  }
+
+  private updateTrayTooltip(): void {
+    if (!this.TrayIcon) return;
+    const appName = app.getName();
+    if (this.reticulumChatMentionBadgeCount > 0) {
+      const suffix =
+        this.reticulumChatMentionBadgeCount === 1
+          ? '1 unread mention'
+          : `${this.reticulumChatMentionBadgeCount} unread mentions`;
+      this.TrayIcon.setToolTip(`${appName} - ${suffix}`);
+      return;
+    }
+    this.TrayIcon.setToolTip(appName);
   }
 
   async ensureAudioSurfaceWindow(): Promise<BrowserWindow> {
@@ -1103,7 +1127,7 @@ export class ElectronCapacitorApp {
           }
         });
 
-        this.TrayIcon.setToolTip(app.getName());
+        this.updateTrayTooltip();
         this.TrayIcon.setContextMenu(
           Menu.buildFromTemplate(this.TrayMenuTemplate)
         );
@@ -3822,6 +3846,15 @@ ipcMain.handle('reticulumChat:getSubscriptions', async () => {
   const manager = getReticulumChatManager();
   return manager ? manager.getSubscriptions() : [];
 });
+
+ipcMain.handle(
+  'reticulumChat:updateMentionBadge',
+  async (_event, mentionCount: number) => {
+    const count = typeof mentionCount === 'number' ? mentionCount : 0;
+    myCapacitorApp.updateReticulumChatMentionBadge(count);
+    return { success: true };
+  }
+);
 
 ipcMain.on('reticulumChat:event:subscribe', (event) => {
   reticulumChatEventSubscribers.add(event.sender);
