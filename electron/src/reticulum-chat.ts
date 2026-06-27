@@ -1439,6 +1439,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.resourceManifestBelongsToGroup(manifest, groupId)) {
       return { ok: false, reason: 'send-command-failed', error: 'Resource is not for this group' };
     }
+    this.resourceStore.storeManifest(manifest);
     this.resourceStore.recordGroupReference({
       fileHash: manifest.fileHash,
       groupId,
@@ -3577,7 +3578,10 @@ export class ReticulumChatManager extends EventEmitter {
     const timestamp = this.now();
     const byteRanges = ranges.map((range) => [range.startByte, range.endByteExclusive] as [number, number]);
     const signed = await this.signLocalFields({
-      eventId: eventId ?? null,
+      // Keep resource_req small enough for Reticulum's encrypted MDU. The
+      // request is authorized by fileHash, groupId, byte ranges and signer;
+      // eventId remains local state for peer targeting/progress only.
+      eventId: null,
       fileHash: manifest.fileHash,
       byteRanges: normalizeByteRanges(byteRanges),
       groupId,
@@ -3607,7 +3611,6 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.localGroupIds.add(groupId);
     const baseWire: ReticulumChatResourceRequestWire = {
-      ...(eventId ? { eid: eventId } : {}),
       fh: manifest.fileHash,
       b: normalizeByteRanges(byteRanges),
       pk: signed.authorPublicKey,

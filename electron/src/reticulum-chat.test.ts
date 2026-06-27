@@ -3147,13 +3147,16 @@ describe('reticulum chat manager', () => {
       validateGroupMember: async () => true,
     });
 
-    await expect(manager.requestResource(78, manifest)).resolves.toMatchObject({ ok: true });
+    await expect(
+      manager.requestResource(78, manifest, 'b5941e04-b24f-4443-bcc7-05271585737b')
+    ).resolves.toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const requestWire = sent.find((wire) => wire.k === 'resource_req') as any;
     expect(requestWire).toEqual(expect.objectContaining({ t: 'RCHAT', k: 'resource_req', g: 78 }));
     expect(requestWire.q.fh).toBe(fileHash);
     expect(requestWire.q.b).toEqual([[0, RETICULUM_RESOURCE_RANGE_SIZE]]);
+    expect(requestWire.q.eid).toBeUndefined();
     expect(requestWire.q.r).toBeUndefined();
     expect(requestWire.q.o).toBeUndefined();
     expect(byteLengthUtf8JsonWithBridgeSender(requestWire)).toBeLessThanOrEqual(
@@ -3203,13 +3206,18 @@ describe('reticulum chat manager', () => {
       validateGroupMember: async () => true,
     });
 
-    await expect(manager.requestResource(78, manifest, { candidatePeers: ['peer-a'] })).resolves.toMatchObject({ ok: true });
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [78], mode: 'summary' }, 'peer-a');
+    await expect(
+      manager.requestResource(78, manifest, 'b5941e04-b24f-4443-bcc7-05271585737b')
+    ).resolves.toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 25));
     const firstRetryAt = manager.getResourceDownloadStatus(manifest.fileHash).nextRequestAt;
     expect(firstRetryAt).toBe(nowMs + RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS);
 
     nowMs += 100;
-    await expect(manager.requestResource(78, manifest, { candidatePeers: ['peer-a'] })).resolves.toMatchObject({ ok: true });
+    await expect(
+      manager.requestResource(78, manifest, 'b5941e04-b24f-4443-bcc7-05271585737b')
+    ).resolves.toMatchObject({ ok: true });
 
     expect(manager.getResourceDownloadStatus(manifest.fileHash).nextRequestAt).toBe(firstRetryAt);
     manager.close();

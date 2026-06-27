@@ -5,6 +5,7 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useInView } from 'react-intersection-observer';
@@ -424,6 +425,7 @@ export const MessageItemComponent = ({
   const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
+  const requestedImageResourceRef = useRef<Set<string>>(new Set());
   const [fileResourceStatus, setFileResourceStatus] = useState<
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
   >('idle');
@@ -448,6 +450,69 @@ export const MessageItemComponent = ({
     averageBytesPerSecond?: number;
     nextRequestAt?: number | null;
   } | null>(null);
+
+  useEffect(() => {
+    if (
+      !message?.reticulumChat ||
+      !isReticulumResourceImage ||
+      !imageResourceId ||
+      !imageResourceManifest ||
+      !Number.isInteger(reticulumResourceGroupId) ||
+      reticulumResourceGroupId <= 0
+    ) {
+      return;
+    }
+
+    const key = `${reticulumResourceGroupId}:${imageResourceId}:${
+      reticulumResourceEventId || ''
+    }`;
+    if (requestedImageResourceRef.current.has(key)) return;
+    requestedImageResourceRef.current.add(key);
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await window.reticulumResources?.getStatus?.(imageResourceId);
+        if (cancelled) return;
+        if (status?.success && status.complete) return;
+
+        const response = await window.reticulumChat?.requestResource?.(
+          reticulumResourceGroupId,
+          imageResourceManifest,
+          reticulumResourceEventId || undefined
+        );
+        if (cancelled) return;
+        if (!response?.success) {
+          requestedImageResourceRef.current.delete(key);
+          console.warn(
+            '[ReticulumResource] Image resource request failed:',
+            response?.error || 'request API unavailable',
+            imageResourceId
+          );
+        }
+      } catch (error) {
+        if (cancelled) return;
+        requestedImageResourceRef.current.delete(key);
+        console.warn(
+          '[ReticulumResource] Image resource request failed:',
+          error instanceof Error ? error.message : error,
+          imageResourceId
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    imageResourceId,
+    imageResourceManifest,
+    isReticulumResourceImage,
+    message?.reticulumChat,
+    reticulumResourceEventId,
+    reticulumResourceGroupId,
+  ]);
+
   const qchatFileData = qchatFileTransfer?.data || {};
   const qchatTransferState =
     qchatFileData?.transferId && qchatFileTransferStates
@@ -614,35 +679,6 @@ export const MessageItemComponent = ({
           return;
         }
       }
-      if (
-        message?.reticulumChat &&
-        imageResourceManifest &&
-        Number.isInteger(reticulumResourceGroupId) &&
-        reticulumResourceGroupId > 0
-      ) {
-        void window.reticulumChat
-          ?.requestResource?.(
-            reticulumResourceGroupId,
-            imageResourceManifest,
-            reticulumResourceEventId || undefined
-          )
-          .then((response) => {
-            if (response?.success === false) {
-              console.warn(
-                '[ReticulumResource] Image resource request failed:',
-                response.error || 'unknown error',
-                imageResourceId
-              );
-            }
-          })
-          .catch((error) => {
-            console.warn(
-              '[ReticulumResource] Image resource request failed:',
-              error instanceof Error ? error.message : error,
-              imageResourceId
-            );
-          });
-      }
       if (attempt < 5) {
         const delay = attempt === 0 ? 1_500 : Math.min(8_000, 2_000 * attempt);
         timers.push(window.setTimeout(() => void load(attempt + 1), delay));
@@ -656,10 +692,7 @@ export const MessageItemComponent = ({
   }, [
     imageResourceFileHash,
     imageResourceId,
-    message?.reticulumChat,
     resourceReloadNonce,
-    reticulumResourceEventId,
-    reticulumResourceGroupId,
     secretKeyObject,
   ]);
 

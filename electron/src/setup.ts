@@ -3407,6 +3407,17 @@ ipcMain.handle(
     manifest: unknown,
     eventId?: string
   ) => {
+    const manifestRecord =
+      manifest && typeof manifest === 'object'
+        ? (manifest as Record<string, unknown>)
+        : null;
+    const fileHash =
+      typeof manifestRecord?.fileHash === 'string' ? manifestRecord.fileHash : '';
+    const resourceName =
+      typeof manifestRecord?.fileName === 'string' ? manifestRecord.fileName : '';
+    const resourceSize =
+      typeof manifestRecord?.sizeBytes === 'number' ? manifestRecord.sizeBytes : 0;
+    const shortHash = fileHash ? fileHash.slice(0, 12) : 'missing';
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) {
       return { success: false, error: 'Reticulum chat is disabled' };
@@ -3416,15 +3427,35 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     try {
+      loggerLog(
+        `[ReticulumResource] request_resource_received group=${groupId} file=${shortHash} size=${resourceSize} name=${resourceName || 'unknown'} event=${
+          typeof eventId === 'string' && eventId ? eventId : 'none'
+        }`
+      );
       const result = await manager.requestResource(
         groupId,
         manifest as any,
         typeof eventId === 'string' && eventId ? eventId : undefined
       );
-      if (result.ok) return { success: true };
+      if (result.ok) {
+        loggerLog(
+          `[ReticulumResource] request_resource_accepted group=${groupId} file=${shortHash}`
+        );
+        return { success: true };
+      }
       const failed = result as Exclude<typeof result, { ok: true }>;
+      loggerWarn(
+        `[ReticulumResource] request_resource_rejected group=${groupId} file=${shortHash} reason=${
+          failed.error ?? failed.reason ?? 'unknown'
+        }`
+      );
       return { success: false, error: failed.error ?? failed.reason };
     } catch (err) {
+      loggerWarn(
+        `[ReticulumResource] request_resource_error group=${groupId} file=${shortHash} reason=${
+          err instanceof Error ? err.message : 'unknown'
+        }`
+      );
       return {
         success: false,
         error: err instanceof Error ? err.message : 'Reticulum resource request failed',
