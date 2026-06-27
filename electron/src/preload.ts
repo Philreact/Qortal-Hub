@@ -904,6 +904,9 @@ try {
         manifest?: unknown;
         completedChunks?: number;
         totalChunks?: number;
+        fullFileTransfer?: boolean;
+        bytesTransferred?: number;
+        totalBytes?: number;
         progress?: number;
         complete?: boolean;
         latestChunkUpdatedAt?: number | null;

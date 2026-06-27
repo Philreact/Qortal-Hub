@@ -2713,6 +2713,110 @@ export const ChatGroup = ({
     }
   }, []);
 
+  const getLatestOwnEditableMessage = useCallback(() => {
+    let latestMessage = null;
+    let latestTimestamp = -Infinity;
+    let latestIndex = -1;
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (!message || typeof message !== 'object') continue;
+      if (message.sender !== myAddress) continue;
+      if (message.isTemp) continue;
+      if (message.chatReference) continue;
+
+      const signature = message.signature || message.id;
+      if (!signature) continue;
+
+      const messageType =
+        message.eventType || message.decryptedData?.type || message.type;
+      if (
+        messageType === 'edit' ||
+        messageType === 'delete' ||
+        messageType === 'reaction' ||
+        messageType === 'reaction_add' ||
+        messageType === 'reaction_remove' ||
+        messageType === 'attachment_manifest'
+      ) {
+        continue;
+      }
+      if (
+        reticulumChatEnabled &&
+        message.reticulumChat &&
+        normalizeReticulumChannelName(
+          message.channelId || DEFAULT_RETICULUM_CHANNEL_ID
+        ) !== selectedReticulumChannelId
+      ) {
+        continue;
+      }
+
+      const timestamp = Number(message.timestamp || 0);
+      if (timestamp < latestTimestamp) continue;
+      if (timestamp === latestTimestamp && index < latestIndex) continue;
+
+      const edit = chatReferences?.[signature]?.edit;
+      latestMessage = edit
+        ? {
+            ...message,
+            text: edit.message,
+            messageText: edit.messageText,
+            images: edit.images,
+            isEdit: true,
+            editTimestamp: edit.timestamp,
+          }
+        : message;
+      latestTimestamp = timestamp;
+      latestIndex = index;
+    }
+
+    return latestMessage;
+  }, [
+    chatReferences,
+    messages,
+    myAddress,
+    reticulumChatEnabled,
+    selectedReticulumChannelId,
+  ]);
+
+  const handleComposerKeyDown = useCallback(
+    (event, editor) => {
+      if (event.key !== 'ArrowUp') return false;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return false;
+      }
+      if (event.isComposing) return false;
+      if (
+        onEditMessage ||
+        replyMessage ||
+        chatImagesToSave.length > 0 ||
+        pendingReticulumFiles.length > 0
+      ) {
+        return false;
+      }
+
+      const html = editor?.getHTML?.()?.trim() || '';
+      const text = editor?.getText?.()?.trim() || '';
+      const isEmptyEditor =
+        editor?.isEmpty === true || (!text && (!html || html === '<p></p>'));
+      if (!isEmptyEditor) return false;
+
+      const latestMessage = getLatestOwnEditableMessage();
+      if (!latestMessage) return false;
+
+      event.preventDefault();
+      onEdit(latestMessage);
+      return true;
+    },
+    [
+      chatImagesToSave.length,
+      getLatestOwnEditableMessage,
+      onEdit,
+      onEditMessage,
+      pendingReticulumFiles.length,
+      replyMessage,
+    ]
+  );
+
   const onDelete = useCallback(
     async (message) => {
       try {
@@ -4002,6 +4106,7 @@ export const ChatGroup = ({
                   enableMentions
                   setEditorRef={setEditorRef}
                   onEnter={sendMessage}
+                  onKeyDown={handleComposerKeyDown}
                   isChat
                   disableEnter={false}
                   isFocusedParent={isFocusedParent}

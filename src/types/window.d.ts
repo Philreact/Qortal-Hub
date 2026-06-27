@@ -699,6 +699,9 @@ declare global {
         manifest?: unknown;
         completedChunks?: number;
         totalChunks?: number;
+        fullFileTransfer?: boolean;
+        bytesTransferred?: number;
+        totalBytes?: number;
         progress?: number;
         complete?: boolean;
         latestChunkUpdatedAt?: number | null;
@@ -711,6 +714,10 @@ declare global {
           pendingTransfers?: number;
           requestedChunkCount?: number;
           inFlightChunkCount?: number;
+          fullFileTransfer?: boolean;
+          bytesTransferred?: number;
+          totalBytes?: number;
+          progress?: number;
           nextRequestAt?: number | null;
         } | null;
         error?: string;

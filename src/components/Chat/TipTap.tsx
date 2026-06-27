@@ -483,6 +483,7 @@ const content = ``;
 type TiptapProps = {
   setEditorRef: (editorInstance: Editor | null) => void;
   onEnter: () => void | Promise<void>;
+  onKeyDown?: (event: KeyboardEvent, editor: Editor) => boolean | void;
   disableEnter?: boolean;
   isChat?: boolean;
   /** Use chat-style composer (single bar, minimal border) without chat-only behavior (e.g. announcements keep image) */
@@ -501,6 +502,7 @@ type TiptapProps = {
 const Tiptap = ({
   setEditorRef,
   onEnter,
+  onKeyDown,
   disableEnter = false,
   isChat = false,
   composerStyle = false,
@@ -715,6 +717,13 @@ const Tiptap = ({
             style: `overflow: auto; max-height: 250px`,
           },
           handleKeyDown(view, event) {
+            if (typeof onKeyDown === 'function') {
+              const editor = editorRef.current;
+              if (editor) {
+                const handled = onKeyDown(event, editor);
+                if (handled) return true;
+              }
+            }
             if (
               !disableEnter &&
               !isDisabledEditorEnter &&

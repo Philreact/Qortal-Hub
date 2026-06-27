@@ -3681,6 +3681,96 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
+  it('reports live byte progress for a full-file transfer before chunks are finalized', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-full-progress-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const chunks = [5, 6, 7, 8].map((value) =>
+      Buffer.alloc(RETICULUM_RESOURCE_MIN_CHUNK_SIZE, value)
+    );
+    const chunkHashes = chunks.map((chunk) =>
+      nodeCrypto.createHash('sha256').update(chunk).digest('hex')
+    );
+    const fileHash = nodeCrypto
+      .createHash('sha256')
+      .update(Buffer.concat(chunks))
+      .digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-file',
+      ownerId: '84:receiver',
+      fileName: 'full.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: chunks.reduce((total, chunk) => total + chunk.length, 0),
+      chunkSize: RETICULUM_RESOURCE_MIN_CHUNK_SIZE,
+      chunkHashes,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 84 },
+    };
+    const bridge = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    bridge.fanoutReticulumChatDetailed = async () => ({ ok: true as const });
+    bridge.acceptReticulumResourceDetailed = async () => ({ ok: true as const });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    const progressEvents: Array<Record<string, unknown>> = [];
+    manager.on('resource', (payload) => progressEvents.push(payload as Record<string, unknown>));
+    manager.setLocalGroupMemberships([84]);
+    manager.subscribeGroup(84);
+
+    await expect(manager.requestResource(84, manifest)).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_offer',
+        g: 84,
+        o: {
+          x: 'full-transfer-live-progress',
+          fh: fileHash,
+          s: manifest.sizeBytes,
+        },
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const bytesTransferred = Math.floor(manifest.sizeBytes / 2);
+    bridge.emit('reticulum-resource', {
+      status: 'receiving',
+      transferId: 'full-transfer-live-progress',
+      progress: 0.5,
+      bytesTransferred,
+      bytesPerSecond: 12_345,
+    });
+
+    expect(progressEvents).toContainEqual(
+      expect.objectContaining({
+        fileHash,
+        fullFileTransfer: true,
+        bytesTransferred,
+        totalBytes: manifest.sizeBytes,
+        progress: 0.5,
+      })
+    );
+    expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
+      fullFileTransfer: true,
+      bytesTransferred,
+      totalBytes: manifest.sizeBytes,
+      progress: 0.5,
+    });
+    manager.close();
+    resourceStore.close();
+  });
+
   it('cancels an active resource download and closes the bridge transfer', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-cancel-'));
     const resourceStore = new ReticulumResourceStore({
