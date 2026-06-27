@@ -474,6 +474,17 @@ try {
           connectedAt: number;
         }>
       >,
+    reticulumGetDetails: () =>
+      ipcRenderer.invoke('reticulum:getDetails') as Promise<{
+        destinationHash: string | null;
+        overlayPeers: Array<{
+          linkId: string;
+          peerPresenceHash: string;
+          incoming?: boolean;
+          address?: string;
+          connectedAt: number;
+        }>;
+      }>,
     reticulumGetMeshStatus: () =>
       ipcRenderer.invoke('reticulum:getMeshStatus') as Promise<{
         enabled: boolean;

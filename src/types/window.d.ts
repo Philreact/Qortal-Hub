@@ -199,6 +199,16 @@ declare global {
           connectedAt: number;
         }>
       >;
+      reticulumGetDetails?: () => Promise<{
+        destinationHash: string | null;
+        overlayPeers: Array<{
+          linkId: string;
+          peerPresenceHash: string;
+          incoming?: boolean;
+          address?: string;
+          connectedAt: number;
+        }>;
+      }>;
       reticulumGetMeshStatus?: () => Promise<{
         enabled: boolean;
         listenPort: number;

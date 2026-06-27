@@ -2266,6 +2266,11 @@ export type ReticulumOverlayPeerStatus = {
   connectedAt: number;
 };
 
+export type ReticulumDetailsSnapshot = {
+  destinationHash: string | null;
+  overlayPeers: ReticulumOverlayPeerStatus[];
+};
+
 export type ReticulumConfigEditorInfo = {
   ok: boolean;
   error?: string;
@@ -3701,6 +3706,60 @@ export function registerReticulumIpcHandlers(): void {
           error
         );
         return [];
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'reticulum:getDetails',
+    async (): Promise<ReticulumDetailsSnapshot> => {
+      try {
+        const [{ getReticulumBridge }, { getPresenceManager }] =
+          (await Promise.all([
+            import('./reticulum-bridge'),
+            import('./presence'),
+          ])) as [
+            typeof import('./reticulum-bridge'),
+            typeof import('./presence'),
+          ];
+        const bridge = getReticulumBridge();
+        if (!bridge) return { destinationHash: null, overlayPeers: [] };
+        const destinationHash =
+          bridge.getLocalDestinationHash()?.trim().toLowerCase() || null;
+        const peersByHash = new Map(
+          (getPresenceManager()?.getReticulumVerifiedPeers() ?? []).map(
+            (peer) => [peer.destinationHash.toLowerCase(), peer.address]
+          )
+        );
+        const uniqueByHash = new Map<string, ReticulumOverlayPeerStatus>();
+        for (const peer of bridge.getOverlayLinkSnapshots()) {
+          const peerHash = peer.peerPresenceHash.trim();
+          if (!peerHash) continue;
+          const peerKey = peerHash.toLowerCase();
+          if (destinationHash && peerKey === destinationHash) continue;
+          const current = uniqueByHash.get(peerKey);
+          if (current && current.connectedAt <= peer.connectedAt) continue;
+          uniqueByHash.set(peerKey, {
+            linkId: peer.linkId,
+            peerPresenceHash: peer.peerPresenceHash,
+            incoming: peer.incoming,
+            ...(peersByHash.get(peerKey)
+              ? {
+                  address: peersByHash.get(peerKey),
+                }
+              : {}),
+            connectedAt: peer.connectedAt,
+          });
+        }
+        return {
+          destinationHash,
+          overlayPeers: [...uniqueByHash.values()].sort(
+            (a, b) => a.connectedAt - b.connectedAt
+          ),
+        };
+      } catch (error) {
+        loggerError('[Reticulum] Failed to collect details snapshot:', error);
+        return { destinationHash: null, overlayPeers: [] };
       }
     }
   );
