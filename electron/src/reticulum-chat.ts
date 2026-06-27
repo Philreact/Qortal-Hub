@@ -41,8 +41,8 @@ import {
   type ReticulumResourceManifest,
 } from './reticulum-resource-store';
 import {
-  RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT,
   ReticulumResourceTransferManager,
+  type ReticulumResourceByteRange,
   type ReticulumResourceTransferOffer,
   type ReticulumResourceTransferProgress,
 } from './reticulum-resource-transfer';
@@ -159,8 +159,7 @@ export interface ReticulumChatEventRequestWire {
 export interface ReticulumChatResourceRequestWire {
   eid?: string;
   fh: string;
-  r?: Array<[number, number]>;
-  cf?: boolean;
+  b: Array<[number, number]>;
   rid?: string;
   o?: string;
   pk: string;
@@ -197,21 +196,12 @@ export interface ReticulumChatResourceOffer {
   groupId: number;
   eventId?: string;
   fileHash: string;
+  totalSizeBytes: number;
   sizeBytes: number;
   fileName: string;
   mimeType: string;
-  chunkIndex?: number;
-  chunkHash?: string;
-  chunkSize?: number;
-  bundleHash?: string;
-  streamMode?: boolean;
-  chunkIndexes?: number[];
-  chunks?: Array<{
-    index: number;
-    hash: string;
-    sizeBytes: number;
-    offset: number;
-  }>;
+  ranges: ReticulumResourceByteRange[];
+  payloadHash: string;
   sourcePeerHash?: string;
   relayRequestId?: string;
 }
@@ -221,12 +211,9 @@ export interface ReticulumChatResourceOfferWire {
   eid?: string;
   fh: string;
   s: number;
-  ci?: number;
-  ch?: string;
-  cs?: number;
-  bh?: string;
-  sm?: 1;
-  br?: Array<[number, number]>;
+  rs: number;
+  ph: string;
+  b: Array<[number, number]>;
   rr?: string;
   sp?: string;
 }
@@ -415,7 +402,6 @@ const RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS = 10 * 60 * 1_000;
 const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
-const RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT = RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
@@ -757,18 +743,11 @@ function resourceOfferToWire(offer: ReticulumChatResourceOffer): ReticulumChatRe
     ...(offer.eventId ? { eid: offer.eventId } : {}),
     fh: offer.fileHash,
     s: offer.sizeBytes,
-    ...(Number.isInteger(offer.chunkIndex) ? { ci: offer.chunkIndex } : {}),
-    ...(offer.chunkHash ? { ch: offer.chunkHash } : {}),
-    ...(Number.isInteger(offer.chunkSize) ? { cs: offer.chunkSize } : {}),
-    ...(offer.bundleHash ? { bh: offer.bundleHash } : {}),
-    ...(offer.streamMode === true ? { sm: 1 as const } : {}),
-    ...(Array.isArray(offer.chunks) && offer.chunks.length > 0
-      ? {
-          br: chunkIndexesToRanges(offer.chunks.map((chunk) => chunk.index)),
-        }
-      : {}),
+    rs: offer.totalSizeBytes,
+    ph: offer.payloadHash,
+    b: offer.ranges.map((range) => [range.startByte, range.endByteExclusive]),
     ...(offer.relayRequestId ? { rr: offer.relayRequestId } : {}),
-    ...(offer.sourcePeerHash ? { sp: offer.sourcePeerHash } : {}),
+    ...(offer.sourcePeerHash ? { sp: compactPeerHashForWire(offer.sourcePeerHash) } : {}),
   };
 }
 
@@ -780,19 +759,12 @@ function resourceOfferFromWire(groupId: number, wire: unknown): ReticulumChatRes
     groupId,
     ...(typeof o.eid === 'string' && o.eid ? { eventId: o.eid } : {}),
     fileHash: String(o.fh || ''),
+    totalSizeBytes: Number(o.rs || 0),
     sizeBytes: Number(o.s || 0),
     fileName: '',
     mimeType: '',
-    ...(Number.isInteger(o.ci) ? { chunkIndex: Number(o.ci) } : {}),
-    ...(typeof o.ch === 'string' && o.ch ? { chunkHash: o.ch } : {}),
-    ...(Number.isInteger(o.cs) ? { chunkSize: Number(o.cs) } : {}),
-    ...(typeof o.bh === 'string' && o.bh ? { bundleHash: o.bh } : {}),
-    ...(o.sm === 1 ? { streamMode: true } : {}),
-    ...(Array.isArray(o.br)
-      ? {
-          chunkIndexes: chunkRangesToIndexes(o.br) ?? [],
-        }
-      : {}),
+    ranges: byteRangesFromWire(o.b) ?? [],
+    payloadHash: String(o.ph || ''),
     ...(typeof o.rr === 'string' && o.rr ? { relayRequestId: o.rr } : {}),
     ...(typeof o.sp === 'string' && o.sp ? { sourcePeerHash: o.sp.toLowerCase() } : {}),
   };
@@ -868,54 +840,27 @@ export function buildReticulumChatResourceRequestSignedFields(input: {
   groupId: number;
   eventId?: string;
   fileHash: string;
-  chunkIndexes?: number[];
-  chunkRanges?: Array<[number, number]>;
+  byteRanges: Array<[number, number]>;
   authorAddress: string;
   authorPublicKey: string;
   timestamp: number;
 }): Record<string, unknown> {
-  const chunkRanges = normalizeChunkRanges(
-    Array.isArray(input.chunkRanges)
-      ? input.chunkRanges
-      : chunkIndexesToRanges(input.chunkIndexes ?? [])
-  );
+  const byteRanges = normalizeByteRanges(input.byteRanges);
   return {
     authorAddress: input.authorAddress,
     authorPublicKey: input.authorPublicKey,
     eventId: input.eventId ?? null,
     fileHash: input.fileHash,
     groupId: input.groupId,
-    chunkRanges,
+    byteRanges,
     timestamp: input.timestamp,
     type: 'RCHAT_RESOURCE_REQ',
   };
 }
 
-function chunkIndexesToRanges(chunkIndexes: number[]): Array<[number, number]> {
-  const sorted = [...new Set(chunkIndexes)]
-    .filter((index) => Number.isInteger(index) && index >= 0)
-    .sort((a, b) => a - b);
-  const ranges: Array<[number, number]> = [];
-  for (const index of sorted) {
-    const previous = ranges[ranges.length - 1];
-    if (previous && previous[0] + previous[1] === index) {
-      previous[1] += 1;
-    } else {
-      ranges.push([index, 1]);
-    }
-  }
-  return ranges;
-}
-
-function normalizeChunkRanges(ranges: Array<[number, number]>): Array<[number, number]> {
-  const indexes = chunkRangesToIndexes(ranges);
-  if (!indexes) return [];
-  return chunkIndexesToRanges(indexes);
-}
-
-function chunkRangesToIndexes(ranges: unknown): number[] | null {
+function byteRangesFromWire(ranges: unknown): ReticulumResourceByteRange[] | null {
   if (!Array.isArray(ranges)) return null;
-  const indexes: number[] = [];
+  const parsed: ReticulumResourceByteRange[] = [];
   for (const range of ranges) {
     if (
       !Array.isArray(range) ||
@@ -923,19 +868,21 @@ function chunkRangesToIndexes(ranges: unknown): number[] | null {
       !Number.isInteger(range[0]) ||
       !Number.isInteger(range[1]) ||
       range[0] < 0 ||
-      range[1] <= 0
+      range[1] <= range[0]
     ) {
       return null;
     }
-    if (indexes.length + range[1] > RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT) {
-      return null;
-    }
-    for (let offset = 0; offset < range[1]; offset += 1) {
-      indexes.push(range[0] + offset);
-    }
+    parsed.push({ startByte: range[0], endByteExclusive: range[1] });
   }
-  if (new Set(indexes).size !== indexes.length) return null;
-  return indexes;
+  return parsed;
+}
+
+function normalizeByteRanges(ranges: Array<[number, number]>): Array<[number, number]> {
+  const parsed = byteRangesFromWire(ranges);
+  if (!parsed) return [];
+  return parsed
+    .sort((a, b) => a.startByte - b.startByte || a.endByteExclusive - b.endByteExclusive)
+    .map((range) => [range.startByte, range.endByteExclusive]);
 }
 
 export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
@@ -999,8 +946,8 @@ export function verifyReticulumChatResourceRequest(
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
     if (request.eid != null && (typeof request.eid !== 'string' || request.eid.length < 8)) return false;
     if (typeof request.fh !== 'string' || !/^[0-9a-f]{64}$/i.test(request.fh)) return false;
-    const chunkIndexes = chunkRangesToIndexes(request.r ?? []);
-    if (!chunkIndexes) return false;
+    const byteRanges = normalizeByteRanges(request.b ?? []);
+    if (byteRanges.length === 0) return false;
     if (typeof request.pk !== 'string' || !request.pk) return false;
     if (typeof request.sig !== 'string' || !request.sig) return false;
     if (!Number.isFinite(request.ts)) return false;
@@ -1015,7 +962,7 @@ export function verifyReticulumChatResourceRequest(
             groupId,
             eventId: request.eid,
             fileHash: request.fh,
-            chunkIndexes,
+            byteRanges,
             authorAddress: derived,
             authorPublicKey: request.pk,
             timestamp: request.ts,
@@ -1135,15 +1082,15 @@ export class ReticulumChatManager extends EventEmitter {
       now: this.now,
       loggerPrefix: 'ReticulumChatResourceTransfer',
       resourceType: 'reticulum_group_resource',
-      chunkResourceType: 'reticulum_group_resource_chunk',
+      rangeResourceType: 'reticulum_group_resource_range',
       authMessageType: 'RETICULUM_GROUP_RESOURCE_AUTH',
       contextMetadataKey: 'groupId',
-      buildRequestPayloads: async (state, chunkIndexes) =>
+      buildRequestPayloads: async (state, ranges) =>
         this.buildSignedResourceRequestBatches(
           state.contextId,
           state.manifest,
           state.eventId,
-          chunkIndexes
+          ranges
         ),
       sendRequestToPeer: (peerHash, groupId, request) =>
         this.sendResourceRequestToPeer(peerHash, groupId, request),
@@ -1164,6 +1111,7 @@ export class ReticulumChatManager extends EventEmitter {
       canServeRequest: async (groupId, request, manifest) => {
         if (!this.localGroupIds.has(groupId)) return false;
         if (manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) return false;
+        if (!this.resourceManifestBelongsToGroup(manifest, groupId)) return false;
         if (request.eventId) {
           const event = this.db.getEvent(request.eventId);
           if (!event || event.groupId !== groupId) return false;
@@ -1198,16 +1146,12 @@ export class ReticulumChatManager extends EventEmitter {
       groupId: offer.contextId,
       ...(offer.eventId ? { eventId: offer.eventId } : {}),
       fileHash: offer.fileHash,
+      totalSizeBytes: offer.totalSizeBytes,
       sizeBytes: offer.sizeBytes,
       fileName: offer.fileName,
       mimeType: offer.mimeType,
-      ...(offer.chunkIndex != null ? { chunkIndex: offer.chunkIndex } : {}),
-      ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
-      ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
-      ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
-      ...(offer.streamMode === true ? { streamMode: true } : {}),
-      ...(offer.chunkIndexes ? { chunkIndexes: offer.chunkIndexes } : {}),
-      ...(offer.chunks ? { chunks: offer.chunks } : {}),
+      ranges: offer.ranges,
+      payloadHash: offer.payloadHash,
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
       ...(offer.relayRequestId ? { relayRequestId: offer.relayRequestId } : {}),
     };
@@ -1221,16 +1165,12 @@ export class ReticulumChatManager extends EventEmitter {
       contextId: offer.groupId,
       ...(offer.eventId ? { eventId: offer.eventId } : {}),
       fileHash: offer.fileHash,
+      totalSizeBytes: offer.totalSizeBytes,
       sizeBytes: offer.sizeBytes,
       fileName: offer.fileName,
       mimeType: offer.mimeType,
-      ...(offer.chunkIndex != null ? { chunkIndex: offer.chunkIndex } : {}),
-      ...(offer.chunkHash ? { chunkHash: offer.chunkHash } : {}),
-      ...(offer.chunkSize != null ? { chunkSize: offer.chunkSize } : {}),
-      ...(offer.bundleHash ? { bundleHash: offer.bundleHash } : {}),
-      ...(offer.streamMode === true ? { streamMode: true } : {}),
-      ...(offer.chunkIndexes ? { chunkIndexes: offer.chunkIndexes } : {}),
-      ...(offer.chunks ? { chunks: offer.chunks } : {}),
+      ranges: offer.ranges,
+      payloadHash: offer.payloadHash,
       ...(offer.sourcePeerHash ? { sourcePeerHash: offer.sourcePeerHash } : {}),
       ...(offer.relayRequestId ? { relayRequestId: offer.relayRequestId } : {}),
     };
@@ -1241,10 +1181,6 @@ export class ReticulumChatManager extends EventEmitter {
       groupId: progress.contextId,
       eventId: progress.eventId,
       fileHash: progress.fileHash,
-      chunkIndex: progress.chunkIndex,
-      completedChunks: progress.completedChunks,
-      totalChunks: progress.totalChunks,
-      fullFileTransfer: progress.fullFileTransfer,
       bytesTransferred: progress.bytesTransferred,
       totalBytes: progress.totalBytes,
       progress: progress.progress,
@@ -1503,6 +1439,13 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.resourceManifestBelongsToGroup(manifest, groupId)) {
       return { ok: false, reason: 'send-command-failed', error: 'Resource is not for this group' };
     }
+    this.resourceStore.recordGroupReference({
+      fileHash: manifest.fileHash,
+      groupId,
+      eventId,
+      ownerId: manifest.ownerId,
+      createdAt: manifest.createdAt,
+    });
     const candidatePeers = this.getResourceRequestPeers(groupId, eventId);
     this.resourceTransfer.requestResource({
       contextId: groupId,
@@ -3628,14 +3571,15 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     manifest: ReticulumResourceManifest,
     eventId?: string,
-    chunkIndexes: number[] = []
+    ranges: ReticulumResourceByteRange[] = []
   ): Promise<ReticulumChatResourceRequestWire | null> {
     if (!this.signLocalFields) return null;
     const timestamp = this.now();
+    const byteRanges = ranges.map((range) => [range.startByte, range.endByteExclusive] as [number, number]);
     const signed = await this.signLocalFields({
-      eventId: null,
+      eventId: eventId ?? null,
       fileHash: manifest.fileHash,
-      chunkRanges: chunkIndexesToRanges(chunkIndexes),
+      byteRanges: normalizeByteRanges(byteRanges),
       groupId,
       timestamp,
       type: 'RCHAT_RESOURCE_REQ',
@@ -3663,9 +3607,9 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.localGroupIds.add(groupId);
     const baseWire: ReticulumChatResourceRequestWire = {
+      ...(eventId ? { eid: eventId } : {}),
       fh: manifest.fileHash,
-      r: chunkIndexesToRanges(chunkIndexes),
-      ...(chunkIndexes.length === 0 ? { cf: true } : {}),
+      b: normalizeByteRanges(byteRanges),
       pk: signed.authorPublicKey,
       ts: timestamp,
       sig: signed.signature,
@@ -3731,45 +3675,22 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     manifest: ReticulumResourceManifest,
     eventId: string | undefined,
-    chunkIndexes: number[]
+    ranges: ReticulumResourceByteRange[]
   ): Promise<ReticulumChatResourceRequestWire[]> {
     const batches: ReticulumChatResourceRequestWire[] = [];
-    if (chunkIndexes.length === 0) {
+    for (const range of ranges) {
       const request = await this.buildSignedResourceRequestWire(
         groupId,
         manifest,
         eventId,
-        []
+        [range]
       );
-      return request &&
+      if (
+        request &&
         wireFitsReticulum({ t: 'RCHAT', k: 'resource_req', g: groupId, q: request })
-        ? [request]
-        : [];
-    }
-    let remaining = [...chunkIndexes];
-    while (remaining.length > 0) {
-      let count = Math.min(RETICULUM_CHAT_RESOURCE_CHUNK_REQUEST_LIMIT, remaining.length);
-      let request: ReticulumChatResourceRequestWire | null = null;
-      while (count > 0) {
-        const indexes = remaining.slice(0, count);
-        request = await this.buildSignedResourceRequestWire(
-          groupId,
-          manifest,
-          eventId,
-          indexes
-        );
-        if (
-          request &&
-          wireFitsReticulum({ t: 'RCHAT', k: 'resource_req', g: groupId, q: request })
-        ) {
-          break;
-        }
-        count -= 1;
-        request = null;
+      ) {
+        batches.push(request);
       }
-      if (!request || count <= 0) break;
-      batches.push(request);
-      remaining = remaining.slice(count);
     }
     return batches;
   }
@@ -3806,8 +3727,7 @@ export class ReticulumChatManager extends EventEmitter {
             g: groupId,
             eid: request.eid ?? '',
             fh: request.fh.toLowerCase(),
-            r: request.r ?? [],
-            cf: request.cf === true,
+            b: request.b ?? [],
             pk: request.pk,
             ts: request.ts,
             sig: request.sig,
@@ -3974,20 +3894,24 @@ export class ReticulumChatManager extends EventEmitter {
       const event = this.db.getEvent(request.eid);
       if (!event || event.groupId !== groupId) return false;
     }
-    if (request.cf === true) {
-      try {
-        this.resourceStore?.assembleResource(manifest.fileHash);
-        return true;
-      } catch {
-        return false;
-      }
+    const requestedRanges = byteRangesFromWire(request.b ?? []) ?? [];
+    if (requestedRanges.length === 0) return false;
+    if (
+      requestedRanges.some(
+        (range) =>
+          range.startByte < 0 ||
+          range.endByteExclusive <= range.startByte ||
+          range.endByteExclusive > manifest.sizeBytes
+      )
+    ) {
+      return false;
     }
-    const requestedIndexes = chunkRangesToIndexes(request.r ?? []) ?? [];
-    if (requestedIndexes.length === 0) return false;
-    return requestedIndexes.every((index) => {
-      const chunk = this.resourceStore?.getChunk(manifest.fileHash, index);
-      return chunk?.status === 'complete' && !!chunk.localPath;
-    });
+    try {
+      this.resourceStore?.assembleResource(manifest.fileHash);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async maybeForwardResourceRequest(
@@ -4099,8 +4023,7 @@ export class ReticulumChatManager extends EventEmitter {
       {
         eventId: request.eid,
         fileHash: request.fh,
-        chunkIndexes: chunkRangesToIndexes(request.r ?? []) ?? [],
-        requireCompleteFile: request.cf === true,
+        ranges: byteRangesFromWire(request.b ?? []) ?? [],
         requesterAddress: deriveAddressFromPublicKey(request.pk),
         ...(requesterPeerHash ? { requesterPeerHash } : {}),
         ...(relayRequestId ? { relayRequestId } : {}),
@@ -4119,49 +4042,20 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Number.isInteger(offer.groupId) || offer.groupId <= 0) return;
     if (offer.eventId != null && (typeof offer.eventId !== 'string' || offer.eventId.length < 8)) return;
     if (typeof offer.fileHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.fileHash)) return;
+    if (!Number.isInteger(offer.totalSizeBytes) || offer.totalSizeBytes <= 0) return;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return;
-    if (offer.chunkIndex != null && (!Number.isInteger(offer.chunkIndex) || offer.chunkIndex < 0)) return;
-    if (
-      offer.chunkIndex != null &&
-      (typeof offer.chunkHash !== 'string' ||
-        !/^[0-9a-f]{64}$/i.test(offer.chunkHash) ||
-        !Number.isInteger(offer.chunkSize) ||
-        offer.chunkSize <= 0)
-    ) {
-      return;
-    }
-    if (offer.chunkHash != null && (typeof offer.chunkHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.chunkHash))) {
-      return;
-    }
-    if (offer.chunkSize != null && (!Number.isInteger(offer.chunkSize) || offer.chunkSize <= 0)) return;
-    if (offer.bundleHash != null && (typeof offer.bundleHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.bundleHash))) {
-      return;
-    }
-    if (offer.chunkIndexes != null) {
+    if (typeof offer.payloadHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.payloadHash)) return;
+    if (!Array.isArray(offer.ranges) || offer.ranges.length !== 1) return;
+    for (const range of offer.ranges) {
       if (
-        !Array.isArray(offer.chunkIndexes) ||
-        offer.chunkIndexes.length === 0 ||
-        offer.chunkIndexes.some((index) => !Number.isInteger(index) || index < 0)
+        !range ||
+        !Number.isInteger(range.startByte) ||
+        !Number.isInteger(range.endByteExclusive) ||
+        range.startByte < 0 ||
+        range.endByteExclusive <= range.startByte ||
+        range.endByteExclusive > offer.totalSizeBytes
       ) {
         return;
-      }
-    }
-    if (offer.chunks != null) {
-      if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return;
-      for (const chunk of offer.chunks) {
-        if (
-          !chunk ||
-          !Number.isInteger(chunk.index) ||
-          chunk.index < 0 ||
-          typeof chunk.hash !== 'string' ||
-          !/^[0-9a-f]{64}$/i.test(chunk.hash) ||
-          !Number.isInteger(chunk.sizeBytes) ||
-          chunk.sizeBytes <= 0 ||
-          !Number.isInteger(chunk.offset) ||
-          chunk.offset < 0
-        ) {
-          return;
-        }
       }
     }
     if (offer.sourcePeerHash != null && !this.normalizeResourcePeerHash(offer.sourcePeerHash)) {
@@ -4843,12 +4737,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (typeof manifest.fileName !== 'string' || !manifest.fileName) return false;
     if (typeof manifest.mimeType !== 'string' || !manifest.mimeType) return false;
     if (!Number.isInteger(manifest.sizeBytes) || manifest.sizeBytes <= 0) return false;
-    if (!Number.isInteger(manifest.chunkSize) || manifest.chunkSize <= 0) return false;
     if (typeof manifest.fileHash !== 'string' || !/^[0-9a-f]{64}$/i.test(manifest.fileHash)) return false;
-    if (!Array.isArray(manifest.chunkHashes) || manifest.chunkHashes.length === 0) return false;
-    if (manifest.chunkHashes.some((hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash))) {
-      return false;
-    }
     return true;
   }
 
@@ -4861,6 +4750,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (Number.isInteger(metadataGroupId) && metadataGroupId === groupId) return true;
     const ownerId = typeof manifest.ownerId === 'string' ? manifest.ownerId : '';
     if (ownerId.startsWith(`${groupId}:`) || ownerId.startsWith(`group:${groupId}:`)) return true;
+    if (this.resourceStore?.hasGroupReference(manifest.fileHash, groupId)) return true;
     return false;
   }
 

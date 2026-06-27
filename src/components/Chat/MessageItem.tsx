@@ -428,26 +428,22 @@ export const MessageItemComponent = ({
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
   >('idle');
   const [fileResourceProgress, setFileResourceProgress] = useState<number | null>(null);
-  const [fileResourceChunks, setFileResourceChunks] = useState<{
-    completed: number;
-    total: number;
-  } | null>(null);
   const [fileResourceBytes, setFileResourceBytes] = useState<{
     received: number;
     total: number;
   } | null>(null);
-  const [fileResourceFullFileTransfer, setFileResourceFullFileTransfer] = useState(false);
   const [fileResourceLastChunkAt, setFileResourceLastChunkAt] = useState<number | null>(null);
   const [fileResourceCheckedAt, setFileResourceCheckedAt] = useState<number | null>(null);
   const [fileResourceStartedAt, setFileResourceStartedAt] = useState<number | null>(null);
   const [fileResourceRuntime, setFileResourceRuntime] = useState<{
     active?: boolean;
     peerCount?: number;
+    candidatePeerCount?: number;
     advertisedPeerCount?: number;
     activeTransfers?: number;
     pendingTransfers?: number;
-    requestedChunkCount?: number;
-    inFlightChunkCount?: number;
+    requestedRangeCount?: number;
+    inFlightRangeCount?: number;
     currentBytesPerSecond?: number;
     averageBytesPerSecond?: number;
     nextRequestAt?: number | null;
@@ -669,24 +665,22 @@ export const MessageItemComponent = ({
 
   const applyFileResourceStatus = useCallback(
     (payload?: {
-      completedChunks?: number;
-      totalChunks?: number;
-      fullFileTransfer?: boolean;
       bytesTransferred?: number;
       totalBytes?: number;
       progress?: number;
       complete?: boolean;
       failed?: boolean;
-      latestChunkUpdatedAt?: number | null;
+      latestRangeUpdatedAt?: number | null;
       checkedAt?: number;
       runtime?: {
         active?: boolean;
         peerCount?: number;
+        candidatePeerCount?: number;
         advertisedPeerCount?: number;
         activeTransfers?: number;
         pendingTransfers?: number;
-        requestedChunkCount?: number;
-        inFlightChunkCount?: number;
+        requestedRangeCount?: number;
+        inFlightRangeCount?: number;
         currentBytesPerSecond?: number;
         averageBytesPerSecond?: number;
         nextRequestAt?: number | null;
@@ -707,23 +701,6 @@ export const MessageItemComponent = ({
         if (nextProgress > 0) {
           setFileResourceLastChunkAt(Date.now());
         }
-      }
-      if (payload.fullFileTransfer) {
-        setFileResourceFullFileTransfer(true);
-      }
-      if (
-        typeof payload.completedChunks === 'number' &&
-        typeof payload.totalChunks === 'number' &&
-        payload.totalChunks > 0
-      ) {
-        const completed = Math.max(0, Math.min(payload.completedChunks, payload.totalChunks));
-        setFileResourceChunks((chunks) => ({
-          completed:
-            chunks && chunks.total === payload.totalChunks
-              ? Math.max(chunks.completed, completed)
-              : completed,
-          total: payload.totalChunks,
-        }));
       }
       if (
         typeof payload.bytesTransferred === 'number' &&
@@ -749,15 +726,14 @@ export const MessageItemComponent = ({
           setFileResourceLastChunkAt(Date.now());
         }
       }
-      if (typeof payload.latestChunkUpdatedAt === 'number' && payload.latestChunkUpdatedAt > 0) {
-        setFileResourceLastChunkAt(payload.latestChunkUpdatedAt);
+      if (typeof payload.latestRangeUpdatedAt === 'number' && payload.latestRangeUpdatedAt > 0) {
+        setFileResourceLastChunkAt(payload.latestRangeUpdatedAt);
       }
       if (payload.canceled) {
         setFileResourceStatus('idle');
         setFileResourceProgress(null);
         setFileResourceBytes(null);
         setFileResourceRuntime(null);
-        setFileResourceFullFileTransfer(false);
         setFileResourceStartedAt(null);
         setFileResourceLastChunkAt(null);
         return;
@@ -766,17 +742,6 @@ export const MessageItemComponent = ({
         setFileResourceStatus('ready');
         setFileResourceProgress(100);
         setFileResourceBytes(null);
-        setFileResourceFullFileTransfer(false);
-        if (
-          !payload.fullFileTransfer &&
-          typeof payload.totalChunks === 'number' &&
-          payload.totalChunks > 0
-        ) {
-          setFileResourceChunks({
-            completed: payload.totalChunks,
-            total: payload.totalChunks,
-          });
-        }
       }
       if (payload.failed) {
         setFileResourceStatus('error');
@@ -839,8 +804,6 @@ export const MessageItemComponent = ({
     setFileResourceCheckedAt(startedAt);
     setFileResourceStartedAt(startedAt);
     setFileResourceRuntime(null);
-    setFileResourceFullFileTransfer(true);
-    setFileResourceChunks(null);
     setFileResourceBytes(
       reticulumFileSize > 0
         ? {
@@ -874,7 +837,6 @@ export const MessageItemComponent = ({
     setFileResourceProgress(null);
     setFileResourceBytes(null);
     setFileResourceRuntime(null);
-    setFileResourceFullFileTransfer(false);
     setFileResourceStartedAt(null);
     setFileResourceLastChunkAt(null);
     await window.reticulumChat?.cancelResource?.(reticulumFileResourceId);
@@ -910,9 +872,7 @@ export const MessageItemComponent = ({
     if (!reticulumFileResourceId) {
       setFileResourceStatus('idle');
       setFileResourceProgress(null);
-      setFileResourceChunks(null);
       setFileResourceBytes(null);
-      setFileResourceFullFileTransfer(false);
       return;
     }
     void window.reticulumResources?.getStatus?.(reticulumFileResourceId).then((result) => {
@@ -922,9 +882,7 @@ export const MessageItemComponent = ({
       } else {
         setFileResourceStatus('idle');
         setFileResourceProgress(null);
-        setFileResourceChunks(null);
         setFileResourceBytes(null);
-        setFileResourceFullFileTransfer(false);
         setFileResourceLastChunkAt(null);
         setFileResourceCheckedAt(null);
         setFileResourceStartedAt(null);
@@ -982,31 +940,20 @@ export const MessageItemComponent = ({
   }, [fileResourceLastChunkAt, fileResourceStartedAt, fileResourceStatus, nowMs]);
   const fileResourceActivityText = (() => {
     if (fileResourceStatus !== 'downloading') return '';
-    const total = fileResourceFullFileTransfer ? 0 : fileResourceChunks?.total || 0;
-    const completed = fileResourceFullFileTransfer ? 0 : fileResourceChunks?.completed || 0;
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
-    if (!referenceAt) return fileResourceFullFileTransfer ? 'waiting for file' : 'waiting for first chunk';
+    if (!referenceAt) return 'waiting for first range';
     const ageSeconds = Math.max(0, Math.floor((nowMs - referenceAt) / 1000));
     const activeTransfers = Number(fileResourceRuntime?.activeTransfers || 0);
     const isReceivingBundle =
       Boolean(fileResourceRuntime?.active) && activeTransfers > 0;
-    if (fileResourceFullFileTransfer) {
+    if (!fileResourceBytes?.received) {
       if (isReceivingBundle) {
-        if ((fileResourceProgress ?? 0) > 0) return 'receiving file';
-        return `receiving file ${ageSeconds}s`;
+        if ((fileResourceProgress ?? 0) > 0) return 'receiving first range';
+        return `receiving first range ${ageSeconds}s`;
       }
-      if (ageSeconds < 8) return 'requesting file';
-      if (ageSeconds < 30) return `waiting for file ${ageSeconds}s`;
-      return `waiting for peer ${ageSeconds}s`;
-    }
-    if (completed <= 0) {
-      if (isReceivingBundle) {
-        if ((fileResourceProgress ?? 0) > 0) return 'receiving first bundle';
-        return `receiving first bundle ${ageSeconds}s`;
-      }
-      if (ageSeconds < 8) return 'requesting chunks';
-      if (ageSeconds < 30) return `waiting for first chunk ${ageSeconds}s`;
-      return `retrying / waiting for first chunk ${ageSeconds}s`;
+      if (ageSeconds < 8) return 'requesting ranges';
+      if (ageSeconds < 30) return `waiting for first range ${ageSeconds}s`;
+      return `retrying / waiting for first range ${ageSeconds}s`;
     }
     if (ageSeconds < 8) return 'receiving';
     if (ageSeconds < 30) return `waiting ${ageSeconds}s`;
@@ -1017,6 +964,7 @@ export const MessageItemComponent = ({
       return '';
     }
     const peerCount = Number(fileResourceRuntime.peerCount || 0);
+    const candidatePeerCount = Number(fileResourceRuntime.candidatePeerCount || 0);
     const advertisedPeerCount = Number(fileResourceRuntime.advertisedPeerCount || 0);
     const activeTransfers = Number(fileResourceRuntime.activeTransfers || 0);
     const pendingTransfers = Number(fileResourceRuntime.pendingTransfers || 0);
@@ -1026,10 +974,13 @@ export const MessageItemComponent = ({
     const averageSpeedText = formatQchatFileSpeed(
       Number(fileResourceRuntime.averageBytesPerSecond || 0)
     );
+    const sourceCount = Math.max(peerCount, advertisedPeerCount);
     const peersText =
-      advertisedPeerCount > 0 && advertisedPeerCount !== peerCount
-        ? `peers ${advertisedPeerCount}/${peerCount}`
-        : `peers ${peerCount}`;
+      sourceCount > 0
+        ? `sources ${sourceCount}`
+        : candidatePeerCount > 0
+          ? `checking ${candidatePeerCount} peer${candidatePeerCount !== 1 ? 's' : ''}`
+          : '';
     const transferParts: string[] = [];
     if (activeTransfers > 0) {
       transferParts.push(`${activeTransfers} active`);
@@ -1055,25 +1006,18 @@ export const MessageItemComponent = ({
         fileResourceBytes && fileResourceBytes.total > 0
           ? `${formatQchatFileSize(fileResourceBytes.received)} / ${formatQchatFileSize(fileResourceBytes.total)}`
           : '';
-      const chunkText = !fileResourceFullFileTransfer && fileResourceChunks
-        ? ` (${fileResourceChunks.completed}/${fileResourceChunks.total} chunks)`
-        : '';
       const details = [fileResourceActivityText, fileResourcePeerText]
         .filter(Boolean)
         .join(' · ');
-      return `downloading ${fileResourceProgress}%${chunkText}${
+      return `downloading ${fileResourceProgress}%${
         bytesText ? ` · ${bytesText}` : ''
       }${
         details ? ` · ${details}` : ''
       }`;
     }
     if (fileResourceStatus === 'error') {
-      if (!fileResourceChunks?.completed) return 'download failed';
-      return `download paused at ${fileResourceProgress ?? 0}%${
-        fileResourceChunks
-          ? ` (${fileResourceChunks.completed}/${fileResourceChunks.total} chunks)`
-          : ''
-      }`;
+      if (!fileResourceBytes?.received) return 'download failed';
+      return `download paused at ${fileResourceProgress ?? 0}%`;
     }
     return 'not downloaded';
   })();

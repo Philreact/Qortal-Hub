@@ -902,23 +902,21 @@ try {
       ipcRenderer.invoke('reticulumResource:getStatus', fileHash) as Promise<{
         success: boolean;
         manifest?: unknown;
-        completedChunks?: number;
-        totalChunks?: number;
-        fullFileTransfer?: boolean;
         bytesTransferred?: number;
         totalBytes?: number;
         progress?: number;
         complete?: boolean;
-        latestChunkUpdatedAt?: number | null;
+        latestRangeUpdatedAt?: number | null;
         checkedAt?: number;
         runtime?: {
           active?: boolean;
           peerCount?: number;
+          candidatePeerCount?: number;
           advertisedPeerCount?: number;
           activeTransfers?: number;
           pendingTransfers?: number;
-          requestedChunkCount?: number;
-          inFlightChunkCount?: number;
+          requestedRangeCount?: number;
+          inFlightRangeCount?: number;
           currentBytesPerSecond?: number;
           averageBytesPerSecond?: number;
           nextRequestAt?: number | null;
@@ -1546,10 +1544,6 @@ try {
           groupId?: number;
           eventId?: string;
           fileHash?: string;
-          chunkIndex?: number;
-          completedChunks?: number;
-          totalChunks?: number;
-          fullFileTransfer?: boolean;
           bytesTransferred?: number;
           totalBytes?: number;
           progress?: number;
@@ -1563,10 +1557,6 @@ try {
               groupId?: number;
               eventId?: string;
               fileHash?: string;
-              chunkIndex?: number;
-              completedChunks?: number;
-              totalChunks?: number;
-              fullFileTransfer?: boolean;
               bytesTransferred?: number;
               totalBytes?: number;
               progress?: number;
@@ -1805,10 +1795,6 @@ try {
           groupId?: number;
           eventId?: string;
           fileHash?: string;
-          chunkIndex?: number;
-          completedChunks?: number;
-          totalChunks?: number;
-          fullFileTransfer?: boolean;
           bytesTransferred?: number;
           totalBytes?: number;
           progress?: number;
@@ -1822,10 +1808,6 @@ try {
               groupId?: number;
               eventId?: string;
               fileHash?: string;
-              chunkIndex?: number;
-              completedChunks?: number;
-              totalChunks?: number;
-              fullFileTransfer?: boolean;
               bytesTransferred?: number;
               totalBytes?: number;
               progress?: number;

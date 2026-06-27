@@ -4,33 +4,36 @@ import * as nodeCrypto from 'crypto';
 import * as path from 'path';
 import type { ReticulumBridge, ReticulumSendResult } from './reticulum-bridge';
 import {
+  RETICULUM_RESOURCE_MAX_RANGE_SIZE,
+  RETICULUM_RESOURCE_RANGE_SIZE,
   ReticulumResourceStore,
   type ReticulumResourceManifest,
 } from './reticulum-resource-store';
 import { log as loggerLog, warn as loggerWarn } from './logger';
 
-export const RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS = 8;
-export const RETICULUM_RESOURCE_TRANSFER_MAX_BLOCK_CHUNKS = 8;
-export const RETICULUM_RESOURCE_TRANSFER_CHUNK_REQUEST_LIMIT =
-  RETICULUM_RESOURCE_TRANSFER_MAX_BLOCK_CHUNKS;
+export const RETICULUM_RESOURCE_TRANSFER_RANGE_BYTES = RETICULUM_RESOURCE_RANGE_SIZE;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 1;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
-export const RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS = 6;
+export const RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 export const RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS = 15_000;
 export const RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS = 180_000;
-export const RETICULUM_RESOURCE_TRANSFER_COMPLETE_FILE_RESPONSE_TIMEOUT_MS = 45_000;
+export const RETICULUM_RESOURCE_TRANSFER_RESPONSE_TIMEOUT_MS = 45_000;
 export const RETICULUM_RESOURCE_TRANSFER_OVERLAY_STALE_THROTTLE_MS = 30_000;
 export const RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS = 5_000;
 const RETICULUM_RESOURCE_TRANSFER_ACCEPT_STALE_MS = 180_000;
 const RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS = 5_000;
 
+export type ReticulumResourceByteRange = {
+  startByte: number;
+  endByteExclusive: number;
+};
+
 export type ReticulumResourceTransferRequest = {
   eventId?: string;
   fileHash: string;
-  chunkIndexes?: number[];
-  requireCompleteFile?: boolean;
+  ranges: ReticulumResourceByteRange[];
   requesterAddress?: string;
   requesterPeerHash?: string;
   relayRequestId?: string;
@@ -41,21 +44,12 @@ export type ReticulumResourceTransferOffer = {
   contextId: number;
   eventId?: string;
   fileHash: string;
+  totalSizeBytes: number;
   sizeBytes: number;
   fileName: string;
   mimeType: string;
-  chunkIndex?: number;
-  chunkHash?: string;
-  chunkSize?: number;
-  bundleHash?: string;
-  streamMode?: boolean;
-  chunkIndexes?: number[];
-  chunks?: Array<{
-    index: number;
-    hash: string;
-    sizeBytes: number;
-    offset: number;
-  }>;
+  ranges: ReticulumResourceByteRange[];
+  payloadHash: string;
   sourcePeerHash?: string;
   relayRequestId?: string;
   temporaryPath?: string;
@@ -78,10 +72,6 @@ export type ReticulumResourceTransferProgress = {
   contextId: number;
   eventId?: string;
   fileHash: string;
-  chunkIndex?: number;
-  completedChunks?: number;
-  totalChunks?: number;
-  fullFileTransfer?: boolean;
   bytesTransferred?: number;
   totalBytes?: number;
   progress?: number;
@@ -93,12 +83,12 @@ export type ReticulumResourceTransferProgress = {
 export type ReticulumResourceDownloadRuntimeStatus = {
   active: boolean;
   peerCount: number;
+  candidatePeerCount: number;
   advertisedPeerCount: number;
   activeTransfers: number;
   pendingTransfers: number;
-  requestedChunkCount: number;
-  inFlightChunkCount: number;
-  fullFileTransfer?: boolean;
+  requestedRangeCount: number;
+  inFlightRangeCount: number;
   bytesTransferred?: number;
   totalBytes?: number;
   progress?: number;
@@ -107,72 +97,20 @@ export type ReticulumResourceDownloadRuntimeStatus = {
   nextRequestAt: number | null;
 };
 
-function chunkIndexesToRanges(chunkIndexes: number[]): Array<[number, number]> {
-  const sorted = [...new Set(chunkIndexes)]
-    .filter((index) => Number.isInteger(index) && index >= 0)
-    .sort((a, b) => a - b);
-  const ranges: Array<[number, number]> = [];
-  for (const index of sorted) {
-    const previous = ranges[ranges.length - 1];
-    if (previous && previous[0] + previous[1] === index) {
-      previous[1] += 1;
-    } else {
-      ranges.push([index, 1]);
-    }
-  }
-  return ranges;
-}
-
-function offerChunkRanges(offer: ReticulumResourceTransferOffer): Array<[number, number]> {
-  if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return [];
-  return chunkIndexesToRanges(offer.chunks.map((chunk) => chunk.index));
-}
-
-function sameChunkRanges(a: unknown, b: Array<[number, number]>): boolean {
-  if (!Array.isArray(a)) return b.length === 0;
-  if (a.length !== b.length) return false;
-  return a.every(
-    (range, index) =>
-      Array.isArray(range) &&
-      range.length === 2 &&
-      range[0] === b[index]?.[0] &&
-      range[1] === b[index]?.[1]
-  );
-}
-
-function formatByteCount(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
-}
-
-function formatBytesPerSecond(bytesPerSecond: number): string {
-  return `${formatByteCount(bytesPerSecond)}/s`;
-}
-
 type ReticulumResourceDownloadState<TRequestWire> = {
   contextId: number;
   fileHash: string;
   eventId?: string;
   manifest: ReticulumResourceManifest;
   peerHashes: Set<string>;
-  chunkAttempts: Map<number, number>;
-  chunkPeers: Map<number, Set<string>>;
-  inFlightChunks: Map<number, { transferId: string; startedAt: number }>;
-  peerBlockChunkLimits: Map<string, number>;
+  sourcePeerHashes: Set<string>;
+  rangeAttempts: Map<string, number>;
+  rangePeers: Map<string, Set<string>>;
+  inFlightRanges: Map<string, { transferId: string; startedAt: number }>;
   peerBulkThrottleUntil: Map<string, number>;
   peerBulkThrottleLoggedAt: Map<string, number>;
-  fullTransfer?: { transferId: string; startedAt: number };
   nextRequestAt: number;
   featureData?: Record<string, unknown>;
-  requestPayloads?: TRequestWire[];
 };
 
 type TransferSpeedSample = {
@@ -189,7 +127,7 @@ export type ReticulumResourceTransferOptions<TRequestWire> = {
   now?: () => number;
   loggerPrefix?: string;
   resourceType?: string;
-  chunkResourceType?: string;
+  rangeResourceType?: string;
   authMessageType?: string;
   contextMetadataKey?: string;
   buildRequestPayloads: (
@@ -199,7 +137,7 @@ export type ReticulumResourceTransferOptions<TRequestWire> = {
       manifest: ReticulumResourceManifest;
       featureData?: Record<string, unknown>;
     },
-    chunkIndexes: number[]
+    ranges: ReticulumResourceByteRange[]
   ) => Promise<TRequestWire[]>;
   sendRequestToPeer: (
     peerHash: string,
@@ -228,13 +166,75 @@ export type ReticulumResourceTransferOptions<TRequestWire> = {
   onProgress?: (progress: ReticulumResourceTransferProgress) => void;
 };
 
+function formatByteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatBytesPerSecond(bytesPerSecond: number): string {
+  return `${formatByteCount(bytesPerSecond)}/s`;
+}
+
+function rangeKey(range: ReticulumResourceByteRange): string {
+  return `${range.startByte}:${range.endByteExclusive}`;
+}
+
+function normalizeRange(range: ReticulumResourceByteRange): ReticulumResourceByteRange {
+  return {
+    startByte: Math.floor(range.startByte),
+    endByteExclusive: Math.floor(range.endByteExclusive),
+  };
+}
+
+function rangeSize(range: ReticulumResourceByteRange): number {
+  return Math.max(0, range.endByteExclusive - range.startByte);
+}
+
+function validRangeForManifest(
+  manifest: ReticulumResourceManifest,
+  range: ReticulumResourceByteRange
+): boolean {
+  return (
+    Number.isInteger(range.startByte) &&
+    Number.isInteger(range.endByteExclusive) &&
+    range.startByte >= 0 &&
+    range.endByteExclusive > range.startByte &&
+    range.endByteExclusive <= manifest.sizeBytes &&
+    rangeSize(range) <= RETICULUM_RESOURCE_MAX_RANGE_SIZE
+  );
+}
+
+function mergeRanges(ranges: ReticulumResourceByteRange[]): ReticulumResourceByteRange[] {
+  const sorted = ranges
+    .map(normalizeRange)
+    .filter((range) => range.endByteExclusive > range.startByte)
+    .sort((a, b) => a.startByte - b.startByte || a.endByteExclusive - b.endByteExclusive);
+  const merged: ReticulumResourceByteRange[] = [];
+  for (const range of sorted) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.startByte <= previous.endByteExclusive) {
+      previous.endByteExclusive = Math.max(previous.endByteExclusive, range.endByteExclusive);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+
 export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter {
   private bridge: ReticulumBridge | null;
   private readonly resourceStore: ReticulumResourceStore;
   private readonly now: () => number;
   private readonly loggerPrefix: string;
-  private readonly resourceType: string;
-  private readonly chunkResourceType: string;
+  private readonly rangeResourceType: string;
   private readonly authMessageType: string;
   private readonly contextMetadataKey?: string;
   private readonly buildRequestPayloads: ReticulumResourceTransferOptions<TRequestWire>['buildRequestPayloads'];
@@ -261,8 +261,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.resourceStore = options.resourceStore;
     this.now = options.now ?? Date.now;
     this.loggerPrefix = options.loggerPrefix ?? 'ReticulumResourceTransfer';
-    this.resourceType = options.resourceType ?? 'reticulum_resource';
-    this.chunkResourceType = options.chunkResourceType ?? 'reticulum_resource_chunk';
+    this.rangeResourceType = options.rangeResourceType ?? 'reticulum_resource_range';
     this.authMessageType = options.authMessageType ?? 'RETICULUM_RESOURCE_AUTH';
     this.contextMetadataKey = options.contextMetadataKey;
     this.buildRequestPayloads = options.buildRequestPayloads;
@@ -293,25 +292,27 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.pendingAcceptQueuedAt.clear();
     this.activeAccepts.clear();
     this.activeAcceptStartedAt.clear();
+    this.transferSpeedSamples.clear();
   }
 
   getDownloadStatus(fileHash: string): ReticulumResourceDownloadRuntimeStatus {
     const blobId = String(fileHash || '').trim().toLowerCase();
     const state = this.downloads.get(blobId);
     if (!state) {
-      return this.emptyDownloadStatus();
+      return this.emptyDownloadStatus(blobId);
     }
     this.cleanupStaleAccepts();
-    if (!this.downloads.has(blobId)) {
-      return this.emptyDownloadStatus();
-    }
-    this.releaseStaleInFlightChunks(state);
+    this.releaseStaleInFlightRanges(state);
     const advertisedPeers = new Set<string>();
-    for (const peers of state.chunkPeers.values()) {
+    for (const peers of state.rangePeers.values()) {
       for (const peer of peers) {
         const peerKey = peer.trim().toLowerCase();
         if (peerKey) advertisedPeers.add(peerKey);
       }
+    }
+    for (const peer of state.sourcePeerHashes) {
+      const peerKey = peer.trim().toLowerCase();
+      if (peerKey) advertisedPeers.add(peerKey);
     }
     let activeTransfers = 0;
     for (const transferId of this.activeAccepts) {
@@ -327,8 +328,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     let currentBytesPerSecond = 0;
     let activeSampleBytes = 0;
-    let fullFileSampleBytes = 0;
-    let fullFileTransfer = false;
     let oldestStartedAt = 0;
     for (const transferId of this.activeAccepts) {
       const offer = this.offers.get(transferId);
@@ -336,83 +335,34 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const sample = this.transferSpeedSamples.get(transferId);
       if (!sample) continue;
       currentBytesPerSecond += Math.max(0, sample.bytesPerSecond || 0);
-      const sampleBytes = Math.max(0, sample.bytes || 0);
-      const isFullFileTransfer =
-        offer.chunkIndex == null &&
-        (!Array.isArray(offer.chunks) || offer.chunks.length === 0);
-      if (isFullFileTransfer) {
-        fullFileTransfer = true;
-        fullFileSampleBytes = Math.max(fullFileSampleBytes, sampleBytes);
-      } else {
-        activeSampleBytes += sampleBytes;
-      }
+      activeSampleBytes += Math.max(0, sample.bytes || 0);
       oldestStartedAt = oldestStartedAt === 0
         ? sample.startedAt
         : Math.min(oldestStartedAt, sample.startedAt);
     }
-    const elapsedMs = oldestStartedAt > 0 ? Math.max(1, this.now() - oldestStartedAt) : 0;
-    const totalResourceBytes = Math.max(0, Math.floor(Number(state.manifest.sizeBytes) || 0));
-    const completedBytes = this.resourceStore
-      .getChunks(blobId)
-      .reduce(
-        (total, chunk) =>
-          chunk.status === 'complete' ? total + Math.max(0, chunk.sizeBytes || 0) : total,
-        0
-      );
+    const totalBytes = Math.max(0, Math.floor(Number(state.manifest.sizeBytes) || 0));
+    const completedBytes = this.resourceStore.getCompletedBytes(blobId);
     const bytesTransferred =
-      totalResourceBytes > 0
-        ? Math.max(
-            0,
-            Math.min(
-              totalResourceBytes,
-              fullFileTransfer
-                ? Math.max(completedBytes, fullFileSampleBytes)
-                : completedBytes + activeSampleBytes
-            )
-          )
-        : undefined;
-    const progress =
-      bytesTransferred != null && totalResourceBytes > 0
-        ? bytesTransferred / totalResourceBytes
-        : undefined;
+      totalBytes > 0
+        ? Math.max(0, Math.min(totalBytes, completedBytes + activeSampleBytes))
+        : 0;
+    const elapsedMs = oldestStartedAt > 0 ? Math.max(1, this.now() - oldestStartedAt) : 0;
     return {
       active: true,
-      peerCount: state.peerHashes.size,
+      peerCount: state.sourcePeerHashes.size,
+      candidatePeerCount: state.peerHashes.size,
       advertisedPeerCount: advertisedPeers.size,
       activeTransfers,
       pendingTransfers,
-      requestedChunkCount: state.chunkAttempts.size,
-      inFlightChunkCount: state.inFlightChunks.size,
-      ...(fullFileTransfer ? { fullFileTransfer: true } : {}),
-      ...(bytesTransferred != null
-        ? {
-            bytesTransferred,
-            totalBytes: totalResourceBytes,
-            progress,
-          }
-        : {}),
+      requestedRangeCount: state.rangeAttempts.size,
+      inFlightRangeCount: state.inFlightRanges.size,
+      bytesTransferred,
+      totalBytes,
+      progress: totalBytes > 0 ? bytesTransferred / totalBytes : 0,
       currentBytesPerSecond,
       averageBytesPerSecond:
-        elapsedMs > 0 ? ((bytesTransferred ?? activeSampleBytes) * 1000) / elapsedMs : 0,
+        elapsedMs > 0 ? (bytesTransferred * 1000) / elapsedMs : 0,
       nextRequestAt: state.nextRequestAt || null,
-    };
-  }
-
-  private emptyDownloadStatus(): ReticulumResourceDownloadRuntimeStatus {
-    return {
-      active: false,
-      peerCount: 0,
-      advertisedPeerCount: 0,
-      activeTransfers: 0,
-      pendingTransfers: 0,
-      requestedChunkCount: 0,
-      inFlightChunkCount: 0,
-      bytesTransferred: 0,
-      totalBytes: 0,
-      progress: 0,
-      currentBytesPerSecond: 0,
-      averageBytesPerSecond: 0,
-      nextRequestAt: null,
     };
   }
 
@@ -427,15 +377,15 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const manifest: ReticulumResourceManifest = {
       ...options.manifest,
       fileHash: blobId,
-      chunkHashes: options.manifest.chunkHashes.map((hash) => hash.toLowerCase()),
     };
     this.resourceStore.storeManifest(manifest);
     try {
       this.resourceStore.assembleResource(blobId);
       return;
     } catch {
-      // Missing chunks are expected; continue into network retrieval.
+      // Missing bytes are expected; continue into network retrieval.
     }
+    this.resourceStore.ensurePartialFile(blobId);
     const existingDownload = this.downloads.get(blobId);
     const state = this.upsertDownload(
       options.contextId,
@@ -444,10 +394,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       options.candidatePeers ?? [],
       options.featureData
     );
-    if (!existingDownload) {
-      state.chunkAttempts.delete(-1);
-      state.nextRequestAt = 0;
-    } else if (state.nextRequestAt <= this.now()) {
+    if (!existingDownload || state.nextRequestAt <= this.now()) {
       state.nextRequestAt = 0;
     }
     this.emitProgress(state);
@@ -467,29 +414,21 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!state && transferIds.size === 0) return false;
 
     if (state) {
-      const completedChunks = Math.max(
-        0,
-        state.manifest.chunkHashes.length - this.getMissingChunkIndexes(state.manifest).length
-      );
-      const progressPayload: ReticulumResourceTransferProgress = {
+      const payload: ReticulumResourceTransferProgress = {
         contextId: state.contextId,
         eventId: state.eventId,
         fileHash: state.fileHash,
-        completedChunks,
-        totalChunks: state.manifest.chunkHashes.length,
-        progress:
-          state.manifest.chunkHashes.length > 0
-            ? completedChunks / state.manifest.chunkHashes.length
-            : 0,
+        bytesTransferred: 0,
+        totalBytes: state.manifest.sizeBytes,
+        progress: 0,
         complete: false,
         failed: false,
         canceled: true,
       };
-      this.emit('progress', progressPayload);
-      this.onProgress?.(progressPayload);
-      state.inFlightChunks.clear();
-      state.chunkAttempts.clear();
-      delete state.fullTransfer;
+      this.emit('progress', payload);
+      this.onProgress?.(payload);
+      state.inFlightRanges.clear();
+      state.rangeAttempts.clear();
       this.downloads.delete(blobId);
     }
     this.resourceStore.discardResourceData(blobId);
@@ -560,33 +499,50 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         return;
       }
     }
-    if (request.requireCompleteFile) {
-      let filePath = '';
-      try {
-        filePath = this.resourceStore.assembleResource(manifest.fileHash);
-      } catch {
-        loggerWarn(
-          `[${this.loggerPrefix}] Cannot serve complete resource request fileHash=${request.fileHash}: complete file unavailable`
-        );
-        return;
-      }
+    let sourcePath = '';
+    try {
+      sourcePath = this.resourceStore.assembleResource(manifest.fileHash);
+    } catch {
+      loggerWarn(
+        `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: complete file unavailable`
+      );
+      return;
+    }
+    if (!sourcePath) return;
+    const ranges = mergeRanges(request.ranges || [])
+      .filter((range) => validRangeForManifest(manifest, range))
+      .slice(0, 1);
+    if (ranges.length === 0) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: no valid ranges`
+      );
+      return;
+    }
+    for (const range of ranges) {
+      const rangePayload = this.resourceStore.readByteRange(
+        manifest.fileHash,
+        range.startByte,
+        range.endByteExclusive
+      );
       const transferId = nodeCrypto.randomBytes(8).toString('hex');
-      const fileName = manifest.fileName || `${manifest.fileHash}.bin`;
+      const fileName = `${manifest.fileHash}.range-${range.startByte}-${range.endByteExclusive}.bin`;
       const registered = await this.bridge.sendReticulumResourceDetailed({
         allowedRecipientAddress: recipientPeerKey,
         transferId,
-        filePath,
+        filePath: rangePayload.path,
         fileName,
-        size: manifest.sizeBytes,
-        sha256: manifest.fileHash,
-        resourceType: this.resourceType,
+        size: rangePayload.sizeBytes,
+        sha256: rangePayload.sha256,
+        resourceType: this.rangeResourceType,
         metadata: {
-          logicalResourceType: this.resourceType,
+          logicalResourceType: this.rangeResourceType,
           eventId: request.eventId ?? '',
           contextId,
           ...this.contextMetadata(contextId),
           fileHash: manifest.fileHash,
-          completeFile: true,
+          totalSizeBytes: manifest.sizeBytes,
+          byteRanges: [[range.startByte, range.endByteExclusive]],
+          payloadHash: rangePayload.sha256,
           mimeType: manifest.mimeType,
           namespace: manifest.namespace,
         },
@@ -595,124 +551,42 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       if (!registered.ok) {
         const failed = registered as Exclude<ReticulumSendResult, { ok: true }>;
         loggerWarn(
-          `[${this.loggerPrefix}] Failed to register complete file offer fileHash=${manifest.fileHash}:`,
+          `[${this.loggerPrefix}] Failed to register byte range offer fileHash=${manifest.fileHash} range=${rangeKey(range)}:`,
           failed.error ?? failed.reason
         );
-        return;
+        this.cleanupTemporaryPath(rangePayload.path);
+        continue;
       }
       const offer: ReticulumResourceTransferOffer = {
         transferId,
         contextId,
         ...(request.eventId ? { eventId: request.eventId } : {}),
         fileHash: manifest.fileHash,
-        sizeBytes: manifest.sizeBytes,
+        totalSizeBytes: manifest.sizeBytes,
+        sizeBytes: rangePayload.sizeBytes,
         fileName,
         mimeType: manifest.mimeType,
+        ranges: [range],
+        payloadHash: rangePayload.sha256,
+        temporaryPath: rangePayload.path,
         ...(request.relayRequestId ? { relayRequestId: request.relayRequestId } : {}),
       };
       this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
       loggerLog(
-        `[${this.loggerPrefix}] resource_session_opened fileHash=${manifest.fileHash} ` +
-          `peer=${peerKey.slice(0, 16)} transfer=${transferId} mode=complete ` +
-          `bytes=${manifest.sizeBytes}`
+        `[${this.loggerPrefix}] resource_range_streaming fileHash=${manifest.fileHash} ` +
+          `peer=${peerKey.slice(0, 16)} transfer=${transferId} range=${rangeKey(range)} ` +
+          `bytes=${rangePayload.sizeBytes}`
       );
       const sent = await this.sendOfferToPeer(peerKey, contextId, offer);
       if (!sent.ok) {
         const failed = sent as Exclude<ReticulumSendResult, { ok: true }>;
         loggerWarn(
-          `[${this.loggerPrefix}] Failed to send complete file offer fileHash=${manifest.fileHash}:`,
+          `[${this.loggerPrefix}] Failed to send byte range offer fileHash=${manifest.fileHash} range=${rangeKey(range)}:`,
           failed.error ?? failed.reason
         );
+        this.cleanupTemporaryOfferFile(offer);
         this.offers.delete(transferId);
       }
-      return;
-    }
-    const requestedIndexes = Array.isArray(request.chunkIndexes) && request.chunkIndexes.length > 0
-      ? request.chunkIndexes
-      : manifest.chunkHashes
-          .map((_, index) => index)
-          .slice(0, RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS);
-    const availableChunks = this.getAvailableRequestedChunks(manifest, requestedIndexes);
-    if (availableChunks.length === 0) {
-      loggerWarn(
-        `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: no requested chunks available`
-      );
-      return;
-    }
-    const sortedChunks = [...availableChunks].sort((a, b) => a.index - b.index);
-    const bundle = this.createChunkBundle(manifest, sortedChunks);
-    if (!bundle) {
-      loggerWarn(
-        `[${this.loggerPrefix}] Cannot serve resource request fileHash=${request.fileHash}: failed to create chunk bundle`
-      );
-      return;
-    }
-    const transferId = nodeCrypto.randomBytes(8).toString('hex');
-    const firstChunk = bundle.chunks[0]?.index ?? 0;
-    const fileName = `${manifest.fileHash}.range-${firstChunk}-${bundle.chunks.length}.bundle`;
-    const chunkRanges = chunkIndexesToRanges(bundle.chunks.map((chunk) => chunk.index));
-    const registered = await this.bridge.sendReticulumResourceDetailed({
-      allowedRecipientAddress: recipientPeerKey,
-      transferId,
-      filePath: bundle.path,
-      fileName,
-      size: bundle.sizeBytes,
-      sha256: bundle.bundleHash,
-      resourceType: this.chunkResourceType,
-      metadata: {
-        logicalResourceType: this.chunkResourceType,
-        eventId: request.eventId ?? '',
-        contextId,
-        ...this.contextMetadata(contextId),
-        fileHash: manifest.fileHash,
-        rangeStartChunk: firstChunk,
-        chunkCount: bundle.chunks.length,
-        chunkBundle: true,
-        bundleHash: bundle.bundleHash,
-        chunkRanges,
-        mimeType: manifest.mimeType,
-        namespace: manifest.namespace,
-      },
-      expiresAt: this.now() + RETICULUM_RESOURCE_TRANSFER_TTL_MS,
-    });
-    if (!registered.ok) {
-      const failed = registered as Exclude<ReticulumSendResult, { ok: true }>;
-      loggerWarn(
-        `[${this.loggerPrefix}] Failed to register chunk bundle offer fileHash=${manifest.fileHash} chunks=${bundle.chunks.length}:`,
-        failed.error ?? failed.reason
-      );
-      this.cleanupTemporaryPath(bundle.path);
-      return;
-    }
-    const offer: ReticulumResourceTransferOffer = {
-      transferId,
-      contextId,
-      ...(request.eventId ? { eventId: request.eventId } : {}),
-      fileHash: manifest.fileHash,
-      sizeBytes: bundle.sizeBytes,
-      fileName,
-      mimeType: manifest.mimeType,
-      bundleHash: bundle.bundleHash,
-      chunks: bundle.chunks,
-      temporaryPath: bundle.path,
-      ...(request.relayRequestId ? { relayRequestId: request.relayRequestId } : {}),
-    };
-    this.offers.set(transferId, { ...offer, sourcePeerHash: peerKey });
-    loggerLog(
-      `[${this.loggerPrefix}] resource_range_streaming fileHash=${manifest.fileHash} ` +
-        `peer=${peerKey.slice(0, 16)} transfer=${transferId} chunks=${bundle.chunks.length} ` +
-        `ranges=${chunkRanges.map(([start, count]) => `${start}:${count}`).join(',')} ` +
-        `bytes=${bundle.sizeBytes}`
-    );
-    const sent = await this.sendOfferToPeer(peerKey, contextId, offer);
-    if (!sent.ok) {
-      const failed = sent as Exclude<ReticulumSendResult, { ok: true }>;
-      loggerWarn(
-        `[${this.loggerPrefix}] Failed to send chunk bundle offer fileHash=${manifest.fileHash} chunks=${bundle.chunks.length}:`,
-        failed.error ?? failed.reason
-      );
-      this.cleanupTemporaryOfferFile(offer);
-      this.offers.delete(transferId);
     }
   }
 
@@ -722,7 +596,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!peerKey) return;
     this.cleanupStaleAccepts(false);
     const download = this.downloads.get(offer.fileHash.toLowerCase());
-    if (download) this.releaseStaleInFlightChunks(download);
+    if (download) this.releaseStaleInFlightRanges(download);
     const manifest = download?.manifest ?? this.resourceStore.getManifest(offer.fileHash);
     if (!manifest || manifest.fileHash.toLowerCase() !== offer.fileHash.toLowerCase()) {
       loggerWarn(
@@ -730,104 +604,59 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       );
       return;
     }
-    const normalizedOffer = this.normalizeChunkBundleOffer(offer, manifest);
-    if (!normalizedOffer) return;
-    const sourcePeerKey = (normalizedOffer.sourcePeerHash || peerKey).trim().toLowerCase();
+    const sourcePeerKey = (offer.sourcePeerHash || peerKey).trim().toLowerCase();
     if (!sourcePeerKey) return;
     if (this.canAcceptOffer) {
-      const allowed = await this.canAcceptOffer(normalizedOffer.contextId, normalizedOffer, manifest);
+      const allowed = await this.canAcceptOffer(offer.contextId, offer, manifest);
       if (!allowed) {
         loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: offer not allowed`
+          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: offer not allowed`
         );
         return;
       }
     }
-    if (download?.fullTransfer) return;
-    if (normalizedOffer.chunkIndex != null) {
-      const expectedChunkHash = manifest.chunkHashes[normalizedOffer.chunkIndex]?.toLowerCase();
-      if (!expectedChunkHash || normalizedOffer.chunkHash?.toLowerCase() !== expectedChunkHash) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash} chunk=${normalizedOffer.chunkIndex}: chunk hash mismatch`
-        );
-        return;
-      }
-      if (normalizedOffer.chunkSize !== this.expectedChunkSize(manifest, normalizedOffer.chunkIndex)) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash} chunk=${normalizedOffer.chunkIndex}: chunk size mismatch`
-        );
-        return;
-      }
-      const localChunk = this.resourceStore.getChunk(normalizedOffer.fileHash, normalizedOffer.chunkIndex);
-      if (localChunk?.status === 'complete' && localChunk.localPath) return;
-      if (download && download.inFlightChunks.has(normalizedOffer.chunkIndex)) return;
-      if (this.peerHasMaxActiveOrPendingAcceptsForResource(sourcePeerKey, normalizedOffer.fileHash)) return;
-    } else if (Array.isArray(normalizedOffer.chunks) && normalizedOffer.chunks.length > 0) {
-      if (!this.isValidChunkBundleOffer(normalizedOffer, manifest)) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: invalid chunk bundle`
-        );
-        return;
-      }
-      const neededChunks = normalizedOffer.chunks.filter((chunk) => {
-        const localChunk = this.resourceStore.getChunk(normalizedOffer.fileHash, chunk.index);
-        if (localChunk?.status === 'complete' && localChunk.localPath) return false;
-        if (download?.inFlightChunks.has(chunk.index)) return false;
-        return true;
-      });
-      if (neededChunks.length === 0) return;
-      if (neededChunks.length !== normalizedOffer.chunks.length) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: partial chunk bundle overlap`
-        );
-        return;
-      }
-      if (this.peerHasMaxActiveOrPendingAcceptsForResource(sourcePeerKey, normalizedOffer.fileHash)) return;
-    } else {
-      if (normalizedOffer.sizeBytes !== manifest.sizeBytes) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Ignoring resource offer fileHash=${normalizedOffer.fileHash}: size mismatch`
-        );
-        return;
-      }
-      try {
-        this.resourceStore.assembleResource(normalizedOffer.fileHash);
-        return;
-      } catch {
-        // Missing data is expected for active downloads.
-      }
-      if (download?.fullTransfer) return;
-      if (this.peerHasActiveOrPendingAcceptForResource(sourcePeerKey, normalizedOffer.fileHash)) return;
+    const ranges = mergeRanges(offer.ranges);
+    if (
+      ranges.length !== 1 ||
+      ranges.some((range) => !validRangeForManifest(manifest, range))
+    ) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: invalid byte ranges`
+      );
+      return;
     }
+    const range = ranges[0];
+    if (offer.sizeBytes !== rangeSize(range)) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Ignoring resource offer fileHash=${offer.fileHash}: size mismatch`
+      );
+      return;
+    }
+    if (this.rangeAlreadyComplete(manifest.fileHash, range)) return;
+    if (download?.inFlightRanges.has(rangeKey(range))) return;
+    if (this.peerHasMaxActiveOrPendingAcceptsForResource(sourcePeerKey, offer.fileHash)) return;
     const trackedOffer: ReticulumResourceTransferOffer = {
-      ...normalizedOffer,
-      fileName: normalizedOffer.fileName || manifest.fileName,
-      mimeType: normalizedOffer.mimeType || manifest.mimeType,
+      ...offer,
+      totalSizeBytes: manifest.sizeBytes,
+      fileName: offer.fileName || manifest.fileName,
+      mimeType: offer.mimeType || manifest.mimeType,
+      ranges,
       sourcePeerHash: sourcePeerKey,
     };
-    this.offers.set(normalizedOffer.transferId, trackedOffer);
-    if (download && normalizedOffer.chunkIndex != null) {
+    this.offers.set(offer.transferId, trackedOffer);
+    if (download) {
       download.peerHashes.add(sourcePeerKey);
-      let peers = download.chunkPeers.get(normalizedOffer.chunkIndex);
-      if (!peers) {
-        peers = new Set<string>();
-        download.chunkPeers.set(normalizedOffer.chunkIndex, peers);
-      }
-      peers.add(sourcePeerKey);
-    } else if (download && Array.isArray(normalizedOffer.chunks)) {
-      download.peerHashes.add(sourcePeerKey);
-      for (const chunk of normalizedOffer.chunks) {
-        let peers = download.chunkPeers.get(chunk.index);
+      download.sourcePeerHashes.add(sourcePeerKey);
+      for (const offeredRange of ranges) {
+        let peers = download.rangePeers.get(rangeKey(offeredRange));
         if (!peers) {
           peers = new Set<string>();
-          download.chunkPeers.set(chunk.index, peers);
+          download.rangePeers.set(rangeKey(offeredRange), peers);
         }
         peers.add(sourcePeerKey);
       }
-    } else if (download) {
-      download.peerHashes.add(sourcePeerKey);
     }
-    this.enqueueAccept(normalizedOffer.transferId);
+    this.enqueueAccept(offer.transferId);
   }
 
   handleResourceEvent(payload: ReticulumResourceTransferPayload): void {
@@ -849,6 +678,28 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     if (payload?.status !== 'received' || !payload.path || !payload.transferId) return;
     void this.importReceived(payload);
+  }
+
+  private emptyDownloadStatus(fileHash = ''): ReticulumResourceDownloadRuntimeStatus {
+    const manifest = fileHash ? this.resourceStore.getManifest(fileHash) : null;
+    const totalBytes = Math.max(0, Number(manifest?.sizeBytes || 0));
+    const bytesTransferred = fileHash ? this.resourceStore.getCompletedBytes(fileHash) : 0;
+    return {
+      active: false,
+      peerCount: 0,
+      candidatePeerCount: 0,
+      advertisedPeerCount: 0,
+      activeTransfers: 0,
+      pendingTransfers: 0,
+      requestedRangeCount: 0,
+      inFlightRangeCount: 0,
+      bytesTransferred,
+      totalBytes,
+      progress: totalBytes > 0 ? Math.min(1, bytesTransferred / totalBytes) : 0,
+      currentBytesPerSecond: 0,
+      averageBytesPerSecond: 0,
+      nextRequestAt: null,
+    };
   }
 
   private upsertDownload(
@@ -877,10 +728,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       ...(eventId ? { eventId } : {}),
       manifest,
       peerHashes: new Set(peerHashes.map((peer) => peer.trim().toLowerCase()).filter(Boolean)),
-      chunkAttempts: new Map(),
-      chunkPeers: new Map(),
-      inFlightChunks: new Map(),
-      peerBlockChunkLimits: new Map(),
+      sourcePeerHashes: new Set(),
+      rangeAttempts: new Map(),
+      rangePeers: new Map(),
+      inFlightRanges: new Map(),
       peerBulkThrottleUntil: new Map(),
       peerBulkThrottleLoggedAt: new Map(),
       nextRequestAt: 0,
@@ -927,15 +778,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   }
 
   private async dispatchRequests(state: ReticulumResourceDownloadState<TRequestWire>): Promise<void> {
-    this.releaseStaleInFlightChunks(state);
-    if (state.fullTransfer) {
-      this.emitProgress(state);
-      return;
-    }
-    const missing = this.getMissingChunkIndexes(state.manifest).filter((index) => {
-      if (state.inFlightChunks.has(index)) return false;
-      const attempts = state.chunkAttempts.get(index) ?? 0;
-      return attempts < RETICULUM_RESOURCE_TRANSFER_MAX_CHUNK_ATTEMPTS;
+    this.releaseStaleInFlightRanges(state);
+    const missing = this.getMissingRanges(state.manifest).filter((range) => {
+      if (state.inFlightRanges.has(rangeKey(range))) return false;
+      const attempts = state.rangeAttempts.get(rangeKey(range)) ?? 0;
+      return attempts < RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS;
     });
     if (missing.length === 0) {
       try {
@@ -951,77 +798,36 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const knownPeers = [...state.peerHashes]
       .map((peer) => peer.trim().toLowerCase())
       .filter(Boolean);
-    const availablePeers = knownPeers
-      .filter((peer) => !this.peerHasMaxActiveOrPendingAcceptsForResource(peer, state.fileHash));
+    const availablePeers = knownPeers.filter(
+      (peer) => !this.peerHasMaxActiveOrPendingAcceptsForResource(peer, state.fileHash)
+    );
     if (knownPeers.length > 0 && availablePeers.length === 0) {
       state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_RETRY_MS;
       this.emitProgress(state);
       return;
     }
-    const totalChunks = state.manifest.chunkHashes.length;
-    const completeFileAttempts = state.chunkAttempts.get(-1) ?? 0;
-    if (
-      totalChunks > 1 &&
-      missing.length === totalChunks &&
-      completeFileAttempts < 1 &&
-      availablePeers.length > 0
-    ) {
-      const peerKey = availablePeers.find((peer) => !this.shouldThrottlePeerForBulk(state, peer));
-      if (!peerKey) {
-        state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS;
-        this.emitProgress(state);
-        return;
-      }
-      const requests = await this.buildRequestPayloads(state, []);
-      let completeRequestDelivered = false;
-      for (const request of requests) {
-        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:complete`;
-        const now = this.now();
-        if (now - (this.requestedResources.get(throttleKey) ?? 0) < RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS) {
-          continue;
-        }
-        this.requestedResources.set(throttleKey, now);
-        loggerLog(
-          `[${this.loggerPrefix}] resource_range_requested fileHash=${state.fileHash} ` +
-            `peer=${peerKey.slice(0, 16)} mode=complete chunks=${totalChunks} bytes=${state.manifest.sizeBytes}`
-        );
-        const result = await this.sendRequestToPeer(peerKey, state.contextId, request);
-        if (result.ok) {
-          completeRequestDelivered = true;
-        } else {
-          const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
-          loggerWarn(
-            `[${this.loggerPrefix}] Complete file request failed fileHash=${state.fileHash} peer=${peerKey}:`,
-            failed.error ?? failed.reason
-          );
-        }
-      }
-      if (completeRequestDelivered) {
-        state.chunkAttempts.set(-1, completeFileAttempts + 1);
-        state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_COMPLETE_FILE_RESPONSE_TIMEOUT_MS;
-        this.emitProgress(state);
-        return;
-      }
-      state.chunkAttempts.set(-1, completeFileAttempts + 1);
-    }
-    const targetedAssignments = this.assignMissingChunksToPeers(state, missing, availablePeers);
-    const requestedChunkIndexes = new Set<number>();
+    const requestedRanges: ReticulumResourceByteRange[] = [];
     let throttledPeerCount = 0;
+    const assigned = new Set<string>();
     for (const peerKey of availablePeers) {
       if (this.shouldThrottlePeerForBulk(state, peerKey)) {
         throttledPeerCount += 1;
         continue;
       }
-      const requestChunks = targetedAssignments.get(peerKey);
-      if (!requestChunks || requestChunks.length === 0) continue;
-      const requests = await this.buildRequestPayloads(state, requestChunks);
+      const requestRange =
+        missing.find(
+          (range) => !assigned.has(rangeKey(range)) && (state.rangePeers.get(rangeKey(range))?.has(peerKey) ?? false)
+        ) ?? missing.find((range) => !assigned.has(rangeKey(range)));
+      if (!requestRange) continue;
+      assigned.add(rangeKey(requestRange));
+      const requests = await this.buildRequestPayloads(state, [requestRange]);
       if (requests.length === 0) {
         loggerWarn(
-          `[${this.loggerPrefix}] Could not build targeted chunk request fileHash=${state.fileHash} peer=${peerKey}`
+          `[${this.loggerPrefix}] Could not build targeted range request fileHash=${state.fileHash} peer=${peerKey}`
         );
       }
       for (const request of requests) {
-        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${requestChunks.join(',')}`;
+        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${rangeKey(requestRange)}`;
         const now = this.now();
         if (now - (this.requestedResources.get(throttleKey) ?? 0) < RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS) {
           continue;
@@ -1029,17 +835,16 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.requestedResources.set(throttleKey, now);
         loggerLog(
           `[${this.loggerPrefix}] resource_range_requested fileHash=${state.fileHash} ` +
-            `peer=${peerKey.slice(0, 16)} chunks=${requestChunks.length} ` +
-            `ranges=${chunkIndexesToRanges(requestChunks).map(([start, count]) => `${start}:${count}`).join(',')}`
+            `peer=${peerKey.slice(0, 16)} range=${rangeKey(requestRange)}`
         );
         const result = await this.sendRequestToPeer(peerKey, state.contextId, request);
         if (result.ok) {
           delivered = true;
-          for (const chunkIndex of requestChunks) requestedChunkIndexes.add(chunkIndex);
+          requestedRanges.push(requestRange);
         } else {
           const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
           loggerWarn(
-            `[${this.loggerPrefix}] Targeted chunk request failed fileHash=${state.fileHash} peer=${peerKey} chunks=${requestChunks.join(',')}:`,
+            `[${this.loggerPrefix}] Targeted range request failed fileHash=${state.fileHash} peer=${peerKey} range=${rangeKey(requestRange)}:`,
             failed.error ?? failed.reason
           );
         }
@@ -1051,74 +856,38 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     if (!delivered) {
-      const requestChunks = this.takeContiguousChunkRun(
-        missing,
-        missing[0],
-        RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS
-      );
-      const requests = await this.buildRequestPayloads(state, requestChunks);
+      const requestRange = missing[0];
+      const requests = await this.buildRequestPayloads(state, [requestRange]);
       if (requests.length === 0) {
         loggerWarn(
-          `[${this.loggerPrefix}] Could not build chunk fanout request fileHash=${state.fileHash}`
+          `[${this.loggerPrefix}] Could not build range fanout request fileHash=${state.fileHash}`
         );
       }
       for (const request of requests) {
         loggerLog(
           `[${this.loggerPrefix}] resource_range_requested fileHash=${state.fileHash} ` +
-            `peer=fanout chunks=${requestChunks.length} ` +
-            `ranges=${chunkIndexesToRanges(requestChunks).map(([start, count]) => `${start}:${count}`).join(',')}`
+            `peer=fanout range=${rangeKey(requestRange)}`
         );
         const result = await this.fanoutRequest(state.contextId, request);
         if (result.ok) {
           delivered = true;
-          for (const chunkIndex of requestChunks) requestedChunkIndexes.add(chunkIndex);
+          requestedRanges.push(requestRange);
         } else {
           const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
           loggerWarn(
-            `[${this.loggerPrefix}] Chunk fanout request failed fileHash=${state.fileHash} chunks=${requestChunks.join(',')}:`,
+            `[${this.loggerPrefix}] Range fanout request failed fileHash=${state.fileHash} range=${rangeKey(requestRange)}:`,
             failed.error ?? failed.reason
           );
         }
       }
     }
-    for (const chunkIndex of requestedChunkIndexes) {
-      state.chunkAttempts.set(chunkIndex, (state.chunkAttempts.get(chunkIndex) ?? 0) + 1);
+    for (const range of requestedRanges) {
+      state.rangeAttempts.set(rangeKey(range), (state.rangeAttempts.get(rangeKey(range)) ?? 0) + 1);
     }
-    state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_COMPLETE_FILE_RESPONSE_TIMEOUT_MS;
-    if (!delivered) {
-      state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_RETRY_MS;
-      this.emitProgress(state);
-      return;
-    }
+    state.nextRequestAt = delivered
+      ? this.now() + RETICULUM_RESOURCE_TRANSFER_RESPONSE_TIMEOUT_MS
+      : this.now() + RETICULUM_RESOURCE_TRANSFER_RETRY_MS;
     this.emitProgress(state);
-  }
-
-  private assignMissingChunksToPeers(
-    state: ReticulumResourceDownloadState<TRequestWire>,
-    missing: number[],
-    peers: string[]
-  ): Map<string, number[]> {
-    const assignments = new Map<string, number[]>();
-    const assigned = new Set<number>();
-    const missingSet = new Set(missing);
-    for (const peer of peers) {
-      const limit = this.peerBlockChunkLimit(state, peer);
-      const advertised = missing.filter(
-        (index) =>
-          !assigned.has(index) &&
-          missingSet.has(index) &&
-          (state.chunkPeers.get(index)?.has(peer) ?? false)
-      );
-      const candidates = advertised.length > 0
-        ? advertised
-        : missing.filter((index) => !assigned.has(index));
-      if (candidates.length === 0) continue;
-      const block = this.takeContiguousChunkRun(candidates, candidates[0], limit);
-      if (block.length === 0) continue;
-      assignments.set(peer, block);
-      for (const index of block) assigned.add(index);
-    }
-    return assignments;
   }
 
   private overlayPeerLastRxAgeMs(peerHash: string): number | null {
@@ -1175,63 +944,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     return true;
   }
 
-  private takeContiguousChunkRun(
-    indexes: number[],
-    startIndex: number,
-    limit: number
-  ): number[] {
-    const indexSet = new Set(indexes);
-    const block: number[] = [];
-    let next = startIndex;
-    while (
-      block.length < limit &&
-      Number.isInteger(next) &&
-      next >= 0 &&
-      indexSet.has(next)
-    ) {
-      block.push(next);
-      next += 1;
-    }
-    return block;
-  }
-
-  private peerBlockChunkLimit(
-    state: ReticulumResourceDownloadState<TRequestWire>,
-    peerHash: string
-  ): number {
-    const peerKey = peerHash.trim().toLowerCase();
-    const current = state.peerBlockChunkLimits.get(peerKey);
-    if (Number.isInteger(current) && current > 0) {
-      return Math.max(
-        RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS,
-        Math.min(RETICULUM_RESOURCE_TRANSFER_MAX_BLOCK_CHUNKS, current)
-      );
-    }
-    return RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS;
-  }
-
-  private growPeerBlockLimit(
-    state: ReticulumResourceDownloadState<TRequestWire>,
-    peerHash: string
-  ): void {
-    const peerKey = peerHash.trim().toLowerCase();
-    if (!peerKey) return;
-    const current = this.peerBlockChunkLimit(state, peerKey);
-    state.peerBlockChunkLimits.set(
-      peerKey,
-      Math.min(RETICULUM_RESOURCE_TRANSFER_MAX_BLOCK_CHUNKS, current * 2)
-    );
-  }
-
-  private shrinkPeerBlockLimit(
-    state: ReticulumResourceDownloadState<TRequestWire>,
-    peerHash: string
-  ): void {
-    const peerKey = peerHash.trim().toLowerCase();
-    if (!peerKey) return;
-    state.peerBlockChunkLimits.set(peerKey, RETICULUM_RESOURCE_TRANSFER_INITIAL_BLOCK_CHUNKS);
-  }
-
   private emitProgress(
     state: ReticulumResourceDownloadState<TRequestWire>,
     complete = false,
@@ -1242,65 +954,23 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     },
     failed = false
   ): void {
-    const totalChunks = state.manifest.chunkHashes.length;
-    const completedChunks = activeTransfer
-      ? this.getCompletedChunkCountFast(state.manifest)
-      : Math.max(0, totalChunks - this.getMissingChunkIndexes(state.manifest).length);
-    let displayCompletedChunks = completedChunks;
-    let progress =
-      totalChunks > 0 ? completedChunks / totalChunks : 0;
-    const isFullFileTransfer = !!activeTransfer &&
-      activeTransfer?.offer.chunkIndex == null &&
-      (!Array.isArray(activeTransfer.offer.chunks) || activeTransfer.offer.chunks.length === 0);
-    if (activeTransfer && totalChunks > 0) {
-      const transferProgress = Math.max(0, Math.min(1, activeTransfer.progress));
-      const transferChunkCount = this.offerProgressChunkCount(
-        activeTransfer.offer,
-        totalChunks,
-        completedChunks
-      );
-      const estimatedCompletedChunks = Math.max(
-        completedChunks,
-        Math.min(totalChunks, completedChunks + transferChunkCount * transferProgress)
-      );
-      displayCompletedChunks = Math.floor(estimatedCompletedChunks);
-      progress = Math.max(progress, estimatedCompletedChunks / totalChunks);
-      if (
-        isFullFileTransfer &&
-        Number.isFinite(activeTransfer.bytesTransferred) &&
-        activeTransfer.bytesTransferred != null &&
-        activeTransfer.offer.sizeBytes > 0
-      ) {
-        const byteProgress = Math.max(
-          0,
-          Math.min(1, activeTransfer.bytesTransferred / activeTransfer.offer.sizeBytes)
-        );
-        progress = Math.max(progress, byteProgress);
-        displayCompletedChunks = Math.max(
-          displayCompletedChunks,
-          Math.floor(totalChunks * byteProgress)
-        );
-      }
-    }
     const totalBytes = Math.max(0, Math.floor(Number(state.manifest.sizeBytes) || 0));
+    const completedBytes = this.resourceStore.getCompletedBytes(state.fileHash);
+    const activeBytes =
+      activeTransfer && Number.isFinite(activeTransfer.bytesTransferred)
+        ? Math.max(0, Math.min(activeTransfer.offer.sizeBytes, Number(activeTransfer.bytesTransferred)))
+        : 0;
     const bytesTransferred = totalBytes > 0
-      ? Math.max(0, Math.min(totalBytes, Math.floor(progress * totalBytes)))
-      : undefined;
+      ? Math.max(0, Math.min(totalBytes, completedBytes + activeBytes))
+      : 0;
     const payload: ReticulumResourceTransferProgress = {
       contextId: state.contextId,
       eventId: state.eventId,
       fileHash: state.manifest.fileHash,
-      completedChunks: displayCompletedChunks,
-      totalChunks,
-      ...(isFullFileTransfer ? { fullFileTransfer: true } : {}),
-      ...(bytesTransferred != null
-        ? {
-            bytesTransferred,
-            totalBytes,
-          }
-        : {}),
-      progress,
-      complete: complete || (!activeTransfer && completedChunks >= totalChunks),
+      bytesTransferred,
+      totalBytes,
+      progress: totalBytes > 0 ? bytesTransferred / totalBytes : 0,
+      complete: complete || bytesTransferred >= totalBytes,
       failed,
     };
     this.emit('progress', payload);
@@ -1308,18 +978,26 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   }
 
   private handleTransferProgress(payload: ReticulumResourceTransferPayload): void {
-    if (typeof payload.progress !== 'number') return;
     const offer = this.offers.get(payload.transferId || '');
     if (!offer) return;
     const state = this.downloads.get(offer.fileHash);
     if (!state) return;
+    const payloadBytes = Number(payload.bytesTransferred);
+    const boundedBytes = Number.isFinite(payloadBytes) && payloadBytes >= 0
+      ? Math.min(offer.sizeBytes, Math.floor(payloadBytes))
+      : null;
+    const progress = typeof payload.progress === 'number'
+      ? Math.max(0, Math.min(1, payload.progress))
+      : boundedBytes != null && offer.sizeBytes > 0
+        ? boundedBytes / offer.sizeBytes
+        : 0;
     this.activeAcceptStartedAt.set(offer.transferId, this.now());
-    this.refreshOfferChunksInFlight(state, offer);
+    this.refreshOfferRangesInFlight(state, offer);
     this.logTransferSpeed(offer, payload);
     this.emitProgress(state, false, {
       offer,
-      progress: payload.progress,
-      bytesTransferred: Number(payload.bytesTransferred),
+      progress,
+      bytesTransferred: boundedBytes ?? 0,
     });
   }
 
@@ -1348,6 +1026,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         `[${this.loggerPrefix}] Download speed fileHash=${offer.fileHash} ` +
           `transfer=${offer.transferId} ` +
           `peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} ` +
+          `range=${offer.ranges.map(rangeKey).join(',')} ` +
           `progress=${Math.round(boundedProgress * 100)}% ` +
           `speed=${formatBytesPerSecond(Number(payload.bytesPerSecond) || 0)} ` +
           `received=${formatByteCount(bytes)}/${formatByteCount(offer.sizeBytes)}`
@@ -1373,6 +1052,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       `[${this.loggerPrefix}] Download speed fileHash=${offer.fileHash} ` +
         `transfer=${offer.transferId} ` +
         `peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} ` +
+        `range=${offer.ranges.map(rangeKey).join(',')} ` +
         `progress=${Math.round(boundedProgress * 100)}% ` +
         `speed=${formatBytesPerSecond(bytesPerSecond)} ` +
         `received=${formatByteCount(bytes)}/${formatByteCount(offer.sizeBytes)}` +
@@ -1385,129 +1065,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       startedAt: previous.startedAt,
       bytesPerSecond,
     });
-  }
-
-  private offerProgressChunkCount(
-    offer: ReticulumResourceTransferOffer,
-    totalChunks: number,
-    completedChunks: number
-  ): number {
-    if (Array.isArray(offer.chunks) && offer.chunks.length > 0) {
-      return offer.chunks.length;
-    }
-    if (offer.chunkIndex != null) return 1;
-    return Math.max(0, totalChunks - completedChunks);
-  }
-
-  private getCompletedChunkCountFast(manifest: ReticulumResourceManifest): number {
-    const chunks = this.resourceStore.getChunks(manifest.fileHash);
-    let completed = 0;
-    for (const chunk of chunks) {
-      if (
-        chunk.status === 'complete' &&
-        chunk.localPath &&
-        Number.isInteger(chunk.chunkIndex) &&
-        chunk.chunkIndex >= 0 &&
-        chunk.chunkIndex < manifest.chunkHashes.length
-      ) {
-        completed += 1;
-      }
-    }
-    return completed;
-  }
-
-  private getMissingChunkIndexes(manifest: ReticulumResourceManifest): number[] {
-    const chunks = this.resourceStore.getChunks(manifest.fileHash);
-    const byIndex = new Map(chunks.map((chunk) => [chunk.chunkIndex, chunk]));
-    const missing: number[] = [];
-    for (const [index] of manifest.chunkHashes.entries()) {
-      const chunk = byIndex.get(index);
-      if (!chunk || chunk.status !== 'complete' || !chunk.localPath) {
-        missing.push(index);
-      }
-    }
-    return missing;
-  }
-
-  private getAvailableRequestedChunks(
-    manifest: ReticulumResourceManifest,
-    requestedIndexes: number[]
-  ): Array<{ index: number; localPath: string; sizeBytes: number; chunkHash: string }> {
-    const requested = new Set(
-      requestedIndexes
-        .filter((index) => Number.isInteger(index) && index >= 0 && index < manifest.chunkHashes.length)
-        .slice(0, RETICULUM_RESOURCE_TRANSFER_MAX_BLOCK_CHUNKS)
-    );
-    const chunks = this.resourceStore.getChunks(manifest.fileHash);
-    const available: Array<{ index: number; localPath: string; sizeBytes: number; chunkHash: string }> = [];
-    for (const chunk of chunks) {
-      if (!requested.has(chunk.chunkIndex)) continue;
-      if (chunk.status !== 'complete' || !chunk.localPath) continue;
-      const expectedHash = manifest.chunkHashes[chunk.chunkIndex]?.toLowerCase();
-      if (!expectedHash) continue;
-      available.push({
-        index: chunk.chunkIndex,
-        localPath: chunk.localPath,
-        sizeBytes: chunk.sizeBytes,
-        chunkHash: expectedHash,
-      });
-    }
-    return available;
-  }
-
-  private createChunkBundle(
-    manifest: ReticulumResourceManifest,
-    chunks: Array<{ index: number; localPath: string; sizeBytes: number; chunkHash: string }>
-  ): {
-    path: string;
-    sizeBytes: number;
-    bundleHash: string;
-    chunks: NonNullable<ReticulumResourceTransferOffer['chunks']>;
-  } | null {
-    if (chunks.length === 0) return null;
-    const tempPath = this.resourceStore.createPlaintextTempPath(
-      manifest.fileHash,
-      `.bundle-${chunks[0]?.index ?? 0}.bin`
-    );
-    let offset = 0;
-    const bundleChunks: NonNullable<ReticulumResourceTransferOffer['chunks']> = [];
-    const out = fs.openSync(tempPath, 'w');
-    let failed = false;
-    try {
-      for (const chunk of chunks) {
-        const bytes = fs.readFileSync(chunk.localPath);
-        const actualHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
-        if (actualHash !== chunk.chunkHash.toLowerCase()) {
-          throw new Error(`chunk hash mismatch for ${chunk.index}`);
-        }
-        fs.writeSync(out, bytes, 0, bytes.length, offset);
-        bundleChunks.push({
-          index: chunk.index,
-          hash: chunk.chunkHash.toLowerCase(),
-          sizeBytes: bytes.length,
-          offset,
-        });
-        offset += bytes.length;
-      }
-    } catch {
-      failed = true;
-    } finally {
-      fs.closeSync(out);
-    }
-    if (failed) {
-      this.cleanupTemporaryPath(tempPath);
-      return null;
-    }
-    const bundleHash = nodeCrypto
-      .createHash('sha256')
-      .update(fs.readFileSync(tempPath))
-      .digest('hex');
-    return {
-      path: tempPath,
-      sizeBytes: offset,
-      bundleHash,
-      chunks: bundleChunks,
-    };
   }
 
   private enqueueAccept(transferId: string): void {
@@ -1543,13 +1100,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.activeAccepts.add(transferId);
       this.activeAcceptStartedAt.set(transferId, this.now());
       const state = this.downloads.get(offer.fileHash);
-      if (state) {
-        if (offer.chunkIndex != null || (Array.isArray(offer.chunks) && offer.chunks.length > 0)) {
-          this.markOfferChunksInFlight(state, offer);
-        } else {
-          state.fullTransfer = { transferId: offer.transferId, startedAt: this.now() };
-        }
-      }
+      if (state) this.markOfferRangesInFlight(state, offer);
       await this.accept(offer.sourcePeerHash || '', offer);
     }
   }
@@ -1570,15 +1121,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       path.extname(offer.fileName) || '.bin'
     );
     offer.receiveTemporaryPath = savePath;
-    const isChunkTransfer =
-      offer.chunkIndex != null || (Array.isArray(offer.chunks) && offer.chunks.length > 0);
-    const chunkRanges = offerChunkRanges(offer);
     loggerLog(
       `[${this.loggerPrefix}] resource_session_opened fileHash=${offer.fileHash} ` +
         `peer=${senderHash.slice(0, 16)} transfer=${offer.transferId} ` +
-        `mode=${isChunkTransfer ? 'range' : 'complete'} ` +
-        `chunks=${chunkRanges.length > 0 ? this.getOfferChunkIndexes(offer).length : 0} ` +
-        `bytes=${offer.sizeBytes}`
+        `mode=range range=${offer.ranges.map(rangeKey).join(',')} bytes=${offer.sizeBytes}`
     );
     const result = await this.bridge.acceptReticulumResourceDetailed({
       peerPresenceHash: senderHash,
@@ -1587,24 +1133,17 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       savePath,
       fileName: offer.fileName,
       size: offer.sizeBytes,
-      sha256: offer.bundleHash || offer.chunkHash || offer.fileHash,
-      resourceType: isChunkTransfer
-        ? this.chunkResourceType
-        : this.resourceType,
-      streamMode: offer.streamMode === true,
+      sha256: offer.payloadHash,
+      resourceType: this.rangeResourceType,
       metadata: {
-        logicalResourceType: isChunkTransfer
-          ? this.chunkResourceType
-          : this.resourceType,
+        logicalResourceType: this.rangeResourceType,
         eventId: offer.eventId ?? '',
         contextId: offer.contextId,
         ...this.contextMetadata(offer.contextId),
         fileHash: offer.fileHash,
-        chunkIndex: offer.chunkIndex ?? null,
-        chunkHash: offer.chunkHash ?? '',
-        bundleHash: offer.bundleHash ?? '',
-        chunkBundle: Array.isArray(offer.chunks) && offer.chunks.length > 0,
-        chunkRanges,
+        totalSizeBytes: offer.totalSizeBytes,
+        byteRanges: offer.ranges.map((range) => [range.startByte, range.endByteExclusive]),
+        payloadHash: offer.payloadHash,
         mimeType: offer.mimeType,
       },
       authMessage: {
@@ -1614,12 +1153,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         contextId: offer.contextId,
         ...this.contextMetadata(offer.contextId),
         fileHash: offer.fileHash,
-        chunkIndex: offer.chunkIndex ?? null,
-        chunkHash: offer.chunkHash ?? '',
-        chunkSize: offer.chunkSize ?? null,
-        bundleHash: offer.bundleHash ?? '',
-        chunkBundle: Array.isArray(offer.chunks) && offer.chunks.length > 0,
-        chunkRanges,
+        totalSizeBytes: offer.totalSizeBytes,
+        byteRanges: offer.ranges.map((range) => [range.startByte, range.endByteExclusive]),
+        payloadHash: offer.payloadHash,
       },
     });
     if (!result.ok) {
@@ -1649,14 +1185,16 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     const offer = this.offers.get(transferId);
+    const authRanges = Array.isArray(auth.byteRanges)
+      ? auth.byteRanges
+      : [];
+    const expectedRanges = offer?.ranges.map((range) => [range.startByte, range.endByteExclusive]) ?? [];
     if (
       !offer ||
       Number(auth.contextId) !== offer.contextId ||
       auth.fileHash !== offer.fileHash ||
-      (offer.chunkIndex != null && Number(auth.chunkIndex) !== offer.chunkIndex) ||
-      (offer.chunkHash && auth.chunkHash !== offer.chunkHash) ||
-      (offer.bundleHash && auth.bundleHash !== offer.bundleHash) ||
-      (Array.isArray(offer.chunks) && !sameChunkRanges(auth.chunkRanges, offerChunkRanges(offer)))
+      auth.payloadHash !== offer.payloadHash ||
+      JSON.stringify(authRanges) !== JSON.stringify(expectedRanges)
     ) {
       loggerWarn(
         `[${this.loggerPrefix}] Rejecting resource auth transfer=${transferId}: metadata mismatch`
@@ -1698,100 +1236,42 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         );
         return;
       }
-      if (offer.chunkIndex != null) {
-        const expectedChunkHash = pendingManifest.chunkHashes[offer.chunkIndex]?.toLowerCase();
-        if (!expectedChunkHash || actualHash !== expectedChunkHash) {
-          loggerWarn(
-            `[${this.loggerPrefix}] Cannot import resource chunk fileHash=${offer.fileHash} chunk=${offer.chunkIndex}: hash mismatch`
-          );
-          return;
-        }
-        this.resourceStore.storeChunk(offer.fileHash, offer.chunkIndex, bytes);
-        try {
-          this.resourceStore.assembleResource(offer.fileHash);
-        } catch {
-          // More chunks are still missing.
-        }
-        this.emit('resource', {
-          contextId: offer.contextId,
-          eventId: offer.eventId,
-          fileHash: offer.fileHash,
-          chunkIndex: offer.chunkIndex,
-        });
-        this.handleReceivedChunk(offer);
-        return;
-      }
-      if (Array.isArray(offer.chunks) && offer.chunks.length > 0) {
-        if (offer.bundleHash && actualHash !== offer.bundleHash.toLowerCase()) {
-          loggerWarn(
-            `[${this.loggerPrefix}] Cannot import resource chunk bundle fileHash=${offer.fileHash}: bundle hash mismatch`
-          );
-          return;
-        }
-        if (!this.importReceivedChunkBundle(offer, bytes, pendingManifest)) {
-          return;
-        }
-        loggerLog(
-          `[${this.loggerPrefix}] resource_chunk_stored fileHash=${offer.fileHash} ` +
-            `transfer=${offer.transferId} chunks=${offer.chunks.length} bytes=${bytes.length}`
-        );
-        try {
-          this.resourceStore.assembleResource(offer.fileHash);
-        } catch {
-          // More chunks are still missing.
-        }
-        this.emit('resource', {
-          contextId: offer.contextId,
-          eventId: offer.eventId,
-          fileHash: offer.fileHash,
-        });
-        this.handleReceivedChunk(offer);
-        return;
-      }
-      if (actualHash !== offer.fileHash.toLowerCase()) {
+      if (actualHash !== offer.payloadHash.toLowerCase()) {
         loggerWarn(
-          `[${this.loggerPrefix}] Cannot import resource fileHash=${offer.fileHash}: hash mismatch`
+          `[${this.loggerPrefix}] Cannot import resource range fileHash=${offer.fileHash}: payload hash mismatch`
         );
         return;
       }
-      const metadata =
-        pendingManifest?.metadata && typeof pendingManifest.metadata === 'object'
-          ? pendingManifest.metadata
-          : {};
-      this.resourceStore.importLocalFile({
-        sourcePath: payload.path,
-        namespace: pendingManifest?.namespace || 'reticulum-resource',
-        ownerId: pendingManifest?.ownerId,
-        fileName: pendingManifest?.fileName || offer.fileName,
-        mimeType: pendingManifest?.mimeType || offer.mimeType,
-        chunkSize: pendingManifest?.chunkSize,
-        encrypted: pendingManifest?.encrypted ?? false,
-        metadata: {
-          ...metadata,
-          contextId: offer.contextId,
-          ...this.contextMetadata(offer.contextId),
-          eventId: offer.eventId ?? (metadata.eventId as string | undefined) ?? '',
-          receivedViaReticulum: true,
-        },
-      });
+      if (offer.ranges.length !== 1) {
+        loggerWarn(
+          `[${this.loggerPrefix}] Cannot import resource range fileHash=${offer.fileHash}: invalid range count`
+        );
+        return;
+      }
+      const range = offer.ranges[0];
+      this.resourceStore.storeByteRange(
+        offer.fileHash,
+        range.startByte,
+        range.endByteExclusive,
+        bytes
+      );
+      loggerLog(
+        `[${this.loggerPrefix}] resource_range_stored fileHash=${offer.fileHash} ` +
+          `transfer=${offer.transferId} range=${rangeKey(range)} bytes=${bytes.length}`
+      );
       this.emit('resource', {
         contextId: offer.contextId,
         eventId: offer.eventId,
         fileHash: offer.fileHash,
       });
-      loggerLog(
-        `[${this.loggerPrefix}] resource_session_completed fileHash=${offer.fileHash} ` +
-          `transfer=${offer.transferId} mode=complete bytes=${offer.sizeBytes}`
-      );
-      this.handleReceivedChunk(offer, true);
+      this.handleReceivedRange(offer);
     } catch (err) {
       loggerWarn(`[${this.loggerPrefix}] Failed to import received resource:`, err);
       this.finishTransfer(payload.transferId, false);
     } finally {
       const state = this.downloads.get(offer.fileHash);
       if (state) {
-        this.releaseOfferChunksInFlight(state, offer);
-        this.releaseFullTransfer(state, offer);
+        this.releaseOfferRangesInFlight(state, offer);
       }
       this.offers.delete(payload.transferId);
       this.transferSpeedSamples.delete(payload.transferId);
@@ -1804,10 +1284,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
 
   private finishTransfer(transferId: string, success: boolean, drainQueue = true): void {
     const offer = this.offers.get(transferId);
-    const isFullFileOffer =
-      !!offer &&
-      offer.chunkIndex == null &&
-      (!Array.isArray(offer.chunks) || offer.chunks.length === 0);
     if (offer) this.cleanupTemporaryOfferFile(offer);
     this.offers.delete(transferId);
     this.transferSpeedSamples.delete(transferId);
@@ -1816,12 +1292,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (offer) {
       const state = this.downloads.get(offer.fileHash);
       if (state) {
-        if (!success && offer.sourcePeerHash) {
-          this.shrinkPeerBlockLimit(state, offer.sourcePeerHash);
-        }
-        this.releaseOfferChunksInFlight(state, offer);
-        this.releaseFullTransfer(state, offer);
-        if (!success && isFullFileOffer) {
+        this.releaseOfferRangesInFlight(state, offer);
+        if (!success) {
           state.nextRequestAt = 0;
           this.emitProgress(state);
           this.scheduleDownload(0);
@@ -1831,45 +1303,24 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (drainQueue) void this.processAcceptQueue();
   }
 
-  private handleReceivedChunk(
-    offer: ReticulumResourceTransferOffer,
-    completeResource = false
-  ): void {
+  private handleReceivedRange(offer: ReticulumResourceTransferOffer): void {
     const state = this.downloads.get(offer.fileHash);
     if (!state) return;
-    if (offer.sourcePeerHash) {
-      this.growPeerBlockLimit(state, offer.sourcePeerHash);
+    for (const range of offer.ranges) {
+      state.rangeAttempts.delete(rangeKey(range));
     }
-    if (offer.chunkIndex != null) {
-      state.chunkAttempts.delete(offer.chunkIndex);
-    }
-    for (const chunkIndex of this.getOfferChunkIndexes(offer)) {
-      state.chunkAttempts.delete(chunkIndex);
-    }
-    this.releaseOfferChunksInFlight(state, offer);
-    this.releaseFullTransfer(state, offer);
+    this.releaseOfferRangesInFlight(state, offer);
     try {
       this.resourceStore.assembleResource(offer.fileHash);
       loggerLog(
         `[${this.loggerPrefix}] resource_session_completed fileHash=${offer.fileHash} ` +
-          `transfer=${offer.transferId} mode=${
-            Array.isArray(offer.chunks) && offer.chunks.length > 0
-              ? 'range'
-              : offer.chunkIndex != null
-                ? 'chunk'
-                : 'complete'
-          }`
+          `transfer=${offer.transferId} mode=byte-range`
       );
       this.emitProgress(state, true);
       this.clearPendingOffersForFile(offer.fileHash, offer.transferId);
       this.downloads.delete(offer.fileHash);
       return;
     } catch {
-      if (completeResource) {
-        this.clearPendingOffersForFile(offer.fileHash, offer.transferId);
-        this.downloads.delete(offer.fileHash);
-        return;
-      }
       this.emitProgress(state);
       state.nextRequestAt = 0;
       this.scheduleDownload(0);
@@ -1881,196 +1332,98 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!Number.isInteger(offer.contextId) || offer.contextId <= 0) return false;
     if (offer.eventId != null && (typeof offer.eventId !== 'string' || offer.eventId.length < 8)) return false;
     if (typeof offer.fileHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.fileHash)) return false;
+    if (!Number.isInteger(offer.totalSizeBytes) || offer.totalSizeBytes <= 0) return false;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;
-    if (offer.chunkIndex != null && (!Number.isInteger(offer.chunkIndex) || offer.chunkIndex < 0)) return false;
-    if (
-      offer.chunkIndex != null &&
-      (typeof offer.chunkHash !== 'string' ||
-        !/^[0-9a-f]{64}$/i.test(offer.chunkHash) ||
-        !Number.isInteger(offer.chunkSize) ||
-        offer.chunkSize <= 0)
-    ) {
-      return false;
-    }
-    if (offer.chunkHash != null && (typeof offer.chunkHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.chunkHash))) {
-      return false;
-    }
-    if (offer.chunkSize != null && (!Number.isInteger(offer.chunkSize) || offer.chunkSize <= 0)) return false;
-    if (offer.bundleHash != null && (typeof offer.bundleHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.bundleHash))) {
-      return false;
-    }
-    if (offer.chunkIndexes != null) {
-      if (
-        !Array.isArray(offer.chunkIndexes) ||
-        offer.chunkIndexes.length === 0 ||
-        offer.chunkIndexes.some((index) => !Number.isInteger(index) || index < 0)
-      ) {
-        return false;
+    if (typeof offer.payloadHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.payloadHash)) return false;
+    if (!Array.isArray(offer.ranges) || offer.ranges.length !== 1) return false;
+    const totalRangeBytes = offer.ranges.reduce((total, range) => total + rangeSize(range), 0);
+    return totalRangeBytes === offer.sizeBytes;
+  }
+
+  private getMissingRanges(manifest: ReticulumResourceManifest): ReticulumResourceByteRange[] {
+    const completed = mergeRanges(
+      this.resourceStore.getCompletedRanges(manifest.fileHash).map((range) => ({
+        startByte: range.startByte,
+        endByteExclusive: range.endByteExclusive,
+      }))
+    );
+    const missing: ReticulumResourceByteRange[] = [];
+    let cursor = 0;
+    for (const range of completed) {
+      if (range.startByte > cursor) {
+        missing.push(...this.splitRange(cursor, range.startByte));
       }
+      cursor = Math.max(cursor, range.endByteExclusive);
     }
-    if (offer.chunks != null) {
-      if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return false;
-      for (const chunk of offer.chunks) {
-        if (
-          !chunk ||
-          !Number.isInteger(chunk.index) ||
-          chunk.index < 0 ||
-          typeof chunk.hash !== 'string' ||
-          !/^[0-9a-f]{64}$/i.test(chunk.hash) ||
-          !Number.isInteger(chunk.sizeBytes) ||
-          chunk.sizeBytes <= 0 ||
-          !Number.isInteger(chunk.offset) ||
-          chunk.offset < 0
-        ) {
-          return false;
-        }
-      }
+    if (cursor < manifest.sizeBytes) {
+      missing.push(...this.splitRange(cursor, manifest.sizeBytes));
     }
-    return true;
+    return missing;
   }
 
-  private normalizeChunkBundleOffer(
-    offer: ReticulumResourceTransferOffer,
-    manifest: ReticulumResourceManifest
-  ): ReticulumResourceTransferOffer | null {
-    if (Array.isArray(offer.chunks) && offer.chunks.length > 0) return offer;
-    if (!Array.isArray(offer.chunkIndexes) || offer.chunkIndexes.length === 0) return offer;
-    const seen = new Set<number>();
-    const chunks: NonNullable<ReticulumResourceTransferOffer['chunks']> = [];
-    let offset = 0;
-    for (const index of offer.chunkIndexes) {
-      if (seen.has(index)) return null;
-      seen.add(index);
-      const hash = manifest.chunkHashes[index]?.toLowerCase();
-      if (!hash) return null;
-      const sizeBytes = this.expectedChunkSize(manifest, index);
-      chunks.push({
-        index,
-        hash,
-        sizeBytes,
-        offset,
-      });
-      offset += sizeBytes;
+  private splitRange(startByte: number, endByteExclusive: number): ReticulumResourceByteRange[] {
+    const ranges: ReticulumResourceByteRange[] = [];
+    let cursor = startByte;
+    while (cursor < endByteExclusive) {
+      const end = Math.min(endByteExclusive, cursor + RETICULUM_RESOURCE_TRANSFER_RANGE_BYTES);
+      ranges.push({ startByte: cursor, endByteExclusive: end });
+      cursor = end;
     }
-    if (offer.sizeBytes !== offset) return null;
-    return {
-      ...offer,
-      chunks,
-    };
+    return ranges;
   }
 
-  private isValidChunkBundleOffer(
-    offer: ReticulumResourceTransferOffer,
-    manifest: ReticulumResourceManifest
-  ): boolean {
-    if (!Array.isArray(offer.chunks) || offer.chunks.length === 0) return false;
-    let expectedOffset = 0;
-    const seen = new Set<number>();
-    for (const chunk of offer.chunks) {
-      if (seen.has(chunk.index)) return false;
-      seen.add(chunk.index);
-      const expectedHash = manifest.chunkHashes[chunk.index]?.toLowerCase();
-      if (!expectedHash || chunk.hash.toLowerCase() !== expectedHash) return false;
-      if (chunk.sizeBytes !== this.expectedChunkSize(manifest, chunk.index)) return false;
-      if (chunk.offset !== expectedOffset) return false;
-      expectedOffset += chunk.sizeBytes;
-    }
-    return offer.sizeBytes === expectedOffset;
+  private rangeAlreadyComplete(fileHash: string, candidate: ReticulumResourceByteRange): boolean {
+    return this.resourceStore.getCompletedRanges(fileHash).some(
+      (range) =>
+        range.startByte <= candidate.startByte &&
+        range.endByteExclusive >= candidate.endByteExclusive
+    );
   }
 
-  private importReceivedChunkBundle(
-    offer: ReticulumResourceTransferOffer,
-    bytes: Buffer,
-    manifest: ReticulumResourceManifest
-  ): boolean {
-    if (!this.isValidChunkBundleOffer(offer, manifest)) return false;
-    if (bytes.length !== offer.sizeBytes) {
-      loggerWarn(
-        `[${this.loggerPrefix}] Cannot import resource chunk bundle fileHash=${offer.fileHash}: size mismatch`
-      );
-      return false;
-    }
-    for (const chunk of offer.chunks ?? []) {
-      const chunkBytes = bytes.subarray(chunk.offset, chunk.offset + chunk.sizeBytes);
-      const actualHash = nodeCrypto.createHash('sha256').update(chunkBytes).digest('hex');
-      if (actualHash !== chunk.hash.toLowerCase()) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Cannot import resource chunk bundle fileHash=${offer.fileHash} chunk=${chunk.index}: hash mismatch`
-        );
-        return false;
-      }
-    }
-    for (const chunk of offer.chunks ?? []) {
-      const chunkBytes = bytes.subarray(chunk.offset, chunk.offset + chunk.sizeBytes);
-      this.resourceStore.storeChunk(offer.fileHash, chunk.index, Buffer.from(chunkBytes));
-    }
-    return true;
-  }
-
-  private expectedChunkSize(manifest: ReticulumResourceManifest, chunkIndex: number): number {
-    if (chunkIndex < manifest.chunkHashes.length - 1) return manifest.chunkSize;
-    return manifest.sizeBytes - manifest.chunkSize * chunkIndex;
-  }
-
-  private getOfferChunkIndexes(offer: ReticulumResourceTransferOffer): number[] {
-    if (offer.chunkIndex != null) return [offer.chunkIndex];
-    if (Array.isArray(offer.chunks)) return offer.chunks.map((chunk) => chunk.index);
-    return [];
-  }
-
-  private markOfferChunksInFlight(
+  private markOfferRangesInFlight(
     state: ReticulumResourceDownloadState<TRequestWire>,
     offer: ReticulumResourceTransferOffer
   ): void {
     const startedAt = this.now();
-    for (const chunkIndex of this.getOfferChunkIndexes(offer)) {
-      state.inFlightChunks.set(chunkIndex, {
+    for (const range of offer.ranges) {
+      state.inFlightRanges.set(rangeKey(range), {
         transferId: offer.transferId,
         startedAt,
       });
     }
   }
 
-  private releaseOfferChunksInFlight(
+  private releaseOfferRangesInFlight(
     state: ReticulumResourceDownloadState<TRequestWire>,
     offer: ReticulumResourceTransferOffer
   ): void {
-    for (const chunkIndex of this.getOfferChunkIndexes(offer)) {
-      const reservation = state.inFlightChunks.get(chunkIndex);
+    for (const range of offer.ranges) {
+      const reservation = state.inFlightRanges.get(rangeKey(range));
       if (reservation?.transferId === offer.transferId) {
-        state.inFlightChunks.delete(chunkIndex);
+        state.inFlightRanges.delete(rangeKey(range));
       }
     }
   }
 
-  private refreshOfferChunksInFlight(
+  private refreshOfferRangesInFlight(
     state: ReticulumResourceDownloadState<TRequestWire>,
     offer: ReticulumResourceTransferOffer
   ): void {
     const now = this.now();
-    for (const chunkIndex of this.getOfferChunkIndexes(offer)) {
-      const reservation = state.inFlightChunks.get(chunkIndex);
+    for (const range of offer.ranges) {
+      const reservation = state.inFlightRanges.get(rangeKey(range));
       if (reservation?.transferId === offer.transferId) {
         reservation.startedAt = now;
       }
     }
   }
 
-  private releaseStaleInFlightChunks(state: ReticulumResourceDownloadState<TRequestWire>): void {
+  private releaseStaleInFlightRanges(state: ReticulumResourceDownloadState<TRequestWire>): void {
     const now = this.now();
-    for (const [chunkIndex, reservation] of state.inFlightChunks.entries()) {
+    for (const [key, reservation] of state.inFlightRanges.entries()) {
       if (now - reservation.startedAt >= RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS) {
-        state.inFlightChunks.delete(chunkIndex);
+        state.inFlightRanges.delete(key);
       }
-    }
-  }
-
-  private releaseFullTransfer(
-    state: ReticulumResourceDownloadState<TRequestWire>,
-    offer: ReticulumResourceTransferOffer
-  ): void {
-    if (state.fullTransfer?.transferId === offer.transferId) {
-      delete state.fullTransfer;
     }
   }
 
@@ -2130,31 +1483,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       }
     }
     return activeOrPendingForPeer >= RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER;
-  }
-
-  private peerHasActiveOrPendingAcceptForResource(peerHash: string, fileHash: string): boolean {
-    const peerKey = peerHash.trim().toLowerCase();
-    const blobId = fileHash.trim().toLowerCase();
-    if (!peerKey || !blobId) return false;
-    for (const transferId of this.activeAccepts) {
-      const offer = this.offers.get(transferId);
-      if (
-        (offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey &&
-        (offer?.fileHash || '').trim().toLowerCase() === blobId
-      ) {
-        return true;
-      }
-    }
-    for (const transferId of this.pendingAccepts) {
-      const offer = this.offers.get(transferId);
-      if (
-        (offer?.sourcePeerHash || '').trim().toLowerCase() === peerKey &&
-        (offer?.fileHash || '').trim().toLowerCase() === blobId
-      ) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private cleanupStaleAccepts(drainQueue = true): void {

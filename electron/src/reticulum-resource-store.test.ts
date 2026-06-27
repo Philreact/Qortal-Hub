@@ -24,6 +24,10 @@ function tempStore(): { dir: string; store: ReticulumResourceStore } {
   };
 }
 
+function cryptoHash(value: Buffer): string {
+  return nodeCrypto.createHash('sha256').update(value).digest('hex');
+}
+
 describe('reticulum resource store', () => {
   const stores: ReticulumResourceStore[] = [];
 
@@ -31,14 +35,14 @@ describe('reticulum resource store', () => {
     while (stores.length) stores.pop()?.close();
   });
 
-  it('imports a local file as hashed chunks and assembles the encrypted payload', () => {
+  it('imports a local file as a verified assembled resource', () => {
     const { dir, store } = tempStore();
     stores.push(store);
     const sourcePath = path.join(dir, 'source.bin');
     const contents = Buffer.concat([
-      Buffer.from('first chunk data'),
+      Buffer.from('first range data'),
       Buffer.alloc(64, 7),
-      Buffer.from('last chunk data'),
+      Buffer.from('last range data'),
     ]);
     fs.writeFileSync(sourcePath, contents);
 
@@ -47,62 +51,116 @@ describe('reticulum resource store', () => {
       namespace: 'test.feature',
       fileName: 'image.enc',
       mimeType: 'application/octet-stream',
-      chunkSize: 16 * 1024,
       encrypted: true,
     });
 
     expect(manifest.namespace).toBe('test.feature');
     expect(manifest.encrypted).toBe(true);
-    expect(manifest.chunkHashes).toHaveLength(1);
-    expect(store.getChunks(manifest.fileHash)).toEqual([
-      expect.objectContaining({
-        fileHash: manifest.fileHash,
-        chunkIndex: 0,
-        status: 'complete',
-        sizeBytes: contents.length,
-      }),
-    ]);
+    expect(manifest.fileHash).toBe(cryptoHash(contents));
+    expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
 
     const assembledPath = store.assembleResource(manifest.fileHash);
     expect(path.basename(assembledPath)).toBe('assembled.enc');
     expect(fs.readFileSync(assembledPath)).toEqual(contents);
   });
 
-  it('stores a received manifest and verifies chunks before assembly', () => {
+  it('keeps separate group references for the same file hash', () => {
+    const { dir, store } = tempStore();
+    stores.push(store);
+    const sourcePath = path.join(dir, 'shared.bin');
+    const contents = Buffer.from('same bytes posted in two groups');
+    fs.writeFileSync(sourcePath, contents);
+
+    const firstManifest = store.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-chat-file',
+      ownerId: '81:sender',
+      fileName: 'shared.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+      metadata: { groupId: 81, eventId: 'event-group-81' },
+    });
+    store.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-chat-file',
+      ownerId: '82:sender',
+      fileName: 'shared.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+      metadata: { groupId: 82, eventId: 'event-group-82' },
+    });
+
+    expect(store.getManifest(firstManifest.fileHash)?.metadata?.groupId).toBe(82);
+    expect(store.hasGroupReference(firstManifest.fileHash, 81)).toBe(true);
+    expect(store.hasGroupReference(firstManifest.fileHash, 82)).toBe(true);
+    expect(store.listGroupReferences(firstManifest.fileHash)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fileHash: firstManifest.fileHash,
+          groupId: 81,
+          eventId: 'event-group-81',
+        }),
+        expect.objectContaining({
+          fileHash: firstManifest.fileHash,
+          groupId: 82,
+          eventId: 'event-group-82',
+        }),
+      ])
+    );
+    expect(fs.readFileSync(store.assembleResource(firstManifest.fileHash))).toEqual(contents);
+  });
+
+  it('stores received byte ranges and assembles after final file hash verification', () => {
     const { store } = tempStore();
     stores.push(store);
     const first = Buffer.from('a'.repeat(16 * 1024));
     const second = Buffer.from('second');
+    const contents = Buffer.concat([first, second]);
     const manifest: ReticulumResourceManifest = {
       namespace: 'test.feature',
       fileName: 'payload.enc',
       mimeType: 'application/octet-stream',
-      sizeBytes: first.length + second.length,
-      chunkSize: first.length,
-      chunkHashes: [
-        cryptoHash(first),
-        cryptoHash(second),
-      ],
-      fileHash: cryptoHash(Buffer.concat([first, second])),
+      sizeBytes: contents.length,
+      fileHash: cryptoHash(contents),
       encrypted: true,
       createdAt: 100_000,
     };
 
     store.storeManifest(manifest);
     expect(store.getManifest(manifest.fileHash)?.fileHash).toBe(manifest.fileHash);
-    expect(store.getChunks(manifest.fileHash).map((chunk) => chunk.status)).toEqual([
-      'missing',
-      'missing',
-    ]);
-    expect(() => store.storeChunk(manifest.fileHash, 0, Buffer.from('wrong'))).toThrow(
-      /Chunk hash mismatch/
-    );
+    expect(() => store.assembleResource(manifest.fileHash)).toThrow(/partial file/);
 
-    store.storeChunk(manifest.fileHash, 0, first);
-    store.storeChunk(manifest.fileHash, 1, second);
+    store.storeByteRange(manifest.fileHash, first.length, contents.length, second);
+    expect(store.getCompletedBytes(manifest.fileHash)).toBe(second.length);
+    expect(() => store.assembleResource(manifest.fileHash)).toThrow(/missing byte ranges/);
 
+    store.storeByteRange(manifest.fileHash, 0, first.length, first);
     const assembledPath = store.assembleResource(manifest.fileHash);
-    expect(fs.readFileSync(assembledPath)).toEqual(Buffer.concat([first, second]));
+    expect(fs.readFileSync(assembledPath)).toEqual(contents);
+  });
+
+  it('rejects invalid received byte ranges before writing to the partial file', () => {
+    const { store } = tempStore();
+    stores.push(store);
+    const contents = Buffer.from('valid bytes');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'test.feature',
+      fileName: 'payload.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: cryptoHash(contents),
+      encrypted: false,
+      createdAt: 100_000,
+    };
+
+    store.storeManifest(manifest);
+    expect(() => store.storeByteRange(manifest.fileHash, 0, 5, Buffer.from('no'))).toThrow(
+      /Range size mismatch/
+    );
+    expect(() =>
+      store.storeByteRange(manifest.fileHash, 0, contents.length + 1, Buffer.alloc(contents.length + 1))
+    ).toThrow(/Invalid byte range/);
+    expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
   });
 
   it('reuses an existing assembled resource instead of rebuilding it', () => {
@@ -160,46 +218,38 @@ describe('reticulum resource store', () => {
       now: () => 100_000,
     });
     stores.push(store);
-    const tempPath = store.createPlaintextTempPath(cryptoHash(Buffer.from('resource')), '.bundle-0.bin');
+    const tempPath = store.createPlaintextTempPath(cryptoHash(Buffer.from('resource')), '.range.bin');
 
     expect(path.dirname(tempPath)).toBe(path.join(tempRoot, 'qortal-reticulum-resources'));
     fs.writeFileSync(tempPath, Buffer.from('ok'));
     expect(fs.readFileSync(tempPath, 'utf8')).toBe('ok');
   });
 
-  it('discards downloaded chunk data while keeping the manifest retryable', () => {
+  it('discards downloaded byte ranges while keeping the manifest retryable', () => {
     const { store } = tempStore();
     stores.push(store);
     const first = Buffer.from('a'.repeat(16 * 1024));
     const second = Buffer.from('b'.repeat(16 * 1024));
+    const contents = Buffer.concat([first, second]);
     const manifest: ReticulumResourceManifest = {
       namespace: 'test.feature',
       fileName: 'payload.bin',
       mimeType: 'application/octet-stream',
-      sizeBytes: first.length + second.length,
-      chunkSize: first.length,
-      chunkHashes: [cryptoHash(first), cryptoHash(second)],
-      fileHash: cryptoHash(Buffer.concat([first, second])),
+      sizeBytes: contents.length,
+      fileHash: cryptoHash(contents),
       encrypted: false,
       createdAt: 100_000,
     };
 
     store.storeManifest(manifest);
-    store.storeChunk(manifest.fileHash, 0, first);
-    const chunkPath = store.getChunk(manifest.fileHash, 0)?.localPath;
-    expect(chunkPath && fs.existsSync(chunkPath)).toBe(true);
+    store.storeByteRange(manifest.fileHash, 0, first.length, first);
+    const partialPath = store.getPartialPath(manifest.fileHash);
+    expect(partialPath && fs.existsSync(partialPath)).toBe(true);
 
     store.discardResourceData(manifest.fileHash);
 
     expect(store.getManifest(manifest.fileHash)?.fileHash).toBe(manifest.fileHash);
-    expect(store.getChunks(manifest.fileHash)).toEqual([
-      expect.objectContaining({ chunkIndex: 0, status: 'missing', localPath: null }),
-      expect.objectContaining({ chunkIndex: 1, status: 'missing', localPath: null }),
-    ]);
-    expect(chunkPath && fs.existsSync(chunkPath)).toBe(false);
+    expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
+    expect(partialPath && fs.existsSync(partialPath)).toBe(false);
   });
 });
-
-function cryptoHash(value: Buffer): string {
-  return nodeCrypto.createHash('sha256').update(value).digest('hex');
-}

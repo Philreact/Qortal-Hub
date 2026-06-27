@@ -650,10 +650,6 @@ declare global {
           groupId?: number;
           eventId?: string;
           fileHash?: string;
-          chunkIndex?: number;
-          completedChunks?: number;
-          totalChunks?: number;
-          fullFileTransfer?: boolean;
           bytesTransferred?: number;
           totalBytes?: number;
           progress?: number;
@@ -697,24 +693,21 @@ declare global {
       ) => Promise<{
         success: boolean;
         manifest?: unknown;
-        completedChunks?: number;
-        totalChunks?: number;
-        fullFileTransfer?: boolean;
         bytesTransferred?: number;
         totalBytes?: number;
         progress?: number;
         complete?: boolean;
-        latestChunkUpdatedAt?: number | null;
+        latestRangeUpdatedAt?: number | null;
         checkedAt?: number;
         runtime?: {
           active?: boolean;
           peerCount?: number;
+          candidatePeerCount?: number;
           advertisedPeerCount?: number;
           activeTransfers?: number;
           pendingTransfers?: number;
-          requestedChunkCount?: number;
-          inFlightChunkCount?: number;
-          fullFileTransfer?: boolean;
+          requestedRangeCount?: number;
+          inFlightRangeCount?: number;
           bytesTransferred?: number;
           totalBytes?: number;
           progress?: number;

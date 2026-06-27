@@ -3600,21 +3600,16 @@ ipcMain.handle('reticulumResource:getStatus', async (_event, fileHash: string) =
     const store = getReticulumResourceStore();
     const manifest = store.getManifest(hash);
     if (!manifest) return { success: false, error: 'Unknown resource' };
-    const chunks = store.getChunks(hash);
-    const completedChunks = chunks.filter((chunk) => chunk.status === 'complete').length;
-    const completedBytes = chunks.reduce(
-      (total, chunk) =>
-        chunk.status === 'complete' ? total + Math.max(0, Number(chunk.sizeBytes || 0)) : total,
-      0
-    );
-    const latestChunkUpdatedAt = chunks.reduce(
-      (latest, chunk) =>
-        chunk.status === 'complete' ? Math.max(latest, Number(chunk.updatedAt || 0)) : latest,
-      0
-    );
-    const totalChunks = manifest.chunkHashes.length;
+    let complete = false;
+    try {
+      store.assembleResource(hash);
+      complete = true;
+    } catch {
+      complete = false;
+    }
+    const completedBytes = complete ? manifest.sizeBytes : store.getCompletedBytes(hash);
+    const latestRangeUpdatedAt = store.getLatestRangeUpdatedAt(hash);
     const runtime = getReticulumChatManager()?.getResourceDownloadStatus(hash) ?? null;
-    const chunkProgress = totalChunks > 0 ? completedChunks / totalChunks : 0;
     const runtimeProgress =
       runtime && typeof runtime.progress === 'number'
         ? Math.max(0, Math.min(1, runtime.progress))
@@ -3627,14 +3622,14 @@ ipcMain.handle('reticulumResource:getStatus', async (_event, fileHash: string) =
     return {
       success: true,
       manifest,
-      completedChunks,
-      totalChunks,
-      fullFileTransfer: runtime?.fullFileTransfer === true,
       bytesTransferred: runtimeBytes ?? completedBytes,
       totalBytes,
-      progress: Math.max(chunkProgress, runtimeProgress ?? 0),
-      complete: totalChunks > 0 && completedChunks >= totalChunks,
-      latestChunkUpdatedAt: latestChunkUpdatedAt || null,
+      progress: Math.max(
+        totalBytes > 0 ? Math.min(1, completedBytes / totalBytes) : 0,
+        runtimeProgress ?? 0
+      ),
+      complete,
+      latestRangeUpdatedAt: latestRangeUpdatedAt || null,
       checkedAt: Date.now(),
       runtime,
     };
