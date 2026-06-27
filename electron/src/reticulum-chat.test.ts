@@ -60,6 +60,7 @@ function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChat
     payloadHash:
       overrides.payloadHash ?? hashReticulumChatPayload(encryptedPayload),
     mentionAddressHashes: overrides.mentionAddressHashes ?? [],
+    ...(overrides.mentionTargets ? { mentionTargets: overrides.mentionTargets } : {}),
     signature: '',
   };
   const signedBytes = canonicalizeForSigning(
@@ -95,6 +96,7 @@ function signedAuthorEvents(
       encryptedPayload,
       payloadHash: overrides.payloadHash ?? hashReticulumChatPayload(encryptedPayload),
       mentionAddressHashes: overrides.mentionAddressHashes ?? [],
+      ...(overrides.mentionTargets ? { mentionTargets: overrides.mentionTargets } : {}),
       signature: '',
     };
     const sig = nacl.sign.detached(
@@ -451,6 +453,192 @@ describe('reticulum chat database', () => {
     expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
       mentionCount: 0,
       hasUnreadMention: false,
+    });
+  });
+
+  it('tracks semantic @everyone and @group mention targets', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-semantic-everyone-target',
+      groupId: 166,
+      mentionTargets: [{ type: 'everyone', groupId: 166 }],
+    });
+    expect(validateReticulumChatEventShape(event)).toBe(true);
+    expect(verifyReticulumChatEvent(event)).toBe(true);
+    db.insertEvent(event, true);
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      groupId: 166,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+  });
+
+  it('only applies @here targets for messages created during this app session', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const onlineSince = Date.now();
+    const beforeOnline = signedEvent({
+      eventId: 'event-here-before-online',
+      groupId: 167,
+      authorSeq: 1,
+      timestamp: onlineSince - 5_000,
+      mentionTargets: [
+        {
+          type: 'here',
+          groupId: 167,
+          channelId: 'general',
+          createdAt: onlineSince - 5_000,
+        },
+      ],
+    });
+    const afterOnline = signedEvent({
+      eventId: 'event-here-after-online',
+      groupId: 167,
+      authorSeq: 2,
+      timestamp: onlineSince + 5_000,
+      mentionTargets: [
+        {
+          type: 'here',
+          groupId: 167,
+          channelId: 'general',
+          createdAt: onlineSince + 5_000,
+        },
+      ],
+    });
+    db.insertEvent(beforeOnline, true);
+    db.insertEvent(afterOnline, true);
+
+    expect(db.getChatSummaries(mentionedAddress, onlineSince)[0]).toMatchObject({
+      groupId: 167,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+  });
+
+  it('applies edit and delete state to semantic mention target summaries', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const original = signedEvent({
+      eventId: 'event-semantic-edit-original',
+      groupId: 168,
+      authorSeq: 1,
+      timestamp: Date.now(),
+      mentionTargets: [],
+    });
+    const editAddsEveryone = signedEvent({
+      eventId: 'event-semantic-edit-adds',
+      groupId: 168,
+      authorSeq: 2,
+      timestamp: original.timestamp + 1,
+      eventType: 'edit',
+      targetEventId: original.eventId,
+      mentionTargets: [{ type: 'group', groupId: 168, groupName: 'test-group' }],
+    });
+    const editRemovesEveryone = signedEvent({
+      eventId: 'event-semantic-edit-removes',
+      groupId: 168,
+      authorSeq: 3,
+      timestamp: original.timestamp + 2,
+      eventType: 'edit',
+      targetEventId: original.eventId,
+      mentionTargets: [],
+    });
+    db.insertEvent(original, true);
+    db.insertEvent(editAddsEveryone, true);
+    expect(
+      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 168)
+    ).toMatchObject({
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+    db.insertEvent(editRemovesEveryone, true);
+    expect(
+      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 168)
+    ).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+  });
+
+  it('tracks semantic channel mention targets while all channels are visible', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-semantic-channel-target',
+      groupId: 169,
+      channelId: 'general',
+      mentionTargets: [
+        {
+          type: 'channel',
+          groupId: 169,
+          channelId: 'general-devs',
+          channelName: 'general-devs',
+        },
+      ],
+    });
+    db.insertEvent(event, true);
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      groupId: 169,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+  });
+
+  it('tracks semantic mention targets beyond the recent summary window', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const baseTimestamp = Date.now() - 60_000;
+    const semanticMention = signedEvent({
+      eventId: 'event-semantic-old-unread-target',
+      groupId: 170,
+      authorSeq: 1,
+      timestamp: baseTimestamp,
+      mentionTargets: [{ type: 'everyone', groupId: 170 }],
+    });
+    db.insertEvent(semanticMention, true);
+
+    const fillerTemplate = signedEvent({
+      eventId: 'event-semantic-window-filler-template',
+      groupId: 170,
+      authorSeq: 2,
+      timestamp: baseTimestamp + 1,
+      mentionTargets: [],
+    });
+    for (let index = 0; index < 501; index += 1) {
+      db.insertEvent(
+        {
+          ...fillerTemplate,
+          eventId: `event-semantic-window-filler-${index}`,
+          authorSeq: index + 2,
+          timestamp: baseTimestamp + index + 1,
+          mentionTargets: [],
+        },
+        true
+      );
+    }
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      groupId: 170,
+      mentionCount: 1,
+      hasUnreadMention: true,
     });
   });
 

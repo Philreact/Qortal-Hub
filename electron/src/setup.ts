@@ -155,6 +155,7 @@ const GCALL_MAIN_LOOP_SAMPLE_INTERVAL_MS = 50;
 const GCALL_MAIN_LOOP_STALL_LOG_THRESHOLD_MS = 80;
 const GCALL_MAIN_LOOP_STALL_RECENT_LIMIT = 16;
 const GCALL_MAIN_LOOP_STALL_LOG_THROTTLE_MS = 1000;
+const RETICULUM_CHAT_ONLINE_SINCE_MS = Date.now();
 
 type MainLoopStallSample = {
   atMs: number;
@@ -3750,8 +3751,8 @@ ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) 
   const manager = getReticulumChatManager();
   const address = typeof myAddress === 'string' ? myAddress : '';
   return manager
-    ? manager.getChatSummaries(address)
-    : readReticulumChatSummariesFromDb(address);
+    ? manager.getChatSummaries(address, RETICULUM_CHAT_ONLINE_SINCE_MS)
+    : readReticulumChatSummariesFromDb(address, RETICULUM_CHAT_ONLINE_SINCE_MS);
 });
 
 ipcMain.handle(

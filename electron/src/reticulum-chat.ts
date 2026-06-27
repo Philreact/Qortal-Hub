@@ -63,6 +63,13 @@ export type ReticulumChatEventType =
   | 'category_update'
   | 'category_delete';
 
+export type ReticulumChatMentionTarget =
+  | { type: 'here'; groupId: number; channelId: string; createdAt: number }
+  | { type: 'everyone'; groupId: number }
+  | { type: 'group'; groupId: number; groupName?: string }
+  | { type: 'channel'; groupId: number; channelId: string; channelName?: string }
+  | { type: 'user'; addressHash: string };
+
 export interface ReticulumChatEvent {
   eventId: string;
   groupId: number;
@@ -77,6 +84,7 @@ export interface ReticulumChatEvent {
   encryptedPayload: string;
   payloadHash: string;
   mentionAddressHashes: string[];
+  mentionTargets?: ReticulumChatMentionTarget[];
   signature: string;
 }
 
@@ -518,6 +526,10 @@ type ReticulumChatEventRelayRoute = {
 export function buildReticulumChatSignedFields(
   event: ReticulumChatEvent
 ): Record<string, unknown> {
+  const mentionTargets = normalizeReticulumChatMentionTargets(
+    event.mentionTargets,
+    event
+  );
   return {
     authorAddress: event.authorAddress,
     authorPublicKey: event.authorPublicKey,
@@ -528,11 +540,95 @@ export function buildReticulumChatSignedFields(
     eventType: event.eventType,
     groupId: event.groupId,
     mentionAddressHashes: event.mentionAddressHashes,
+    ...(mentionTargets.length > 0 ? { mentionTargets } : {}),
     payloadHash: event.payloadHash,
     replyToEventId: event.replyToEventId ?? null,
     targetEventId: event.targetEventId ?? null,
     timestamp: event.timestamp,
   };
+}
+
+export function normalizeReticulumChatMentionTargets(
+  value: unknown,
+  event?: Partial<Pick<ReticulumChatEvent, 'groupId' | 'channelId' | 'timestamp'>>
+): ReticulumChatMentionTarget[] {
+  if (!Array.isArray(value)) return [];
+  const groupId = Number(event?.groupId);
+  const eventChannelId = normalizeReticulumChatChannelId(event?.channelId);
+  const createdAt = Number(event?.timestamp);
+  const targets: ReticulumChatMentionTarget[] = [];
+  const seen = new Set<string>();
+
+  const add = (target: ReticulumChatMentionTarget) => {
+    const key = JSON.stringify(target);
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(target);
+  };
+
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const target = raw as Record<string, unknown>;
+    const type = typeof target.type === 'string' ? target.type : '';
+    if (type === 'user') {
+      const addressHash =
+        typeof target.addressHash === 'string' ? target.addressHash.trim().toLowerCase() : '';
+      if (/^[0-9a-f]{64}$/i.test(addressHash)) add({ type: 'user', addressHash });
+      continue;
+    }
+
+    const targetGroupId = Number(target.groupId);
+    if (
+      !Number.isInteger(targetGroupId) ||
+      targetGroupId <= 0 ||
+      (Number.isInteger(groupId) && targetGroupId !== groupId)
+    ) {
+      continue;
+    }
+
+    if (type === 'everyone') {
+      add({ type: 'everyone', groupId: targetGroupId });
+      continue;
+    }
+    if (type === 'group') {
+      const groupName =
+        typeof target.groupName === 'string' ? target.groupName.trim().slice(0, 120) : '';
+      add({
+        type: 'group',
+        groupId: targetGroupId,
+        ...(groupName ? { groupName } : {}),
+      });
+      continue;
+    }
+    if (type === 'channel') {
+      const channelId = normalizeReticulumChatChannelId(target.channelId);
+      const channelName =
+        typeof target.channelName === 'string' ? target.channelName.trim().slice(0, 120) : '';
+      add({
+        type: 'channel',
+        groupId: targetGroupId,
+        channelId,
+        ...(channelName ? { channelName } : {}),
+      });
+      continue;
+    }
+    if (type === 'here') {
+      const channelId = normalizeReticulumChatChannelId(target.channelId || eventChannelId);
+      const targetCreatedAt = Number(target.createdAt);
+      add({
+        type: 'here',
+        groupId: targetGroupId,
+        channelId,
+        createdAt: Number.isFinite(targetCreatedAt)
+          ? targetCreatedAt
+          : Number.isFinite(createdAt)
+            ? createdAt
+            : Date.now(),
+      });
+    }
+  }
+
+  return targets.slice(0, 32);
 }
 
 export function hashReticulumChatPayload(encryptedPayload: string): string {
@@ -733,6 +829,13 @@ export function validateReticulumChatEventShape(
     e.mentionAddressHashes.some(
       (hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash)
     )
+  ) {
+    return false;
+  }
+  if (
+    e.mentionTargets != null &&
+    normalizeReticulumChatMentionTargets(e.mentionTargets, e).length !==
+      e.mentionTargets.length
   ) {
     return false;
   }
@@ -1446,8 +1549,8 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getSyncState(groupId);
   }
 
-  getChatSummaries(myAddress = ''): ReticulumGroupChatSummary[] {
-    return this.db.getChatSummaries(myAddress);
+  getChatSummaries(myAddress = '', onlineSince = 0): ReticulumGroupChatSummary[] {
+    return this.db.getChatSummaries(myAddress, onlineSince);
   }
 
   searchEvents(
@@ -5569,11 +5672,12 @@ export function readReticulumChatChannelMetadataHistoryFromDb(
 }
 
 export function readReticulumChatSummariesFromDb(
-  myAddress = ''
+  myAddress = '',
+  onlineSince = 0
 ): ReticulumGroupChatSummary[] {
   const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
   try {
-    return db.getChatSummaries(myAddress);
+    return db.getChatSummaries(myAddress, onlineSince);
   } finally {
     db.close();
   }

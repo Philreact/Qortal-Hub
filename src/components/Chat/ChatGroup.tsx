@@ -476,6 +476,21 @@ const mentionTextFromHtml = (html: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const escapeMentionRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const textHasMentionToken = (text: string, label: string): boolean => {
+  const normalized = String(label || '').trim();
+  if (!normalized) return false;
+  return new RegExp(
+    `(^|\\s)@${escapeMentionRegExp(normalized)}(?=$|\\s|[.,!?;:)\\]])`,
+    'i'
+  ).test(text);
+};
+
+const normalizeMentionTargetLabel = (value: unknown): string =>
+  String(value || '').trim().slice(0, 120);
+
 const mentionedAddressesFromPayload = (payload: unknown): string[] => {
   if (!payload || typeof payload !== 'object') return [];
   const value = (payload as { mentionedAddresses?: unknown })
@@ -492,6 +507,7 @@ const mentionedAddressesFromPayload = (payload: unknown): string[] => {
 
 export const ChatGroup = ({
   selectedGroup,
+  selectedGroupName = '',
   secretKey,
   getSecretKey,
   myAddress,
@@ -980,6 +996,12 @@ export const ChatGroup = ({
 
   const members = useMemo(() => {
     const uniqueMembers = new Set();
+    uniqueMembers.add('here');
+    uniqueMembers.add('everyone');
+    if (selectedGroupName) uniqueMembers.add(selectedGroupName);
+    reticulumChannels.forEach((channel) => {
+      if (channel?.name) uniqueMembers.add(channel.name);
+    });
     groupMentionMembers.forEach((member) => {
       if (member.name) uniqueMembers.add(member.name);
     });
@@ -990,7 +1012,73 @@ export const ChatGroup = ({
     });
 
     return Array.from(uniqueMembers);
-  }, [groupMentionMembers, messages]);
+  }, [groupMentionMembers, messages, reticulumChannels, selectedGroupName]);
+
+  const resolveMentionTargets = useCallback(
+    (html: string) => {
+      const rawText = mentionTextFromHtml(html);
+      const groupId = Number(selectedGroup);
+      const channelId =
+        normalizeReticulumChannelName(selectedReticulumChannelId) ||
+        DEFAULT_RETICULUM_CHANNEL_ID;
+      if (!rawText || !Number.isInteger(groupId) || groupId <= 0) return [];
+
+      const targets = [];
+      const seen = new Set<string>();
+      const addTarget = (target) => {
+        const key = JSON.stringify(target);
+        if (seen.has(key)) return;
+        seen.add(key);
+        targets.push(target);
+      };
+
+      if (textHasMentionToken(rawText, 'here')) {
+        addTarget({
+          type: 'here',
+          groupId,
+          channelId,
+          createdAt: Date.now(),
+        });
+      }
+      if (textHasMentionToken(rawText, 'everyone')) {
+        addTarget({ type: 'everyone', groupId });
+      }
+      const groupName = normalizeMentionTargetLabel(selectedGroupName);
+      if (groupName && textHasMentionToken(rawText, groupName)) {
+        addTarget({
+          type: 'group',
+          groupId,
+          groupName,
+        });
+      }
+      for (const channel of reticulumChannels) {
+        const targetChannelId =
+          normalizeReticulumChannelName(channel?.channelId) ||
+          DEFAULT_RETICULUM_CHANNEL_ID;
+        const channelName = normalizeMentionTargetLabel(channel?.name);
+        const channelIdLabel = normalizeMentionTargetLabel(channel?.channelId);
+        if (
+          (channelName && textHasMentionToken(rawText, channelName)) ||
+          (channelIdLabel && textHasMentionToken(rawText, channelIdLabel))
+        ) {
+          addTarget({
+            type: 'channel',
+            groupId,
+            channelId: targetChannelId,
+            ...(channelName ? { channelName } : {}),
+          });
+        }
+      }
+
+      return targets;
+    },
+    [
+      reticulumChannels,
+      selectedGroup,
+      selectedGroupName,
+      selectedReticulumChannelId,
+    ]
+  );
 
   const setEditorRef = (editorInstance) => {
     editorRef.current = editorInstance;
@@ -1648,6 +1736,7 @@ export const ChatGroup = ({
       targetEventId,
       replyToEventId,
       mentionAddressHashes = [],
+      mentionTargets = [],
     }: {
       encryptedPayload: string;
       eventType:
@@ -1669,6 +1758,7 @@ export const ChatGroup = ({
       targetEventId?: string;
       replyToEventId?: string;
       mentionAddressHashes?: string[];
+      mentionTargets?: Array<Record<string, unknown>>;
     }) => {
       const groupId = Number(selectedGroup);
       if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
@@ -1693,6 +1783,13 @@ export const ChatGroup = ({
         encryptedPayload,
         payloadHash,
         mentionAddressHashes,
+        mentionTargets: Array.isArray(mentionTargets)
+          ? mentionTargets.map((target) =>
+              target?.type === 'here'
+                ? { ...target, createdAt: timestamp }
+                : target
+            )
+          : [],
       };
       const signed = await window.sendMessage(
         'signReticulumChatEvent',
@@ -2557,6 +2654,7 @@ export const ChatGroup = ({
               : [];
 
         const mentionedAddresses = resolveMentionedAddresses(htmlContent || '');
+        const mentionTargets = resolveMentionTargets(htmlContent || '');
         const mentionedAddressHashes =
           await buildMentionAddressHashes(mentionedAddresses);
         const otherData = {
@@ -2569,6 +2667,7 @@ export const ChatGroup = ({
             ? { attachments: reticulumAttachments }
             : {}),
           mentionedAddresses,
+          mentionTargets,
           ...publicData,
         };
         const objectMessage = {
@@ -2591,6 +2690,7 @@ export const ChatGroup = ({
               targetEventId: chatReference || undefined,
               replyToEventId: repliedTo || undefined,
               mentionAddressHashes: mentionedAddressHashes,
+              mentionTargets,
             });
             return { ...result, clearQueueOnSuccess: true };
           }

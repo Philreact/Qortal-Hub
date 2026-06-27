@@ -2914,6 +2914,9 @@ export const Group = ({
                 <ChatGroup
                   myAddress={myAddress}
                   selectedGroup={selectedGroup?.groupId}
+                  selectedGroupName={
+                    selectedGroup?.groupName || selectedGroup?.name || ''
+                  }
                   getSecretKey={getSecretKey}
                   secretKey={secretKey}
                   isPrivate={isPrivate}
