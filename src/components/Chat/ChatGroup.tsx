@@ -1771,6 +1771,13 @@ export const ChatGroup = ({
         normalizeReticulumChannelName(
           channelId || selectedReticulumChannelId
         ) || DEFAULT_RETICULUM_CHANNEL_ID;
+      const normalizedMentionTargets = Array.isArray(mentionTargets)
+        ? mentionTargets.map((target) =>
+            target?.type === 'here'
+              ? { ...target, createdAt: timestamp }
+              : target
+          )
+        : [];
       const baseFields = {
         eventId,
         groupId,
@@ -1783,13 +1790,9 @@ export const ChatGroup = ({
         encryptedPayload,
         payloadHash,
         mentionAddressHashes,
-        mentionTargets: Array.isArray(mentionTargets)
-          ? mentionTargets.map((target) =>
-              target?.type === 'here'
-                ? { ...target, createdAt: timestamp }
-                : target
-            )
-          : [],
+        ...(normalizedMentionTargets.length > 0
+          ? { mentionTargets: normalizedMentionTargets }
+          : {}),
       };
       const signed = await window.sendMessage(
         'signReticulumChatEvent',

@@ -4414,9 +4414,6 @@ export class ReticulumChatManager extends EventEmitter {
     const now = this.now();
     const lastServedAt = this.recentRelayDigestsServed.get(key);
     if (lastServedAt != null && now - lastServedAt < RETICULUM_CHAT_RELAY_DIGEST_DEBOUNCE_MS) {
-      loggerLog(
-        `[ReticulumChat] relay_digest_skipped group=${groupId} peer=${peer} reason=rate_limited`
-      );
       return;
     }
     const firstEntry = this.db.listRelayDigestEntries(groupId, 0, 1, now);
