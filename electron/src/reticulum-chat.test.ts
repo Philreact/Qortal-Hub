@@ -25,10 +25,12 @@ import {
 import {
   hashReticulumChatMentionAddress,
   ReticulumChatDatabase,
+  RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
 } from './reticulum-chat-db';
 import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
   byteLengthUtf8JsonWithBridgeSender,
+  wireFitsReticulum,
 } from './reticulum-wire-size';
 import { ReticulumResourceStore, RETICULUM_RESOURCE_MIN_CHUNK_SIZE } from './reticulum-resource-store';
 import {
@@ -675,6 +677,65 @@ describe('reticulum chat database', () => {
 
     expect(db.getKnownGroupIds()).toEqual([62, 63]);
   });
+
+  it('persists offline relay cache blobs separately from normal chat events', () => {
+    const dbPath = tempDbPath();
+    const event = signedEvent({ eventId: 'relay-db-persist-event', groupId: 64 });
+    const payloadJson = serializeReticulumChatEvent(event);
+    const first = new ReticulumChatDatabase(dbPath);
+    const stored = first.storeRelayEventBlob(event, payloadJson, 'relay-source');
+    expect(stored).toMatchObject({ ok: true });
+    expect(first.hasEvent(event.eventId)).toBe(false);
+    first.close();
+
+    const second = new ReticulumChatDatabase(dbPath);
+    const cached = second.getRelayEventBlob(event.groupId, event.eventId);
+    expect(cached).toMatchObject({
+      eventId: event.eventId,
+      groupId: event.groupId,
+      encoding: 'plain-json-v1',
+      encryption: 'none',
+      payloadJson,
+    });
+    expect(second.hasEvent(event.eventId)).toBe(false);
+    second.close();
+  });
+
+  it('expires offline relay cache blobs after the relay retention window', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({ eventId: 'relay-db-expiring-event', groupId: 65 });
+    const payloadJson = serializeReticulumChatEvent(event);
+    expect(db.storeRelayEventBlob(event, payloadJson, 'relay-source', 10_000)).toMatchObject({
+      ok: true,
+    });
+    expect(db.getRelayEventBlob(65, event.eventId, 10_000)).toMatchObject({
+      eventId: event.eventId,
+    });
+    expect(
+      db.getRelayEventBlob(
+        65,
+        event.eventId,
+        10_000 + RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS + 1
+      )
+    ).toBeNull();
+  });
+
+  it('does not store attachment manifests in the offline relay cache', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'relay-db-attachment-event',
+      groupId: 66,
+      eventType: 'attachment_manifest',
+    });
+    const payloadJson = serializeReticulumChatEvent(event);
+    expect(db.storeRelayEventBlob(event, payloadJson, 'relay-source')).toMatchObject({
+      ok: false,
+      reason: 'attachment-events-not-relayed',
+    });
+    expect(db.getRelayEventBlob(66, event.eventId)).toBeNull();
+  });
 });
 
 describe('reticulum chat manager', () => {
@@ -786,6 +847,614 @@ describe('reticulum chat manager', () => {
       },
     });
     expect(direct.some(({ wire }) => JSON.stringify(wire).includes('encryptedPayload'))).toBe(false);
+    manager.close();
+  });
+
+  it('stores relay event resources without importing them into normal chat history', async () => {
+    const acceptedTransfers: unknown[] = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+        acceptedTransfers.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const now = Date.now();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    const event = signedEvent({
+      eventId: 'relay-cache-event',
+      groupId: 701,
+      timestamp: now,
+    });
+    const blob = serializeReticulumChatEvent(event);
+    const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const resourcePath = path.join(path.dirname(tempDbPath()), 'relay-cache-event.json');
+    fs.writeFileSync(resourcePath, blob, 'utf8');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 701,
+        o: {
+          x: 'relay-store-transfer',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+          rs: 1,
+        },
+      },
+      'source-peer'
+    );
+    expect(acceptedTransfers).toHaveLength(1);
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'relay-store-transfer',
+      peerPresenceHash: 'source-peer',
+      path: resourcePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(manager.getHistory(701, 10)).toHaveLength(0);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'relay_query',
+        g: 701,
+        q: { ids: [event.eventId] },
+      },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(resources).toHaveLength(1);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          o: expect.objectContaining({
+            id: event.eventId,
+            rc: 1,
+            wh: wireHash,
+          }),
+        }),
+      })
+    );
+    manager.close();
+  });
+
+  it('queues relay-store uploads for eligible published events', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([702]);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [999], mode: 'summary' },
+      'relay-peer'
+    );
+    const event = signedEvent({
+      eventId: 'relay-publish-event',
+      groupId: 702,
+      timestamp: 100_000,
+    });
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(resources).toHaveLength(1);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'relay-peer',
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          o: expect.objectContaining({
+            id: event.eventId,
+            rs: 1,
+          }),
+        }),
+      })
+    );
+    manager.close();
+  });
+
+  it('serves relay digests for cached events after group_sub', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    const event = signedEvent({
+      eventId: 'relay-digest-event',
+      groupId: 703,
+      timestamp: now,
+    });
+    (manager as any).db.storeRelayEventBlob(
+      event,
+      serializeReticulumChatEvent(event),
+      'source-peer',
+      now
+    );
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [703], mode: 'summary' },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const digest = direct.find((item) => item.wire.k === 'relay_digest');
+    expect(digest).toMatchObject({
+      peer: 'requester-peer',
+      wire: expect.objectContaining({
+        t: 'RCHAT',
+        k: 'relay_digest',
+        g: 703,
+      }),
+    });
+    expect((digest?.wire as any).events).toContainEqual(
+      expect.objectContaining({
+        id: event.eventId,
+        ts: event.timestamp,
+        c: event.channelId,
+      })
+    );
+    manager.close();
+  });
+
+  it('does not serve empty or duplicate relay digests for repeated group_sub', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [704], mode: 'summary' },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(direct.some((item) => item.wire.k === 'relay_digest')).toBe(false);
+
+    const event = signedEvent({
+      eventId: 'relay-digest-duplicate-event',
+      groupId: 704,
+      timestamp: now,
+    });
+    (manager as any).db.storeRelayEventBlob(
+      event,
+      serializeReticulumChatEvent(event),
+      'source-peer',
+      now
+    );
+    now += 31_000;
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [704], mode: 'summary' },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(direct.filter((item) => item.wire.k === 'relay_digest')).toHaveLength(1);
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [704], mode: 'summary' },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(direct.filter((item) => item.wire.k === 'relay_digest')).toHaveLength(1);
+    manager.close();
+  });
+
+  it('keeps relay digest pages inside the Reticulum wire limit', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    for (let index = 0; index < 12; index += 1) {
+      const event = signedEvent({
+        eventId: `relay-digest-page-${index}`,
+        groupId: 705,
+        authorSeq: index + 1,
+        timestamp: now + index,
+      });
+      (manager as any).db.storeRelayEventBlob(
+        event,
+        serializeReticulumChatEvent(event),
+        'source-peer',
+        now + index
+      );
+    }
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [705], mode: 'summary' },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const digests = direct.filter((item) => item.wire.k === 'relay_digest');
+    expect(digests.length).toBeGreaterThan(0);
+    expect(
+      digests.reduce((total, item) => total + (((item.wire as any).events ?? []).length), 0)
+    ).toBeGreaterThan(0);
+    expect(digests.every((item) => wireFitsReticulum(item.wire))).toBe(true);
+    manager.close();
+  });
+
+  it('uses relay digest discovery to fetch an offline cached event', async () => {
+    const relayDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const relayResources: Array<Record<string, any>> = [];
+    const receiverDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const relayBridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        relayDirect.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        relayResources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const receiverBridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        receiverDirect.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const now = 100_000;
+    const relay = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: relayBridge as any,
+      now: () => now,
+    });
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: receiverBridge as any,
+      now: () => now,
+    });
+    receiver.setLocalGroupMemberships([706]);
+    receiver.subscribeGroup(706);
+    receiverDirect.length = 0;
+    const event = signedEvent({
+      eventId: 'relay-offline-catchup-event',
+      groupId: 706,
+      timestamp: now,
+    });
+    (relay as any).db.storeRelayEventBlob(
+      event,
+      serializeReticulumChatEvent(event),
+      'source-peer',
+      now
+    );
+
+    relay.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [706], mode: 'summary' },
+      'receiver-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const relayDigest = relayDirect.find((item) => item.wire.k === 'relay_digest');
+    expect(relayDigest).toBeDefined();
+
+    receiver.handleWire(relayDigest!.wire, 'relay-peer');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const relayQuery = receiverDirect.find((item) => item.wire.k === 'relay_query');
+    expect(relayQuery).toMatchObject({
+      peer: 'relay-peer',
+      wire: expect.objectContaining({
+        k: 'relay_query',
+        q: expect.objectContaining({ ids: [event.eventId] }),
+      }),
+    });
+
+    relay.handleWire(relayQuery!.wire, 'receiver-peer');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const eventOffer = relayDirect.find((item) => item.wire.k === 'event_offer');
+    expect(eventOffer).toBeDefined();
+    expect(relayResources).toHaveLength(1);
+
+    receiver.handleWire(eventOffer!.wire, 'relay-peer');
+    receiver.handleResourceEvent({
+      status: 'received',
+      transferId: relayResources[0].transferId,
+      peerPresenceHash: 'relay-peer',
+      path: relayResources[0].filePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(receiver.getHistory(706, 10).map((item) => item.eventId)).toContain(event.eventId);
+    relay.close();
+    receiver.close();
+  });
+
+  it('routes relay digest fetches through an intermediate overlay peer', async () => {
+    const receiverPeer = 'aaaaaaaaaaaaaaaa';
+    const intermediatePeer = 'bbbbbbbbbbbbbbbb';
+    const relayPeer = 'cccccccccccccccc';
+    const receiverDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const intermediateDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const intermediateFanout: Array<{ messages: Record<string, unknown>[]; excludes: string[] }> = [];
+    const relayDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const relayResources: Array<Record<string, any>> = [];
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => receiverPeer,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          receiverDirect.push({ peer, wire });
+          return { ok: true as const };
+        },
+        acceptReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+    });
+    const intermediate = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => intermediatePeer,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[],
+          excludes: string[] = []
+        ) => {
+          intermediateFanout.push({ messages, excludes });
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          intermediateDirect.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    const relay = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => relayPeer,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          relayDirect.push({ peer, wire });
+          return { ok: true as const };
+        },
+        sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+          relayResources.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    receiver.setLocalGroupMemberships([707]);
+    receiver.subscribeGroup(707);
+    receiverDirect.length = 0;
+    const event = signedEvent({
+      eventId: 'relay-multihop-catchup-event',
+      groupId: 707,
+      timestamp: 100_000,
+    });
+    (relay as any).db.storeRelayEventBlob(
+      event,
+      serializeReticulumChatEvent(event),
+      'dddddddddddddddd',
+      100_000
+    );
+
+    intermediate.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [707], mode: 'summary' },
+      receiverPeer
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const forwardedSub = intermediateFanout
+      .flatMap((item) => item.messages)
+      .find((wire) => wire.k === 'group_sub');
+    expect(forwardedSub).toMatchObject({
+      k: 'group_sub',
+    });
+    expect(typeof forwardedSub?.o).toBe('string');
+
+    relay.handleWire(forwardedSub!, intermediatePeer);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const relayDigest = relayDirect.find((item) => item.wire.k === 'relay_digest');
+    expect(relayDigest).toMatchObject({
+      peer: intermediatePeer,
+      wire: expect.objectContaining({ k: 'relay_digest', g: 707 }),
+    });
+
+    intermediate.handleWire(relayDigest!.wire, relayPeer);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const forwardedDigest = intermediateDirect.find((item) => item.wire.k === 'relay_digest');
+    expect(forwardedDigest).toMatchObject({
+      peer: receiverPeer,
+      wire: expect.objectContaining({ k: 'relay_digest', g: 707 }),
+    });
+
+    receiver.handleWire(forwardedDigest!.wire, intermediatePeer);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const relayQuery = receiverDirect.find((item) => item.wire.k === 'relay_query');
+    expect(relayQuery).toMatchObject({
+      peer: intermediatePeer,
+      wire: expect.objectContaining({ k: 'relay_query', g: 707 }),
+    });
+
+    intermediateFanout.length = 0;
+    intermediate.handleWire(relayQuery!.wire, receiverPeer);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const forwardedQuery = intermediateFanout
+      .flatMap((item) => item.messages)
+      .find((wire) => wire.k === 'relay_query');
+    expect(forwardedQuery).toMatchObject({
+      k: 'relay_query',
+      g: 707,
+    });
+    expect(typeof forwardedQuery?.o).toBe('string');
+
+    relay.handleWire(forwardedQuery!, intermediatePeer);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const relayOffer = relayDirect.find((item) => item.wire.k === 'event_offer');
+    expect(relayOffer).toMatchObject({
+      peer: intermediatePeer,
+      wire: expect.objectContaining({ k: 'event_offer', g: 707 }),
+    });
+    expect(relayResources[0]).toMatchObject({
+      allowedRecipientAddress: receiverPeer,
+    });
+
+    intermediate.handleWire(relayOffer!.wire, relayPeer);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const forwardedOffer = intermediateDirect.find((item) => item.wire.k === 'event_offer');
+    expect(forwardedOffer).toMatchObject({
+      peer: receiverPeer,
+      wire: expect.objectContaining({ k: 'event_offer', g: 707 }),
+    });
+
+    receiver.handleWire(forwardedOffer!.wire, intermediatePeer);
+    receiver.handleResourceEvent({
+      status: 'received',
+      transferId: relayResources[0].transferId,
+      peerPresenceHash: relayPeer,
+      path: relayResources[0].filePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(receiver.getHistory(707, 10).map((item) => item.eventId)).toContain(event.eventId);
+    receiver.close();
+    intermediate.close();
+    relay.close();
+  });
+
+  it('prefers established overlay peers for relay-store uploads and randomizes selection', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getOverlayLinkSnapshots: () => [
+        {
+          linkId: 'link-alpha',
+          peerPresenceHash: 'alpha-peer',
+          incoming: false,
+          connectedAt: 1,
+          lastRxAt: 100_000,
+          lastActivityAt: 100_000,
+        },
+        {
+          linkId: 'link-gamma',
+          peerPresenceHash: 'gamma-peer',
+          incoming: false,
+          connectedAt: 2,
+          lastRxAt: 100_000,
+          lastActivityAt: 100_000,
+        },
+      ],
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    (manager as any).shuffleRelayPeers = (peers: string[]) => [...peers].reverse();
+    manager.setLocalGroupMemberships([702]);
+    for (const peer of ['alpha-peer', 'beta-peer', 'gamma-peer', 'delta-peer']) {
+      manager.handleWire(
+        { t: 'RCHAT', k: 'group_sub', groups: [999], mode: 'summary' },
+        peer
+      );
+    }
+    const event = signedEvent({
+      eventId: 'relay-established-randomized-event',
+      groupId: 702,
+      timestamp: 100_000,
+    });
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(resources).toHaveLength(3);
+    expect(direct.map((item) => item.peer)).toEqual([
+      'gamma-peer',
+      'alpha-peer',
+      'delta-peer',
+    ]);
     manager.close();
   });
 

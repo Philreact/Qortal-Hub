@@ -5,6 +5,9 @@ import * as path from 'path';
 import type { ReticulumChatEvent } from './reticulum-chat';
 
 export const RETICULUM_CHAT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+export const RETICULUM_CHAT_RELAY_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+export const RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+export const RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES = 32 * 1024;
 export const RETICULUM_CHAT_DEFAULT_CHANNEL_ID = 'general';
 
 export type ReticulumGroupChannel = {
@@ -81,6 +84,36 @@ export type ReticulumChatSearchResult = {
   snippet: string;
 };
 
+export type ReticulumChatRelayCacheEntry = {
+  blobId: string;
+  eventId: string;
+  groupId: number;
+  groupHash: string;
+  createdAt: number;
+  expiresAt: number;
+  sizeBytes: number;
+  encoding: 'plain-json-v1';
+  encryption: 'none';
+  keyEpoch: number | null;
+  encryptedKeyId: string | null;
+  payloadJson: string;
+  sourcePeerHash: string;
+  servedCount: number;
+  lastServedAt: number | null;
+};
+
+export type ReticulumChatRelayDigestEntry = {
+  blobId: string;
+  eventId: string;
+  groupId: number;
+  channelId: string;
+  authorAddress: string;
+  authorSeq: number;
+  timestamp: number;
+  payloadHash: string;
+  createdAt: number;
+};
+
 type ReticulumChatMissingRangeRow = {
   group_id: number;
   author_address: string;
@@ -113,6 +146,55 @@ type EventRow = {
   accepted_at: number;
   wire_bytes: number;
 };
+
+type RelayCacheRow = {
+  blob_id: string;
+  event_id: string;
+  group_id: number;
+  group_hash: string;
+  created_at: number;
+  expires_at: number;
+  size_bytes: number;
+  encoding: string;
+  encryption: string;
+  key_epoch: number | null;
+  encrypted_key_id: string | null;
+  payload_json: string;
+  source_peer_hash: string;
+  served_count: number;
+  last_served_at: number | null;
+};
+
+function relayRowToEntry(row: RelayCacheRow): ReticulumChatRelayCacheEntry {
+  return {
+    blobId: row.blob_id,
+    eventId: row.event_id,
+    groupId: row.group_id,
+    groupHash: row.group_hash,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    sizeBytes: row.size_bytes,
+    encoding: 'plain-json-v1',
+    encryption: 'none',
+    keyEpoch: row.key_epoch,
+    encryptedKeyId: row.encrypted_key_id,
+    payloadJson: row.payload_json,
+    sourcePeerHash: row.source_peer_hash,
+    servedCount: row.served_count,
+    lastServedAt: row.last_served_at,
+  };
+}
+
+export function reticulumChatRelayBlobId(payloadJson: string): string {
+  return nodeCrypto.createHash('sha256').update(payloadJson, 'utf8').digest('hex');
+}
+
+export function reticulumChatRelayGroupHash(groupId: number): string {
+  return nodeCrypto
+    .createHash('sha256')
+    .update(`rchat-relay-group:${groupId}`, 'utf8')
+    .digest('hex');
+}
 
 function rowToEvent(row: EventRow): ReticulumChatEvent {
   return {
@@ -252,7 +334,9 @@ function buildPlainSnippet(text: string, terms: string[]): string {
 }
 
 export class ReticulumChatDatabase {
+  private static sharedRelayCaches = new Map<string, Map<string, ReticulumChatRelayCacheEntry>>();
   private db: DB;
+  private readonly relayCacheKey: string;
   private memoryEvents = new Map<string, ReticulumChatEvent>();
   private memorySearchText = new Map<string, string>();
   private memoryChannels = new Map<string, ReticulumGroupChannel>();
@@ -269,6 +353,7 @@ export class ReticulumChatDatabase {
     }>
   >();
   private memoryReadWatermarks = new Map<string, number>();
+  private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
   private memoryMeta = new Map<
     string,
     { ownEvent: boolean; lastServedAt: number; storedAt: number; wireBytes: number }
@@ -334,14 +419,30 @@ export class ReticulumChatDatabase {
   private stmtGetPresentSeqsInRange: Statement;
   private stmtDeleteMissingRange: Statement;
   private stmtInsertMissingRangeRaw: Statement;
+  private stmtInsertRelayBlob: Statement;
+  private stmtGetRelayBlobByEvent: Statement;
+  private stmtListRelayDigestEntries: Statement;
+  private stmtMarkRelayBlobServed: Statement;
+  private stmtDeleteRelayExpired: Statement;
+  private stmtTotalRelayBytes: Statement;
+  private stmtRelayEvictCandidate: Statement;
+  private stmtDeleteRelayBlob: Statement;
+  private stmtDeleteRelayByEvent: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    this.relayCacheKey = path.resolve(dbPath);
+    const sharedRelayCache = ReticulumChatDatabase.sharedRelayCaches.get(this.relayCacheKey);
+    this.memoryRelayCache = sharedRelayCache ?? new Map<string, ReticulumChatRelayCacheEntry>();
+    if (!sharedRelayCache) {
+      ReticulumChatDatabase.sharedRelayCaches.set(this.relayCacheKey, this.memoryRelayCache);
+    }
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('synchronous = NORMAL');
     this.initSchema();
+    this.initRelayCacheSchema();
 
     this.stmtInsertEvent = this.db.prepare(`
       INSERT OR IGNORE INTO reticulum_chat_events
@@ -791,6 +892,51 @@ export class ReticulumChatDatabase {
       VALUES
         (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, @attempts, @next_attempt_at)
     `);
+    this.stmtInsertRelayBlob = this.db.prepare(`
+      INSERT INTO rchat_relay_cache
+        (blob_id, event_id, group_id, group_hash, created_at, expires_at, size_bytes,
+         encoding, encryption, key_epoch, encrypted_key_id, payload_json, source_peer_hash,
+         served_count, last_served_at)
+      VALUES
+        (@blob_id, @event_id, @group_id, @group_hash, @created_at, @expires_at, @size_bytes,
+         @encoding, @encryption, @key_epoch, @encrypted_key_id, @payload_json, @source_peer_hash,
+         0, NULL)
+    `);
+    this.stmtGetRelayBlobByEvent = this.db.prepare(`
+      SELECT * FROM rchat_relay_cache
+      WHERE group_id = ? AND event_id = ? AND expires_at > ?
+      LIMIT 1
+    `);
+    this.stmtListRelayDigestEntries = this.db.prepare(`
+      SELECT * FROM rchat_relay_cache
+      WHERE group_id = ? AND expires_at > ?
+      ORDER BY created_at ASC, event_id ASC
+      LIMIT ? OFFSET ?
+    `);
+    this.stmtMarkRelayBlobServed = this.db.prepare(`
+      UPDATE rchat_relay_cache
+      SET served_count = served_count + 1,
+          last_served_at = ?
+      WHERE blob_id = ?
+    `);
+    this.stmtDeleteRelayExpired = this.db.prepare(
+      'DELETE FROM rchat_relay_cache WHERE expires_at <= ?'
+    );
+    this.stmtTotalRelayBytes = this.db.prepare(`
+      SELECT COALESCE(SUM(size_bytes), 0) AS total
+      FROM rchat_relay_cache
+    `);
+    this.stmtRelayEvictCandidate = this.db.prepare(`
+      SELECT blob_id FROM rchat_relay_cache
+      ORDER BY expires_at ASC, created_at ASC
+      LIMIT 1
+    `);
+    this.stmtDeleteRelayBlob = this.db.prepare(
+      'DELETE FROM rchat_relay_cache WHERE blob_id = ?'
+    );
+    this.stmtDeleteRelayByEvent = this.db.prepare(
+      'DELETE FROM rchat_relay_cache WHERE event_id = ?'
+    );
     this.pruneSatisfiedMissingRanges();
     this.backfillSearchIndex();
   }
@@ -855,6 +1001,173 @@ export class ReticulumChatDatabase {
     if (inMemory) return inMemory;
     const row = this.stmtGetEvent.get(eventId) as EventRow | undefined;
     return row ? rowToEvent(row) : null;
+  }
+
+  private relayEntryToDigestEntry(
+    entry: ReticulumChatRelayCacheEntry,
+    now = Date.now()
+  ): ReticulumChatRelayDigestEntry | null {
+    if (entry.expiresAt <= now) return null;
+    try {
+      const event = JSON.parse(entry.payloadJson) as Partial<ReticulumChatEvent>;
+      if (
+        event.groupId !== entry.groupId ||
+        event.eventId !== entry.eventId ||
+        typeof event.channelId !== 'string' ||
+        typeof event.authorAddress !== 'string' ||
+        !Number.isInteger(event.authorSeq) ||
+        typeof event.timestamp !== 'number' ||
+        typeof event.payloadHash !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        blobId: entry.blobId,
+        eventId: entry.eventId,
+        groupId: entry.groupId,
+        channelId: event.channelId,
+        authorAddress: event.authorAddress,
+        authorSeq: event.authorSeq,
+        timestamp: event.timestamp,
+        payloadHash: event.payloadHash,
+        createdAt: entry.createdAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  storeRelayEventBlob(
+    event: ReticulumChatEvent,
+    payloadJson: string,
+    sourcePeerHash: string,
+    now = Date.now()
+  ): { ok: true; blobId: string; stored: boolean } | { ok: false; reason: string } {
+    if (!Number.isInteger(event.groupId) || event.groupId <= 0) {
+      return { ok: false, reason: 'invalid-group' };
+    }
+    if (event.eventType === 'attachment_manifest') {
+      return { ok: false, reason: 'attachment-events-not-relayed' };
+    }
+    if (typeof payloadJson !== 'string' || !payloadJson.trim()) {
+      return { ok: false, reason: 'empty-payload' };
+    }
+    const sizeBytes = Buffer.byteLength(payloadJson, 'utf8');
+    if (sizeBytes <= 0 || sizeBytes > RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES) {
+      return { ok: false, reason: 'payload-too-large' };
+    }
+    const blobId = reticulumChatRelayBlobId(payloadJson);
+    this.stmtDeleteRelayByEvent.run(event.eventId);
+    this.stmtDeleteRelayBlob.run(blobId);
+    const inserted = this.stmtInsertRelayBlob.run({
+      blob_id: blobId,
+      event_id: event.eventId,
+      group_id: event.groupId,
+      group_hash: reticulumChatRelayGroupHash(event.groupId),
+      created_at: now,
+      expires_at: now + RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
+      size_bytes: sizeBytes,
+      encoding: 'plain-json-v1',
+      encryption: 'none',
+      key_epoch: null,
+      encrypted_key_id: null,
+      payload_json: payloadJson,
+      source_peer_hash: sourcePeerHash.trim().toLowerCase(),
+    });
+    this.memoryRelayCache.set(event.eventId, {
+      blobId,
+      eventId: event.eventId,
+      groupId: event.groupId,
+      groupHash: reticulumChatRelayGroupHash(event.groupId),
+      createdAt: now,
+      expiresAt: now + RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
+      sizeBytes,
+      encoding: 'plain-json-v1',
+      encryption: 'none',
+      keyEpoch: null,
+      encryptedKeyId: null,
+      payloadJson,
+      sourcePeerHash: sourcePeerHash.trim().toLowerCase(),
+      servedCount: 0,
+      lastServedAt: null,
+    });
+    this.enforceOfflineRelayCacheLimit(now);
+    return { ok: true, blobId, stored: inserted.changes > 0 || this.memoryRelayCache.has(event.eventId) };
+  }
+
+  getRelayEventBlob(
+    groupId: number,
+    eventId: string,
+    now = Date.now()
+  ): ReticulumChatRelayCacheEntry | null {
+    const memoryEntry = this.memoryRelayCache.get(eventId);
+    if (memoryEntry && memoryEntry.groupId === groupId && memoryEntry.expiresAt > now) {
+      const served = {
+        ...memoryEntry,
+        servedCount: memoryEntry.servedCount + 1,
+        lastServedAt: now,
+      };
+      this.memoryRelayCache.set(eventId, served);
+      return served;
+    }
+    if (memoryEntry && memoryEntry.expiresAt <= now) this.memoryRelayCache.delete(eventId);
+    this.stmtDeleteRelayExpired.run(now);
+    const row = this.stmtGetRelayBlobByEvent.get(groupId, eventId, now) as RelayCacheRow | undefined;
+    if (!row) return null;
+    this.stmtMarkRelayBlobServed.run(now, row.blob_id);
+    return relayRowToEntry(row);
+  }
+
+  listRelayDigestEntries(
+    groupId: number,
+    offset = 0,
+    limit = 32,
+    now = Date.now()
+  ): ReticulumChatRelayDigestEntry[] {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    const boundedOffset = Math.max(0, Math.floor(offset));
+    const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
+    this.stmtDeleteRelayExpired.run(now);
+    const byEventId = new Map<string, ReticulumChatRelayDigestEntry>();
+    for (const [eventId, entry] of this.memoryRelayCache) {
+      if (entry.expiresAt <= now) {
+        this.memoryRelayCache.delete(eventId);
+        continue;
+      }
+      if (entry.groupId !== groupId) continue;
+      const digestEntry = this.relayEntryToDigestEntry(entry, now);
+      if (digestEntry) byEventId.set(digestEntry.eventId, digestEntry);
+    }
+    const rows = this.stmtListRelayDigestEntries.all(
+      groupId,
+      now,
+      boundedLimit + boundedOffset,
+      0
+    ) as RelayCacheRow[];
+    for (const row of rows) {
+      const digestEntry = this.relayEntryToDigestEntry(relayRowToEntry(row), now);
+      if (digestEntry && !byEventId.has(digestEntry.eventId)) {
+        byEventId.set(digestEntry.eventId, digestEntry);
+      }
+    }
+    return [...byEventId.values()]
+      .sort((a, b) => a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId))
+      .slice(boundedOffset, boundedOffset + boundedLimit);
+  }
+
+  getOfflineRelayCacheBytes(now = Date.now()): number {
+    this.stmtDeleteRelayExpired.run(now);
+    let memoryTotal = 0;
+    for (const [eventId, entry] of this.memoryRelayCache) {
+      if (entry.expiresAt <= now) {
+        this.memoryRelayCache.delete(eventId);
+        continue;
+      }
+      memoryTotal += entry.sizeBytes;
+    }
+    const row = this.stmtTotalRelayBytes.get() as { total?: number } | undefined;
+    const sqliteTotal = typeof row?.total === 'number' ? row.total : 0;
+    return Math.max(sqliteTotal, memoryTotal);
   }
 
   upsertSearchText(
@@ -2298,6 +2611,31 @@ export class ReticulumChatDatabase {
     }
   }
 
+  private enforceOfflineRelayCacheLimit(
+    now = Date.now(),
+    maxBytes = RETICULUM_CHAT_RELAY_CACHE_MAX_BYTES
+  ): void {
+    this.stmtDeleteRelayExpired.run(now);
+    for (const [eventId, entry] of this.memoryRelayCache) {
+      if (entry.expiresAt <= now) this.memoryRelayCache.delete(eventId);
+    }
+    while (this.getOfflineRelayCacheBytes(now) > maxBytes) {
+      const memoryCandidate = [...this.memoryRelayCache.values()].sort(
+        (a, b) => a.expiresAt - b.expiresAt || a.createdAt - b.createdAt
+      )[0];
+      if (memoryCandidate) {
+        this.memoryRelayCache.delete(memoryCandidate.eventId);
+        this.stmtDeleteRelayBlob.run(memoryCandidate.blobId);
+        continue;
+      }
+      const row = this.stmtRelayEvictCandidate.get() as
+        | { blob_id?: string }
+        | undefined;
+      if (!row?.blob_id) break;
+      this.stmtDeleteRelayBlob.run(row.blob_id);
+    }
+  }
+
   private searchEventsMirror(
     terms: string[],
     allowedGroups: Set<number> | null,
@@ -2487,6 +2825,29 @@ export class ReticulumChatDatabase {
         ON rchat_missing_ranges (group_id, author_address, next_attempt_at);
       CREATE INDEX IF NOT EXISTS idx_rchat_verified_windows_lookup
         ON rchat_verified_windows (group_id, channel_id, start_feed_timestamp, end_feed_timestamp);
+      CREATE TABLE IF NOT EXISTS rchat_relay_cache (
+        blob_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        group_id INTEGER NOT NULL,
+        group_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        encoding TEXT NOT NULL DEFAULT 'plain-json-v1',
+        encryption TEXT NOT NULL DEFAULT 'none',
+        key_epoch INTEGER,
+        encrypted_key_id TEXT,
+        payload_json TEXT NOT NULL,
+        source_peer_hash TEXT NOT NULL DEFAULT '',
+        served_count INTEGER NOT NULL DEFAULT 0,
+        last_served_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_event
+        ON rchat_relay_cache (group_id, event_id, expires_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_eviction
+        ON rchat_relay_cache (expires_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_group_created
+        ON rchat_relay_cache (group_id, created_at, event_id);
       CREATE TABLE IF NOT EXISTS reticulum_chat_read_watermarks (
         group_id INTEGER NOT NULL,
         channel_id TEXT NOT NULL DEFAULT 'general',
@@ -2550,6 +2911,34 @@ export class ReticulumChatDatabase {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (group_id, category_id)
       );
+    `);
+  }
+
+  private initRelayCacheSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_relay_cache (
+        blob_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        group_id INTEGER NOT NULL,
+        group_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        encoding TEXT NOT NULL DEFAULT 'plain-json-v1',
+        encryption TEXT NOT NULL DEFAULT 'none',
+        key_epoch INTEGER,
+        encrypted_key_id TEXT,
+        payload_json TEXT NOT NULL,
+        source_peer_hash TEXT NOT NULL DEFAULT '',
+        served_count INTEGER NOT NULL DEFAULT 0,
+        last_served_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_event
+        ON rchat_relay_cache (group_id, event_id, expires_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_eviction
+        ON rchat_relay_cache (expires_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_group_created
+        ON rchat_relay_cache (group_id, created_at, event_id);
     `);
   }
 

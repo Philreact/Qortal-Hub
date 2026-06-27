@@ -13,9 +13,13 @@ import {
   ReticulumChatDatabase,
   type ReticulumChatChannelDigest,
   type ReticulumChatFeedCursor,
+  type ReticulumChatRelayCacheEntry,
+  type ReticulumChatRelayDigestEntry,
+  RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
+  reticulumChatRelayBlobId,
   type ReticulumGroupChannel,
   type ReticulumGroupCategory,
   type ReticulumGroupChatSummary,
@@ -104,6 +108,9 @@ export interface ReticulumChatEventOffer {
   senderReticulumDestinationHash?: string;
   senderReticulumIdentityPublicKeyBase64?: string;
   relayRequestId?: string;
+  relayStore?: boolean;
+  relayCached?: boolean;
+  relayBlobId?: string;
 }
 
 type ReticulumChatEventOfferOptions = {
@@ -111,6 +118,9 @@ type ReticulumChatEventOfferOptions = {
   recipientPeerHash?: string;
   relayRequestId?: string;
   sourcePeerHash?: string;
+  relayStore?: boolean;
+  relayCached?: boolean;
+  relayBlobId?: string;
 };
 
 export interface ReticulumChatEventOfferWire {
@@ -125,6 +135,9 @@ export interface ReticulumChatEventOfferWire {
   fts?: number;
   rr?: string;
   sp?: string;
+  rs?: 1;
+  rc?: 1;
+  bid?: string;
 }
 
 export interface ReticulumChatEventRequestWire {
@@ -146,6 +159,30 @@ export interface ReticulumChatResourceRequestWire {
   ts: number;
   sig: string;
 }
+
+export type ReticulumChatRelayQueryWire = {
+  ids: string[];
+  o?: string;
+  rid?: string;
+  h?: number;
+};
+
+export type ReticulumChatRelayAckWire = {
+  id: string;
+  ok: boolean;
+  reason?: string;
+  bid?: string;
+};
+
+export type ReticulumChatRelayDigestEntryWire = {
+  id: string;
+  ts: number;
+  c: string;
+  a?: string;
+  seq?: number;
+  ph?: string;
+  bid?: string;
+};
 
 export interface ReticulumChatResourceOffer {
   transferId: string;
@@ -214,7 +251,8 @@ export type ReticulumChatProtocolFeature =
   | 'digest_req'
   | 'feed_req'
   | 'range_req'
-  | 'resource_v2';
+  | 'resource_v2'
+  | 'relay_cache';
 
 export type ReticulumChatDigestWire = {
   c: string;
@@ -288,6 +326,16 @@ export type ReticulumChatWire =
       rid?: string;
       h?: number;
     }
+  | { t: 'RCHAT'; k: 'relay_query'; g: number; q: ReticulumChatRelayQueryWire }
+  | { t: 'RCHAT'; k: 'relay_ack'; g: number; a: ReticulumChatRelayAckWire }
+  | {
+      t: 'RCHAT';
+      k: 'relay_digest';
+      g: number;
+      events: ReticulumChatRelayDigestEntryWire[];
+      more?: boolean;
+      nextOffset?: number;
+    }
   | {
       t: 'RCHAT';
       k: 'event_batch';
@@ -323,6 +371,7 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'feed_req',
   'range_req',
   'resource_v2',
+  'relay_cache',
 ];
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 25;
 const RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE = 20;
@@ -367,6 +416,12 @@ const RETICULUM_CHAT_CONTROL_RETRY_MS = 3_000;
 const RETICULUM_CHAT_CONTROL_RETRY_TICK_MS = 250;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX_ATTEMPTS = 10;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX = 512;
+const RETICULUM_CHAT_RELAY_REPLICATION_TARGET = 3;
+const RETICULUM_CHAT_RELAY_QUERY_MAX_IDS = 16;
+const RETICULUM_CHAT_RELAY_QUERY_DEBOUNCE_MS = 30_000;
+const RETICULUM_CHAT_RELAY_DIGEST_PAGE_SIZE = 8;
+const RETICULUM_CHAT_RELAY_DIGEST_MAX_EVENTS_PER_SUB = 64;
+const RETICULUM_CHAT_RELAY_DIGEST_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_RESOURCE_RELAY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_RESOURCE_RELAY_MAX_ROUTES = 2048;
 const RETICULUM_CHAT_GROUP_ROUTE_TTL_MS = 5 * 60_000;
@@ -559,6 +614,8 @@ function eventOfferToWire(offer: ReticulumChatEventOffer): ReticulumChatEventOff
       : {}),
     ...(offer.relayRequestId ? { rr: offer.relayRequestId } : {}),
     ...(offer.sourcePeerHash ? { sp: compactPeerHashForWire(offer.sourcePeerHash) } : {}),
+    ...(offer.relayStore ? { rs: 1 as const } : {}),
+    ...(offer.relayCached ? { rc: 1 as const } : {}),
   };
 }
 
@@ -592,6 +649,9 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
     ...(continuation ? { continuation } : {}),
     ...(typeof o.rr === 'string' && o.rr ? { relayRequestId: o.rr } : {}),
     ...(typeof o.sp === 'string' && o.sp ? { sourcePeerHash: normalizePeerHashFromWire(o.sp) ?? o.sp } : {}),
+    ...(o.rs === 1 ? { relayStore: true } : {}),
+    ...(o.rc === 1 ? { relayCached: true } : {}),
+    ...(typeof o.bid === 'string' && /^[0-9a-f]{64}$/i.test(o.bid) ? { relayBlobId: o.bid.toLowerCase() } : {}),
   };
 }
 
@@ -892,6 +952,10 @@ export class ReticulumChatManager extends EventEmitter {
   private groupAdminValidationCache = new Map<string, { isAdmin: boolean; expiresAt: number }>();
   private requestedEventPulls = new Map<string, number>();
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
+  private outboundRelayCachedEventResources = new Map<
+    string,
+    { groupId: number; eventId: string; expiresAt: number }
+  >();
   private eventPullQueueTimer: ReturnType<typeof setTimeout> | null = null;
   private controlRetryQueue = new Map<string, ReticulumChatControlRetryItem>();
   private controlRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -915,6 +979,9 @@ export class ReticulumChatManager extends EventEmitter {
   private activeChannelSubscriptions = new Map<number, Set<string>>();
   private recentInboundControlWires = new Map<string, number>();
   private recentServedSyncRequests = new Map<string, number>();
+  private recentRelayQueries = new Map<string, number>();
+  private recentRelayDigestsServed = new Map<string, number>();
+  private lastRelayNoPeersLogAt = 0;
   private peerProtocolViolations = new Map<string, ReticulumChatPeerViolationRecord>();
   private resourceRelayRoutes = new Map<string, ReticulumChatResourceRelayRoute>();
   private localResourceRequestIds = new Map<string, number>();
@@ -1286,6 +1353,7 @@ export class ReticulumChatManager extends EventEmitter {
         failed.error ?? failed.reason
       );
     }
+    void this.replicateEventToRelayCache(event);
     return { ok: true };
   }
 
@@ -1568,6 +1636,7 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'group_digest' &&
       kind !== 'digest_req' &&
       kind !== 'group_sub' &&
+      kind !== 'relay_digest' &&
       kind !== 'feed_req' &&
       kind !== 'range_req' &&
       kind !== 'event_batch'
@@ -1639,6 +1708,27 @@ export class ReticulumChatManager extends EventEmitter {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         this.handleEventOffer(eventOfferFromWire(groupId, wire.o), peerHash);
+        return;
+      }
+      case 'relay_query':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.handleRelayQuery(groupId, wire, peerHash);
+        return;
+      }
+      case 'relay_ack':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        this.handleRelayAck(groupId, wire.a, peerHash);
+        return;
+      }
+      case 'relay_digest':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        this.handleRelayDigest(groupId, wire, peerHash);
         return;
       }
       case 'resource_route':
@@ -1833,7 +1923,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private relayGroupControlRequest(
-    kind: 'digest_req' | 'feed_req' | 'range_req' | 'event_req',
+    kind: 'digest_req' | 'feed_req' | 'range_req' | 'event_req' | 'relay_query',
     groupId: number,
     wire: Record<string, unknown>,
     inboundPeerHash: string,
@@ -1873,10 +1963,23 @@ export class ReticulumChatManager extends EventEmitter {
             )
           : this.groupControlRequestId(kind, groupId, origin, payloadKey)
       );
-    if (kind === 'event_req') {
-      const eventId = String((wire.q as Partial<ReticulumChatEventRequestWire> | undefined)?.id || '');
-      if (eventId) {
-        this.eventRelayRoutes.set(requestId, {
+    if (kind === 'event_req' || kind === 'relay_query') {
+      const eventIds =
+        kind === 'event_req'
+          ? [String((wire.q as Partial<ReticulumChatEventRequestWire> | undefined)?.id || '')]
+          : (
+              Array.isArray((wire.q as Partial<ReticulumChatRelayQueryWire> | undefined)?.ids)
+                ? ((wire.q as Partial<ReticulumChatRelayQueryWire>).ids ?? [])
+                    .filter((id): id is string => typeof id === 'string' && id.length >= 8)
+                    .slice(0, RETICULUM_CHAT_RELAY_QUERY_MAX_IDS)
+                : []
+            );
+      for (const eventId of eventIds) {
+        const routeKey =
+          kind === 'event_req'
+            ? requestId
+            : this.eventRelayRequestId(groupId, eventId, origin);
+        this.eventRelayRoutes.set(routeKey, {
           reversePeerHash: inbound,
           originPeerHash: origin,
           groupId,
@@ -1888,7 +1991,7 @@ export class ReticulumChatManager extends EventEmitter {
     const forwarded = {
       ...wire,
       o: this.compactRoutePeerHash(origin),
-      rid: requestId,
+      ...(kind === 'relay_query' ? {} : { rid: requestId }),
       h: hops + 1,
     } as ReticulumChatWire;
     if (kind === 'event_req' && !wireFitsReticulum(forwarded)) {
@@ -1921,6 +2024,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (this.subscribedGroups.has(groupId) && this.localGroupIds.has(groupId)) {
         void this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
       }
+      void this.serveRelayDigestForGroup(peerHash, groupId);
     }
     void this.forwardGroupSub(
       groups,
@@ -3231,6 +3335,36 @@ export class ReticulumChatManager extends EventEmitter {
     this.scheduleEventPullQueue();
   }
 
+  private enqueueRelayQuery(
+    groupId: number,
+    eventIds: string[],
+    reason: string,
+    peerHash = ''
+  ): void {
+    const ids = [...new Set(eventIds)]
+      .filter((id) => typeof id === 'string' && id.length >= 8 && !this.db.hasEvent(id))
+      .slice(0, RETICULUM_CHAT_RELAY_QUERY_MAX_IDS);
+    if (ids.length === 0) return;
+    const peer = peerHash.trim().toLowerCase();
+    const key = `${groupId}:${peer || 'fanout'}:${ids.sort().join(',')}`;
+    const now = this.now();
+    if (now - (this.recentRelayQueries.get(key) ?? 0) < RETICULUM_CHAT_RELAY_QUERY_DEBOUNCE_MS) {
+      return;
+    }
+    this.recentRelayQueries.set(key, now);
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'relay_query',
+      g: groupId,
+      q: { ids },
+    };
+    loggerLog(
+      `[ReticulumChat] relay_query queued group=${groupId} ids=${ids.length} reason=${reason}${peer ? ` peer=${peer}` : ''}`
+    );
+    if (peer) void this.sendToPeer(peer, wire);
+    else void this.fanout(wire);
+  }
+
   private scheduleEventPullQueue(delayMs = 0): void {
     if (this.eventPullQueueTimer) {
       if (delayMs > 0) return;
@@ -3261,11 +3395,13 @@ export class ReticulumChatManager extends EventEmitter {
           loggerWarn(
             `[ReticulumChat] Giving up event pull ${item.hint.eventId} after ${item.attempts} attempts`
           );
+          this.enqueueRelayQuery(item.hint.groupId, [item.hint.eventId], 'pull-max-attempts');
           this.pendingEventPulls.delete(queueKey);
           continue;
         }
         const peerKey = item.peerHashes.values().next().value;
         if (typeof peerKey !== 'string' || !peerKey) {
+          this.enqueueRelayQuery(item.hint.groupId, [item.hint.eventId], 'pull-no-source');
           this.pendingEventPulls.delete(queueKey);
           continue;
         }
@@ -3321,6 +3457,7 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] Event pull request failed for ${hint.eventId}:`,
         failed.error ?? failed.reason
       );
+      this.enqueueRelayQuery(hint.groupId, [hint.eventId], `pull-send-failed:${failed.reason}`);
       item.nextAttemptAt = now + RETICULUM_CHAT_PULL_RETRY_MS;
       return;
     }
@@ -3979,6 +4116,408 @@ export class ReticulumChatManager extends EventEmitter {
     await this.offerEventResource(peerHash, groupId, request.id, this.relayResponseOptionsFromWire(wire));
   }
 
+  private isRelayEligibleEvent(event: ReticulumChatEvent): boolean {
+    if (event.eventType === 'attachment_manifest') return false;
+    const sizeBytes = Buffer.byteLength(serializeReticulumChatEvent(event), 'utf8');
+    return sizeBytes > 0 && sizeBytes <= RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES;
+  }
+
+  private getRelayCandidatePeers(event: ReticulumChatEvent): string[] {
+    this.prunePeerSubscriptions();
+    const local = this.localPeerHash();
+    const excluded = new Set([local].filter((hash): hash is string => !!hash));
+    const interested = new Set(this.getInterestedPeers(event.groupId));
+    const peers = [...this.peerSubscriptions.keys()]
+      .map((peer) => peer.trim().toLowerCase())
+      .filter((peer) => peer && !excluded.has(peer) && !interested.has(peer));
+    const establishedPeers = this.getEstablishedOverlayPeerHashes();
+    const establishedCandidates = peers.filter((peer) => establishedPeers.has(peer));
+    const fallbackCandidates = peers.filter((peer) => !establishedPeers.has(peer));
+    return [
+      ...this.shuffleRelayPeers(establishedCandidates),
+      ...this.shuffleRelayPeers(fallbackCandidates),
+    ].slice(0, RETICULUM_CHAT_RELAY_REPLICATION_TARGET);
+  }
+
+  private getEstablishedOverlayPeerHashes(): Set<string> {
+    if (!this.bridge || typeof this.bridge.getOverlayLinkSnapshots !== 'function') {
+      return new Set();
+    }
+    return new Set(
+      this.bridge
+        .getOverlayLinkSnapshots()
+        .map((snap) => snap.peerPresenceHash.trim().toLowerCase())
+        .filter(Boolean)
+    );
+  }
+
+  private shuffleRelayPeers(peers: string[]): string[] {
+    const shuffled = [...peers];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const swapIndex = nodeCrypto.randomInt(index + 1);
+      [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+    }
+    return shuffled;
+  }
+
+  private async replicateEventToRelayCache(event: ReticulumChatEvent): Promise<void> {
+    if (!this.isRelayEligibleEvent(event)) return;
+    const peers = this.getRelayCandidatePeers(event);
+    if (peers.length === 0) {
+      const now = this.now();
+      if (now - this.lastRelayNoPeersLogAt >= 60_000) {
+        this.lastRelayNoPeersLogAt = now;
+        loggerLog(`[ReticulumChat] relay_store skipped reason=no-relay-peers`);
+      }
+      return;
+    }
+    let accepted = 0;
+    for (const peerHash of peers) {
+      const result = await this.offerEventResource(peerHash, event.groupId, event.eventId, {
+        relayStore: true,
+      });
+      if (result.ok) accepted += 1;
+      else {
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] relay_store send failed event=${event.eventId} peer=${peerHash}:`,
+          failed.error ?? failed.reason
+        );
+      }
+    }
+    loggerLog(
+      `[ReticulumChat] relay_store queued event=${event.eventId} peers=${peers.length} accepted=${accepted}`
+    );
+  }
+
+  private async handleRelayQuery(
+    groupId: number,
+    wire: Record<string, unknown>,
+    peerHash: string
+  ): Promise<void> {
+    if (!peerHash) return;
+    const query = wire.q;
+    if (!query || typeof query !== 'object' || Array.isArray(query)) return;
+    const q = query as Partial<ReticulumChatRelayQueryWire>;
+    const ids = Array.isArray(q.ids)
+      ? q.ids
+          .filter((id): id is string => typeof id === 'string' && id.length >= 8)
+          .slice(0, RETICULUM_CHAT_RELAY_QUERY_MAX_IDS)
+      : [];
+    if (ids.length === 0) return;
+    if (!this.shouldServeControlRequest({ k: 'relay_query', ids }, groupId, peerHash)) return;
+
+    let offered = 0;
+    const relayOptions = this.relayResponseOptionsFromWire(wire);
+    for (const eventId of ids) {
+      const localEvent = this.db.getEvent(eventId);
+      if (localEvent && localEvent.groupId === groupId && this.isRelayEligibleEvent(localEvent)) {
+        const result = await this.offerEventResource(peerHash, groupId, eventId, {
+          relayCached: true,
+          ...relayOptions,
+        });
+        if (result.ok) offered += 1;
+        continue;
+      }
+      const cached = this.db.getRelayEventBlob(groupId, eventId, this.now());
+      if (!cached) continue;
+      const result = await this.offerRelayCachedEventResource(
+        peerHash,
+        cached,
+        relayOptions
+      );
+      if (result.ok) offered += 1;
+      else {
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] relay_query offer failed group=${groupId} event=${eventId} peer=${peerHash}:`,
+          failed.error ?? failed.reason
+        );
+      }
+    }
+    if (offered === 0) {
+      const relayed = this.relayGroupControlRequest(
+        'relay_query',
+        groupId,
+        wire,
+        peerHash,
+        this.hashControlPayload({ ids })
+      );
+      if (relayed) {
+        loggerLog(
+          `[ReticulumChat] relay_query forwarded group=${groupId} peer=${peerHash} requested=${ids.length}`
+        );
+        return;
+      }
+    }
+    loggerLog(
+      `[ReticulumChat] relay_query served group=${groupId} peer=${peerHash} requested=${ids.length} offered=${offered}`
+    );
+  }
+
+  private relayDigestEntryToWire(
+    entry: ReticulumChatRelayDigestEntry
+  ): ReticulumChatRelayDigestEntryWire {
+    return {
+      id: entry.eventId,
+      ts: entry.timestamp,
+      c: normalizeReticulumChatChannelId(entry.channelId),
+      a: entry.authorAddress,
+      seq: entry.authorSeq,
+      ph: entry.payloadHash,
+      bid: entry.blobId,
+    };
+  }
+
+  private buildRelayDigestWire(
+    groupId: number,
+    entries: ReticulumChatRelayDigestEntry[],
+    more: boolean,
+    offset: number
+  ): Extract<ReticulumChatWire, { k: 'relay_digest' }> | null {
+    const fullEvents = entries.map((entry) => this.relayDigestEntryToWire(entry));
+    for (let eventCount = fullEvents.length; eventCount > 0; eventCount -= 1) {
+      const page = fullEvents.slice(0, eventCount);
+      for (let compactLevel = 0; compactLevel <= 4; compactLevel += 1) {
+        const events = page.map((event) => {
+          const compacted: ReticulumChatRelayDigestEntryWire = {
+            id: event.id,
+            ts: event.ts,
+            c: event.c,
+          };
+          if (compactLevel <= 3 && event.seq != null) compacted.seq = event.seq;
+          if (compactLevel <= 2 && event.a) compacted.a = event.a;
+          if (compactLevel <= 1 && event.ph) compacted.ph = event.ph;
+          if (compactLevel === 0 && event.bid) compacted.bid = event.bid;
+          return compacted;
+        });
+        const wire: Extract<ReticulumChatWire, { k: 'relay_digest' }> = {
+          t: 'RCHAT',
+          k: 'relay_digest',
+          g: groupId,
+          events,
+          ...(more ? { more: true, nextOffset: offset + events.length } : {}),
+        };
+        if (wireFitsReticulum(wire)) return wire;
+      }
+    }
+    return null;
+  }
+
+  private async serveRelayDigestForGroup(peerHash: string, groupId: number): Promise<void> {
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer) return;
+    const key = `${peer}:${groupId}`;
+    const now = this.now();
+    const lastServedAt = this.recentRelayDigestsServed.get(key);
+    if (lastServedAt != null && now - lastServedAt < RETICULUM_CHAT_RELAY_DIGEST_DEBOUNCE_MS) {
+      loggerLog(
+        `[ReticulumChat] relay_digest_skipped group=${groupId} peer=${peer} reason=rate_limited`
+      );
+      return;
+    }
+    const firstEntry = this.db.listRelayDigestEntries(groupId, 0, 1, now);
+    if (firstEntry.length === 0) {
+      this.recentRelayDigestsServed.set(key, now);
+      loggerLog(
+        `[ReticulumChat] relay_digest_skipped group=${groupId} peer=${peer} reason=empty`
+      );
+      return;
+    }
+    this.recentRelayDigestsServed.set(key, now);
+    let offset = 0;
+    let served = 0;
+    let more = false;
+    while (served < RETICULUM_CHAT_RELAY_DIGEST_MAX_EVENTS_PER_SUB) {
+      const limit = Math.min(
+        RETICULUM_CHAT_RELAY_DIGEST_PAGE_SIZE,
+        RETICULUM_CHAT_RELAY_DIGEST_MAX_EVENTS_PER_SUB - served
+      );
+      const entries = this.db.listRelayDigestEntries(groupId, offset, limit, now);
+      if (entries.length === 0) {
+        more = false;
+        break;
+      }
+      const potentiallyMore =
+        entries.length > 1 ||
+        this.db.listRelayDigestEntries(groupId, offset + entries.length, 1, now).length > 0;
+      const wire = this.buildRelayDigestWire(
+        groupId,
+        entries,
+        potentiallyMore,
+        offset
+      );
+      if (!wire) {
+        loggerWarn(
+          `[ReticulumChat] relay_digest_skipped group=${groupId} peer=${peer} reason=wire_too_large`
+        );
+        break;
+      }
+      const sentCount = wire.events.length;
+      if (sentCount === 0) break;
+      const result = await this.sendToPeer(peer, wire);
+      if (!result.ok) {
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] relay_digest send failed group=${groupId} peer=${peer}:`,
+          failed.error ?? failed.reason
+        );
+        break;
+      }
+      served += sentCount;
+      offset += sentCount;
+      more = this.db.listRelayDigestEntries(groupId, offset, 1, now).length > 0;
+      if (!more) break;
+    }
+    loggerLog(
+      `[ReticulumChat] relay_digest_served group=${groupId} peer=${peer} count=${served} more=${more}`
+    );
+  }
+
+  private handleRelayDigest(
+    groupId: number,
+    wire: Record<string, unknown>,
+    peerHash: string
+  ): void {
+    void this.forwardGroupDigestToInterestRoutes(groupId, wire, peerHash);
+    if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+    if (!Array.isArray(wire.events)) return;
+    const missing: string[] = [];
+    const entries = wire.events.slice(0, RETICULUM_CHAT_RELAY_DIGEST_MAX_EVENTS_PER_SUB);
+    for (const rawEntry of entries) {
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) continue;
+      const entry = rawEntry as Partial<ReticulumChatRelayDigestEntryWire>;
+      if (
+        typeof entry.id !== 'string' ||
+        entry.id.length < 8 ||
+        typeof entry.ts !== 'number' ||
+        typeof entry.c !== 'string' ||
+        (entry.a != null && typeof entry.a !== 'string') ||
+        (entry.seq != null && !Number.isInteger(entry.seq)) ||
+        (entry.ph != null && typeof entry.ph !== 'string') ||
+        (entry.bid != null && typeof entry.bid !== 'string')
+      ) {
+        continue;
+      }
+      if (!this.db.hasEvent(entry.id)) missing.push(entry.id);
+    }
+    loggerLog(
+      `[ReticulumChat] relay_digest_received group=${groupId} peer=${peerHash} entries=${entries.length} missing=${missing.length}`
+    );
+    if (missing.length > 0) {
+      this.enqueueRelayQuery(groupId, missing, 'relay-digest', peerHash);
+    }
+  }
+
+  private handleRelayAck(groupId: number, ack: unknown, peerHash: string): void {
+    if (!ack || typeof ack !== 'object' || Array.isArray(ack)) return;
+    const a = ack as Partial<ReticulumChatRelayAckWire>;
+    if (typeof a.id !== 'string' || a.id.length < 8 || typeof a.ok !== 'boolean') return;
+    loggerLog(
+      `[ReticulumChat] relay_ack group=${groupId} event=${a.id} peer=${peerHash} ok=${a.ok}${
+        a.reason ? ` reason=${a.reason}` : ''
+      }${a.bid ? ` blob=${a.bid}` : ''}`
+    );
+  }
+
+  private sendRelayAck(
+    peerHash: string,
+    groupId: number,
+    eventId: string,
+    ok: boolean,
+    reason?: string,
+    blobId?: string
+  ): void {
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer) return;
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'relay_ack',
+      g: groupId,
+      a: {
+        id: eventId,
+        ok,
+        ...(reason ? { reason } : {}),
+        ...(blobId ? { bid: blobId } : {}),
+      },
+    };
+    if (wireFitsReticulum(wire)) void this.sendToPeer(peer, wire);
+  }
+
+  private async offerRelayCachedEventResource(
+    peerHash: string,
+    entry: ReticulumChatRelayCacheEntry,
+    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {}
+  ): Promise<ReticulumSendResult> {
+    const peerKey = peerHash.trim().toLowerCase();
+    if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
+    if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
+    if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
+      return { ok: false, reason: 'send-command-failed', error: 'Bridge chat resource send unavailable' };
+    }
+    let event: ReticulumChatEvent;
+    try {
+      const parsed = JSON.parse(entry.payloadJson) as unknown;
+      if (!this.canStoreRelayEventResource(parsed)) {
+        return { ok: false, reason: 'send-command-failed', error: 'Invalid relay cache event blob' };
+      }
+      event = parsed;
+    } catch {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid relay cache JSON' };
+    }
+    const wireHash = reticulumChatRelayBlobId(entry.payloadJson);
+    if (wireHash !== entry.blobId) {
+      return { ok: false, reason: 'send-command-failed', error: 'Relay cache blob hash mismatch' };
+    }
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    const filePath = this.writeTempEventBlob(transferId, entry.payloadJson);
+    const recipientPeerKey = (options.recipientPeerHash ?? peerKey).trim().toLowerCase();
+    const registered = await this.bridge.sendReticulumChatResourceDetailed({
+      allowedRecipientAddress: recipientPeerKey,
+      transferId,
+      filePath,
+      fileName: `${event.eventId}.json`,
+      size: entry.sizeBytes,
+      sha256: entry.blobId,
+      metadata: {
+        resourceType: 'reticulum_chat_event',
+        eventId: event.eventId,
+        groupId: event.groupId,
+        payloadHash: event.payloadHash,
+        wireHash: entry.blobId,
+        sizeBytes: entry.sizeBytes,
+        relayCached: true,
+        relayBlobId: entry.blobId,
+      },
+      expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
+    });
+    if (!registered.ok) return registered;
+    this.outboundRelayCachedEventResources.set(transferId, {
+      groupId: event.groupId,
+      eventId: event.eventId,
+      expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
+    });
+    const offer: ReticulumChatEventOffer = {
+      transferId,
+      eventId: event.eventId,
+      groupId: event.groupId,
+      payloadHash: event.payloadHash,
+      wireHash: entry.blobId,
+      sizeBytes: entry.sizeBytes,
+      sourcePeerHash: options.sourcePeerHash ?? entry.sourcePeerHash,
+      ...(options.relayRequestId ? { relayRequestId: options.relayRequestId } : {}),
+      relayCached: true,
+      relayBlobId: entry.blobId,
+    };
+    return this.sendToPeer(peerKey, {
+      t: 'RCHAT',
+      k: 'event_offer',
+      g: event.groupId,
+      o: eventOfferToWire(offer),
+    });
+  }
+
   private async offerEventResource(
     peerHash: string,
     groupId: number,
@@ -4019,6 +4558,9 @@ export class ReticulumChatManager extends EventEmitter {
       ...(options.continuation ? { continuation: options.continuation } : {}),
       ...(options.relayRequestId ? { relayRequestId: options.relayRequestId } : {}),
       ...(options.sourcePeerHash ? { sourcePeerHash: options.sourcePeerHash } : {}),
+      ...(options.relayStore ? { relayStore: true } : {}),
+      ...(options.relayCached ? { relayCached: true } : {}),
+      ...(options.relayBlobId ? { relayBlobId: options.relayBlobId } : {}),
     };
     const recipientPeerKey = (options.recipientPeerHash ?? peerKey).trim().toLowerCase();
     const registered = await this.bridge.sendReticulumChatResourceDetailed({
@@ -4035,6 +4577,9 @@ export class ReticulumChatManager extends EventEmitter {
         payloadHash: event.payloadHash,
         wireHash,
         sizeBytes: offer.sizeBytes,
+        relayStore: options.relayStore === true,
+        relayCached: options.relayCached === true,
+        relayBlobId: options.relayBlobId ?? '',
       },
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
@@ -4061,6 +4606,10 @@ export class ReticulumChatManager extends EventEmitter {
     const offer = candidate as Partial<ReticulumChatEventOffer>;
     if (!this.isValidEventOffer(offer)) {
       loggerWarn('[ReticulumChat] Dropping inbound event offer: invalid offer shape');
+      return;
+    }
+    if (offer.relayStore === true) {
+      this.acceptRelayStoreEventOffer(offer as ReticulumChatEventOffer, peerHash);
       return;
     }
     const relayRequestId = this.normalizeGroupControlRequestId(offer.relayRequestId);
@@ -4104,6 +4653,24 @@ export class ReticulumChatManager extends EventEmitter {
     void this.acceptEventResource(sourcePeerHash, trackedOffer);
   }
 
+  private acceptRelayStoreEventOffer(offer: ReticulumChatEventOffer, peerHash: string): void {
+    const sourcePeerHash = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    if (!sourcePeerHash) return;
+    if (offer.sizeBytes > RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES) {
+      loggerWarn(
+        `[ReticulumChat] relay_store rejected event=${offer.eventId} reason=payload-too-large size=${offer.sizeBytes}`
+      );
+      this.sendRelayAck(sourcePeerHash, offer.groupId, offer.eventId, false, 'payload-too-large');
+      return;
+    }
+    const trackedOffer = {
+      ...offer,
+      sourcePeerHash,
+    };
+    this.resourceOffers.set(offer.transferId, trackedOffer);
+    void this.acceptEventResource(sourcePeerHash, trackedOffer);
+  }
+
   private isValidEventOffer(offer: Partial<ReticulumChatEventOffer>): offer is ReticulumChatEventOffer {
     if (typeof offer.transferId !== 'string' || !offer.transferId) return false;
     if (typeof offer.eventId !== 'string' || offer.eventId.length < 8) return false;
@@ -4113,6 +4680,9 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;
     if (offer.relayRequestId != null && !this.normalizeGroupControlRequestId(offer.relayRequestId)) return false;
     if (offer.sourcePeerHash != null && !this.routePeerHash(offer.sourcePeerHash)) return false;
+    if (offer.relayStore != null && typeof offer.relayStore !== 'boolean') return false;
+    if (offer.relayCached != null && typeof offer.relayCached !== 'boolean') return false;
+    if (offer.relayBlobId != null && !/^[0-9a-f]{64}$/i.test(offer.relayBlobId)) return false;
     if (offer.continuation) {
       if (offer.continuation.direction !== 'after' && offer.continuation.direction !== 'before') return false;
       if (typeof offer.continuation.channelId !== 'string' || !offer.continuation.channelId) return false;
@@ -4261,6 +4831,41 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       }
       const parsed = JSON.parse(blob) as unknown;
+      if (offer.relayStore === true) {
+        if (!this.canStoreRelayEventResource(parsed)) {
+          loggerWarn(
+            `[ReticulumChat] relay_store rejected event=${offer.eventId} reason=invalid_event_resource`
+          );
+          this.sendRelayAck(offer.sourcePeerHash || payload.peerPresenceHash || '', offer.groupId, offer.eventId, false, 'invalid_event_resource');
+          return;
+        }
+        const event = parsed as ReticulumChatEvent;
+        if (event.groupId !== offer.groupId || event.eventId !== offer.eventId) {
+          loggerWarn(
+            `[ReticulumChat] relay_store rejected event=${offer.eventId} reason=offer_mismatch`
+          );
+          this.sendRelayAck(offer.sourcePeerHash || payload.peerPresenceHash || '', offer.groupId, offer.eventId, false, 'offer_mismatch');
+          return;
+        }
+        const stored = this.db.storeRelayEventBlob(
+          event,
+          blob,
+          offer.sourcePeerHash || payload.peerPresenceHash || '',
+          this.now()
+        );
+        if ('reason' in stored) {
+          loggerWarn(
+            `[ReticulumChat] relay_store rejected event=${event.eventId} reason=${stored.reason}`
+          );
+          this.sendRelayAck(offer.sourcePeerHash || payload.peerPresenceHash || '', offer.groupId, offer.eventId, false, stored.reason);
+          return;
+        }
+        loggerLog(
+          `[ReticulumChat] relay_store accepted event=${event.eventId} group=${event.groupId} blob=${stored.blobId} stored=${stored.stored}`
+        );
+        this.sendRelayAck(offer.sourcePeerHash || payload.peerPresenceHash || '', offer.groupId, offer.eventId, true, undefined, stored.blobId);
+        return;
+      }
       if (!this.canAcceptInboundEventResource(parsed)) {
         this.retryEventPullAfterResourceFailure(offer, 'invalid_event_resource');
         return;
@@ -4336,6 +4941,14 @@ export class ReticulumChatManager extends EventEmitter {
     return verifyReticulumChatEvent(event);
   }
 
+  private canStoreRelayEventResource(candidate: unknown): candidate is ReticulumChatEvent {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    if (!validateReticulumChatEventShape(candidate, this.now())) return false;
+    const event = candidate as ReticulumChatEvent;
+    if (!this.isRelayEligibleEvent(event)) return false;
+    return verifyReticulumChatEvent(event);
+  }
+
   private handleEventResourceFailure(transferId: string, reason: string): void {
     const offer = this.resourceOffers.get(transferId);
     if (!offer) return;
@@ -4359,6 +4972,7 @@ export class ReticulumChatManager extends EventEmitter {
     item.inFlight = false;
     item.nextAttemptAt = 0;
     if (item.peerHashes.size === 0) {
+      this.enqueueRelayQuery(offer.groupId, [offer.eventId], `resource-failed:${reason}`);
       this.pendingEventPulls.delete(queueKey);
       return;
     }
@@ -4384,6 +4998,18 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const event = this.db.getEvent(eventId);
     if (!event || event.groupId !== groupId) {
+      const now = this.now();
+      for (const [transferId, relay] of this.outboundRelayCachedEventResources) {
+        if (relay.expiresAt <= now) this.outboundRelayCachedEventResources.delete(transferId);
+      }
+      const relay = this.outboundRelayCachedEventResources.get(payload.transferId);
+      if (relay && relay.groupId === groupId && relay.eventId === eventId && relay.expiresAt > now) {
+        await this.bridge.authorizeReticulumChatResourceDetailed?.({
+          linkId: payload.linkId,
+          transferId: payload.transferId,
+        });
+        return;
+      }
       await this.bridge.rejectReticulumChatResourceDetailed?.({
         linkId: payload.linkId,
         transferId: payload.transferId,
@@ -4760,6 +5386,8 @@ export class ReticulumChatManager extends EventEmitter {
       case 'digest_req':
       case 'range_req':
       case 'event_req':
+      case 'relay_query':
+      case 'relay_digest':
       case 'event_offer':
       case 'event_batch':
         return true;
