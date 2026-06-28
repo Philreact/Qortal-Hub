@@ -13,6 +13,9 @@ import {
   ReticulumChatDatabase,
   type ReticulumChatChannelDigest,
   type ReticulumChatFeedCursor,
+  type ReticulumChatGroupKey,
+  type ReticulumChatGroupKeyDigest,
+  type ReticulumChatGroupKeyRequest,
   type ReticulumChatRelayCacheEntry,
   type ReticulumChatRelayDigestEntry,
   RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
@@ -189,6 +192,44 @@ export type ReticulumChatRelayDigestEntryWire = {
   bid?: string;
 };
 
+export type ReticulumChatGroupKeyDigestWire = {
+  e: number;
+  id: string;
+  p: string;
+  ts: number;
+  s: string;
+};
+
+export type ReticulumChatGroupKeyRequestWire = {
+  e: number;
+  id: string;
+  r: string;
+  p: string;
+  ts: number;
+  s: string;
+};
+
+export type ReticulumChatGroupKeyResponseWire = {
+  e: number;
+  id: string;
+  r: string;
+  kb: string;
+  p: string;
+  ts: number;
+  s: string;
+};
+
+export type ReticulumChatLocalGroupMembership =
+  | number
+  | {
+      groupId?: unknown;
+      groupid?: unknown;
+      group_id?: unknown;
+      id?: unknown;
+      isPrivate?: unknown;
+      isOpen?: unknown;
+    };
+
 type ReticulumChatVerifiedReticulumPeer = {
   destinationHash: string;
   address: string;
@@ -232,7 +273,8 @@ export type ReticulumChatProtocolFeature =
   | 'feed_req'
   | 'range_req'
   | 'resource_v2'
-  | 'relay_cache';
+  | 'relay_cache'
+  | 'group_keys';
 
 export type ReticulumChatDigestWire = {
   c: string;
@@ -328,6 +370,9 @@ export type ReticulumChatWire =
       more?: boolean;
       nextOffset?: number;
     }
+  | { t: 'RCHAT'; k: 'gkd'; g: number; d: ReticulumChatGroupKeyDigestWire }
+  | { t: 'RCHAT'; k: 'gkq'; g: number; q: ReticulumChatGroupKeyRequestWire }
+  | { t: 'RCHAT'; k: 'gks'; g: number; r: ReticulumChatGroupKeyResponseWire }
   | {
       t: 'RCHAT';
       k: 'event_batch';
@@ -358,6 +403,7 @@ const RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS = 30_000;
 const RETICULUM_CHAT_TYPING_TTL_MS = 8_000;
 const RETICULUM_CHAT_TYPING_REFRESH_MS = 3_000;
 const RETICULUM_CHAT_PROTOCOL_VERSION = 1;
+const isDisableReticulumGroupKeys = true;
 const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'digest',
   'digest_req',
@@ -365,6 +411,7 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'range_req',
   'resource_v2',
   'relay_cache',
+  ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 25;
 const RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE = 20;
@@ -414,6 +461,8 @@ const RETICULUM_CHAT_RELAY_QUERY_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_RELAY_DIGEST_PAGE_SIZE = 8;
 const RETICULUM_CHAT_RELAY_DIGEST_MAX_EVENTS_PER_SUB = 64;
 const RETICULUM_CHAT_RELAY_DIGEST_DEBOUNCE_MS = 30_000;
+const RETICULUM_CHAT_GROUP_KEY_DIGEST_REFRESH_MS = 60_000;
+const RETICULUM_CHAT_GROUP_KEY_REQUEST_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_RESOURCE_RELAY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_RESOURCE_RELAY_MAX_ROUTES = 2048;
 const RETICULUM_CHAT_RESOURCE_DISCOVERY_TTL_MS = 60_000;
@@ -845,6 +894,91 @@ export function buildReticulumChatResourceFindSignedFields(input: {
   };
 }
 
+export function buildReticulumChatGroupKeyDigestSignedFields(input: {
+  groupId: number;
+  epoch: number;
+  keyId: string;
+  authorAddress: string;
+  authorPublicKey: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    authorPublicKey: input.authorPublicKey,
+    epoch: input.epoch,
+    groupId: input.groupId,
+    keyId: input.keyId.toLowerCase(),
+    timestamp: input.timestamp,
+    type: 'RCHAT_GROUP_KEY_DIGEST',
+  };
+}
+
+export function buildReticulumChatGroupKeyRequestSignedFields(input: {
+  groupId: number;
+  epoch: number;
+  keyId: string;
+  requestId: string;
+  authorAddress: string;
+  authorPublicKey: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    authorPublicKey: input.authorPublicKey,
+    epoch: input.epoch,
+    groupId: input.groupId,
+    keyId: input.keyId.toLowerCase(),
+    requestId: input.requestId.toLowerCase(),
+    timestamp: input.timestamp,
+    type: 'RCHAT_GROUP_KEY_REQ',
+  };
+}
+
+export function buildReticulumChatGroupKeyResponseSignedFields(input: {
+  groupId: number;
+  epoch: number;
+  keyId: string;
+  keyBytesBase64: string;
+  requestId: string;
+  authorAddress: string;
+  authorPublicKey: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    authorPublicKey: input.authorPublicKey,
+    epoch: input.epoch,
+    groupId: input.groupId,
+    keyBytesBase64: input.keyBytesBase64,
+    keyId: input.keyId.toLowerCase(),
+    requestId: input.requestId.toLowerCase(),
+    timestamp: input.timestamp,
+    type: 'RCHAT_GROUP_KEY_RES',
+  };
+}
+
+function isReticulumGroupKeyId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function isReticulumGroupKeyRequestId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8,64}$/i.test(value);
+}
+
+function reticulumGroupKeyBytesFromBase64(value: unknown): Buffer | null {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  try {
+    const bytes = Buffer.from(value, 'base64');
+    return bytes.length === 32 ? bytes : null;
+  } catch {
+    return null;
+  }
+}
+
+function reticulumGroupKeyIdFromBase64(value: string): string {
+  return nodeCrypto.createHash('sha256').update(Buffer.from(value, 'base64')).digest('hex');
+}
+
 function byteRangesFromWire(ranges: unknown): ReticulumResourceByteRange[] | null {
   if (!Array.isArray(ranges)) return null;
   const parsed: ReticulumResourceByteRange[] = [];
@@ -1009,6 +1143,124 @@ export function verifyReticulumChatResourceFind(
   }
 }
 
+export function verifyReticulumChatGroupKeyDigest(
+  groupId: number,
+  wire: ReticulumChatGroupKeyDigestWire,
+  now = Date.now()
+): boolean {
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    if (!Number.isInteger(wire.e) || wire.e <= 0) return false;
+    if (!isReticulumGroupKeyId(wire.id)) return false;
+    if (typeof wire.p !== 'string' || !wire.p) return false;
+    if (typeof wire.s !== 'string' || !wire.s) return false;
+    if (!Number.isFinite(wire.ts)) return false;
+    if (wire.ts - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+    if (now - wire.ts > RETICULUM_CHAT_MAX_AGE_MS) return false;
+    const derived = deriveAddressFromPublicKey(wire.p);
+    if (!derived) return false;
+    return nacl.sign.detached.verify(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumChatGroupKeyDigestSignedFields({
+            groupId,
+            epoch: wire.e,
+            keyId: wire.id,
+            authorAddress: derived,
+            authorPublicKey: wire.p,
+            timestamp: wire.ts,
+          })
+        )
+      ),
+      new Uint8Array(base58Decode(wire.s)),
+      new Uint8Array(base58Decode(wire.p))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function verifyReticulumChatGroupKeyRequest(
+  groupId: number,
+  wire: ReticulumChatGroupKeyRequestWire,
+  now = Date.now()
+): boolean {
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    if (!Number.isInteger(wire.e) || wire.e <= 0) return false;
+    if (!isReticulumGroupKeyId(wire.id)) return false;
+    if (!isReticulumGroupKeyRequestId(wire.r)) return false;
+    if (typeof wire.p !== 'string' || !wire.p) return false;
+    if (typeof wire.s !== 'string' || !wire.s) return false;
+    if (!Number.isFinite(wire.ts)) return false;
+    if (wire.ts - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+    if (now - wire.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
+    const derived = deriveAddressFromPublicKey(wire.p);
+    if (!derived) return false;
+    return nacl.sign.detached.verify(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumChatGroupKeyRequestSignedFields({
+            groupId,
+            epoch: wire.e,
+            keyId: wire.id,
+            requestId: wire.r,
+            authorAddress: derived,
+            authorPublicKey: wire.p,
+            timestamp: wire.ts,
+          })
+        )
+      ),
+      new Uint8Array(base58Decode(wire.s)),
+      new Uint8Array(base58Decode(wire.p))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function verifyReticulumChatGroupKeyResponse(
+  groupId: number,
+  wire: ReticulumChatGroupKeyResponseWire,
+  now = Date.now()
+): boolean {
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    if (!Number.isInteger(wire.e) || wire.e <= 0) return false;
+    if (!isReticulumGroupKeyId(wire.id)) return false;
+    if (!isReticulumGroupKeyRequestId(wire.r)) return false;
+    if (!reticulumGroupKeyBytesFromBase64(wire.kb)) return false;
+    if (reticulumGroupKeyIdFromBase64(wire.kb) !== wire.id.toLowerCase()) return false;
+    if (typeof wire.p !== 'string' || !wire.p) return false;
+    if (typeof wire.s !== 'string' || !wire.s) return false;
+    if (!Number.isFinite(wire.ts)) return false;
+    if (wire.ts - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+    if (now - wire.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
+    const derived = deriveAddressFromPublicKey(wire.p);
+    if (!derived) return false;
+    return nacl.sign.detached.verify(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumChatGroupKeyResponseSignedFields({
+            groupId,
+            epoch: wire.e,
+            keyId: wire.id,
+            keyBytesBase64: wire.kb,
+            requestId: wire.r,
+            authorAddress: derived,
+            authorPublicKey: wire.p,
+            timestamp: wire.ts,
+          })
+        )
+      ),
+      new Uint8Array(base58Decode(wire.s)),
+      new Uint8Array(base58Decode(wire.p))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function defaultReticulumChatDbPath(): string {
   return path.join(app.getPath('appData'), 'qortal-shared', 'reticulum-chat.db');
 }
@@ -1029,6 +1281,7 @@ export class ReticulumChatManager extends EventEmitter {
   private bridge: ReticulumBridge | null;
   private resourceTransfer: ReticulumResourceTransferManager<ReticulumChatResourceRequestWire> | null = null;
   private localGroupIds = new Set<number>();
+  private localPrivateGroupIds = new Set<number>();
   private subscribedGroups = new Set<number>();
   private peerSubscriptions = new Map<string, Map<number, number>>();
   private groupMemberValidationCache = new Map<string, { isMember: boolean; expiresAt: number }>();
@@ -1065,6 +1318,9 @@ export class ReticulumChatManager extends EventEmitter {
   private recentRelayQueries = new Map<string, number>();
   private recentRelayDigestsServed = new Map<string, number>();
   private recentResourceDiscoveryRequests = new Map<string, number>();
+  private recentGroupKeyDigestsSent = new Map<string, number>();
+  private recentGroupKeyRequests = new Map<string, number>();
+  private groupKeyCreateInFlight = new Map<number, Promise<ReticulumChatGroupKey | null>>();
   private lastRelayNoPeersLogAt = 0;
   private peerProtocolViolations = new Map<string, ReticulumChatPeerViolationRecord>();
   private resourceFindRoutes = new Map<string, ReticulumChatResourceFindRoute>();
@@ -1249,8 +1505,46 @@ export class ReticulumChatManager extends EventEmitter {
     this.db.close();
   }
 
-  setLocalGroupMemberships(groupIds: number[]): void {
-    const nextGroupIds = groupIds.filter((id) => Number.isInteger(id) && id > 0);
+  private normalizeLocalGroupMemberships(
+    memberships: ReticulumChatLocalGroupMembership[]
+  ): Array<{ groupId: number; isPrivate: boolean }> {
+    const byGroupId = new Map<number, boolean>();
+    for (const membership of memberships) {
+      let groupId: number;
+      let isPrivate = false;
+      if (typeof membership === 'number') {
+        groupId = membership;
+      } else if (membership && typeof membership === 'object') {
+        groupId = Number(
+          membership.groupId ??
+          membership.groupid ??
+          membership.group_id ??
+          membership.id
+        );
+        if (membership.isPrivate === true || membership.isOpen === false) {
+          isPrivate = true;
+        }
+      } else {
+        continue;
+      }
+      if (!Number.isInteger(groupId) || groupId <= 0) continue;
+      byGroupId.set(groupId, byGroupId.get(groupId) === true || isPrivate);
+    }
+    return [...byGroupId.entries()].map(([groupId, isPrivate]) => ({ groupId, isPrivate }));
+  }
+
+  private isLocalPrivateGroup(groupId: number): boolean {
+    return this.localPrivateGroupIds.has(groupId);
+  }
+
+  setLocalGroupMemberships(memberships: ReticulumChatLocalGroupMembership[]): void {
+    const normalizedMemberships = this.normalizeLocalGroupMemberships(memberships);
+    const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
+    this.localPrivateGroupIds = new Set(
+      normalizedMemberships
+        .filter(({ isPrivate }) => isPrivate)
+        .map(({ groupId }) => groupId)
+    );
     this.localGroupIds = new Set(nextGroupIds);
     for (const groupId of this.getSubscriptions()) {
       if (this.localGroupIds.has(groupId)) continue;
@@ -1268,6 +1562,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (latestEvent) {
         this.emitSummaryChanged(groupId, latestEvent);
       }
+      void this.ensureGroupKeyState(groupId);
     }
   }
 
@@ -1317,6 +1612,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private announceGroupSubscription(groupId: number): void {
+    void this.ensureGroupKeyState(groupId);
     this.enqueueSubscriptionFanouts([
       this.buildHelloWire(),
       { t: 'RCHAT', k: 'group_sub', groups: [groupId], mode: 'summary' },
@@ -1326,6 +1622,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   private announceActiveGroupSubscription(groupId: number): void {
     if (!this.subscribedGroups.has(groupId) || !this.localGroupIds.has(groupId)) return;
+    void this.ensureGroupKeyState(groupId);
     this.enqueueSubscriptionFanouts([
       { t: 'RCHAT', k: 'group_sub', groups: [groupId], mode: 'active' },
       this.buildGroupDigestWire(groupId, 0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP),
@@ -1702,6 +1999,8 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'digest_req' &&
       kind !== 'group_sub' &&
       kind !== 'relay_digest' &&
+      kind !== 'gkd' &&
+      kind !== 'gkq' &&
       kind !== 'rf' &&
       kind !== 'feed_req' &&
       kind !== 'range_req' &&
@@ -1795,6 +2094,27 @@ export class ReticulumChatManager extends EventEmitter {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         this.handleRelayDigest(groupId, wire, peerHash);
+        return;
+      }
+      case 'gkd':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.handleGroupKeyDigest(groupId, wire.d, peerHash);
+        return;
+      }
+      case 'gkq':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.handleGroupKeyRequest(groupId, wire.q, peerHash);
+        return;
+      }
+      case 'gks':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.handleGroupKeyResponse(groupId, wire.r, peerHash);
         return;
       }
       case 'rf':
@@ -2077,6 +2397,7 @@ export class ReticulumChatManager extends EventEmitter {
         void this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
       }
       void this.serveRelayDigestForGroup(peerHash, groupId);
+      void this.serveGroupKeyDigestForGroup(peerHash, groupId);
     }
     void this.forwardGroupSub(
       groups,
@@ -3571,6 +3892,454 @@ export class ReticulumChatManager extends EventEmitter {
     };
     if (!verifyReticulumChatEventRequest(groupId, wire, timestamp)) return null;
     return wire;
+  }
+
+  private groupKeyDigestToWire(
+    digest: ReticulumChatGroupKeyDigest | ReticulumChatGroupKey
+  ): Extract<ReticulumChatWire, { k: 'gkd' }> {
+    return {
+      t: 'RCHAT',
+      k: 'gkd',
+      g: digest.groupId,
+      d: {
+        e: digest.epoch,
+        id: digest.keyId.toLowerCase(),
+        p: digest.adminPublicKey,
+        ts: digest.createdAt,
+        s: digest.adminSignature,
+      },
+    };
+  }
+
+  private async ensureGroupKeyState(groupId: number): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    if (!this.isLocalPrivateGroup(groupId)) return;
+    const activeKey = this.db.getActiveGroupKey(groupId);
+    if (activeKey) {
+      await this.announceGroupKeyDigest(activeKey);
+      return;
+    }
+    const latestDigest = this.db.getLatestGroupKeyDigest(groupId);
+    if (latestDigest) {
+      await this.requestGroupKey(latestDigest, latestDigest.sourcePeerHash);
+      return;
+    }
+    await this.createGroupKeyIfAdmin(groupId);
+  }
+
+  private async createGroupKeyIfAdmin(groupId: number): Promise<ReticulumChatGroupKey | null> {
+    if (isDisableReticulumGroupKeys) return null;
+    const inFlight = this.groupKeyCreateInFlight.get(groupId);
+    if (inFlight) return inFlight;
+    const createPromise = this.createGroupKeyIfAdminNow(groupId);
+    this.groupKeyCreateInFlight.set(groupId, createPromise);
+    try {
+      return await createPromise;
+    } finally {
+      if (this.groupKeyCreateInFlight.get(groupId) === createPromise) {
+        this.groupKeyCreateInFlight.delete(groupId);
+      }
+    }
+  }
+
+  private async createGroupKeyIfAdminNow(groupId: number): Promise<ReticulumChatGroupKey | null> {
+    if (!this.signLocalFields || !this.isLocalPrivateGroup(groupId)) return null;
+    const existing = this.db.getActiveGroupKey(groupId);
+    if (existing) return existing;
+    const latestDigest = this.db.getLatestGroupKeyDigest(groupId);
+    if (latestDigest) return null;
+
+    const keyBytes = nodeCrypto.randomBytes(32);
+    const keyBytesBase64 = keyBytes.toString('base64');
+    const keyId = nodeCrypto.createHash('sha256').update(keyBytes).digest('hex');
+    const epoch = 1;
+    const createdAt = this.now();
+    const signed = await this.signLocalFields({
+      epoch,
+      groupId,
+      keyId,
+      timestamp: createdAt,
+      type: 'RCHAT_GROUP_KEY_DIGEST',
+    }).catch((err) => {
+      loggerWarn('[ReticulumChat] Failed to sign group key digest:', err);
+      return null;
+    });
+    if (
+      !signed ||
+      typeof signed.authorAddress !== 'string' ||
+      typeof signed.authorPublicKey !== 'string' ||
+      typeof signed.signature !== 'string'
+    ) {
+      return null;
+    }
+    const isAdmin = await this.isValidatedGroupAdmin(groupId, signed.authorAddress);
+    if (!isAdmin) return null;
+    const key: ReticulumChatGroupKey = {
+      groupId,
+      epoch,
+      keyId,
+      keyBytesBase64,
+      createdBy: signed.authorAddress,
+      createdAt,
+      status: 'active',
+      adminPublicKey: signed.authorPublicKey,
+      adminSignature: signed.signature,
+    };
+    const digestWire = this.groupKeyDigestToWire(key);
+    if (!verifyReticulumChatGroupKeyDigest(groupId, digestWire.d, createdAt)) return null;
+    if (!wireFitsReticulum(digestWire)) {
+      loggerWarn(
+        `[ReticulumChat] Refusing to create oversized group key digest group=${groupId} bytes=${byteLengthUtf8JsonWithBridgeSender(digestWire)}`
+      );
+      return null;
+    }
+    this.db.upsertGroupKey(key);
+    this.db.upsertGroupKeyDigest({
+      groupId,
+      epoch,
+      keyId,
+      createdBy: signed.authorAddress,
+      createdAt,
+      adminPublicKey: signed.authorPublicKey,
+      adminSignature: signed.signature,
+      sourcePeerHash: '',
+      seenAt: createdAt,
+    });
+    loggerLog(
+      `[ReticulumChat] group_key_created group=${groupId} epoch=${epoch} key=${keyId.slice(0, 12)} admin=${signed.authorAddress}`
+    );
+    await this.announceGroupKeyDigest(key);
+    return key;
+  }
+
+  private async announceGroupKeyDigest(
+    digest: ReticulumChatGroupKeyDigest | ReticulumChatGroupKey
+  ): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    const key = `${digest.groupId}:${digest.epoch}:${digest.keyId}`;
+    const now = this.now();
+    if (now - (this.recentGroupKeyDigestsSent.get(key) ?? 0) < RETICULUM_CHAT_GROUP_KEY_DIGEST_REFRESH_MS) {
+      return;
+    }
+    const wire = this.groupKeyDigestToWire(digest);
+    if (!wireFitsReticulum(wire)) {
+      loggerWarn(
+        `[ReticulumChat] group_key_digest skipped group=${digest.groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+      );
+      return;
+    }
+    this.recentGroupKeyDigestsSent.set(key, now);
+    const result = await this.fanout(wire);
+    if (result.ok) {
+      loggerLog(
+        `[ReticulumChat] group_key_digest_sent group=${digest.groupId} epoch=${digest.epoch} key=${digest.keyId.slice(0, 12)}`
+      );
+    }
+  }
+
+  private async serveGroupKeyDigestForGroup(peerHash: string, groupId: number): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    if (!this.isLocalPrivateGroup(groupId)) return;
+    const digest =
+      this.db.getLatestGroupKeyDigest(groupId) ??
+      this.db.getActiveGroupKey(groupId);
+    if (!digest) {
+      void this.createGroupKeyIfAdmin(groupId);
+      return;
+    }
+    const peer = this.routePeerHash(peerHash);
+    if (!peer) return;
+    const rateKey = `${peer}:${groupId}:${digest.epoch}:${digest.keyId}`;
+    const now = this.now();
+    if (now - (this.recentGroupKeyDigestsSent.get(rateKey) ?? 0) < RETICULUM_CHAT_GROUP_KEY_DIGEST_REFRESH_MS) {
+      return;
+    }
+    const wire = this.groupKeyDigestToWire(digest);
+    if (!wireFitsReticulum(wire)) return;
+    this.recentGroupKeyDigestsSent.set(rateKey, now);
+    void this.sendToPeer(peer, wire);
+  }
+
+  private async requestGroupKey(
+    digest: ReticulumChatGroupKeyDigest,
+    peerHash = ''
+  ): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    if (!this.signLocalFields) return;
+    if (this.db.getGroupKey(digest.groupId, digest.epoch, digest.keyId)) return;
+    if (!this.isLocalPrivateGroup(digest.groupId)) return;
+    const now = this.now();
+    const requestKey = `${digest.groupId}:${digest.epoch}:${digest.keyId}:${peerHash || 'fanout'}`;
+    if (now - (this.recentGroupKeyRequests.get(requestKey) ?? 0) < RETICULUM_CHAT_GROUP_KEY_REQUEST_DEBOUNCE_MS) {
+      return;
+    }
+    const requestId = nodeCrypto.randomBytes(8).toString('hex');
+    const signed = await this.signLocalFields({
+      epoch: digest.epoch,
+      groupId: digest.groupId,
+      keyId: digest.keyId,
+      requestId,
+      timestamp: now,
+      type: 'RCHAT_GROUP_KEY_REQ',
+    }).catch((err) => {
+      loggerWarn('[ReticulumChat] Failed to sign group key request:', err);
+      return null;
+    });
+    if (
+      !signed ||
+      typeof signed.authorAddress !== 'string' ||
+      typeof signed.authorPublicKey !== 'string' ||
+      typeof signed.signature !== 'string'
+    ) {
+      return;
+    }
+    const requesterIsMember = await this.isValidatedGroupMember(digest.groupId, signed.authorAddress);
+    if (!requesterIsMember) return;
+    const wire: Extract<ReticulumChatWire, { k: 'gkq' }> = {
+      t: 'RCHAT',
+      k: 'gkq',
+      g: digest.groupId,
+      q: {
+        e: digest.epoch,
+        id: digest.keyId.toLowerCase(),
+        r: requestId,
+        p: signed.authorPublicKey,
+        ts: now,
+        s: signed.signature,
+      },
+    };
+    if (!verifyReticulumChatGroupKeyRequest(digest.groupId, wire.q, now)) return;
+    if (!wireFitsReticulum(wire)) {
+      loggerWarn(
+        `[ReticulumChat] group_key_request skipped group=${digest.groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+      );
+      return;
+    }
+    this.db.upsertGroupKeyRequest({
+      groupId: digest.groupId,
+      epoch: digest.epoch,
+      keyId: digest.keyId,
+      requestId,
+      requestedAt: now,
+      attempts: 1,
+      status: 'pending',
+    });
+    this.recentGroupKeyRequests.set(requestKey, now);
+    const peer = this.routePeerHash(peerHash);
+    if (peer) void this.sendToPeer(peer, wire);
+    else void this.fanout(wire);
+    loggerLog(
+      `[ReticulumChat] group_key_request_sent group=${digest.groupId} epoch=${digest.epoch} key=${digest.keyId.slice(0, 12)}${peer ? ` peer=${peer.slice(0, 16)}` : ''}`
+    );
+  }
+
+  private async buildSignedGroupKeyResponseWire(
+    groupId: number,
+    key: ReticulumChatGroupKey,
+    request: ReticulumChatGroupKeyRequestWire
+  ): Promise<Extract<ReticulumChatWire, { k: 'gks' }> | null> {
+    if (isDisableReticulumGroupKeys) return null;
+    if (!this.signLocalFields) return null;
+    const now = this.now();
+    const signed = await this.signLocalFields({
+      epoch: key.epoch,
+      groupId,
+      keyBytesBase64: key.keyBytesBase64,
+      keyId: key.keyId,
+      requestId: request.r,
+      timestamp: now,
+      type: 'RCHAT_GROUP_KEY_RES',
+    }).catch((err) => {
+      loggerWarn('[ReticulumChat] Failed to sign group key response:', err);
+      return null;
+    });
+    if (
+      !signed ||
+      typeof signed.authorAddress !== 'string' ||
+      typeof signed.authorPublicKey !== 'string' ||
+      typeof signed.signature !== 'string'
+    ) {
+      return null;
+    }
+    const responderIsAdmin = await this.isValidatedGroupAdmin(groupId, signed.authorAddress);
+    if (!responderIsAdmin) return null;
+    const wire: Extract<ReticulumChatWire, { k: 'gks' }> = {
+      t: 'RCHAT',
+      k: 'gks',
+      g: groupId,
+      r: {
+        e: key.epoch,
+        id: key.keyId.toLowerCase(),
+        r: request.r.toLowerCase(),
+        kb: key.keyBytesBase64,
+        p: signed.authorPublicKey,
+        ts: now,
+        s: signed.signature,
+      },
+    };
+    if (!verifyReticulumChatGroupKeyResponse(groupId, wire.r, now)) return null;
+    if (!wireFitsReticulum(wire)) {
+      loggerWarn(
+        `[ReticulumChat] group_key_response skipped group=${groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+      );
+      return null;
+    }
+    return wire;
+  }
+
+  private async handleGroupKeyDigest(
+    groupId: number,
+    value: unknown,
+    peerHash: string
+  ): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    if (!this.isLocalPrivateGroup(groupId)) return;
+    const now = this.now();
+    const wire = value as ReticulumChatGroupKeyDigestWire;
+    if (!verifyReticulumChatGroupKeyDigest(groupId, wire, now)) {
+      loggerWarn(`[ReticulumChat] group_key_digest_ignored group=${groupId} reason=invalid`);
+      return;
+    }
+    const authorAddress = deriveAddressFromPublicKey(wire.p);
+    const isAdmin = await this.isValidatedGroupAdmin(groupId, authorAddress);
+    if (!isAdmin) {
+      loggerWarn(
+        `[ReticulumChat] group_key_digest_ignored group=${groupId} key=${wire.id.slice(0, 12)} reason=not_admin author=${authorAddress}`
+      );
+      return;
+    }
+    const sourcePeerHash = this.routePeerHash(peerHash) ?? '';
+    const digest: ReticulumChatGroupKeyDigest = {
+      groupId,
+      epoch: wire.e,
+      keyId: wire.id.toLowerCase(),
+      createdBy: authorAddress,
+      createdAt: wire.ts,
+      adminPublicKey: wire.p,
+      adminSignature: wire.s,
+      sourcePeerHash,
+      seenAt: now,
+    };
+    this.db.upsertGroupKeyDigest(digest);
+    loggerLog(
+      `[ReticulumChat] group_key_digest_received group=${groupId} epoch=${digest.epoch} key=${digest.keyId.slice(0, 12)} peer=${sourcePeerHash.slice(0, 16) || 'unknown'}`
+    );
+    if (!this.db.getGroupKey(groupId, digest.epoch, digest.keyId)) {
+      void this.requestGroupKey(digest, sourcePeerHash);
+    }
+  }
+
+  private async handleGroupKeyRequest(
+    groupId: number,
+    value: unknown,
+    peerHash: string
+  ): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    if (!this.isLocalPrivateGroup(groupId)) return;
+    const now = this.now();
+    const wire = value as ReticulumChatGroupKeyRequestWire;
+    if (!verifyReticulumChatGroupKeyRequest(groupId, wire, now)) {
+      loggerWarn(`[ReticulumChat] group_key_request_ignored group=${groupId} reason=invalid`);
+      return;
+    }
+    const requesterAddress = deriveAddressFromPublicKey(wire.p);
+    const requesterIsMember = await this.isValidatedGroupMember(groupId, requesterAddress);
+    if (!requesterIsMember) {
+      loggerWarn(
+        `[ReticulumChat] group_key_request_ignored group=${groupId} key=${wire.id.slice(0, 12)} reason=requester_not_member requester=${requesterAddress}`
+      );
+      return;
+    }
+    const key = this.db.getGroupKey(groupId, wire.e, wire.id);
+    if (!key) {
+      loggerLog(
+        `[ReticulumChat] group_key_request_ignored group=${groupId} epoch=${wire.e} key=${wire.id.slice(0, 12)} reason=key_not_available`
+      );
+      return;
+    }
+    const response = await this.buildSignedGroupKeyResponseWire(groupId, key, wire);
+    if (!response) return;
+    const peer = this.routePeerHash(peerHash);
+    if (!peer) {
+      loggerWarn(
+        `[ReticulumChat] group_key_response_skipped group=${groupId} key=${wire.id.slice(0, 12)} reason=unknown_peer`
+      );
+      return;
+    }
+    const result = await this.sendToPeer(peer, response);
+    if (result.ok) {
+      loggerLog(
+        `[ReticulumChat] group_key_response_sent group=${groupId} epoch=${wire.e} key=${wire.id.slice(0, 12)} peer=${peer.slice(0, 16)}`
+      );
+    } else if (result.ok === false) {
+      loggerWarn(
+        `[ReticulumChat] group_key_response_failed group=${groupId} epoch=${wire.e} key=${wire.id.slice(0, 12)} peer=${peer.slice(0, 16)} reason=${result.reason}`
+      );
+    }
+  }
+
+  private async handleGroupKeyResponse(
+    groupId: number,
+    value: unknown,
+    peerHash: string
+  ): Promise<void> {
+    if (isDisableReticulumGroupKeys) return;
+    if (!this.isLocalPrivateGroup(groupId)) return;
+    const now = this.now();
+    const wire = value as ReticulumChatGroupKeyResponseWire;
+    if (!verifyReticulumChatGroupKeyResponse(groupId, wire, now)) {
+      loggerWarn(`[ReticulumChat] group_key_response_ignored group=${groupId} reason=invalid`);
+      return;
+    }
+    const responderAddress = deriveAddressFromPublicKey(wire.p);
+    const responderIsAdmin = await this.isValidatedGroupAdmin(groupId, responderAddress);
+    if (!responderIsAdmin) {
+      loggerWarn(
+        `[ReticulumChat] group_key_response_ignored group=${groupId} key=${wire.id.slice(0, 12)} reason=responder_not_admin responder=${responderAddress}`
+      );
+      return;
+    }
+    const pending = this.db
+      .listPendingGroupKeyRequests()
+      .find(
+        (request: ReticulumChatGroupKeyRequest) =>
+          request.groupId === groupId &&
+          request.epoch === wire.e &&
+          request.keyId === wire.id.toLowerCase() &&
+          request.requestId === wire.r.toLowerCase()
+      );
+    if (!pending) {
+      loggerLog(
+        `[ReticulumChat] group_key_response_ignored group=${groupId} epoch=${wire.e} key=${wire.id.slice(0, 12)} reason=no_pending_request`
+      );
+      return;
+    }
+    const digest = this.db
+      .listGroupKeyDigests(groupId, 16)
+      .find((entry) => entry.epoch === wire.e && entry.keyId === wire.id.toLowerCase());
+    const key: ReticulumChatGroupKey = {
+      groupId,
+      epoch: wire.e,
+      keyId: wire.id.toLowerCase(),
+      keyBytesBase64: wire.kb,
+      createdBy: digest?.createdBy ?? responderAddress,
+      createdAt: digest?.createdAt ?? wire.ts,
+      status: 'active',
+      adminPublicKey: digest?.adminPublicKey ?? wire.p,
+      adminSignature: digest?.adminSignature ?? wire.s,
+    };
+    if (reticulumGroupKeyIdFromBase64(key.keyBytesBase64) !== key.keyId) {
+      loggerWarn(
+        `[ReticulumChat] group_key_response_ignored group=${groupId} key=${wire.id.slice(0, 12)} reason=key_hash_mismatch`
+      );
+      return;
+    }
+    this.db.upsertGroupKey(key);
+    this.db.markGroupKeyRequestStatus(groupId, wire.e, wire.id, 'fulfilled');
+    loggerLog(
+      `[ReticulumChat] group_key_received group=${groupId} epoch=${wire.e} key=${wire.id.slice(0, 12)} peer=${(this.routePeerHash(peerHash) ?? '').slice(0, 16) || 'unknown'}`
+    );
+    await this.announceGroupKeyDigest(key);
   }
 
   private async buildSignedResourceRequestWire(
@@ -5326,6 +6095,9 @@ export class ReticulumChatManager extends EventEmitter {
       case 'event_req':
       case 'relay_query':
       case 'relay_digest':
+      case 'gkd':
+      case 'gkq':
+      case 'gks':
       case 'event_offer':
       case 'event_batch':
       case 'rf':

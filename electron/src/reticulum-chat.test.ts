@@ -8,6 +8,9 @@ import nacl from 'tweetnacl';
 import {
   buildReticulumChatSignedFields,
   buildReticulumChatEventRequestSignedFields,
+  buildReticulumChatGroupKeyDigestSignedFields,
+  buildReticulumChatGroupKeyRequestSignedFields,
+  buildReticulumChatGroupKeyResponseSignedFields,
   buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
   hashReticulumChatPayload,
@@ -155,6 +158,57 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
                 Number.isInteger(range[1])
             ) as Array<[number, number]>)
           : undefined,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_GROUP_KEY_DIGEST' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.epoch === 'number' &&
+      typeof fullFields.keyId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatGroupKeyDigestSignedFields({
+        groupId: fullFields.groupId,
+        epoch: fullFields.epoch,
+        keyId: fullFields.keyId,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_GROUP_KEY_REQ' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.epoch === 'number' &&
+      typeof fullFields.keyId === 'string' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatGroupKeyRequestSignedFields({
+        groupId: fullFields.groupId,
+        epoch: fullFields.epoch,
+        keyId: fullFields.keyId,
+        requestId: fullFields.requestId,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_GROUP_KEY_RES' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.epoch === 'number' &&
+      typeof fullFields.keyId === 'string' &&
+      typeof fullFields.keyBytesBase64 === 'string' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatGroupKeyResponseSignedFields({
+        groupId: fullFields.groupId,
+        epoch: fullFields.epoch,
+        keyId: fullFields.keyId,
+        keyBytesBase64: fullFields.keyBytesBase64,
+        requestId: fullFields.requestId,
         authorAddress,
         authorPublicKey,
         timestamp: fullFields.timestamp,
@@ -989,6 +1043,25 @@ describe('reticulum chat database', () => {
     });
     expect(db.getRelayEventBlob(66, event.eventId)).toBeNull();
   });
+
+  it('stores and retrieves active group keys', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const key = {
+      groupId: 91,
+      epoch: 1,
+      keyId: 'a'.repeat(64),
+      keyBytesBase64: Buffer.alloc(32, 7).toString('base64'),
+      createdBy: 'Qadmin',
+      createdAt: 10_000,
+      status: 'active' as const,
+      adminPublicKey: 'admin-public-key',
+      adminSignature: 'admin-signature',
+    };
+    db.upsertGroupKey(key);
+    expect(db.getActiveGroupKey(91)).toMatchObject(key);
+    expect(db.getGroupKey(91, 1, key.keyId)).toMatchObject(key);
+  });
 });
 
 describe('reticulum chat manager', () => {
@@ -1041,6 +1114,37 @@ describe('reticulum chat manager', () => {
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     manager.close();
+  });
+
+  it('keeps reticulum group key exchange disabled behind the kill switch', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const admin = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    const hello = (admin as any).buildHelloWire();
+    admin.setLocalGroupMemberships([{ groupId: 88, isPrivate: true }]);
+    const privateKey = await (admin as any).createGroupKeyIfAdmin(88);
+    const publicKey = await (admin as any).createGroupKeyIfAdmin(90);
+    expect(hello.f).not.toContain('group_keys');
+    expect(privateKey).toBeNull();
+    expect(publicKey).toBeNull();
+    expect((admin as any).db.getActiveGroupKey(88)).toBeNull();
+    expect((admin as any).db.getActiveGroupKey(90)).toBeNull();
+    expect(sent.some((wire) => wire.k === 'gkd')).toBe(false);
+    admin.close();
   });
 
   it('publishes oversized live events as event resource offers and digest discovery', async () => {

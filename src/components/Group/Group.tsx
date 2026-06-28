@@ -272,6 +272,31 @@ const getGroupIdsFromGroupLikeList = (groups: unknown): number[] => {
   ];
 };
 
+const getReticulumGroupMembershipsFromGroupLikeList = (
+  groups: unknown,
+  groupsProperties: Record<string, unknown>
+): Array<{ groupId: number; isPrivate: boolean }> => {
+  if (!Array.isArray(groups)) return [];
+  const byGroupId = new Map<number, boolean>();
+  for (const group of groups) {
+    const groupId = getGroupIdFromGroupLike(group);
+    if (groupId == null) continue;
+    const groupObject = group && typeof group === 'object'
+      ? group as { isOpen?: unknown; isPrivate?: unknown }
+      : {};
+    const groupProperty = groupsProperties[String(groupId)] as
+      | { isOpen?: unknown; isPrivate?: unknown }
+      | undefined;
+    const isPrivate =
+      groupObject.isPrivate === true ||
+      groupProperty?.isPrivate === true ||
+      groupObject.isOpen === false ||
+      groupProperty?.isOpen === false;
+    byGroupId.set(groupId, byGroupId.get(groupId) === true || isPrivate);
+  }
+  return [...byGroupId.entries()].map(([groupId, isPrivate]) => ({ groupId, isPrivate }));
+};
+
 const collectReticulumPlainText = (value: unknown, out: string[]): void => {
   if (typeof value === 'string') {
     out.push(value);
@@ -1144,6 +1169,10 @@ export const Group = ({
       return;
     }
     const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
+    const reticulumMemberships = getReticulumGroupMembershipsFromGroupLikeList(
+      memberGroupsForReticulum,
+      groupsProperties
+    );
     if (groupIds.length === 0) {
       for (const groupId of reticulumSubscribedGroupIdsRef.current) {
         void window.reticulumChat?.unsubscribeGroup?.(groupId);
@@ -1172,7 +1201,7 @@ export const Group = ({
         }
         return;
       }
-      await window.reticulumChat?.setLocalGroupMemberships?.(groupIds);
+      await window.reticulumChat?.setLocalGroupMemberships?.(reticulumMemberships);
       const nextIds = new Set(groupIds);
       const previousIds = reticulumSubscribedGroupIdsRef.current;
       for (const groupId of previousIds) {
@@ -1194,6 +1223,7 @@ export const Group = ({
       cancelled = true;
     };
   }, [
+    groupsProperties,
     memberGroupsLoadedAddress,
     memberGroupsForReticulum,
     myAddress,

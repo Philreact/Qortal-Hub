@@ -548,7 +548,7 @@ declare global {
     reticulumChat?: {
       isEnabled: () => Promise<boolean>;
       setLocalGroupMemberships: (
-        groupIds: number[]
+        groupIds: Array<number | { groupId: number; isPrivate?: boolean; isOpen?: boolean }>
       ) => Promise<{ success: boolean; error?: string }>;
       subscribeGroup: (
         groupId: number

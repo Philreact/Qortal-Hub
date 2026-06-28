@@ -3266,7 +3266,7 @@ ipcMain.handle('reticulumChat:isEnabled', async () => {
 
 ipcMain.handle(
   'reticulumChat:setLocalGroupMemberships',
-  async (_event, groupIds: number[]) => {
+  async (_event, groupIds: Array<number | { groupId?: unknown; isPrivate?: unknown; isOpen?: unknown }>) => {
     const manager = getReticulumChatManager();
     if (!manager) {
       return { success: false, error: 'Reticulum chat manager is not running' };

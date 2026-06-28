@@ -114,6 +114,40 @@ export type ReticulumChatRelayDigestEntry = {
   createdAt: number;
 };
 
+export type ReticulumChatGroupKey = {
+  groupId: number;
+  epoch: number;
+  keyId: string;
+  keyBytesBase64: string;
+  createdBy: string;
+  createdAt: number;
+  status: 'active' | 'superseded';
+  adminPublicKey: string;
+  adminSignature: string;
+};
+
+export type ReticulumChatGroupKeyDigest = {
+  groupId: number;
+  epoch: number;
+  keyId: string;
+  createdBy: string;
+  createdAt: number;
+  adminPublicKey: string;
+  adminSignature: string;
+  sourcePeerHash: string;
+  seenAt: number;
+};
+
+export type ReticulumChatGroupKeyRequest = {
+  groupId: number;
+  epoch: number;
+  keyId: string;
+  requestId: string;
+  requestedAt: number;
+  attempts: number;
+  status: 'pending' | 'fulfilled' | 'failed';
+};
+
 type ReticulumChatMissingRangeRow = {
   group_id: number;
   author_address: string;
@@ -166,6 +200,40 @@ type RelayCacheRow = {
   last_served_at: number | null;
 };
 
+type GroupKeyRow = {
+  group_id: number;
+  epoch: number;
+  key_id: string;
+  key_bytes_base64: string;
+  created_by: string;
+  created_at: number;
+  status: string;
+  admin_public_key: string;
+  admin_signature: string;
+};
+
+type GroupKeyDigestRow = {
+  group_id: number;
+  epoch: number;
+  key_id: string;
+  created_by: string;
+  created_at: number;
+  admin_public_key: string;
+  admin_signature: string;
+  source_peer_hash: string;
+  seen_at: number;
+};
+
+type GroupKeyRequestRow = {
+  group_id: number;
+  epoch: number;
+  key_id: string;
+  request_id: string;
+  requested_at: number;
+  attempts: number;
+  status: string;
+};
+
 function relayRowToEntry(row: RelayCacheRow): ReticulumChatRelayCacheEntry {
   return {
     blobId: row.blob_id,
@@ -183,6 +251,34 @@ function relayRowToEntry(row: RelayCacheRow): ReticulumChatRelayCacheEntry {
     sourcePeerHash: row.source_peer_hash,
     servedCount: row.served_count,
     lastServedAt: row.last_served_at,
+  };
+}
+
+function groupKeyRowToEntry(row: GroupKeyRow): ReticulumChatGroupKey {
+  return {
+    groupId: row.group_id,
+    epoch: row.epoch,
+    keyId: row.key_id,
+    keyBytesBase64: row.key_bytes_base64,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    status: row.status === 'superseded' ? 'superseded' : 'active',
+    adminPublicKey: row.admin_public_key,
+    adminSignature: row.admin_signature,
+  };
+}
+
+function groupKeyDigestRowToEntry(row: GroupKeyDigestRow): ReticulumChatGroupKeyDigest {
+  return {
+    groupId: row.group_id,
+    epoch: row.epoch,
+    keyId: row.key_id,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    adminPublicKey: row.admin_public_key,
+    adminSignature: row.admin_signature,
+    sourcePeerHash: row.source_peer_hash,
+    seenAt: row.seen_at,
   };
 }
 
@@ -450,6 +546,9 @@ export class ReticulumChatDatabase {
   private db: DB;
   private readonly relayCacheKey: string;
   private memoryEvents = new Map<string, ReticulumChatEvent>();
+  private memoryGroupKeys = new Map<string, ReticulumChatGroupKey>();
+  private memoryGroupKeyDigests = new Map<string, ReticulumChatGroupKeyDigest>();
+  private memoryGroupKeyRequests = new Map<string, ReticulumChatGroupKeyRequest>();
   private memorySearchText = new Map<string, string>();
   private memoryChannels = new Map<string, ReticulumGroupChannel>();
   private memoryCategories = new Map<string, ReticulumGroupCategory>();
@@ -541,6 +640,15 @@ export class ReticulumChatDatabase {
   private stmtRelayEvictCandidate: Statement;
   private stmtDeleteRelayBlob: Statement;
   private stmtDeleteRelayByEvent: Statement;
+  private stmtUpsertGroupKey: Statement;
+  private stmtGetActiveGroupKey: Statement;
+  private stmtGetGroupKey: Statement;
+  private stmtUpsertGroupKeyDigest: Statement;
+  private stmtGetLatestGroupKeyDigest: Statement;
+  private stmtListGroupKeyDigests: Statement;
+  private stmtUpsertGroupKeyRequest: Statement;
+  private stmtGetPendingGroupKeyRequests: Statement;
+  private stmtMarkGroupKeyRequestStatus: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -557,6 +665,7 @@ export class ReticulumChatDatabase {
     this.initSchema();
     this.migrateEventMentionTargetsSchema();
     this.initRelayCacheSchema();
+    this.initGroupKeySchema();
 
     this.stmtInsertEvent = this.db.prepare(`
       INSERT OR IGNORE INTO reticulum_chat_events
@@ -1064,6 +1173,60 @@ export class ReticulumChatDatabase {
     this.stmtDeleteRelayByEvent = this.db.prepare(
       'DELETE FROM rchat_relay_cache WHERE event_id = ?'
     );
+    this.stmtUpsertGroupKey = this.db.prepare(`
+      INSERT OR REPLACE INTO rchat_group_keys
+        (group_id, epoch, key_id, key_bytes_base64, created_by, created_at,
+         status, admin_public_key, admin_signature)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtGetActiveGroupKey = this.db.prepare(`
+      SELECT * FROM rchat_group_keys
+      WHERE group_id = ? AND status = 'active'
+      ORDER BY epoch DESC, key_id ASC, created_at ASC
+      LIMIT 1
+    `);
+    this.stmtGetGroupKey = this.db.prepare(`
+      SELECT * FROM rchat_group_keys
+      WHERE group_id = ? AND epoch = ? AND key_id = ?
+      LIMIT 1
+    `);
+    this.stmtUpsertGroupKeyDigest = this.db.prepare(`
+      INSERT OR REPLACE INTO rchat_group_key_digests
+        (group_id, epoch, key_id, created_by, created_at, admin_public_key,
+         admin_signature, source_peer_hash, seen_at)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtGetLatestGroupKeyDigest = this.db.prepare(`
+      SELECT * FROM rchat_group_key_digests
+      WHERE group_id = ?
+      ORDER BY epoch DESC, created_at DESC, key_id ASC
+      LIMIT 1
+    `);
+    this.stmtListGroupKeyDigests = this.db.prepare(`
+      SELECT * FROM rchat_group_key_digests
+      WHERE group_id = ?
+      ORDER BY epoch DESC, created_at DESC, key_id ASC
+      LIMIT ?
+    `);
+    this.stmtUpsertGroupKeyRequest = this.db.prepare(`
+      INSERT OR REPLACE INTO rchat_group_key_requests
+        (group_id, epoch, key_id, request_id, requested_at, attempts, status)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtGetPendingGroupKeyRequests = this.db.prepare(`
+      SELECT * FROM rchat_group_key_requests
+      WHERE status = 'pending'
+      ORDER BY requested_at ASC
+      LIMIT ?
+    `);
+    this.stmtMarkGroupKeyRequestStatus = this.db.prepare(`
+      UPDATE rchat_group_key_requests
+      SET status = ?
+      WHERE group_id = ? AND epoch = ? AND key_id = ?
+    `);
     this.pruneSatisfiedMissingRanges();
     this.backfillSearchIndex();
   }
@@ -1281,6 +1444,175 @@ export class ReticulumChatDatabase {
     return [...byEventId.values()]
       .sort((a, b) => a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId))
       .slice(boundedOffset, boundedOffset + boundedLimit);
+  }
+
+  upsertGroupKey(key: ReticulumChatGroupKey): void {
+    const groupId = Number(key.groupId);
+    const epoch = Number(key.epoch);
+    const keyId = typeof key.keyId === 'string' ? key.keyId.trim().toLowerCase() : '';
+    const normalized: ReticulumChatGroupKey = {
+      ...key,
+      groupId,
+      epoch,
+      keyId,
+    };
+    this.memoryGroupKeys.set(`${groupId}:${epoch}:${keyId}`, normalized);
+    this.stmtUpsertGroupKey.run(
+      groupId,
+      epoch,
+      keyId,
+      key.keyBytesBase64,
+      key.createdBy,
+      key.createdAt,
+      key.status,
+      key.adminPublicKey,
+      key.adminSignature
+    );
+  }
+
+  getActiveGroupKey(groupId: number): ReticulumChatGroupKey | null {
+    if (!Number.isInteger(groupId) || groupId <= 0) return null;
+    const memory = [...this.memoryGroupKeys.values()]
+      .filter((key) => key.groupId === groupId && key.status === 'active')
+      .sort((a, b) => b.epoch - a.epoch || a.keyId.localeCompare(b.keyId) || a.createdAt - b.createdAt)[0];
+    if (memory) return memory;
+    const row = this.stmtGetActiveGroupKey.get(groupId) as GroupKeyRow | undefined;
+    return row ? groupKeyRowToEntry(row) : null;
+  }
+
+  getGroupKey(groupId: number, epoch: number, keyId: string): ReticulumChatGroupKey | null {
+    if (!Number.isInteger(groupId) || groupId <= 0) return null;
+    if (!Number.isInteger(epoch) || epoch <= 0) return null;
+    const normalizedKeyId = typeof keyId === 'string' ? keyId.trim().toLowerCase() : '';
+    if (!/^[0-9a-f]{64}$/.test(normalizedKeyId)) return null;
+    const memory = this.memoryGroupKeys.get(`${groupId}:${epoch}:${normalizedKeyId}`);
+    if (memory) return memory;
+    const row = this.stmtGetGroupKey.get(groupId, epoch, normalizedKeyId) as GroupKeyRow | undefined;
+    return row ? groupKeyRowToEntry(row) : null;
+  }
+
+  upsertGroupKeyDigest(digest: ReticulumChatGroupKeyDigest): void {
+    if (!Number.isInteger(digest.groupId) || digest.groupId <= 0) return;
+    if (!Number.isInteger(digest.epoch) || digest.epoch <= 0) return;
+    if (!/^[0-9a-f]{64}$/i.test(digest.keyId)) return;
+    const key = `${digest.groupId}:${digest.epoch}:${digest.keyId.toLowerCase()}`;
+    this.memoryGroupKeyDigests.set(key, {
+      ...digest,
+      keyId: digest.keyId.toLowerCase(),
+      sourcePeerHash: digest.sourcePeerHash.trim().toLowerCase(),
+    });
+    this.stmtUpsertGroupKeyDigest.run(
+      digest.groupId,
+      digest.epoch,
+      digest.keyId.toLowerCase(),
+      digest.createdBy,
+      digest.createdAt,
+      digest.adminPublicKey,
+      digest.adminSignature,
+      digest.sourcePeerHash.trim().toLowerCase(),
+      digest.seenAt
+    );
+  }
+
+  getLatestGroupKeyDigest(groupId: number): ReticulumChatGroupKeyDigest | null {
+    if (!Number.isInteger(groupId) || groupId <= 0) return null;
+    const memory = [...this.memoryGroupKeyDigests.values()]
+      .filter((digest) => digest.groupId === groupId)
+      .sort((a, b) => b.epoch - a.epoch || b.createdAt - a.createdAt || a.keyId.localeCompare(b.keyId))[0];
+    if (memory) return memory;
+    const row = this.stmtGetLatestGroupKeyDigest.get(groupId) as GroupKeyDigestRow | undefined;
+    return row ? groupKeyDigestRowToEntry(row) : null;
+  }
+
+  listGroupKeyDigests(groupId: number, limit = 4): ReticulumChatGroupKeyDigest[] {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    const boundedLimit = Math.max(1, Math.min(16, Math.floor(limit)));
+    const rows = this.stmtListGroupKeyDigests.all(
+      groupId,
+      boundedLimit
+    ) as GroupKeyDigestRow[];
+    const byKey = new Map<string, ReticulumChatGroupKeyDigest>();
+    for (const row of rows) {
+      const entry = groupKeyDigestRowToEntry(row);
+      byKey.set(`${entry.groupId}:${entry.epoch}:${entry.keyId}`, entry);
+    }
+    for (const entry of this.memoryGroupKeyDigests.values()) {
+      if (entry.groupId === groupId) byKey.set(`${entry.groupId}:${entry.epoch}:${entry.keyId}`, entry);
+    }
+    return [...byKey.values()]
+      .sort((a, b) => b.epoch - a.epoch || b.createdAt - a.createdAt || a.keyId.localeCompare(b.keyId))
+      .slice(0, boundedLimit);
+  }
+
+  upsertGroupKeyRequest(request: ReticulumChatGroupKeyRequest): void {
+    if (!Number.isInteger(request.groupId) || request.groupId <= 0) return;
+    if (!Number.isInteger(request.epoch) || request.epoch <= 0) return;
+    if (!/^[0-9a-f]{64}$/i.test(request.keyId)) return;
+    if (!/^[0-9a-f]{8,64}$/i.test(request.requestId)) return;
+    const normalized: ReticulumChatGroupKeyRequest = {
+      ...request,
+      keyId: request.keyId.toLowerCase(),
+      requestId: request.requestId.toLowerCase(),
+      attempts: Math.max(0, Math.floor(request.attempts)),
+    };
+    this.memoryGroupKeyRequests.set(
+      `${request.groupId}:${request.epoch}:${request.keyId.toLowerCase()}`,
+      normalized
+    );
+    this.stmtUpsertGroupKeyRequest.run(
+      request.groupId,
+      request.epoch,
+      request.keyId.toLowerCase(),
+      request.requestId.toLowerCase(),
+      request.requestedAt,
+      Math.max(0, Math.floor(request.attempts)),
+      request.status
+    );
+  }
+
+  listPendingGroupKeyRequests(limit = 64): ReticulumChatGroupKeyRequest[] {
+    const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
+    const rows = this.stmtGetPendingGroupKeyRequests.all(boundedLimit) as GroupKeyRequestRow[];
+    const byKey = new Map<string, ReticulumChatGroupKeyRequest>();
+    for (const row of rows) {
+      const entry: ReticulumChatGroupKeyRequest = {
+        groupId: row.group_id,
+        epoch: row.epoch,
+        keyId: row.key_id,
+        requestId: row.request_id,
+        requestedAt: row.requested_at,
+        attempts: row.attempts,
+        status: row.status === 'fulfilled' || row.status === 'failed' ? row.status : 'pending',
+      };
+      byKey.set(`${entry.groupId}:${entry.epoch}:${entry.keyId}`, entry);
+    }
+    for (const entry of this.memoryGroupKeyRequests.values()) {
+      if (entry.status === 'pending') byKey.set(`${entry.groupId}:${entry.epoch}:${entry.keyId}`, entry);
+    }
+    return [...byKey.values()]
+      .filter((entry) => entry.status === 'pending')
+      .sort((a, b) => a.requestedAt - b.requestedAt)
+      .slice(0, boundedLimit);
+  }
+
+  markGroupKeyRequestStatus(
+    groupId: number,
+    epoch: number,
+    keyId: string,
+    status: 'pending' | 'fulfilled' | 'failed'
+  ): void {
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    if (!Number.isInteger(epoch) || epoch <= 0) return;
+    if (!/^[0-9a-f]{64}$/i.test(keyId)) return;
+    const normalizedKeyId = keyId.toLowerCase();
+    const memory = this.memoryGroupKeyRequests.get(`${groupId}:${epoch}:${normalizedKeyId}`);
+    if (memory) {
+      this.memoryGroupKeyRequests.set(`${groupId}:${epoch}:${normalizedKeyId}`, {
+        ...memory,
+        status,
+      });
+    }
+    this.stmtMarkGroupKeyRequestStatus.run(status, groupId, epoch, keyId.toLowerCase());
   }
 
   getOfflineRelayCacheBytes(now = Date.now()): number {
@@ -3057,6 +3389,46 @@ export class ReticulumChatDatabase {
         ON rchat_relay_cache (expires_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_group_created
         ON rchat_relay_cache (group_id, created_at, event_id);
+      CREATE TABLE IF NOT EXISTS rchat_group_keys (
+        group_id INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        key_bytes_base64 TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        admin_public_key TEXT NOT NULL,
+        admin_signature TEXT NOT NULL,
+        PRIMARY KEY (group_id, epoch, key_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_group_keys_active
+        ON rchat_group_keys (group_id, status, epoch, created_at);
+      CREATE TABLE IF NOT EXISTS rchat_group_key_digests (
+        group_id INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        admin_public_key TEXT NOT NULL,
+        admin_signature TEXT NOT NULL,
+        source_peer_hash TEXT NOT NULL DEFAULT '',
+        seen_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, epoch, key_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_group_key_digests_latest
+        ON rchat_group_key_digests (group_id, epoch, created_at);
+      CREATE TABLE IF NOT EXISTS rchat_group_key_requests (
+        group_id INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        requested_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        PRIMARY KEY (group_id, epoch, key_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_group_key_requests_pending
+        ON rchat_group_key_requests (status, requested_at);
       CREATE TABLE IF NOT EXISTS reticulum_chat_read_watermarks (
         group_id INTEGER NOT NULL,
         channel_id TEXT NOT NULL DEFAULT 'general',
@@ -3148,6 +3520,51 @@ export class ReticulumChatDatabase {
         ON rchat_relay_cache (expires_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_rchat_relay_cache_group_created
         ON rchat_relay_cache (group_id, created_at, event_id);
+    `);
+  }
+
+  private initGroupKeySchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_group_keys (
+        group_id INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        key_bytes_base64 TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        admin_public_key TEXT NOT NULL,
+        admin_signature TEXT NOT NULL,
+        PRIMARY KEY (group_id, epoch, key_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_group_keys_active
+        ON rchat_group_keys (group_id, status, epoch, created_at);
+      CREATE TABLE IF NOT EXISTS rchat_group_key_digests (
+        group_id INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        admin_public_key TEXT NOT NULL,
+        admin_signature TEXT NOT NULL,
+        source_peer_hash TEXT NOT NULL DEFAULT '',
+        seen_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, epoch, key_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_group_key_digests_latest
+        ON rchat_group_key_digests (group_id, epoch, created_at);
+      CREATE TABLE IF NOT EXISTS rchat_group_key_requests (
+        group_id INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        requested_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        PRIMARY KEY (group_id, epoch, key_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_group_key_requests_pending
+        ON rchat_group_key_requests (status, requested_at);
     `);
   }
 

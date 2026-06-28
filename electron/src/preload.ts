@@ -1363,7 +1363,9 @@ try {
     contextBridge.exposeInMainWorld('reticulumChat', {
       isEnabled: async () =>
         ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
-      setLocalGroupMemberships: async (groupIds: number[]) =>
+      setLocalGroupMemberships: async (
+        groupIds: Array<number | { groupId: number; isPrivate?: boolean; isOpen?: boolean }>
+      ) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalGroupMemberships',
           groupIds
@@ -1614,7 +1616,9 @@ try {
     contextBridge.exposeInMainWorld('reticulumChat', {
       isEnabled: async () =>
         ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
-      setLocalGroupMemberships: async (groupIds: number[]) =>
+      setLocalGroupMemberships: async (
+        groupIds: Array<number | { groupId: number; isPrivate?: boolean; isOpen?: boolean }>
+      ) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalGroupMemberships',
           groupIds
