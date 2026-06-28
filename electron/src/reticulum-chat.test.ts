@@ -40,7 +40,9 @@ import {
 } from './reticulum-resource-store';
 import {
   RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
+  RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS,
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
+  RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS,
 } from './reticulum-resource-transfer';
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
@@ -3420,6 +3422,82 @@ describe('reticulum chat manager', () => {
     expect(status.candidatePeerCount).toBe(1);
     expect(status.peerCount).toBe(0);
     expect(accepts.some((item) => item.peerPresenceHash === 'c'.repeat(32))).toBe(true);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('clears exhausted range attempts when a user retries a resource download', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-user-retry-'));
+    let nowMs = 100_000;
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => nowMs,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 12);
+    const manifest = {
+      namespace: 'reticulum-chat-file',
+      ownerId: '78:sender',
+      fileName: 'retry.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const accepts: Array<Record<string, unknown>> = [];
+    const bridge = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    bridge.on = bridge.on.bind(bridge);
+    bridge.off = bridge.off.bind(bridge);
+    bridge.fanoutReticulumChatDetailed = async () => ({ ok: true as const });
+    bridge.acceptReticulumResourceDetailed = async (payload: Record<string, unknown>) => {
+      accepts.push(payload);
+      return { ok: true as const };
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => nowMs,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([78]);
+    manager.subscribeGroup(78);
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-file')
+    ).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: manifest.fileHash,
+        s: manifest.sizeBytes,
+      },
+      'd'.repeat(32)
+    );
+
+    for (let attempt = 0; attempt < RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(accepts).toHaveLength(attempt + 1);
+      bridge.emit('reticulum-resource', {
+        status: 'failed',
+        transferId: accepts[attempt].transferId,
+      });
+      nowMs += RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS + 1;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(accepts).toHaveLength(RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS);
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-file')
+    ).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(accepts).toHaveLength(RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS + 1);
     manager.close();
     resourceStore.close();
   });
