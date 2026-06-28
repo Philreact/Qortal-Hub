@@ -345,6 +345,8 @@ def _qchat_file_is_bridge_chunkable_managed_resource_type(resource_type: str) ->
     normalized = str(resource_type or "").strip()
     if normalized == _RETICULUM_CHAT_RESOURCE_TYPE:
         return False
+    if normalized == "reticulum_resource_range" or normalized.endswith("_resource_range"):
+        return False
     return _qchat_file_is_managed_resource_type(normalized)
 
 
