@@ -3906,7 +3906,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('does not open duplicate byte-range links for repeated resource_have from the same provider', async () => {
+  it('opens each missing byte range once for repeated resource_have from the same provider', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-duplicate-range-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -3965,10 +3965,10 @@ describe('reticulum chat manager', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(1);
+    expect(accepts).toBe(2);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: 1,
-      inFlightRangeCount: 1,
+      activeTransfers: 2,
+      inFlightRangeCount: 2,
     });
     manager.close();
     resourceStore.close();
@@ -4029,7 +4029,7 @@ describe('reticulum chat manager', () => {
       'e'.repeat(32)
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(accepted).toHaveLength(1);
+    expect(accepted).toHaveLength(2);
 
     bridge.emit('reticulum-resource', {
       status: 'receiving',
@@ -4144,7 +4144,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('keeps one active direct range per provider for a resource', async () => {
+  it('keeps active direct ranges per provider within the configured resource cap', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-one-peer-link-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -4202,11 +4202,11 @@ describe('reticulum chat manager', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(1);
+    expect(accepts).toBe(4);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: 1,
+      activeTransfers: 4,
       pendingTransfers: 0,
-      inFlightRangeCount: 1,
+      inFlightRangeCount: 4,
     });
 
     now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
@@ -4214,9 +4214,9 @@ describe('reticulum chat manager', () => {
     await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(2);
+    expect(accepts).toBe(8);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: 1,
+      activeTransfers: 4,
       pendingTransfers: 0,
     });
     manager.close();
@@ -4292,11 +4292,11 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(2);
+    expect(accepts).toBe(5);
     expect(manager.getResourceDownloadStatus(largeHash)).toMatchObject({
-      activeTransfers: 1,
+      activeTransfers: 4,
       pendingTransfers: 0,
-      inFlightRangeCount: 1,
+      inFlightRangeCount: 4,
     });
     expect(manager.getResourceDownloadStatus(imageHash)).toMatchObject({
       activeTransfers: 1,

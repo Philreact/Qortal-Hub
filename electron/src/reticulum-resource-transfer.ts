@@ -12,8 +12,8 @@ import {
 import { log as loggerLog, warn as loggerWarn } from './logger';
 
 export const RETICULUM_RESOURCE_TRANSFER_RANGE_BYTES = RETICULUM_RESOURCE_RANGE_SIZE;
-export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 4;
-export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 1;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 8;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 4;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
 export const RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
@@ -619,39 +619,50 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         throttledPeerCount += 1;
         continue;
       }
-      const requestRange =
-        missing.find(
-          (range) => !assigned.has(rangeKey(range)) && (state.rangePeers.get(rangeKey(range))?.has(peerKey) ?? false)
-        ) ?? missing.find((range) => !assigned.has(rangeKey(range)));
-      if (!requestRange) continue;
-      assigned.add(rangeKey(requestRange));
-      const requests = await this.buildRequestPayloads(state, [requestRange]);
-      if (requests.length === 0) {
-        loggerWarn(
-          `[${this.loggerPrefix}] Could not build targeted range request fileHash=${state.fileHash} peer=${peerKey}`
-        );
-      }
-      for (const request of requests) {
-        const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${rangeKey(requestRange)}`;
-        const now = this.now();
-        if (now - (this.requestedResources.get(throttleKey) ?? 0) < RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS) {
+      while (
+        this.activeAccepts.size < RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY &&
+        !this.peerHasMaxActiveAcceptsForResource(peerKey, state.fileHash)
+      ) {
+        const requestRange =
+          missing.find(
+            (range) => !assigned.has(rangeKey(range)) && (state.rangePeers.get(rangeKey(range))?.has(peerKey) ?? false)
+          ) ?? missing.find((range) => !assigned.has(rangeKey(range)));
+        if (!requestRange) break;
+        assigned.add(rangeKey(requestRange));
+        const requests = await this.buildRequestPayloads(state, [requestRange]);
+        if (requests.length === 0) {
+          loggerWarn(
+            `[${this.loggerPrefix}] Could not build targeted range request fileHash=${state.fileHash} peer=${peerKey}`
+          );
           continue;
         }
-        this.requestedResources.set(throttleKey, now);
-        loggerLog(
-          `[${this.loggerPrefix}] resource_range_link_requested fileHash=${state.fileHash} ` +
-            `peer=${peerKey.slice(0, 16)} range=${rangeKey(requestRange)}`
-        );
-        const result = await this.openRangeLink(peerKey, state, requestRange, request);
-        if (result.ok) {
-          delivered = true;
-          requestedRanges.push(requestRange);
-        } else {
-          const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
-          loggerWarn(
-            `[${this.loggerPrefix}] Targeted range request failed fileHash=${state.fileHash} peer=${peerKey} range=${rangeKey(requestRange)}:`,
-            failed.error ?? failed.reason
+        for (const request of requests) {
+          if (this.activeAccepts.size >= RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY) {
+            capacityLimited = true;
+            break;
+          }
+          if (this.peerHasMaxActiveAcceptsForResource(peerKey, state.fileHash)) break;
+          const throttleKey = `${state.contextId}:${peerKey}:${state.fileHash}:${rangeKey(requestRange)}`;
+          const now = this.now();
+          if (now - (this.requestedResources.get(throttleKey) ?? 0) < RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS) {
+            continue;
+          }
+          this.requestedResources.set(throttleKey, now);
+          loggerLog(
+            `[${this.loggerPrefix}] resource_range_link_requested fileHash=${state.fileHash} ` +
+              `peer=${peerKey.slice(0, 16)} range=${rangeKey(requestRange)}`
           );
+          const result = await this.openRangeLink(peerKey, state, requestRange, request);
+          if (result.ok) {
+            delivered = true;
+            requestedRanges.push(requestRange);
+          } else {
+            const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+            loggerWarn(
+              `[${this.loggerPrefix}] Targeted range request failed fileHash=${state.fileHash} peer=${peerKey} range=${rangeKey(requestRange)}:`,
+              failed.error ?? failed.reason
+            );
+          }
         }
       }
     }
