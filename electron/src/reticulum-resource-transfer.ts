@@ -1005,7 +1005,43 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       await this.serveLinkedRangeRequest(payload, auth as Record<string, unknown>);
       return;
     }
+    if (offer.temporaryPath && !offer.receiveTemporaryPath) {
+      await this.authorizeProvidedOffer(payload, auth as Record<string, unknown>, offer);
+      return;
+    }
     await this.authorizeAcceptedOffer(payload, auth as Record<string, unknown>, offer);
+  }
+
+  private async authorizeProvidedOffer(
+    payload: ReticulumResourceTransferPayload,
+    auth: Record<string, unknown>,
+    offer: ReticulumResourceTransferOffer
+  ): Promise<void> {
+    const transferId = offer.transferId;
+    const authRanges = Array.isArray(auth.byteRanges)
+      ? auth.byteRanges
+      : [];
+    const expectedRanges = offer.ranges.map((range) => [range.startByte, range.endByteExclusive]);
+    if (
+      Number(auth.contextId) !== offer.contextId ||
+      auth.fileHash !== offer.fileHash ||
+      JSON.stringify(authRanges) !== JSON.stringify(expectedRanges)
+    ) {
+      loggerWarn(
+        `[${this.loggerPrefix}] Rejecting provided resource auth transfer=${transferId}: metadata mismatch`
+      );
+      await this.bridge?.rejectReticulumResourceDetailed?.({
+        linkId: payload.linkId || '',
+        transferId,
+        reason: 'resource_auth_mismatch',
+      });
+      this.finishTransfer(transferId, false);
+      return;
+    }
+    await this.bridge?.authorizeReticulumResourceDetailed({
+      linkId: payload.linkId || '',
+      transferId,
+    });
   }
 
   private async authorizeAcceptedOffer(

@@ -3091,22 +3091,31 @@ describe('reticulum chat manager', () => {
       byteRanges: [range],
       timestamp: 100_000,
     });
+    const authRequest = {
+      ...request,
+      type: 'RETICULUM_GROUP_RESOURCE_AUTH',
+      transferId: 'linked-transfer-1',
+      groupId: 81,
+      contextId: 81,
+      fileHash: manifest.fileHash,
+      totalSizeBytes: manifest.sizeBytes,
+      byteRanges: [range],
+      requesterPeerHash,
+    };
     manager.handleGenericResourceEvent({
       status: 'auth',
       linkId: 'resource-link-1',
       transferId: 'linked-transfer-1',
       peerPresenceHash: requesterPeerHash,
-      auth: {
-        ...request,
-        type: 'RETICULUM_GROUP_RESOURCE_AUTH',
-        transferId: 'linked-transfer-1',
-        groupId: 81,
-        contextId: 81,
-        fileHash: manifest.fileHash,
-        totalSizeBytes: manifest.sizeBytes,
-        byteRanges: [range],
-        requesterPeerHash,
-      },
+      auth: authRequest,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-1-resource',
+      transferId: 'linked-transfer-1',
+      peerPresenceHash: requesterPeerHash,
+      auth: authRequest,
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -3128,6 +3137,10 @@ describe('reticulum chat manager', () => {
     expect(authorizations).toEqual([
       {
         linkId: 'resource-link-1',
+        transferId: 'linked-transfer-1',
+      },
+      {
+        linkId: 'resource-link-1-resource',
         transferId: 'linked-transfer-1',
       },
     ]);
