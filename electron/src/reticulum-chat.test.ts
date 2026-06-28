@@ -8,11 +8,13 @@ import nacl from 'tweetnacl';
 import {
   buildReticulumChatSignedFields,
   buildReticulumChatEventRequestSignedFields,
+  buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
   hashReticulumChatPayload,
   ReticulumChatManager,
   serializeReticulumChatEvent,
   type ReticulumChatEvent,
+  type ReticulumChatWire,
   validateReticulumChatEventShape,
   verifyReticulumChatEvent,
   type ReticulumChatManagerOptions,
@@ -37,7 +39,6 @@ import {
   RETICULUM_RESOURCE_RANGE_SIZE,
 } from './reticulum-resource-store';
 import {
-  RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
   RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
 } from './reticulum-resource-transfer';
@@ -156,6 +157,27 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         authorPublicKey,
         timestamp: fullFields.timestamp,
       });
+    } else if (
+      fullFields.type === 'RCHAT_RESOURCE_FIND' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.fileHash === 'string' &&
+      typeof fullFields.sizeBytes === 'number' &&
+      typeof fullFields.maxHops === 'number' &&
+      typeof fullFields.expiresAt === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatResourceFindSignedFields({
+        groupId: fullFields.groupId,
+        requestId: fullFields.requestId,
+        fileHash: fullFields.fileHash,
+        sizeBytes: fullFields.sizeBytes,
+        maxHops: fullFields.maxHops,
+        expiresAt: fullFields.expiresAt,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
     }
     const signature = nacl.sign.detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
@@ -234,6 +256,51 @@ function signedResourceRequestWire(params: {
     pk: authorPublicKey,
     ts: params.timestamp,
     sig: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
+}
+
+function signedResourceFindWire(params: {
+  groupId: number;
+  requestId: string;
+  fileHash: string;
+  sizeBytes: number;
+  hop: number;
+  maxHops: number;
+  expiresAt: number;
+  timestamp: number;
+}): Extract<ReticulumChatWire, { k: 'rf' }> {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumChatResourceFindSignedFields({
+    groupId: params.groupId,
+    requestId: params.requestId,
+    fileHash: params.fileHash,
+    sizeBytes: params.sizeBytes,
+    maxHops: params.maxHops,
+    expiresAt: params.expiresAt,
+    authorAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    t: 'RCHAT',
+    k: 'rf',
+    g: params.groupId,
+    r: params.requestId,
+    f: params.fileHash,
+    s: params.sizeBytes,
+    h: params.hop,
+    m: params.maxHops,
+    x: params.expiresAt,
+    p: authorPublicKey,
+    ts: params.timestamp,
+    sg: base58Encode(
       nacl.sign.detached(
         new Uint8Array(canonicalizeForSigning(fields)),
         kp.secretKey
@@ -977,6 +1044,7 @@ describe('reticulum chat manager', () => {
   it('publishes oversized live events as event resource offers and digest discovery', async () => {
     const fanout: Record<string, unknown>[] = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const accepts: Array<Record<string, unknown>> = [];
     const resources: unknown[] = [];
     const bridge = {
       on: () => undefined,
@@ -987,6 +1055,10 @@ describe('reticulum chat manager', () => {
       },
       sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
         direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
         return { ok: true as const };
       },
       sendReticulumChatResourceDetailed: async (payload: unknown) => {
@@ -2854,12 +2926,12 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('serves requested byte ranges as Reticulum resource offers', async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-range-offer-'));
+  it('serves linked byte-range auth requests on the established resource link', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-linked-auth-'));
     const sourcePath = path.join(tempRoot, 'source.bin');
     const sourceBytes = Buffer.concat([
-      Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 11),
-      Buffer.from('tail bytes'),
+      Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 21),
+      Buffer.from('linked tail'),
     ]);
     fs.writeFileSync(sourcePath, sourceBytes);
     const resourceStore = new ReticulumResourceStore({
@@ -2878,7 +2950,9 @@ describe('reticulum chat manager', () => {
     });
 
     const offeredResources: Array<Record<string, unknown>> = [];
-    const offerWires: Array<Record<string, unknown>> = [];
+    const authorizations: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
     const bridge = {
       on: () => undefined,
       off: () => undefined,
@@ -2886,8 +2960,12 @@ describe('reticulum chat manager', () => {
         offeredResources.push(payload);
         return { ok: true as const };
       },
-      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
-        offerWires.push(wire);
+      authorizeReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        authorizations.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        rejections.push(payload);
         return { ok: true as const };
       },
     };
@@ -2896,60 +2974,57 @@ describe('reticulum chat manager', () => {
       bridge: bridge as any,
       resourceStore,
       now: () => 100_000,
+      validateGroupMember: async () => true,
     });
     manager.setLocalGroupMemberships([81]);
 
     const range: [number, number] = [0, RETICULUM_RESOURCE_RANGE_SIZE];
-    manager.handleWire(
-      {
-        t: 'RCHAT',
-        k: 'resource_req',
-        g: 81,
-        q: signedResourceRequestWire({
-          groupId: 81,
-          fileHash: manifest.fileHash,
-          byteRanges: [range],
-          timestamp: 100_000,
-        }),
+    const request = signedResourceRequestWire({
+      groupId: 81,
+      fileHash: manifest.fileHash,
+      byteRanges: [range],
+      timestamp: 100_000,
+    });
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-1',
+      transferId: 'linked-transfer-1',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_GROUP_RESOURCE_AUTH',
+        transferId: 'linked-transfer-1',
+        groupId: 81,
+        contextId: 81,
+        fileHash: manifest.fileHash,
+        totalSizeBytes: manifest.sizeBytes,
+        byteRanges: [range],
+        requesterPeerHash,
       },
-      'peer-a'
-    );
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const expectedPayloadHash = nodeCrypto
       .createHash('sha256')
       .update(sourceBytes.subarray(range[0], range[1]))
       .digest('hex');
+    expect(rejections).toHaveLength(0);
     expect(offeredResources).toHaveLength(1);
     expect(offeredResources[0]).toEqual(
       expect.objectContaining({
+        allowedRecipientAddress: requesterPeerHash,
+        transferId: 'linked-transfer-1',
         resourceType: 'reticulum_group_resource_range',
         size: RETICULUM_RESOURCE_RANGE_SIZE,
         sha256: expectedPayloadHash,
       })
     );
-    expect(offeredResources[0].metadata).toEqual(
-      expect.objectContaining({
-        fileHash: manifest.fileHash,
-        totalSizeBytes: manifest.sizeBytes,
-        byteRanges: [range],
-        payloadHash: expectedPayloadHash,
-      })
-    );
-    expect(offerWires).toHaveLength(1);
-    expect(offerWires[0].k).toBe('resource_offer');
-    expect((offerWires[0].o as any)).toEqual(
-      expect.objectContaining({
-        fh: manifest.fileHash,
-        rs: manifest.sizeBytes,
-        s: RETICULUM_RESOURCE_RANGE_SIZE,
-        ph: expectedPayloadHash,
-        b: [range],
-      })
-    );
-    expect(byteLengthUtf8JsonWithBridgeSender(offerWires[0])).toBeLessThanOrEqual(
-      RT_RETICULUM_MAX_WIRE_JSON_BYTES
-    );
+    expect(authorizations).toEqual([
+      {
+        linkId: 'resource-link-1',
+        transferId: 'linked-transfer-1',
+      },
+    ]);
     manager.close();
     resourceStore.close();
   });
@@ -2975,7 +3050,7 @@ describe('reticulum chat manager', () => {
     });
 
     const offeredResources: Array<Record<string, unknown>> = [];
-    const offerWires: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
     const bridge = {
       on: () => undefined,
       off: () => undefined,
@@ -2983,11 +3058,8 @@ describe('reticulum chat manager', () => {
         offeredResources.push(payload);
         return { ok: true as const };
       },
-      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
-        offerWires.push(wire);
-        return { ok: true as const };
-      },
-      fanoutReticulumChatDetailed: async (_messages: Record<string, unknown>[]) => {
+      rejectReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        rejections.push(payload);
         return { ok: true as const };
       },
     };
@@ -3001,24 +3073,39 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([82]);
 
     const range: [number, number] = [0, RETICULUM_RESOURCE_RANGE_SIZE];
-    manager.handleWire(
-      {
-        t: 'RCHAT',
-        k: 'resource_req',
-        g: 82,
-        q: signedResourceRequestWire({
-          groupId: 82,
-          fileHash: manifest.fileHash,
-          byteRanges: [range],
-          timestamp: 100_000,
-        }),
+    const request = signedResourceRequestWire({
+      groupId: 82,
+      fileHash: manifest.fileHash,
+      byteRanges: [range],
+      timestamp: 100_000,
+    });
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-wrong-group',
+      transferId: 'wrong-group-transfer',
+      peerPresenceHash: 'a'.repeat(32),
+      auth: {
+        ...request,
+        type: 'RETICULUM_GROUP_RESOURCE_AUTH',
+        transferId: 'wrong-group-transfer',
+        groupId: 82,
+        contextId: 82,
+        fileHash: manifest.fileHash,
+        totalSizeBytes: manifest.sizeBytes,
+        byteRanges: [range],
+        requesterPeerHash: 'a'.repeat(32),
       },
-      'peer-a'
-    );
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(offeredResources).toHaveLength(0);
-    expect(offerWires).toHaveLength(0);
+    expect(rejections).toEqual([
+      {
+        linkId: 'resource-link-wrong-group',
+        transferId: 'wrong-group-transfer',
+        reason: 'request_not_allowed',
+      },
+    ]);
     manager.close();
     resourceStore.close();
   });
@@ -3053,7 +3140,7 @@ describe('reticulum chat manager', () => {
     });
 
     const offeredResources: Array<Record<string, unknown>> = [];
-    const offerWires: Array<Record<string, unknown>> = [];
+    const authorizations: Array<Record<string, unknown>> = [];
     const bridge = {
       on: () => undefined,
       off: () => undefined,
@@ -3061,8 +3148,8 @@ describe('reticulum chat manager', () => {
         offeredResources.push(payload);
         return { ok: true as const };
       },
-      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
-        offerWires.push(wire);
+      authorizeReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        authorizations.push(payload);
         return { ok: true as const };
       },
     };
@@ -3076,37 +3163,51 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([81]);
 
     const range: [number, number] = [0, RETICULUM_RESOURCE_RANGE_SIZE];
-    manager.handleWire(
-      {
-        t: 'RCHAT',
-        k: 'resource_req',
-        g: 81,
-        q: signedResourceRequestWire({
-          groupId: 81,
-          fileHash: manifest.fileHash,
-          byteRanges: [range],
-          timestamp: 100_000,
-        }),
+    const request = signedResourceRequestWire({
+      groupId: 81,
+      fileHash: manifest.fileHash,
+      byteRanges: [range],
+      timestamp: 100_000,
+    });
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-multi-group',
+      transferId: 'multi-group-transfer',
+      peerPresenceHash: 'a'.repeat(32),
+      auth: {
+        ...request,
+        type: 'RETICULUM_GROUP_RESOURCE_AUTH',
+        transferId: 'multi-group-transfer',
+        groupId: 81,
+        contextId: 81,
+        fileHash: manifest.fileHash,
+        totalSizeBytes: manifest.sizeBytes,
+        byteRanges: [range],
+        requesterPeerHash: 'a'.repeat(32),
       },
-      'peer-a'
-    );
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(resourceStore.getManifest(manifest.fileHash)?.metadata?.groupId).toBe(82);
     expect(resourceStore.hasGroupReference(manifest.fileHash, 81)).toBe(true);
     expect(offeredResources).toHaveLength(1);
-    expect(offerWires).toHaveLength(1);
-    expect((offerWires[0].o as any)).toEqual(
+    expect(offeredResources[0].metadata).toEqual(
       expect.objectContaining({
-        fh: manifest.fileHash,
-        b: [range],
+        fileHash: manifest.fileHash,
+        byteRanges: [range],
       })
     );
+    expect(authorizations).toEqual([
+      {
+        linkId: 'resource-link-multi-group',
+        transferId: 'multi-group-transfer',
+      },
+    ]);
     manager.close();
     resourceStore.close();
   });
 
-  it('requests byte ranges after Core validates the local signer even when local membership cache is stale', async () => {
+  it('starts resource discovery after Core validates the local signer even when local membership cache is stale', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-stale-local-membership-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -3133,6 +3234,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'f'.repeat(32),
       fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
         sent.push(...messages);
         return { ok: true as const };
@@ -3152,16 +3254,520 @@ describe('reticulum chat manager', () => {
     ).resolves.toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const requestWire = sent.find((wire) => wire.k === 'resource_req') as any;
-    expect(requestWire).toEqual(expect.objectContaining({ t: 'RCHAT', k: 'resource_req', g: 78 }));
-    expect(requestWire.q.fh).toBe(fileHash);
-    expect(requestWire.q.b).toEqual([[0, RETICULUM_RESOURCE_RANGE_SIZE]]);
-    expect(requestWire.q.eid).toBeUndefined();
-    expect(requestWire.q.r).toBeUndefined();
-    expect(requestWire.q.o).toBeUndefined();
-    expect(byteLengthUtf8JsonWithBridgeSender(requestWire)).toBeLessThanOrEqual(
+    const findWire = sent.find((wire) => wire.k === 'rf') as any;
+    expect(findWire).toEqual(expect.objectContaining({ t: 'RCHAT', k: 'rf', g: 78 }));
+    expect(findWire.f).toBe(fileHash);
+    expect(findWire.s).toBe(manifest.sizeBytes);
+    expect(byteLengthUtf8JsonWithBridgeSender(findWire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('requests resource ranges from the manifest owner before event relay peers', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-owner-peer-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 9);
+    const ownerAddress = 'QownerAddress';
+    const ownerPeer = 'a'.repeat(32);
+    const relayPeer = 'b'.repeat(32);
+    const localPeer = 'f'.repeat(32);
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: `78:${ownerAddress}`,
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const accepts: Array<Record<string, unknown>> = [];
+    const fanouts: Array<{ messages: Record<string, unknown>[]; exclude?: string[] }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => localPeer,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (
+        messages: Record<string, unknown>[],
+        exclude?: string[]
+      ) => {
+        fanouts.push({ messages, exclude });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+      getVerifiedReticulumPeers: () => [
+        { address: ownerAddress, destinationHash: ownerPeer, lastSeen: 99_000 },
+      ],
+    });
+    (manager as any).noteEventSourcePeer('event-with-image', relayPeer);
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-image')
+    ).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toMatchObject({
+      peerPresenceHash: ownerPeer,
+      resourceType: 'reticulum_group_resource_range',
+    });
+    expect((accepts[0].authMessage as Record<string, unknown>)?.type).toBe(
+      'RETICULUM_GROUP_RESOURCE_AUTH'
+    );
+    const findFanout = fanouts.find((call) =>
+      call.messages.some((wire) => wire.k === 'rf')
+    );
+    expect(findFanout?.exclude).toEqual([ownerPeer, relayPeer, localPeer]);
+    const findWire = findFanout?.messages.find((wire) => wire.k === 'rf') as
+      | Record<string, unknown>
+      | undefined;
+    expect(findWire).toMatchObject({
+      k: 'rf',
+      g: 78,
+      f: manifest.fileHash,
+      s: manifest.sizeBytes,
+      h: 0,
+      m: 5,
+    });
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('adds resource_have responders as candidates without counting them as proven sources', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-have-peer-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 10);
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const accepts: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([78]);
+    manager.subscribeGroup(78);
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-image')
+    ).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: manifest.fileHash,
+        s: manifest.sizeBytes,
+      },
+      'c'.repeat(32)
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const status = manager.getResourceDownloadStatus(manifest.fileHash);
+    expect(status.candidatePeerCount).toBe(1);
+    expect(status.peerCount).toBe(0);
+    expect(accepts.some((item) => item.peerPresenceHash === 'c'.repeat(32))).toBe(true);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('does not rate-limit resource discovery when the discovery fanout fails', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-discovery-retry-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 11);
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const discoveryResults = [
+      { ok: false as const, reason: 'no-overlay-route' as const, error: 'No overlay route' },
+      { ok: true as const },
+    ];
+    const discoveryCalls: Record<string, unknown>[][] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'f'.repeat(32),
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        if (messages.some((wire) => wire.k === 'rf')) {
+          discoveryCalls.push(messages);
+          return discoveryResults.shift() ?? { ok: true as const };
+        }
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-image')
+    ).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-image')
+    ).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(discoveryCalls).toHaveLength(2);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('forwards signed resource discovery and routes provider replies back to the origin', async () => {
+    const localPeer = '4'.repeat(32);
+    const reversePeer = '2'.repeat(32);
+    const providerHop = '3'.repeat(32);
+    const providerPeer = '9'.repeat(32);
+    const fileHash = 'a'.repeat(64);
+    const direct: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const accepts: Array<Record<string, unknown>> = [];
+    const fanouts: Array<{ messages: ReticulumChatWire[]; exclude?: string[] }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => localPeer,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (
+        messages: ReticulumChatWire[],
+        exclude?: string[]
+      ) => {
+        fanouts.push({ messages, exclude });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async (groupId, address) => groupId === 78 && Boolean(address),
+    });
+    const findWire = signedResourceFindWire({
+      groupId: 78,
+      requestId: 'b'.repeat(16),
+      eventId: 'event-with-image',
+      fileHash,
+      sizeBytes: 1_048_576,
+      hop: 0,
+      maxHops: 5,
+      expiresAt: 130_000,
+      timestamp: 100_000,
+    });
+
+    manager.handleWire(findWire, reversePeer);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const forwarded = fanouts.find((call) =>
+      call.messages.some((wire) => wire.k === 'rf')
+    );
+    expect(forwarded?.exclude).toEqual([reversePeer, localPeer]);
+    expect(forwarded?.messages[0]).toMatchObject({
+      k: 'rf',
+      r: findWire.r,
+      h: 1,
+      m: 5,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: fileHash,
+        s: 1_048_576,
+        rid: findWire.r,
+        sp: providerPeer,
+      },
+      providerHop
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(direct.some((item) =>
+      item.peer === reversePeer &&
+      item.wire.k === 'resource_have' &&
+      item.wire.rid === findWire.r &&
+      typeof item.wire.sp === 'string'
+    )).toBe(true);
+    manager.close();
+  });
+
+  it('forwards signed resource discovery without validating membership on relay-only hops', async () => {
+    const localPeer = '4'.repeat(32);
+    const reversePeer = '2'.repeat(32);
+    const fileHash = 'a'.repeat(64);
+    const fanouts: Array<{ messages: ReticulumChatWire[]; exclude?: string[] }> = [];
+    const validateGroupMember = vi.fn(async () => false);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => localPeer,
+      fanoutReticulumChatDetailed: async (
+        messages: ReticulumChatWire[],
+        exclude?: string[]
+      ) => {
+        fanouts.push({ messages, exclude });
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember,
+    });
+    const findWire = signedResourceFindWire({
+      groupId: 78,
+      requestId: 'd'.repeat(16),
+      fileHash,
+      sizeBytes: 1_048_576,
+      hop: 0,
+      maxHops: 5,
+      expiresAt: 130_000,
+      timestamp: 100_000,
+    });
+
+    manager.handleWire(findWire, reversePeer);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(validateGroupMember).not.toHaveBeenCalled();
+    expect(fanouts.some((call) => call.messages.some((wire) => wire.k === 'rf'))).toBe(true);
+    manager.close();
+  });
+
+  it('validates membership before answering resource discovery as a provider', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-find-provider-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 18);
+    const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    resourceStore.storeManifest(manifest);
+    resourceStore.storeByteRange(fileHash, 0, contents.length, contents);
+    const direct: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const fanouts: Array<{ messages: ReticulumChatWire[]; exclude?: string[] }> = [];
+    const validateGroupMember = vi.fn(async () => false);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => '4'.repeat(32),
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (
+        messages: ReticulumChatWire[],
+        exclude?: string[]
+      ) => {
+        fanouts.push({ messages, exclude });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      validateGroupMember,
+    });
+    manager.setLocalGroupMemberships([78]);
+    const findWire = signedResourceFindWire({
+      groupId: 78,
+      requestId: 'e'.repeat(16),
+      fileHash,
+      sizeBytes: contents.length,
+      hop: 0,
+      maxHops: 5,
+      expiresAt: 130_000,
+      timestamp: 100_000,
+    });
+
+    manager.handleWire(findWire, '2'.repeat(32));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(validateGroupMember).toHaveBeenCalledTimes(1);
+    expect(direct.some((item) => item.wire.k === 'resource_have')).toBe(false);
+    expect(fanouts.some((call) => call.messages.some((wire) => wire.k === 'rf'))).toBe(false);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('routes byte-range requests through the discovered provider path', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-provider-route-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 17);
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const localPeer = 'f'.repeat(32);
+    const nextHop = '5'.repeat(32);
+    const providerPeer = '6'.repeat(32);
+    const direct: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const accepts: Array<Record<string, unknown>> = [];
+    const fanouts: Array<{ messages: ReticulumChatWire[]; exclude?: string[] }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => localPeer,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (
+        messages: ReticulumChatWire[],
+        exclude?: string[]
+      ) => {
+        fanouts.push({ messages, exclude });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([78]);
+    manager.subscribeGroup(78);
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-image')
+    ).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const findWire = fanouts
+      .flatMap((call) => call.messages)
+      .find((wire): wire is Extract<ReticulumChatWire, { k: 'rf' }> =>
+        wire.k === 'rf'
+      );
+    expect(findWire).toBeTruthy();
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: manifest.fileHash,
+        s: manifest.sizeBytes,
+        rid: findWire!.r,
+        sp: providerPeer,
+      },
+      nextHop
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toMatchObject({
+      peerPresenceHash: providerPeer,
+      resourceType: 'reticulum_group_resource_range',
+    });
     manager.close();
     resourceStore.close();
   });
@@ -3207,6 +3813,7 @@ describe('reticulum chat manager', () => {
     });
 
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [78], mode: 'summary' }, 'peer-a');
+    (manager as any).noteEventSourcePeer('b5941e04-b24f-4443-bcc7-05271585737b', 'peer-a');
     await expect(
       manager.requestResource(78, manifest, 'b5941e04-b24f-4443-bcc7-05271585737b')
     ).resolves.toMatchObject({ ok: true });
@@ -3224,167 +3831,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('relays signed byte-range resource requests when the local node cannot serve the file', async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-relay-req-'));
-    const resourceStore = new ReticulumResourceStore({
-      dbPath: path.join(tempRoot, 'resources.db'),
-      rootDir: path.join(tempRoot, 'resources'),
-      now: () => 100_000,
-    });
-    const fileHash = 'c'.repeat(64);
-    const relayCalls: Array<{ messages: Record<string, unknown>[]; exclude?: string[] }> = [];
-    const bridge = {
-      on: () => undefined,
-      off: () => undefined,
-      getLocalDestinationHash: () => '4'.repeat(32),
-      fanoutReticulumChatDetailed: async (
-        messages: Record<string, unknown>[],
-        exclude?: string[]
-      ) => {
-        relayCalls.push({ messages, exclude });
-        return { ok: true as const };
-      },
-    };
-    const manager = new ReticulumChatManager({
-      dbPath: tempDbPath(),
-      bridge: bridge as any,
-      resourceStore,
-      now: () => 100_000,
-      validateGroupMember: async () => true,
-    });
-    manager.setLocalGroupMemberships([90]);
-    const request = signedResourceRequestWire({
-      groupId: 90,
-      fileHash,
-      byteRanges: [[0, RETICULUM_RESOURCE_RANGE_SIZE]],
-      timestamp: 100_000,
-    });
-    const requestId = (manager as any).resourceRelayRequestId(90, request);
-
-    manager.handleWire(
-      {
-        t: 'RCHAT',
-        k: 'resource_route',
-        g: 90,
-        id: requestId,
-        o: (manager as any).compactResourcePeerHash('2'.repeat(32)),
-        fh: fileHash,
-      },
-      '3'.repeat(32)
-    );
-    manager.handleWire(
-      {
-        t: 'RCHAT',
-        k: 'resource_req',
-        g: 90,
-        q: request,
-      },
-      '3'.repeat(32)
-    );
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(relayCalls).toHaveLength(1);
-    expect(relayCalls[0].exclude).toEqual([
-      '3'.repeat(32),
-      '2'.repeat(32),
-      '4'.repeat(32),
-    ]);
-    const forwardedRoute = relayCalls[0].messages.find((wire) => wire.k === 'resource_route') as any;
-    const forwarded = relayCalls[0].messages.find((wire) => wire.k === 'resource_req') as any;
-    expect(forwardedRoute).toEqual(
-      expect.objectContaining({
-        k: 'resource_route',
-        g: 90,
-        id: requestId,
-        fh: fileHash,
-      })
-    );
-    expect(forwarded.q).toEqual(expect.objectContaining({ fh: fileHash, b: [[0, RETICULUM_RESOURCE_RANGE_SIZE]] }));
-    expect(forwarded.q.r).toBeUndefined();
-
-    manager.handleWire({ t: 'RCHAT', k: 'resource_req', g: 90, q: request }, '3'.repeat(32));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(relayCalls).toHaveLength(1);
-    manager.close();
-    resourceStore.close();
-  });
-
-  it('relays byte-range resource offers back along the remembered request route', async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-relay-offer-'));
-    const resourceStore = new ReticulumResourceStore({
-      dbPath: path.join(tempRoot, 'resources.db'),
-      rootDir: path.join(tempRoot, 'resources'),
-      now: () => 100_000,
-    });
-    const fileHash = 'd'.repeat(64);
-    const payloadHash = 'e'.repeat(64);
-    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
-    const bridge = {
-      on: () => undefined,
-      off: () => undefined,
-      getLocalDestinationHash: () => '4'.repeat(32),
-      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
-      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
-        direct.push({ peer, wire });
-        return { ok: true as const };
-      },
-    };
-    const manager = new ReticulumChatManager({
-      dbPath: tempDbPath(),
-      bridge: bridge as any,
-      resourceStore,
-      now: () => 100_000,
-      validateGroupMember: async () => true,
-    });
-    manager.setLocalGroupMemberships([91]);
-    (manager as any).resourceRelayRoutes.set('5'.repeat(16), {
-      reversePeerHash: '7'.repeat(32),
-      originPeerHash: '6'.repeat(32),
-      groupId: 91,
-      fileHash,
-      expiresAt: 160_000,
-    });
-
-    const relayed = await (manager as any).maybeRelayResourceOffer(
-      91,
-      {
-        transferId: 'transfer-relayed',
-        groupId: 91,
-        fileHash,
-        totalSizeBytes: RETICULUM_RESOURCE_RANGE_SIZE,
-        sizeBytes: RETICULUM_RESOURCE_RANGE_SIZE,
-        fileName: '',
-        mimeType: '',
-        payloadHash,
-        ranges: [{ startByte: 0, endByteExclusive: RETICULUM_RESOURCE_RANGE_SIZE }],
-        relayRequestId: '5'.repeat(16),
-        sourcePeerHash: '8'.repeat(32),
-      },
-      '8'.repeat(32)
-    );
-    expect(relayed).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(direct).toHaveLength(1);
-    expect(direct[0].peer).toBe('7'.repeat(32));
-    expect((direct[0].wire.o as any)).toEqual(
-      expect.objectContaining({
-        fh: fileHash,
-        rs: RETICULUM_RESOURCE_RANGE_SIZE,
-        s: RETICULUM_RESOURCE_RANGE_SIZE,
-        ph: payloadHash,
-        b: [[0, RETICULUM_RESOURCE_RANGE_SIZE]],
-        rr: '5'.repeat(16),
-      })
-    );
-    expect((manager as any).normalizeResourcePeerHash((direct[0].wire.o as any).sp)).toBe(
-      '8'.repeat(32)
-    );
-    manager.close();
-    resourceStore.close();
-  });
-
-  it('accepts a relayed byte-range offer from the real source peer', async () => {
+  it('opens a direct byte-range link to a resource_have provider', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-relayed-source-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -3393,7 +3840,6 @@ describe('reticulum chat manager', () => {
     });
     const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 9);
     const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
-    const payloadHash = fileHash;
     const manifest = {
       namespace: 'reticulum-chat-file',
       ownerId: '92:sender',
@@ -3430,19 +3876,12 @@ describe('reticulum chat manager', () => {
     manager.handleWire(
       {
         t: 'RCHAT',
-        k: 'resource_offer',
+        k: 'resource_have',
         g: 92,
-        o: {
-          x: 'transfer-from-source',
-          fh: fileHash,
-          rs: contents.length,
-          s: contents.length,
-          ph: payloadHash,
-          b: [[0, contents.length]],
-          sp: '8'.repeat(32),
-        },
+        fh: fileHash,
+        s: contents.length,
       },
-      'relay-peer'
+      '8'.repeat(32)
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -3450,9 +3889,7 @@ describe('reticulum chat manager', () => {
     expect(accepted[0]).toEqual(
       expect.objectContaining({
         peerPresenceHash: '8'.repeat(32),
-        transferId: 'transfer-from-source',
         resourceType: 'reticulum_group_resource_range',
-        sha256: payloadHash,
       })
     );
     expect(accepted[0].metadata).toEqual(
@@ -3462,11 +3899,14 @@ describe('reticulum chat manager', () => {
         byteRanges: [[0, contents.length]],
       })
     );
+    expect((accepted[0].authMessage as Record<string, unknown>)?.type).toBe(
+      'RETICULUM_GROUP_RESOURCE_AUTH'
+    );
     manager.close();
     resourceStore.close();
   });
 
-  it('does not accept duplicate byte-range offers while a range is in flight', async () => {
+  it('does not open duplicate byte-range links for repeated resource_have from the same provider', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-duplicate-range-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -3478,10 +3918,6 @@ describe('reticulum chat manager', () => {
       Buffer.from('tail'),
     ]);
     const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
-    const firstPayloadHash = nodeCrypto
-      .createHash('sha256')
-      .update(contents.subarray(0, RETICULUM_RESOURCE_RANGE_SIZE))
-      .digest('hex');
     const manifest = {
       namespace: 'reticulum-chat-image',
       ownerId: '80:sender',
@@ -3515,22 +3951,16 @@ describe('reticulum chat manager', () => {
     manager.subscribeGroup(80);
 
     await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
-    for (const transferId of ['transfer-range-a', 'transfer-range-b']) {
+    for (let index = 0; index < 2; index += 1) {
       manager.handleWire(
         {
           t: 'RCHAT',
-          k: 'resource_offer',
+          k: 'resource_have',
           g: 80,
-          o: {
-            x: transferId,
-            fh: fileHash,
-            rs: contents.length,
-            s: RETICULUM_RESOURCE_RANGE_SIZE,
-            ph: firstPayloadHash,
-            b: [[0, RETICULUM_RESOURCE_RANGE_SIZE]],
-          },
+          fh: fileHash,
+          s: contents.length,
         },
-        'peer-a'
+        'd'.repeat(32)
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3556,10 +3986,6 @@ describe('reticulum chat manager', () => {
       Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 2),
     ]);
     const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
-    const firstPayloadHash = nodeCrypto
-      .createHash('sha256')
-      .update(contents.subarray(0, RETICULUM_RESOURCE_RANGE_SIZE))
-      .digest('hex');
     const manifest = {
       namespace: 'reticulum-chat-file',
       ownerId: '83:receiver',
@@ -3572,8 +3998,12 @@ describe('reticulum chat manager', () => {
       metadata: { groupId: 83 },
     };
     const bridge = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    const accepted: Array<Record<string, unknown>> = [];
     bridge.fanoutReticulumChatDetailed = async () => ({ ok: true as const });
-    bridge.acceptReticulumResourceDetailed = async () => ({ ok: true as const });
+    bridge.acceptReticulumResourceDetailed = async (payload: Record<string, unknown>) => {
+      accepted.push(payload);
+      return { ok: true as const };
+    };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: bridge as any,
@@ -3591,24 +4021,19 @@ describe('reticulum chat manager', () => {
     manager.handleWire(
       {
         t: 'RCHAT',
-        k: 'resource_offer',
+        k: 'resource_have',
         g: 83,
-        o: {
-          x: 'transfer-range-progress',
-          fh: fileHash,
-          rs: contents.length,
-          s: RETICULUM_RESOURCE_RANGE_SIZE,
-          ph: firstPayloadHash,
-          b: [[0, RETICULUM_RESOURCE_RANGE_SIZE]],
-        },
+        fh: fileHash,
+        s: contents.length,
       },
-      'peer-a'
+      'e'.repeat(32)
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(accepted).toHaveLength(1);
 
     bridge.emit('reticulum-resource', {
       status: 'receiving',
-      transferId: 'transfer-range-progress',
+      transferId: accepted[0].transferId,
       progress: 0.5,
       bytesTransferred: RETICULUM_RESOURCE_RANGE_SIZE / 2,
       bytesPerSecond: 12_345,
@@ -3637,7 +4062,6 @@ describe('reticulum chat manager', () => {
     const second = Buffer.from('tail bytes');
     const contents = Buffer.concat([first, second]);
     const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
-    const secondPayloadHash = nodeCrypto.createHash('sha256').update(second).digest('hex');
     const manifest = {
       namespace: 'reticulum-chat-file',
       ownerId: '86:receiver',
@@ -3654,8 +4078,12 @@ describe('reticulum chat manager', () => {
     const partialPath = resourceStore.getPartialPath(fileHash);
     expect(partialPath && fs.existsSync(partialPath)).toBe(true);
     const bridge = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    const accepted: Array<Record<string, unknown>> = [];
     bridge.fanoutReticulumChatDetailed = vi.fn(async () => ({ ok: true as const }));
-    bridge.acceptReticulumResourceDetailed = vi.fn(async () => ({ ok: true as const }));
+    bridge.acceptReticulumResourceDetailed = vi.fn(async (payload: Record<string, unknown>) => {
+      accepted.push(payload);
+      return { ok: true as const };
+    });
     bridge.cancelReticulumResourceDetailed = vi.fn(async () => ({ ok: true as const }));
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -3674,20 +4102,15 @@ describe('reticulum chat manager', () => {
     manager.handleWire(
       {
         t: 'RCHAT',
-        k: 'resource_offer',
+        k: 'resource_have',
         g: 86,
-        o: {
-          x: 'transfer-cancel-active',
-          fh: fileHash,
-          rs: contents.length,
-          s: second.length,
-          ph: secondPayloadHash,
-          b: [[first.length, contents.length]],
-        },
+        fh: fileHash,
+        s: contents.length,
       },
-      'peer-a'
+      'f'.repeat(32)
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(accepted).toHaveLength(1);
 
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       active: true,
@@ -3697,8 +4120,8 @@ describe('reticulum chat manager', () => {
     expect(manager.cancelResource(fileHash)).toBe(true);
     expect(bridge.cancelReticulumResourceDetailed).toHaveBeenCalledWith(
       expect.objectContaining({
-        transferId: 'transfer-cancel-active',
-        peerPresenceHash: 'peer-a',
+        transferId: accepted[0].transferId,
+        peerPresenceHash: 'f'.repeat(32),
         reason: 'user_cancelled',
       })
     );
@@ -3721,7 +4144,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('keeps bounded parallel resource transfers per peer and releases stale active transfers', async () => {
+  it('keeps one active direct range per provider for a resource', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-one-peer-link-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -3731,7 +4154,6 @@ describe('reticulum chat manager', () => {
     const parts = [7, 8, 9, 10].map((value) => Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, value));
     const contents = Buffer.concat(parts);
     const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
-    const payloadHashes = parts.map((part) => nodeCrypto.createHash('sha256').update(part).digest('hex'));
     const manifest = {
       namespace: 'reticulum-chat-image',
       ownerId: '80:sender',
@@ -3766,55 +4188,33 @@ describe('reticulum chat manager', () => {
     manager.subscribeGroup(80);
 
     await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
-    for (const [index, part] of parts.entries()) {
-      const start = index * RETICULUM_RESOURCE_RANGE_SIZE;
+    for (let index = 0; index < 3; index += 1) {
       manager.handleWire(
         {
           t: 'RCHAT',
-          k: 'resource_offer',
+          k: 'resource_have',
           g: 80,
-          o: {
-            x: `transfer-peer-a-${index}`,
-            fh: fileHash,
-            rs: contents.length,
-            s: part.length,
-            ph: payloadHashes[index],
-            b: [[start, start + part.length]],
-          },
+          fh: fileHash,
+          s: contents.length,
         },
-        'peer-a'
+        'a'.repeat(32)
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER);
+    expect(accepts).toBe(1);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
+      activeTransfers: 1,
       pendingTransfers: 0,
-      inFlightRangeCount: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
+      inFlightRangeCount: 1,
     });
 
     now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
     manager.getResourceDownloadStatus(fileHash);
-    manager.handleWire(
-      {
-        t: 'RCHAT',
-        k: 'resource_offer',
-        g: 80,
-        o: {
-          x: 'transfer-peer-a-after-stale',
-          fh: fileHash,
-          rs: contents.length,
-          s: parts[1].length,
-          ph: payloadHashes[1],
-          b: [[RETICULUM_RESOURCE_RANGE_SIZE, RETICULUM_RESOURCE_RANGE_SIZE * 2]],
-        },
-      },
-      'peer-a'
-    );
+    await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER + 1);
+    expect(accepts).toBe(2);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
       activeTransfers: 1,
       pendingTransfers: 0,
@@ -3837,8 +4237,6 @@ describe('reticulum chat manager', () => {
     const largeBytes = Buffer.concat(largeParts);
     const largeHash = nodeCrypto.createHash('sha256').update(largeBytes).digest('hex');
     const imageHash = nodeCrypto.createHash('sha256').update(imageBytes).digest('hex');
-    const largePayloadHashes = largeParts.map((part) => nodeCrypto.createHash('sha256').update(part).digest('hex'));
-    const imagePayloadHash = imageHash;
     const largeManifest = {
       namespace: 'reticulum-chat-file',
       ownerId: '82:sender',
@@ -3884,34 +4282,21 @@ describe('reticulum chat manager', () => {
 
     await expect(manager.requestResource(82, largeManifest)).resolves.toMatchObject({ ok: true });
     await expect(manager.requestResource(82, imageManifest)).resolves.toMatchObject({ ok: true });
-    const offers = [
-      ...largeParts.map((part, index) => ({
-        x: `large-transfer-${index}`,
-        fh: largeHash,
-        rs: largeBytes.length,
-        s: part.length,
-        ph: largePayloadHashes[index],
-        b: [[index * RETICULUM_RESOURCE_RANGE_SIZE, (index + 1) * RETICULUM_RESOURCE_RANGE_SIZE]],
-      })),
-      {
-        x: 'image-transfer',
-        fh: imageHash,
-        rs: imageBytes.length,
-        s: imageBytes.length,
-        ph: imagePayloadHash,
-        b: [[0, imageBytes.length]],
-      },
-    ];
-    for (const offer of offers) {
-      manager.handleWire({ t: 'RCHAT', k: 'resource_offer', g: 82, o: offer }, 'peer-a');
-    }
+    manager.handleWire(
+      { t: 'RCHAT', k: 'resource_have', g: 82, fh: largeHash, s: largeBytes.length },
+      'a'.repeat(32)
+    );
+    manager.handleWire(
+      { t: 'RCHAT', k: 'resource_have', g: 82, fh: imageHash, s: imageBytes.length },
+      'a'.repeat(32)
+    );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER + 1);
+    expect(accepts).toBe(2);
     expect(manager.getResourceDownloadStatus(largeHash)).toMatchObject({
-      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
+      activeTransfers: 1,
       pendingTransfers: 0,
-      inFlightRangeCount: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER,
+      inFlightRangeCount: 1,
     });
     expect(manager.getResourceDownloadStatus(imageHash)).toMatchObject({
       activeTransfers: 1,

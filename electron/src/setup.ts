@@ -2443,6 +2443,7 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     signLocalFields: signReticulumChatControlFields,
     validateGroupMember: validateQortalGroupMember,
     validateGroupAdmin: validateQortalGroupAdmin,
+    getVerifiedReticulumPeers: () => getPresenceManager()?.getReticulumVerifiedPeers() ?? [],
     resourceStore: getReticulumResourceStore(),
   });
   attachReticulumChatListeners(reticulumChat);

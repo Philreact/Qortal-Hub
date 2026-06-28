@@ -22,9 +22,9 @@ from typing import IO, Any, Callable, Dict, List, Optional, Set, Tuple
 
 import RNS
 
-APP_NAMESPACE = "qortal-hub-test"
+APP_NAMESPACE = "qortal-hub-test2"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v1-test"
+PRESENCE_VERSION = "v1-test2"
 IDENTITY_FILENAME = "presence-bridge.identity"
 disable_bootstrap = False
 
@@ -9164,6 +9164,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
         {
             "linkId": link_id,
             "transferId": transfer_id,
+            "peerPresenceHash": state.get("peerPresenceHash") or "",
             "auth": decoded,
             "resourceType": resource_type,
             "eventId": decoded.get("eventId"),

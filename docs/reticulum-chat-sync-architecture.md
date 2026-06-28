@@ -90,13 +90,13 @@ The active chat gets local DB history immediately. But the network sync path sti
 Attachments and large event payloads use the resource transfer path:
 
 ```text
-resource_req
-  -> resource_offer
-  -> Reticulum file/resource link transfer
+resource_find (rf)
+  -> resource_have from a verified provider
+  -> direct linked byte-range resource transfer
   -> local resource store
 ```
 
-This is conceptually separate from chat sync, but it still uses RCHAT control messages to request and offer resources. If chat sync is noisy, it competes with resource control and event delivery.
+This is conceptually separate from chat sync. RCHAT overlay messages only discover providers and route provider hints; the byte-range request is sent on the dedicated resource link after a provider is known.
 
 ## Problems With The Current Model
 
@@ -511,12 +511,12 @@ The `windowHash` is computed from the ordered event IDs in `events`. It is not a
 Attachments and large event blobs remain separate:
 
 ```text
-resource_req
-  -> resource_offer
-  -> file/resource link transfer
+resource_find (rf)
+  -> resource_have
+  -> linked byte-range resource transfer
 ```
 
-Resource transfer should not be starved by background sync traffic.
+Resource transfer should not be starved by background sync traffic. Overlay discovery stays bounded, and bulk/request bytes stay on the direct resource link.
 
 ## Background Vs Active Sync
 
@@ -904,7 +904,8 @@ This design should replace the current eager sync model directly. Since this is 
 - Add `feed_req`.
 - Add `range_req`.
 - Add `event_batch`.
-- Keep `resource_req` / `resource_offer` for large objects.
+- Use `resource_find` / `resource_have` for resource provider discovery.
+- Send byte-range resource requests only after opening the dedicated provider link.
 - Every message builder must use `wireFitsReticulum()` while paging.
 
 ### 2. Replace Subscription Semantics
