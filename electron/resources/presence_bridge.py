@@ -8976,7 +8976,17 @@ def _open_qchat_file_link_for_state(state: Dict[str, Any]) -> bool:
         raise RuntimeError("No Reticulum path for file transfer link")
     previous_link = state.get("link")
     if previous_link is not None:
-        _qchat_file_link_ids_by_object.pop(id(previous_link), None)
+        previous_link_id = get_qchat_file_link_id(previous_link)
+        if previous_link_id:
+            remove_qchat_file_link(previous_link_id)
+        else:
+            with _state_lock:
+                _qchat_file_link_ids_by_object.pop(id(previous_link), None)
+                _incoming_unified_peer_hash_by_object.pop(id(previous_link), None)
+        _teardown_reticulum_link_bounded(
+            previous_link,
+            f"target=qchat-file-reticulum replace_previous_link transfer={state.get('transferId') or ''}",
+        )
     link_id = str(uuid.uuid4())
     link = RNS.Link(
         outbound,
