@@ -939,23 +939,16 @@ export const Group = ({
       const groupName =
         group?.groupName || group?.name || `Group ${String(groupId)}`;
       const channelName = reticulumChannelDisplayName(channelId);
-      const groupProperty = groupsPropertiesRef.current?.[String(groupId)] as
-        | { isOpen?: boolean }
-        | undefined;
-      const isPublicGroup = groupProperty?.isOpen === true;
       const author =
         event.authorPrimaryName ||
         event.authorAddress ||
         (hasMention ? 'Someone' : 'New message');
-      let preview = '';
-      if (isPublicGroup) {
-        const payload = parseReticulumPublicPayload(event.encryptedPayload);
-        preview = reticulumTextFromPayload(payload).slice(0, 140);
-      }
+      const payload = parseReticulumPublicPayload(event.encryptedPayload);
+      const preview = reticulumTextFromPayload(payload).slice(0, 140);
       const title = hasMention
         ? `Mention in ${groupName} / ${channelName}`
         : `New message in ${groupName} / ${channelName}`;
-      const body = isPublicGroup && preview
+      const body = preview
         ? `${author}: ${preview}`
         : hasMention
           ? `You were mentioned in ${groupName}`
@@ -1612,13 +1605,7 @@ export const Group = ({
       const groupProperty = groupsPropertiesRef.current?.[String(groupId)] as
         | { isOpen?: boolean }
         | undefined;
-      const isPublicGroup = groupProperty?.isOpen === true;
       if (groupProperty?.isOpen !== true && groupProperty?.isOpen !== false) {
-        return;
-      }
-      if (!isPublicGroup) {
-        noteProcessedReticulumBackgroundEvent(event.eventId);
-        scheduleReticulumChatSummariesRefresh();
         return;
       }
 

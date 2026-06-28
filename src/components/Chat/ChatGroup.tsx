@@ -1983,7 +1983,7 @@ export const ChatGroup = ({
         reticulumChat: true,
       };
       let decryptedData = null;
-      if (isPrivate === false) {
+      if (reticulumChatEnabled || isPrivate === false) {
         try {
           decryptedData = JSON.parse(event.encryptedPayload);
         } catch {
@@ -2113,7 +2113,7 @@ export const ChatGroup = ({
         messageText: normalizedText,
         text: normalizedText,
         eventType: event.eventType,
-        isNotEncrypted: isPrivate === false,
+        isNotEncrypted: reticulumChatEnabled || isPrivate === false,
         unread: event.authorAddress === myAddress ? false : true,
       };
     },
@@ -2122,6 +2122,7 @@ export const ChatGroup = ({
       myAddress,
       myName,
       refreshReticulumChannels,
+      reticulumChatEnabled,
       resolveMentionedAddresses,
       selectedGroup,
       selectedReticulumChannelId,
@@ -2158,7 +2159,6 @@ export const ChatGroup = ({
     if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
       return;
     }
-    if (isPrivate !== false && !secretKey) return;
     let cancelled = false;
     void (async () => {
       const history = await window.reticulumChat?.getChannelMetadataHistory?.(
@@ -2350,13 +2350,16 @@ export const ChatGroup = ({
           htmlContent = null;
         }
         setIsSending(true);
+        const reticulumPlainPayload = reticulumChatEnabled || isPrivate === false;
         const message =
-          isPrivate === false
+          reticulumPlainPayload
             ? !htmlContent
               ? '<p></p>'
               : editorRef.current.getJSON()
             : htmlContent;
-        const secretKeyObject = await getSecretKey(false, true);
+        const secretKeyObject = reticulumPlainPayload
+          ? null
+          : await getSecretKey(false, true);
 
         let repliedTo = replyMessage?.signature;
 
@@ -2366,11 +2369,11 @@ export const ChatGroup = ({
 
         const chatReference = onEditMessage?.signature;
 
-        const publicData = isPrivate
-          ? {}
-          : {
+        const publicData = reticulumPlainPayload
+          ? {
               isEdited: chatReference ? true : false,
-            };
+            }
+          : {};
 
         interface ImageToPublish {
           service: string;
@@ -2491,7 +2494,7 @@ export const ChatGroup = ({
                       : base64
                         ? await getImageDimensions(base64, imageMimeType)
                         : null;
-                  if (file.filePath && isPrivate !== true) {
+                  if (file.filePath) {
                     const imported =
                       await window.reticulumResources?.importFilePath?.({
                         filePath: file.filePath,
@@ -2535,30 +2538,16 @@ export const ChatGroup = ({
                   if (!base64) {
                     throw new Error('Reticulum image file is not available');
                   }
-                  const resourceBase64 =
-                    isPrivate === true
-                      ? await encryptChatMessage(
-                          await objectToBase64({
-                            imageBase64: base64,
-                            mimeType: imageMimeType,
-                            version: 1,
-                          }),
-                          secretKeyObject
-                        )
-                      : base64;
                   const imported =
                     await window.reticulumResources?.importBase64?.({
-                      base64: resourceBase64,
+                      base64,
                       namespace: 'reticulum-group-resource',
                       ownerId: `${selectedGroup}:${myAddress}`,
                       fileName:
                         file.fileName ||
                         `chat-image-${Date.now()}-${index}.webp`,
-                      mimeType:
-                        isPrivate === true
-                          ? 'application/qortal-encrypted-reticulum-resource'
-                          : imageMimeType,
-                      encrypted: isPrivate === true,
+                      mimeType: imageMimeType,
+                      encrypted: false,
                       metadata: {
                         feature: 'reticulum-chat',
                         groupId: selectedGroup,
@@ -2600,11 +2589,6 @@ export const ChatGroup = ({
                 pendingReticulumFiles
                   .filter((file) => !file.isImage)
                   .map(async (file) => {
-                    if (isPrivate === true) {
-                      throw new Error(
-                        'Private group file attachments need streaming encryption before they can be sent'
-                      );
-                    }
                     if (!file.filePath) {
                       throw new Error(
                         'File attachments require a local file path'
@@ -2675,13 +2659,13 @@ export const ChatGroup = ({
         };
         const objectMessage = {
           ...(otherData || {}),
-          [isPrivate ? 'message' : 'messageText']: message,
+          [reticulumPlainPayload ? 'messageText' : 'message']: message,
           version: 3,
         };
         const message64: any = await objectToBase64(objectMessage);
 
         const encryptSingle =
-          isPrivate === false
+          reticulumPlainPayload
             ? JSON.stringify(objectMessage)
             : await encryptChatMessage(message64, secretKeyObject);
 
@@ -2749,7 +2733,7 @@ export const ChatGroup = ({
 
     handleUpdateRef.current = throttle(async () => {
       try {
-        if (isPrivate) {
+        if (isPrivate && !reticulumChatEnabled) {
           const htmlContent = editorRef.current.getHTML();
           const message64 = await objectToBase64(JSON.stringify(htmlContent));
           const secretKeyObject = await getSecretKey(false, true);
@@ -2776,7 +2760,14 @@ export const ChatGroup = ({
     return () => {
       currentEditor.off('update', handleUpdateRef.current);
     };
-  }, [editorRef, setMessageSize, isPrivate]);
+  }, [
+    editorRef,
+    encryptChatMessage,
+    getSecretKey,
+    isPrivate,
+    reticulumChatEnabled,
+    setMessageSize,
+  ]);
 
   useEffect(() => {
     if (hide) {
@@ -2943,7 +2934,6 @@ export const ChatGroup = ({
 
         const targetEventId = message.signature || message.id;
         if (!targetEventId) return;
-        const secretKeyObject = await getSecretKey(false, true);
         const objectMessage = {
           message: '',
           type: 'delete',
@@ -2951,11 +2941,7 @@ export const ChatGroup = ({
           specialId: uid.rnd(),
           version: 3,
         };
-        const message64: any = await objectToBase64(objectMessage);
-        const encryptedPayload =
-          isPrivate === false
-            ? JSON.stringify(objectMessage)
-            : await encryptChatMessage(message64, secretKeyObject);
+        const encryptedPayload = JSON.stringify(objectMessage);
         const result = await publishReticulumGroupChatEvent({
           encryptedPayload,
           eventType: 'delete',
@@ -3015,7 +3001,10 @@ export const ChatGroup = ({
         setIsSending(true);
 
         const message = '';
-        const secretKeyObject = await getSecretKey(false, true);
+        const reticulumPlainPayload = reticulumChatEnabled || isPrivate === false;
+        const secretKeyObject = reticulumPlainPayload
+          ? null
+          : await getSecretKey(false, true);
         const otherData = {
           specialId: uid.rnd(),
           type: 'reaction',
@@ -3029,7 +3018,7 @@ export const ChatGroup = ({
         const message64: any = await objectToBase64(objectMessage);
         const reactiontypeNumber = RESOURCE_TYPE_NUMBER_GROUP_CHAT_REACTIONS;
         const encryptSingle =
-          isPrivate === false
+          reticulumPlainPayload
             ? JSON.stringify(objectMessage)
             : await encryptChatMessage(
                 message64,
@@ -3171,19 +3160,9 @@ export const ChatGroup = ({
         setOpenSnack(true);
         return;
       }
-      if (!isImage && isPrivate === true) {
-        setInfoSnack({
-          type: 'error',
-          message:
-            'Private group file attachments need streaming encryption before they can be sent',
-        });
-        setOpenSnack(true);
-        return;
-      }
       const dimensions = isImage ? await getImageFileDimensions(file) : null;
       const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
-      const needsBase64ImagePayload =
-        isImage && (!filePath || isPrivate === true);
+      const needsBase64ImagePayload = isImage && !filePath;
       const base64 = needsBase64ImagePayload
         ? await fileToBase64(file)
         : undefined;
@@ -3232,14 +3211,7 @@ export const ChatGroup = ({
       options: { refresh?: boolean } = {}
     ) => {
       if (!reticulumChatEnabled || !isReticulumChannelAdmin) return;
-      const secretKeyObject = await getSecretKey(false, true);
-      const payloadText =
-        isPrivate === false
-          ? JSON.stringify(payload)
-          : await encryptChatMessage(
-              await objectToBase64(payload),
-              secretKeyObject
-            );
+      const payloadText = JSON.stringify(payload);
       const result = await publishReticulumGroupChatEvent({
         encryptedPayload: payloadText,
         eventType,
@@ -3263,9 +3235,6 @@ export const ChatGroup = ({
       }
     },
     [
-      encryptChatMessage,
-      getSecretKey,
-      isPrivate,
       isReticulumChannelAdmin,
       publishReticulumGroupChatEvent,
       refreshReticulumChannels,
@@ -3926,7 +3895,7 @@ export const ChatGroup = ({
             tempMessages={tempMessages}
           />
 
-          {(!!secretKey || isPrivate === false) && (
+          {(reticulumChatEnabled || !!secretKey || isPrivate === false) && (
             <Box
               sx={{
                 alignItems: 'flex-end',
