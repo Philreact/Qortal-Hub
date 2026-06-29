@@ -2191,8 +2191,12 @@ describe('reticulum chat manager', () => {
     expect(page.events[0].eventId).toBe('sub-history-006');
     expect(page.events[99].eventId).toBe('sub-history-105');
     const pageOffer = direct.find((item) => item.wire.k === 'event_page_offer')?.wire as any;
+    expect(wireFitsReticulum(pageOffer)).toBe(true);
     expect(pageOffer?.p?.sd).toEqual(expect.any(String));
     expect(pageOffer?.p?.rk).toBeUndefined();
+    expect(pageOffer?.p?.sid).toBeUndefined();
+    expect(pageOffer?.p?.eid).toBeUndefined();
+    expect(pageOffer?.p?.sp).toBeUndefined();
     manager.close();
   });
 
@@ -2472,7 +2476,7 @@ describe('reticulum chat manager', () => {
           g: 74,
           o: expect.objectContaining({
             id: 'event-relay-74',
-            sp: 'peer-c',
+            sd: 'peer-c',
             ...(typeof relayedRequest.rid === 'string' ? { rr: relayedRequest.rid } : {}),
           }),
         }),
@@ -2827,6 +2831,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -3056,6 +3061,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
         direct.push({ peer, wire });
         return { ok: true as const };
@@ -3110,6 +3116,57 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps fixed compact event page offers inside the Reticulum wire limit', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    const channelId = `a${'b'.repeat(38)}c`;
+    manager.setLocalGroupMemberships([999_999_999]);
+    const event = signedEvent({
+      eventId: 'event-fixed-page-offer',
+      groupId: 999_999_999,
+      channelId,
+      timestamp: 10_000,
+    });
+    (manager as any).db.insertEvent(event, true);
+    direct.length = 0;
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'feed_req', g: 999_999_999, c: channelId, limit: 10 },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const pageOffer = direct.find((item) => item.wire.k === 'event_page_offer')?.wire as any;
+    expect(pageOffer).toBeDefined();
+    expect(wireFitsReticulum(pageOffer)).toBe(true);
+    expect(pageOffer.p).toMatchObject({
+      c: channelId,
+      d: 'a',
+      n: 1,
+      sd: expect.any(String),
+    });
+    expect(pageOffer.p.rk).toBeUndefined();
+    expect(pageOffer.p.sid).toBeUndefined();
+    expect(pageOffer.p.eid).toBeUndefined();
+    expect(pageOffer.p.sp).toBeUndefined();
+    manager.close();
+  });
+
   it('keeps event page resources alive for targeted retry when direct send fails', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const fanout: Record<string, unknown>[][] = [];
@@ -3117,6 +3174,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
         direct.push({ peer, wire });
         return { ok: false as const, reason: 'packet-send-false' as const };
@@ -3174,6 +3232,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       sendReticulumChatDetailed: async (peer: string, wire: Record<string, any>) => {
         direct.push({ peer, wire });
         return { ok: true as const };
@@ -5822,6 +5881,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -5857,6 +5917,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -5901,6 +5962,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -5957,6 +6019,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -5993,6 +6056,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6046,6 +6110,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6096,6 +6161,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6179,6 +6245,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6215,9 +6282,10 @@ describe('reticulum chat manager', () => {
     expect(eventPageOffer?.p).toMatchObject({
       c: 'general',
       d: 'a',
-      eid: 'event-page-2',
-      ets: 20_002,
+      n: 1,
     });
+    expect(eventPageOffer?.p?.eid).toBeUndefined();
+    expect(eventPageOffer?.p?.ets).toBeUndefined();
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
     expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
@@ -6229,6 +6297,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6270,6 +6339,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6340,6 +6410,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6405,6 +6476,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6478,7 +6550,8 @@ describe('reticulum chat manager', () => {
     expect(repairResponse?.k).toBeTruthy();
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
     if (repairResponse.k === 'event_page_offer') {
-      expect(repairResponse.p?.eid).toBe(olderLocal.eventId);
+      expect(repairResponse.p).toMatchObject({ c: '*', d: 'b' });
+      expect(repairResponse.p?.eid).toBeUndefined();
     }
     getLatestSpy.mockRestore();
     manager.close();
@@ -6489,6 +6562,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6560,7 +6634,8 @@ describe('reticulum chat manager', () => {
     expect(repairResponse?.k).toBeTruthy();
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
     if (repairResponse.k === 'event_page_offer') {
-      expect(repairResponse.p?.eid).toBe(olderLocal.eventId);
+      expect(repairResponse.p).toMatchObject({ c: '*', d: 'b' });
+      expect(repairResponse.p?.eid).toBeUndefined();
     }
     getLatestSpy.mockRestore();
     manager.close();
@@ -6571,6 +6646,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6622,6 +6698,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6708,6 +6785,7 @@ describe('reticulum chat manager', () => {
     const bridge = {
       on: () => undefined,
       off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
@@ -6791,7 +6869,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'event_page_offer',
       g: 58,
-      p: expect.objectContaining({ eid: latestLocal.eventId }),
+      p: expect.objectContaining({ c: '*', d: 'b' }),
     }));
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
     manager.close();

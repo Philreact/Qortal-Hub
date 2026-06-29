@@ -154,7 +154,7 @@ type ReticulumChatEventOfferOptions = {
 export interface ReticulumChatEventOfferWire {
   x: string;
   id: string;
-  ph: string;
+  ph?: string;
   wh: string;
   s: number;
   fc?: string;
@@ -791,6 +791,14 @@ function compactPeerHashForWire(peerHash: string): string {
     .replace(/=+$/g, '');
 }
 
+function normalizeRoutePeerHash(value: unknown): string | undefined {
+  const normalized = normalizePeerHashFromWire(value);
+  if (normalized) return normalized;
+  if (typeof value !== 'string') return undefined;
+  const fallback = value.trim().toLowerCase();
+  return /^[a-z0-9._:-]{1,128}$/.test(fallback) ? fallback : undefined;
+}
+
 function normalizeReticulumIdentityPublicKeyBase64(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -821,24 +829,16 @@ export function buildReticulumChatEventHint(
 }
 
 function eventOfferToWire(offer: ReticulumChatEventOffer): ReticulumChatEventOfferWire {
+  const providerDestinationHash =
+    normalizeRoutePeerHash(offer.senderReticulumDestinationHash) ??
+    normalizeRoutePeerHash(offer.sourcePeerHash);
   return {
     x: offer.transferId,
     id: offer.eventId,
-    ph: offer.payloadHash,
     wh: offer.wireHash,
     s: offer.sizeBytes,
-    ...(offer.continuation
-      ? {
-          fc: offer.continuation.channelId,
-          fd: offer.continuation.direction === 'before' ? 'b' : 'a',
-          fid: offer.continuation.cursor.eventId,
-          fts: offer.continuation.cursor.feedTimestamp,
-        }
-      : {}),
     ...(offer.relayRequestId ? { rr: offer.relayRequestId } : {}),
-    ...(offer.sourcePeerHash ? { sp: compactPeerHashForWire(offer.sourcePeerHash) } : {}),
-    ...(offer.senderReticulumDestinationHash ? { sd: compactPeerHashForWire(offer.senderReticulumDestinationHash) } : {}),
-    ...(offer.senderReticulumIdentityPublicKeyBase64 ? { rk: offer.senderReticulumIdentityPublicKeyBase64 } : {}),
+    ...(providerDestinationHash ? { sd: compactPeerHashForWire(providerDestinationHash) } : {}),
     ...(offer.relayStore ? { rs: 1 as const } : {}),
     ...(offer.relayCached ? { rc: 1 as const } : {}),
   };
@@ -848,20 +848,11 @@ function buildEventOfferControlWire(
   groupId: number,
   offer: ReticulumChatEventOffer
 ): Extract<ReticulumChatWire, { k: 'event_offer' }> {
-  const wire: Extract<ReticulumChatWire, { k: 'event_offer' }> = {
-    t: 'RCHAT',
-    k: 'event_offer',
-    g: groupId,
-    o: eventOfferToWire(offer),
-  };
-  if (wireFitsReticulum(wire) || !offer.senderReticulumIdentityPublicKeyBase64) return wire;
-  const fallbackOffer = { ...offer };
-  delete fallbackOffer.senderReticulumIdentityPublicKeyBase64;
   return {
     t: 'RCHAT',
     k: 'event_offer',
     g: groupId,
-    o: eventOfferToWire(fallbackOffer),
+    o: eventOfferToWire(offer),
   };
 }
 
@@ -885,6 +876,12 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
           },
         }
       : undefined;
+  const sourcePeerHash =
+    typeof o.sp === 'string' && o.sp
+      ? normalizePeerHashFromWire(o.sp) ?? o.sp
+      : typeof o.sd === 'string' && o.sd
+        ? normalizePeerHashFromWire(o.sd) ?? o.sd
+        : undefined;
   return {
     transferId: String(o.x || ''),
     eventId: String(o.id || ''),
@@ -894,7 +891,7 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
     sizeBytes: Number(o.s || 0),
     ...(continuation ? { continuation } : {}),
     ...(typeof o.rr === 'string' && o.rr ? { relayRequestId: o.rr } : {}),
-    ...(typeof o.sp === 'string' && o.sp ? { sourcePeerHash: normalizePeerHashFromWire(o.sp) ?? o.sp } : {}),
+    ...(sourcePeerHash ? { sourcePeerHash } : {}),
     ...(typeof o.sd === 'string' && o.sd ? { senderReticulumDestinationHash: normalizePeerHashFromWire(o.sd) ?? o.sd } : {}),
     ...(typeof o.rk === 'string' && o.rk ? { senderReticulumIdentityPublicKeyBase64: o.rk } : {}),
     ...(o.rs === 1 ? { relayStore: true } : {}),
@@ -904,6 +901,9 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
 }
 
 function eventPageOfferToWire(offer: ReticulumChatEventPageOffer): ReticulumChatEventPageOfferWire {
+  const providerDestinationHash =
+    normalizeRoutePeerHash(offer.senderReticulumDestinationHash) ??
+    normalizeRoutePeerHash(offer.sourcePeerHash);
   return {
     x: offer.transferId,
     c: offer.channelId,
@@ -911,13 +911,9 @@ function eventPageOfferToWire(offer: ReticulumChatEventPageOffer): ReticulumChat
     ph: offer.pageHash,
     s: offer.sizeBytes,
     n: offer.eventCount,
-    ...(offer.start ? { sid: offer.start.eventId, sts: offer.start.feedTimestamp } : {}),
-    ...(offer.end ? { eid: offer.end.eventId, ets: offer.end.feedTimestamp } : {}),
     ...(offer.hasMore ? { more: 1 as const } : {}),
     ...(offer.relayRequestId ? { rr: offer.relayRequestId } : {}),
-    ...(offer.sourcePeerHash ? { sp: compactPeerHashForWire(offer.sourcePeerHash) } : {}),
-    ...(offer.senderReticulumDestinationHash ? { sd: compactPeerHashForWire(offer.senderReticulumDestinationHash) } : {}),
-    ...(offer.senderReticulumIdentityPublicKeyBase64 ? { rk: offer.senderReticulumIdentityPublicKeyBase64 } : {}),
+    ...(providerDestinationHash ? { sd: compactPeerHashForWire(providerDestinationHash) } : {}),
   };
 }
 
@@ -925,20 +921,11 @@ function buildEventPageOfferControlWire(
   groupId: number,
   offer: ReticulumChatEventPageOffer
 ): Extract<ReticulumChatWire, { k: 'event_page_offer' }> {
-  const wire: Extract<ReticulumChatWire, { k: 'event_page_offer' }> = {
-    t: 'RCHAT',
-    k: 'event_page_offer',
-    g: groupId,
-    p: eventPageOfferToWire(offer),
-  };
-  if (wireFitsReticulum(wire) || !offer.senderReticulumIdentityPublicKeyBase64) return wire;
-  const fallbackOffer = { ...offer };
-  delete fallbackOffer.senderReticulumIdentityPublicKeyBase64;
   return {
     t: 'RCHAT',
     k: 'event_page_offer',
     g: groupId,
-    p: eventPageOfferToWire(fallbackOffer),
+    p: eventPageOfferToWire(offer),
   };
 }
 
@@ -2112,11 +2099,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private routePeerHash(value: unknown): string | undefined {
-    const normalized = normalizePeerHashFromWire(value);
-    if (normalized) return normalized;
-    if (typeof value !== 'string') return undefined;
-    const fallback = value.trim().toLowerCase();
-    return /^[a-z0-9._:-]{1,128}$/.test(fallback) ? fallback : undefined;
+    return normalizeRoutePeerHash(value);
   }
 
   private compactRoutePeerHash(peerHash: string): string {
@@ -3323,8 +3306,11 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const failedPageResult = pageResult as Exclude<ReticulumSendResult, { ok: true }>;
+    const pageFailureDetail = failedPageResult.error
+      ? `${failedPageResult.reason}:${failedPageResult.error}`
+      : failedPageResult.reason;
     loggerWarn(
-      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${failedPageResult.reason}; page will be retried by digest/range repair`
+      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${pageFailureDetail}; page will be retried by digest/range repair`
     );
     await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
   }
@@ -5342,7 +5328,6 @@ export class ReticulumChatManager extends EventEmitter {
       if (!requesterAddress || !(await this.isValidatedGroupMember(groupId, requesterAddress))) {
         return;
       }
-      const localResourceIdentity = await this.localReticulumResourceIdentity();
       const response: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'resource_have',
@@ -5351,10 +5336,8 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(localPeerHash),
-        ...(localResourceIdentity.identityPublicKeyBase64
-          ? { rk: localResourceIdentity.identityPublicKeyBase64 }
-          : {}),
       };
+      if (!wireFitsReticulum(response)) return;
       const result = await this.sendToPeer(reversePeerHash, response);
       if (result.ok) {
         loggerLog(
@@ -5411,7 +5394,6 @@ export class ReticulumChatManager extends EventEmitter {
       ) {
         return;
       }
-      const publicKey = normalizeReticulumIdentityPublicKeyBase64(wire.rk);
       const response: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'resource_have',
@@ -5420,8 +5402,8 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
-        ...(publicKey ? { rk: publicKey } : {}),
       };
+      if (!wireFitsReticulum(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);
       return;
     }
@@ -5871,9 +5853,6 @@ export class ReticulumChatManager extends EventEmitter {
       ...(localResourceIdentity.destinationHash
         ? { senderReticulumDestinationHash: localResourceIdentity.destinationHash }
         : {}),
-      ...(localResourceIdentity.identityPublicKeyBase64
-        ? { senderReticulumIdentityPublicKeyBase64: localResourceIdentity.identityPublicKeyBase64 }
-        : {}),
       ...(options.relayRequestId ? { relayRequestId: options.relayRequestId } : {}),
       relayCached: true,
       relayBlobId: entry.blobId,
@@ -5961,6 +5940,9 @@ export class ReticulumChatManager extends EventEmitter {
       (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
     );
     const localResourceIdentity = await this.localReticulumResourceIdentity();
+    if (!localResourceIdentity.destinationHash) {
+      return { ok: false, reason: 'send-command-failed', error: 'Missing local Reticulum destination hash' };
+    }
     const transferId = nodeCrypto.randomBytes(8).toString('hex');
     const filePath = this.writeTempEventBlob(transferId, blob);
     const recipientPeerKey = (options.recipientPeerHash ?? peerKey).trim().toLowerCase();
@@ -5981,9 +5963,6 @@ export class ReticulumChatManager extends EventEmitter {
       ...(options.sourcePeerHash ? { sourcePeerHash: options.sourcePeerHash } : {}),
       ...(localResourceIdentity.destinationHash
         ? { senderReticulumDestinationHash: localResourceIdentity.destinationHash }
-        : {}),
-      ...(localResourceIdentity.identityPublicKeyBase64
-        ? { senderReticulumIdentityPublicKeyBase64: localResourceIdentity.identityPublicKeyBase64 }
         : {}),
     };
     const wire = buildEventPageOfferControlWire(groupId, offer);
@@ -6071,9 +6050,6 @@ export class ReticulumChatManager extends EventEmitter {
       ...(localResourceIdentity.destinationHash
         ? { senderReticulumDestinationHash: localResourceIdentity.destinationHash }
         : {}),
-      ...(localResourceIdentity.identityPublicKeyBase64
-        ? { senderReticulumIdentityPublicKeyBase64: localResourceIdentity.identityPublicKeyBase64 }
-        : {}),
     };
     const recipientPeerKey = (options.recipientPeerHash ?? peerKey).trim().toLowerCase();
     const registered = await this.bridge.sendReticulumChatResourceDetailed({
@@ -6097,14 +6073,10 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
     if (!registered.ok) return registered;
-    let wire = buildEventOfferControlWire(groupId, offer);
-    if (options.continuation && !wireFitsReticulum(wire)) {
-      const compactOffer = { ...offer };
-      delete compactOffer.continuation;
-      wire = buildEventOfferControlWire(groupId, compactOffer);
-      loggerWarn(
-        `[ReticulumChat] Dropping oversized event offer continuation group=${groupId} channel=${options.continuation.channelId} event=${event.eventId}`
-      );
+    const wire = buildEventOfferControlWire(groupId, offer);
+    if (!wireFitsReticulum(wire)) {
+      this.safeUnlink(filePath);
+      return { ok: false, reason: 'send-command-failed', error: 'Event offer too large' };
     }
     return this.sendToPeer(peerKey, wire);
   }
@@ -6199,7 +6171,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (offer.eventCount > RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS) return false;
     if (offer.relayRequestId != null && !this.normalizeGroupControlRequestId(offer.relayRequestId)) return false;
     if (offer.sourcePeerHash != null && !this.routePeerHash(offer.sourcePeerHash)) return false;
-    if (offer.senderReticulumDestinationHash != null && !normalizePeerHashFromWire(offer.senderReticulumDestinationHash)) return false;
+    if (offer.senderReticulumDestinationHash != null && !this.routePeerHash(offer.senderReticulumDestinationHash)) return false;
     if (
       offer.senderReticulumIdentityPublicKeyBase64 != null &&
       !normalizeReticulumIdentityPublicKeyBase64(offer.senderReticulumIdentityPublicKeyBase64)
@@ -6252,12 +6224,18 @@ export class ReticulumChatManager extends EventEmitter {
     if (typeof offer.transferId !== 'string' || !offer.transferId) return false;
     if (typeof offer.eventId !== 'string' || offer.eventId.length < 8) return false;
     if (!Number.isInteger(offer.groupId) || offer.groupId <= 0) return false;
-    if (typeof offer.payloadHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.payloadHash)) return false;
+    if (
+      offer.payloadHash != null &&
+      offer.payloadHash !== '' &&
+      !/^[0-9a-f]{64}$/i.test(offer.payloadHash)
+    ) {
+      return false;
+    }
     if (typeof offer.wireHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.wireHash)) return false;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;
     if (offer.relayRequestId != null && !this.normalizeGroupControlRequestId(offer.relayRequestId)) return false;
     if (offer.sourcePeerHash != null && !this.routePeerHash(offer.sourcePeerHash)) return false;
-    if (offer.senderReticulumDestinationHash != null && !normalizePeerHashFromWire(offer.senderReticulumDestinationHash)) return false;
+    if (offer.senderReticulumDestinationHash != null && !this.routePeerHash(offer.senderReticulumDestinationHash)) return false;
     if (
       offer.senderReticulumIdentityPublicKeyBase64 != null &&
       !normalizeReticulumIdentityPublicKeyBase64(offer.senderReticulumIdentityPublicKeyBase64)
