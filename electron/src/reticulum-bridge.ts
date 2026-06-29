@@ -221,6 +221,7 @@ type BridgeCmdFrame = {
     | 'get_group_audio_data_plane_session'
     | 'configure_group_audio_data_plane_routes'
     | 'get_local_identity_public_key'
+    | 'ensure_peer_identity'
     | 'register_peer_identity';
   id: string;
   payload?: Record<string, unknown>;
@@ -2825,6 +2826,25 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       return typeof pk === 'string' && pk.length > 0 ? pk : null;
     } catch {
       return null;
+    }
+  }
+
+  async ensurePeerIdentityKnown(peerPresenceHash: string): Promise<boolean> {
+    const peer = peerPresenceHash.trim().toLowerCase();
+    if (!peer) return false;
+    try {
+      await this.start();
+    } catch {
+      return false;
+    }
+    if (this.state !== 'ready') return false;
+    try {
+      const resp = await this.sendCommand('ensure_peer_identity', {
+        peerPresenceHash: peer,
+      });
+      return resp.ok === true;
+    } catch {
+      return false;
     }
   }
 

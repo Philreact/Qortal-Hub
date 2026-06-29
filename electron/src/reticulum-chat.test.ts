@@ -2115,6 +2115,220 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('pushes newest history page resource immediately for direct group_sub peers', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: Array<{ filePath: string; metadata?: Record<string, unknown> }> = [];
+    const publicKey = Buffer.alloc(64, 6).toString('base64');
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      getLocalIdentityPublicKeyBase64: async () => publicKey,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: { filePath: string; metadata?: Record<string, unknown> }) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    const events = signedAuthorEvents(
+      Array.from({ length: 105 }, (_, index) => ({
+        eventId: `sub-history-${String(index + 1).padStart(3, '0')}`,
+        groupId: 69,
+        authorSeq: index + 1,
+        timestamp: 80_000 + index,
+      }))
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    }
+    direct.length = 0;
+
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' }, 'peer-a');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({ k: 'group_digest', g: 69 }),
+      })
+    );
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'event_page_offer',
+          g: 69,
+          p: expect.objectContaining({
+            n: 100,
+            sd: expect.any(String),
+          }),
+        }),
+      })
+    );
+    const pagePayload = resources.find(
+      (payload) => payload.metadata?.resourceType === 'reticulum_chat_event_page'
+    );
+    expect(pagePayload).toBeTruthy();
+    const page = JSON.parse(fs.readFileSync(pagePayload!.filePath, 'utf8')) as {
+      d: string;
+      more?: boolean;
+      events: ReticulumChatEvent[];
+    };
+    expect(page.d).toBe('before');
+    expect(page.more).toBe(true);
+    expect(page.events.map((event) => event.eventId)).toHaveLength(100);
+    expect(page.events[0].eventId).toBe('sub-history-006');
+    expect(page.events[99].eventId).toBe('sub-history-105');
+    const pageOffer = direct.find((item) => item.wire.k === 'event_page_offer')?.wire as any;
+    expect(pageOffer?.p?.sd).toEqual(expect.any(String));
+    expect(pageOffer?.p?.rk).toBeUndefined();
+    manager.close();
+  });
+
+  it('accepts relayed event page resources from the provider Reticulum destination', async () => {
+    const providerHash = 'b'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          accepts.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_page_offer',
+        g: 69,
+        p: {
+          x: 'relayed-page-provider-identity',
+          c: '*',
+          d: 'b',
+          ph: 'c'.repeat(64),
+          s: 123,
+          n: 1,
+          sd: providerHash,
+        },
+      },
+      'intermediate-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(accepts).toContainEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        reticulumIdentityPublicKeyBase64: '',
+        transferId: 'relayed-page-provider-identity',
+      })
+    );
+    manager.close();
+  });
+
+  it('resolves provider identity before accepting a relayed event page resource', async () => {
+    const providerHash = 'b'.repeat(32);
+    const publicKey = Buffer.alloc(64, 7).toString('base64');
+    const fanout: Array<Record<string, unknown>> = [];
+    const registrations: Array<Record<string, unknown>> = [];
+    const accepts: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        ensurePeerIdentityKnown: async () => false,
+        registerPeerIdentityFromGroupJoin: async (
+          peerPresenceHash: string,
+          reticulumIdentityPublicKeyBase64: string
+        ) => {
+          registrations.push({ peerPresenceHash, reticulumIdentityPublicKeyBase64 });
+          return true;
+        },
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+        acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          accepts.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_page_offer',
+        g: 69,
+        p: {
+          x: 'relayed-page-provider-identity',
+          c: '*',
+          d: 'b',
+          ph: 'c'.repeat(64),
+          s: 123,
+          n: 1,
+          sd: providerHash,
+        },
+      },
+      'intermediate-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const identityReq = fanout.find((wire) => wire.k === 'identity_req');
+    expect(identityReq).toEqual(
+      expect.objectContaining({
+        k: 'identity_req',
+        d: expect.any(String),
+      })
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'identity_offer',
+        d: providerHash,
+        rk: publicKey,
+        rid: identityReq?.rid,
+      },
+      'intermediate-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(registrations).toContainEqual({
+      peerPresenceHash: providerHash,
+      reticulumIdentityPublicKeyBase64: publicKey,
+    });
+    expect(accepts).toContainEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        reticulumIdentityPublicKeyBase64: publicKey,
+        transferId: 'relayed-page-provider-identity',
+      })
+    );
+    manager.close();
+  });
+
   it('relays group subscriptions through non-member overlay peers', async () => {
     const fanout: Array<{ messages: Record<string, unknown>[]; excludes: string[] }> = [];
     const manager = new ReticulumChatManager({
@@ -2514,6 +2728,57 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps newest feed repair peer-targeted when direct route is unavailable', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const fanout: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: false as const, reason: 'no-route' as const };
+      },
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    const event = signedEvent({ groupId: 9, timestamp: 90_000 });
+    manager.setLocalGroupMemberships([9]);
+    manager.subscribeGroup(9);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 9,
+        latest: {
+          id: event.eventId,
+          ts: event.timestamp,
+        },
+        channels: [],
+      },
+      'peer'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
+      k: 'feed_req',
+      g: 9,
+      c: '*',
+      before: { id: event.eventId, ts: event.timestamp },
+      inc: 1,
+    });
+    expect(fanout.find((wire) => wire.k === 'feed_req')).toBeUndefined();
+    manager.close();
+  });
+
   it('requests default feed when a digest hash differs but no cursor details are present', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -2556,14 +2821,19 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('pushes local history when a cursorless peer digest is behind local history', async () => {
+  it('pushes newest local history when a cursorless peer digest is behind local history', async () => {
     const direct: Record<string, unknown>[] = [];
+    const resources: Array<{ filePath: string; metadata?: Record<string, unknown> }> = [];
     const bridge = {
       on: () => undefined,
       off: () => undefined,
       fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
         direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: { filePath: string; metadata?: Record<string, unknown> }) => {
+        resources.push(payload);
         return { ok: true as const };
       },
     };
@@ -2573,8 +2843,17 @@ describe('reticulum chat manager', () => {
       now: () => 100_000,
     });
     manager.setLocalGroupMemberships([9]);
-    const event = signedEvent({ groupId: 9, timestamp: 90_000 });
-    await manager.publishEvent(event);
+    const events = signedAuthorEvents(
+      Array.from({ length: 105 }, (_, index) => ({
+        eventId: `history-${String(index + 1).padStart(3, '0')}`,
+        groupId: 9,
+        authorSeq: index + 1,
+        timestamp: 90_000 + index,
+      }))
+    );
+    for (const event of events) {
+      (manager as any).acceptEvent(event, false);
+    }
     manager.subscribeGroup(9);
     direct.length = 0;
 
@@ -2589,13 +2868,31 @@ describe('reticulum chat manager', () => {
       'peer'
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
-    expect(direct.some((wire) => ['event_offer', 'group_digest'].includes(String(wire.k)))).toBe(true);
+    expect(direct.some((wire) => ['event_page_offer', 'group_digest'].includes(String(wire.k)))).toBe(true);
     const digest = direct.find((wire) => wire.k === 'group_digest') as any;
     if (digest) {
-      expect(digest.latest).toEqual({ id: event.eventId, ts: event.timestamp });
+      expect(digest.latest).toEqual({
+        id: 'history-105',
+        ts: 90_104,
+      });
     }
+    const pagePayload = resources.find(
+      (payload) => payload.metadata?.resourceType === 'reticulum_chat_event_page'
+    );
+    expect(pagePayload).toBeTruthy();
+    const page = JSON.parse(fs.readFileSync(pagePayload!.filePath, 'utf8')) as {
+      d: string;
+      more?: boolean;
+      events: ReticulumChatEvent[];
+    };
+    expect(page.d).toBe('before');
+    expect(page.more).toBe(true);
+    expect(page.events.map((event) => event.eventId)).toHaveLength(100);
+    expect(page.events[0].eventId).toBe('history-006');
+    expect(page.events[99].eventId).toBe('history-105');
+    expect(page.events.some((event) => event.eventId === 'history-001')).toBe(false);
     manager.close();
   });
 
@@ -2813,7 +3110,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('keeps event page resources alive and fanouts the offer when direct send fails', async () => {
+  it('keeps event page resources alive for targeted retry when direct send fails', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const fanout: Record<string, unknown>[][] = [];
     const resources: Array<Record<string, any>> = [];
@@ -2867,12 +3164,7 @@ describe('reticulum chat manager', () => {
         wire: expect.objectContaining({ k: 'event_page_offer' }),
       })
     );
-    expect(fanout.flat()).toContainEqual(
-      expect.objectContaining({
-        k: 'event_page_offer',
-        p: expect.objectContaining({ n: 1 }),
-      })
-    );
+    expect(fanout.flat().find((wire) => wire.k === 'event_page_offer')).toBeUndefined();
     manager.close();
   });
 
@@ -3489,7 +3781,8 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('falls back to fanout when targeted author range repair cannot use the peer route', async () => {
+  it('keeps author range repair peer-targeted when direct route is unavailable', async () => {
+    const directWires: Record<string, unknown>[] = [];
     const fanoutWires: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -3498,10 +3791,13 @@ describe('reticulum chat manager', () => {
         fanoutWires.push(...wires);
         return { ok: true as const };
       },
-      sendReticulumChatDetailed: async () => ({
+      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
+        directWires.push(wire);
+        return {
         ok: false as const,
-        reason: 'no-overlay-route' as const,
-      }),
+          reason: 'no-route' as const,
+        };
+      },
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -3529,12 +3825,13 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(fanoutWires).toContainEqual(
+    expect(directWires).toContainEqual(
       expect.objectContaining({
         k: 'range_req',
         ranges: [expect.objectContaining({ a: first.authorAddress, from: 2, to: 2 })],
       })
     );
+    expect(fanoutWires.find((wire) => wire.k === 'range_req')).toBeUndefined();
     manager.close();
   });
 
@@ -4646,6 +4943,175 @@ describe('reticulum chat manager', () => {
     );
     expect((accepted[0].authMessage as Record<string, unknown>)?.type).toBe(
       'RETICULUM_GROUP_RESOURCE_AUTH'
+    );
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('resolves provider identity before opening a byte-range resource link', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-identity-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 4);
+    const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
+    const providerHash = '8'.repeat(32);
+    const publicKey = Buffer.alloc(64, 9).toString('base64');
+    const manifest = {
+      namespace: 'reticulum-chat-file',
+      ownerId: '92:sender',
+      fileName: 'identity.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 92 },
+    };
+    const fanout: Array<Record<string, unknown>> = [];
+    const accepted: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => false,
+      registerPeerIdentityFromGroupJoin: async () => true,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepted.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([92]);
+    manager.subscribeGroup(92);
+
+    await expect(manager.requestResource(92, manifest)).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 92,
+        fh: fileHash,
+        s: contents.length,
+      },
+      providerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const identityReq = fanout.find((wire) => wire.k === 'identity_req');
+    expect(identityReq).toEqual(
+      expect.objectContaining({
+        k: 'identity_req',
+        d: expect.any(String),
+      })
+    );
+    expect(accepted).toHaveLength(0);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'identity_offer',
+        d: providerHash,
+        rk: publicKey,
+        rid: identityReq?.rid,
+      },
+      providerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(accepted).toContainEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        reticulumIdentityPublicKeyBase64: publicKey,
+        resourceType: 'reticulum_group_resource_range',
+      })
+    );
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('uses a resource_have provider public key without an extra identity request', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-have-key-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 5);
+    const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
+    const providerHash = '8'.repeat(32);
+    const publicKey = Buffer.alloc(64, 10).toString('base64');
+    const manifest = {
+      namespace: 'reticulum-chat-file',
+      ownerId: '92:sender',
+      fileName: 'provider-key.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 92 },
+    };
+    const fanout: Array<Record<string, unknown>> = [];
+    const accepted: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => false,
+      registerPeerIdentityFromGroupJoin: async () => true,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepted.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([92]);
+    manager.subscribeGroup(92);
+
+    await expect(manager.requestResource(92, manifest)).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 92,
+        fh: fileHash,
+        s: contents.length,
+        rk: publicKey,
+      },
+      providerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(fanout.find((wire) => wire.k === 'identity_req')).toBeUndefined();
+    expect(accepted).toContainEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        reticulumIdentityPublicKeyBase64: publicKey,
+        resourceType: 'reticulum_group_resource_range',
+      })
     );
     manager.close();
     resourceStore.close();

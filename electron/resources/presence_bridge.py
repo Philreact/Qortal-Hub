@@ -14765,6 +14765,25 @@ def handle_get_local_identity_public_key(req_id: str, payload: Dict[str, Any]) -
         emit_resp(req_id, False, error=str(exc))
 
 
+def handle_ensure_peer_identity(req_id: str, payload: Dict[str, Any]) -> None:
+    peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
+    if not peer_hash:
+        emit_resp(req_id, False, error="Missing peerPresenceHash")
+        return
+    if peer_hash in _known_peers:
+        emit_resp(req_id, True, payload={"source": "known"})
+        return
+    if ensure_known_peer_from_recall(peer_hash, "ts_seed"):
+        emit_resp(req_id, True, payload={"source": "recall"})
+        return
+    emit_resp(
+        req_id,
+        False,
+        payload={"code": "unknown_peer_identity"},
+        error="Unknown peer identity",
+    )
+
+
 def handle_register_peer_identity(req_id: str, payload: Dict[str, Any]) -> None:
     peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
     pk_b64 = payload.get("reticulumIdentityPublicKeyBase64")
@@ -15089,6 +15108,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         emit_resp(req_id, True, payload={"routeCount": route_count})
     elif action == "get_local_identity_public_key":
         handle_get_local_identity_public_key(req_id, payload)
+    elif action == "ensure_peer_identity":
+        handle_ensure_peer_identity(req_id, payload)
     elif action == "register_peer_identity":
         handle_register_peer_identity(req_id, payload)
     else:
