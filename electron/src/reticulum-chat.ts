@@ -3133,8 +3133,9 @@ export class ReticulumChatManager extends EventEmitter {
       await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
       return;
     }
+    const failedPageResult = pageResult as Exclude<ReticulumSendResult, { ok: true }>;
     loggerWarn(
-      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${pageResult.reason}; falling back to per-event offers`
+      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${failedPageResult.reason}; falling back to per-event offers`
     );
     for (let i = 0; i < events.length; i += RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY) {
       const batch = events.slice(i, i + RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY);
