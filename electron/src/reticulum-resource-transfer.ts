@@ -114,6 +114,7 @@ type ReticulumResourceDownloadState<TRequestWire> = {
   inFlightRanges: Map<string, { transferId: string; startedAt: number }>;
   peerBulkThrottleUntil: Map<string, number>;
   peerBulkThrottleLoggedAt: Map<string, number>;
+  waitingForProvider: boolean;
   nextRequestAt: number;
   featureData?: Record<string, unknown>;
 };
@@ -377,6 +378,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       options.candidatePeers ?? [],
       options.featureData
     );
+    state.waitingForProvider = false;
     const resetForRetry =
       existingDownload &&
       !this.hasActiveAcceptsForResource(blobId) &&
@@ -406,6 +408,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       added = true;
     }
     if (!added) return false;
+    state.waitingForProvider = false;
     state.nextRequestAt = 0;
     this.emitProgress(state);
     this.scheduleDownload(0);
@@ -551,6 +554,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       inFlightRanges: new Map(),
       peerBulkThrottleUntil: new Map(),
       peerBulkThrottleLoggedAt: new Map(),
+      waitingForProvider: false,
       nextRequestAt: 0,
       ...(featureData ? { featureData } : {}),
     };
@@ -580,6 +584,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const now = this.now();
       let nextDelay: number | null = null;
       for (const state of this.downloads.values()) {
+        if (state.waitingForProvider) continue;
         if (state.nextRequestAt > now) {
           const delay = state.nextRequestAt - now;
           nextDelay = nextDelay === null ? delay : Math.min(nextDelay, delay);
@@ -587,7 +592,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         }
         await this.dispatchRequests(state);
       }
-      if (this.downloads.size > 0) {
+      const hasRunnableDownloads = [...this.downloads.values()].some((state) => !state.waitingForProvider);
+      if (hasRunnableDownloads || this.activeAccepts.size > 0) {
         const activeWatchDelay = this.activeAccepts.size > 0
           ? RETICULUM_RESOURCE_TRANSFER_RETRY_MS
           : null;
@@ -703,10 +709,15 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     if (!delivered && knownPeers.length === 0) {
-      loggerLog(
-        `[${this.loggerPrefix}] resource_range_waiting_for_provider fileHash=${state.fileHash} ` +
-          `missingRanges=${missing.length}`
-      );
+      if (!state.waitingForProvider) {
+        state.waitingForProvider = true;
+        loggerLog(
+          `[${this.loggerPrefix}] resource_range_waiting_for_provider fileHash=${state.fileHash} ` +
+            `missingRanges=${missing.length}`
+        );
+      }
+      this.emitProgress(state);
+      return;
     }
     for (const range of requestedRanges) {
       state.rangeAttempts.set(rangeKey(range), (state.rangeAttempts.get(rangeKey(range)) ?? 0) + 1);

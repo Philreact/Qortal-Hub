@@ -13696,7 +13696,13 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
         return
     bridge_chunked = _qchat_file_should_bridge_chunk_resource(resource_type, stream_mode)
     try:
-        if resource_type in (_RETICULUM_CHAT_RESOURCE_TYPE, _RETICULUM_RESOURCE_TYPE) and (not isinstance(pk_b64, str) or not pk_b64.strip()):
+        if (
+            (
+                resource_type == _RETICULUM_CHAT_RESOURCE_TYPE
+                or resource_type.startswith(_RETICULUM_RESOURCE_TYPE)
+            )
+            and (not isinstance(pk_b64, str) or not pk_b64.strip())
+        ):
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
             peer_identity = _known_peers.get(peer_hash)
             if peer_identity is None:
@@ -13945,10 +13951,15 @@ def handle_reject_reticulum_chat_resource(req_id: str, payload: Dict[str, Any]) 
 def _generic_reticulum_resource_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     next_payload = dict(payload)
     logical_resource_type = str(next_payload.get("resourceType") or "").strip()
-    next_payload["resourceType"] = _RETICULUM_RESOURCE_TYPE
+    effective_resource_type = logical_resource_type or _RETICULUM_RESOURCE_TYPE
+    next_payload["resourceType"] = effective_resource_type
     metadata = next_payload.get("metadata") if isinstance(next_payload.get("metadata"), dict) else {}
-    next_metadata = {**metadata, "resourceType": _RETICULUM_RESOURCE_TYPE}
-    if logical_resource_type and logical_resource_type != _RETICULUM_RESOURCE_TYPE:
+    next_metadata = {
+        **metadata,
+        "resourceType": effective_resource_type,
+        "wireResourceType": _RETICULUM_RESOURCE_TYPE,
+    }
+    if effective_resource_type != _RETICULUM_RESOURCE_TYPE:
         next_metadata["logicalResourceType"] = logical_resource_type
     next_payload["metadata"] = next_metadata
     return next_payload
