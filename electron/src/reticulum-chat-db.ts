@@ -2475,7 +2475,7 @@ export class ReticulumChatDatabase {
   ): ReticulumChatEvent[] {
     const safeFrom = Math.max(1, Math.floor(fromSeq));
     const safeTo = Math.max(safeFrom, Math.floor(toSeq));
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const rows = this.stmtGetAuthorEventsRange.all(
       groupId,
       authorAddress,

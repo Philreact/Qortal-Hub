@@ -5481,6 +5481,7 @@ describe('reticulum chat manager', () => {
 
   it('responds to author range requests with events for that author only', async () => {
     const direct: Record<string, unknown>[] = [];
+    const resources: Record<string, any>[] = [];
     const bridge = {
       on: () => undefined,
       off: () => undefined,
@@ -5489,7 +5490,10 @@ describe('reticulum chat manager', () => {
         direct.push(message);
         return { ok: true as const };
       },
-      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -5518,8 +5522,63 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(direct.some((wire) => wire.k === 'event_page_offer')).toBe(true);
+    const offer = direct.find((wire) => wire.k === 'event_page_offer') as any;
+    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 2 });
+    expect(resources).toHaveLength(1);
     expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    manager.close();
+  });
+
+  it('serves author range repairs as newest all-channel pages with more when truncated', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([60]);
+    const events = signedAuthorEvents(
+      Array.from({ length: 105 }, (_unused, index) => {
+        const seq = index + 1;
+        return {
+          eventId: `event-gap-response-large-${seq}`,
+          groupId: 60,
+          channelId: seq % 2 === 0 ? 'general' : 'dev',
+          authorSeq: seq,
+          timestamp: 40_000 + seq,
+        };
+      })
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    }
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 60,
+        ranges: [{ a: events[0].authorAddress, from: 1, to: 105 }],
+        limit: 100,
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const offer = direct.find((wire) => wire.k === 'event_page_offer') as any;
+    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 100, more: 1 });
     manager.close();
   });
 
@@ -5783,7 +5842,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'feed_req',
       g: 54,
-      c: 'general',
+      c: '*',
       before: { id: latestCursor.eventId, ts: latestCursor.feedTimestamp },
     }));
     const repairResponse = direct.find((wire) =>
@@ -5877,6 +5936,143 @@ describe('reticulum chat manager', () => {
       expect(repairResponse.p?.eid).toBe(olderLocal.eventId);
     }
     getLatestSpy.mockRestore();
+    manager.close();
+  });
+
+  it('starts cold digest catch-up from the newest group-wide page before channel pages', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 90_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([56]);
+    manager.subscribeGroup(56);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 56,
+        latest: { id: 'event-newest-group', ts: 90_000 },
+        channels: [
+          { c: 'old-channel', latest: { id: 'event-old-channel', ts: 10_000 } },
+          { c: 'new-channel', latest: { id: 'event-newest-group', ts: 90_000 } },
+        ],
+        digestHash: 'remote-digest',
+      },
+      'peer-cold-newest'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const feedRequests = direct.filter((wire) => wire.k === 'feed_req');
+    expect(feedRequests).toHaveLength(1);
+    expect(feedRequests[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 56,
+      c: '*',
+      before: { id: 'event-newest-group', ts: 90_000 },
+      inc: 1,
+    });
+    manager.close();
+  });
+
+  it('continues remaining author gaps after importing a partial range page', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const dbPath = tempDbPath();
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const events = signedAuthorEvents([
+      { eventId: 'event-gap-local-1', groupId: 57, authorSeq: 1, timestamp: 10_001 },
+      ...Array.from({ length: 99 }, (_unused, index) => {
+        const seq = index + 4;
+        return {
+          eventId: `event-gap-page-${seq}`,
+          groupId: 57,
+          channelId: seq % 2 === 0 ? 'general' : 'dev',
+          authorSeq: seq,
+          timestamp: 10_000 + seq,
+        };
+      }),
+      { eventId: 'event-gap-local-103', groupId: 57, authorSeq: 103, timestamp: 10_103 },
+    ]);
+    const localFirst = events[0];
+    const localLatest = events[events.length - 1];
+    expect((manager as any).db.insertEvent(localFirst, true)).toBe(true);
+    expect((manager as any).db.insertEvent(localLatest, true)).toBe(true);
+    const pageEvents = events.slice(1, -1).sort((a, b) => b.authorSeq - a.authorSeq);
+    const ordered = [...pageEvents].sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+    const page = {
+      v: 1,
+      g: 57,
+      c: '*',
+      d: 'range',
+      more: true,
+      start: { id: ordered[0].eventId, ts: ordered[0].timestamp },
+      end: { id: ordered[ordered.length - 1].eventId, ts: ordered[ordered.length - 1].timestamp },
+      wh: (manager as any).db.computeWindowHash(ordered),
+      events: pageEvents,
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const transferId = 'range-page-continuation-transfer';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).eventPageOffers.set(transferId, {
+      transferId,
+      groupId: 57,
+      channelId: '*',
+      direction: 'range',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: pageEvents.length,
+      sourcePeerHash: 'peer-range',
+      hasMore: true,
+    });
+    direct.length = 0;
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-range',
+    });
+
+    expect(direct).toContainEqual(expect.objectContaining({
+      t: 'RCHAT',
+      k: 'range_req',
+      g: 57,
+      ranges: [{ a: localFirst.authorAddress, from: 2, to: 3 }],
+    }));
     manager.close();
   });
 

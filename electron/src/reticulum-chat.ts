@@ -2566,6 +2566,79 @@ export class ReticulumChatManager extends EventEmitter {
     let requestedFromChannelDigest = false;
     let pushedFromChannelDigest = false;
     let requestedWindowRepair = false;
+    const localGroupLatest = this.getGroupLatestCursor(groupId);
+    const localDigestWire = this.buildGroupDigestWire(groupId);
+    const localDigestHash =
+      localDigestWire.k === 'group_digest' && typeof localDigestWire.digestHash === 'string'
+        ? localDigestWire.digestHash
+        : '';
+    const remoteDigestNeedsRepair =
+      !!remoteDigestHash && remoteDigestHash !== localDigestHash;
+    const remoteHasCursorDetail =
+      !!remoteGroupLatest ||
+      channels.some((rawChannel) => {
+        if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) return false;
+        return !!this.cursorFromWire((rawChannel as Partial<ReticulumChatDigestWire>).latest);
+      });
+    const remoteIsBehindGroup =
+      !!localGroupLatest &&
+      (
+        !remoteGroupLatest ||
+        this.compareCursors(localGroupLatest, remoteGroupLatest) > 0
+      );
+    const remoteAtOrAheadOfLocalGroup =
+      !!remoteGroupLatest &&
+      (
+        !localGroupLatest ||
+        this.compareCursors(remoteGroupLatest, localGroupLatest) >= 0
+      );
+    const needsNewestGroupRepair =
+      !!remoteGroupLatest &&
+      remoteAtOrAheadOfLocalGroup &&
+      (
+        !localGroupLatest ||
+        this.compareCursors(remoteGroupLatest, localGroupLatest) > 0 ||
+        remoteDigestNeedsRepair
+      );
+    let newestGroupRepairRequested = false;
+    if (
+      needsNewestGroupRepair &&
+      this.shouldRequestGroupRepair(peerHash, groupId, RETICULUM_CHAT_ALL_CHANNELS_ID)
+    ) {
+      void this.requestPeerEventById(peerHash, groupId, remoteGroupLatest.eventId, 'group-newest-repair');
+      void this.sendToPeer(peerHash, {
+        t: 'RCHAT',
+        k: 'feed_req',
+        g: groupId,
+        c: RETICULUM_CHAT_ALL_CHANNELS_ID,
+        before: this.cursorToWire(remoteGroupLatest),
+        inc: 1,
+        limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+      });
+      loggerLog(
+        `[ReticulumChat] Requesting newest group repair group=${groupId} peer=${peerHash.slice(0, 16)} remoteLatest=${remoteGroupLatest.eventId} localLatest=${localGroupLatest?.eventId ?? 'none'} reason=${remoteDigestNeedsRepair ? 'digest-mismatch' : 'remote-newer'}`
+      );
+      if (
+        localGroupLatest &&
+        this.compareCursors(remoteGroupLatest, localGroupLatest) === 0
+      ) {
+        void this.sendFeedPageToPeer(
+          peerHash,
+          groupId,
+          RETICULUM_CHAT_ALL_CHANNELS_ID,
+          remoteGroupLatest,
+          'before'
+        ).catch((err) => {
+          loggerWarn(
+            `[ReticulumChat] Newest group repair push failed group=${groupId} peer=${peerHash.slice(0, 16)}:`,
+            err
+          );
+        });
+      }
+      requestedFromChannelDigest = true;
+      requestedWindowRepair = true;
+      newestGroupRepairRequested = true;
+    }
     for (const rawChannel of channels) {
       if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) continue;
       const channel = rawChannel as Partial<ReticulumChatDigestWire>;
@@ -2583,6 +2656,7 @@ export class ReticulumChatManager extends EventEmitter {
         },
         this.now()
       );
+      if (newestGroupRepairRequested) continue;
       const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
       const localWindowHash = this.db.computeWindowHash(
         this.db.getRecentEvents(groupId, 25, channelId)
@@ -2633,26 +2707,6 @@ export class ReticulumChatManager extends EventEmitter {
         pushedFromChannelDigest = true;
       }
     }
-    const localGroupLatest = this.getGroupLatestCursor(groupId);
-    const localDigestWire = this.buildGroupDigestWire(groupId);
-    const localDigestHash =
-      localDigestWire.k === 'group_digest' && typeof localDigestWire.digestHash === 'string'
-        ? localDigestWire.digestHash
-        : '';
-    const remoteDigestNeedsRepair =
-      !!remoteDigestHash && remoteDigestHash !== localDigestHash;
-    const remoteHasCursorDetail =
-      !!remoteGroupLatest ||
-      channels.some((rawChannel) => {
-        if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) return false;
-        return !!this.cursorFromWire((rawChannel as Partial<ReticulumChatDigestWire>).latest);
-      });
-    const remoteIsBehindGroup =
-      !!localGroupLatest &&
-      (
-        !remoteGroupLatest ||
-        this.compareCursors(localGroupLatest, remoteGroupLatest) > 0
-      );
     if (
       !requestedWindowRepair &&
       remoteDigestNeedsRepair &&
@@ -2897,7 +2951,6 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Array.isArray(wire.ranges)) return;
     const limit = this.normalizeFeedLimit(wire.limit);
     let budget = limit;
-    const byChannel = new Map<string, ReticulumChatEvent[]>();
     for (const rawRange of wire.ranges.slice(0, RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE)) {
       if (!rawRange || typeof rawRange !== 'object' || Array.isArray(rawRange)) continue;
       const range = rawRange as { a?: unknown; from?: unknown; to?: unknown };
@@ -2905,28 +2958,23 @@ export class ReticulumChatManager extends EventEmitter {
       const from = Number(range.from);
       const to = Number(range.to);
       if (!author || !Number.isInteger(from) || !Number.isInteger(to) || from <= 0 || to < from) continue;
-      const events = this.db.getAuthorEventsRange(groupId, author, from, to, budget);
-      for (const event of events) {
-        const channelId = normalizeReticulumChatChannelId(event.channelId);
-        const existing = byChannel.get(channelId) ?? [];
-        existing.push(event);
-        byChannel.set(channelId, existing);
-        budget -= 1;
-        if (budget <= 0) break;
-      }
       if (budget <= 0) break;
-    }
-    for (const [channelId, events] of byChannel) {
-      if (events.length) this.db.markServed(events.map((event) => event.eventId));
+      const eventsWithProbe = this.db.getAuthorEventsRange(groupId, author, from, to, budget + 1);
+      const events = eventsWithProbe.slice(0, budget);
+      if (events.length === 0) continue;
+      const hasMore = eventsWithProbe.length > events.length;
+      this.db.markServed(events.map((event) => event.eventId));
       await this.sendEventBatchOrResourceDigest(
         peerHash,
         groupId,
-        channelId,
+        RETICULUM_CHAT_ALL_CHANNELS_ID,
         events,
-        false,
+        hasMore,
         'range',
         this.relayResponseOptionsFromWire(wire)
       );
+      budget -= events.length;
+      if (budget <= 0) break;
     }
   }
 
@@ -3035,7 +3083,8 @@ export class ReticulumChatManager extends EventEmitter {
   private requestKnownAuthorGaps(
     groupId: number,
     peerHash: string,
-    reason: string
+    reason: string,
+    force = false
   ): boolean {
     const peer = peerHash.trim().toLowerCase();
     if (!peer || !this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) {
@@ -3046,7 +3095,10 @@ export class ReticulumChatManager extends EventEmitter {
       RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE
     );
     if (gaps.length === 0) return false;
-    if (!this.shouldRequestAuthorGapRepair(peer, groupId)) return false;
+    if (!force && !this.shouldRequestAuthorGapRepair(peer, groupId)) return false;
+    if (force) {
+      this.recentAuthorGapRepairRequests.set(`${peer}:${groupId}`, this.now());
+    }
     const now = this.now();
     const ranges = gaps.map((gap) => {
       this.db.upsertMissingRange(
@@ -6039,17 +6091,28 @@ export class ReticulumChatManager extends EventEmitter {
       loggerLog(
         `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
       );
-      if (page.more === true && offer.direction !== 'range') {
-        const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
-        if (cursor && sourcePeerHash) {
-          void this.sendToPeer(sourcePeerHash, {
-            t: 'RCHAT',
-            k: 'feed_req',
-            g: offer.groupId,
-            c: offer.channelId,
-            [offer.direction]: this.cursorToWire(cursor),
-            limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-          });
+      if (page.more === true) {
+        if (offer.direction === 'range') {
+          if (sourcePeerHash) {
+            this.requestKnownAuthorGaps(
+              offer.groupId,
+              sourcePeerHash,
+              'range_page_more',
+              true
+            );
+          }
+        } else {
+          const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
+          if (cursor && sourcePeerHash) {
+            void this.sendToPeer(sourcePeerHash, {
+              t: 'RCHAT',
+              k: 'feed_req',
+              g: offer.groupId,
+              c: offer.channelId,
+              [offer.direction]: this.cursorToWire(cursor),
+              limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+            });
+          }
         }
       }
     } catch (err) {
