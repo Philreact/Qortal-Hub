@@ -5,8 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { app } from 'electron';
 
-export const RETICULUM_RESOURCE_RANGE_SIZE = 5 * 1024 * 1024;
-export const RETICULUM_RESOURCE_MAX_RANGE_SIZE = 5 * 1024 * 1024;
+export const RETICULUM_RESOURCE_RANGE_SIZE = 1024 * 1024;
+export const RETICULUM_RESOURCE_MAX_RANGE_SIZE = 1024 * 1024;
 
 export type ReticulumResourceManifest = {
   namespace: string;

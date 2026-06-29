@@ -12,8 +12,9 @@ import {
 import { log as loggerLog, warn as loggerWarn } from './logger';
 
 export const RETICULUM_RESOURCE_TRANSFER_RANGE_BYTES = RETICULUM_RESOURCE_RANGE_SIZE;
-export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 8;
-export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 4;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 30;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE = 10;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 10;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
 export const RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
@@ -633,6 +634,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const availablePeers = knownPeers.filter(
       (peer) => !this.peerHasMaxActiveAcceptsForResource(peer, state.fileHash)
     );
+    if (this.resourceHasMaxActiveAccepts(state.fileHash)) {
+      state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_RETRY_MS;
+      this.emitProgress(state);
+      return;
+    }
     if (knownPeers.length > 0 && availablePeers.length === 0) {
       state.nextRequestAt = this.now() + RETICULUM_RESOURCE_TRANSFER_RETRY_MS;
       this.emitProgress(state);
@@ -647,12 +653,17 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         capacityLimited = true;
         break;
       }
+      if (this.resourceHasMaxActiveAccepts(state.fileHash)) {
+        capacityLimited = true;
+        break;
+      }
       if (this.shouldThrottlePeerForBulk(state, peerKey)) {
         throttledPeerCount += 1;
         continue;
       }
       while (
         this.activeAccepts.size < RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY &&
+        !this.resourceHasMaxActiveAccepts(state.fileHash) &&
         !this.peerHasMaxActiveAcceptsForResource(peerKey, state.fileHash)
       ) {
         const requestRange =
@@ -670,6 +681,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         }
         for (const request of requests) {
           if (this.activeAccepts.size >= RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY) {
+            capacityLimited = true;
+            break;
+          }
+          if (this.resourceHasMaxActiveAccepts(state.fileHash)) {
             capacityLimited = true;
             break;
           }
@@ -1545,6 +1560,18 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       }
     }
     return activeForPeer >= RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER;
+  }
+
+  private resourceHasMaxActiveAccepts(fileHash: string): boolean {
+    const blobId = fileHash.trim().toLowerCase();
+    if (!blobId) return false;
+    let activeForResource = 0;
+    for (const transferId of this.activeAccepts) {
+      if (this.offers.get(transferId)?.fileHash.toLowerCase() === blobId) {
+        activeForResource += 1;
+      }
+    }
+    return activeForResource >= RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE;
   }
 
   private hasActiveAcceptsForResource(fileHash: string): boolean {

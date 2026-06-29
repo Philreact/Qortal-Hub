@@ -8695,9 +8695,10 @@ def _qchat_file_chunk_bounds(size: int, chunk_index: int) -> Tuple[int, int]:
 def _qchat_file_emit(status: str, payload: Dict[str, Any]) -> None:
     event_payload = dict(payload)
     event_payload["status"] = status
-    if event_payload.get("resourceType") == _RETICULUM_CHAT_RESOURCE_TYPE:
+    resource_type = str(event_payload.get("resourceType") or "").strip()
+    if resource_type == _RETICULUM_CHAT_RESOURCE_TYPE:
         emit_event("reticulum_chat_resource", event_payload)
-    elif str(event_payload.get("resourceType") or "").startswith(_RETICULUM_RESOURCE_TYPE):
+    elif _qchat_file_is_managed_resource_type(resource_type):
         emit_event("reticulum_resource", event_payload)
     else:
         emit_event("qchat_file_transfer", event_payload)
@@ -13699,7 +13700,7 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
         if (
             (
                 resource_type == _RETICULUM_CHAT_RESOURCE_TYPE
-                or resource_type.startswith(_RETICULUM_RESOURCE_TYPE)
+                or _qchat_file_is_managed_resource_type(resource_type)
             )
             and (not isinstance(pk_b64, str) or not pk_b64.strip())
         ):

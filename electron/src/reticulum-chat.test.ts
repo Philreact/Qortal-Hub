@@ -42,6 +42,7 @@ import {
   RETICULUM_RESOURCE_RANGE_SIZE,
 } from './reticulum-resource-store';
 import {
+  RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
   RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
   RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS,
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
@@ -4346,7 +4347,9 @@ describe('reticulum chat manager', () => {
       rootDir: path.join(tempRoot, 'resources'),
       now: () => 100_000,
     });
-    const parts = [7, 8, 9, 10].map((value) => Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, value));
+    const parts = Array.from({ length: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE + 2 }, (_, index) =>
+      Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, index + 7)
+    );
     const contents = Buffer.concat(parts);
     const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
     const manifest = {
@@ -4397,11 +4400,11 @@ describe('reticulum chat manager', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(4);
+    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: 4,
+      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
       pendingTransfers: 0,
-      inFlightRangeCount: 4,
+      inFlightRangeCount: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
     });
 
     now += RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS + 1;
@@ -4409,9 +4412,9 @@ describe('reticulum chat manager', () => {
     await expect(manager.requestResource(80, manifest)).resolves.toMatchObject({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(8);
+    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE * 2);
     expect(manager.getResourceDownloadStatus(fileHash)).toMatchObject({
-      activeTransfers: 4,
+      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
       pendingTransfers: 0,
     });
     manager.close();
@@ -4425,8 +4428,8 @@ describe('reticulum chat manager', () => {
       rootDir: path.join(tempRoot, 'resources'),
       now: () => 100_000,
     });
-    const largeParts = [14, 15, 16, 17].map((value) =>
-      Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, value)
+    const largeParts = Array.from({ length: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE }, (_, index) =>
+      Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, index + 14)
     );
     const imageBytes = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 18);
     const largeBytes = Buffer.concat(largeParts);
@@ -4487,11 +4490,11 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toBe(5);
+    expect(accepts).toBe(RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE + 1);
     expect(manager.getResourceDownloadStatus(largeHash)).toMatchObject({
-      activeTransfers: 4,
+      activeTransfers: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
       pendingTransfers: 0,
-      inFlightRangeCount: 4,
+      inFlightRangeCount: RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
     });
     expect(manager.getResourceDownloadStatus(imageHash)).toMatchObject({
       activeTransfers: 1,
