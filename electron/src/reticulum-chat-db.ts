@@ -182,6 +182,27 @@ type EventRow = {
   wire_bytes: number;
 };
 
+type MessageProjectionRow = {
+  root_event_id: string;
+  group_id: number;
+  channel_id: string;
+  author_address: string;
+  author_public_key: string;
+  author_seq: number;
+  created_at: number;
+  root_event_type: string;
+  current_event_id: string;
+  updated_at: number;
+  reply_to_event_id: string | null;
+  encrypted_payload: string;
+  payload_hash: string;
+  mention_address_hashes: string;
+  mention_targets: string;
+  signature: string;
+  deleted_at: number | null;
+  deleted_event_id: string | null;
+};
+
 type RelayCacheRow = {
   blob_id: string;
   event_id: string;
@@ -305,6 +326,26 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
     timestamp: row.timestamp,
     eventType: row.event_type as ReticulumChatEvent['eventType'],
     ...(row.target_event_id ? { targetEventId: row.target_event_id } : {}),
+    ...(row.reply_to_event_id ? { replyToEventId: row.reply_to_event_id } : {}),
+    encryptedPayload: row.encrypted_payload,
+    payloadHash: row.payload_hash,
+    mentionAddressHashes: parseMentionAddressHashes(row.mention_address_hashes),
+    ...(mentionTargets.length > 0 ? { mentionTargets } : {}),
+    signature: row.signature,
+  };
+}
+
+function messageProjectionRowToEvent(row: MessageProjectionRow): ReticulumChatEvent {
+  const mentionTargets = parseMentionTargets(row.mention_targets);
+  return {
+    eventId: row.root_event_id,
+    groupId: row.group_id,
+    channelId: normalizeReticulumChatChannelId(row.channel_id),
+    authorAddress: row.author_address,
+    authorPublicKey: row.author_public_key,
+    authorSeq: row.author_seq,
+    timestamp: row.created_at,
+    eventType: row.root_event_type as ReticulumChatEvent['eventType'],
     ...(row.reply_to_event_id ? { replyToEventId: row.reply_to_event_id } : {}),
     encryptedPayload: row.encrypted_payload,
     payloadHash: row.payload_hash,
@@ -573,6 +614,11 @@ export class ReticulumChatDatabase {
   private stmtGetEvent: Statement;
   private stmtHasEvent: Statement;
   private stmtGetRecentEvents: Statement;
+  private stmtGetRecentMessageEvents: Statement;
+  private stmtGetRecentMessageEventsAllChannels: Statement;
+  private stmtUpsertMessageProjection: Statement;
+  private stmtGetMessageProjectionEvents: Statement;
+  private stmtDeleteMessageProjection: Statement;
   private stmtGetChannelMetadataEvents: Statement;
   private stmtGetEventsAfter: Statement;
   private stmtGetEventsAfterCursor: Statement;
@@ -694,6 +740,64 @@ export class ReticulumChatDatabase {
       )
       ORDER BY timestamp ASC, event_id ASC
     `);
+    this.stmtGetRecentMessageEvents = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM rchat_message_projection
+        WHERE group_id = ? AND channel_id = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC, root_event_id DESC
+        LIMIT ?
+      )
+      ORDER BY created_at ASC, root_event_id ASC
+    `);
+    this.stmtGetRecentMessageEventsAllChannels = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM rchat_message_projection
+        WHERE group_id = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC, root_event_id DESC
+        LIMIT ?
+      )
+      ORDER BY created_at ASC, root_event_id ASC
+    `);
+    this.stmtUpsertMessageProjection = this.db.prepare(`
+      INSERT INTO rchat_message_projection
+        (root_event_id, group_id, channel_id, author_address, author_public_key,
+         author_seq, created_at, root_event_type, current_event_id, updated_at,
+         reply_to_event_id, encrypted_payload, payload_hash,
+         mention_address_hashes, mention_targets, signature, deleted_at,
+         deleted_event_id)
+      VALUES
+        (@root_event_id, @group_id, @channel_id, @author_address, @author_public_key,
+         @author_seq, @created_at, @root_event_type, @current_event_id, @updated_at,
+         @reply_to_event_id, @encrypted_payload, @payload_hash,
+         @mention_address_hashes, @mention_targets, @signature, @deleted_at,
+         @deleted_event_id)
+      ON CONFLICT(root_event_id) DO UPDATE SET
+        group_id = excluded.group_id,
+        channel_id = excluded.channel_id,
+        author_address = excluded.author_address,
+        author_public_key = excluded.author_public_key,
+        author_seq = excluded.author_seq,
+        created_at = excluded.created_at,
+        root_event_type = excluded.root_event_type,
+        current_event_id = excluded.current_event_id,
+        updated_at = excluded.updated_at,
+        reply_to_event_id = excluded.reply_to_event_id,
+        encrypted_payload = excluded.encrypted_payload,
+        payload_hash = excluded.payload_hash,
+        mention_address_hashes = excluded.mention_address_hashes,
+        mention_targets = excluded.mention_targets,
+        signature = excluded.signature,
+        deleted_at = excluded.deleted_at,
+        deleted_event_id = excluded.deleted_event_id
+    `);
+    this.stmtGetMessageProjectionEvents = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE event_id = ? OR target_event_id = ?
+      ORDER BY feed_timestamp ASC, event_id ASC
+    `);
+    this.stmtDeleteMessageProjection = this.db.prepare(
+      'DELETE FROM rchat_message_projection WHERE root_event_id = ?'
+    );
     this.stmtGetChannelMetadataEvents = this.db.prepare(`
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
@@ -806,7 +910,7 @@ export class ReticulumChatDatabase {
       FROM ordered
       WHERE previous_seq IS NOT NULL
         AND author_seq > previous_seq + 1
-      ORDER BY author_address ASC, from_seq ASC
+      ORDER BY to_seq DESC, author_address ASC, from_seq DESC
       LIMIT ?
     `);
     this.stmtGetMissingByAuthor = this.db.prepare(`
@@ -1041,7 +1145,7 @@ export class ReticulumChatDatabase {
         AND author_address = ?
         AND author_seq >= ?
         AND author_seq <= ?
-      ORDER BY author_seq ASC, feed_timestamp ASC, event_id ASC
+      ORDER BY author_seq DESC, feed_timestamp DESC, event_id DESC
       LIMIT ?
     `);
     this.stmtUpsertPeerGroupState = this.db.prepare(`
@@ -1228,6 +1332,7 @@ export class ReticulumChatDatabase {
       WHERE group_id = ? AND epoch = ? AND key_id = ?
     `);
     this.pruneSatisfiedMissingRanges();
+    this.backfillMessageProjection();
     this.backfillSearchIndex();
   }
 
@@ -1273,6 +1378,7 @@ export class ReticulumChatDatabase {
         storedAt: now,
         wireBytes: eventWireBytes(event),
       });
+      this.applyMessageProjectionEvent(event);
       this.upsertSearchText(
         event,
         searchTextFromPayload(event.encryptedPayload),
@@ -1292,6 +1398,111 @@ export class ReticulumChatDatabase {
     if (inMemory) return inMemory;
     const row = this.stmtGetEvent.get(eventId) as EventRow | undefined;
     return row ? rowToEvent(row) : null;
+  }
+
+  private applyMessageProjectionEvent(event: ReticulumChatEvent): void {
+    if (
+      event.eventType === 'message' ||
+      event.eventType === 'attachment_manifest'
+    ) {
+      this.rebuildMessageProjection(event.eventId);
+      return;
+    }
+    if (
+      (event.eventType === 'edit' || event.eventType === 'delete') &&
+      event.targetEventId
+    ) {
+      this.rebuildMessageProjection(event.targetEventId);
+    }
+  }
+
+  private rebuildMessageProjection(rootEventId: string): void {
+    if (typeof rootEventId !== 'string' || !rootEventId) return;
+    const rows = this.stmtGetMessageProjectionEvents.all(
+      rootEventId,
+      rootEventId
+    ) as EventRow[];
+    const eventsById = new Map<string, ReticulumChatEvent>();
+    for (const row of rows) {
+      const event = rowToEvent(row);
+      eventsById.set(event.eventId, event);
+    }
+    const events = [...eventsById.values()].sort(
+      (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
+    );
+    const root = events.find(
+      (candidate) =>
+        candidate.eventId === rootEventId &&
+        (candidate.eventType === 'message' ||
+          candidate.eventType === 'attachment_manifest')
+    );
+    if (!root) return;
+
+    let current = root;
+    let deletedAt: number | null = null;
+    let deletedEventId: string | null = null;
+    for (const event of events) {
+      if (event.eventId === root.eventId) continue;
+      if (event.targetEventId !== root.eventId) continue;
+      if (event.eventType === 'edit') {
+        if (deletedAt !== null) continue;
+        current = event;
+        continue;
+      }
+      if (event.eventType === 'delete') {
+        deletedAt = event.timestamp;
+        deletedEventId = event.eventId;
+      }
+    }
+
+    this.stmtUpsertMessageProjection.run({
+      root_event_id: root.eventId,
+      group_id: root.groupId,
+      channel_id: normalizeReticulumChatChannelId(root.channelId),
+      author_address: root.authorAddress,
+      author_public_key: root.authorPublicKey,
+      author_seq: root.authorSeq,
+      created_at: root.timestamp,
+      root_event_type: root.eventType,
+      current_event_id: current.eventId,
+      updated_at: current.timestamp,
+      reply_to_event_id: root.replyToEventId ?? null,
+      encrypted_payload: current.encryptedPayload,
+      payload_hash: current.payloadHash,
+      mention_address_hashes: serializeMentionAddressHashes(
+        current.mentionAddressHashes
+      ),
+      mention_targets: serializeMentionTargets(current.mentionTargets),
+      signature: root.signature,
+      deleted_at: deletedAt,
+      deleted_event_id: deletedEventId,
+    });
+  }
+
+  private deleteCachedEvent(eventId: string): void {
+    const event = this.getEvent(eventId);
+    this.memoryMeta.delete(eventId);
+    this.memoryEvents.delete(eventId);
+    this.memorySearchText.delete(eventId);
+    this.memoryMentions.delete(eventId);
+    this.stmtDeleteSearchText.run(eventId);
+    this.stmtDeleteSearchMirror.run(eventId);
+    this.stmtDeleteMentionsForEvent.run(eventId);
+    this.stmtDeleteEvent.run(eventId);
+    if (!event) return;
+    if (
+      event.eventType === 'message' ||
+      event.eventType === 'attachment_manifest'
+    ) {
+      this.stmtDeleteMessageProjection.run(event.eventId);
+      return;
+    }
+    if (
+      (event.eventType === 'edit' || event.eventType === 'delete') &&
+      event.targetEventId
+    ) {
+      this.rebuildMessageProjection(event.targetEventId);
+    }
   }
 
   private relayEntryToDigestEntry(
@@ -1794,6 +2005,27 @@ export class ReticulumChatDatabase {
     );
   }
 
+  getRecentMessageEvents(
+    groupId: number,
+    limit: number,
+    channelId: string | null = null
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const normalizedChannelId = channelId == null ? null : normalizeReticulumChatChannelId(channelId);
+    const rows =
+      normalizedChannelId == null
+        ? (this.stmtGetRecentMessageEventsAllChannels.all(
+            groupId,
+            safeLimit
+          ) as MessageProjectionRow[])
+        : (this.stmtGetRecentMessageEvents.all(
+            groupId,
+            normalizedChannelId,
+            safeLimit
+          ) as MessageProjectionRow[]);
+    return rows.map(messageProjectionRowToEvent);
+  }
+
   getChannelMetadataEvents(groupId: number, limit: number): ReticulumChatEvent[] {
     const maxLimit = Math.max(1, Math.min(500, limit));
     const metadataTypes = new Set([
@@ -2148,17 +2380,28 @@ export class ReticulumChatDatabase {
       safeTo,
       safeLimit
     ) as EventRow[];
-    return this.mergeWindowEvents(
-      rows.map(rowToEvent),
-      [...this.memoryEvents.values()].filter(
-        (event) =>
-          event.groupId === groupId &&
-          event.authorAddress === authorAddress &&
-          event.authorSeq >= safeFrom &&
-          event.authorSeq <= safeTo
-      ),
-      safeLimit
-    ).sort((a, b) => a.authorSeq - b.authorSeq || a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+    const byId = new Map<string, ReticulumChatEvent>();
+    for (const event of rows.map(rowToEvent)) {
+      byId.set(event.eventId, event);
+    }
+    const memoryMatches = [...this.memoryEvents.values()].filter(
+      (event) =>
+        event.groupId === groupId &&
+        event.authorAddress === authorAddress &&
+        event.authorSeq >= safeFrom &&
+        event.authorSeq <= safeTo
+    );
+    for (const event of memoryMatches) {
+      byId.set(event.eventId, event);
+    }
+    return [...byId.values()]
+      .sort(
+        (a, b) =>
+          b.authorSeq - a.authorSeq ||
+          b.timestamp - a.timestamp ||
+          b.eventId.localeCompare(a.eventId)
+      )
+      .slice(0, safeLimit);
   }
 
   computeWindowHash(events: ReticulumChatEvent[]): string {
@@ -2464,7 +2707,7 @@ export class ReticulumChatDatabase {
     }
 
     return [...gaps.values()]
-      .sort((a, b) => a.authorAddress.localeCompare(b.authorAddress) || a.fromSeq - b.fromSeq)
+      .sort((a, b) => b.toSeq - a.toSeq || a.authorAddress.localeCompare(b.authorAddress) || b.fromSeq - a.fromSeq)
       .slice(0, maxLimit);
   }
 
@@ -3130,24 +3373,14 @@ export class ReticulumChatDatabase {
             a[1].storedAt - b[1].storedAt
         )[0];
       if (memoryCandidate) {
-        this.memoryMeta.delete(memoryCandidate[0]);
-        this.memoryEvents.delete(memoryCandidate[0]);
-        this.memorySearchText.delete(memoryCandidate[0]);
-        this.memoryMentions.delete(memoryCandidate[0]);
-        this.stmtDeleteSearchText.run(memoryCandidate[0]);
-        this.stmtDeleteSearchMirror.run(memoryCandidate[0]);
-        this.stmtDeleteMentionsForEvent.run(memoryCandidate[0]);
-        this.stmtDeleteEvent.run(memoryCandidate[0]);
+        this.deleteCachedEvent(memoryCandidate[0]);
         continue;
       }
       const row = this.stmtEvictCandidate.get() as
         | { event_id?: string }
         | undefined;
       if (!row?.event_id) break;
-      this.stmtDeleteSearchText.run(row.event_id);
-      this.stmtDeleteSearchMirror.run(row.event_id);
-      this.stmtDeleteMentionsForEvent.run(row.event_id);
-      this.stmtDeleteEvent.run(row.event_id);
+      this.deleteCachedEvent(row.event_id);
     }
   }
 
@@ -3268,6 +3501,34 @@ export class ReticulumChatDatabase {
     tx(rows);
   }
 
+  private backfillMessageProjection(limit = 10000): void {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT e.event_id
+          FROM reticulum_chat_events e
+          LEFT JOIN rchat_message_projection p
+            ON p.root_event_id = e.event_id
+          WHERE event_type IN ('message', 'attachment_manifest')
+            AND p.root_event_id IS NULL
+          ORDER BY timestamp DESC, event_id DESC
+          LIMIT ?
+        `
+      )
+      .all(limit) as Array<{ event_id?: string }>;
+    if (rows.length === 0) return;
+    const tx = this.db.transaction((eventIds: string[]) => {
+      for (const eventId of eventIds) {
+        this.rebuildMessageProjection(eventId);
+      }
+    });
+    tx(
+      rows
+        .map((row) => (typeof row.event_id === 'string' ? row.event_id : ''))
+        .filter(Boolean)
+    );
+  }
+
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS reticulum_chat_events (
@@ -3303,6 +3564,30 @@ export class ReticulumChatDatabase {
         ON reticulum_chat_events (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
+      CREATE TABLE IF NOT EXISTS rchat_message_projection (
+        root_event_id TEXT PRIMARY KEY,
+        group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL DEFAULT 'general',
+        author_address TEXT NOT NULL,
+        author_public_key TEXT NOT NULL,
+        author_seq INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        root_event_type TEXT NOT NULL,
+        current_event_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        reply_to_event_id TEXT,
+        encrypted_payload TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        mention_address_hashes TEXT NOT NULL DEFAULT '[]',
+        mention_targets TEXT NOT NULL DEFAULT '[]',
+        signature TEXT NOT NULL,
+        deleted_at INTEGER,
+        deleted_event_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_visible
+        ON rchat_message_projection (group_id, channel_id, deleted_at, created_at, root_event_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_group_visible
+        ON rchat_message_projection (group_id, deleted_at, created_at, root_event_id);
       CREATE TABLE IF NOT EXISTS rchat_peer_group_state (
         peer_hash TEXT NOT NULL,
         group_id INTEGER NOT NULL,

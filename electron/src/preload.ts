@@ -1433,6 +1433,13 @@ try {
           channelId,
           limit
         ) as Promise<unknown[]>,
+      getMessageHistory: async (groupId: number, channelId?: string, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistory',
+          groupId,
+          channelId,
+          limit
+        ) as Promise<unknown[]>,
       getChannelMetadataHistory: async (groupId: number, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getChannelMetadataHistory',
@@ -1682,6 +1689,13 @@ try {
       getHistory: async (groupId: number, channelId?: string, limit?: number) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
+          groupId,
+          channelId,
+          limit
+        ) as Promise<unknown[]>,
+      getMessageHistory: async (groupId: number, channelId?: string, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistory',
           groupId,
           channelId,
           limit

@@ -87,6 +87,7 @@ import {
   stopReticulumChatManager,
   getReticulumChatManager,
   readReticulumChatHistoryFromDb,
+  readReticulumChatMessageHistoryFromDb,
   readReticulumChatChannelMetadataHistoryFromDb,
   readReticulumChatChannelsFromDb,
   readReticulumChatCategoriesFromDb,
@@ -3725,6 +3726,27 @@ ipcMain.handle(
     return manager
       ? manager.getHistory(groupId, channelId, limit)
       : readReticulumChatHistoryFromDb(groupId, channelId, limit);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getMessageHistory',
+  async (
+    _event,
+    groupId: number,
+    channelIdOrLimit?: string | number,
+    limitMaybe?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    const channelId =
+      typeof channelIdOrLimit === 'string' && channelIdOrLimit
+        ? channelIdOrLimit
+        : 'general';
+    const limit =
+      typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
+    return manager
+      ? manager.getMessageHistory(groupId, channelId, limit)
+      : readReticulumChatMessageHistoryFromDb(groupId, channelId, limit);
   }
 );
 

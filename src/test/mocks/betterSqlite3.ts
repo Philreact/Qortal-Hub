@@ -4,6 +4,7 @@ type ReticulumResourceChunkRow = Record<string, any>;
 
 type MockStore = {
   reticulumChatEvents: ReticulumChatRow[];
+  reticulumChatMessages: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
 };
@@ -17,6 +18,45 @@ class Statement {
   ) {}
 
   all(...args: any[]) {
+    if (this.sql.includes('FROM rchat_message_projection')) {
+      if (this.sql.includes('WHERE group_id = ? AND channel_id = ?')) {
+        const [groupId, channelId, limit] = args;
+        return this.store.reticulumChatMessages
+          .filter(
+            (row) =>
+              row.group_id === groupId &&
+              row.channel_id === channelId &&
+              row.deleted_at == null
+          )
+          .sort(
+            (a, b) =>
+              b.created_at - a.created_at ||
+              String(b.root_event_id).localeCompare(String(a.root_event_id))
+          )
+          .slice(0, limit)
+          .sort(
+            (a, b) =>
+              a.created_at - b.created_at ||
+              String(a.root_event_id).localeCompare(String(b.root_event_id))
+          );
+      }
+      if (this.sql.includes('WHERE group_id = ? AND deleted_at IS NULL')) {
+        const [groupId, limit] = args;
+        return this.store.reticulumChatMessages
+          .filter((row) => row.group_id === groupId && row.deleted_at == null)
+          .sort(
+            (a, b) =>
+              b.created_at - a.created_at ||
+              String(b.root_event_id).localeCompare(String(a.root_event_id))
+          )
+          .slice(0, limit)
+          .sort(
+            (a, b) =>
+              a.created_at - b.created_at ||
+              String(a.root_event_id).localeCompare(String(b.root_event_id))
+          );
+      }
+    }
     if (this.sql.includes('FROM reticulum_resource_chunks')) {
       const [fileHash] = args;
       return this.store.reticulumResourceChunks
@@ -24,6 +64,19 @@ class Statement {
         .sort((a, b) => a.chunk_index - b.chunk_index);
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
+      if (this.sql.includes('WHERE event_id = ? OR target_event_id = ?')) {
+        const [eventId, targetEventId] = args;
+        return this.store.reticulumChatEvents
+          .filter(
+            (row) =>
+              row.event_id === eventId || row.target_event_id === targetEventId
+          )
+          .sort(
+            (a, b) =>
+              (a.feed_timestamp ?? a.timestamp) - (b.feed_timestamp ?? b.timestamp) ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          );
+      }
       if (this.sql.includes('WHERE group_id = ? AND author_address = ? AND author_seq > ?')) {
         const [groupId, authorAddress, seq, limit] = args;
         return this.store.reticulumChatEvents
@@ -162,6 +215,11 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_message_projection')) {
+      if (this.sql.includes('COUNT(*) AS cnt')) {
+        return { cnt: this.store.reticulumChatMessages.length };
+      }
+    }
     if (this.sql.includes('FROM reticulum_resources')) {
       const [fileHash] = args;
       return this.store.reticulumResources.find((row) => row.file_hash === fileHash);
@@ -298,6 +356,23 @@ class Statement {
       this.store.reticulumChatEvents.push({ ...params });
       return { changes: 1, lastInsertRowid: this.store.reticulumChatEvents.length };
     }
+    if (this.sql.includes('INSERT INTO rchat_message_projection')) {
+      const index = this.store.reticulumChatMessages.findIndex(
+        (row) => row.root_event_id === params.root_event_id
+      );
+      if (index >= 0) {
+        this.store.reticulumChatMessages[index] = {
+          ...this.store.reticulumChatMessages[index],
+          ...params,
+        };
+        return { changes: 1, lastInsertRowid: index + 1 };
+      }
+      this.store.reticulumChatMessages.push({ ...params });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumChatMessages.length,
+      };
+    }
     if (this.sql.includes('UPDATE reticulum_chat_events SET last_served_at = ?')) {
       const [lastServedAt, eventId] = [params, second];
       const row = this.store.reticulumChatEvents.find(
@@ -316,6 +391,16 @@ class Statement {
         lastInsertRowid: 0,
       };
     }
+    if (this.sql.includes('DELETE FROM rchat_message_projection WHERE root_event_id = ?')) {
+      const before = this.store.reticulumChatMessages.length;
+      this.store.reticulumChatMessages = this.store.reticulumChatMessages.filter(
+        (row) => row.root_event_id !== params
+      );
+      return {
+        changes: before - this.store.reticulumChatMessages.length,
+        lastInsertRowid: 0,
+      };
+    }
     return { changes: 0, lastInsertRowid: 0 };
   }
 }
@@ -327,6 +412,7 @@ class MockDatabase {
     const key = String(dbPath);
     const store = storesByPath.get(key) ?? {
       reticulumChatEvents: [],
+      reticulumChatMessages: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
     };

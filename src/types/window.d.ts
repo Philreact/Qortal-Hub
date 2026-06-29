@@ -586,6 +586,11 @@ declare global {
         channelId?: string,
         limit?: number
       ) => Promise<unknown[]>;
+      getMessageHistory: (
+        groupId: number,
+        channelId?: string,
+        limit?: number
+      ) => Promise<unknown[]>;
       getChannelMetadataHistory: (
         groupId: number,
         limit?: number

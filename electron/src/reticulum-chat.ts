@@ -124,6 +124,23 @@ export interface ReticulumChatEventOffer {
   relayBlobId?: string;
 }
 
+export interface ReticulumChatEventPageOffer {
+  transferId: string;
+  groupId: number;
+  channelId: string;
+  direction: 'after' | 'before' | 'range';
+  pageHash: string;
+  sizeBytes: number;
+  eventCount: number;
+  start?: ReticulumChatFeedCursor;
+  end?: ReticulumChatFeedCursor;
+  hasMore?: boolean;
+  sourcePeerHash?: string;
+  senderReticulumDestinationHash?: string;
+  senderReticulumIdentityPublicKeyBase64?: string;
+  relayRequestId?: string;
+}
+
 type ReticulumChatEventOfferOptions = {
   continuation?: ReticulumChatEventOffer['continuation'];
   recipientPeerHash?: string;
@@ -149,6 +166,22 @@ export interface ReticulumChatEventOfferWire {
   rs?: 1;
   rc?: 1;
   bid?: string;
+}
+
+export interface ReticulumChatEventPageOfferWire {
+  x: string;
+  c: string;
+  d: 'a' | 'b' | 'r';
+  ph: string;
+  s: number;
+  n: number;
+  sid?: string;
+  sts?: number;
+  eid?: string;
+  ets?: number;
+  more?: 1;
+  rr?: string;
+  sp?: string;
 }
 
 export interface ReticulumChatEventRequestWire {
@@ -303,6 +336,7 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'unsub'; g: number }
   | { t: 'RCHAT'; k: 'event_req'; g: number; q: ReticulumChatEventRequestWire; o?: string; rid?: string; h?: number }
   | { t: 'RCHAT'; k: 'event_offer'; g: number; o: ReticulumChatEventOfferWire }
+  | { t: 'RCHAT'; k: 'event_page_offer'; g: number; p: ReticulumChatEventPageOfferWire }
   | {
       t: 'RCHAT';
       k: 'rf';
@@ -413,7 +447,8 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'relay_cache',
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
-const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 25;
+const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 100;
+const RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES = 1024 * 1024;
 const RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE = 20;
 const RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE = 50;
 const RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP = 16;
@@ -672,6 +707,29 @@ export function serializeReticulumChatEvent(event: ReticulumChatEvent): string {
   return JSON.stringify(event);
 }
 
+type ReticulumChatEventPageResource = {
+  v: 1;
+  g: number;
+  c: string;
+  d: 'after' | 'before' | 'range';
+  more?: boolean;
+  start?: ReticulumChatFeedCursorWire;
+  end?: ReticulumChatFeedCursorWire;
+  wh: string;
+  events: ReticulumChatEvent[];
+};
+
+function serializeReticulumChatEventPage(page: ReticulumChatEventPageResource): string {
+  return JSON.stringify(page);
+}
+
+function hashReticulumChatEventPage(pageJson: string): string {
+  return nodeCrypto
+    .createHash('sha256')
+    .update(pageJson, 'utf8')
+    .digest('hex');
+}
+
 export function hashReticulumChatEventWire(event: ReticulumChatEvent): string {
   return nodeCrypto
     .createHash('sha256')
@@ -778,6 +836,52 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
     ...(o.rs === 1 ? { relayStore: true } : {}),
     ...(o.rc === 1 ? { relayCached: true } : {}),
     ...(typeof o.bid === 'string' && /^[0-9a-f]{64}$/i.test(o.bid) ? { relayBlobId: o.bid.toLowerCase() } : {}),
+  };
+}
+
+function eventPageOfferToWire(offer: ReticulumChatEventPageOffer): ReticulumChatEventPageOfferWire {
+  return {
+    x: offer.transferId,
+    c: offer.channelId,
+    d: offer.direction === 'before' ? 'b' : offer.direction === 'range' ? 'r' : 'a',
+    ph: offer.pageHash,
+    s: offer.sizeBytes,
+    n: offer.eventCount,
+    ...(offer.start ? { sid: offer.start.eventId, sts: offer.start.feedTimestamp } : {}),
+    ...(offer.end ? { eid: offer.end.eventId, ets: offer.end.feedTimestamp } : {}),
+    ...(offer.hasMore ? { more: 1 as const } : {}),
+    ...(offer.relayRequestId ? { rr: offer.relayRequestId } : {}),
+    ...(offer.sourcePeerHash ? { sp: compactPeerHashForWire(offer.sourcePeerHash) } : {}),
+  };
+}
+
+function eventPageOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventPageOffer | null {
+  if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return null;
+  const p = wire as Partial<ReticulumChatEventPageOfferWire>;
+  const start =
+    typeof p.sid === 'string' && Number.isFinite(Number(p.sts))
+      ? { eventId: p.sid, feedTimestamp: Number(p.sts) }
+      : undefined;
+  const end =
+    typeof p.eid === 'string' && Number.isFinite(Number(p.ets))
+      ? { eventId: p.eid, feedTimestamp: Number(p.ets) }
+      : undefined;
+  return {
+    transferId: String(p.x || ''),
+    groupId,
+    channelId:
+      p.c === RETICULUM_CHAT_ALL_CHANNELS_ID
+        ? RETICULUM_CHAT_ALL_CHANNELS_ID
+        : normalizeReticulumChatChannelId(p.c),
+    direction: p.d === 'b' ? 'before' : p.d === 'r' ? 'range' : 'after',
+    pageHash: String(p.ph || ''),
+    sizeBytes: Number(p.s || 0),
+    eventCount: Number(p.n || 0),
+    ...(start ? { start } : {}),
+    ...(end ? { end } : {}),
+    ...(p.more === 1 ? { hasMore: true } : {}),
+    ...(typeof p.rr === 'string' && p.rr ? { relayRequestId: p.rr } : {}),
+    ...(typeof p.sp === 'string' && p.sp ? { sourcePeerHash: normalizePeerHashFromWire(p.sp) ?? p.sp } : {}),
   };
 }
 
@@ -1292,6 +1396,10 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     { groupId: number; eventId: string; expiresAt: number }
   >();
+  private outboundEventPageResources = new Map<
+    string,
+    { groupId: number; channelId: string; pageHash: string; eventIds: Set<string>; expiresAt: number }
+  >();
   private eventPullQueueTimer: ReturnType<typeof setTimeout> | null = null;
   private controlRetryQueue = new Map<string, ReticulumChatControlRetryItem>();
   private controlRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1307,6 +1415,7 @@ export class ReticulumChatManager extends EventEmitter {
   private recentGroupRepairRequests = new Map<string, number>();
   private recentAuthorGapRepairRequests = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
+  private eventPageOffers = new Map<string, ReticulumChatEventPageOffer>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1798,6 +1907,24 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
+  getMessageHistory(
+    groupId: number,
+    channelIdOrLimit: string | number = RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+    limitMaybe = 100
+  ): ReticulumChatEvent[] {
+    this.assertGroupId(groupId);
+    const channelId =
+      typeof channelIdOrLimit === 'string'
+        ? channelIdOrLimit
+        : null;
+    const limit = typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
+    return this.db.getRecentMessageEvents(
+      groupId,
+      Math.max(1, Math.min(500, limit)),
+      channelId
+    );
+  }
+
   getChannelMetadataHistory(groupId: number, limit = 200): ReticulumChatEvent[] {
     this.assertGroupId(groupId);
     return this.db.getChannelMetadataEvents(groupId, Math.max(1, Math.min(500, limit)));
@@ -2073,6 +2200,13 @@ export class ReticulumChatManager extends EventEmitter {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         this.handleEventOffer(eventOfferFromWire(groupId, wire.o), peerHash);
+        return;
+      }
+      case 'event_page_offer':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        this.handleEventPageOffer(eventPageOfferFromWire(groupId, wire.p), peerHash);
         return;
       }
       case 'relay_query':
@@ -2471,14 +2605,26 @@ export class ReticulumChatManager extends EventEmitter {
       }
       if (!remoteLatest) continue;
       if (!localLatest || this.compareCursors(remoteLatest, localLatest) > 0) {
-        void this.sendToPeer(peerHash, {
-          t: 'RCHAT',
-          k: 'feed_req',
-          g: groupId,
-          c: channelId,
-          ...(localLatest ? { after: this.cursorToWire(localLatest) } : {}),
-          limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-        });
+        if (localLatest) {
+          void this.sendToPeer(peerHash, {
+            t: 'RCHAT',
+            k: 'feed_req',
+            g: groupId,
+            c: channelId,
+            after: this.cursorToWire(localLatest),
+            limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+          });
+        } else {
+          void this.requestPeerEventById(peerHash, groupId, remoteLatest.eventId, 'cold-channel-latest');
+          void this.sendToPeer(peerHash, {
+            t: 'RCHAT',
+            k: 'feed_req',
+            g: groupId,
+            c: channelId,
+            before: this.cursorToWire(remoteLatest),
+            limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+          });
+        }
         requestedFromChannelDigest = true;
       } else if (this.compareCursors(localLatest, remoteLatest) > 0) {
         void this.sendFeedPageToPeer(peerHash, groupId, channelId, remoteLatest, 'after');
@@ -2574,14 +2720,26 @@ export class ReticulumChatManager extends EventEmitter {
               ? null
               : this.db.getLatestFeedCursor(groupId, channelId);
           const afterCursor = remoteGroupLatest ? localLatest : null;
-          void this.sendToPeer(peerHash, {
-            t: 'RCHAT',
-            k: 'feed_req',
-            g: groupId,
-            c: channelId,
-            ...(afterCursor ? { after: this.cursorToWire(afterCursor) } : {}),
-            limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-          });
+          if (remoteGroupLatest && !afterCursor) {
+            void this.requestPeerEventById(peerHash, groupId, remoteGroupLatest.eventId, 'cold-group-latest');
+            void this.sendToPeer(peerHash, {
+              t: 'RCHAT',
+              k: 'feed_req',
+              g: groupId,
+              c: channelId,
+              before: this.cursorToWire(remoteGroupLatest),
+              limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+            });
+          } else {
+            void this.sendToPeer(peerHash, {
+              t: 'RCHAT',
+              k: 'feed_req',
+              g: groupId,
+              c: channelId,
+              ...(afterCursor ? { after: this.cursorToWire(afterCursor) } : {}),
+              limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+            });
+          }
         }
       }
     }
@@ -2897,16 +3055,17 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     const peer = peerHash.trim().toLowerCase();
     for (const range of ranges) {
+      const pagedRange = this.newestAuthorRangePage(range);
       const wire: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'range_req',
         g: groupId,
-        ranges: [range],
+        ranges: [pagedRange],
         limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
       };
       if (!wireFitsReticulum(wire)) {
         loggerWarn(
-          `[ReticulumChat] Skipping oversized author gap repair group=${groupId} author=${range.a} from=${range.from} to=${range.to} reason=${reason}`
+          `[ReticulumChat] Skipping oversized author gap repair group=${groupId} author=${pagedRange.a} from=${pagedRange.from} to=${pagedRange.to} reason=${reason}`
         );
         continue;
       }
@@ -2922,6 +3081,20 @@ export class ReticulumChatManager extends EventEmitter {
         void this.fanout(wire);
       });
     }
+  }
+
+  private newestAuthorRangePage(range: { a: string; from: number; to: number }): {
+    a: string;
+    from: number;
+    to: number;
+  } {
+    const safeFrom = Math.max(1, Math.floor(range.from));
+    const safeTo = Math.max(safeFrom, Math.floor(range.to));
+    const pageFrom = Math.max(
+      safeFrom,
+      safeTo - RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
+    );
+    return { a: range.a, from: pageFrom, to: safeTo };
   }
 
   private async sendEventBatchOrResourceDigest(
@@ -2947,6 +3120,22 @@ export class ReticulumChatManager extends EventEmitter {
             cursor: this.eventCursor(cursorEvent),
           }
         : undefined;
+    const pageResult = await this.offerEventPageResource(
+      peerHash,
+      groupId,
+      channelId,
+      events,
+      hasMore,
+      direction,
+      options
+    );
+    if (pageResult.ok) {
+      await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
+      return;
+    }
+    loggerWarn(
+      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${pageResult.reason}; falling back to per-event offers`
+    );
     for (let i = 0; i < events.length; i += RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY) {
       const batch = events.slice(i, i + RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY);
       await Promise.all(
@@ -3088,14 +3277,6 @@ export class ReticulumChatManager extends EventEmitter {
           limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
         });
       }
-    } else {
-      void this.sendToPeer(peerHash, {
-        t: 'RCHAT',
-        k: 'feed_req',
-        g: groupId,
-        c: channelId,
-        limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-      });
     }
     loggerLog(
       `[ReticulumChat] Sync repair group=${groupId} channel=${channelId} peer=${peerHash.slice(0, 16)} remoteLatest=${remoteLatest.eventId} localLatest=${localLatest?.eventId ?? 'none'} reason=${reason}`
@@ -5229,6 +5410,155 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
+  private async offerEventPageResource(
+    peerHash: string,
+    groupId: number,
+    channelId: string,
+    events: ReticulumChatEvent[],
+    hasMore: boolean,
+    direction: 'after' | 'before' | 'range',
+    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {}
+  ): Promise<ReticulumSendResult> {
+    const peerKey = peerHash.trim().toLowerCase();
+    if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
+    if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
+    if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
+      return { ok: false, reason: 'send-command-failed', error: 'Bridge chat resource send unavailable' };
+    }
+    if (!this.localGroupIds.has(groupId)) {
+      return { ok: false, reason: 'send-command-failed', error: 'Not a local group member' };
+    }
+    if (events.length === 0) return { ok: false, reason: 'send-command-failed', error: 'No events to offer' };
+
+    const boundedEvents = events.slice(0, RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS);
+    const selectedEvents: ReticulumChatEvent[] = [];
+    for (const event of boundedEvents) {
+      if (event.groupId !== groupId) continue;
+      if (
+        channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+        normalizeReticulumChatChannelId(event.channelId) !== channelId
+      ) {
+        continue;
+      }
+      const authorIsMember = await this.isValidatedGroupMember(
+        event.groupId,
+        event.authorAddress
+      );
+      if (!authorIsMember) continue;
+      selectedEvents.push(event);
+    }
+    if (selectedEvents.length === 0) {
+      return { ok: false, reason: 'send-command-failed', error: 'No valid events to offer' };
+    }
+
+    let pageEvents = selectedEvents;
+    let truncatedForSize = false;
+    let page: ReticulumChatEventPageResource;
+    let blob = '';
+    let pageHash = '';
+    while (pageEvents.length > 0) {
+      const ordered = [...pageEvents].sort(
+        (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
+      );
+      const start = ordered[0] ? this.cursorToWire(this.eventCursor(ordered[0])) : undefined;
+      const end = ordered[ordered.length - 1]
+        ? this.cursorToWire(this.eventCursor(ordered[ordered.length - 1]))
+        : undefined;
+      page = {
+        v: 1,
+        g: groupId,
+        c: channelId,
+        d: direction,
+        ...(hasMore || truncatedForSize ? { more: true } : {}),
+        ...(start ? { start } : {}),
+        ...(end ? { end } : {}),
+        wh: this.db.computeWindowHash(ordered),
+        events: pageEvents,
+      };
+      blob = serializeReticulumChatEventPage(page);
+      if (Buffer.byteLength(blob, 'utf8') <= RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES) {
+        pageHash = hashReticulumChatEventPage(blob);
+        break;
+      }
+      truncatedForSize = true;
+      if (direction === 'before') {
+        pageEvents = pageEvents.slice(1);
+      } else {
+        pageEvents = pageEvents.slice(0, -1);
+      }
+    }
+    if (pageEvents.length === 0 || !blob || !pageHash) {
+      return { ok: false, reason: 'send-command-failed', error: 'Event page too large' };
+    }
+
+    const orderedPageEvents = [...pageEvents].sort(
+      (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
+    );
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    const filePath = this.writeTempEventBlob(transferId, blob);
+    const recipientPeerKey = (options.recipientPeerHash ?? peerKey).trim().toLowerCase();
+    const offer: ReticulumChatEventPageOffer = {
+      transferId,
+      groupId,
+      channelId,
+      direction,
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: pageEvents.length,
+      ...(orderedPageEvents[0] ? { start: this.eventCursor(orderedPageEvents[0]) } : {}),
+      ...(orderedPageEvents[orderedPageEvents.length - 1]
+        ? { end: this.eventCursor(orderedPageEvents[orderedPageEvents.length - 1]) }
+        : {}),
+      ...(hasMore || truncatedForSize ? { hasMore: true } : {}),
+      ...(options.relayRequestId ? { relayRequestId: options.relayRequestId } : {}),
+      ...(options.sourcePeerHash ? { sourcePeerHash: options.sourcePeerHash } : {}),
+    };
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'event_page_offer',
+      g: groupId,
+      p: eventPageOfferToWire(offer),
+    };
+    if (!wireFitsReticulum(wire)) {
+      this.safeUnlink(filePath);
+      return { ok: false, reason: 'send-command-failed', error: 'Event page offer too large' };
+    }
+    const registered = await this.bridge.sendReticulumChatResourceDetailed({
+      allowedRecipientAddress: recipientPeerKey,
+      transferId,
+      filePath,
+      fileName: `${groupId}-${transferId}.event-page.json`,
+      size: Buffer.byteLength(blob, 'utf8'),
+      sha256: pageHash,
+      metadata: {
+        resourceType: 'reticulum_chat_event_page',
+        groupId,
+        channelId,
+        pageHash,
+        eventCount: pageEvents.length,
+      },
+      expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
+    });
+    if (!registered.ok) {
+      this.safeUnlink(filePath);
+      return registered;
+    }
+
+    this.outboundEventPageResources.set(transferId, {
+      groupId,
+      channelId,
+      pageHash,
+      eventIds: new Set(pageEvents.map((event) => event.eventId)),
+      expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
+    });
+    const sent = await this.sendToPeer(peerKey, wire);
+    if (!sent.ok) {
+      this.outboundEventPageResources.delete(transferId);
+      this.safeUnlink(filePath);
+    }
+    return sent;
+  }
+
   private async offerEventResource(
     peerHash: string,
     groupId: number,
@@ -5342,6 +5672,63 @@ export class ReticulumChatManager extends EventEmitter {
       if (relayed) return;
       this.acceptLocalEventOffer(offer as ReticulumChatEventOffer, peerHash);
     });
+  }
+
+  private handleEventPageOffer(candidate: unknown, peerHash: string): void {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      loggerWarn('[ReticulumChat] Dropping inbound event page offer: invalid offer payload');
+      return;
+    }
+    const offer = candidate as Partial<ReticulumChatEventPageOffer>;
+    if (!this.isValidEventPageOffer(offer)) {
+      loggerWarn('[ReticulumChat] Dropping inbound event page offer: invalid offer shape');
+      return;
+    }
+    if (!this.subscribedGroups.has(offer.groupId) || !this.localGroupIds.has(offer.groupId)) {
+      loggerWarn(
+        `[ReticulumChat] Dropping inbound event page offer group=${offer.groupId}: subscribed=${this.subscribedGroups.has(offer.groupId)} localMember=${this.localGroupIds.has(offer.groupId)}`
+      );
+      return;
+    }
+    const sourcePeerHash =
+      this.routePeerHash(offer.sourcePeerHash) ??
+      peerHash.trim().toLowerCase();
+    if (!sourcePeerHash) return;
+    const trackedOffer: ReticulumChatEventPageOffer = {
+      ...offer,
+      sourcePeerHash,
+    };
+    this.eventPageOffers.set(trackedOffer.transferId, trackedOffer);
+    void this.acceptEventPageResource(sourcePeerHash, trackedOffer);
+  }
+
+  private isValidEventPageOffer(
+    offer: Partial<ReticulumChatEventPageOffer>
+  ): offer is ReticulumChatEventPageOffer {
+    if (typeof offer.transferId !== 'string' || !offer.transferId) return false;
+    if (!Number.isInteger(offer.groupId) || offer.groupId <= 0) return false;
+    if (typeof offer.channelId !== 'string' || !offer.channelId) return false;
+    if (
+      offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+      normalizeReticulumChatChannelId(offer.channelId) !== offer.channelId
+    ) {
+      return false;
+    }
+    if (
+      offer.direction !== 'after' &&
+      offer.direction !== 'before' &&
+      offer.direction !== 'range'
+    ) {
+      return false;
+    }
+    if (typeof offer.pageHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.pageHash)) return false;
+    if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;
+    if (offer.sizeBytes > RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES) return false;
+    if (!Number.isInteger(offer.eventCount) || offer.eventCount <= 0) return false;
+    if (offer.eventCount > RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS) return false;
+    if (offer.relayRequestId != null && !this.normalizeGroupControlRequestId(offer.relayRequestId)) return false;
+    if (offer.sourcePeerHash != null && !this.routePeerHash(offer.sourcePeerHash)) return false;
+    return true;
   }
 
   private acceptLocalEventOffer(offer: ReticulumChatEventOffer, peerHash: string): void {
@@ -5506,24 +5893,188 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  private async acceptEventPageResource(
+    peerHash: string,
+    offer: ReticulumChatEventPageOffer
+  ): Promise<void> {
+    if (!this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
+      this.handleEventPageResourceFailure(offer.transferId, 'accept_unavailable');
+      return;
+    }
+    const senderHash = (offer.senderReticulumDestinationHash || peerHash).trim().toLowerCase();
+    if (!senderHash) {
+      loggerWarn(
+        `[ReticulumChat] Cannot accept event page resource group=${offer.groupId}: missing sender Reticulum identity`
+      );
+      this.handleEventPageResourceFailure(offer.transferId, 'missing_sender_identity');
+      return;
+    }
+    const result = await this.bridge.acceptReticulumChatResourceDetailed({
+      peerPresenceHash: senderHash,
+      reticulumIdentityPublicKeyBase64: offer.senderReticulumIdentityPublicKeyBase64?.trim() ?? '',
+      transferId: offer.transferId,
+      savePath: this.tempEventBlobPath(`${offer.transferId}.page.recv`),
+      fileName: `${offer.groupId}-${offer.transferId}.event-page.json`,
+      size: offer.sizeBytes,
+      sha256: offer.pageHash,
+      authMessage: {
+        type: 'RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH',
+        transferId: offer.transferId,
+        groupId: offer.groupId,
+        channelId: offer.channelId,
+        pageHash: offer.pageHash,
+      },
+    });
+    if (!result.ok) {
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      this.handleEventPageResourceFailure(
+        offer.transferId,
+        failed.error ?? failed.reason ?? 'accept_failed'
+      );
+    }
+  }
+
   handleResourceEvent(payload: ReticulumChatResourcePayload): void {
     if (payload?.status === 'auth' && payload.linkId && payload.transferId) {
       void this.authorizeResource(payload);
       return;
     }
     if (payload?.status === 'failed' && payload.transferId) {
-      this.handleEventResourceFailure(
-        payload.transferId,
-        typeof payload.reason === 'string' ? payload.reason : 'resource_failed'
-      );
+      if (this.eventPageOffers.has(payload.transferId)) {
+        this.handleEventPageResourceFailure(
+          payload.transferId,
+          typeof payload.reason === 'string' ? payload.reason : 'resource_failed'
+        );
+      } else {
+        this.handleEventResourceFailure(
+          payload.transferId,
+          typeof payload.reason === 'string' ? payload.reason : 'resource_failed'
+        );
+      }
       return;
     }
     if (payload?.status !== 'received' || !payload.path || !payload.transferId) return;
-    void this.importReceivedEventResource(payload);
+    if (this.eventPageOffers.has(payload.transferId)) {
+      void this.importReceivedEventPageResource(payload);
+    } else {
+      void this.importReceivedEventResource(payload);
+    }
   }
 
   handleGenericResourceEvent(payload: ReticulumChatResourcePayload): void {
     this.resourceTransfer?.handleResourceEvent(payload);
+  }
+
+  private async importReceivedEventPageResource(payload: ReticulumChatResourcePayload): Promise<void> {
+    if (!payload.path || !payload.transferId) return;
+    const offer = this.eventPageOffers.get(payload.transferId);
+    if (!offer) return;
+    try {
+      const blob = fs.readFileSync(payload.path, 'utf8');
+      const pageHash = hashReticulumChatEventPage(blob);
+      if (pageHash !== offer.pageHash.toLowerCase()) {
+        this.handleEventPageResourceFailure(offer.transferId, 'page_hash_mismatch');
+        return;
+      }
+      const parsed = JSON.parse(blob) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        this.handleEventPageResourceFailure(offer.transferId, 'invalid_event_page');
+        return;
+      }
+      const page = parsed as Partial<ReticulumChatEventPageResource>;
+      if (
+        page.v !== 1 ||
+        page.g !== offer.groupId ||
+        page.c !== offer.channelId ||
+        page.d !== offer.direction ||
+        typeof page.wh !== 'string' ||
+        !Array.isArray(page.events) ||
+        page.events.length > offer.eventCount ||
+        page.events.length > RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS
+      ) {
+        this.handleEventPageResourceFailure(offer.transferId, 'invalid_event_page');
+        return;
+      }
+      const sourcePeerHash = offer.sourcePeerHash || payload.peerPresenceHash || '';
+      const validWindowEvents: ReticulumChatEvent[] = [];
+      let insertedCount = 0;
+      for (const candidate of page.events) {
+        if (!this.canAcceptInboundEventResource(candidate)) {
+          this.notePeerViolation(sourcePeerHash, 'event_page_invalid_event');
+          continue;
+        }
+        const event = candidate as ReticulumChatEvent;
+        if (
+          event.groupId !== offer.groupId ||
+          (
+            offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+            normalizeReticulumChatChannelId(event.channelId) !== offer.channelId
+          )
+        ) {
+          this.notePeerViolation(sourcePeerHash, 'event_page_out_of_bounds');
+          continue;
+        }
+        const authorIsMember = await this.isValidatedGroupMember(
+          event.groupId,
+          event.authorAddress
+        );
+        if (!authorIsMember) {
+          this.notePeerViolation(sourcePeerHash, 'event_page_non_member_author');
+          continue;
+        }
+        validWindowEvents.push(event);
+        this.noteEventSourcePeer(event.eventId, sourcePeerHash);
+        this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
+        if (this.acceptEvent(event, false)) {
+          insertedCount += 1;
+          this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
+          this.emit('event', { event });
+        }
+      }
+      const start = this.cursorFromWire(page.start);
+      const end = this.cursorFromWire(page.end);
+      if (
+        offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+        start &&
+        end &&
+        page.wh === this.db.computeWindowHash(validWindowEvents)
+      ) {
+        this.db.upsertVerifiedWindow(
+          offer.groupId,
+          offer.channelId,
+          start,
+          end,
+          page.wh,
+          this.now()
+        );
+      } else if (
+        offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+        validWindowEvents.length > 0
+      ) {
+        this.notePeerViolation(sourcePeerHash, 'event_page_window_hash_mismatch');
+      }
+      loggerLog(
+        `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} more=${page.more === true}`
+      );
+      if (page.more === true && offer.direction !== 'range') {
+        const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
+        if (cursor && sourcePeerHash) {
+          void this.sendToPeer(sourcePeerHash, {
+            t: 'RCHAT',
+            k: 'feed_req',
+            g: offer.groupId,
+            c: offer.channelId,
+            [offer.direction]: this.cursorToWire(cursor),
+            limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+          });
+        }
+      }
+    } catch (err) {
+      loggerWarn('[ReticulumChat] Failed to import event page resource:', err);
+      this.handleEventPageResourceFailure(offer.transferId, 'page_import_failed');
+    } finally {
+      this.eventPageOffers.delete(payload.transferId);
+    }
   }
 
   private async importReceivedEventResource(payload: ReticulumChatResourcePayload): Promise<void> {
@@ -5663,6 +6214,15 @@ export class ReticulumChatManager extends EventEmitter {
     this.retryEventPullAfterResourceFailure(offer, reason);
   }
 
+  private handleEventPageResourceFailure(transferId: string, reason: string): void {
+    const offer = this.eventPageOffers.get(transferId);
+    if (!offer) return;
+    this.eventPageOffers.delete(transferId);
+    loggerWarn(
+      `[ReticulumChat] Event page resource failed group=${offer.groupId} channel=${offer.channelId} peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} reason=${reason}`
+    );
+  }
+
   private retryEventPullAfterResourceFailure(
     offer: ReticulumChatEventOffer,
     reason: string
@@ -5695,7 +6255,34 @@ export class ReticulumChatManager extends EventEmitter {
     const auth = payload.auth && typeof payload.auth === 'object' ? payload.auth : {};
     const eventId = String(auth.eventId || payload.eventId || '');
     const groupId = Number(auth.groupId || payload.groupId || 0);
-    if (!eventId || !Number.isInteger(groupId) || groupId <= 0) {
+    if (!Number.isInteger(groupId) || groupId <= 0) {
+      await this.bridge.rejectReticulumChatResourceDetailed?.({
+        linkId: payload.linkId,
+        transferId: payload.transferId,
+        reason: 'bad_resource_auth',
+      });
+      return;
+    }
+    const now = this.now();
+    for (const [transferId, page] of this.outboundEventPageResources) {
+      if (page.expiresAt <= now) this.outboundEventPageResources.delete(transferId);
+    }
+    const page = this.outboundEventPageResources.get(payload.transferId);
+    const pageHash = String(auth.pageHash || payload.wireHash || payload.sha256 || '');
+    if (
+      !eventId &&
+      page &&
+      page.groupId === groupId &&
+      page.expiresAt > now &&
+      (!pageHash || pageHash.toLowerCase() === page.pageHash.toLowerCase())
+    ) {
+      await this.bridge.authorizeReticulumChatResourceDetailed?.({
+        linkId: payload.linkId,
+        transferId: payload.transferId,
+      });
+      return;
+    }
+    if (!eventId) {
       await this.bridge.rejectReticulumChatResourceDetailed?.({
         linkId: payload.linkId,
         transferId: payload.transferId,
@@ -5705,7 +6292,6 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const event = this.db.getEvent(eventId);
     if (!event || event.groupId !== groupId) {
-      const now = this.now();
       for (const [transferId, relay] of this.outboundRelayCachedEventResources) {
         if (relay.expiresAt <= now) this.outboundRelayCachedEventResources.delete(transferId);
       }
@@ -5740,6 +6326,14 @@ export class ReticulumChatManager extends EventEmitter {
     const filePath = this.tempEventBlobPath(`${transferId}.json`);
     fs.writeFileSync(filePath, contents, 'utf8');
     return filePath;
+  }
+
+  private safeUnlink(filePath: string): void {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // Best-effort cleanup for temporary event page files.
+    }
   }
 
   private applyTyping(
@@ -6262,6 +6856,20 @@ export function readReticulumChatHistoryFromDb(
   try {
     if (!Number.isInteger(groupId) || groupId <= 0) return [];
     return db.getRecentEvents(groupId, Math.max(1, Math.min(500, limit)), channelId);
+  } finally {
+    db.close();
+  }
+}
+
+export function readReticulumChatMessageHistoryFromDb(
+  groupId: number,
+  channelId = RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+  limit = 100
+): ReticulumChatEvent[] {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    return db.getRecentMessageEvents(groupId, Math.max(1, Math.min(500, limit)), channelId);
   } finally {
     db.close();
   }

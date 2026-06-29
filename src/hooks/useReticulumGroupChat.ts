@@ -145,7 +145,18 @@ export function useReticulumGroupChat(
     void window.reticulumChat?.subscribeGroup?.(validGroupId);
     void window.reticulumChat?.subscribeChannel?.(validGroupId, normalizedChannelId);
     setEvents([]);
-    void window.reticulumChat?.getHistory?.(validGroupId, normalizedChannelId, 200).then(async (history) => {
+    const historyPromise =
+      window.reticulumChat?.getMessageHistory?.(
+        validGroupId,
+        normalizedChannelId,
+        200
+      ) ??
+      window.reticulumChat?.getHistory?.(
+        validGroupId,
+        normalizedChannelId,
+        200
+      );
+    void historyPromise?.then(async (history) => {
       if (cancelled || !Array.isArray(history)) return;
       const enriched = await addPrimaryNamesToEvents(
         history as ReticulumChatHookEvent[],
