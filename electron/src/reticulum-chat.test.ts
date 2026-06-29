@@ -2724,6 +2724,78 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('serves event page resources without filtering out third-party cached authors', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, any> }> = [];
+    const resources: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, any>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const first = signedEvent({
+      eventId: 'event-page-provider-author',
+      groupId: 72,
+      channelId: 'general',
+      authorSeq: 1,
+      timestamp: 100_000,
+    });
+    const second = signedEvent({
+      eventId: 'event-page-third-party-author',
+      groupId: 72,
+      channelId: 'general',
+      authorSeq: 1,
+      timestamp: 101_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 120_000,
+      validateGroupMember: async (_groupId, address) => address === first.authorAddress,
+    });
+    manager.setLocalGroupMemberships([72]);
+    expect((manager as any).db.insertEvent(first, true)).toBe(true);
+    expect((manager as any).db.insertEvent(second, false)).toBe(true);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'feed_req',
+        g: 72,
+        c: 'general',
+        limit: 10,
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(resources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(resources[0].filePath, 'utf8')) as {
+      events: Array<{ eventId: string }>;
+    };
+    expect(page.events.map((event) => event.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+    ]);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'event_page_offer',
+          p: expect.objectContaining({ n: 2 }),
+        }),
+      })
+    );
+    manager.close();
+  });
+
   it('accepts event batches and requests exact author range repair for gaps', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const bridge = {

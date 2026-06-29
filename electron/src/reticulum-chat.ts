@@ -5441,11 +5441,6 @@ export class ReticulumChatManager extends EventEmitter {
       ) {
         continue;
       }
-      const authorIsMember = await this.isValidatedGroupMember(
-        event.groupId,
-        event.authorAddress
-      );
-      if (!authorIsMember) continue;
       selectedEvents.push(event);
     }
     if (selectedEvents.length === 0) {
@@ -5999,8 +5994,12 @@ export class ReticulumChatManager extends EventEmitter {
       const sourcePeerHash = offer.sourcePeerHash || payload.peerPresenceHash || '';
       const validWindowEvents: ReticulumChatEvent[] = [];
       let insertedCount = 0;
+      let rejectedInvalidCount = 0;
+      let rejectedOutOfBoundsCount = 0;
+      let rejectedNonMemberCount = 0;
       for (const candidate of page.events) {
         if (!this.canAcceptInboundEventResource(candidate)) {
+          rejectedInvalidCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_invalid_event');
           continue;
         }
@@ -6012,6 +6011,7 @@ export class ReticulumChatManager extends EventEmitter {
             normalizeReticulumChatChannelId(event.channelId) !== offer.channelId
           )
         ) {
+          rejectedOutOfBoundsCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_out_of_bounds');
           continue;
         }
@@ -6020,6 +6020,7 @@ export class ReticulumChatManager extends EventEmitter {
           event.authorAddress
         );
         if (!authorIsMember) {
+          rejectedNonMemberCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_non_member_author');
           continue;
         }
@@ -6055,7 +6056,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.notePeerViolation(sourcePeerHash, 'event_page_window_hash_mismatch');
       }
       loggerLog(
-        `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} more=${page.more === true}`
+        `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
       );
       if (page.more === true && offer.direction !== 'range') {
         const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
