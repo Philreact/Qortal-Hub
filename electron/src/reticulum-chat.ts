@@ -3106,20 +3106,6 @@ export class ReticulumChatManager extends EventEmitter {
     direction: 'after' | 'before' | 'range' = 'after',
     options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {}
   ): Promise<void> {
-    const ordered = [...events].sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
-    const cursorEvent = hasMore && direction !== 'range' && ordered.length > 0
-      ? direction === 'before'
-        ? ordered[0]
-        : ordered[ordered.length - 1]
-      : null;
-    const continuation: ReticulumChatEventOffer['continuation'] | undefined =
-      cursorEvent && direction !== 'range'
-        ? {
-            channelId,
-            direction,
-            cursor: this.eventCursor(cursorEvent),
-          }
-        : undefined;
     const pageResult = await this.offerEventPageResource(
       peerHash,
       groupId,
@@ -3135,26 +3121,8 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const failedPageResult = pageResult as Exclude<ReticulumSendResult, { ok: true }>;
     loggerWarn(
-      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${failedPageResult.reason}; falling back to per-event offers`
+      `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${failedPageResult.reason}; page will be retried by digest/range repair`
     );
-    for (let i = 0; i < events.length; i += RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY) {
-      const batch = events.slice(i, i + RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY);
-      await Promise.all(
-        batch.map((event) =>
-          this.offerEventResource(
-            peerHash,
-            groupId,
-            event.eventId,
-            {
-              ...options,
-              ...(continuation && event.eventId === cursorEvent?.eventId
-                ? { continuation }
-                : {}),
-            }
-          )
-        )
-      );
-    }
     await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
   }
 
@@ -5571,13 +5539,6 @@ export class ReticulumChatManager extends EventEmitter {
     if (!event || event.groupId !== groupId) {
       return { ok: false, reason: 'send-command-failed', error: 'Event not found for group' };
     }
-    const authorIsMember = await this.isValidatedGroupMember(
-      event.groupId,
-      event.authorAddress
-    );
-    if (!authorIsMember) {
-      return { ok: false, reason: 'send-command-failed', error: 'Event author is not a group member' };
-    }
     if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
       return { ok: false, reason: 'send-command-failed', error: 'Bridge chat resource send unavailable' };
     }
@@ -6278,6 +6239,9 @@ export class ReticulumChatManager extends EventEmitter {
       page.expiresAt > now &&
       (!pageHash || pageHash.toLowerCase() === page.pageHash.toLowerCase())
     ) {
+      loggerLog(
+        `[ReticulumChat] event_page_auth_authorized group=${groupId} channel=${page.channelId} transfer=${payload.transferId} link=${payload.linkId} events=${page.eventIds.size}`
+      );
       await this.bridge.authorizeReticulumChatResourceDetailed?.({
         linkId: payload.linkId,
         transferId: payload.transferId,
@@ -6285,6 +6249,9 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (!eventId) {
+      loggerWarn(
+        `[ReticulumChat] event_page_auth_rejected transfer=${payload.transferId} link=${payload.linkId} group=${groupId} reason=bad_page_resource_auth has_page=${page ? 'yes' : 'no'} page_hash_match=${page && pageHash ? pageHash.toLowerCase() === page.pageHash.toLowerCase() : 'n/a'}`
+      );
       await this.bridge.rejectReticulumChatResourceDetailed?.({
         linkId: payload.linkId,
         transferId: payload.transferId,

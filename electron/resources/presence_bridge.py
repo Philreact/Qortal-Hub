@@ -308,6 +308,7 @@ _qchat_file_pending_sends_by_transfer: Dict[str, Dict[str, Any]] = {}
 _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _RETICULUM_RESOURCE_TYPE = "reticulum_resource"
 _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
+_RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH"
 _RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
@@ -9155,6 +9156,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
     if decoded.get("type") not in (
         "QCHAT_FILE_LINK_AUTH",
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
         _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
     ):
         return
@@ -9165,7 +9167,10 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             state["requestedChunkIndex"] = int(decoded.get("retryChunkIndex"))
         except Exception:
             state.pop("requestedChunkIndex", None)
-    if decoded.get("type") == _RETICULUM_CHAT_RESOURCE_AUTH_TYPE:
+    if decoded.get("type") in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
+    ):
         resource_type = _RETICULUM_CHAT_RESOURCE_TYPE
     elif decoded.get("type") == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
         resource_type = _RETICULUM_RESOURCE_TYPE
@@ -13122,6 +13127,7 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
     if decoded.get("type") in (
         "QCHAT_FILE_LINK_AUTH",
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
         _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
     ):
         link_id = _register_incoming_qchat_file_link(

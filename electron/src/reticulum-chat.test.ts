@@ -6385,7 +6385,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('refuses to serve cached event resources when Core membership validation rejects the event author', async () => {
+  it('serves cached event resources without provider-side author membership filtering', async () => {
     const sentResources: unknown[] = [];
     const blockedKp = nacl.sign.keyPair();
     const blockedPublicKey = base58Encode(blockedKp.publicKey);
@@ -6442,7 +6442,15 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(sentResources).toEqual([]);
+    expect(sentResources).toHaveLength(1);
+    expect(sentResources[0]).toMatchObject({
+      transferId: expect.any(String),
+      metadata: expect.objectContaining({
+        eventId: event.eventId,
+        groupId: 76,
+        resourceType: 'reticulum_chat_event',
+      }),
+    });
     manager.close();
   });
 

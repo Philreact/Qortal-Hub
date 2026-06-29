@@ -4134,7 +4134,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           this.emit('reticulum-resource', frame.payload ?? {});
           return;
         }
-        if (resourceType === 'reticulum_chat_resource') {
+        if (resourceType.startsWith('reticulum_chat')) {
           this.emit('reticulum-chat-resource', frame.payload ?? {});
           return;
         }
