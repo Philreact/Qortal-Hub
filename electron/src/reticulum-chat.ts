@@ -2879,6 +2879,9 @@ export class ReticulumChatManager extends EventEmitter {
     const limit = this.normalizeFeedLimit(wire.limit);
     let budget = limit;
     const byChannel = new Map<string, ReticulumChatEvent[]>();
+    let requestedEventBudget = 0;
+    let servedEventCount = 0;
+    let validRangeCount = 0;
     for (const rawRange of wire.ranges.slice(0, RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE)) {
       if (!rawRange || typeof rawRange !== 'object' || Array.isArray(rawRange)) continue;
       const range = rawRange as { a?: unknown; from?: unknown; to?: unknown };
@@ -2886,12 +2889,15 @@ export class ReticulumChatManager extends EventEmitter {
       const from = Number(range.from);
       const to = Number(range.to);
       if (!author || !Number.isInteger(from) || !Number.isInteger(to) || from <= 0 || to < from) continue;
+      validRangeCount += 1;
+      requestedEventBudget += Math.max(0, Math.min(to - from + 1, Math.max(0, budget)));
       const events = this.db.getAuthorEventsRange(groupId, author, from, to, budget);
       for (const event of events) {
         const channelId = normalizeReticulumChatChannelId(event.channelId);
         const existing = byChannel.get(channelId) ?? [];
         existing.push(event);
         byChannel.set(channelId, existing);
+        servedEventCount += 1;
         budget -= 1;
         if (budget <= 0) break;
       }
@@ -2908,6 +2914,23 @@ export class ReticulumChatManager extends EventEmitter {
         'range',
         this.relayResponseOptionsFromWire(wire)
       );
+    }
+    if (validRangeCount > 0 && servedEventCount < requestedEventBudget) {
+      const forwarded = this.relayGroupControlRequest(
+        'range_req',
+        groupId,
+        wire,
+        peerHash,
+        this.hashControlPayload({
+          ranges: wire.ranges,
+          limit: wire.limit,
+        })
+      );
+      if (forwarded) {
+        loggerLog(
+          `[ReticulumChat] Forwarded unsatisfied author gap repair group=${groupId} peer=${peerHash.slice(0, 16)} ranges=${validRangeCount} served=${servedEventCount}/${requestedEventBudget}`
+        );
+      }
     }
   }
 
