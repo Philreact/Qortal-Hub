@@ -1014,6 +1014,61 @@ describe('reticulum chat database', () => {
     ]);
   });
 
+  it('returns newest inclusive feed pages for cold sync repair', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const events = [1, 2, 3].map((seq) =>
+      signedEvent({
+        eventId: `event-inclusive-page-${seq}`,
+        groupId: 47,
+        channelId: seq === 2 ? 'ch-inclusive-page' : 'general',
+        authorSeq: seq,
+        timestamp: 2_000 + seq,
+      })
+    );
+    for (const event of events) db.insertEvent(event, true);
+
+    expect(
+      db
+        .getFeedPageAtOrBefore(
+          47,
+          'general',
+          { eventId: 'event-inclusive-page-3', feedTimestamp: 2_003 },
+          2
+        )
+        .map((item) => item.eventId)
+    ).toEqual(['event-inclusive-page-1', 'event-inclusive-page-3']);
+    expect(
+      db
+        .getGroupFeedPageAtOrBefore(
+          47,
+          { eventId: 'event-inclusive-page-3', feedTimestamp: 2_003 },
+          2
+        )
+        .map((item) => item.eventId)
+    ).toEqual(['event-inclusive-page-2', 'event-inclusive-page-3']);
+  });
+
+  it('exposes event-bearing channels even before channel metadata arrives', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'event-metadata-missing-channel',
+      groupId: 48,
+      channelId: 'ch-missing-metadata',
+      authorSeq: 1,
+      timestamp: 3_000,
+    });
+    db.insertEvent(event, true);
+
+    expect(db.getChannels(48).map((channel) => channel.channelId)).toContain(
+      'ch-missing-metadata'
+    );
+    expect(
+      db.getRecentMessageEvents(48, 10, 'ch-missing-metadata').map((item) => item.eventId)
+    ).toEqual([event.eventId]);
+  });
+
   it('returns author heads and author ranges for gap repair', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -2314,7 +2369,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('requests a recent feed page before peer latest when local history is empty', async () => {
+  it('requests a newest inclusive feed page before peer latest when local history is empty', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -2360,6 +2415,7 @@ describe('reticulum chat manager', () => {
         id: event.eventId,
         ts: event.timestamp,
       },
+      inc: 1,
       limit: 100,
     });
     expect(byteLengthUtf8JsonWithBridgeSender(direct.find((wire) => wire.k === 'feed_req')!)).toBeLessThanOrEqual(
@@ -2374,7 +2430,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('requests known feeds when a newer group digest has no channel rows', async () => {
+  it('requests a group-wide newest page when a newer group digest has no channel rows', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -2415,11 +2471,12 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'feed_req',
       g: 9,
-      c: 'general',
+      c: '*',
       before: {
         id: event.eventId,
         ts: event.timestamp,
       },
+      inc: 1,
       limit: 100,
     });
     manager.close();
@@ -5584,6 +5641,76 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(direct.some((wire) => wire.k === 'event_page_offer' || wire.k === 'group_digest')).toBe(true);
+    manager.close();
+  });
+
+  it('serves group-wide newest inclusive feed pages across channels', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const resources: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 60_000,
+    });
+    manager.setLocalGroupMemberships([53]);
+    manager.subscribeGroup(53);
+    const older = signedEvent({
+      eventId: 'event-group-wide-inclusive-old',
+      groupId: 53,
+      channelId: 'general',
+      authorSeq: 1,
+      timestamp: 30_001,
+    });
+    const latest = signedEvent({
+      eventId: 'event-group-wide-inclusive-latest',
+      groupId: 53,
+      channelId: 'ch-other-channel',
+      authorSeq: 2,
+      timestamp: 30_002,
+    });
+    expect((manager as any).db.insertEvent(older, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latest, true)).toBe(true);
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'feed_req',
+        g: 53,
+        c: '*',
+        before: { ts: latest.timestamp, id: latest.eventId },
+        inc: 1,
+        limit: 2,
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(resources[0].filePath, 'utf8')) as {
+      c: string;
+      events: Array<{ eventId: string; channelId: string }>;
+    };
+    expect(page.c).toBe('*');
+    expect(page.events.map((event) => event.eventId)).toEqual([
+      older.eventId,
+      latest.eventId,
+    ]);
+    expect(page.events.map((event) => event.channelId)).toContain('ch-other-channel');
+    expect(direct.some((wire) => wire.k === 'event_page_offer')).toBe(true);
     manager.close();
   });
 

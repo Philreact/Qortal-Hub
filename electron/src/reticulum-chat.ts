@@ -379,6 +379,7 @@ export type ReticulumChatWire =
       c: string;
       after?: ReticulumChatFeedCursorWire;
       before?: ReticulumChatFeedCursorWire;
+      inc?: 1;
       limit?: number;
       o?: string;
       rid?: string;
@@ -2622,6 +2623,7 @@ export class ReticulumChatManager extends EventEmitter {
             g: groupId,
             c: channelId,
             before: this.cursorToWire(remoteLatest),
+            inc: 1,
             limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
           });
         }
@@ -2707,11 +2709,17 @@ export class ReticulumChatManager extends EventEmitter {
         const channelsToRepair = this.db
           .getChannels(groupId, true)
           .slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP);
+        const knownRepairChannelIds = channelsToRepair
+          .map((channel) => normalizeReticulumChatChannelId(channel.channelId))
+          .filter((channelId) =>
+            channelId !== RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+            this.db.getLatestFeedCursor(groupId, RETICULUM_CHAT_DEFAULT_CHANNEL_ID) != null
+          );
         const repairChannelIds = remoteGroupLatest
           ? (
-              channelsToRepair.length
-                ? channelsToRepair.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
-                : [RETICULUM_CHAT_DEFAULT_CHANNEL_ID]
+              knownRepairChannelIds.length
+                ? knownRepairChannelIds
+                : [RETICULUM_CHAT_ALL_CHANNELS_ID]
             )
           : [RETICULUM_CHAT_ALL_CHANNELS_ID];
         for (const channelId of repairChannelIds) {
@@ -2728,6 +2736,7 @@ export class ReticulumChatManager extends EventEmitter {
               g: groupId,
               c: channelId,
               before: this.cursorToWire(remoteGroupLatest),
+              inc: 1,
               limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
             });
           } else {
@@ -2815,6 +2824,7 @@ export class ReticulumChatManager extends EventEmitter {
           c: wire.c,
           after: wire.after,
           before: wire.before,
+          inc: wire.inc,
           limit: wire.limit,
         })
       );
@@ -2828,16 +2838,25 @@ export class ReticulumChatManager extends EventEmitter {
     const limit = this.normalizeFeedLimit(wire.limit);
     const before = this.cursorFromWire(wire.before);
     const after = before ? null : this.cursorFromWire(wire.after);
+    const includeBeforeCursor = before != null && wire.inc === 1;
     const events =
       channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
         ? (
             before
-              ? this.db.getGroupFeedPageBefore(groupId, before, limit + 1)
+              ? (
+                  includeBeforeCursor
+                    ? this.db.getGroupFeedPageAtOrBefore(groupId, before, limit + 1)
+                    : this.db.getGroupFeedPageBefore(groupId, before, limit + 1)
+                )
               : this.db.getGroupFeedPageAfter(groupId, after, limit + 1)
           )
         : (
             before
-              ? this.db.getFeedPageBefore(groupId, channelId, before, limit + 1)
+              ? (
+                  includeBeforeCursor
+                    ? this.db.getFeedPageAtOrBefore(groupId, channelId, before, limit + 1)
+                    : this.db.getFeedPageBefore(groupId, channelId, before, limit + 1)
+                )
               : this.db.getFeedPageAfter(groupId, channelId, after, limit + 1)
           );
     const hasMore = events.length > limit;
@@ -3219,6 +3238,7 @@ export class ReticulumChatManager extends EventEmitter {
         g: groupId,
         c: channelId,
         before: this.cursorToWire(remoteLatest),
+        inc: 1,
         limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
       }
     );
