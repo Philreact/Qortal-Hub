@@ -2273,7 +2273,7 @@ export class ReticulumChatDatabase {
     cursor: ReticulumChatFeedCursor | null,
     limit: number
   ): ReticulumChatEvent[] {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const effectiveCursor = cursor ?? { feedTimestamp: -1, eventId: '' };
     const rows = this.stmtGetFeedPageAfter.all(
@@ -2305,7 +2305,7 @@ export class ReticulumChatDatabase {
     cursor: ReticulumChatFeedCursor,
     limit: number
   ): ReticulumChatEvent[] {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const rows = this.stmtGetFeedPageBefore.all(
       groupId,
@@ -2353,7 +2353,7 @@ export class ReticulumChatDatabase {
     cursor: ReticulumChatFeedCursor,
     limit: number
   ): ReticulumChatEvent[] {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const rows = this.stmtGetFeedPageAtOrBefore.all(
       groupId,
@@ -2383,7 +2383,7 @@ export class ReticulumChatDatabase {
     cursor: ReticulumChatFeedCursor | null,
     limit: number
   ): ReticulumChatEvent[] {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const effectiveCursor = cursor ?? { feedTimestamp: -1, eventId: '' };
     const rows = cursor
       ? this.stmtGetGroupEventsAfterCursor.all(
@@ -2417,7 +2417,7 @@ export class ReticulumChatDatabase {
     cursor: ReticulumChatFeedCursor,
     limit: number
   ): ReticulumChatEvent[] {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const rows = this.stmtGetGroupEventsBeforeCursor.all(
       groupId,
       cursor.feedTimestamp,
@@ -2444,7 +2444,7 @@ export class ReticulumChatDatabase {
     cursor: ReticulumChatFeedCursor,
     limit: number
   ): ReticulumChatEvent[] {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
     const rows = this.stmtGetGroupEventsAtOrBeforeCursor.all(
       groupId,
       cursor.feedTimestamp,

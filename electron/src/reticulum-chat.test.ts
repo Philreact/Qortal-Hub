@@ -1049,6 +1049,38 @@ describe('reticulum chat database', () => {
     ).toEqual(['event-inclusive-page-2', 'event-inclusive-page-3']);
   });
 
+  it('allows one extra feed row as a continuation probe', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const events = Array.from({ length: 102 }, (_unused, index) =>
+      signedEvent({
+        eventId: `event-feed-probe-${String(index + 1).padStart(3, '0')}`,
+        groupId: 47,
+        channelId: 'general',
+        authorSeq: index + 1,
+        timestamp: 3_000 + index,
+      })
+    );
+    for (const event of events) db.insertEvent(event, true);
+
+    const latest = events[events.length - 1];
+    expect(
+      db.getGroupFeedPageAtOrBefore(
+        47,
+        { eventId: latest.eventId, feedTimestamp: latest.timestamp },
+        101
+      )
+    ).toHaveLength(101);
+    expect(
+      db.getFeedPageAtOrBefore(
+        47,
+        'general',
+        { eventId: latest.eventId, feedTimestamp: latest.timestamp },
+        101
+      )
+    ).toHaveLength(101);
+  });
+
   it('exposes event-bearing channels even before channel metadata arrives', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -5833,6 +5865,72 @@ describe('reticulum chat manager', () => {
     ]);
     expect(page.events.map((event) => event.channelId)).toContain('ch-other-channel');
     expect(direct.some((wire) => wire.k === 'event_page_offer')).toBe(true);
+    manager.close();
+  });
+
+  it('marks full group-wide newest feed pages as continued', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const resources: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 80_000,
+    });
+    manager.setLocalGroupMemberships([53]);
+    manager.subscribeGroup(53);
+    const events = signedAuthorEvents(
+      Array.from({ length: 101 }, (_unused, index) => ({
+        eventId: `event-group-page-more-${String(index + 1).padStart(3, '0')}`,
+        groupId: 53,
+        channelId: index % 2 === 0 ? 'general' : 'ch-more',
+        authorSeq: index + 1,
+        timestamp: 40_000 + index,
+      }))
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    }
+    const latest = events[events.length - 1];
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'feed_req',
+        g: 53,
+        c: '*',
+        before: { ts: latest.timestamp, id: latest.eventId },
+        inc: 1,
+        limit: 100,
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(resources[0].filePath, 'utf8')) as {
+      more?: boolean;
+      events: Array<{ eventId: string }>;
+    };
+    expect(page.events).toHaveLength(100);
+    expect(page.more).toBe(true);
+    expect(direct).toContainEqual(expect.objectContaining({
+      k: 'event_page_offer',
+      p: expect.objectContaining({ n: 100, more: 1 }),
+    }));
     manager.close();
   });
 
