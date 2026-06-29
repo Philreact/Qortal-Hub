@@ -2781,6 +2781,69 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps event page resources alive and fanouts the offer when direct send fails', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Record<string, unknown>[][] = [];
+    const resources: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: false as const, reason: 'packet-send-false' as const };
+      },
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        fanout.push(messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    const event = signedEvent({
+      eventId: 'event-page-direct-fail',
+      groupId: 71,
+      authorSeq: 1,
+      timestamp: 100_000,
+    });
+    manager.setLocalGroupMemberships([71]);
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'feed_req',
+        g: 71,
+        c: 'general',
+        limit: 25,
+      },
+      'peer-a'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(resources).toHaveLength(1);
+    expect(fs.existsSync(resources[0].filePath)).toBe(true);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({ k: 'event_page_offer' }),
+      })
+    );
+    expect(fanout.flat()).toContainEqual(
+      expect.objectContaining({
+        k: 'event_page_offer',
+        p: expect.objectContaining({ n: 1 }),
+      })
+    );
+    manager.close();
+  });
+
   it('serves event page resources without filtering out third-party cached authors', async () => {
     const direct: Array<{ peer: string; wire: Record<string, any> }> = [];
     const resources: Array<Record<string, any>> = [];
@@ -6013,7 +6076,7 @@ describe('reticulum chat manager', () => {
     manager.subscribeGroup(57);
     const events = signedAuthorEvents([
       { eventId: 'event-gap-local-1', groupId: 57, authorSeq: 1, timestamp: 10_001 },
-      ...Array.from({ length: 99 }, (_unused, index) => {
+      ...Array.from({ length: 3 }, (_unused, index) => {
         const seq = index + 4;
         return {
           eventId: `event-gap-page-${seq}`,

@@ -5588,7 +5588,16 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
     const sent = await this.sendToPeer(peerKey, wire);
-    if (!sent.ok) {
+    if (sent.ok) return sent;
+
+    const failedSent = sent as Exclude<ReticulumSendResult, { ok: true }>;
+    const retryable = this.shouldRetryControlSend(wire, failedSent.reason);
+    if (retryable) {
+      const fanoutResult = await this.fanout(wire, []);
+      if (fanoutResult.ok) return fanoutResult;
+    }
+
+    if (!retryable) {
       this.outboundEventPageResources.delete(transferId);
       this.safeUnlink(filePath);
     }
@@ -6745,6 +6754,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'gkq':
       case 'gks':
       case 'event_offer':
+      case 'event_page_offer':
       case 'event_batch':
       case 'rf':
       case 'resource_have':
