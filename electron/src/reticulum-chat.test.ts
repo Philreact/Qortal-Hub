@@ -11,6 +11,7 @@ import {
   buildReticulumChatGroupKeyDigestSignedFields,
   buildReticulumChatGroupKeyRequestSignedFields,
   buildReticulumChatGroupKeyResponseSignedFields,
+  buildReticulumChatHistoryPageRequestSignedFields,
   buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
   hashReticulumChatPayload,
@@ -164,6 +165,32 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         timestamp: fullFields.timestamp,
       });
     } else if (
+      fullFields.type === 'RCHAT_HISTORY_PAGE_REQ' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.channelId === 'string' &&
+      (fullFields.direction === 'after' || fullFields.direction === 'before') &&
+      typeof fullFields.limit === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatHistoryPageRequestSignedFields({
+        groupId: fullFields.groupId,
+        channelId: fullFields.channelId,
+        direction: fullFields.direction,
+        after:
+          fullFields.after && typeof fullFields.after === 'object'
+            ? fullFields.after as any
+            : undefined,
+        before:
+          fullFields.before && typeof fullFields.before === 'object'
+            ? fullFields.before as any
+            : undefined,
+        includeCursor: fullFields.includeCursor === true,
+        limit: fullFields.limit,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
       fullFields.type === 'RCHAT_GROUP_KEY_DIGEST' &&
       typeof fullFields.groupId === 'number' &&
       typeof fullFields.epoch === 'number' &&
@@ -310,6 +337,60 @@ function signedResourceRequestWire(params: {
   return {
     fh: params.fileHash,
     b: ranges,
+    pk: authorPublicKey,
+    ts: params.timestamp,
+    sig: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
+}
+
+function signedHistoryPageRequestWire(params: {
+  groupId: number;
+  channelId: string;
+  direction: 'after' | 'before';
+  cursor?: { id: string; ts: number };
+  includeCursor?: boolean;
+  limit: number;
+  timestamp: number;
+}): {
+  c: string;
+  d: 'after' | 'before';
+  after?: { id: string; ts: number };
+  before?: { id: string; ts: number };
+  inc?: 1;
+  limit: number;
+  a: string;
+  pk: string;
+  ts: number;
+  sig: string;
+} {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumChatHistoryPageRequestSignedFields({
+    groupId: params.groupId,
+    channelId: params.channelId,
+    direction: params.direction,
+    after: params.direction === 'after' ? params.cursor : undefined,
+    before: params.direction === 'before' ? params.cursor : undefined,
+    includeCursor: params.includeCursor === true,
+    limit: params.limit,
+    authorAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    c: params.channelId,
+    d: params.direction,
+    ...(params.direction === 'after' && params.cursor ? { after: params.cursor } : {}),
+    ...(params.direction === 'before' && params.cursor ? { before: params.cursor } : {}),
+    ...(params.includeCursor ? { inc: 1 as const } : {}),
+    limit: params.limit,
+    a: authorAddress,
     pk: authorPublicKey,
     ts: params.timestamp,
     sig: base58Encode(
@@ -2197,6 +2278,175 @@ describe('reticulum chat manager', () => {
     expect(pageOffer?.p?.sid).toBeUndefined();
     expect(pageOffer?.p?.eid).toBeUndefined();
     expect(pageOffer?.p?.sp).toBeUndefined();
+    manager.close();
+  });
+
+  it('opens a linked history page resource when a group digest shows missing recent history', async () => {
+    const providerHash = 'c'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 69,
+        latest: { id: 'remote-latest-event', ts: 99_000 },
+        digestHash: 'f'.repeat(64),
+        sd: providerHash,
+      },
+      'overlay-hop'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        transferId: expect.any(String),
+        size: 1024 * 1024,
+        metadata: expect.objectContaining({
+          logicalResourceType: 'reticulum_chat_history_page',
+          groupId: 69,
+          channelId: '*',
+          direction: 'before',
+          variableSize: true,
+        }),
+        authMessage: expect.objectContaining({
+          type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+          groupId: 69,
+          c: '*',
+          d: 'before',
+          before: { id: 'remote-latest-event', ts: 99_000 },
+          inc: 1,
+          limit: 100,
+        }),
+      })
+    );
+    expect(direct.some((item) => item.wire.k === 'feed_req')).toBe(false);
+    manager.close();
+  });
+
+  it('serves a linked history page request with the newest available group events', async () => {
+    const sentResources: Array<Record<string, unknown>> = [];
+    const authorizations: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        authorizations.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        rejections.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    const events = signedAuthorEvents(
+      Array.from({ length: 105 }, (_, index) => ({
+        eventId: `linked-history-${String(index + 1).padStart(3, '0')}`,
+        groupId: 69,
+        authorSeq: index + 1,
+        timestamp: 80_000 + index,
+      }))
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    }
+    const latest = events[events.length - 1];
+    const request = signedHistoryPageRequestWire({
+      groupId: 69,
+      channelId: '*',
+      direction: 'before',
+      cursor: { id: latest.eventId, ts: latest.timestamp },
+      includeCursor: true,
+      limit: 100,
+      timestamp: 100_000,
+    });
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'history-link-1',
+      transferId: 'history-transfer-1',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        transferId: 'history-transfer-1',
+        groupId: 69,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(rejections).toEqual([]);
+    expect(authorizations).toEqual([
+      {
+        linkId: 'history-link-1',
+        transferId: 'history-transfer-1',
+      },
+    ]);
+    expect(sentResources).toHaveLength(1);
+    expect(sentResources[0]).toEqual(
+      expect.objectContaining({
+        allowedRecipientAddress: requesterPeerHash,
+        transferId: 'history-transfer-1',
+        size: expect.any(Number),
+        sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        metadata: expect.objectContaining({
+          logicalResourceType: 'reticulum_chat_history_page',
+          groupId: 69,
+          channelId: '*',
+          eventCount: 100,
+          variableSize: true,
+        }),
+      })
+    );
+    const page = JSON.parse(fs.readFileSync(String(sentResources[0].filePath), 'utf8')) as {
+      d: string;
+      more?: boolean;
+      events: ReticulumChatEvent[];
+    };
+    expect(page.d).toBe('before');
+    expect(page.more).toBe(true);
+    expect(page.events).toHaveLength(100);
+    expect(page.events[0].eventId).toBe('linked-history-006');
+    expect(page.events[99].eventId).toBe('linked-history-105');
     manager.close();
   });
 
@@ -5957,7 +6207,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('serves the requested group digest continuation page', async () => {
+  it('serves digest requests as compact group beacons without channel arrays', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -6003,13 +6253,13 @@ describe('reticulum chat manager', () => {
 
     const digest = direct.find((wire) => wire.k === 'group_digest') as any;
     expect(digest).toBeDefined();
-    const firstPage = (manager as any).buildGroupDigestWire(57, 0, 16) as any;
-    const firstPageChannels = new Set(firstPage.channels.map((channel: any) => channel.c));
-    const continuationChannels = digest.channels.map((channel: any) => channel.c);
     expect(digest.g).toBe(57);
-    expect(digest.channels.length).toBeGreaterThan(0);
-    expect(digest.channels.length).toBeLessThanOrEqual(4);
-    expect(continuationChannels.every((channelId: string) => !firstPageChannels.has(channelId))).toBe(true);
+    expect(digest.channels).toBeUndefined();
+    expect(digest.more).toBeUndefined();
+    expect(digest.nextOffset).toBeUndefined();
+    expect(digest.latest?.id).toBeTruthy();
+    expect(digest.digestHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest.sd).toBeTruthy();
     expect(byteLengthUtf8JsonWithBridgeSender(digest)).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
     manager.close();
   });

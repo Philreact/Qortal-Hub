@@ -1485,6 +1485,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     fileName: string;
     size: number;
     sha256?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('accept_reticulum_chat_resource', payload);
   }

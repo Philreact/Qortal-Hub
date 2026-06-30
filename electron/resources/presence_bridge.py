@@ -309,6 +309,7 @@ _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _RETICULUM_RESOURCE_TYPE = "reticulum_resource"
 _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
 _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH"
+_RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE = "RETICULUM_CHAT_HISTORY_PAGE_REQUEST"
 _RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
@@ -9157,6 +9158,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
         "QCHAT_FILE_LINK_AUTH",
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
         _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
     ):
         return
@@ -9170,6 +9172,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
     if decoded.get("type") in (
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
     ):
         resource_type = _RETICULUM_CHAT_RESOURCE_TYPE
     elif decoded.get("type") == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
@@ -10714,9 +10717,20 @@ def on_qchat_file_resource_concluded(resource) -> None:
             metadata_size = int(metadata.get("size") or 0)
             metadata_sha256 = str(metadata.get("sha256") or "").strip().lower()
             expected_size = int(pending.get("size") or 0)
+            pending_metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+            allow_variable_size = (
+                metadata.get("variableSize") is True
+                or pending_metadata.get("variableSize") is True
+                or pending_metadata.get("logicalResourceType") == "reticulum_chat_history_page"
+            )
             if (
                 (metadata_transfer_id and metadata_transfer_id != transfer_id)
-                or (metadata_size and expected_size and metadata_size != expected_size)
+                or (
+                    metadata_size
+                    and expected_size
+                    and metadata_size != expected_size
+                    and not allow_variable_size
+                )
                 or (not is_chunked and metadata_sha256 and expected_hash and metadata_sha256 != expected_hash)
             ):
                 log(
