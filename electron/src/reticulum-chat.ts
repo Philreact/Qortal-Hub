@@ -442,7 +442,7 @@ export type ReticulumChatWire =
       c: string;
       batch: ReticulumChatEventBatchWire;
     }
-  | { t: 'RCHAT'; k: 'typing'; g: number; c: string; a: string; ts: number; active: boolean };
+  | { t: 'RCHAT'; k: 'typing'; g: number; c: string; a: string; ts: number; active: boolean; o?: string; h?: number };
 
 export interface ReticulumChatManagerOptions {
   dbPath?: string;
@@ -464,6 +464,7 @@ const RETICULUM_CHAT_CONTROL_MAX_AGE_MS = 2 * 60_000;
 const RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS = 30_000;
 const RETICULUM_CHAT_TYPING_TTL_MS = 8_000;
 const RETICULUM_CHAT_TYPING_REFRESH_MS = 3_000;
+const isDisabledTyping = false;
 const RETICULUM_CHAT_PROTOCOL_VERSION = 1;
 const isDisableReticulumGroupKeys = true;
 const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
@@ -2051,6 +2052,7 @@ export class ReticulumChatManager extends EventEmitter {
     authorAddress: string,
     active: boolean
   ): void {
+    if (isDisabledTyping) return;
     this.assertLocalGroupMember(groupId);
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const key = `${groupId}:${normalizedChannelId}:${authorAddress}`;
@@ -2366,6 +2368,7 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'group_digest' &&
       kind !== 'digest_req' &&
       kind !== 'group_sub' &&
+      kind !== 'typing' &&
       kind !== 'relay_digest' &&
       kind !== 'gkd' &&
       kind !== 'gkq' &&
@@ -2548,9 +2551,17 @@ export class ReticulumChatManager extends EventEmitter {
       }
       case 'typing':
       {
+        if (isDisabledTyping) return;
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         if (typeof wire.a !== 'string') return;
+        void this.forwardTypingToInterestRoutes(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'typing' }>,
+          peerHash
+        );
+        if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
         this.applyTyping(
           groupId,
           normalizeReticulumChatChannelId(wire.c),
@@ -2676,6 +2687,51 @@ export class ReticulumChatManager extends EventEmitter {
         this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
       );
       void this.sendToPeer(route.reversePeerHash, wire as ReticulumChatWire);
+    }
+  }
+
+  private async forwardTypingToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'typing' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'typing' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'typing',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded);
     }
   }
 

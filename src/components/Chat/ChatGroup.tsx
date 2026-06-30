@@ -91,7 +91,10 @@ import SendIcon from '@mui/icons-material/Send';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { messageHasImage } from '../../utils/chat';
 import { useTranslation } from 'react-i18next';
-import { useReticulumGroupChat } from '../../hooks/useReticulumGroupChat';
+import {
+  isDisabledTyping,
+  useReticulumGroupChat,
+} from '../../hooks/useReticulumGroupChat';
 import { fileToBase64 } from '../../utils/fileReading';
 import { generateHTML } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -176,6 +179,7 @@ const Q_MANAGER_MIN_WIDTH = 360;
 const Q_MANAGER_MIN_HEIGHT = 420;
 const Q_MANAGER_HEADER_HEIGHT = 40;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
+const RETICULUM_TYPING_IDLE_STOP_MS = 5_000;
 
 const isReticulumCompressibleImage = (file: File) =>
   file.type?.startsWith('image/') === true && file.type !== 'image/gif';
@@ -659,6 +663,8 @@ export const ChatGroup = ({
     enabled: reticulumChatEnabled,
     events: reticulumChatEvents,
     publishEvent: publishReticulumChatEvent,
+    sendTyping: sendReticulumTypingSignal,
+    typing: reticulumTyping,
   } = useReticulumGroupChat(selectedGroup, selectedReticulumChannelId);
   const reticulumChatQueueId =
     reticulumChatEnabled && selectedGroup
@@ -673,6 +679,10 @@ export const ChatGroup = ({
   const appliedReticulumChannelMetadataEventIdsRef = useRef<Set<string>>(
     new Set()
   );
+  const reticulumTypingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const reticulumTypingActiveRef = useRef(false);
   const reticulumChatSummaries = useAtomValue(reticulumChatSummariesAtom);
   const [windowSize, setWindowSize] = useState(() =>
     typeof window !== 'undefined'
@@ -1153,6 +1163,26 @@ export const ChatGroup = ({
     return Array.from(uniqueMembers);
   }, [groupMentionMembers, messages, reticulumChannelsForSelectedGroup, selectedGroupName]);
 
+  const reticulumTypingText = useMemo(() => {
+    if (isDisabledTyping || !reticulumChatEnabled) return '';
+    const nameByAddress = new Map<string, string>();
+    for (const member of groupMentionMembers) {
+      if (member.address && member.name) nameByAddress.set(member.address, member.name);
+    }
+    const addresses = Object.entries(reticulumTyping || {})
+      .filter(([address, active]) => active === true && address && address !== myAddress)
+      .map(([address]) => address)
+      .slice(0, 4);
+    if (addresses.length === 0) return '';
+    const names = addresses.map((address) => {
+      const name = nameByAddress.get(address)?.trim();
+      return name || `${address.slice(0, 8)}...`;
+    });
+    if (names.length === 1) return `${names[0]} is typing...`;
+    if (names.length === 2) return `${names[0]} and ${names[1]} are typing...`;
+    return `${names.slice(0, 2).join(', ')} and ${names.length - 2} more are typing...`;
+  }, [groupMentionMembers, myAddress, reticulumChatEnabled, reticulumTyping]);
+
   const resolveMentionTargets = useCallback(
     (html: string) => {
       const rawText = mentionTextFromHtml(html);
@@ -1222,6 +1252,45 @@ export const ChatGroup = ({
   const setEditorRef = (editorInstance) => {
     editorRef.current = editorInstance;
   };
+
+  const stopReticulumTyping = useCallback(() => {
+    if (reticulumTypingStopTimerRef.current) {
+      clearTimeout(reticulumTypingStopTimerRef.current);
+      reticulumTypingStopTimerRef.current = null;
+    }
+    if (
+      isDisabledTyping ||
+      !reticulumChatEnabled ||
+      !reticulumTypingActiveRef.current ||
+      !myAddress
+    ) {
+      reticulumTypingActiveRef.current = false;
+      return;
+    }
+    reticulumTypingActiveRef.current = false;
+    void sendReticulumTypingSignal(myAddress, false);
+  }, [myAddress, reticulumChatEnabled, sendReticulumTypingSignal]);
+
+  const noteReticulumComposerActivity = useCallback(
+    (hasText: boolean) => {
+      if (isDisabledTyping || !reticulumChatEnabled || !myAddress) return;
+      if (!hasText) {
+        stopReticulumTyping();
+        return;
+      }
+      reticulumTypingActiveRef.current = true;
+      void sendReticulumTypingSignal(myAddress, true);
+      if (reticulumTypingStopTimerRef.current) {
+        clearTimeout(reticulumTypingStopTimerRef.current);
+      }
+      reticulumTypingStopTimerRef.current = setTimeout(() => {
+        stopReticulumTyping();
+      }, RETICULUM_TYPING_IDLE_STOP_MS);
+    },
+    [myAddress, reticulumChatEnabled, sendReticulumTypingSignal, stopReticulumTyping]
+  );
+
+  useEffect(() => () => stopReticulumTyping(), [stopReticulumTyping]);
 
   const tempMessages = useMemo(() => {
     if (!reticulumChatQueueId) return [];
@@ -2474,6 +2543,7 @@ export const ChatGroup = ({
           })
         );
       pauseAllQueues();
+      stopReticulumTyping();
       if (editorRef.current) {
         let htmlContent = editorRef.current.getHTML();
         const deleteImage =
@@ -4110,6 +4180,21 @@ export const ChatGroup = ({
             tempMessages={tempMessages}
           />
 
+          {reticulumTypingText && (
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                flexShrink: 0,
+                fontSize: '12px',
+                minHeight: '18px',
+                px: 2,
+                py: 0.5,
+              }}
+            >
+              {reticulumTypingText}
+            </Typography>
+          )}
+
           {(reticulumChatEnabled || !!secretKey || isPrivate === false) && (
             <Box
               sx={{
@@ -4394,6 +4479,11 @@ export const ChatGroup = ({
                   setEditorRef={setEditorRef}
                   onEnter={sendMessage}
                   onKeyDown={handleComposerKeyDown}
+                  onContentUpdate={(editor) => {
+                    noteReticulumComposerActivity(
+                      Boolean(editor.getText().trim())
+                    );
+                  }}
                   isChat
                   disableEnter={false}
                   isFocusedParent={isFocusedParent}

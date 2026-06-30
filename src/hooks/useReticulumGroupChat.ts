@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 
 const RETICULUM_CHAT_EVENT_BATCH_MS = 400;
+export const isDisabledTyping = false;
 
 type ReticulumChatHookEvent = {
   authorAddress?: unknown;
@@ -145,6 +146,7 @@ export function useReticulumGroupChat(
     void window.reticulumChat?.subscribeGroup?.(validGroupId);
     void window.reticulumChat?.subscribeChannel?.(validGroupId, normalizedChannelId);
     setEvents([]);
+    setTyping({});
     const historyPromise =
       window.reticulumChat?.getMessageHistory?.(
         validGroupId,
@@ -181,14 +183,28 @@ export function useReticulumGroupChat(
       }
       enqueueIncomingEvent(event);
     });
-    const offTyping = window.reticulumChat?.onTyping?.((payload) => {
-      if (payload.groupId !== validGroupId) return;
-      if (payload.channelId !== normalizedChannelId) return;
-      setTyping((prev) => ({
-        ...prev,
-        [payload.authorAddress]: payload.active,
-      }));
-    });
+    const offTyping = isDisabledTyping
+      ? undefined
+      : window.reticulumChat?.onTyping?.((payload) => {
+          if (payload.groupId !== validGroupId) return;
+          if (payload.channelId !== normalizedChannelId) return;
+          if (typeof payload.authorAddress !== 'string' || !payload.authorAddress) {
+            return;
+          }
+          setTyping((prev) => {
+            if (payload.active) {
+              if (prev[payload.authorAddress] === true) return prev;
+              return {
+                ...prev,
+                [payload.authorAddress]: true,
+              };
+            }
+            if (prev[payload.authorAddress] !== true) return prev;
+            const next = { ...prev };
+            delete next[payload.authorAddress];
+            return next;
+          });
+        });
 
     return () => {
       cancelled = true;
@@ -236,6 +252,9 @@ export function useReticulumGroupChat(
 
   const sendTyping = useCallback(
     async (authorAddress: string, active: boolean) => {
+      if (isDisabledTyping) {
+        return { success: true };
+      }
       if (!enabled || validGroupId == null) {
         return { success: false, error: 'Reticulum chat is disabled' };
       }

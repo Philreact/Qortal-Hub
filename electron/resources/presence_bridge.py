@@ -647,6 +647,7 @@ _RETICULUM_CHAT_SOFT_FANOUT_TYPES = {
     "hello",
     "group_sub",
     "group_digest",
+    "typing",
 }
 _reticulum_chat_digest_fanout_recent: Dict[Tuple[str, str, str], float] = {}
 _AUDIO_LINK_WIRE_TYPES = frozenset(

@@ -493,6 +493,7 @@ type TiptapProps = {
   setEditorRef: (editorInstance: Editor | null) => void;
   onEnter: () => void | Promise<void>;
   onKeyDown?: (event: KeyboardEvent, editor: Editor) => boolean | void;
+  onContentUpdate?: (editor: Editor) => void;
   disableEnter?: boolean;
   isChat?: boolean;
   /** Use chat-style composer (single bar, minimal border) without chat-only behavior (e.g. announcements keep image) */
@@ -512,6 +513,7 @@ const Tiptap = ({
   setEditorRef,
   onEnter,
   onKeyDown,
+  onContentUpdate,
   disableEnter = false,
   isChat = false,
   composerStyle = false,
@@ -720,6 +722,7 @@ const Tiptap = ({
         }}
         onUpdate={({ editor }) => {
           editor.on('blur', handleBlur); // Ensure blur is updated
+          onContentUpdate?.(editor);
         }}
         editorProps={{
           attributes: {

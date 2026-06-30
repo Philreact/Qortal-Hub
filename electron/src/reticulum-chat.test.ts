@@ -3075,6 +3075,56 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('relays typing indicators only along subscribed group interest routes', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' }, 'peer-a');
+    direct.length = 0;
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'typing',
+        g: 73,
+        c: 'general',
+        a: 'Qsender',
+        ts: 100_000,
+        active: true,
+      },
+      'peer-c'
+    );
+    await Promise.resolve();
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          t: 'RCHAT',
+          k: 'typing',
+          g: 73,
+          c: 'general',
+          a: 'Qsender',
+          active: true,
+          o: 'peer-c',
+          h: 1,
+        }),
+      })
+    );
+    manager.close();
+  });
+
   it('relays event requests and routes event offers back to the origin', async () => {
     const fanout: Array<Record<string, unknown>> = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
