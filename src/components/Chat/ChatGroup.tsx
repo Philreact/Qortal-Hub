@@ -566,6 +566,8 @@ export const ChatGroup = ({
   const [reticulumCategories, setReticulumCategories] = useState<
     ReticulumGroupCategory[]
   >([]);
+  const [reticulumChannelStateGroupId, setReticulumChannelStateGroupId] =
+    useState('');
   const [selectedReticulumChannelId, setSelectedReticulumChannelId] = useState(
     DEFAULT_RETICULUM_CHANNEL_ID
   );
@@ -599,6 +601,7 @@ export const ChatGroup = ({
   const [reticulumCategoryMenuCategory, setReticulumCategoryMenuCategory] =
     useState<ReticulumGroupCategory | null>(null);
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
+  const reticulumChannelRefreshSeqRef = useRef(0);
   const hasInitializedWebsocket = useRef(false);
   const socketRef = useRef(null); // WebSocket reference
   const timeoutIdRef = useRef(null); // Timeout ID reference
@@ -815,14 +818,91 @@ export const ChatGroup = ({
     getTimestampEnterChat(selectedGroup);
   }, [selectedGroup, isActive]);
 
+  useEffect(() => {
+    reticulumChannelRefreshSeqRef.current += 1;
+    setReticulumChannels([]);
+    setReticulumCategories([]);
+    setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
+    setReticulumChannelSettingsOpen(false);
+    setEditingReticulumChannel(null);
+  }, [reticulumChatEnabled, selectedGroup]);
+
   const refreshReticulumChannels = useCallback(async () => {
     const groupId = Number(selectedGroup);
+    const refreshSeq = ++reticulumChannelRefreshSeqRef.current;
     if (!Number.isInteger(groupId) || groupId <= 0) {
       setReticulumChannels([]);
       setReticulumCategories([]);
+      setReticulumChannelStateGroupId('');
       setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
       return;
     }
+    const metadataHistory =
+      await window.reticulumChat?.getChannelMetadataHistory?.(groupId, 500);
+    if (Array.isArray(metadataHistory)) {
+      for (const event of metadataHistory) {
+        if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
+        const eventRecord =
+          event && typeof event === 'object'
+            ? (event as Record<string, any>)
+            : null;
+        if (!eventRecord) continue;
+        const eventId =
+          typeof eventRecord.eventId === 'string' ? eventRecord.eventId : '';
+        if (
+          eventId &&
+          appliedReticulumChannelMetadataEventIdsRef.current.has(eventId)
+        ) {
+          continue;
+        }
+        const eventType =
+          typeof eventRecord.eventType === 'string' ? eventRecord.eventType : '';
+        if (
+          !eventType.startsWith('channel_') &&
+          !eventType.startsWith('category_')
+        ) {
+          continue;
+        }
+        let metadataPayload: unknown = null;
+        if (reticulumChatEnabled || isPrivate === false) {
+          try {
+            metadataPayload = JSON.parse(String(eventRecord.encryptedPayload || ''));
+          } catch {
+            metadataPayload = null;
+          }
+        } else if (secretKeyRef.current) {
+          const decrypted = await window.sendMessage('decryptSingle', {
+            data: [
+              {
+                signature: eventRecord.eventId,
+                id: eventRecord.eventId,
+                groupId: eventRecord.groupId,
+                channelId:
+                  normalizeReticulumChannelName(
+                    eventRecord.channelId || DEFAULT_RETICULUM_CHANNEL_ID
+                  ) || DEFAULT_RETICULUM_CHANNEL_ID,
+                sender: eventRecord.authorAddress,
+                timestamp: eventRecord.timestamp,
+                data: eventRecord.encryptedPayload,
+                eventType: eventRecord.eventType,
+                reticulumChat: true,
+              },
+            ],
+            secretKeyObject: secretKeyRef.current,
+          });
+          metadataPayload = decrypted?.[0]?.decryptedData;
+        }
+        if (!metadataPayload) continue;
+        const result = await window.reticulumChat?.applyChannelMetadata?.(
+          eventRecord.eventId,
+          metadataPayload
+        );
+        if (result?.success && eventId) {
+          appliedReticulumChannelMetadataEventIdsRef.current.add(eventId);
+        }
+      }
+    }
+    if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
     const channels = await window.reticulumChat?.getChannels?.(groupId);
     const categories = await window.reticulumChat?.getCategories?.(groupId);
     const parsedChannels = Array.isArray(channels)
@@ -831,6 +911,8 @@ export const ChatGroup = ({
     const parsedCategories = Array.isArray(categories)
       ? (categories as ReticulumGroupCategory[])
       : [];
+    if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
+    setReticulumChannelStateGroupId(String(groupId));
     const visibleChannels = parsedChannels.length
       ? parsedChannels.filter((channel) => !channel.archived)
       : [
@@ -852,7 +934,7 @@ export const ChatGroup = ({
         ? current
         : DEFAULT_RETICULUM_CHANNEL_ID
     );
-  }, [selectedGroup]);
+  }, [isPrivate, reticulumChatEnabled, selectedGroup]);
 
   useEffect(() => {
     if (!reticulumChatEnabled || !selectedGroup) return;
@@ -876,15 +958,25 @@ export const ChatGroup = ({
     return new Map(entries);
   }, [reticulumChatSummaries, selectedGroup]);
 
+  const selectedReticulumGroupKey = selectedGroup ? String(selectedGroup) : '';
+  const reticulumChannelsForSelectedGroup =
+    reticulumChannelStateGroupId === selectedReticulumGroupKey
+      ? reticulumChannels
+      : [];
+  const reticulumCategoriesForSelectedGroup =
+    reticulumChannelStateGroupId === selectedReticulumGroupKey
+      ? reticulumCategories
+      : [];
+
   const reticulumChannelsByCategory = useMemo(() => {
     const categoryIds = new Set(
-      reticulumCategories.map((category) => category.categoryId)
+      reticulumCategoriesForSelectedGroup.map((category) => category.categoryId)
     );
     const grouped = new Map<string, ReticulumGroupChannel[]>();
-    for (const category of reticulumCategories)
+    for (const category of reticulumCategoriesForSelectedGroup)
       grouped.set(category.categoryId, []);
     grouped.set('', []);
-    for (const channel of reticulumChannels) {
+    for (const channel of reticulumChannelsForSelectedGroup) {
       const categoryId =
         channel.categoryId && categoryIds.has(channel.categoryId)
           ? channel.categoryId
@@ -900,7 +992,7 @@ export const ChatGroup = ({
       );
     }
     return grouped;
-  }, [reticulumCategories, reticulumChannels]);
+  }, [reticulumCategoriesForSelectedGroup, reticulumChannelsForSelectedGroup]);
 
   useEffect(() => {
     const groupId = Number(selectedGroup);
@@ -999,7 +1091,7 @@ export const ChatGroup = ({
     uniqueMembers.add('here');
     uniqueMembers.add('everyone');
     if (selectedGroupName) uniqueMembers.add(selectedGroupName);
-    reticulumChannels.forEach((channel) => {
+    reticulumChannelsForSelectedGroup.forEach((channel) => {
       if (channel?.name) uniqueMembers.add(channel.name);
     });
     groupMentionMembers.forEach((member) => {
@@ -1012,7 +1104,7 @@ export const ChatGroup = ({
     });
 
     return Array.from(uniqueMembers);
-  }, [groupMentionMembers, messages, reticulumChannels, selectedGroupName]);
+  }, [groupMentionMembers, messages, reticulumChannelsForSelectedGroup, selectedGroupName]);
 
   const resolveMentionTargets = useCallback(
     (html: string) => {
@@ -1051,7 +1143,7 @@ export const ChatGroup = ({
           groupName,
         });
       }
-      for (const channel of reticulumChannels) {
+      for (const channel of reticulumChannelsForSelectedGroup) {
         const targetChannelId =
           normalizeReticulumChannelName(channel?.channelId) ||
           DEFAULT_RETICULUM_CHANNEL_ID;
@@ -1073,7 +1165,7 @@ export const ChatGroup = ({
       return targets;
     },
     [
-      reticulumChannels,
+      reticulumChannelsForSelectedGroup,
       selectedGroup,
       selectedGroupName,
       selectedReticulumChannelId,
@@ -1107,6 +1199,10 @@ export const ChatGroup = ({
   const secretKeyRef = useRef(null);
   const reticulumReadWasActiveRef = useRef(false);
   const lastReticulumReadEntryTokenRef = useRef<number | null>(null);
+  const lastReticulumMarkedReadRef = useRef<{
+    key: string;
+    timestamp: number;
+  } | null>(null);
 
   useEffect(() => {
     if (secretKey) {
@@ -1129,7 +1225,7 @@ export const ChatGroup = ({
   useEffect(() => {
     if (!reticulumChatEnabled || !notificationReticulumChannelId) return;
     if (
-      reticulumChannels.some(
+      reticulumChannelsForSelectedGroup.some(
         (channel) => channel.channelId === notificationReticulumChannelId
       )
     ) {
@@ -1137,7 +1233,7 @@ export const ChatGroup = ({
     }
   }, [
     notificationReticulumChannelId,
-    reticulumChannels,
+    reticulumChannelsForSelectedGroup,
     reticulumChatEnabled,
   ]);
 
@@ -2155,41 +2251,10 @@ export const ChatGroup = ({
   ]);
 
   useEffect(() => {
-    const groupId = Number(selectedGroup);
-    if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      const history = await window.reticulumChat?.getChannelMetadataHistory?.(
-        groupId,
-        500
-      );
-      if (cancelled || !Array.isArray(history)) return;
-      for (const event of history) {
-        if (cancelled) return;
-        await convertReticulumEventToChatItem(event);
-      }
-      if (!cancelled) await refreshReticulumChannels();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    convertReticulumEventToChatItem,
-    isPrivate,
-    refreshReticulumChannels,
-    reticulumChatEnabled,
-    secretKey,
-    selectedGroup,
-  ]);
-
-  useEffect(() => {
     if (
       !reticulumChatEnabled ||
       !isActive ||
-      !selectedGroup ||
-      reticulumChatEvents.length === 0
+      !selectedGroup
     ) {
       if (!isActive) {
         reticulumReadWasActiveRef.current = false;
@@ -2210,7 +2275,7 @@ export const ChatGroup = ({
     }
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
-    const latestTimestamp = reticulumChatEvents.reduce((latest, event: any) => {
+    const latestVisibleTimestamp = reticulumChatEvents.reduce<number>((latest, event: any) => {
       if (Number(event?.groupId) !== groupId) return latest;
       const eventChannelId =
         normalizeReticulumChannelName(
@@ -2220,10 +2285,33 @@ export const ChatGroup = ({
       const timestamp = Number(event?.timestamp);
       return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
     }, 0);
+    const channelSummary = reticulumChannelSummariesById.get(
+      selectedReticulumChannelId
+    );
+    const latestSummaryTimestamp = Math.max(
+      Number(channelSummary?.lastEvent?.timestamp) || 0,
+      Number(channelSummary?.updatedAt) || 0
+    );
+    const latestTimestamp = Math.max(
+      latestVisibleTimestamp,
+      latestSummaryTimestamp
+    );
     if (latestTimestamp <= 0) return;
     if (entryTokenChanged) {
       lastReticulumReadEntryTokenRef.current = readEntryToken;
     }
+    const readKey = `${groupId}:${selectedReticulumChannelId}:${myAddress || ''}`;
+    const lastMarkedRead = lastReticulumMarkedReadRef.current;
+    if (
+      lastMarkedRead?.key === readKey &&
+      lastMarkedRead.timestamp >= latestTimestamp
+    ) {
+      return;
+    }
+    lastReticulumMarkedReadRef.current = {
+      key: readKey,
+      timestamp: latestTimestamp,
+    };
     void window.reticulumChat
       ?.markRead?.(
         groupId,
@@ -2233,6 +2321,14 @@ export const ChatGroup = ({
       )
       .then(() => {
         executeEvent('reticulum-chat-summaries-refresh', {});
+      })
+      .catch(() => {
+        if (
+          lastReticulumMarkedReadRef.current?.key === readKey &&
+          lastReticulumMarkedReadRef.current?.timestamp === latestTimestamp
+        ) {
+          lastReticulumMarkedReadRef.current = null;
+        }
       });
   }, [
     isActive,
@@ -2240,6 +2336,7 @@ export const ChatGroup = ({
     reticulumReadEntryToken,
     reticulumChatEnabled,
     reticulumChatEvents,
+    reticulumChannelSummariesById,
     selectedGroup,
     selectedReticulumChannelId,
   ]);
@@ -3264,7 +3361,7 @@ export const ChatGroup = ({
       );
       return;
     }
-    if (reticulumChannels.some((channel) => channel.name === name)) {
+    if (reticulumChannelsForSelectedGroup.some((channel) => channel.name === name)) {
       setNewReticulumChannelError('Channel already exists');
       return;
     }
@@ -3273,7 +3370,7 @@ export const ChatGroup = ({
         ? DEFAULT_RETICULUM_CHANNEL_ID
         : `ch-${crypto.randomUUID?.() || `${Date.now()}-${uid.rnd()}`}`;
     const categoryIds = new Set(
-      reticulumCategories.map((category) => category.categoryId)
+      reticulumCategoriesForSelectedGroup.map((category) => category.categoryId)
     );
     const categoryId = categoryIds.has(newReticulumChannelCategoryId)
       ? newReticulumChannelCategoryId
@@ -3292,8 +3389,8 @@ export const ChatGroup = ({
     newReticulumChannelCategoryId,
     newReticulumChannelName,
     publishReticulumChannelMetadata,
-    reticulumCategories,
-    reticulumChannels,
+    reticulumCategoriesForSelectedGroup,
+    reticulumChannelsForSelectedGroup,
     reticulumChannelsByCategory,
   ]);
 
@@ -3321,7 +3418,7 @@ export const ChatGroup = ({
       setReticulumChannelError('Use lowercase letters, numbers, and hyphens');
       return;
     }
-    const duplicate = reticulumChannels.some(
+    const duplicate = reticulumChannelsForSelectedGroup.some(
       (channel) =>
         channel.channelId !== editingReticulumChannel.channelId &&
         channel.name === name
@@ -3342,7 +3439,7 @@ export const ChatGroup = ({
     editingReticulumChannel,
     publishReticulumChannelMetadata,
     reticulumChannelName,
-    reticulumChannels,
+    reticulumChannelsForSelectedGroup,
   ]);
 
   const openCreateReticulumCategoryDialog = useCallback(() => {
@@ -3377,7 +3474,7 @@ export const ChatGroup = ({
       setReticulumCategoryError('Use lowercase letters, numbers, and hyphens');
       return;
     }
-    const duplicate = reticulumCategories.some(
+    const duplicate = reticulumCategoriesForSelectedGroup.some(
       (category) =>
         category.name === name &&
         category.categoryId !== editingReticulumCategory?.categoryId
@@ -3396,7 +3493,7 @@ export const ChatGroup = ({
       await publishReticulumChannelMetadata('category_create', {
         categoryId: `cat-${crypto.randomUUID?.() || `${Date.now()}-${uid.rnd()}`}`,
         name,
-        position: reticulumCategories.length,
+        position: reticulumCategoriesForSelectedGroup.length,
       });
     }
     closeReticulumCategoryDialog();
@@ -3404,7 +3501,7 @@ export const ChatGroup = ({
     closeReticulumCategoryDialog,
     editingReticulumCategory,
     publishReticulumChannelMetadata,
-    reticulumCategories,
+    reticulumCategoriesForSelectedGroup,
     reticulumCategoryDialogMode,
     reticulumCategoryName,
   ]);
@@ -3465,8 +3562,11 @@ export const ChatGroup = ({
   );
 
   const reticulumChannelDragItems = useMemo(
-    () => reticulumChannels.map((channel) => reticulumChannelDragId(channel.channelId)),
-    [reticulumChannels]
+    () =>
+      reticulumChannelsForSelectedGroup.map((channel) =>
+        reticulumChannelDragId(channel.channelId)
+      ),
+    [reticulumChannelsForSelectedGroup]
   );
 
   const persistReticulumChannelOrder = useCallback(
@@ -3499,13 +3599,13 @@ export const ChatGroup = ({
       if (!isReticulumChannelAdmin || !event.over) return;
       const activeChannelId = parseReticulumChannelDragId(event.active.id);
       if (!activeChannelId) return;
-      const activeChannel = reticulumChannels.find(
+      const activeChannel = reticulumChannelsForSelectedGroup.find(
         (channel) => channel.channelId === activeChannelId
       );
       if (!activeChannel) return;
 
       const categoryIds = new Set(
-        reticulumCategories.map((category) => category.categoryId)
+        reticulumCategoriesForSelectedGroup.map((category) => category.categoryId)
       );
       const sourceCategoryId =
         activeChannel.categoryId && categoryIds.has(activeChannel.categoryId)
@@ -3513,7 +3613,9 @@ export const ChatGroup = ({
           : '';
       const overChannelId = parseReticulumChannelDragId(event.over.id);
       const overChannel = overChannelId
-        ? reticulumChannels.find((channel) => channel.channelId === overChannelId)
+        ? reticulumChannelsForSelectedGroup.find(
+            (channel) => channel.channelId === overChannelId
+          )
         : null;
       const targetCategoryId = overChannel
         ? overChannel.categoryId && categoryIds.has(overChannel.categoryId)
@@ -3561,8 +3663,8 @@ export const ChatGroup = ({
       isReticulumChannelAdmin,
       persistReticulumChannelOrder,
       refreshReticulumChannels,
-      reticulumCategories,
-      reticulumChannels,
+      reticulumCategoriesForSelectedGroup,
+      reticulumChannelsForSelectedGroup,
       reticulumChannelsByCategory,
     ]
   );
@@ -3699,7 +3801,7 @@ export const ChatGroup = ({
                     renderReticulumChannelButton
                   )}
                 </ReticulumCategoryDropZone>
-                {reticulumCategories.map((category) => {
+                {reticulumCategoriesForSelectedGroup.map((category) => {
                   const channels =
                     reticulumChannelsByCategory.get(category.categoryId) ?? [];
                   const isCollapsed = collapsedReticulumCategoryIds.has(
@@ -3864,7 +3966,7 @@ export const ChatGroup = ({
               }}
             >
               #{' '}
-              {reticulumChannels.find(
+              {reticulumChannelsForSelectedGroup.find(
                 (channel) => channel.channelId === selectedReticulumChannelId
               )?.name || selectedReticulumChannelId}
             </Typography>
@@ -4292,7 +4394,7 @@ export const ChatGroup = ({
               newReticulumChannelError ||
               (newReticulumChannelCategoryId
                 ? `Creates inside ${
-                    reticulumCategories.find(
+                    reticulumCategoriesForSelectedGroup.find(
                       (category) =>
                         category.categoryId === newReticulumChannelCategoryId
                     )?.name || 'selected category'

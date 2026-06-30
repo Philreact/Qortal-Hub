@@ -3124,14 +3124,22 @@ export class ReticulumChatDatabase {
 
   private getSummaryChannelIds(groupId: number): string[] {
     const channels = new Set<string>([RETICULUM_CHAT_DEFAULT_CHANNEL_ID]);
+    const archivedChannels = new Set(
+      this.getChannels(groupId, true)
+        .filter((channel) => channel.archived)
+        .map((channel) => channel.channelId)
+    );
     for (const row of this.stmtGetKnownChannels.all(groupId) as Array<{ channel_id?: string }>) {
-      channels.add(normalizeReticulumChatChannelId(row.channel_id));
+      const channelId = normalizeReticulumChatChannelId(row.channel_id);
+      if (!archivedChannels.has(channelId)) channels.add(channelId);
     }
-    for (const channel of this.getChannels(groupId, true)) {
+    for (const channel of this.getChannels(groupId, false)) {
       channels.add(channel.channelId);
     }
     for (const event of this.memoryEvents.values()) {
-      if (event.groupId === groupId) channels.add(normalizeReticulumChatChannelId(event.channelId));
+      if (event.groupId !== groupId) continue;
+      const channelId = normalizeReticulumChatChannelId(event.channelId);
+      if (!archivedChannels.has(channelId)) channels.add(channelId);
     }
     return [...channels];
   }

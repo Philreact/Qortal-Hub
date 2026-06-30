@@ -715,6 +715,55 @@ describe('reticulum chat database', () => {
     expect(db.getChatSummaries(accountA)[0]?.unreadCount).toBe(1);
   });
 
+  it('does not count archived channels in unread group summaries', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const reader = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const groupId = 164;
+    const baseTimestamp = Date.now() - 10_000;
+    db.upsertChannel({
+      groupId,
+      channelId: 'archived',
+      name: 'archived',
+      position: 1,
+      archived: true,
+      createdBy: 'Qadmin',
+      createdAt: baseTimestamp,
+      updatedAt: baseTimestamp,
+    });
+    const visibleEvent = signedEvent({
+      eventId: 'event-visible-read',
+      groupId,
+      channelId: 'general',
+      timestamp: baseTimestamp,
+    });
+    const archivedMention = signedEvent({
+      eventId: 'event-archived-unread',
+      groupId,
+      channelId: 'archived',
+      timestamp: baseTimestamp + 1_000,
+      mentionAddressHashes: [hashReticulumChatMentionAddress(reader)],
+    });
+    expect(db.insertEvent(visibleEvent, true)).toBe(true);
+    expect(db.insertEvent(archivedMention, true)).toBe(true);
+    db.markRead(groupId, 'general', visibleEvent.timestamp, reader);
+
+    const summary = db.getChatSummaries(reader).find(
+      (entry) => entry.groupId === groupId
+    );
+    expect(summary).toMatchObject({
+      unreadCount: 0,
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+    expect(summary?.lastEvent?.eventId).toBe(visibleEvent.eventId);
+    expect(summary?.channels?.map((channel) => channel.channelId)).not.toContain(
+      'archived'
+    );
+  });
+
   it('tracks unread mention hints from event address hashes', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);

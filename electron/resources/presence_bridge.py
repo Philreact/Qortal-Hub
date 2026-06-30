@@ -10548,12 +10548,14 @@ def on_qchat_file_resource_started(resource) -> None:
     transfer_id = str(pending.get("transferId") or "")
     file_name = str(pending.get("fileName") or "")
     size = int(pending.get("size") or 0)
+    resource_type = str(pending.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
     metadata = getattr(resource, "metadata", None)
     chunk_index = int(metadata.get("chunkIndex") or 0) if isinstance(metadata, dict) else -1
     chunk_count = int(metadata.get("chunkCount") or 0) if isinstance(metadata, dict) else 0
     chunk_size = int(metadata.get("chunkSize") or 0) if isinstance(metadata, dict) else 0
     is_known_chunk = isinstance(metadata, dict) and metadata.get("chunked") is True and chunk_index >= 0
     is_chunked_pending = pending.get("bridgeChunked") is True
+    is_managed_resource = _qchat_file_is_managed_resource_type(resource_type)
     if is_known_chunk:
         lock = pending.get("chunk_lock")
         if lock is None:
@@ -10570,11 +10572,18 @@ def on_qchat_file_resource_started(resource) -> None:
             attempts = pending.setdefault("chunk_attempts", {})
             if isinstance(attempts, dict):
                 attempts.setdefault(chunk_index, 1)
-    log(
-        "[presence_bridge] qchat file resource started "
-        f"transfer={transfer_id} peer={peer_hash[:16]} size={size} "
-        f"chunk={chunk_index}/{chunk_count} chunk_size={chunk_size}"
-    )
+    if is_known_chunk:
+        log(
+            "[presence_bridge] qchat file resource started "
+            f"transfer={transfer_id} peer={peer_hash[:16]} size={size} "
+            f"chunk={chunk_index}/{chunk_count} chunk_size={chunk_size}"
+        )
+    else:
+        log(
+            "[presence_bridge] qchat file resource started "
+            f"transfer={transfer_id} peer={peer_hash[:16]} size={size} "
+            f"resource_type={resource_type} bridge_chunked={is_chunked_pending}"
+        )
 
     def on_progress(res) -> None:
         try:
@@ -10605,18 +10614,29 @@ def on_qchat_file_resource_started(resource) -> None:
             progress = _qchat_file_chunked_receive_progress(pending, size)
         else:
             progress = resource_progress
-        if (
-            (is_known_chunk or not is_chunked_pending)
-            and _should_log_qchat_file_chunk_progress(
-                pending,
-                f"recv:{chunk_index}",
-                resource_progress,
-            )
+        if is_known_chunk and _should_log_qchat_file_chunk_progress(
+            pending,
+            f"recv:{chunk_index}",
+            resource_progress,
         ):
             log(
                 "[presence_bridge] qchat file chunk receive progress "
                 f"transfer={transfer_id} peer={peer_hash[:16]} chunk={chunk_index}/{chunk_count} "
                 f"chunk_size={chunk_size} progress={resource_progress:.3f}"
+            )
+        elif (
+            not is_chunked_pending
+            and not is_managed_resource
+            and _should_log_qchat_file_chunk_progress(
+                pending,
+                "recv:resource",
+                resource_progress,
+            )
+        ):
+            log(
+                "[presence_bridge] qchat file resource receive progress "
+                f"transfer={transfer_id} peer={peer_hash[:16]} resource_type={resource_type} "
+                f"size={size} progress={resource_progress:.3f}"
             )
         if not _should_emit_qchat_file_progress(pending, progress):
             return
