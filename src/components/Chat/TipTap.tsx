@@ -42,6 +42,7 @@ const MenuBar = memo(
     isDisabledEditorEnter,
     setIsDisabledEditorEnter,
     toolbarStyle = 'default',
+    insertFiles,
   }) => {
     const { editor } = useCurrentEditor();
     const fileInputRef = useRef(null);
@@ -444,9 +445,17 @@ const MenuBar = memo(
                 type="file"
                 ref={fileInputRef}
                 style={{ display: 'none' }}
-                onChange={(event) =>
-                  handleImageUpload(event.target.files?.[0])
-                }
+                onChange={(event) => {
+                  const files = Array.from(event.target.files || []);
+                  if (isChat && files.length > 0 && typeof insertFiles === 'function') {
+                    void insertFiles(files);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = '';
+                    }
+                    return;
+                  }
+                  handleImageUpload(files[0]);
+                }}
                 accept="image/*"
               />
             </>
@@ -701,6 +710,7 @@ const Tiptap = ({
             isDisabledEditorEnter={isDisabledEditorEnter}
             setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
             toolbarStyle={useComposerLook ? 'chat' : 'default'}
+            insertFiles={insertFiles}
           />
         }
         extensions={[...extensionsFiltered, ...additionalExtensions]}

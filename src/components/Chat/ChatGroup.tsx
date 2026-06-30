@@ -175,7 +175,7 @@ const Q_MANAGER_DEFAULT_HEIGHT = 600;
 const Q_MANAGER_MIN_WIDTH = 360;
 const Q_MANAGER_MIN_HEIGHT = 420;
 const Q_MANAGER_HEADER_HEIGHT = 40;
-const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1024 * 1024;
+const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
 
 const isReticulumCompressibleImage = (file: File) =>
   file.type?.startsWith('image/') === true && file.type !== 'image/gif';
@@ -3350,11 +3350,7 @@ export const ChatGroup = ({
         setOpenSnack(true);
         return;
       }
-      if (
-        isImage &&
-        isReticulumCompressibleImage(file) &&
-        file.size >= RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES
-      ) {
+      if (isImage && isReticulumCompressibleImage(file)) {
         setReticulumLargeImageChoice({ file, filePath });
         return;
       }
