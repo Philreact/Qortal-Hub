@@ -375,6 +375,21 @@ export class ReticulumResourceStore {
     );
   }
 
+  getVerifiedAssembledPath(fileHash: string): string | null {
+    const row = this.stmtGetResource.get(String(fileHash || '').trim().toLowerCase()) as
+      | ResourceRow
+      | undefined;
+    if (!row || row.status !== 'complete' || !row.final_verified_at || !row.assembled_path) {
+      return null;
+    }
+    try {
+      const stat = fs.statSync(row.assembled_path);
+      return stat.isFile() && stat.size === row.size_bytes ? row.assembled_path : null;
+    } catch {
+      return null;
+    }
+  }
+
   getPartialPath(fileHash: string): string | null {
     const row = this.stmtGetResource.get(String(fileHash || '').trim().toLowerCase()) as
       | ResourceRow
@@ -568,12 +583,23 @@ export class ReticulumResourceStore {
     const manifest = this.getManifest(fileHash);
     if (!manifest) throw new Error('Unknown resource manifest');
     const row = this.stmtGetResource.get(manifest.fileHash) as ResourceRow | undefined;
+    const verifiedPath = this.getVerifiedAssembledPath(manifest.fileHash);
+    if (verifiedPath) return verifiedPath;
     if (row?.assembled_path && fs.existsSync(row.assembled_path)) {
       try {
         const stat = fs.statSync(row.assembled_path);
         if (stat.isFile() && stat.size === manifest.sizeBytes) {
           const actualFileHash = sha256File(row.assembled_path);
           if (actualFileHash === manifest.fileHash.toLowerCase()) {
+            const now = this.now();
+            this.stmtUpdateResourceStatus.run(
+              'complete',
+              row.assembled_path,
+              null,
+              now,
+              row.final_verified_at ?? now,
+              manifest.fileHash
+            );
             return row.assembled_path;
           }
         }

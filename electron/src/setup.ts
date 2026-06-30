@@ -318,7 +318,7 @@ const defaultDomains = [
 
 let reticulumResourceStore: ReticulumResourceStore | null = null;
 const RETICULUM_RESOURCE_PROTOCOL = 'qortal-reticulum-resource';
-const RETICULUM_RESOURCE_URL_TOKEN_TTL_MS = 5 * 60_000;
+const RETICULUM_RESOURCE_URL_TOKEN_TTL_MS = 20 * 60_000;
 const RETICULUM_RESOURCE_URL_TOKEN_MAX = 2_000;
 let reticulumResourceProtocolRegistered = false;
 const reticulumResourceUrlTokens = new Map<
@@ -415,7 +415,9 @@ async function registerReticulumResourceProtocol(): Promise<void> {
       const store = getReticulumResourceStore();
       const manifest = store.getManifest(fileHash);
       if (!manifest) return new Response('Not Found', { status: 404 });
-      const filePath = store.assembleResource(fileHash);
+      const filePath =
+        store.getVerifiedAssembledPath(fileHash) ??
+        store.assembleResource(fileHash);
       const response = await net.fetch(pathToFileURL(filePath).toString());
       const headers = new Headers(response.headers);
       headers.set('content-type', manifest.mimeType || 'application/octet-stream');
@@ -3612,7 +3614,9 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
     const store = getReticulumResourceStore();
     const manifest = store.getManifest(hash);
     if (!manifest) return { success: false, error: 'Unknown resource' };
-    store.assembleResource(hash);
+    const assembledPath =
+      store.getVerifiedAssembledPath(hash) ?? store.assembleResource(hash);
+    if (!assembledPath) return { success: false, error: 'Resource not assembled' };
     return {
       success: true,
       url: reticulumResourceUrl(hash),
@@ -3633,13 +3637,7 @@ ipcMain.handle('reticulumResource:getStatus', async (_event, fileHash: string) =
     const store = getReticulumResourceStore();
     const manifest = store.getManifest(hash);
     if (!manifest) return { success: false, error: 'Unknown resource' };
-    let complete = false;
-    try {
-      store.assembleResource(hash);
-      complete = true;
-    } catch {
-      complete = false;
-    }
+    const complete = Boolean(store.getVerifiedAssembledPath(hash));
     const completedBytes = complete ? manifest.sizeBytes : store.getCompletedBytes(hash);
     const latestRangeUpdatedAt = store.getLatestRangeUpdatedAt(hash);
     const runtime = getReticulumChatManager()?.getResourceDownloadStatus(hash) ?? null;
@@ -3683,7 +3681,8 @@ ipcMain.handle(
       const store = getReticulumResourceStore();
       const manifest = store.getManifest(hash);
       if (!manifest) return { success: false, error: 'Unknown resource' };
-      const assembledPath = store.assembleResource(hash);
+      const assembledPath =
+        store.getVerifiedAssembledPath(hash) ?? store.assembleResource(hash);
       const defaultPath = path.basename(
         typeof suggestedFileName === 'string' && suggestedFileName.trim()
           ? suggestedFileName.trim()

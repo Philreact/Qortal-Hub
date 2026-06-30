@@ -176,6 +176,7 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         groupId: fullFields.groupId,
         channelId: fullFields.channelId,
         direction: fullFields.direction,
+        priority: fullFields.priority === 'metadata' ? 'metadata' : undefined,
         after:
           fullFields.after && typeof fullFields.after === 'object'
             ? fullFields.after as any
@@ -352,6 +353,7 @@ function signedHistoryPageRequestWire(params: {
   groupId: number;
   channelId: string;
   direction: 'after' | 'before';
+  priority?: 'metadata';
   cursor?: { id: string; ts: number };
   includeCursor?: boolean;
   limit: number;
@@ -359,6 +361,7 @@ function signedHistoryPageRequestWire(params: {
 }): {
   c: string;
   d: 'after' | 'before';
+  p?: 'm';
   after?: { id: string; ts: number };
   before?: { id: string; ts: number };
   inc?: 1;
@@ -375,6 +378,7 @@ function signedHistoryPageRequestWire(params: {
     groupId: params.groupId,
     channelId: params.channelId,
     direction: params.direction,
+    priority: params.priority,
     after: params.direction === 'after' ? params.cursor : undefined,
     before: params.direction === 'before' ? params.cursor : undefined,
     includeCursor: params.includeCursor === true,
@@ -386,6 +390,7 @@ function signedHistoryPageRequestWire(params: {
   return {
     c: params.channelId,
     d: params.direction,
+    ...(params.priority === 'metadata' ? { p: 'm' as const } : {}),
     ...(params.direction === 'after' && params.cursor ? { after: params.cursor } : {}),
     ...(params.direction === 'before' && params.cursor ? { before: params.cursor } : {}),
     ...(params.includeCursor ? { inc: 1 as const } : {}),
@@ -577,6 +582,139 @@ describe('reticulum chat database', () => {
     }
 
     expect(db.getRecentMessageEvents(46, 200, 'general')).toEqual([]);
+  });
+
+  it('scrubs deleted message payloads while keeping a tombstone row', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionHash = hashReticulumChatMentionAddress('Qmentioned');
+    const events = signedAuthorEvents([
+      {
+        eventId: 'scrub-root-message',
+        groupId: 46,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: 1000,
+        eventType: 'message',
+        encryptedPayload: JSON.stringify({ messageText: 'delete me permanently' }),
+        mentionAddressHashes: [mentionHash],
+      },
+      {
+        eventId: 'scrub-edit-message',
+        groupId: 46,
+        channelId: 'general',
+        authorSeq: 2,
+        timestamp: 1001,
+        eventType: 'edit',
+        targetEventId: 'scrub-root-message',
+        encryptedPayload: JSON.stringify({ messageText: 'edited private text' }),
+      },
+      {
+        eventId: 'scrub-delete-event',
+        groupId: 46,
+        channelId: 'general',
+        authorSeq: 3,
+        timestamp: 1002,
+        eventType: 'delete',
+        targetEventId: 'scrub-root-message',
+        encryptedPayload: JSON.stringify({ type: 'delete' }),
+      },
+    ]);
+
+    for (const event of events) db.insertEvent(event, true);
+
+    expect(db.hasEvent('scrub-root-message')).toBe(true);
+    expect(db.isEventPayloadScrubbed('scrub-root-message')).toBe(true);
+    expect(db.isEventPayloadScrubbed('scrub-edit-message')).toBe(true);
+    expect(db.isEventPayloadScrubbed('scrub-delete-event')).toBe(false);
+    expect(db.getRecentMessageEvents(46, 200, 'general')).toEqual([]);
+    expect(db.searchEvents('permanently', { groupIds: [46] })).toEqual([]);
+    expect(db.searchEvents('private', { groupIds: [46] })).toEqual([]);
+
+    const scrubbedRoot = db.getEvent('scrub-root-message');
+    const scrubbedEdit = db.getEvent('scrub-edit-message');
+    expect(scrubbedRoot?.encryptedPayload).not.toContain('delete me permanently');
+    expect(scrubbedEdit?.encryptedPayload).not.toContain('edited private text');
+    expect(scrubbedRoot?.mentionAddressHashes).toEqual([]);
+    expect(scrubbedRoot && verifyReticulumChatEvent(scrubbedRoot)).toBe(false);
+    expect(db.getEvent('scrub-delete-event') && verifyReticulumChatEvent(db.getEvent('scrub-delete-event')!)).toBe(true);
+  });
+
+  it('scrubs late-arriving original payloads when the delete tombstone already exists', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const events = signedAuthorEvents([
+      {
+        eventId: 'late-root-message',
+        groupId: 146,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: 1000,
+        eventType: 'message',
+        encryptedPayload: JSON.stringify({ messageText: 'late deleted text' }),
+      },
+      {
+        eventId: 'late-delete-event',
+        groupId: 146,
+        channelId: 'general',
+        authorSeq: 2,
+        timestamp: 1001,
+        eventType: 'delete',
+        targetEventId: 'late-root-message',
+        encryptedPayload: JSON.stringify({ type: 'delete' }),
+      },
+    ]);
+
+    db.insertEvent(events[1], true);
+    db.insertEvent(events[0], true);
+
+    expect(db.hasEvent('late-root-message')).toBe(true);
+    expect(db.isEventPayloadScrubbed('late-root-message')).toBe(true);
+    expect(db.getEvent('late-root-message')?.encryptedPayload).not.toContain('late deleted text');
+    expect(db.getRecentMessageEvents(146, 200, 'general')).toEqual([]);
+  });
+
+  it('keeps deleted message payloads scrubbed when reopening the database', () => {
+    const dbPath = tempDbPath();
+    const initialDb = new ReticulumChatDatabase(dbPath);
+    const events = signedAuthorEvents([
+      {
+        eventId: 'existing-root-message',
+        groupId: 246,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: 1000,
+        eventType: 'message',
+        encryptedPayload: JSON.stringify({ messageText: 'existing deleted text' }),
+      },
+      {
+        eventId: 'existing-delete-event',
+        groupId: 246,
+        channelId: 'general',
+        authorSeq: 2,
+        timestamp: 1001,
+        eventType: 'delete',
+        targetEventId: 'existing-root-message',
+        encryptedPayload: JSON.stringify({ type: 'delete' }),
+      },
+    ]);
+
+    for (const event of events) {
+      initialDb.insertEvent(event, true);
+    }
+    expect(initialDb.isEventPayloadScrubbed('existing-root-message')).toBe(true);
+    initialDb.close();
+
+    const reopenedDb = new ReticulumChatDatabase(dbPath);
+    dbs.push(reopenedDb);
+
+    expect(reopenedDb.hasEvent('existing-root-message')).toBe(true);
+    expect(reopenedDb.getEvent('existing-root-message')?.encryptedPayload).not.toContain(
+      'existing deleted text'
+    );
+    expect(reopenedDb.isEventPayloadScrubbed('existing-root-message')).toBe(true);
+    expect(reopenedDb.getEvent('existing-delete-event') && verifyReticulumChatEvent(reopenedDb.getEvent('existing-delete-event')!)).toBe(true);
+    expect(reopenedDb.getRecentMessageEvents(246, 200, 'general')).toEqual([]);
   });
 
   it('removes projected messages when raw message events are evicted', () => {
@@ -1056,13 +1194,11 @@ describe('reticulum chat database', () => {
       hasUnreadMention: true,
     });
     db.insertEvent(deleteEvent, true);
-    expect(
-      db.getChatSummaries(mentionedAddress).find((summary) => summary.groupId === 68)
-    ).toMatchObject({
-      groupId: 68,
-      mentionCount: 0,
-      hasUnreadMention: false,
-    });
+    const deletedSummary = db
+      .getChatSummaries(mentionedAddress)
+      .find((summary) => summary.groupId === 68);
+    expect(deletedSummary?.mentionCount ?? 0).toBe(0);
+    expect(deletedSummary?.hasUnreadMention ?? false).toBe(false);
   });
 
   it('replaces and deletes mentions for edited or deleted messages', () => {
@@ -1345,6 +1481,46 @@ describe('reticulum chat database', () => {
       reason: 'attachment-events-not-relayed',
     });
     expect(db.getRelayEventBlob(66, event.eventId)).toBeNull();
+  });
+
+  it('removes relay-cached message payloads when a delete is relayed', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const [original, edit, deleteEvent] = signedAuthorEvents([
+      {
+        eventId: 'relay-delete-root',
+        groupId: 67,
+        authorSeq: 1,
+        eventType: 'message',
+        encryptedPayload: JSON.stringify({ messageText: 'relay cached secret' }),
+      },
+      {
+        eventId: 'relay-delete-edit',
+        groupId: 67,
+        authorSeq: 2,
+        eventType: 'edit',
+        targetEventId: 'relay-delete-root',
+        encryptedPayload: JSON.stringify({ messageText: 'relay cached edit' }),
+      },
+      {
+        eventId: 'relay-delete-tombstone',
+        groupId: 67,
+        authorSeq: 3,
+        eventType: 'delete',
+        targetEventId: 'relay-delete-root',
+        encryptedPayload: JSON.stringify({ type: 'delete' }),
+      },
+    ]);
+
+    expect(db.storeRelayEventBlob(original, serializeReticulumChatEvent(original), 'relay-source')).toMatchObject({ ok: true });
+    expect(db.storeRelayEventBlob(edit, serializeReticulumChatEvent(edit), 'relay-source')).toMatchObject({ ok: true });
+    expect(db.getRelayEventBlob(67, original.eventId)).toMatchObject({ eventId: original.eventId });
+    expect(db.getRelayEventBlob(67, edit.eventId)).toMatchObject({ eventId: edit.eventId });
+
+    expect(db.storeRelayEventBlob(deleteEvent, serializeReticulumChatEvent(deleteEvent), 'relay-source')).toMatchObject({ ok: true });
+    expect(db.getRelayEventBlob(67, original.eventId)).toBeNull();
+    expect(db.getRelayEventBlob(67, edit.eventId)).toBeNull();
+    expect(db.getRelayEventBlob(67, deleteEvent.eventId)).toMatchObject({ eventId: deleteEvent.eventId });
   });
 
   it('stores and retrieves active group keys', () => {
@@ -2370,7 +2546,7 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(accepts).toHaveLength(1);
+    expect(accepts).toHaveLength(2);
     expect(accepts[0]).toEqual(
       expect.objectContaining({
         peerPresenceHash: providerHash,
@@ -2381,6 +2557,7 @@ describe('reticulum chat manager', () => {
           groupId: 69,
           channelId: '*',
           direction: 'before',
+          p: 'm',
           variableSize: true,
         }),
         authMessage: expect.objectContaining({
@@ -2388,13 +2565,94 @@ describe('reticulum chat manager', () => {
           groupId: 69,
           c: '*',
           d: 'before',
+          p: 'm',
           before: { id: 'remote-latest-event', ts: 99_000 },
           inc: 1,
           limit: 100,
         }),
       })
     );
+    expect(accepts[1]).toEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        metadata: expect.objectContaining({
+          logicalResourceType: 'reticulum_chat_history_page',
+          groupId: 69,
+          channelId: '*',
+          direction: 'before',
+        }),
+        authMessage: expect.not.objectContaining({ p: 'm' }),
+      })
+    );
     expect(direct.some((item) => item.wire.k === 'feed_req')).toBe(false);
+    manager.close();
+  });
+
+  it('requests channel metadata first when a digest differs', async () => {
+    const providerHash = 'e'.repeat(32);
+    const accepts: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 69,
+        latest: { id: 'remote-latest-event', ts: 99_000 },
+        digestHash: 'f'.repeat(64),
+        sd: providerHash,
+      },
+      'overlay-hop'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(accepts).toHaveLength(2);
+    expect(accepts[0]).toEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        metadata: expect.objectContaining({
+          logicalResourceType: 'reticulum_chat_history_page',
+          groupId: 69,
+          channelId: '*',
+          direction: 'before',
+          p: 'm',
+        }),
+        authMessage: expect.objectContaining({
+          type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+          groupId: 69,
+          c: '*',
+          d: 'before',
+          p: 'm',
+          before: { id: 'remote-latest-event', ts: 99_000 },
+          inc: 1,
+          limit: 100,
+        }),
+      })
+    );
+    expect(accepts[1]).toEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        authMessage: expect.not.objectContaining({ p: 'm' }),
+      })
+    );
     manager.close();
   });
 
@@ -2496,6 +2754,115 @@ describe('reticulum chat manager', () => {
     expect(page.events).toHaveLength(100);
     expect(page.events[0].eventId).toBe('linked-history-006');
     expect(page.events[99].eventId).toBe('linked-history-105');
+    manager.close();
+  });
+
+  it('serves linked metadata history pages without normal messages', async () => {
+    const sentResources: Array<Record<string, any>> = [];
+    const authorizations: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'f'.repeat(32);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        authorizations.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([70]);
+    const events = signedAuthorEvents([
+      {
+        eventId: 'linked-meta-1',
+        groupId: 70,
+        channelId: 'general',
+        eventType: 'channel_create',
+        authorSeq: 1,
+        timestamp: 80_000,
+        encryptedPayload: JSON.stringify({ channelId: 'alpha', name: 'alpha' }),
+      },
+      {
+        eventId: 'linked-meta-message',
+        groupId: 70,
+        channelId: 'alpha',
+        eventType: 'message',
+        authorSeq: 2,
+        timestamp: 80_001,
+      },
+      {
+        eventId: 'linked-meta-2',
+        groupId: 70,
+        channelId: 'alpha',
+        eventType: 'channel_update',
+        authorSeq: 3,
+        timestamp: 80_002,
+        encryptedPayload: JSON.stringify({ channelId: 'alpha', name: 'alpha-renamed' }),
+      },
+    ]);
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    }
+    const request = signedHistoryPageRequestWire({
+      groupId: 70,
+      channelId: '*',
+      direction: 'before',
+      priority: 'metadata',
+      cursor: { id: 'linked-meta-2', ts: 80_002 },
+      includeCursor: true,
+      limit: 100,
+      timestamp: 100_000,
+    });
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'history-link-meta',
+      transferId: 'history-transfer-meta',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        transferId: 'history-transfer-meta',
+        groupId: 70,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(authorizations).toEqual([
+      {
+        linkId: 'history-link-meta',
+        transferId: 'history-transfer-meta',
+      },
+    ]);
+    expect(sentResources).toHaveLength(1);
+    expect(sentResources[0].metadata).toEqual(
+      expect.objectContaining({
+        logicalResourceType: 'reticulum_chat_history_page',
+        groupId: 70,
+        channelId: '*',
+        p: 'm',
+        eventCount: 2,
+      })
+    );
+    const page = JSON.parse(fs.readFileSync(String(sentResources[0].filePath), 'utf8')) as {
+      p?: string;
+      events: ReticulumChatEvent[];
+    };
+    expect(page.p).toBe('m');
+    expect(page.events.map((event) => event.eventId)).toEqual([
+      'linked-meta-1',
+      'linked-meta-2',
+    ]);
     manager.close();
   });
 
@@ -6980,8 +7347,17 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const feedRequests = direct.filter((wire) => wire.k === 'feed_req');
-    expect(feedRequests).toHaveLength(1);
+    expect(feedRequests).toHaveLength(2);
     expect(feedRequests[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'feed_req',
+      g: 56,
+      c: '*',
+      p: 'm',
+      before: { id: 'event-newest-group', ts: 90_000 },
+      inc: 1,
+    });
+    expect(feedRequests[1]).toMatchObject({
       t: 'RCHAT',
       k: 'feed_req',
       g: 56,
@@ -7573,6 +7949,79 @@ describe('reticulum chat manager', () => {
       metadataEvent.eventId,
     ]);
     manager.close();
+  });
+
+  it('pages channel metadata events independently from normal messages', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    const metadataEvents = signedAuthorEvents([
+      {
+        eventId: 'event-meta-page-1',
+        groupId: 82,
+        channelId: 'general',
+        eventType: 'channel_create',
+        authorSeq: 1,
+        timestamp: 10_000,
+        encryptedPayload: JSON.stringify({ channelId: 'alpha', name: 'alpha' }),
+      },
+      {
+        eventId: 'event-meta-page-2',
+        groupId: 82,
+        channelId: 'alpha',
+        eventType: 'category_create',
+        authorSeq: 2,
+        timestamp: 20_000,
+        encryptedPayload: JSON.stringify({ categoryId: 'cat-a', name: 'cat-a' }),
+      },
+      {
+        eventId: 'event-meta-page-3',
+        groupId: 82,
+        channelId: 'alpha',
+        eventType: 'channel_update',
+        authorSeq: 3,
+        timestamp: 30_000,
+        encryptedPayload: JSON.stringify({ channelId: 'alpha', name: 'alpha-renamed' }),
+      },
+    ]);
+    const messageEvent = signedEvent({
+      eventId: 'event-meta-page-message',
+      groupId: 82,
+      channelId: 'alpha',
+      timestamp: 25_000,
+      authorSeq: 10,
+    });
+    for (const event of [...metadataEvents, messageEvent]) {
+      expect(db.insertEvent(event, true)).toBe(true);
+    }
+
+    expect(db.getChannelMetadataPageAtOrBefore(
+      82,
+      { eventId: 'event-meta-page-3', feedTimestamp: 30_000 },
+      2
+    ).map((event) => event.eventId)).toEqual([
+      'event-meta-page-2',
+      'event-meta-page-3',
+    ]);
+    expect(db.getChannelMetadataPageBefore(
+      82,
+      { eventId: 'event-meta-page-3', feedTimestamp: 30_000 },
+      2
+    ).map((event) => event.eventId)).toEqual([
+      'event-meta-page-1',
+      'event-meta-page-2',
+    ]);
+    expect(db.getChannelMetadataPageAfter(
+      82,
+      { eventId: 'event-meta-page-1', feedTimestamp: 10_000 },
+      5
+    ).map((event) => event.eventId)).toEqual([
+      'event-meta-page-2',
+      'event-meta-page-3',
+    ]);
+    expect(db.getChannelMetadataEvents(82, 2).map((event) => event.eventId)).toEqual([
+      'event-meta-page-2',
+      'event-meta-page-3',
+    ]);
+    db.close();
   });
 
   it('refuses signed event resource requests when Core membership validation rejects the requester', async () => {

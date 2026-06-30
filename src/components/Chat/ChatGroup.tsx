@@ -100,6 +100,7 @@ import Highlight from '@tiptap/extension-highlight';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
 import { getGroupAdminsAddress, getGroupMembers } from '../Group/groupApi';
+import Compressor from 'compressorjs';
 import {
   closestCenter,
   DndContext,
@@ -174,6 +175,46 @@ const Q_MANAGER_DEFAULT_HEIGHT = 600;
 const Q_MANAGER_MIN_WIDTH = 360;
 const Q_MANAGER_MIN_HEIGHT = 420;
 const Q_MANAGER_HEADER_HEIGHT = 40;
+const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1024 * 1024;
+
+const isReticulumCompressibleImage = (file: File) =>
+  file.type?.startsWith('image/') === true && file.type !== 'image/gif';
+
+const formatReticulumFileSize = (bytes?: number) => {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return '0 bytes';
+  if (size < 1024) return `${size} ${size === 1 ? 'byte' : 'bytes'}`;
+  if (size < 1024 * 1024) return `${Math.max(1, Math.ceil(size / 1024))} KB`;
+  if (size < 1024 * 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  }
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const compressReticulumImageFile = (file: File): Promise<File> =>
+  new Promise((resolve) => {
+    new Compressor(file, {
+      quality: 0.6,
+      maxWidth: 1200,
+      mimeType: 'image/webp',
+      success(result) {
+        resolve(
+          new File(
+            [result],
+            `${file.name.replace(/\.[^.]+$/, '') || 'image'}.webp`,
+            {
+              type: 'image/webp',
+              lastModified: Date.now(),
+            }
+          )
+        );
+      },
+      error(err) {
+        console.error('Reticulum image compression error:', err);
+        resolve(file);
+      },
+    });
+  });
 
 const reticulumChannelDragId = (channelId: string) =>
   `${RETICULUM_CHANNEL_DRAG_PREFIX}${channelId}`;
@@ -600,6 +641,12 @@ export const ChatGroup = ({
     useState<{ mouseX: number; mouseY: number } | null>(null);
   const [reticulumCategoryMenuCategory, setReticulumCategoryMenuCategory] =
     useState<ReticulumGroupCategory | null>(null);
+  const [
+    reticulumLargeImageChoice,
+    setReticulumLargeImageChoice,
+  ] = useState<{ file: File; filePath: string } | null>(null);
+  const [isCompressingReticulumImage, setIsCompressingReticulumImage] =
+    useState(false);
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
   const reticulumChannelRefreshSeqRef = useRef(0);
   const hasInitializedWebsocket = useRef(false);
@@ -3210,6 +3257,52 @@ export const ChatGroup = ({
     ]
   );
 
+  const addPendingReticulumFile = useCallback(
+    async (
+      file: File,
+      options: { asAttachment?: boolean; filePathOverride?: string } = {}
+    ) => {
+      const filePath =
+        options.filePathOverride ||
+        window.reticulumResources?.getPathForFile?.(file) ||
+        (typeof (file as File & { path?: unknown }).path === 'string'
+          ? String((file as File & { path?: unknown }).path)
+          : '');
+      const isImage =
+        file.type?.startsWith('image/') === true && options.asAttachment !== true;
+      if (options.asAttachment && !filePath) {
+        setInfoSnack({
+          type: 'error',
+          message: 'This file source cannot be streamed from disk',
+        });
+        setOpenSnack(true);
+        return false;
+      }
+      const dimensions = isImage ? await getImageFileDimensions(file) : null;
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+      const base64 = isImage && !filePath ? await fileToBase64(file) : undefined;
+      setPendingReticulumFiles([
+        {
+          ...(filePath ? { filePath } : {}),
+          fileName: file.name || 'resource.bin',
+          mimeType: file.type || 'application/octet-stream',
+          sizeBytes: file.size || 0,
+          isImage,
+          ...(previewUrl ? { previewUrl } : {}),
+          ...(typeof base64 === 'string' && base64 ? { base64 } : {}),
+          ...(dimensions
+            ? {
+                width: dimensions.width,
+                height: dimensions.height,
+              }
+            : {}),
+        },
+      ]);
+      return true;
+    },
+    [getImageFileDimensions]
+  );
+
   const insertFiles = useCallback(
     async (files: File[]) => {
       const file = files.find((item) => item && item.size >= 0);
@@ -3257,33 +3350,19 @@ export const ChatGroup = ({
         setOpenSnack(true);
         return;
       }
-      const dimensions = isImage ? await getImageFileDimensions(file) : null;
-      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
-      const needsBase64ImagePayload = isImage && !filePath;
-      const base64 = needsBase64ImagePayload
-        ? await fileToBase64(file)
-        : undefined;
-      setPendingReticulumFiles([
-        {
-          ...(filePath ? { filePath } : {}),
-          fileName: file.name || 'resource.bin',
-          mimeType: file.type || 'application/octet-stream',
-          sizeBytes: file.size || 0,
-          isImage,
-          ...(previewUrl ? { previewUrl } : {}),
-          ...(typeof base64 === 'string' && base64 ? { base64 } : {}),
-          ...(dimensions
-            ? {
-                width: dimensions.width,
-                height: dimensions.height,
-              }
-            : {}),
-        },
-      ]);
+      if (
+        isImage &&
+        isReticulumCompressibleImage(file) &&
+        file.size >= RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES
+      ) {
+        setReticulumLargeImageChoice({ file, filePath });
+        return;
+      }
+      await addPendingReticulumFile(file, { filePathOverride: filePath });
     },
     [
+      addPendingReticulumFile,
       chatImagesToSave,
-      getImageFileDimensions,
       insertImage,
       isDeleteImage,
       isPrivate,
@@ -3293,6 +3372,44 @@ export const ChatGroup = ({
       t,
     ]
   );
+
+  const closeReticulumLargeImageChoice = useCallback(() => {
+    if (isCompressingReticulumImage) return;
+    setReticulumLargeImageChoice(null);
+  }, [isCompressingReticulumImage]);
+
+  const useReticulumCompressedImage = useCallback(async () => {
+    const choice = reticulumLargeImageChoice;
+    if (!choice || isCompressingReticulumImage) return;
+    setIsCompressingReticulumImage(true);
+    try {
+      const compressed = await compressReticulumImageFile(choice.file);
+      await addPendingReticulumFile(compressed);
+      setReticulumLargeImageChoice(null);
+    } finally {
+      setIsCompressingReticulumImage(false);
+    }
+  }, [
+    addPendingReticulumFile,
+    isCompressingReticulumImage,
+    reticulumLargeImageChoice,
+  ]);
+
+  const useReticulumImageAsAttachment = useCallback(async () => {
+    const choice = reticulumLargeImageChoice;
+    if (!choice || isCompressingReticulumImage) return;
+    const added = await addPendingReticulumFile(choice.file, {
+      asAttachment: true,
+      filePathOverride: choice.filePath,
+    });
+    if (added) {
+      setReticulumLargeImageChoice(null);
+    }
+  }, [
+    addPendingReticulumFile,
+    isCompressingReticulumImage,
+    reticulumLargeImageChoice,
+  ]);
 
   const publishReticulumChannelMetadata = useCallback(
     async (
@@ -4374,6 +4491,40 @@ export const ChatGroup = ({
           )}
         </Box>
       </Box>
+
+      <Dialog
+        open={Boolean(reticulumLargeImageChoice)}
+        onClose={closeReticulumLargeImageChoice}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Send large image</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '14px', mb: 1 }}>
+            This image is {formatReticulumFileSize(reticulumLargeImageChoice?.file.size)}.
+          </Typography>
+          <Typography sx={{ color: theme.palette.text.secondary, fontSize: '13px' }}>
+            Compress it for inline chat display, or send the original image as a
+            downloadable attachment.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={useReticulumImageAsAttachment}
+            disabled={isCompressingReticulumImage}
+          >
+            As attachment
+          </Button>
+          <Button
+            onClick={useReticulumCompressedImage}
+            disabled={isCompressingReticulumImage}
+            variant="contained"
+            autoFocus
+          >
+            {isCompressingReticulumImage ? 'Compressing...' : 'Compress'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={isCreateReticulumChannelOpen}

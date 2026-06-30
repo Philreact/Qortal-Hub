@@ -1192,7 +1192,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     let sourcePath = '';
     try {
-      sourcePath = this.resourceStore.assembleResource(manifest.fileHash);
+      sourcePath =
+        this.resourceStore.getVerifiedAssembledPath(manifest.fileHash) ??
+        this.resourceStore.assembleResource(manifest.fileHash);
     } catch {
       await this.bridge.rejectReticulumResourceDetailed?.({
         linkId: payload.linkId,
@@ -1295,7 +1297,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     try {
-      const bytes = fs.readFileSync(payload.path);
+      const bytes = await fs.promises.readFile(payload.path);
       const actualHash = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
       const expectedPayloadHash =
         typeof offer.payloadHash === 'string' && /^[0-9a-f]{64}$/i.test(offer.payloadHash)

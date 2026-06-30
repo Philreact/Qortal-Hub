@@ -91,6 +91,8 @@ export interface ReticulumChatEvent {
   signature: string;
 }
 
+type ReticulumChatFeedPriority = 'metadata';
+
 export interface ReticulumChatEventHint {
   eventId: string;
   groupId: number;
@@ -129,6 +131,7 @@ export interface ReticulumChatEventPageOffer {
   groupId: number;
   channelId: string;
   direction: 'after' | 'before' | 'range';
+  priority?: ReticulumChatFeedPriority;
   pageHash: string;
   sizeBytes: number;
   eventCount: number;
@@ -174,6 +177,7 @@ export interface ReticulumChatEventPageOfferWire {
   x: string;
   c: string;
   d: 'a' | 'b' | 'r';
+  p?: 'm';
   ph: string;
   s: number;
   n: number;
@@ -199,6 +203,7 @@ export interface ReticulumChatEventRequestWire {
 export interface ReticulumChatHistoryPageRequestWire {
   c: string;
   d: 'after' | 'before';
+  p?: 'm';
   after?: ReticulumChatFeedCursorWire;
   before?: ReticulumChatFeedCursorWire;
   inc?: 1;
@@ -342,6 +347,7 @@ export type ReticulumChatEventBatchWire = {
   start?: ReticulumChatFeedCursorWire;
   end?: ReticulumChatFeedCursorWire;
   dir: 'after' | 'before' | 'range';
+  p?: 'm';
   more?: boolean;
   wh: string;
   events: ReticulumChatEvent[];
@@ -400,6 +406,7 @@ export type ReticulumChatWire =
       after?: ReticulumChatFeedCursorWire;
       before?: ReticulumChatFeedCursorWire;
       inc?: 1;
+      p?: 'm';
       limit?: number;
       o?: string;
       rid?: string;
@@ -753,6 +760,7 @@ type ReticulumChatEventPageResource = {
   g: number;
   c: string;
   d: 'after' | 'before' | 'range';
+  p?: 'm';
   more?: boolean;
   start?: ReticulumChatFeedCursorWire;
   end?: ReticulumChatFeedCursorWire;
@@ -923,6 +931,7 @@ function eventPageOfferToWire(offer: ReticulumChatEventPageOffer): ReticulumChat
     x: offer.transferId,
     c: offer.channelId,
     d: offer.direction === 'before' ? 'b' : offer.direction === 'range' ? 'r' : 'a',
+    ...(feedPriorityToWire(offer.priority) ? { p: feedPriorityToWire(offer.priority) } : {}),
     ph: offer.pageHash,
     s: offer.sizeBytes,
     n: offer.eventCount,
@@ -947,6 +956,8 @@ function buildEventPageOfferControlWire(
 function eventPageOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventPageOffer | null {
   if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return null;
   const p = wire as Partial<ReticulumChatEventPageOfferWire>;
+  const priority = feedPriorityFromWire(p.p);
+  if (p.p != null && !priority) return null;
   const start =
     typeof p.sid === 'string' && Number.isFinite(Number(p.sts))
       ? { eventId: p.sid, feedTimestamp: Number(p.sts) }
@@ -963,6 +974,7 @@ function eventPageOfferFromWire(groupId: number, wire: unknown): ReticulumChatEv
         ? RETICULUM_CHAT_ALL_CHANNELS_ID
         : normalizeReticulumChatChannelId(p.c),
     direction: p.d === 'b' ? 'before' : p.d === 'r' ? 'range' : 'after',
+    ...(priority ? { priority } : {}),
     pageHash: String(p.ph || ''),
     sizeBytes: Number(p.s || 0),
     eventCount: Number(p.n || 0),
@@ -1046,6 +1058,7 @@ export function buildReticulumChatHistoryPageRequestSignedFields(input: {
   groupId: number;
   channelId: string;
   direction: 'after' | 'before';
+  priority?: ReticulumChatFeedPriority;
   after?: ReticulumChatFeedCursorWire;
   before?: ReticulumChatFeedCursorWire;
   includeCursor?: boolean;
@@ -1062,6 +1075,7 @@ export function buildReticulumChatHistoryPageRequestSignedFields(input: {
         ? RETICULUM_CHAT_ALL_CHANNELS_ID
         : normalizeReticulumChatChannelId(input.channelId),
     direction: input.direction,
+    ...(input.priority ? { priority: input.priority } : {}),
     after: input.after ?? null,
     before: input.before ?? null,
     groupId: input.groupId,
@@ -1242,6 +1256,14 @@ function isFeedCursorWire(value: unknown): value is ReticulumChatFeedCursorWire 
   );
 }
 
+function feedPriorityToWire(priority: ReticulumChatFeedPriority | undefined): 'm' | undefined {
+  return priority === 'metadata' ? 'm' : undefined;
+}
+
+function feedPriorityFromWire(value: unknown): ReticulumChatFeedPriority | undefined {
+  return value === 'm' ? 'metadata' : undefined;
+}
+
 export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
   try {
     const derived = deriveAddressFromPublicKey(event.authorPublicKey);
@@ -1308,6 +1330,8 @@ export function verifyReticulumChatHistoryPageRequest(
       return false;
     }
     if (request.d !== 'after' && request.d !== 'before') return false;
+    const priority = feedPriorityFromWire(request.p);
+    if (request.p != null && !priority) return false;
     if (request.after != null && !isFeedCursorWire(request.after)) return false;
     if (request.before != null && !isFeedCursorWire(request.before)) return false;
     if (request.after != null && request.before != null) return false;
@@ -1329,6 +1353,7 @@ export function verifyReticulumChatHistoryPageRequest(
             groupId,
             channelId: request.c,
             direction: request.d,
+            priority,
             after: request.after,
             before: request.before,
             includeCursor: request.inc === 1,
@@ -1598,6 +1623,8 @@ export class ReticulumChatManager extends EventEmitter {
   private subscriptionDigestRefreshOffset = 0;
   private eventPullQueueActive = false;
   private recentGroupRepairRequests = new Map<string, number>();
+  private recentMetadataRepairRequests = new Map<string, number>();
+  private recentMetadataPagePushes = new Map<string, number>();
   private recentNewestPagePushes = new Map<string, number>();
   private recentAuthorGapRepairRequests = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
@@ -2754,6 +2781,9 @@ export class ReticulumChatManager extends EventEmitter {
       if (this.subscribedGroups.has(groupId) && this.localGroupIds.has(groupId)) {
         void this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
         if (hops === 0 && originPeerHash === inboundPeerHash) {
+          void this.pushMetadataHistoryPageToPeer(peerHash, groupId, 'group_sub');
+        }
+        if (hops === 0 && originPeerHash === inboundPeerHash) {
           void this.pushNewestHistoryPageToPeer(peerHash, groupId, 'group_sub');
         }
       }
@@ -2827,6 +2857,26 @@ export class ReticulumChatManager extends EventEmitter {
         this.compareCursors(remoteGroupLatest, localGroupLatest) > 0 ||
         remoteDigestNeedsRepair
       );
+    if (
+      remoteDigestNeedsRepair &&
+      remoteGroupLatest &&
+      this.shouldRequestMetadataRepair(providerPeerHash || peerHash, groupId)
+    ) {
+      void this.requestLinkedHistoryPage(
+        providerPeerHash || peerHash,
+        groupId,
+        RETICULUM_CHAT_ALL_CHANNELS_ID,
+        remoteGroupLatest,
+        'before',
+        true,
+        'metadata-first-digest-repair',
+        peerHash,
+        'metadata'
+      );
+      loggerLog(
+        `[ReticulumChat] Requesting metadata-first repair group=${groupId} peer=${peerHash.slice(0, 16)} provider=${providerPeerHash.slice(0, 16) || 'unknown'} remoteLatest=${remoteGroupLatest.eventId}`
+      );
+    }
     let newestGroupRepairRequested = false;
     if (
       needsNewestGroupRepair &&
@@ -3088,6 +3138,44 @@ export class ReticulumChatManager extends EventEmitter {
     };
   }
 
+  private getFeedPageEvents(
+    groupId: number,
+    channelId: string,
+    before: ReticulumChatFeedCursor | null,
+    after: ReticulumChatFeedCursor | null,
+    includeBeforeCursor: boolean,
+    limit: number,
+    priority?: ReticulumChatFeedPriority
+  ): ReticulumChatEvent[] {
+    if (priority === 'metadata') {
+      if (before) {
+        return includeBeforeCursor
+          ? this.db.getChannelMetadataPageAtOrBefore(groupId, before, limit)
+          : this.db.getChannelMetadataPageBefore(groupId, before, limit);
+      }
+      return this.db.getChannelMetadataPageAfter(groupId, after, limit);
+    }
+    return channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+      ? (
+          before
+            ? (
+                includeBeforeCursor
+                  ? this.db.getGroupFeedPageAtOrBefore(groupId, before, limit)
+                  : this.db.getGroupFeedPageBefore(groupId, before, limit)
+              )
+            : this.db.getGroupFeedPageAfter(groupId, after, limit)
+        )
+      : (
+          before
+            ? (
+                includeBeforeCursor
+                  ? this.db.getFeedPageAtOrBefore(groupId, channelId, before, limit)
+                  : this.db.getFeedPageBefore(groupId, channelId, before, limit)
+              )
+            : this.db.getFeedPageAfter(groupId, channelId, after, limit)
+        );
+  }
+
   private async handleFeedReq(
     groupId: number,
     wire: Record<string, unknown>,
@@ -3104,6 +3192,7 @@ export class ReticulumChatManager extends EventEmitter {
           after: wire.after,
           before: wire.before,
           inc: wire.inc,
+          p: wire.p,
           limit: wire.limit,
         })
       );
@@ -3118,26 +3207,17 @@ export class ReticulumChatManager extends EventEmitter {
     const before = this.cursorFromWire(wire.before);
     const after = before ? null : this.cursorFromWire(wire.after);
     const includeBeforeCursor = before != null && wire.inc === 1;
-    const events =
-      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-        ? (
-            before
-              ? (
-                  includeBeforeCursor
-                    ? this.db.getGroupFeedPageAtOrBefore(groupId, before, limit + 1)
-                    : this.db.getGroupFeedPageBefore(groupId, before, limit + 1)
-                )
-              : this.db.getGroupFeedPageAfter(groupId, after, limit + 1)
-          )
-        : (
-            before
-              ? (
-                  includeBeforeCursor
-                    ? this.db.getFeedPageAtOrBefore(groupId, channelId, before, limit + 1)
-                    : this.db.getFeedPageBefore(groupId, channelId, before, limit + 1)
-                )
-              : this.db.getFeedPageAfter(groupId, channelId, after, limit + 1)
-          );
+    const priority = feedPriorityFromWire(wire.p);
+    if (wire.p != null && !priority) return;
+    const events = this.getFeedPageEvents(
+      groupId,
+      channelId,
+      before,
+      after,
+      includeBeforeCursor,
+      limit + 1,
+      priority
+    );
     const hasMore = events.length > limit;
     const visibleEvents = before && hasMore
       ? events.slice(events.length - limit)
@@ -3150,7 +3230,8 @@ export class ReticulumChatManager extends EventEmitter {
       visibleEvents,
       hasMore,
       before ? 'before' : 'after',
-      this.relayResponseOptionsFromWire(wire)
+      this.relayResponseOptionsFromWire(wire),
+      priority
     );
   }
 
@@ -3218,6 +3299,8 @@ export class ReticulumChatManager extends EventEmitter {
       ? wire.batch as Partial<ReticulumChatEventBatchWire>
       : null;
     if (!batch || !Array.isArray(batch.events)) return;
+    const priority = feedPriorityFromWire(batch.p);
+    if (batch.p != null && !priority) return;
     const incomingEvents = batch.events.slice(0, RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS);
     const validWindowEvents: ReticulumChatEvent[] = [];
     for (const candidate of incomingEvents) {
@@ -3225,6 +3308,7 @@ export class ReticulumChatManager extends EventEmitter {
       const event = candidate as ReticulumChatEvent;
       if (
         event.groupId !== groupId ||
+        (priority === 'metadata' && !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) ||
         (!allChannels && normalizeReticulumChatChannelId(event.channelId) !== channelId)
       ) {
         this.notePeerViolation(peerHash, 'event_batch_out_of_bounds');
@@ -3266,6 +3350,7 @@ export class ReticulumChatManager extends EventEmitter {
           g: groupId,
           c: channelId,
           [direction]: this.cursorToWire(cursor),
+          ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
           limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
         }, 'event-batch-more');
       }
@@ -3401,7 +3486,8 @@ export class ReticulumChatManager extends EventEmitter {
     events: ReticulumChatEvent[],
     hasMore: boolean,
     direction: 'after' | 'before' | 'range' = 'after',
-    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {}
+    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {},
+    priority?: ReticulumChatFeedPriority
   ): Promise<void> {
     const pageResult = await this.offerEventPageResource(
       peerHash,
@@ -3410,7 +3496,8 @@ export class ReticulumChatManager extends EventEmitter {
       events,
       hasMore,
       direction,
-      options
+      options,
+      priority
     );
     if (pageResult.ok) {
       await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
@@ -3454,37 +3541,20 @@ export class ReticulumChatManager extends EventEmitter {
     channelId: string,
     after: ReticulumChatFeedCursor | null,
     direction: 'after' | 'before' | 'range' = 'after',
-    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {}
+    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {},
+    priority?: ReticulumChatFeedPriority
   ): Promise<void> {
-    const events = direction === 'before' && after
-      ? (
-          channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-            ? this.db.getGroupFeedPageBefore(
-                groupId,
-                after,
-                RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
-              )
-            : this.db.getFeedPageBefore(
-                groupId,
-                channelId,
-                after,
-                RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
-              )
-        )
-      : (
-          channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-            ? this.db.getGroupFeedPageAfter(
-                groupId,
-                after,
-                RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
-              )
-            : this.db.getFeedPageAfter(
-                groupId,
-                channelId,
-                after,
-                RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
-              )
-        );
+    const before = direction === 'before' && after ? after : null;
+    const afterCursor = before ? null : after;
+    const events = this.getFeedPageEvents(
+      groupId,
+      channelId,
+      before,
+      afterCursor,
+      false,
+      RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1,
+      priority
+    );
     const hasMore = events.length > RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS;
     const visibleEvents = direction === 'before' && hasMore
       ? events.slice(events.length - RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS)
@@ -3497,7 +3567,8 @@ export class ReticulumChatManager extends EventEmitter {
       visibleEvents,
       hasMore,
       direction,
-      options
+      options,
+      priority
     );
   }
 
@@ -3565,6 +3636,46 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  private async pushMetadataHistoryPageToPeer(
+    peerHash: string,
+    groupId: number,
+    reason: string
+  ): Promise<void> {
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer || !this.canServeGroupHistory(groupId)) return;
+    if (!this.shouldPushMetadataHistoryPage(peer, groupId)) return;
+    const events = this.db.getChannelMetadataEvents(
+      groupId,
+      RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
+    );
+    if (events.length === 0) return;
+    const hasMore = events.length > RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS;
+    const visibleEvents = hasMore
+      ? events.slice(events.length - RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS)
+      : events.slice(0, RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS);
+    if (visibleEvents.length) this.db.markServed(visibleEvents.map((event) => event.eventId));
+    try {
+      await this.sendEventBatchOrResourceDigest(
+        peer,
+        groupId,
+        RETICULUM_CHAT_ALL_CHANNELS_ID,
+        visibleEvents,
+        hasMore,
+        'before',
+        {},
+        'metadata'
+      );
+      loggerLog(
+        `[ReticulumChat] Metadata sync page push group=${groupId} peer=${peer.slice(0, 16)} events=${visibleEvents.length} reason=${reason}`
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Metadata sync page push failed group=${groupId} peer=${peer.slice(0, 16)} reason=${reason}:`,
+        err
+      );
+    }
+  }
+
   private sendRepairFeedRequest(
     peerHash: string,
     wire: Extract<ReticulumChatWire, { k: 'feed_req' }>,
@@ -3578,7 +3689,8 @@ export class ReticulumChatManager extends EventEmitter {
     channelId: string,
     cursor: ReticulumChatFeedCursor | null,
     direction: 'after' | 'before',
-    includeCursor: boolean
+    includeCursor: boolean,
+    priority?: ReticulumChatFeedPriority
   ): Promise<ReticulumChatHistoryPageRequestWire | null> {
     if (!this.signLocalFields) return null;
     const normalizedChannelId =
@@ -3591,6 +3703,7 @@ export class ReticulumChatManager extends EventEmitter {
       groupId,
       channelId: normalizedChannelId,
       direction,
+      priority,
       after: direction === 'after' ? cursorWire ?? null : null,
       before: direction === 'before' ? cursorWire ?? null : null,
       includeCursor,
@@ -3619,6 +3732,7 @@ export class ReticulumChatManager extends EventEmitter {
     const request: ReticulumChatHistoryPageRequestWire = {
       c: normalizedChannelId,
       d: direction,
+      ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
       ...(direction === 'after' && cursorWire ? { after: cursorWire } : {}),
       ...(direction === 'before' && cursorWire ? { before: cursorWire } : {}),
       ...(includeCursor ? { inc: 1 as const } : {}),
@@ -3639,7 +3753,8 @@ export class ReticulumChatManager extends EventEmitter {
     direction: 'after' | 'before',
     includeCursor: boolean,
     reason: string,
-    fallbackPeerHash = peerHash
+    fallbackPeerHash = peerHash,
+    priority?: ReticulumChatFeedPriority
   ): Promise<void> {
     const peer = peerHash.trim().toLowerCase();
     const fallbackPeer = fallbackPeerHash.trim().toLowerCase();
@@ -3648,7 +3763,8 @@ export class ReticulumChatManager extends EventEmitter {
       channelId,
       cursor,
       direction,
-      includeCursor
+      includeCursor,
+      priority
     );
     const fallbackWire: Extract<ReticulumChatWire, { k: 'feed_req' }> = {
       t: 'RCHAT',
@@ -3658,6 +3774,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(direction === 'after' && cursor ? { after: this.cursorToWire(cursor) } : {}),
       ...(direction === 'before' && cursor ? { before: this.cursorToWire(cursor) } : {}),
       ...(includeCursor ? { inc: 1 as const } : {}),
+      ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
       limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
     };
     if (!peer || !request || !this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
@@ -3689,6 +3806,7 @@ export class ReticulumChatManager extends EventEmitter {
       groupId,
       channelId: normalizedChannelId,
       direction,
+      ...(priority ? { priority } : {}),
       pageHash: '',
       sizeBytes: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
       eventCount: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
@@ -3711,6 +3829,7 @@ export class ReticulumChatManager extends EventEmitter {
         groupId,
         channelId: normalizedChannelId,
         direction,
+        ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
         variableSize: true,
       },
       authMessage: {
@@ -5541,8 +5660,10 @@ export class ReticulumChatManager extends EventEmitter {
       return false;
     }
     try {
-      this.resourceStore?.assembleResource(fileHash);
-      return true;
+      const sourcePath =
+        this.resourceStore?.getVerifiedAssembledPath(fileHash) ??
+        this.resourceStore?.assembleResource(fileHash);
+      return Boolean(sourcePath);
     } catch {
       return false;
     }
@@ -5692,7 +5813,7 @@ export class ReticulumChatManager extends EventEmitter {
     const request = candidate as ReticulumChatEventRequestWire;
     if (!verifyReticulumChatEventRequest(groupId, request, this.now())) return;
     const event = this.db.getEvent(request.id);
-    if (!event || !this.canServeGroupHistory(groupId)) {
+    if (!event || this.db.isEventPayloadScrubbed(request.id) || !this.canServeGroupHistory(groupId)) {
       this.relayGroupControlRequest(
         'event_req',
         groupId,
@@ -6121,7 +6242,8 @@ export class ReticulumChatManager extends EventEmitter {
     channelId: string,
     events: ReticulumChatEvent[],
     hasMore: boolean,
-    direction: 'after' | 'before' | 'range'
+    direction: 'after' | 'before' | 'range',
+    priority?: ReticulumChatFeedPriority
   ): {
     pageEvents: ReticulumChatEvent[];
     orderedPageEvents: ReticulumChatEvent[];
@@ -6135,6 +6257,10 @@ export class ReticulumChatManager extends EventEmitter {
     const selectedEvents: ReticulumChatEvent[] = [];
     for (const event of boundedEvents) {
       if (event.groupId !== groupId) continue;
+      if (this.db.isEventPayloadScrubbed(event.eventId)) continue;
+      if (priority === 'metadata' && !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
+        continue;
+      }
       if (
         channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
         normalizeReticulumChatChannelId(event.channelId) !== channelId
@@ -6162,6 +6288,7 @@ export class ReticulumChatManager extends EventEmitter {
         g: groupId,
         c: channelId,
         d: direction,
+        ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
         ...(hasMore || truncatedForSize ? { more: true } : {}),
         ...(start ? { start } : {}),
         ...(end ? { end } : {}),
@@ -6198,7 +6325,8 @@ export class ReticulumChatManager extends EventEmitter {
     events: ReticulumChatEvent[],
     hasMore: boolean,
     direction: 'after' | 'before' | 'range',
-    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {}
+    options: Omit<ReticulumChatEventOfferOptions, 'continuation'> = {},
+    priority?: ReticulumChatFeedPriority
   ): Promise<ReticulumSendResult> {
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
@@ -6216,7 +6344,8 @@ export class ReticulumChatManager extends EventEmitter {
       channelId,
       events,
       hasMore,
-      direction
+      direction,
+      priority
     );
     if (!pageResource) {
       return { ok: false, reason: 'send-command-failed', error: 'No valid events to offer' };
@@ -6234,6 +6363,7 @@ export class ReticulumChatManager extends EventEmitter {
       groupId,
       channelId,
       direction,
+      ...(priority ? { priority } : {}),
       pageHash: pageResource.pageHash,
       sizeBytes: pageResource.sizeBytes,
       eventCount: pageResource.eventCount,
@@ -6264,6 +6394,7 @@ export class ReticulumChatManager extends EventEmitter {
         resourceType: 'reticulum_chat_event_page',
         groupId,
         channelId,
+        ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
         pageHash: pageResource.pageHash,
         eventCount: pageResource.eventCount,
       },
@@ -6308,6 +6439,9 @@ export class ReticulumChatManager extends EventEmitter {
     const event = this.db.getEvent(eventId);
     if (!event || event.groupId !== groupId) {
       return { ok: false, reason: 'send-command-failed', error: 'Event not found for group' };
+    }
+    if (this.db.isEventPayloadScrubbed(eventId)) {
+      return { ok: false, reason: 'send-command-failed', error: 'Event payload has been deleted' };
     }
     if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
       return { ok: false, reason: 'send-command-failed', error: 'Bridge chat resource send unavailable' };
@@ -6447,6 +6581,7 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       return false;
     }
+    if (offer.priority != null && offer.priority !== 'metadata') return false;
     if (typeof offer.pageHash !== 'string' || !/^[0-9a-f]{64}$/i.test(offer.pageHash)) return false;
     if (!Number.isInteger(offer.sizeBytes) || offer.sizeBytes <= 0) return false;
     if (offer.sizeBytes > RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES) return false;
@@ -6767,6 +6902,7 @@ export class ReticulumChatManager extends EventEmitter {
         page.g !== offer.groupId ||
         page.c !== offer.channelId ||
         page.d !== offer.direction ||
+        feedPriorityFromWire(page.p) !== offer.priority ||
         typeof page.wh !== 'string' ||
         !Array.isArray(page.events) ||
         page.events.length > offer.eventCount ||
@@ -6790,6 +6926,7 @@ export class ReticulumChatManager extends EventEmitter {
         const event = candidate as ReticulumChatEvent;
         if (
           event.groupId !== offer.groupId ||
+          (offer.priority === 'metadata' && !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) ||
           (
             offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
             normalizeReticulumChatChannelId(event.channelId) !== offer.channelId
@@ -6862,7 +6999,9 @@ export class ReticulumChatManager extends EventEmitter {
               cursor,
               offer.direction,
               false,
-              'event-page-more'
+              'event-page-more',
+              sourcePeerHash,
+              offer.priority
             );
           }
         }
@@ -7134,6 +7273,7 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     if (!this.bridge || !payload.linkId || !payload.transferId) return;
     const groupId = Number(auth.groupId || payload.groupId || 0);
+    const requestedPriority = feedPriorityFromWire(auth.p);
     const request: ReticulumChatHistoryPageRequestWire = {
       c:
         auth.c === RETICULUM_CHAT_ALL_CHANNELS_ID
@@ -7143,6 +7283,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(isFeedCursorWire(auth.after) ? { after: auth.after } : {}),
       ...(isFeedCursorWire(auth.before) ? { before: auth.before } : {}),
       ...(auth.inc === 1 ? { inc: 1 as const } : {}),
+      ...(requestedPriority ? { p: feedPriorityToWire(requestedPriority) } : {}),
       limit: this.normalizeFeedLimit(auth.limit),
       a: String(auth.a || ''),
       pk: String(auth.pk || ''),
@@ -7158,6 +7299,10 @@ export class ReticulumChatManager extends EventEmitter {
     };
     if (!Number.isInteger(groupId) || groupId <= 0) {
       await reject('bad_history_page_auth');
+      return;
+    }
+    if (auth.p != null && !requestedPriority) {
+      await reject('invalid_history_priority');
       return;
     }
     if (!this.canServeGroupHistory(groupId)) {
@@ -7184,26 +7329,20 @@ export class ReticulumChatManager extends EventEmitter {
     const after = before ? null : this.cursorFromWire(request.after);
     const includeBeforeCursor = before != null && request.inc === 1;
     const limit = this.normalizeFeedLimit(request.limit);
-    const events =
-      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-        ? (
-            before
-              ? (
-                  includeBeforeCursor
-                    ? this.db.getGroupFeedPageAtOrBefore(groupId, before, limit + 1)
-                    : this.db.getGroupFeedPageBefore(groupId, before, limit + 1)
-                )
-              : this.db.getGroupFeedPageAfter(groupId, after, limit + 1)
-          )
-        : (
-            before
-              ? (
-                  includeBeforeCursor
-                    ? this.db.getFeedPageAtOrBefore(groupId, channelId, before, limit + 1)
-                    : this.db.getFeedPageBefore(groupId, channelId, before, limit + 1)
-                )
-              : this.db.getFeedPageAfter(groupId, channelId, after, limit + 1)
-          );
+    const priority = feedPriorityFromWire(request.p);
+    if (request.p != null && !priority) {
+      await reject('invalid_history_priority');
+      return;
+    }
+    const events = this.getFeedPageEvents(
+      groupId,
+      channelId,
+      before,
+      after,
+      includeBeforeCursor,
+      limit + 1,
+      priority
+    );
     const hasMore = events.length > limit;
     const direction = before ? 'before' as const : 'after' as const;
     const visibleEvents = before && hasMore
@@ -7218,7 +7357,8 @@ export class ReticulumChatManager extends EventEmitter {
       channelId,
       visibleEvents,
       hasMore,
-      direction
+      direction,
+      priority
     );
     if (!pageResource) {
       await reject('history_page_too_large');
@@ -7245,6 +7385,7 @@ export class ReticulumChatManager extends EventEmitter {
         logicalResourceType: 'reticulum_chat_history_page',
         groupId,
         channelId,
+        ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
         pageHash: pageResource.pageHash,
         eventCount: pageResource.eventCount,
         size: pageResource.sizeBytes,
@@ -7516,6 +7657,24 @@ export class ReticulumChatManager extends EventEmitter {
     const lastRequestedAt = this.recentGroupRepairRequests.get(key) ?? 0;
     if (now - lastRequestedAt < RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS) return false;
     this.recentGroupRepairRequests.set(key, now);
+    return true;
+  }
+
+  private shouldRequestMetadataRepair(peerHash: string, groupId: number): boolean {
+    const key = `${peerHash.trim().toLowerCase()}:${groupId}`;
+    const now = this.now();
+    const lastRequestedAt = this.recentMetadataRepairRequests.get(key) ?? 0;
+    if (now - lastRequestedAt < RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS) return false;
+    this.recentMetadataRepairRequests.set(key, now);
+    return true;
+  }
+
+  private shouldPushMetadataHistoryPage(peerHash: string, groupId: number): boolean {
+    const key = `${peerHash.trim().toLowerCase()}:${groupId}`;
+    const now = this.now();
+    const lastPushedAt = this.recentMetadataPagePushes.get(key) ?? 0;
+    if (now - lastPushedAt < RETICULUM_CHAT_NEWEST_PAGE_PUSH_DEBOUNCE_MS) return false;
+    this.recentMetadataPagePushes.set(key, now);
     return true;
   }
 

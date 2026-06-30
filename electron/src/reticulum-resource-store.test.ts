@@ -62,6 +62,7 @@ describe('reticulum resource store', () => {
     const assembledPath = store.assembleResource(manifest.fileHash);
     expect(path.basename(assembledPath)).toBe('assembled.enc');
     expect(fs.readFileSync(assembledPath)).toEqual(contents);
+    expect(store.getVerifiedAssembledPath(manifest.fileHash)).toBe(assembledPath);
   });
 
   it('keeps separate group references for the same file hash', () => {
@@ -182,9 +183,33 @@ describe('reticulum resource store', () => {
     const oldTime = new Date(10_000);
     fs.utimesSync(assembledPath, oldTime, oldTime);
 
+    expect(store.getVerifiedAssembledPath(manifest.fileHash)).toBe(assembledPath);
     expect(store.assembleResource(manifest.fileHash)).toBe(assembledPath);
     expect(fs.readFileSync(assembledPath)).toEqual(contents);
     expect(fs.statSync(assembledPath).mtimeMs).toBe(10_000);
+  });
+
+  it('does not report a verified assembled path when the verified file is missing', () => {
+    const { dir, store } = tempStore();
+    stores.push(store);
+    const sourcePath = path.join(dir, 'source.bin');
+    const contents = Buffer.from('missing assembled path');
+    fs.writeFileSync(sourcePath, contents);
+
+    const manifest = store.importLocalFile({
+      sourcePath,
+      namespace: 'test.feature',
+      fileName: 'missing.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+    });
+    const assembledPath = store.getVerifiedAssembledPath(manifest.fileHash);
+    expect(assembledPath).toBeTruthy();
+
+    fs.rmSync(assembledPath!, { force: true });
+
+    expect(store.getVerifiedAssembledPath(manifest.fileHash)).toBe(null);
+    expect(() => store.assembleResource(manifest.fileHash)).toThrow(/partial file/);
   });
 
   it('assembles public resources to the original safe filename', () => {

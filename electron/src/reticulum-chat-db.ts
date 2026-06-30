@@ -180,6 +180,7 @@ type EventRow = {
   stored_at: number;
   accepted_at: number;
   wire_bytes: number;
+  scrubbed_at?: number | null;
 };
 
 type MessageProjectionRow = {
@@ -518,6 +519,31 @@ function eventWireBytes(event: ReticulumChatEvent): number {
   return Buffer.byteLength(JSON.stringify(event), 'utf8');
 }
 
+function deletedPayloadScrubMarker(eventId: string, deletedEventId: string | null): string {
+  return JSON.stringify({
+    deleted: true,
+    eventId,
+    ...(deletedEventId ? { deletedEventId } : {}),
+  });
+}
+
+function isDeletedPayloadScrubMarker(value: unknown): boolean {
+  if (typeof value !== 'string' || !value) return false;
+  try {
+    const parsed = JSON.parse(value) as { deleted?: unknown; eventId?: unknown };
+    return parsed.deleted === true && typeof parsed.eventId === 'string' && !!parsed.eventId;
+  } catch {
+    return false;
+  }
+}
+
+function hashReticulumChatDbPayload(encryptedPayload: string): string {
+  return nodeCrypto
+    .createHash('sha256')
+    .update(encryptedPayload, 'utf8')
+    .digest('hex');
+}
+
 function collectSearchStrings(value: unknown, out: string[]): void {
   if (typeof value === 'string') {
     out.push(value);
@@ -591,6 +617,8 @@ export class ReticulumChatDatabase {
   private memoryGroupKeyDigests = new Map<string, ReticulumChatGroupKeyDigest>();
   private memoryGroupKeyRequests = new Map<string, ReticulumChatGroupKeyRequest>();
   private memorySearchText = new Map<string, string>();
+  private memoryScrubbedEvents = new Set<string>();
+  private memoryScrubbedEventOverrides = new Map<string, ReticulumChatEvent>();
   private memoryChannels = new Map<string, ReticulumGroupChannel>();
   private memoryCategories = new Map<string, ReticulumGroupCategory>();
   private memoryMentions = new Map<
@@ -613,6 +641,7 @@ export class ReticulumChatDatabase {
   private stmtInsertEvent: Statement;
   private stmtGetEvent: Statement;
   private stmtHasEvent: Statement;
+  private stmtIsEventScrubbed: Statement;
   private stmtGetRecentEvents: Statement;
   private stmtGetRecentMessageEvents: Statement;
   private stmtGetRecentMessageEventsAllChannels: Statement;
@@ -620,6 +649,9 @@ export class ReticulumChatDatabase {
   private stmtGetMessageProjectionEvents: Statement;
   private stmtDeleteMessageProjection: Statement;
   private stmtGetChannelMetadataEvents: Statement;
+  private stmtGetChannelMetadataPageAfter: Statement;
+  private stmtGetChannelMetadataPageBefore: Statement;
+  private stmtGetChannelMetadataPageAtOrBefore: Statement;
   private stmtGetEventsAfter: Statement;
   private stmtGetEventsAfterCursor: Statement;
   private stmtGetEventsBefore: Statement;
@@ -650,6 +682,10 @@ export class ReticulumChatDatabase {
   private stmtTotalCacheBytes: Statement;
   private stmtEvictCandidate: Statement;
   private stmtDeleteEvent: Statement;
+  private stmtGetRelayEventsForGroup: Statement;
+  private stmtGetDeleteEvents: Statement;
+  private stmtUpdateScrubbedEvent: Statement;
+  private stmtInsertScrubbedEvent: Statement;
   private stmtUpsertSearchMirror: Statement;
   private stmtDeleteSearchMirror: Statement;
   private stmtSearchMirror: Statement;
@@ -713,6 +749,7 @@ export class ReticulumChatDatabase {
     this.db.pragma('synchronous = NORMAL');
     this.initSchema();
     this.migrateEventMentionTargetsSchema();
+    this.migrateEventScrubbedAtSchema();
     this.initRelayCacheSchema();
     this.initGroupKeySchema();
 
@@ -733,6 +770,9 @@ export class ReticulumChatDatabase {
     );
     this.stmtHasEvent = this.db.prepare(
       'SELECT 1 FROM reticulum_chat_events WHERE event_id = ? LIMIT 1'
+    );
+    this.stmtIsEventScrubbed = this.db.prepare(
+      'SELECT event_type, target_event_id, scrubbed_at, encrypted_payload FROM reticulum_chat_events WHERE event_id = ? LIMIT 1'
     );
     this.stmtGetRecentEvents = this.db.prepare(`
       SELECT * FROM (
@@ -819,6 +859,63 @@ export class ReticulumChatDatabase {
         LIMIT ?
       )
       ORDER BY timestamp ASC, event_id ASC
+    `);
+    this.stmtGetChannelMetadataPageAfter = this.db.prepare(`
+      SELECT * FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND event_type IN (
+          'channel_create',
+          'channel_update',
+          'channel_archive',
+          'channel_restore',
+          'channel_reorder',
+          'category_create',
+          'category_update',
+          'category_delete'
+        )
+        AND (feed_timestamp > ? OR (feed_timestamp = ? AND event_id > ?))
+      ORDER BY feed_timestamp ASC, event_id ASC
+      LIMIT ?
+    `);
+    this.stmtGetChannelMetadataPageBefore = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ?
+          AND event_type IN (
+            'channel_create',
+            'channel_update',
+            'channel_archive',
+            'channel_restore',
+            'channel_reorder',
+            'category_create',
+            'category_update',
+            'category_delete'
+          )
+          AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
+        ORDER BY feed_timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY feed_timestamp ASC, event_id ASC
+    `);
+    this.stmtGetChannelMetadataPageAtOrBefore = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ?
+          AND event_type IN (
+            'channel_create',
+            'channel_update',
+            'channel_archive',
+            'channel_restore',
+            'channel_reorder',
+            'category_create',
+            'category_update',
+            'category_delete'
+          )
+          AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id <= ?))
+        ORDER BY feed_timestamp DESC, event_id DESC
+        LIMIT ?
+      )
+      ORDER BY feed_timestamp ASC, event_id ASC
     `);
     this.stmtGetEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
@@ -1305,6 +1402,38 @@ export class ReticulumChatDatabase {
     this.stmtDeleteRelayByEvent = this.db.prepare(
       'DELETE FROM rchat_relay_cache WHERE event_id = ?'
     );
+    this.stmtGetRelayEventsForGroup = this.db.prepare(
+      'SELECT event_id, payload_json FROM rchat_relay_cache WHERE group_id = ?'
+    );
+    this.stmtGetDeleteEvents = this.db.prepare(`
+      SELECT event_id, target_event_id, timestamp
+      FROM reticulum_chat_events
+      WHERE event_type = 'delete'
+        AND target_event_id IS NOT NULL
+      ORDER BY timestamp ASC, event_id ASC
+    `);
+    this.stmtUpdateScrubbedEvent = this.db.prepare(`
+      UPDATE reticulum_chat_events
+      SET encrypted_payload = ?,
+          payload_hash = ?,
+          mention_address_hashes = '[]',
+          mention_targets = '[]',
+          wire_bytes = ?,
+          scrubbed_at = ?
+      WHERE event_id = ?
+    `);
+    this.stmtInsertScrubbedEvent = this.db.prepare(`
+      INSERT OR REPLACE INTO reticulum_chat_events
+        (event_id, group_id, author_address, author_public_key, author_seq,
+         timestamp, feed_timestamp, event_type, target_event_id, reply_to_event_id,
+         encrypted_payload, payload_hash, mention_address_hashes, mention_targets, signature, own_event,
+         last_served_at, stored_at, accepted_at, wire_bytes, channel_id, scrubbed_at)
+      VALUES
+        (@event_id, @group_id, @author_address, @author_public_key, @author_seq,
+         @timestamp, @feed_timestamp, @event_type, @target_event_id, @reply_to_event_id,
+         @encrypted_payload, @payload_hash, '[]', '[]', @signature, @own_event,
+         @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id, @scrubbed_at)
+    `);
     this.stmtUpsertGroupKey = this.db.prepare(`
       INSERT OR REPLACE INTO rchat_group_keys
         (group_id, epoch, key_id, key_bytes_base64, created_by, created_at,
@@ -1362,6 +1491,7 @@ export class ReticulumChatDatabase {
     this.pruneSatisfiedMissingRanges();
     this.backfillMessageProjection();
     this.backfillSearchIndex();
+    this.scrubExistingDeletedMessagePayloads();
   }
 
   close(): void {
@@ -1412,20 +1542,287 @@ export class ReticulumChatDatabase {
         searchTextFromPayload(event.encryptedPayload),
         false
       );
+      this.applyDeleteScrubForEvent(event);
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return inserted;
   }
 
+  private applyDeleteScrubForEvent(event: ReticulumChatEvent): void {
+    if (event.eventType === 'delete' && event.targetEventId) {
+      this.scrubDeletedMessageThread(event.targetEventId, event.eventId, event.timestamp);
+      return;
+    }
+    if (
+      (event.eventType === 'message' || event.eventType === 'attachment_manifest') &&
+      event.eventId
+    ) {
+      const deleteRow = this.findDeleteTombstone(event.eventId);
+      if (deleteRow) {
+        this.scrubDeletedMessageThread(
+          event.eventId,
+          deleteRow.eventId,
+          deleteRow.timestamp || Date.now()
+        );
+      }
+      return;
+    }
+    if (event.eventType === 'edit' && event.targetEventId) {
+      const deleteRow = this.findDeleteTombstone(event.targetEventId);
+      if (deleteRow) {
+        this.scrubDeletedMessageThread(
+          event.targetEventId,
+          deleteRow.eventId,
+          deleteRow.timestamp || Date.now()
+        );
+      }
+    }
+  }
+
+  private scrubExistingDeletedMessagePayloads(): void {
+    const rows = this.stmtGetDeleteEvents.all() as Array<{
+      event_id?: string;
+      target_event_id?: string;
+      timestamp?: number;
+    }>;
+    for (const row of rows) {
+      if (typeof row.target_event_id !== 'string' || !row.target_event_id) continue;
+      this.scrubDeletedMessageThread(
+        row.target_event_id,
+        typeof row.event_id === 'string' ? row.event_id : null,
+        Number(row.timestamp) || Date.now()
+      );
+    }
+  }
+
+  private findDeleteTombstone(rootEventId: string): { eventId: string; timestamp: number } | null {
+    if (typeof rootEventId !== 'string' || !rootEventId) return null;
+    for (const event of this.memoryEvents.values()) {
+      if (event.eventType === 'delete' && event.targetEventId === rootEventId) {
+        return { eventId: event.eventId, timestamp: event.timestamp };
+      }
+    }
+    const rows = this.stmtGetMessageProjectionEvents.all(rootEventId, rootEventId) as EventRow[];
+    const deleteEvent = rows
+      .map(rowToEvent)
+      .filter((event) => event.eventType === 'delete' && event.targetEventId === rootEventId)
+      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId))[0];
+    if (!deleteEvent) return null;
+    return { eventId: deleteEvent.eventId, timestamp: deleteEvent.timestamp };
+  }
+
+  private scrubDeletedMessageThread(
+    rootEventId: string,
+    deletedEventId: string | null,
+    scrubbedAt: number
+  ): void {
+    if (typeof rootEventId !== 'string' || !rootEventId) return;
+    const rootEvent = this.getEvent(rootEventId);
+    if (!rootEvent) return;
+    const candidates = new Map<string, ReticulumChatEvent>();
+    candidates.set(rootEvent.eventId, rootEvent);
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT *
+          FROM reticulum_chat_events
+          WHERE group_id = ?
+            AND (event_id = ? OR target_event_id = ?)
+        `)
+        .all(rootEvent.groupId, rootEventId, rootEventId) as EventRow[];
+      for (const row of rows) {
+        const event = rowToEvent(row);
+        candidates.set(event.eventId, event);
+      }
+    } catch {
+      // The in-memory write-through cache below still covers current-runtime deletes.
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== rootEvent.groupId) continue;
+      if (event.eventId === rootEventId || event.targetEventId === rootEventId) {
+        candidates.set(event.eventId, event);
+      }
+    }
+    const deletedThreadEvents = [...candidates.values()].filter((event) => {
+      if (event.eventId === rootEventId) return true;
+      return event.eventType === 'edit' && event.targetEventId === rootEventId;
+    });
+    if (deletedThreadEvents.length === 0) return;
+
+    const groupIds = new Set<number>();
+    for (const event of deletedThreadEvents) {
+      const eventId = event.eventId;
+      if (!eventId) continue;
+      if (Number.isInteger(event.groupId) && event.groupId > 0) {
+        groupIds.add(event.groupId);
+      }
+      const scrubbedPayload = deletedPayloadScrubMarker(eventId, deletedEventId);
+      const scrubbedHash = hashReticulumChatDbPayload(scrubbedPayload);
+      const scrubbedEvent: ReticulumChatEvent = {
+        ...event,
+        encryptedPayload: scrubbedPayload,
+        payloadHash: scrubbedHash,
+        mentionAddressHashes: [],
+        mentionTargets: [],
+      };
+      const meta = this.memoryMeta.get(eventId);
+      const existingRow = this.stmtGetEvent.get(eventId) as EventRow | undefined;
+      this.memoryEvents.delete(eventId);
+      this.memoryScrubbedEvents.add(eventId);
+      this.memoryScrubbedEventOverrides.set(eventId, scrubbedEvent);
+      this.memorySearchText.delete(eventId);
+      this.memoryMentions.delete(eventId);
+      const scrubbedWireBytes = Buffer.byteLength(scrubbedPayload, 'utf8');
+      const updateResult = this.stmtUpdateScrubbedEvent.run(
+        scrubbedPayload,
+        scrubbedHash,
+        scrubbedWireBytes,
+        scrubbedAt,
+        eventId
+      );
+      if (updateResult.changes === 0) {
+        this.stmtInsertScrubbedEvent.run({
+          event_id: event.eventId,
+          group_id: event.groupId,
+          author_address: event.authorAddress,
+          author_public_key: event.authorPublicKey,
+          author_seq: event.authorSeq,
+          timestamp: event.timestamp,
+          feed_timestamp:
+            existingRow?.feed_timestamp ?? this.normalizeFeedTimestamp(event.timestamp),
+          event_type: event.eventType,
+          target_event_id: event.targetEventId ?? null,
+          reply_to_event_id: event.replyToEventId ?? null,
+          encrypted_payload: scrubbedPayload,
+          payload_hash: scrubbedHash,
+          signature: event.signature,
+          own_event: existingRow?.own_event ?? (meta?.ownEvent ? 1 : 0),
+          last_served_at: existingRow?.last_served_at ?? meta?.lastServedAt ?? scrubbedAt,
+          stored_at: existingRow?.stored_at ?? meta?.storedAt ?? scrubbedAt,
+          accepted_at: existingRow?.accepted_at ?? scrubbedAt,
+          wire_bytes: scrubbedWireBytes,
+          channel_id: normalizeReticulumChatChannelId(event.channelId),
+          scrubbed_at: scrubbedAt,
+        });
+      }
+      this.stmtDeleteSearchText.run(eventId);
+      this.stmtDeleteSearchMirror.run(eventId);
+      this.stmtDeleteMentionsForEvent.run(eventId);
+      this.stmtDeleteRelayByEvent.run(eventId);
+      this.memoryRelayCache.delete(eventId);
+    }
+
+    for (const groupId of groupIds) {
+      this.deleteRelayPayloadsForDeletedRoot(groupId, rootEventId);
+    }
+    this.rebuildMessageProjection(rootEventId);
+  }
+
+  private deleteRelayPayloadsForDeletedRoot(groupId: number, rootEventId: string): void {
+    for (const [eventId, entry] of [...this.memoryRelayCache.entries()]) {
+      if (entry.groupId !== groupId) continue;
+      if (eventId === rootEventId) {
+        this.memoryRelayCache.delete(eventId);
+        this.stmtDeleteRelayByEvent.run(eventId);
+        continue;
+      }
+      try {
+        const candidate = JSON.parse(entry.payloadJson) as Partial<ReticulumChatEvent>;
+        if (candidate.eventType === 'edit' && candidate.targetEventId === rootEventId) {
+          this.memoryRelayCache.delete(eventId);
+          this.stmtDeleteRelayByEvent.run(eventId);
+        }
+      } catch {
+        // Malformed relay payloads are ignored here; normal relay validation handles them.
+      }
+    }
+    const rows = this.stmtGetRelayEventsForGroup.all(groupId) as Array<{
+      event_id?: string;
+      payload_json?: string;
+    }>;
+    for (const row of rows) {
+      const eventId = typeof row.event_id === 'string' ? row.event_id : '';
+      if (!eventId) continue;
+      if (eventId === rootEventId) {
+        this.stmtDeleteRelayByEvent.run(eventId);
+        this.memoryRelayCache.delete(eventId);
+        continue;
+      }
+      try {
+        const candidate = JSON.parse(String(row.payload_json || '')) as Partial<ReticulumChatEvent>;
+        if (candidate.eventType === 'edit' && candidate.targetEventId === rootEventId) {
+          this.stmtDeleteRelayByEvent.run(eventId);
+          this.memoryRelayCache.delete(eventId);
+        }
+      } catch {
+        // Malformed relay payloads are ignored here; normal relay validation handles them.
+      }
+    }
+  }
+
   hasEvent(eventId: string): boolean {
-    return this.memoryEvents.has(eventId) || !!this.stmtHasEvent.get(eventId);
+    return (
+      this.memoryEvents.has(eventId) ||
+      this.memoryScrubbedEventOverrides.has(eventId) ||
+      !!this.stmtHasEvent.get(eventId)
+    );
+  }
+
+  isEventPayloadScrubbed(eventId: string): boolean {
+    if (typeof eventId !== 'string' || !eventId) return false;
+    if (this.memoryScrubbedEvents.has(eventId)) return true;
+    const row = this.stmtIsEventScrubbed.get(eventId) as
+      | {
+          event_type?: string | null;
+          target_event_id?: string | null;
+          scrubbed_at?: number | null;
+          encrypted_payload?: string | null;
+        }
+      | undefined;
+    const rootEventId =
+      row?.event_type === 'edit' && typeof row.target_event_id === 'string'
+        ? row.target_event_id
+        : eventId;
+    return Number.isFinite(row?.scrubbed_at ?? NaN) ||
+      isDeletedPayloadScrubMarker(row?.encrypted_payload) ||
+      (row?.event_type !== 'delete' && this.findDeleteTombstone(rootEventId) !== null);
   }
 
   getEvent(eventId: string): ReticulumChatEvent | null {
+    const scrubbed = this.memoryScrubbedEventOverrides.get(eventId);
+    if (scrubbed) return scrubbed;
     const inMemory = this.memoryEvents.get(eventId);
-    if (inMemory) return inMemory;
+    if (inMemory) {
+      if (inMemory.eventType === 'delete') return inMemory;
+      const deleteRow = this.findDeleteTombstone(
+        inMemory.eventType === 'edit' ? inMemory.targetEventId || '' : inMemory.eventId
+      );
+      if (!deleteRow) return inMemory;
+      const scrubbedPayload = deletedPayloadScrubMarker(inMemory.eventId, deleteRow.eventId);
+      return {
+        ...inMemory,
+        encryptedPayload: scrubbedPayload,
+        payloadHash: hashReticulumChatDbPayload(scrubbedPayload),
+        mentionAddressHashes: [],
+        mentionTargets: [],
+      };
+    }
     const row = this.stmtGetEvent.get(eventId) as EventRow | undefined;
-    return row ? rowToEvent(row) : null;
+    if (!row) return null;
+    const event = rowToEvent(row);
+    if (event.eventType === 'delete') return event;
+    const deleteRow = this.findDeleteTombstone(
+      event.eventType === 'edit' ? event.targetEventId || '' : event.eventId
+    );
+    if (!deleteRow) return event;
+    const scrubbedPayload = deletedPayloadScrubMarker(event.eventId, deleteRow.eventId);
+    return {
+      ...event,
+      encryptedPayload: scrubbedPayload,
+      payloadHash: hashReticulumChatDbPayload(scrubbedPayload),
+      mentionAddressHashes: [],
+      mentionTargets: [],
+    };
   }
 
   private applyMessageProjectionEvent(event: ReticulumChatEvent): void {
@@ -1511,6 +1908,8 @@ export class ReticulumChatDatabase {
     const event = this.getEvent(eventId);
     this.memoryMeta.delete(eventId);
     this.memoryEvents.delete(eventId);
+    this.memoryScrubbedEvents.delete(eventId);
+    this.memoryScrubbedEventOverrides.delete(eventId);
     this.memorySearchText.delete(eventId);
     this.memoryMentions.delete(eventId);
     this.stmtDeleteSearchText.run(eventId);
@@ -1579,6 +1978,17 @@ export class ReticulumChatDatabase {
     if (event.eventType === 'attachment_manifest') {
       return { ok: false, reason: 'attachment-events-not-relayed' };
     }
+    if (event.eventType === 'delete' && event.targetEventId) {
+      this.deleteRelayPayloadsForDeletedRoot(event.groupId, event.targetEventId);
+    }
+    if (
+      (event.eventType === 'message' || event.eventType === 'edit') &&
+      this.eventHasDeleteTombstone(
+        event.eventType === 'edit' ? event.targetEventId : event.eventId
+      )
+    ) {
+      return { ok: false, reason: 'event-deleted' };
+    }
     if (typeof payloadJson !== 'string' || !payloadJson.trim()) {
       return { ok: false, reason: 'empty-payload' };
     }
@@ -1623,6 +2033,11 @@ export class ReticulumChatDatabase {
     });
     this.enforceOfflineRelayCacheLimit(now);
     return { ok: true, blobId, stored: inserted.changes > 0 || this.memoryRelayCache.has(event.eventId) };
+  }
+
+  private eventHasDeleteTombstone(rootEventId: string | undefined): boolean {
+    if (typeof rootEventId !== 'string' || !rootEventId) return false;
+    return this.findDeleteTombstone(rootEventId) !== null;
   }
 
   getRelayEventBlob(
@@ -1986,6 +2401,7 @@ export class ReticulumChatDatabase {
     }>;
     const results: ReticulumChatSearchResult[] = [];
     for (const row of rows) {
+      if (this.isEventPayloadScrubbed(row.event_id)) continue;
       const event = this.getEvent(row.event_id);
       if (!event) continue;
       if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
@@ -2054,26 +2470,120 @@ export class ReticulumChatDatabase {
     return rows.map(messageProjectionRowToEvent);
   }
 
+  private isChannelMetadataEventType(eventType: string): boolean {
+    return (
+      eventType === 'channel_create' ||
+      eventType === 'channel_update' ||
+      eventType === 'channel_archive' ||
+      eventType === 'channel_restore' ||
+      eventType === 'channel_reorder' ||
+      eventType === 'category_create' ||
+      eventType === 'category_update' ||
+      eventType === 'category_delete'
+    );
+  }
+
   getChannelMetadataEvents(groupId: number, limit: number): ReticulumChatEvent[] {
     const maxLimit = Math.max(1, Math.min(500, limit));
-    const metadataTypes = new Set([
-      'channel_create',
-      'channel_update',
-      'channel_archive',
-      'channel_restore',
-      'channel_reorder',
-      'category_create',
-      'category_update',
-      'category_delete',
-    ]);
-    return this.mergeWindowEvents(
-      (this.stmtGetChannelMetadataEvents.all(groupId, maxLimit) as EventRow[]).map(rowToEvent),
+    const seen = new Set<string>();
+    return [
+      ...(this.stmtGetChannelMetadataEvents.all(groupId, maxLimit) as EventRow[]).map(rowToEvent),
       [...this.memoryEvents.values()]
-        .filter((event) => event.groupId === groupId && metadataTypes.has(event.eventType))
+        .filter((event) => event.groupId === groupId && this.isChannelMetadataEventType(event.eventType))
         .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
         .slice(0, maxLimit),
-      maxLimit
-    ).filter((event) => metadataTypes.has(event.eventType));
+    ].flat()
+      .filter((event) => {
+        if (!this.isChannelMetadataEventType(event.eventType)) return false;
+        if (seen.has(event.eventId)) return false;
+        seen.add(event.eventId);
+        return true;
+      })
+      .sort((a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId))
+      .slice(0, maxLimit)
+      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+  }
+
+  getChannelMetadataPageAfter(
+    groupId: number,
+    cursor: ReticulumChatFeedCursor | null,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
+    const effectiveCursor = cursor ?? { feedTimestamp: -1, eventId: '' };
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (!this.isChannelMetadataEventType(event.eventType)) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        effectiveCursor
+      ) > 0;
+    };
+    return this.mergeWindowEvents(
+      (this.stmtGetChannelMetadataPageAfter.all(
+        groupId,
+        effectiveCursor.feedTimestamp,
+        effectiveCursor.feedTimestamp,
+        effectiveCursor.eventId,
+        safeLimit
+      ) as EventRow[]).map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
+  }
+
+  getChannelMetadataPageBefore(
+    groupId: number,
+    cursor: ReticulumChatFeedCursor,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (!this.isChannelMetadataEventType(event.eventType)) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        cursor
+      ) < 0;
+    };
+    return this.mergeNewestWindowEvents(
+      (this.stmtGetChannelMetadataPageBefore.all(
+        groupId,
+        cursor.feedTimestamp,
+        cursor.feedTimestamp,
+        cursor.eventId,
+        safeLimit
+      ) as EventRow[]).map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
+  }
+
+  getChannelMetadataPageAtOrBefore(
+    groupId: number,
+    cursor: ReticulumChatFeedCursor,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(101, Math.floor(limit)));
+    const matches = (event: ReticulumChatEvent): boolean => {
+      if (event.groupId !== groupId) return false;
+      if (!this.isChannelMetadataEventType(event.eventType)) return false;
+      return this.compareFeedCursors(
+        { eventId: event.eventId, feedTimestamp: this.normalizeFeedTimestamp(event.timestamp) },
+        cursor
+      ) <= 0;
+    };
+    return this.mergeNewestWindowEvents(
+      (this.stmtGetChannelMetadataPageAtOrBefore.all(
+        groupId,
+        cursor.feedTimestamp,
+        cursor.feedTimestamp,
+        cursor.eventId,
+        safeLimit
+      ) as EventRow[]).map(rowToEvent).filter(matches),
+      [...this.memoryEvents.values()].filter(matches),
+      safeLimit
+    );
   }
 
   getEventsAfter(
@@ -3677,7 +4187,8 @@ export class ReticulumChatDatabase {
         last_served_at INTEGER NOT NULL,
         stored_at INTEGER NOT NULL,
         accepted_at INTEGER NOT NULL,
-        wire_bytes INTEGER NOT NULL
+        wire_bytes INTEGER NOT NULL,
+        scrubbed_at INTEGER
       );
       CREATE UNIQUE INDEX IF NOT EXISTS reticulum_chat_author_seq_idx
         ON reticulum_chat_events (group_id, author_address, author_seq);
@@ -4012,6 +4523,18 @@ export class ReticulumChatDatabase {
     this.db.exec(`
       ALTER TABLE reticulum_chat_events
         ADD COLUMN mention_targets TEXT NOT NULL DEFAULT '[]'
+    `);
+  }
+
+  private migrateEventScrubbedAtSchema(): void {
+    const columns = this.db
+      .prepare('PRAGMA table_info(reticulum_chat_events)')
+      .all() as Array<{ name?: string }>;
+    const hasScrubbedAt = columns.some((column) => column.name === 'scrubbed_at');
+    if (hasScrubbedAt) return;
+    this.db.exec(`
+      ALTER TABLE reticulum_chat_events
+        ADD COLUMN scrubbed_at INTEGER
     `);
   }
 }

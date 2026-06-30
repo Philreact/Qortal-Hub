@@ -73,6 +73,29 @@ import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
+const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1024 * 1024;
+const RETICULUM_IMAGE_REQUEST_BACKOFF_MS = 30_000;
+const RETICULUM_IMAGE_REQUEST_TRACK_LIMIT = 500;
+
+const reticulumImageResourceRequestTimes = new Map<string, number>();
+
+const shouldRequestReticulumImageResource = (key: string, nowMs: number) => {
+  const previousRequestAt = reticulumImageResourceRequestTimes.get(key);
+  if (
+    typeof previousRequestAt === 'number' &&
+    nowMs - previousRequestAt < RETICULUM_IMAGE_REQUEST_BACKOFF_MS
+  ) {
+    return false;
+  }
+  reticulumImageResourceRequestTimes.set(key, nowMs);
+  if (reticulumImageResourceRequestTimes.size > RETICULUM_IMAGE_REQUEST_TRACK_LIMIT) {
+    const oldestKey = reticulumImageResourceRequestTimes.keys().next().value;
+    if (oldestKey) {
+      reticulumImageResourceRequestTimes.delete(oldestKey);
+    }
+  }
+  return true;
+};
 
 const normalizeMessageHtmlContent = (raw: unknown): string | null => {
   if (raw == null) return null;
@@ -362,6 +385,17 @@ export const MessageItemComponent = ({
     typeof imageResourceManifest?.fileHash === 'string'
       ? imageResourceManifest.fileHash
       : '';
+  const imageResourceSize =
+    typeof imageResourceManifest?.sizeBytes === 'number'
+      ? imageResourceManifest.sizeBytes
+      : 0;
+  const shouldAutoDownloadReticulumImage =
+    isReticulumResourceImage &&
+    (!imageResourceSize || imageResourceSize < RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES);
+  const largeReticulumImageAttachment =
+    isReticulumResourceImage && !shouldAutoDownloadReticulumImage
+      ? imageResourceManifest
+      : null;
   const imageResourceWidth = (() => {
     const direct = Number(imageResourceManifest?.width);
     const metadata = Number(
@@ -389,22 +423,25 @@ export const MessageItemComponent = ({
             attachment &&
             typeof attachment === 'object' &&
             attachment.reticulumResource === true &&
-            typeof attachment.fileHash === 'string' &&
-            !String(attachment.mimeType || '').startsWith('image/')
+            typeof attachment.fileHash === 'string'
         )
       : null;
+  const reticulumDownloadAttachment =
+    reticulumFileAttachment || largeReticulumImageAttachment;
   const reticulumFileResourceId =
-    typeof reticulumFileAttachment?.fileHash === 'string'
-      ? reticulumFileAttachment.fileHash
+    typeof reticulumDownloadAttachment?.fileHash === 'string'
+      ? reticulumDownloadAttachment.fileHash
       : '';
   const reticulumFileName =
-    typeof reticulumFileAttachment?.fileName === 'string' &&
-    reticulumFileAttachment.fileName.trim()
-      ? reticulumFileAttachment.fileName.trim()
-      : 'File attachment';
+    typeof reticulumDownloadAttachment?.fileName === 'string' &&
+    reticulumDownloadAttachment.fileName.trim()
+      ? reticulumDownloadAttachment.fileName.trim()
+      : largeReticulumImageAttachment
+        ? 'Image attachment'
+        : 'File attachment';
   const reticulumFileSize =
-    typeof reticulumFileAttachment?.sizeBytes === 'number'
-      ? reticulumFileAttachment.sizeBytes
+    typeof reticulumDownloadAttachment?.sizeBytes === 'number'
+      ? reticulumDownloadAttachment.sizeBytes
       : 0;
   const reticulumResourceGroupId = Number(
     message?.groupId ??
@@ -425,7 +462,6 @@ export const MessageItemComponent = ({
   const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
-  const requestedImageResourceRef = useRef<Set<string>>(new Set());
   const [fileResourceStatus, setFileResourceStatus] = useState<
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
   >('idle');
@@ -455,6 +491,7 @@ export const MessageItemComponent = ({
     if (
       !message?.reticulumChat ||
       !isReticulumResourceImage ||
+      !shouldAutoDownloadReticulumImage ||
       !imageResourceId ||
       !imageResourceManifest ||
       !Number.isInteger(reticulumResourceGroupId) ||
@@ -466,15 +503,17 @@ export const MessageItemComponent = ({
     const key = `${reticulumResourceGroupId}:${imageResourceId}:${
       reticulumResourceEventId || ''
     }`;
-    if (requestedImageResourceRef.current.has(key)) return;
-    requestedImageResourceRef.current.add(key);
+    if (!shouldRequestReticulumImageResource(key, Date.now())) return;
 
     let cancelled = false;
     void (async () => {
       try {
         const status = await window.reticulumResources?.getStatus?.(imageResourceId);
         if (cancelled) return;
-        if (status?.success && status.complete) return;
+        if (status?.success && status.complete) {
+          reticulumImageResourceRequestTimes.delete(key);
+          return;
+        }
 
         const response = await window.reticulumChat?.requestResource?.(
           reticulumResourceGroupId,
@@ -483,7 +522,6 @@ export const MessageItemComponent = ({
         );
         if (cancelled) return;
         if (!response?.success) {
-          requestedImageResourceRef.current.delete(key);
           console.warn(
             '[ReticulumResource] Image resource request failed:',
             response?.error || 'request API unavailable',
@@ -492,7 +530,6 @@ export const MessageItemComponent = ({
         }
       } catch (error) {
         if (cancelled) return;
-        requestedImageResourceRef.current.delete(key);
         console.warn(
           '[ReticulumResource] Image resource request failed:',
           error instanceof Error ? error.message : error,
@@ -511,6 +548,7 @@ export const MessageItemComponent = ({
     message?.reticulumChat,
     reticulumResourceEventId,
     reticulumResourceGroupId,
+    shouldAutoDownloadReticulumImage,
   ]);
 
   const qchatFileData = qchatFileTransfer?.data || {};
@@ -619,7 +657,7 @@ export const MessageItemComponent = ({
     let cancelled = false;
     const timers: number[] = [];
     setLocalResourceImageUrl(null);
-    if (!imageResourceId) return;
+    if (!imageResourceId || !shouldAutoDownloadReticulumImage) return;
     const arrayBufferToBinaryString = (buffer: ArrayBuffer): string => {
       const bytes = new Uint8Array(buffer);
       const chunkSize = 0x8000;
@@ -694,6 +732,7 @@ export const MessageItemComponent = ({
     imageResourceId,
     resourceReloadNonce,
     secretKeyObject,
+    shouldAutoDownloadReticulumImage,
   ]);
 
   const applyFileResourceStatus = useCallback(
@@ -798,7 +837,11 @@ export const MessageItemComponent = ({
     )
       return;
     return window.reticulumChat.onResource((payload) => {
-      if (payload?.fileHash === imageResourceId) {
+      if (
+        shouldAutoDownloadReticulumImage &&
+        payload?.fileHash === imageResourceId &&
+        payload.complete === true
+      ) {
         setResourceReloadNonce((value) => value + 1);
       }
       if (payload?.fileHash === reticulumFileResourceId) {
@@ -813,11 +856,12 @@ export const MessageItemComponent = ({
     imageResourceId,
     markFileResourceReadyIfComplete,
     reticulumFileResourceId,
+    shouldAutoDownloadReticulumImage,
   ]);
 
   const requestReticulumFileResource = useCallback(async () => {
     if (
-      !reticulumFileAttachment ||
+      !reticulumDownloadAttachment ||
       !reticulumFileResourceId ||
       !Number.isInteger(reticulumResourceGroupId) ||
       reticulumResourceGroupId <= 0
@@ -847,7 +891,7 @@ export const MessageItemComponent = ({
     );
     const response = await window.reticulumChat?.requestResource?.(
       reticulumResourceGroupId,
-      reticulumFileAttachment,
+      reticulumDownloadAttachment,
       reticulumResourceEventId || undefined
     );
     if (response?.success === false) {
@@ -856,7 +900,7 @@ export const MessageItemComponent = ({
     }
     return { success: true };
   }, [
-    reticulumFileAttachment,
+    reticulumDownloadAttachment,
     reticulumFileSize,
     reticulumFileResourceId,
     reticulumResourceEventId,
@@ -1056,7 +1100,7 @@ export const MessageItemComponent = ({
   })();
   const hasNoMessage =
     !qchatFileTransfer &&
-    !reticulumFileAttachment &&
+    !reticulumDownloadAttachment &&
     (!message.decryptedData?.data?.message ||
       message.decryptedData?.data?.message === '<p></p>') &&
     (message?.images || [])?.length === 0 &&
@@ -1695,12 +1739,20 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {(displayImageUrl || isReticulumResourceImage) &&
+            {(displayImageUrl ||
+              (isReticulumResourceImage && shouldAutoDownloadReticulumImage)) &&
               (displayImageUrl &&
               (localResourceImageUrl || displayImageUrl.startsWith('data:image/')) ? (
                 <Box
                   component="img"
                   src={displayImageUrl}
+                  loading="lazy"
+                  decoding="async"
+                  onError={() => {
+                    if (!isReticulumResourceImage || !localResourceImageUrl) return;
+                    setLocalResourceImageUrl(null);
+                    setResourceReloadNonce((value) => value + 1);
+                  }}
                   sx={{
                     aspectRatio: imageResourceAspectRatio,
                     borderRadius: '8px',
@@ -1713,7 +1765,7 @@ export const MessageItemComponent = ({
                 />
               ) : imageEmbedLink ? (
                 <Embed embedLink={imageEmbedLink} />
-              ) : isReticulumResourceImage ? (
+              ) : isReticulumResourceImage && shouldAutoDownloadReticulumImage ? (
                 <Box
                   sx={{
                     alignItems: 'center',
@@ -1748,7 +1800,7 @@ export const MessageItemComponent = ({
                 </Box>
               ) : null)}
 
-            {reticulumFileAttachment && (
+            {reticulumDownloadAttachment && (
               <Box
                 sx={{
                   alignItems: 'center',
