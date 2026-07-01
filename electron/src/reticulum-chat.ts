@@ -18,12 +18,15 @@ import {
   type ReticulumChatGroupKeyRequest,
   type ReticulumChatRelayCacheEntry,
   type ReticulumChatRelayDigestEntry,
+  RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS,
+  RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
   RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
   reticulumChatRelayBlobId,
   type ReticulumGroupChannel,
+  type ReticulumGroupChannelWriteMode,
   type ReticulumGroupCategory,
   type ReticulumGroupChatSummary,
   type ReticulumChatSearchResult,
@@ -2032,6 +2035,19 @@ export class ReticulumChatManager extends EventEmitter {
           error: 'Cannot publish Reticulum chat event to an archived or unknown channel',
         };
       }
+      if (channel.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS) {
+        const authorIsAdmin = await this.isValidatedGroupAdmin(
+          event.groupId,
+          typeof event?.authorAddress === 'string' ? event.authorAddress : ''
+        );
+        if (!authorIsAdmin) {
+          return {
+            ok: false,
+            reason: 'send-command-failed',
+            error: 'Cannot publish Reticulum chat event: channel is read-only for non-admins',
+          };
+        }
+      }
     }
     const authorIsMember = await this.isValidatedGroupMember(
       event.groupId,
@@ -2561,7 +2577,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'event_batch': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        this.handleEventBatch(groupId, wire, peerHash);
+        void this.handleEventBatch(groupId, wire, peerHash);
         return;
       }
       case 'typing':
@@ -3355,11 +3371,11 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
-  private handleEventBatch(
+  private async handleEventBatch(
     groupId: number,
     wire: Record<string, unknown>,
     peerHash: string
-  ): void {
+  ): Promise<void> {
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     const allChannels = wire.c === RETICULUM_CHAT_ALL_CHANNELS_ID;
@@ -3387,6 +3403,10 @@ export class ReticulumChatManager extends EventEmitter {
       }
       if (!validateReticulumChatEventShape(event, this.now()) || !verifyReticulumChatEvent(event)) {
         this.notePeerViolation(peerHash, 'event_batch_invalid_event');
+        continue;
+      }
+      if (!(await this.canAcceptEventForChannelWritePolicy(event))) {
+        this.notePeerViolation(peerHash, 'event_batch_channel_write_forbidden');
         continue;
       }
       validWindowEvents.push(event);
@@ -4301,6 +4321,18 @@ export class ReticulumChatManager extends EventEmitter {
       typeof data.description === 'string' && data.description.trim()
         ? data.description.trim().slice(0, 240)
         : undefined;
+    const writeMode: ReticulumGroupChannelWriteMode =
+      data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
+        ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
+        : data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
+          ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
+          : existing?.writeMode ?? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS;
+    const writeModeUpdatedAt =
+      data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS ||
+      data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS ||
+      !existing
+        ? now
+        : existing.writeModeUpdatedAt ?? existing.updatedAt;
     const position = Number.isFinite(Number(data.position))
       ? Math.max(0, Math.floor(Number(data.position)))
       : existing?.position ?? (channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ? 0 : 1000);
@@ -4333,6 +4365,8 @@ export class ReticulumChatManager extends EventEmitter {
       ...(description ? { description } : {}),
       position,
       archived: existing?.archived ?? false,
+      writeMode,
+      writeModeUpdatedAt,
       createdBy: existing?.createdBy || event.authorAddress,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
@@ -4447,6 +4481,27 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: now + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
     });
     return isAdmin;
+  }
+
+  private async canAcceptEventForChannelWritePolicy(
+    event: ReticulumChatEvent
+  ): Promise<boolean> {
+    if (CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return true;
+    const channel = this.db.getChannel(
+      event.groupId,
+      normalizeReticulumChatChannelId(event.channelId)
+    );
+    if (!channel || channel.archived) return true;
+    if (channel.writeMode !== RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS) {
+      return true;
+    }
+    const writeModeUpdatedAt = Number.isFinite(channel.writeModeUpdatedAt ?? NaN)
+      ? Number(channel.writeModeUpdatedAt)
+      : channel.updatedAt;
+    if (event.timestamp < writeModeUpdatedAt) {
+      return true;
+    }
+    return this.isValidatedGroupAdmin(event.groupId, event.authorAddress);
   }
 
   private startLocalNotificationWatcher(): void {
@@ -7160,6 +7215,11 @@ export class ReticulumChatManager extends EventEmitter {
           this.notePeerViolation(sourcePeerHash, 'event_page_non_member_author');
           continue;
         }
+        if (!(await this.canAcceptEventForChannelWritePolicy(event))) {
+          rejectedInvalidCount += 1;
+          this.notePeerViolation(sourcePeerHash, 'event_page_channel_write_forbidden');
+          continue;
+        }
         validWindowEvents.push(event);
         this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
@@ -7301,6 +7361,13 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       }
       const event = parsed as ReticulumChatEvent;
+      if (!(await this.canAcceptEventForChannelWritePolicy(event))) {
+        this.notePeerViolation(
+          offer.sourcePeerHash || payload.peerPresenceHash || '',
+          'event_resource_channel_write_forbidden'
+        );
+        return;
+      }
       const sourcePeerHash = offer.sourcePeerHash || payload.peerPresenceHash || '';
       this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
       if (this.acceptEvent(parsed, false)) {

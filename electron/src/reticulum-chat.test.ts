@@ -4759,6 +4759,7 @@ describe('reticulum chat manager', () => {
       },
       'peer'
     );
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(manager.getHistory(72, event.channelId, 10).map((item) => item.eventId)).toEqual([
       event.eventId,
@@ -8013,6 +8014,7 @@ describe('reticulum chat manager', () => {
         off: () => undefined,
         fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       } as any,
+      now: () => 20_000,
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => false,
     });
@@ -8040,6 +8042,7 @@ describe('reticulum chat manager', () => {
         off: () => undefined,
         fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       } as any,
+      now: () => 20_000,
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => true,
     });
@@ -8052,6 +8055,340 @@ describe('reticulum chat manager', () => {
       'support'
     );
     adminManager.close();
+  });
+
+  it('stores channel write mode from admin metadata', async () => {
+    const payload = {
+      channelId: 'announcements',
+      name: 'announcements',
+      position: 1,
+      writeMode: 'admins',
+    };
+    const event = signedEvent({
+      eventId: 'event-channel-admin-write-mode',
+      groupId: 79,
+      channelId: 'announcements',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([79]);
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    await expect(
+      manager.applyChannelMetadataEvent(event.eventId, payload)
+    ).resolves.toBe(true);
+    expect(manager.getChannels(79, true)).toContainEqual(
+      expect.objectContaining({
+        channelId: 'announcements',
+        writeMode: 'admins',
+      })
+    );
+    manager.close();
+  });
+
+  it('keeps admin-only write mode effective time across later channel updates', async () => {
+    const groupId = 79;
+    const channelId = 'announcements';
+    const createPayload = {
+      channelId,
+      name: channelId,
+      position: 1,
+      writeMode: 'admins',
+    };
+    const createEvent = signedEvent({
+      eventId: 'event-channel-admin-write-mode-created',
+      groupId,
+      channelId,
+      timestamp: 5_000,
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(createPayload),
+    });
+    const updatePayload = {
+      channelId,
+      name: 'announcements-renamed',
+      position: 1,
+    };
+    const updateEvent = signedEvent({
+      eventId: 'event-channel-admin-write-mode-renamed',
+      groupId,
+      channelId,
+      timestamp: 20_000,
+      eventType: 'channel_update',
+      encryptedPayload: JSON.stringify(updatePayload),
+    });
+    const nonAdminMessage = signedEvent({
+      eventId: 'event-channel-non-admin-between-write-mode-and-rename',
+      groupId,
+      channelId,
+      timestamp: 10_000,
+    });
+    const adminAddresses = new Set([
+      createEvent.authorAddress,
+      updateEvent.authorAddress,
+    ]);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 30_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async (_groupId, address) => adminAddresses.has(address),
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    manager.subscribeGroup(groupId);
+    expect((manager as any).db.insertEvent(createEvent, true)).toBe(true);
+    await expect(
+      manager.applyChannelMetadataEvent(createEvent.eventId, createPayload)
+    ).resolves.toBe(true);
+    expect((manager as any).db.insertEvent(updateEvent, true)).toBe(true);
+    await expect(
+      manager.applyChannelMetadataEvent(updateEvent.eventId, updatePayload)
+    ).resolves.toBe(true);
+    expect(manager.getChannels(groupId, true)).toContainEqual(
+      expect.objectContaining({
+        channelId,
+        writeMode: 'admins',
+        writeModeUpdatedAt: 5_000,
+        updatedAt: 20_000,
+      })
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: groupId,
+        c: channelId,
+        batch: {
+          events: [nonAdminMessage],
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.getHistory(groupId, channelId, 10)).not.toContainEqual(
+      expect.objectContaining({ eventId: nonAdminMessage.eventId })
+    );
+    manager.close();
+  });
+
+  it('rejects non-admin writes in admin-only write channels', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const groupId = 79;
+    const channelId = 'announcements';
+    const event = signedEvent({
+      eventId: 'event-non-admin-announcement-write',
+      groupId,
+      channelId,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    (manager as any).db.upsertChannel({
+        groupId,
+        channelId,
+        name: channelId,
+        position: 1,
+        archived: false,
+        writeMode: 'admins',
+        createdBy: 'admin',
+        createdAt: 1,
+        updatedAt: 1,
+    });
+    expect(manager.getChannels(groupId, true)).toContainEqual(
+      expect.objectContaining({ channelId, writeMode: 'admins' })
+    );
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: false,
+    });
+    expect(manager.getHistory(groupId, channelId, 10)).toEqual([]);
+    expect(sent).toEqual([]);
+    manager.close();
+  });
+
+  it('allows admin writes in admin-only write channels', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const groupId = 79;
+    const channelId = 'announcements';
+    const event = signedEvent({
+      eventId: 'event-admin-announcement-write',
+      groupId,
+      channelId,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    (manager as any).db.upsertChannel({
+        groupId,
+        channelId,
+        name: channelId,
+        position: 1,
+        archived: false,
+        writeMode: 'admins',
+        createdBy: 'admin',
+        createdAt: 1,
+        updatedAt: 1,
+    });
+    expect(manager.getChannels(groupId, true)).toContainEqual(
+      expect.objectContaining({ channelId, writeMode: 'admins' })
+    );
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(manager.getHistory(groupId, channelId, 10)).toContainEqual(
+      expect.objectContaining({ eventId: event.eventId })
+    );
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: groupId,
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects synced non-admin writes in admin-only write channels', async () => {
+    const groupId = 79;
+    const channelId = 'announcements';
+    const event = signedEvent({
+      eventId: 'event-synced-non-admin-announcement-write',
+      groupId,
+      channelId,
+      timestamp: 10_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 20_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    manager.subscribeGroup(groupId);
+    (manager as any).db.upsertChannel({
+        groupId,
+        channelId,
+        name: channelId,
+        position: 1,
+        archived: false,
+        writeMode: 'admins',
+        createdBy: 'admin',
+        createdAt: 1,
+        updatedAt: 5_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: groupId,
+        c: channelId,
+        batch: {
+          events: [event],
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.getHistory(groupId, channelId, 10)).toEqual([]);
+    manager.close();
+  });
+
+  it('accepts synced admin writes in admin-only write channels', async () => {
+    const groupId = 79;
+    const channelId = 'announcements';
+    const event = signedEvent({
+      eventId: 'event-synced-admin-announcement-write',
+      groupId,
+      channelId,
+      timestamp: 10_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 20_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    manager.subscribeGroup(groupId);
+    (manager as any).db.upsertChannel({
+        groupId,
+        channelId,
+        name: channelId,
+        position: 1,
+        archived: false,
+        writeMode: 'admins',
+        createdBy: 'admin',
+        createdAt: 1,
+        updatedAt: 5_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: groupId,
+        c: channelId,
+        batch: {
+          events: [event],
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.getHistory(groupId, channelId, 10)).toContainEqual(
+      expect.objectContaining({ eventId: event.eventId })
+    );
+    manager.close();
   });
 
   it('projects channel metadata when events are accepted by sync import', async () => {

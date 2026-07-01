@@ -144,10 +144,18 @@ type ReticulumGroupChannel = {
   description?: string;
   position: number;
   archived: boolean;
+  writeMode?: ReticulumGroupChannelWriteMode;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
 };
+
+type ReticulumGroupChannelWriteMode = 'members' | 'admins';
+
+const RETICULUM_CHANNEL_WRITE_MODE_MEMBERS: ReticulumGroupChannelWriteMode =
+  'members';
+const RETICULUM_CHANNEL_WRITE_MODE_ADMINS: ReticulumGroupChannelWriteMode =
+  'admins';
 
 type ReticulumGroupCategory = {
   categoryId: string;
@@ -623,11 +631,19 @@ export const ChatGroup = ({
   const [newReticulumChannelError, setNewReticulumChannelError] = useState('');
   const [newReticulumChannelCategoryId, setNewReticulumChannelCategoryId] =
     useState('');
+  const [newReticulumChannelWriteMode, setNewReticulumChannelWriteMode] =
+    useState<ReticulumGroupChannelWriteMode>(
+      RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+    );
   const [reticulumChannelSettingsOpen, setReticulumChannelSettingsOpen] =
     useState(false);
   const [editingReticulumChannel, setEditingReticulumChannel] =
     useState<ReticulumGroupChannel | null>(null);
   const [reticulumChannelName, setReticulumChannelName] = useState('');
+  const [reticulumChannelWriteMode, setReticulumChannelWriteMode] =
+    useState<ReticulumGroupChannelWriteMode>(
+      RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+    );
   const [reticulumChannelError, setReticulumChannelError] = useState('');
   const [isReticulumCategoryDialogOpen, setIsReticulumCategoryDialogOpen] =
     useState(false);
@@ -913,6 +929,7 @@ export const ChatGroup = ({
             name: DEFAULT_RETICULUM_CHANNEL_ID,
             position: 0,
             archived: false,
+            writeMode: RETICULUM_CHANNEL_WRITE_MODE_MEMBERS,
             createdBy: '',
             createdAt: 0,
             updatedAt: 0,
@@ -984,6 +1001,22 @@ export const ChatGroup = ({
     }
     return grouped;
   }, [reticulumCategoriesForSelectedGroup, reticulumChannelsForSelectedGroup]);
+
+  const selectedReticulumChannel = useMemo(
+    () =>
+      reticulumChannelsForSelectedGroup.find(
+        (channel) => channel.channelId === selectedReticulumChannelId
+      ) || null,
+    [reticulumChannelsForSelectedGroup, selectedReticulumChannelId]
+  );
+  const selectedReticulumChannelWriteMode =
+    selectedReticulumChannel?.writeMode === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+      ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+      : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS;
+  const canWriteSelectedReticulumChannel =
+    !reticulumChatEnabled ||
+    selectedReticulumChannelWriteMode !== RETICULUM_CHANNEL_WRITE_MODE_ADMINS ||
+    isReticulumChannelAdmin;
 
   useEffect(() => {
     const groupId = Number(selectedGroup);
@@ -2462,6 +2495,9 @@ export const ChatGroup = ({
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
+      if (!canWriteSelectedReticulumChannel) {
+        throw new Error('Only group admins can write in this channel');
+      }
       if (isPrivate === null)
         throw new Error(
           t('group:message.error:determine_group_private', {
@@ -3459,6 +3495,7 @@ export const ChatGroup = ({
   const openCreateReticulumChannelDialog = useCallback((categoryId = '') => {
     setNewReticulumChannelCategoryId(categoryId);
     setNewReticulumChannelName('');
+    setNewReticulumChannelWriteMode(RETICULUM_CHANNEL_WRITE_MODE_MEMBERS);
     setNewReticulumChannelError('');
     setIsCreateReticulumChannelOpen(true);
   }, []);
@@ -3468,6 +3505,7 @@ export const ChatGroup = ({
     setNewReticulumChannelName('');
     setNewReticulumChannelError('');
     setNewReticulumChannelCategoryId('');
+    setNewReticulumChannelWriteMode(RETICULUM_CHANNEL_WRITE_MODE_MEMBERS);
   }, []);
 
   const createReticulumChannel = useCallback(async () => {
@@ -3498,6 +3536,7 @@ export const ChatGroup = ({
       categoryId,
       name,
       position,
+      writeMode: newReticulumChannelWriteMode,
     });
     setSelectedReticulumChannelId(channelId);
     closeCreateReticulumChannelDialog();
@@ -3505,6 +3544,7 @@ export const ChatGroup = ({
     closeCreateReticulumChannelDialog,
     newReticulumChannelCategoryId,
     newReticulumChannelName,
+    newReticulumChannelWriteMode,
     publishReticulumChannelMetadata,
     reticulumCategoriesForSelectedGroup,
     reticulumChannelsForSelectedGroup,
@@ -3515,6 +3555,11 @@ export const ChatGroup = ({
     (channel: ReticulumGroupChannel) => {
       setEditingReticulumChannel(channel);
       setReticulumChannelName(channel.name || channel.channelId);
+      setReticulumChannelWriteMode(
+        channel.writeMode === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+          ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+          : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+      );
       setReticulumChannelError('');
       setReticulumChannelSettingsOpen(true);
     },
@@ -3525,6 +3570,7 @@ export const ChatGroup = ({
     setReticulumChannelSettingsOpen(false);
     setEditingReticulumChannel(null);
     setReticulumChannelName('');
+    setReticulumChannelWriteMode(RETICULUM_CHANNEL_WRITE_MODE_MEMBERS);
     setReticulumChannelError('');
   }, []);
 
@@ -3549,6 +3595,7 @@ export const ChatGroup = ({
       categoryId: editingReticulumChannel.categoryId || '',
       name,
       position: editingReticulumChannel.position,
+      writeMode: reticulumChannelWriteMode,
     });
     closeReticulumChannelSettings();
   }, [
@@ -3556,6 +3603,7 @@ export const ChatGroup = ({
     editingReticulumChannel,
     publishReticulumChannelMetadata,
     reticulumChannelName,
+    reticulumChannelWriteMode,
     reticulumChannelsForSelectedGroup,
   ]);
 
@@ -3812,6 +3860,7 @@ export const ChatGroup = ({
         isAdmin={isReticulumChannelAdmin}
         mentionCount={mentionCount}
         onSelect={(channelId) => {
+          if (channelId === selectedReticulumChannelId) return;
           setSelectedReticulumChannelId(channelId);
           setMessages([]);
           setChatReferences({});
@@ -4419,13 +4468,23 @@ export const ChatGroup = ({
                     );
                   }}
                   isChat
-                  disableEnter={false}
+                  disableEnter={!canWriteSelectedReticulumChannel}
                   isFocusedParent={isFocusedParent}
                   setIsFocusedParent={setIsFocusedParent}
                   membersWithNames={members}
                   insertImage={insertImage}
                   insertFiles={insertFiles}
                 />
+                {!canWriteSelectedReticulumChannel && (
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: '12px',
+                    }}
+                  >
+                    Only group admins can write in this channel.
+                  </Typography>
+                )}
                 {messageSize > MESSAGE_LIMIT_WARNING && (
                   <Box
                     sx={{
@@ -4462,19 +4521,22 @@ export const ChatGroup = ({
               >
                 <CustomButton
                   onClick={() => {
-                    if (isSending) return;
+                    if (isSending || !canWriteSelectedReticulumChannel) return;
                     sendMessage();
                   }}
                   sx={{
                     alignItems: 'center',
-                    backgroundColor: isSending
+                    backgroundColor: isSending || !canWriteSelectedReticulumChannel
                       ? theme.palette.action.disabledBackground
                       : theme.palette.background.paper,
                     border: '1px solid',
                     borderColor: theme.palette.divider,
                     borderRadius: '8px',
                     color: theme.palette.text.primary,
-                    cursor: isSending ? 'default' : 'pointer',
+                    cursor:
+                      isSending || !canWriteSelectedReticulumChannel
+                        ? 'default'
+                        : 'pointer',
                     display: 'inline-flex',
                     gap: '6px',
                     fontSize: '14px',
@@ -4486,7 +4548,7 @@ export const ChatGroup = ({
                     position: 'relative',
                     transition:
                       'background-color 0.2s ease, border-color 0.2s ease',
-                    '&:hover': isSending
+                    '&:hover': isSending || !canWriteSelectedReticulumChannel
                       ? {}
                       : {
                           backgroundColor: theme.palette.action.hover,
@@ -4583,6 +4645,28 @@ export const ChatGroup = ({
               }
             }}
           />
+          <TextField
+            select
+            fullWidth
+            margin="dense"
+            label="Channel type"
+            value={newReticulumChannelWriteMode}
+            onChange={(event) =>
+              setNewReticulumChannelWriteMode(
+                event.target.value === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+                  ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+                  : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+              )
+            }
+            helperText="Regular channels allow all members to write. Admin announcement channels are read-only for non-admins."
+          >
+            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_MEMBERS}>
+              Regular
+            </MenuItem>
+            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_ADMINS}>
+              Admins can write, everyone can read
+            </MenuItem>
+          </TextField>
         </DialogContent>
         <DialogActions>
           <Button onClick={closeCreateReticulumChannelDialog}>Cancel</Button>
@@ -4622,6 +4706,28 @@ export const ChatGroup = ({
               }
             }}
           />
+          <TextField
+            select
+            fullWidth
+            margin="dense"
+            label="Channel type"
+            value={reticulumChannelWriteMode}
+            onChange={(event) =>
+              setReticulumChannelWriteMode(
+                event.target.value === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+                  ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
+                  : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+              )
+            }
+            helperText="Regular channels allow all members to write. Admin announcement channels are read-only for non-admins."
+          >
+            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_MEMBERS}>
+              Regular
+            </MenuItem>
+            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_ADMINS}>
+              Admins can write, everyone can read
+            </MenuItem>
+          </TextField>
           {editingReticulumChannel?.channelId !==
             DEFAULT_RETICULUM_CHANNEL_ID && (
             <Button
