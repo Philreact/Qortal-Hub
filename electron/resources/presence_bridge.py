@@ -87,7 +87,7 @@ _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 5.0
 _OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
 _DIRECT_LINK_PATH_PROVEN_SECONDS = 30.0
 _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
-_HARD_PATH_DROP_COOLDOWN_SECONDS = 30.0
+_UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 30.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
@@ -5807,31 +5807,6 @@ def _peer_has_recent_direct_activity(peer_key: str, now: Optional[float] = None)
     return False
 
 
-def _drop_cached_reticulum_path(destination_hash: bytes, peer_key: str, target: str, reason: str) -> bool:
-    dropped = False
-    err = ""
-    try:
-        instance = RNS.Reticulum.get_instance()
-        drop_path = getattr(instance, "drop_path", None)
-        if callable(drop_path):
-            dropped = bool(drop_path(destination_hash))
-        else:
-            dropped = bool(RNS.Transport.expire_path(destination_hash))
-    except Exception as exc:
-        err = str(exc)
-        try:
-            dropped = bool(RNS.Transport.expire_path(destination_hash))
-            err = ""
-        except Exception as fallback_exc:
-            err = f"{err}; fallback={fallback_exc}" if err else str(fallback_exc)
-    log(
-        f"[presence_bridge] target={target} cached_path_drop "
-        f"peer={peer_key or destination_hash_hex(destination_hash)} reason={reason} "
-        f"dropped={str(dropped).lower()}{(' err=' + err) if err else ''}"
-    )
-    return dropped
-
-
 def _request_fresh_link_path(
     destination_hash: bytes,
     peer_key: str,
@@ -5851,7 +5826,10 @@ def _request_fresh_link_path(
         )
         return True
     if had_path and force_refresh:
-        _drop_cached_reticulum_path(destination_hash, peer, target, reason)
+        log(
+            f"[presence_bridge] target={target} cached_path_refresh_preserved "
+            f"peer={peer or destination_hash_hex(destination_hash)} reason={reason}"
+        )
     try:
         RNS.Transport.request_path(destination_hash)
         st = _peer_lifecycle.setdefault(
@@ -6257,11 +6235,10 @@ def _request_and_await_destination_path(
                     cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
                 )
             return True, False
-        _drop_cached_reticulum_path(
-            destination_hash,
-            "",
-            "presence-reticulum",
-            f"{log_context}:refresh_cached_path",
+        log(
+            f"[presence_bridge] target={target} cached_path_refresh_preserved "
+            f"peer={peer_key or destination_hash_hex(destination_hash)} "
+            f"reason={log_context}:refresh_cached_path"
         )
 
     requested = False
@@ -6874,7 +6851,7 @@ def _link_close_was_timeout(link: Any, reason: str = "") -> bool:
     return str(reason or "").lower() == "timeout"
 
 
-def _maybe_drop_path_after_unestablished_link_close(
+def _maybe_request_path_after_unestablished_link_close(
     state: Optional[Dict[str, Any]],
     link: Any,
     *,
@@ -6902,23 +6879,36 @@ def _maybe_drop_path_after_unestablished_link_close(
         return
     now = time.time()
     st = _lifecycle_state_for_peer(peer_hash)
-    last_drop = st.get("last_hard_path_drop_at") if st is not None else None
-    if isinstance(last_drop, (int, float)) and now - float(last_drop) < _HARD_PATH_DROP_COOLDOWN_SECONDS:
+    last_request = (
+        st.get("last_unestablished_link_path_request_at") if st is not None else None
+    )
+    if (
+        isinstance(last_request, (int, float))
+        and now - float(last_request) < _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS
+    ):
         log(
-            f"[presence_bridge] target={target} cached_path_drop_skipped "
-            f"peer={peer_hash} reason=recent_hard_drop close_reason={reason} "
-            f"age_ms={int((now - float(last_drop)) * 1000.0)}"
+            f"[presence_bridge] target={target} cached_path_refresh_skipped "
+            f"peer={peer_hash} reason=recent_request close_reason={reason} "
+            f"age_ms={int((now - float(last_request)) * 1000.0)}"
         )
         return
-    _drop_cached_reticulum_path(
-        destination_hash,
-        peer_hash,
-        target,
-        f"unestablished_link_closed:{reason}",
-    )
-    if st is not None:
-        st["last_hard_path_drop_at"] = now
-        st["last_hard_path_drop_reason"] = f"unestablished_link_closed:{reason}"
+    try:
+        RNS.Transport.request_path(destination_hash)
+        if st is not None:
+            st["last_request_path_at"] = now
+            st["last_unestablished_link_path_request_at"] = now
+            st["last_unestablished_link_path_request_reason"] = (
+                f"unestablished_link_closed:{reason}"
+            )
+        log(
+            f"[presence_bridge] target={target} cached_path_refresh_request "
+            f"peer={peer_hash} reason=unestablished_link_closed:{reason}"
+        )
+    except Exception as exc:
+        log(
+            f"[presence_bridge] target={target} cached_path_refresh_failed "
+            f"peer={peer_hash} reason=unestablished_link_closed:{reason} err={exc}"
+        )
 
 
 def _overlay_close_debug_line(link_id: str, state: Dict[str, Any], reason: str) -> str:
@@ -8328,7 +8318,7 @@ def on_overlay_link_closed(link) -> None:
             (now, reason, bool(replay_associated), bool(announce_retry_associated))
         )
     verbose_presence_log(_overlay_close_debug_line(link_id, state, reason))
-    _maybe_drop_path_after_unestablished_link_close(
+    _maybe_request_path_after_unestablished_link_close(
         state,
         link,
         target="presence-reticulum",
@@ -8887,7 +8877,7 @@ def on_qchat_file_link_closed(link) -> None:
         if state.get("qchat_file_chunk_completed") is True:
             return
         reason = _overlay_teardown_reason_name(getattr(link, "teardown_reason", None))
-        _maybe_drop_path_after_unestablished_link_close(
+        _maybe_request_path_after_unestablished_link_close(
             state,
             link,
             target="qchat-file-reticulum",
@@ -12662,7 +12652,7 @@ def on_audio_link_closed(link) -> None:
         was_established = state.get("established") is True
     teardown_reason = getattr(link, "teardown_reason", None)
     reason = str(teardown_reason) if teardown_reason is not None else "closed"
-    _maybe_drop_path_after_unestablished_link_close(
+    _maybe_request_path_after_unestablished_link_close(
         state,
         link,
         target="reticulum-audio-link",
