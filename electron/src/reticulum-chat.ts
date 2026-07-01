@@ -477,6 +477,8 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 100;
+const RETICULUM_CHAT_EVENT_PAGE_IMPORT_YIELD_EVERY = 20;
+const RETICULUM_CHAT_METADATA_SUPERSEDE_SCAN_LIMIT = 5000;
 const RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES = 1024 * 1024;
 const RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE = 20;
 const RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE = 50;
@@ -1586,6 +1588,7 @@ export class ReticulumChatManager extends EventEmitter {
   private readonly dbPath: string;
   private readonly localNotifyDir: string;
   private readonly localNotifyDebounceMs: number;
+  private isClosed = false;
   private signLocalFields?: (
     fields: Record<string, unknown>
   ) => Promise<ReticulumChatLocalSignature | null>;
@@ -1635,6 +1638,11 @@ export class ReticulumChatManager extends EventEmitter {
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private observedDbEventIds = new Set<string>();
+  private channelMetadataProjectionQueue: string[] = [];
+  private channelMetadataProjectionQueuedIds = new Set<string>();
+  private channelMetadataProjectionAttemptedIds = new Set<string>();
+  private channelMetadataProjectionActive = false;
+  private channelMetadataProjectionRepairGroups = new Set<number>();
   private activeDigestGroups = new Map<number, number>();
   private activeChannelSubscriptions = new Map<number, Set<string>>();
   private recentInboundControlWires = new Map<string, number>();
@@ -1808,6 +1816,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   close(): void {
+    this.isClosed = true;
     this.detachBridge();
     this.stopLocalNotificationWatcher();
     this.stopSubscriptionRefreshTimer();
@@ -1838,6 +1847,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceTransfer?.close();
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
     this.typingTimers.clear();
+    this.channelMetadataProjectionQueue = [];
+    this.channelMetadataProjectionQueuedIds.clear();
+    this.channelMetadataProjectionRepairGroups.clear();
     this.db.close();
   }
 
@@ -1894,6 +1906,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.clearSubscriptionFanoutQueue();
     }
     for (const groupId of nextGroupIds) {
+      this.queueChannelMetadataProjectionRepair(groupId);
       const [latestEvent] = this.db.getRecentEvents(groupId, 1, null);
       if (latestEvent) {
         this.emitSummaryChanged(groupId, latestEvent);
@@ -1912,6 +1925,7 @@ export class ReticulumChatManager extends EventEmitter {
     for (const groupId of groupIds) {
       this.localGroupIds.add(groupId);
       this.subscribedGroups.add(groupId);
+      this.queueChannelMetadataProjectionRepair(groupId);
     }
     this.startLocalNotificationWatcher();
     this.startSubscriptionRefreshTimer();
@@ -1922,6 +1936,7 @@ export class ReticulumChatManager extends EventEmitter {
   subscribeGroup(groupId: number): void {
     this.assertGroupId(groupId);
     const alreadySubscribed = this.ensureGroupSubscribed(groupId);
+    this.queueChannelMetadataProjectionRepair(groupId);
     if (!alreadySubscribed) this.announceGroupSubscription(groupId);
   }
 
@@ -4054,24 +4069,39 @@ export class ReticulumChatManager extends EventEmitter {
     return false;
   }
 
+  private async yieldEventPageImportTurn(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
   private acceptEvent(candidate: unknown, ownEvent: boolean): boolean {
     const now = this.now();
     if (!validateReticulumChatEventShape(candidate, now)) return false;
     const event = candidate;
     if (!this.localGroupIds.has(event.groupId)) return false;
     if (!verifyReticulumChatEvent(event)) return false;
+    return this.acceptValidatedEvent(event, ownEvent);
+  }
+
+  private acceptValidatedEvent(
+    event: ReticulumChatEvent,
+    ownEvent: boolean,
+    options: { emitSummary?: boolean } = {}
+  ): boolean {
     if (this.db.hasEvent(event.eventId)) return false;
     const inserted = this.db.insertEvent(event, ownEvent);
     if (inserted) {
-      void this.tryApplyPublicChannelMetadata(event);
+      this.queueChannelMetadataProjection(event);
       this.observedDbEventIds.add(event.eventId);
       this.writeLocalEventNotification(event);
-      this.emitSummaryChanged(event.groupId, event);
+      if (options.emitSummary !== false) {
+        this.emitSummaryChanged(event.groupId, event);
+      }
     }
     return inserted;
   }
 
   async applyChannelMetadataEvent(eventId: string, payload: unknown): Promise<boolean> {
+    if (this.isClosed) return false;
     const event = this.db.getEvent(eventId);
     if (!event || !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
       loggerWarn(
@@ -4080,11 +4110,15 @@ export class ReticulumChatManager extends EventEmitter {
       return false;
     }
     const authorIsAdmin = await this.isValidatedGroupAdmin(event.groupId, event.authorAddress);
+    if (this.isClosed) return false;
     if (!authorIsAdmin) {
       loggerWarn(
         `[ReticulumChat] Ignoring channel metadata event ${event.eventId}: author is not a group admin`
       );
       return false;
+    }
+    if (await this.isSupersededChannelMetadataEvent(event, payload)) {
+      return true;
     }
     if (event.eventType.startsWith('category_')) {
       const category = this.categoryFromMetadataPayload(event, payload);
@@ -4142,13 +4176,112 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getCategories(groupId);
   }
 
+  private queueChannelMetadataProjection(event: ReticulumChatEvent): void {
+    if (this.isClosed) return;
+    if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return;
+    if (this.channelMetadataProjectionAttemptedIds.has(event.eventId)) return;
+    if (this.channelMetadataProjectionQueuedIds.has(event.eventId)) return;
+    this.channelMetadataProjectionQueuedIds.add(event.eventId);
+    this.channelMetadataProjectionQueue.push(event.eventId);
+    void this.processChannelMetadataProjectionQueue();
+  }
+
+  private queueChannelMetadataProjectionRepair(groupId: number, limit = 500): void {
+    if (this.isClosed) return;
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    if (this.channelMetadataProjectionRepairGroups.has(groupId)) return;
+    this.channelMetadataProjectionRepairGroups.add(groupId);
+    try {
+      for (const event of this.db.getChannelMetadataEvents(groupId, limit)) {
+        this.queueChannelMetadataProjection(event);
+      }
+    } finally {
+      this.channelMetadataProjectionRepairGroups.delete(groupId);
+    }
+  }
+
+  private async processChannelMetadataProjectionQueue(): Promise<void> {
+    if (this.isClosed) return;
+    if (this.channelMetadataProjectionActive) return;
+    this.channelMetadataProjectionActive = true;
+    try {
+      while (!this.isClosed && this.channelMetadataProjectionQueue.length > 0) {
+        const eventId = this.channelMetadataProjectionQueue.shift();
+        if (!eventId) continue;
+        this.channelMetadataProjectionQueuedIds.delete(eventId);
+        if (this.channelMetadataProjectionAttemptedIds.has(eventId)) continue;
+        const event = this.db.getEvent(eventId);
+        if (!event || !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) continue;
+        this.channelMetadataProjectionAttemptedIds.add(eventId);
+        await this.tryApplyPublicChannelMetadata(event);
+        await this.yieldEventPageImportTurn();
+      }
+    } finally {
+      this.channelMetadataProjectionActive = false;
+      if (!this.isClosed && this.channelMetadataProjectionQueue.length > 0) {
+        void this.processChannelMetadataProjectionQueue();
+      }
+    }
+  }
+
   private async tryApplyPublicChannelMetadata(event: ReticulumChatEvent): Promise<void> {
     if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return;
     try {
       await this.applyChannelMetadataEvent(event.eventId, JSON.parse(event.encryptedPayload));
     } catch {
-      // Private groups are applied after renderer-side decryption.
+      // Invalid or legacy-encrypted metadata cannot be projected without a parsed payload.
     }
+  }
+
+  private metadataEntityKey(event: ReticulumChatEvent, payload: unknown): string | null {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const data = payload as Record<string, unknown>;
+    if (event.eventType.startsWith('channel_')) {
+      const channelId = normalizeReticulumChatChannelId(
+        typeof data.channelId === 'string' ? data.channelId : event.channelId
+      );
+      return channelId ? `channel:${channelId}` : null;
+    }
+    if (event.eventType.startsWith('category_')) {
+      const categoryId = normalizeReticulumChatCategoryId(data.categoryId);
+      return categoryId ? `category:${categoryId}` : null;
+    }
+    return null;
+  }
+
+  private async isSupersededChannelMetadataEvent(
+    event: ReticulumChatEvent,
+    payload: unknown
+  ): Promise<boolean> {
+    const entityKey = this.metadataEntityKey(event, payload);
+    if (!entityKey) return false;
+    let cursor = this.eventCursor(event);
+    let scanned = 0;
+    while (scanned < RETICULUM_CHAT_METADATA_SUPERSEDE_SCAN_LIMIT) {
+      const page = this.db.getChannelMetadataPageAfter(
+        event.groupId,
+        cursor,
+        Math.min(101, RETICULUM_CHAT_METADATA_SUPERSEDE_SCAN_LIMIT - scanned)
+      );
+      if (page.length === 0) return false;
+      for (const newerEvent of page) {
+        scanned += 1;
+        cursor = this.eventCursor(newerEvent);
+        let newerPayload: unknown;
+        try {
+          newerPayload = JSON.parse(newerEvent.encryptedPayload);
+        } catch {
+          continue;
+        }
+        if (this.metadataEntityKey(newerEvent, newerPayload) !== entityKey) continue;
+        if (!(await this.isValidatedGroupAdmin(newerEvent.groupId, newerEvent.authorAddress))) {
+          continue;
+        }
+        return true;
+      }
+      if (page.length < 101) return false;
+    }
+    return false;
   }
 
   private channelFromMetadataPayload(
@@ -6973,7 +7106,33 @@ export class ReticulumChatManager extends EventEmitter {
       let rejectedInvalidCount = 0;
       let rejectedOutOfBoundsCount = 0;
       let rejectedNonMemberCount = 0;
+      let skippedKnownCount = 0;
+      let processedSinceYield = 0;
       for (const candidate of page.events) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+          rejectedInvalidCount += 1;
+          this.notePeerViolation(sourcePeerHash, 'event_page_invalid_event');
+          continue;
+        }
+        const candidateEventId =
+          typeof (candidate as Partial<ReticulumChatEvent>).eventId === 'string'
+            ? (candidate as Partial<ReticulumChatEvent>).eventId?.trim() ?? ''
+            : '';
+        if (candidateEventId && this.db.hasEvent(candidateEventId)) {
+          skippedKnownCount += 1;
+          const candidateGroupId = (candidate as Partial<ReticulumChatEvent>).groupId;
+          if (candidateGroupId === offer.groupId) {
+            this.pendingEventPulls.delete(
+              this.eventPullKey(offer.groupId, candidateEventId)
+            );
+          }
+          processedSinceYield += 1;
+          if (processedSinceYield >= RETICULUM_CHAT_EVENT_PAGE_IMPORT_YIELD_EVERY) {
+            processedSinceYield = 0;
+            await this.yieldEventPageImportTurn();
+          }
+          continue;
+        }
         if (!this.canAcceptInboundEventResource(candidate)) {
           rejectedInvalidCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_invalid_event');
@@ -7004,15 +7163,21 @@ export class ReticulumChatManager extends EventEmitter {
         validWindowEvents.push(event);
         this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
-        if (this.acceptEvent(event, false)) {
+        if (this.acceptValidatedEvent(event, false, { emitSummary: false })) {
           insertedCount += 1;
           this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
           this.emit('event', { event });
+        }
+        processedSinceYield += 1;
+        if (processedSinceYield >= RETICULUM_CHAT_EVENT_PAGE_IMPORT_YIELD_EVERY) {
+          processedSinceYield = 0;
+          await this.yieldEventPageImportTurn();
         }
       }
       const start = this.cursorFromWire(page.start);
       const end = this.cursorFromWire(page.end);
       if (
+        skippedKnownCount === 0 &&
         offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
         start &&
         end &&
@@ -7028,12 +7193,16 @@ export class ReticulumChatManager extends EventEmitter {
         );
       } else if (
         offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
+        skippedKnownCount === 0 &&
         validWindowEvents.length > 0
       ) {
         this.notePeerViolation(sourcePeerHash, 'event_page_window_hash_mismatch');
       }
+      if (insertedCount > 0) {
+        this.emitSummaryChanged(offer.groupId);
+      }
       loggerLog(
-        `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
+        `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} skipped_known=${skippedKnownCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
       );
       if (page.more === true) {
         if (offer.direction === 'range') {

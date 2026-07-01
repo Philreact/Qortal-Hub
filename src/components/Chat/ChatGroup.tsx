@@ -894,72 +894,6 @@ export const ChatGroup = ({
       setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
       return;
     }
-    const metadataHistory =
-      await window.reticulumChat?.getChannelMetadataHistory?.(groupId, 500);
-    if (Array.isArray(metadataHistory)) {
-      for (const event of metadataHistory) {
-        if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
-        const eventRecord =
-          event && typeof event === 'object'
-            ? (event as Record<string, any>)
-            : null;
-        if (!eventRecord) continue;
-        const eventId =
-          typeof eventRecord.eventId === 'string' ? eventRecord.eventId : '';
-        if (
-          eventId &&
-          appliedReticulumChannelMetadataEventIdsRef.current.has(eventId)
-        ) {
-          continue;
-        }
-        const eventType =
-          typeof eventRecord.eventType === 'string' ? eventRecord.eventType : '';
-        if (
-          !eventType.startsWith('channel_') &&
-          !eventType.startsWith('category_')
-        ) {
-          continue;
-        }
-        let metadataPayload: unknown = null;
-        if (reticulumChatEnabled || isPrivate === false) {
-          try {
-            metadataPayload = JSON.parse(String(eventRecord.encryptedPayload || ''));
-          } catch {
-            metadataPayload = null;
-          }
-        } else if (secretKeyRef.current) {
-          const decrypted = await window.sendMessage('decryptSingle', {
-            data: [
-              {
-                signature: eventRecord.eventId,
-                id: eventRecord.eventId,
-                groupId: eventRecord.groupId,
-                channelId:
-                  normalizeReticulumChannelName(
-                    eventRecord.channelId || DEFAULT_RETICULUM_CHANNEL_ID
-                  ) || DEFAULT_RETICULUM_CHANNEL_ID,
-                sender: eventRecord.authorAddress,
-                timestamp: eventRecord.timestamp,
-                data: eventRecord.encryptedPayload,
-                eventType: eventRecord.eventType,
-                reticulumChat: true,
-              },
-            ],
-            secretKeyObject: secretKeyRef.current,
-          });
-          metadataPayload = decrypted?.[0]?.decryptedData;
-        }
-        if (!metadataPayload) continue;
-        const result = await window.reticulumChat?.applyChannelMetadata?.(
-          eventRecord.eventId,
-          metadataPayload
-        );
-        if (result?.success && eventId) {
-          appliedReticulumChannelMetadataEventIdsRef.current.add(eventId);
-        }
-      }
-    }
-    if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
     const channels = await window.reticulumChat?.getChannels?.(groupId);
     const categories = await window.reticulumChat?.getCategories?.(groupId);
     const parsedChannels = Array.isArray(channels)
@@ -991,7 +925,7 @@ export const ChatGroup = ({
         ? current
         : DEFAULT_RETICULUM_CHANNEL_ID
     );
-  }, [isPrivate, reticulumChatEnabled, selectedGroup]);
+  }, [selectedGroup]);
 
   useEffect(() => {
     if (!reticulumChatEnabled || !selectedGroup) return;
@@ -2247,11 +2181,11 @@ export const ChatGroup = ({
         normalizedText
       ) {
         void window.reticulumChat?.indexSearchText?.(
-          event.targetEventId,
+          event.eventId,
           normalizedText
         );
         void window.reticulumChat?.replaceMentions?.(
-          event.targetEventId,
+          event.eventId,
           mentionedAddresses
         );
       } else if (

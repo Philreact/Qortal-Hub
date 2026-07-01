@@ -671,6 +671,7 @@ export class ReticulumChatDatabase {
   private stmtGetKnownMessageChannels: Statement;
   private stmtGetLastDisplayEvent: Statement;
   private stmtCountUnreadDisplayEvents: Statement;
+  private stmtGetLastProjectedMessage: Statement;
   private stmtGetUnreadMentionTargetEvents: Statement;
   private stmtGetWatermark: Statement;
   private stmtUpsertWatermark: Statement;
@@ -1062,6 +1063,12 @@ export class ReticulumChatDatabase {
         AND event_type IN ('message', 'attachment_manifest')
         AND timestamp > ?
         AND author_address != ?
+    `);
+    this.stmtGetLastProjectedMessage = this.db.prepare(`
+      SELECT * FROM rchat_message_projection
+      WHERE group_id = ? AND channel_id = ? AND deleted_at IS NULL
+      ORDER BY created_at DESC, root_event_id DESC
+      LIMIT 1
     `);
     this.stmtGetUnreadMentionTargetEvents = this.db.prepare(`
       SELECT *
@@ -1537,11 +1544,16 @@ export class ReticulumChatDatabase {
         wireBytes: eventWireBytes(event),
       });
       this.applyMessageProjectionEvent(event);
-      this.upsertSearchText(
-        event,
-        searchTextFromPayload(event.encryptedPayload),
-        false
-      );
+      if (
+        event.eventType === 'message' ||
+        event.eventType === 'attachment_manifest'
+      ) {
+        this.upsertSearchText(
+          event,
+          searchTextFromPayload(event.encryptedPayload),
+          false
+        );
+      }
       this.applyDeleteScrubForEvent(event);
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
@@ -2313,10 +2325,128 @@ export class ReticulumChatDatabase {
     );
   }
 
+  private rootEventIdForIndexEvent(event: ReticulumChatEvent): string {
+    return event.eventType === 'edit' && event.targetEventId
+      ? event.targetEventId
+      : event.eventId;
+  }
+
+  private computeMessageProjectionForRoot(
+    rootEventId: string
+  ): MessageProjectionRow | null {
+    if (typeof rootEventId !== 'string' || !rootEventId) return null;
+    const rows = this.stmtGetMessageProjectionEvents.all(
+      rootEventId,
+      rootEventId
+    ) as EventRow[];
+    const eventsById = new Map<string, ReticulumChatEvent>();
+    for (const row of rows) {
+      const event = rowToEvent(row);
+      eventsById.set(event.eventId, event);
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (event.eventId === rootEventId || event.targetEventId === rootEventId) {
+        eventsById.set(event.eventId, event);
+      }
+    }
+    const events = [...eventsById.values()].sort(
+      (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
+    );
+    const root = events.find(
+      (candidate) =>
+        candidate.eventId === rootEventId &&
+        (candidate.eventType === 'message' ||
+          candidate.eventType === 'attachment_manifest')
+    );
+    if (!root) return null;
+
+    let current = root;
+    let deletedAt: number | null = null;
+    let deletedEventId: string | null = null;
+    for (const event of events) {
+      if (event.eventId === root.eventId) continue;
+      if (event.targetEventId !== root.eventId) continue;
+      if (event.eventType === 'edit') {
+        if (deletedAt !== null) continue;
+        current = event;
+        continue;
+      }
+      if (event.eventType === 'delete') {
+        deletedAt = event.timestamp;
+        deletedEventId = event.eventId;
+      }
+    }
+
+    return {
+      root_event_id: root.eventId,
+      group_id: root.groupId,
+      channel_id: normalizeReticulumChatChannelId(root.channelId),
+      author_address: root.authorAddress,
+      author_public_key: root.authorPublicKey,
+      author_seq: root.authorSeq,
+      created_at: root.timestamp,
+      root_event_type: root.eventType,
+      current_event_id: current.eventId,
+      updated_at: current.timestamp,
+      reply_to_event_id: root.replyToEventId ?? null,
+      encrypted_payload: current.encryptedPayload,
+      payload_hash: current.payloadHash,
+      mention_address_hashes: serializeMentionAddressHashes(
+        current.mentionAddressHashes
+      ),
+      mention_targets: serializeMentionTargets(current.mentionTargets),
+      signature: root.signature,
+      deleted_at: deletedAt,
+      deleted_event_id: deletedEventId,
+    };
+  }
+
+  private currentMessageProjectionForIndexEvent(
+    event: ReticulumChatEvent
+  ): MessageProjectionRow | null {
+    const rootEventId = this.rootEventIdForIndexEvent(event);
+    if (!rootEventId) return null;
+    const row = this.computeMessageProjectionForRoot(rootEventId);
+    if (!row || row.deleted_at !== null) return null;
+    if (row.current_event_id !== event.eventId) return null;
+    return row;
+  }
+
+  private upsertProjectedSearchText(
+    projection: MessageProjectionRow,
+    text: string
+  ): void {
+    const normalized = normalizeSearchText(text);
+    if (!normalized) return;
+    const rootEventId = projection.root_event_id;
+    this.memorySearchText.set(rootEventId, normalized);
+    this.stmtDeleteSearchText.run(rootEventId);
+    this.stmtUpsertSearchMirror.run(
+      rootEventId,
+      projection.group_id,
+      normalizeReticulumChatChannelId(projection.channel_id),
+      projection.author_address,
+      projection.created_at,
+      projection.root_event_type,
+      normalized
+    );
+    this.stmtUpsertSearchText.run(
+      rootEventId,
+      projection.group_id,
+      normalizeReticulumChatChannelId(projection.channel_id),
+      projection.author_address,
+      projection.created_at,
+      projection.root_event_type,
+      normalized
+    );
+  }
+
   indexSearchText(eventId: string, text: string): boolean {
     const event = this.getEvent(eventId);
     if (!event) return false;
-    this.upsertSearchText(event, text, true);
+    const projection = this.currentMessageProjectionForIndexEvent(event);
+    if (!projection) return false;
+    this.upsertProjectedSearchText(projection, text);
     return true;
   }
 
@@ -2334,6 +2464,9 @@ export class ReticulumChatDatabase {
   ): boolean {
     const event = this.getEvent(eventId);
     if (!event) return false;
+    const projection = this.currentMessageProjectionForIndexEvent(event);
+    if (!projection) return false;
+    const rootEventId = projection.root_event_id;
     const uniqueMentionedAddresses = [
       ...new Set(
         mentionedAddresses
@@ -2344,26 +2477,26 @@ export class ReticulumChatDatabase {
       ),
     ];
     this.memoryMentions.set(
-      event.eventId,
+      rootEventId,
       uniqueMentionedAddresses.map((mentionedAddress) => ({
-        groupId: event.groupId,
-        channelId: normalizeReticulumChatChannelId(event.channelId),
+        groupId: projection.group_id,
+        channelId: normalizeReticulumChatChannelId(projection.channel_id),
         mentionedAddress,
-        authorAddress: event.authorAddress,
-        timestamp: event.timestamp,
+        authorAddress: projection.author_address,
+        timestamp: projection.updated_at,
         readAt: 0,
       }))
     );
     const tx = this.db.transaction(() => {
-      this.stmtDeleteMentionsForEvent.run(event.eventId);
+      this.stmtDeleteMentionsForEvent.run(rootEventId);
       for (const mentionedAddress of uniqueMentionedAddresses) {
-          this.stmtUpsertMention.run(
-          event.eventId,
-          event.groupId,
-          normalizeReticulumChatChannelId(event.channelId),
+        this.stmtUpsertMention.run(
+          rootEventId,
+          projection.group_id,
+          normalizeReticulumChatChannelId(projection.channel_id),
           mentionedAddress,
-          event.authorAddress,
-          event.timestamp
+          projection.author_address,
+          projection.updated_at
         );
       }
     });
@@ -3661,17 +3794,13 @@ export class ReticulumChatDatabase {
     onlineSince = 0
   ): ReticulumChatSummary | null {
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const events = this.getRecentMessageEvents(groupId, 500, normalizedChannelId);
     const recentEvents = this.getRecentEvents(groupId, 500, normalizedChannelId);
-    const events = recentEvents.filter(
-      (event) =>
-        event.eventType === 'message' ||
-        event.eventType === 'attachment_manifest'
-    );
     const memoryLast = events[events.length - 1] ?? null;
-    const row = this.stmtGetLastDisplayEvent.get(groupId, normalizedChannelId) as
-      | EventRow
+    const row = this.stmtGetLastProjectedMessage.get(groupId, normalizedChannelId) as
+      | MessageProjectionRow
       | undefined;
-    const sqliteLast = row ? rowToEvent(row) : null;
+    const sqliteLast = row ? messageProjectionRowToEvent(row) : null;
     const lastEvent =
       memoryLast && (!sqliteLast || memoryLast.timestamp >= sqliteLast.timestamp)
         ? memoryLast
@@ -3679,31 +3808,12 @@ export class ReticulumChatDatabase {
     if (!lastEvent) return null;
 
     const watermark = this.getReadWatermark(groupId, normalizedChannelId, myAddress);
-    const unreadRow = this.stmtCountUnreadDisplayEvents.get(
-      groupId,
-      normalizedChannelId,
-      watermark,
-      myAddress
-    ) as { cnt?: number } | undefined;
-    const unreadCount =
-      typeof unreadRow?.cnt === 'number' && Number.isFinite(unreadRow.cnt)
-        ? unreadRow.cnt
-        : 0;
-    let memoryUnreadCount = 0;
-    if (myAddress) {
-      for (const event of this.memoryEvents.values()) {
-        if (
-          event.groupId === groupId &&
-          normalizeReticulumChatChannelId(event.channelId) === normalizedChannelId &&
-          (event.eventType === 'message' ||
-            event.eventType === 'attachment_manifest') &&
-          event.timestamp > watermark &&
-          event.authorAddress !== myAddress
-        ) {
-          memoryUnreadCount += 1;
-        }
-      }
-    }
+    const unreadCount = myAddress
+      ? events.filter(
+          (event) =>
+            event.timestamp > watermark && event.authorAddress !== myAddress
+        ).length
+      : 0;
     const mentionRow = myAddress
       ? (this.stmtCountUnreadMentions.get(
           groupId,
@@ -3860,7 +3970,7 @@ export class ReticulumChatDatabase {
       groupId,
       channelId: normalizedChannelId,
       lastEvent,
-      unreadCount: Math.max(unreadCount, memoryUnreadCount),
+      unreadCount,
       mentionCount: totalMentionCount,
       hasUnreadMention: totalMentionCount > 0,
       updatedAt: lastEvent.timestamp,
@@ -4062,6 +4172,9 @@ export class ReticulumChatDatabase {
       if (!terms.every((term) => lower.includes(term))) continue;
       const event = this.getEvent(row.event_id);
       if (!event) continue;
+      const rootEventId = this.rootEventIdForIndexEvent(event);
+      const projection = this.computeMessageProjectionForRoot(rootEventId);
+      if (!projection || projection.deleted_at !== null) continue;
       if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
       if (
         allowedChannels &&
@@ -4085,10 +4198,30 @@ export class ReticulumChatDatabase {
     limit: number
   ): ReticulumChatSearchResult[] {
     const results: ReticulumChatSearchResult[] = [];
-    const events = [...this.memoryEvents.values()].sort(
-      (a, b) => b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId)
-    );
-    for (const event of events) {
+    const rootEventIds = new Set<string>();
+    for (const event of this.memoryEvents.values()) {
+      if (
+        event.eventType === 'message' ||
+        event.eventType === 'attachment_manifest'
+      ) {
+        rootEventIds.add(event.eventId);
+      } else if (event.eventType === 'edit' && event.targetEventId) {
+        rootEventIds.add(event.targetEventId);
+      } else if (event.eventType === 'delete' && event.targetEventId) {
+        rootEventIds.add(event.targetEventId);
+      }
+    }
+    const events = [...rootEventIds]
+      .map((rootEventId) => this.computeMessageProjectionForRoot(rootEventId))
+      .filter((projection): projection is MessageProjectionRow => {
+        return !!projection && projection.deleted_at === null;
+      })
+      .sort(
+        (a, b) =>
+          b.created_at - a.created_at || b.root_event_id.localeCompare(a.root_event_id)
+      );
+    for (const projection of events) {
+      const event = messageProjectionRowToEvent(projection);
       if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
       if (
         allowedChannels &&
@@ -4098,7 +4231,7 @@ export class ReticulumChatDatabase {
       }
       const text =
         this.memorySearchText.get(event.eventId) ??
-        searchTextFromPayload(event.encryptedPayload);
+        searchTextFromPayload(projection.encrypted_payload);
       const lower = text.toLowerCase();
       if (!terms.every((term) => lower.includes(term))) continue;
       results.push({ event, snippet: buildPlainSnippet(text, terms) });
@@ -4198,6 +4331,8 @@ export class ReticulumChatDatabase {
         ON reticulum_chat_events (group_id, channel_id, feed_timestamp, event_id);
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_author_seq
         ON reticulum_chat_events (group_id, author_address, author_seq);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_target
+        ON reticulum_chat_events (target_event_id, timestamp, event_id);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
       CREATE TABLE IF NOT EXISTS rchat_message_projection (

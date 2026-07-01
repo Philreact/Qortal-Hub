@@ -808,6 +808,74 @@ describe('reticulum chat database', () => {
     expect(db.searchEvents('replacement', { groupIds: [62] })).toEqual([]);
   });
 
+  it('does not let stale rendered message events overwrite projected search text', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const root = signedEvent({
+      eventId: 'event-search-projection-root',
+      groupId: 262,
+      authorSeq: 1,
+      timestamp: Date.now(),
+      encryptedPayload: JSON.stringify({ messageText: 'original stale text' }),
+    });
+    const olderEdit = signedEvent({
+      eventId: 'event-search-projection-old-edit',
+      groupId: 262,
+      authorSeq: 2,
+      timestamp: root.timestamp + 1,
+      eventType: 'edit',
+      targetEventId: root.eventId,
+      encryptedPayload: JSON.stringify({ messageText: 'older edit text' }),
+    });
+    const newerEdit = signedEvent({
+      eventId: 'event-search-projection-new-edit',
+      groupId: 262,
+      authorSeq: 3,
+      timestamp: root.timestamp + 2,
+      eventType: 'edit',
+      targetEventId: root.eventId,
+      encryptedPayload: JSON.stringify({ messageText: 'newer winning text' }),
+    });
+
+    db.insertEvent(root, true);
+    db.insertEvent(newerEdit, true);
+    expect(db.indexSearchText(newerEdit.eventId, 'newer winning text')).toBe(true);
+    expect(db.indexSearchText(root.eventId, 'original stale text')).toBe(false);
+    db.insertEvent(olderEdit, true);
+    expect(db.indexSearchText(olderEdit.eventId, 'older edit text')).toBe(false);
+
+    expect(db.searchEvents('winning', { groupIds: [262] })[0]?.event.eventId).toBe(root.eventId);
+    expect(db.searchEvents('older', { groupIds: [262] })).toEqual([]);
+    expect(db.searchEvents('original', { groupIds: [262] })).toEqual([]);
+  });
+
+  it('does not re-index search text for deleted projected messages', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const root = signedEvent({
+      eventId: 'event-search-deleted-root',
+      groupId: 263,
+      authorSeq: 1,
+      timestamp: Date.now(),
+      encryptedPayload: JSON.stringify({ messageText: 'deleted searchable text' }),
+    });
+    const deleteEvent = signedEvent({
+      eventId: 'event-search-delete-root',
+      groupId: 263,
+      authorSeq: 2,
+      timestamp: root.timestamp + 1,
+      eventType: 'delete',
+      targetEventId: root.eventId,
+      encryptedPayload: JSON.stringify({ messageText: '' }),
+    });
+
+    db.insertEvent(root, true);
+    db.insertEvent(deleteEvent, true);
+
+    expect(db.indexSearchText(root.eventId, 'deleted searchable text')).toBe(false);
+    expect(db.searchEvents('deleted', { groupIds: [263] })).toEqual([]);
+  });
+
   it('tracks unread mentions by mentioned address', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -1218,6 +1286,50 @@ describe('reticulum chat database', () => {
     expect(db.getChatSummaries('Qsecond')[0]?.mentionCount).toBe(1);
     db.deleteMentionsForEvent(event.eventId);
     expect(db.getChatSummaries('Qsecond')[0]?.mentionCount ?? 0).toBe(0);
+  });
+
+  it('does not let stale rendered edits overwrite projected mentions', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const root = signedEvent({
+      eventId: 'event-mention-projection-root',
+      groupId: 264,
+      authorAddress: 'Qauthor',
+      authorSeq: 1,
+      timestamp: Date.now(),
+      mentionAddressHashes: [],
+    });
+    const olderEdit = signedEvent({
+      eventId: 'event-mention-projection-old-edit',
+      groupId: 264,
+      authorAddress: 'Qauthor',
+      authorSeq: 2,
+      timestamp: root.timestamp + 1,
+      eventType: 'edit',
+      targetEventId: root.eventId,
+      mentionAddressHashes: [],
+    });
+    const newerEdit = signedEvent({
+      eventId: 'event-mention-projection-new-edit',
+      groupId: 264,
+      authorAddress: 'Qauthor',
+      authorSeq: 3,
+      timestamp: root.timestamp + 2,
+      eventType: 'edit',
+      targetEventId: root.eventId,
+      mentionAddressHashes: [],
+    });
+
+    db.insertEvent(root, true);
+    db.insertEvent(newerEdit, true);
+    expect(db.replaceMentionsForEvent(newerEdit.eventId, ['QnewerMention'])).toBe(true);
+    expect(db.replaceMentionsForEvent(root.eventId, ['QrootMention'])).toBe(false);
+    db.insertEvent(olderEdit, true);
+    expect(db.replaceMentionsForEvent(olderEdit.eventId, ['QolderMention'])).toBe(false);
+
+    expect(db.getChatSummaries('QnewerMention')[0]?.mentionCount).toBe(1);
+    expect(db.getChatSummaries('QrootMention')[0]?.mentionCount ?? 0).toBe(0);
+    expect(db.getChatSummaries('QolderMention')[0]?.mentionCount ?? 0).toBe(0);
   });
 
   it('returns recent group events when requester has empty sync state', () => {
@@ -7505,6 +7617,80 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('skips already imported event pages before expensive validation', async () => {
+    const dbPath = tempDbPath();
+    const validateGroupMember = vi.fn(async () => true);
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const events = signedAuthorEvents(
+      Array.from({ length: 40 }, (_unused, index) => {
+        const seq = index + 1;
+        return {
+          eventId: `event-page-known-${seq}`,
+          groupId: 57,
+          channelId: 'general',
+          authorSeq: seq,
+          timestamp: 10_000 + seq,
+        };
+      })
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, false)).toBe(true);
+    }
+    const page = {
+      v: 1,
+      g: 57,
+      c: 'general',
+      d: 'before',
+      more: false,
+      start: { id: events[0].eventId, ts: events[0].timestamp },
+      end: { id: events[events.length - 1].eventId, ts: events[events.length - 1].timestamp },
+      wh: (manager as any).db.computeWindowHash(events),
+      events,
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const transferId = 'known-page-transfer';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    const eventSpy = vi.fn();
+    manager.on('event', eventSpy);
+    (manager as any).eventPageOffers.set(transferId, {
+      transferId,
+      groupId: 57,
+      channelId: 'general',
+      direction: 'before',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: events.length,
+      sourcePeerHash: 'peer-known',
+      hasMore: false,
+    });
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-known',
+    });
+
+    expect(validateGroupMember).not.toHaveBeenCalled();
+    expect(eventSpy).not.toHaveBeenCalled();
+    manager.close();
+  });
+
   it('repairs bidirectionally when digest hashes differ and local latest is newer', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -7866,6 +8052,178 @@ describe('reticulum chat manager', () => {
       'support'
     );
     adminManager.close();
+  });
+
+  it('projects channel metadata when events are accepted by sync import', async () => {
+    const payload = {
+      channelId: 'sync-channel',
+      name: 'sync-channel',
+      position: 1,
+    };
+    const event = signedEvent({
+      eventId: 'event-channel-sync-import',
+      groupId: 80,
+      channelId: 'sync-channel',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([80]);
+
+    expect((manager as any).acceptEvent(event, false)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.getChannels(80, true)).toContainEqual(
+      expect.objectContaining({ channelId: 'sync-channel' })
+    );
+    manager.close();
+  });
+
+  it('repairs persisted channel metadata projection on subscription', async () => {
+    const payload = {
+      channelId: 'persisted-channel',
+      name: 'persisted-channel',
+      position: 1,
+    };
+    const event = signedEvent({
+      eventId: 'event-channel-persisted-import',
+      groupId: 82,
+      channelId: 'persisted-channel',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([82]);
+    expect((manager as any).db.insertEvent(event, false)).toBe(true);
+    expect(manager.getChannels(82, true).map((channel) => channel.channelId)).not.toContain(
+      'persisted-channel'
+    );
+
+    manager.subscribeGroup(82);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.getChannels(82, true)).toContainEqual(
+      expect.objectContaining({ channelId: 'persisted-channel' })
+    );
+    manager.close();
+  });
+
+  it('does not let older channel metadata override newer channel state', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([83]);
+    const now = Date.now();
+
+    const olderPayload = {
+      channelId: 'order-test',
+      name: 'order-test',
+      position: 1,
+    };
+    const newerPayload = {
+      channelId: 'order-test',
+      name: 'order-test',
+      position: 9,
+    };
+    const olderEvent = signedEvent({
+      eventId: 'event-channel-order-older',
+      groupId: 83,
+      channelId: 'order-test',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(olderPayload),
+      timestamp: now - 1000,
+    });
+    const newerEvent = signedEvent({
+      eventId: 'event-channel-order-newer',
+      groupId: 83,
+      channelId: 'order-test',
+      eventType: 'channel_update',
+      encryptedPayload: JSON.stringify(newerPayload),
+      timestamp: now,
+    });
+
+    expect((manager as any).acceptEvent(newerEvent, false)).toBe(true);
+    expect((manager as any).acceptEvent(olderEvent, false)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(manager.getChannels(83, true)).toContainEqual(
+      expect.objectContaining({ channelId: 'order-test', position: 9 })
+    );
+    manager.close();
+  });
+
+  it('does not resurrect a category when an older create arrives after a newer delete', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([84]);
+    const now = Date.now();
+
+    const createPayload = {
+      categoryId: 'cat-order-test',
+      name: 'order-test',
+      position: 1,
+    };
+    const deletePayload = {
+      categoryId: 'cat-order-test',
+      name: 'order-test',
+      position: 1,
+    };
+    const olderCreate = signedEvent({
+      eventId: 'event-category-order-older',
+      groupId: 84,
+      eventType: 'category_create',
+      encryptedPayload: JSON.stringify(createPayload),
+      timestamp: now - 1000,
+    });
+    const newerDelete = signedEvent({
+      eventId: 'event-category-order-newer',
+      groupId: 84,
+      eventType: 'category_delete',
+      encryptedPayload: JSON.stringify(deletePayload),
+      timestamp: now,
+    });
+
+    expect((manager as any).acceptEvent(newerDelete, false)).toBe(true);
+    expect((manager as any).acceptEvent(olderCreate, false)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(manager.getCategories(84).map((category) => category.categoryId)).not.toContain(
+      'cat-order-test'
+    );
+    manager.close();
   });
 
   it('applies categories and clears channel category assignments', async () => {
