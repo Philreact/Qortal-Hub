@@ -3568,22 +3568,6 @@ export class ReticulumChatDatabase {
         channels.push(channel);
       }
     }
-    for (const row of this.stmtGetKnownMessageChannels.all(groupId) as Array<{ channel_id?: string }>) {
-      const channelId = normalizeReticulumChatChannelId(row.channel_id);
-      if (channels.some((channel) => channel.channelId === channelId)) continue;
-      channels.push({
-        groupId,
-        channelId,
-        name: channelId,
-        position: channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ? 0 : 1000,
-        archived: false,
-        writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
-        writeModeUpdatedAt: 0,
-        createdBy: '',
-        createdAt: 0,
-        updatedAt: 0,
-      });
-    }
     if (!channels.some((channel) => channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID)) {
       channels.unshift(this.defaultChannel(groupId));
     }

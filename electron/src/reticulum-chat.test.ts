@@ -1459,7 +1459,7 @@ describe('reticulum chat database', () => {
     ).toHaveLength(101);
   });
 
-  it('exposes event-bearing channels even before channel metadata arrives', () => {
+  it('keeps event-bearing channels hidden until channel metadata arrives', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
     const event = signedEvent({
@@ -1471,7 +1471,7 @@ describe('reticulum chat database', () => {
     });
     db.insertEvent(event, true);
 
-    expect(db.getChannels(48).map((channel) => channel.channelId)).toContain(
+    expect(db.getChannels(48).map((channel) => channel.channelId)).not.toContain(
       'ch-missing-metadata'
     );
     expect(
