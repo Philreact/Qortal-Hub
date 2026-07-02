@@ -2700,6 +2700,73 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('dedupes concurrent linked history page requests for the same cursor', async () => {
+    const providerHash = 'c'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    await Promise.all([
+      (manager as any).requestLinkedHistoryPage(
+        providerHash,
+        69,
+        '*',
+        { eventId: 'same-cursor-event', feedTimestamp: 99_000 },
+        'before',
+        false,
+        'test-dedupe'
+      ),
+      (manager as any).requestLinkedHistoryPage(
+        providerHash,
+        69,
+        '*',
+        { eventId: 'same-cursor-event', feedTimestamp: 99_000 },
+        'before',
+        false,
+        'test-dedupe'
+      ),
+    ]);
+
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toEqual(
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        metadata: expect.objectContaining({
+          logicalResourceType: 'reticulum_chat_history_page',
+          groupId: 69,
+          channelId: '*',
+          direction: 'before',
+        }),
+        authMessage: expect.objectContaining({
+          type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+          groupId: 69,
+          c: '*',
+          d: 'before',
+          before: { id: 'same-cursor-event', ts: 99_000 },
+        }),
+      })
+    );
+    manager.close();
+  });
+
   it('requests channel metadata first when a digest differs', async () => {
     const providerHash = 'e'.repeat(32);
     const accepts: Array<Record<string, any>> = [];

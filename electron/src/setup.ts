@@ -2333,6 +2333,9 @@ function stopPresenceMainHeartbeatScheduler(): void {
     presenceMainHeartbeatTimer = null;
     loggerLog('[Presence] Main heartbeat scheduler stopped');
   }
+  getReticulumBridge()?.clearPresenceCache('heartbeat_scheduler_stopped').catch((err) => {
+    loggerWarn('[Presence] Failed to clear Reticulum presence cache:', err);
+  });
 }
 
 function sendPresenceMainHeartbeatRequest(): void {

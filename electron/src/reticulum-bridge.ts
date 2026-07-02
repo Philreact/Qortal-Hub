@@ -189,6 +189,7 @@ type BridgeCmdFrame = {
   action:
     | 'start'
     | 'publish_presence'
+    | 'clear_presence_cache'
     | 'forward_presence'
     | 'overlay_sync_state'
     | 'overlay_note_candidate_failure'
@@ -536,6 +537,7 @@ export type ReticulumOverlayLinkSnapshot = {
   linkId: string;
   peerPresenceHash: string;
   incoming: boolean;
+  overlayTransportAdmitted: boolean;
   connectedAt: number;
   lastRxAt: number;
   lastActivityAt: number;
@@ -720,6 +722,7 @@ type BridgeEventFrame =
         reason?: string;
         queuedPackets?: number;
         closedByReticulum?: boolean;
+        overlayTransportAdmitted?: boolean;
         lastRxAt?: number | null;
         createdAgeMs?: number | null;
         establishedAgeMs?: number | null;
@@ -2520,6 +2523,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return resp.ok;
   }
 
+  async clearPresenceCache(reason: string): Promise<boolean> {
+    await this.start();
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand('clear_presence_cache', { reason });
+    return resp.ok;
+  }
+
   async forwardPresence(
     envelope: PresenceEnvelope,
     overlayHopsRemaining: number,
@@ -4079,9 +4089,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           typeof frame.payload?.queuedPackets === 'number'
             ? frame.payload.queuedPackets
             : 0;
+        const overlayTransportAdmitted =
+          frame.payload?.overlayTransportAdmitted === true;
         if (shouldLogOverlayLinkStateEvent(reason)) {
           loggerLog(
-            `[ReticulumBridge] overlay-link link_id=${linkId} peer=${peerPresenceHash || 'unknown'} incoming=${frame.payload?.incoming === true ? 'yes' : 'no'} established=${frame.payload?.established === true ? 'yes' : 'no'} queued=${queuedPackets}${reason ? ` reason=${reason}` : ''}${overlayAgeDetail(frame.payload as Record<string, unknown> | undefined)}`
+            `[ReticulumBridge] overlay-link link_id=${linkId} peer=${peerPresenceHash || 'unknown'} incoming=${frame.payload?.incoming === true ? 'yes' : 'no'} established=${frame.payload?.established === true ? 'yes' : 'no'} admitted=${overlayTransportAdmitted ? 'yes' : 'no'} queued=${queuedPackets}${reason ? ` reason=${reason}` : ''}${overlayAgeDetail(frame.payload as Record<string, unknown> | undefined)}`
           );
         }
         const established = frame.payload?.established === true;
@@ -4107,6 +4119,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             peerPresenceHash:
               peerPresenceHash || existing?.peerPresenceHash || '',
             incoming: frame.payload?.incoming === true,
+            overlayTransportAdmitted:
+              overlayTransportAdmitted || existing?.overlayTransportAdmitted === true,
             connectedAt: existing?.connectedAt ?? Date.now(),
             lastRxAt,
             lastActivityAt,

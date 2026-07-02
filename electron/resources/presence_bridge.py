@@ -137,6 +137,16 @@ _RNS_INTERNAL_TIMING_PROBES_ENABLED = (
 # Keep overlay links a little longer than that, but do not trust a link forever
 # when no inbound Qortal overlay traffic arrives after the remote app exits.
 _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS = 95.0
+_OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS = 25.0
+_OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 25.0
+_OVERLAY_HELLO_WIRE_TYPE = "OVERLAY_HELLO"
+_OVERLAY_PING_WIRE_TYPE = "OVERLAY_PING"
+_OVERLAY_PONG_WIRE_TYPE = "OVERLAY_PONG"
+_OVERLAY_TRANSPORT_WIRE_TYPES = {
+    _OVERLAY_HELLO_WIRE_TYPE,
+    _OVERLAY_PING_WIRE_TYPE,
+    _OVERLAY_PONG_WIRE_TYPE,
+}
 _CALL_RELAY_DEDUP_TTL_SECONDS = 90.0
 _CALL_RELAY_DEDUP_MAX = 4096
 _call_relay_dedup: Dict[str, float] = {}
@@ -156,6 +166,7 @@ _inbound_classify_timers: Dict[int, threading.Timer] = {}
 RNS_ANNOUNCE_INTERVAL_SEC = 15 * 60
 _rns_auth_announced: bool = False
 _rns_periodic_announce_timer: Optional[threading.Timer] = None
+_overlay_transport_maintenance_thread: Optional[threading.Thread] = None
 _last_no_verified_peers_announce_at: float = 0.0
 
 _OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME = "overlay-good-outbound-cache.json"
@@ -4909,6 +4920,57 @@ def ensure_rns_callback_scheduler_monitor_started() -> None:
     _rns_callback_scheduler_monitor_thread.start()
 
 
+def overlay_transport_maintenance_loop() -> None:
+    last_announce_at = 0.0
+    while True:
+        try:
+            if _destination is not None:
+                now = time.time()
+                if now - last_announce_at >= RNS_ANNOUNCE_INTERVAL_SEC:
+                    announce_reason = (
+                        "transport_initial"
+                        if last_announce_at <= 0.0
+                        else "transport_periodic"
+                    )
+                    try:
+                        announce_local_destination(announce_reason)
+                    except Exception as exc:
+                        log(f"[presence_bridge] rns announce {announce_reason} failed: {exc}")
+                    last_announce_at = now
+                _seed_overlay_good_outbound_cache_candidates()
+                _run_overlay_sync_maintenance("overlay_transport_periodic")
+                pinged = _ping_established_overlay_links("periodic")
+                with _state_lock:
+                    active = len(_active_overlay_neighbors)
+                    inbound = len(_inbound_overlay_neighbors)
+                    links = len(_overlay_links_by_id)
+                verbose_presence_log(
+                    "[presence_bridge] target=presence-reticulum overlay_transport_sync "
+                    f"outbound={active} inbound={inbound} links={links} pinged={pinged}"
+                )
+        except Exception as exc:
+            log(
+                "[presence_bridge] target=presence-reticulum overlay_transport_sync_failed "
+                f"err={exc}"
+            )
+        time.sleep(_OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS)
+
+
+def ensure_overlay_transport_maintenance_started() -> None:
+    global _overlay_transport_maintenance_thread
+    if (
+        _overlay_transport_maintenance_thread is not None
+        and _overlay_transport_maintenance_thread.is_alive()
+    ):
+        return
+    _overlay_transport_maintenance_thread = threading.Thread(
+        target=overlay_transport_maintenance_loop,
+        daemon=True,
+        name="reticulum-overlay-transport-maintenance",
+    )
+    _overlay_transport_maintenance_thread.start()
+
+
 def destination_hash_hex(destination_hash: bytes) -> str:
     return destination_hash.hex()
 
@@ -5077,6 +5139,14 @@ def _overlay_peer_is_suppressed(peer_key: str) -> bool:
 
 def _parse_presence_announce_capacity(app_data: Any) -> Optional[bool]:
     if app_data is None:
+        return None
+    if isinstance(app_data, dict):
+        inbound_full = app_data.get("inboundFull")
+        if isinstance(inbound_full, bool):
+            return inbound_full
+        inbound_free = app_data.get("inboundFree")
+        if isinstance(inbound_free, int):
+            return inbound_free <= 0
         return None
     if isinstance(app_data, str):
         raw = app_data.strip().encode("utf-8", errors="ignore")
@@ -5284,12 +5354,6 @@ def _set_verified_overlay_peers(
         if not isinstance(seen_at, (int, float)):
             continue
         if now - float(seen_at) > _OVERLAY_NEIGHBOR_GRACE_SECONDS:
-            continue
-        if (
-            peer_hash not in next_verified
-            and peer_hash not in prev_verified
-            and peer_hash not in _candidate_peers
-        ):
             continue
         if peer_hash not in _known_peers:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
@@ -5653,10 +5717,10 @@ def _overlay_bootstrap_peer_sort_key(peer_key: str) -> tuple[int, float, str]:
 def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:
     """
     Recover from a drained or low-fanout overlay by temporarily seeding fanout
-    from known Reticulum/Qortal presence destinations.
+    from known Reticulum overlay destinations.
 
-    This only creates send targets. Peers still become verified solely through
-    accepted signed Qortal presence or other validated overlay traffic.
+    This only creates send targets. Peers become overlay-admitted after
+    Reticulum-level HELLO/PING/PONG traffic; Qortal presence is separate.
     """
     global _active_overlay_neighbors
     if len(_active_overlay_neighbors) >= _OVERLAY_MIN_HEALTHY_FANOUT:
@@ -6811,6 +6875,7 @@ def emit_overlay_link_state(
             "closedByReticulum": closed_by_reticulum,
             "managerState": str(state.get("manager_state") or ""),
             "generation": int(state.get("generation") or 0),
+            "overlayTransportAdmitted": state.get("overlay_transport_admitted") is True,
             "replayPending": state.get("replay_pending") is True,
             "openReason": str(state.get("open_reason") or ""),
             "lastReplayAgeMs": age_ms(last_replay_at),
@@ -7213,6 +7278,191 @@ def _overlay_link_is_fanout_usable(state: Dict[str, Any]) -> bool:
     return True
 
 
+def _overlay_link_peer_hash(state: Dict[str, Any]) -> str:
+    return str(state.get("peerPresenceHash") or "").strip().lower()
+
+
+def _overlay_inbound_full_hint() -> bool:
+    with _state_lock:
+        return len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
+
+
+def _make_overlay_transport_wire(message_type: str) -> bytes:
+    if _destination is None:
+        raise RuntimeError("Bridge not started")
+    wire = {
+        "t": message_type,
+        "r": destination_hash_hex(_destination.hash),
+        "v": PRESENCE_VERSION,
+        "b": PRESENCE_BRIDGE_BUILD,
+        "f": _overlay_inbound_full_hint(),
+    }
+    return json.dumps(wire, separators=(",", ":")).encode("utf-8")
+
+
+def _send_overlay_transport_control(
+    link: Any,
+    state: Dict[str, Any],
+    message_type: str,
+    reason: str,
+) -> bool:
+    peer_key = _overlay_link_peer_hash(state) or "unknown"
+    try:
+        wire_bytes = _make_overlay_transport_wire(message_type)
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_transport_send_failed "
+            f"type={message_type} peer={peer_key} reason={reason} err={exc}"
+        )
+        return False
+    ok = _send_packet_on_link(
+        link,
+        wire_bytes,
+        f"target=presence-reticulum overlay_transport_send peer={peer_key} type={message_type} reason={reason}",
+    )
+    if ok:
+        now = time.time()
+        state["last_send_ok_at"] = now
+        state["last_transport_control_sent_at"] = now
+        state["last_transport_control_type"] = message_type
+        if message_type == _OVERLAY_HELLO_WIRE_TYPE:
+            state["hello_sent_at"] = now
+            log(
+                "[presence_bridge] target=presence-reticulum overlay_hello_sent "
+                f"peer={peer_key} reason={reason}"
+            )
+        elif message_type == _OVERLAY_PING_WIRE_TYPE:
+            state["last_ping_sent_at"] = now
+            verbose_presence_log(
+                "[presence_bridge] target=presence-reticulum overlay_ping "
+                f"peer={peer_key} direction=tx reason={reason}"
+            )
+        elif message_type == _OVERLAY_PONG_WIRE_TYPE:
+            state["last_pong_sent_at"] = now
+            verbose_presence_log(
+                "[presence_bridge] target=presence-reticulum overlay_pong "
+                f"peer={peer_key} direction=tx reason={reason}"
+            )
+    return ok
+
+
+def _admit_overlay_peer_from_transport(
+    peer_key: str,
+    link_id: str,
+    state: Dict[str, Any],
+    reason: str,
+) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return False
+    previous_peer_hash = _overlay_link_peer_hash(state)
+    if previous_peer_hash and previous_peer_hash != peer_key:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_transport_peer_mismatch "
+            f"link={link_id} previous={previous_peer_hash} received={peer_key} reason={reason}"
+        )
+        _overlay_enqueue_close(link_id, "overlay_transport_peer_mismatch")
+        return False
+    state["peerPresenceHash"] = peer_key
+    state["overlay_transport_admitted"] = True
+    state["overlay_transport_admitted_at"] = time.time()
+    _note_overlay_peer_alive(peer_key, reason)
+    admitted_state = _register_active_overlay_for_peer(peer_key, link_id)
+    if admitted_state is None:
+        return False
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_peer_admitted "
+        f"peer={peer_key} link={link_id} incoming={str(state.get('incoming') is True).lower()} reason={reason}"
+    )
+    return True
+
+
+def _handle_overlay_transport_control(
+    decoded: Dict[str, Any],
+    link: Any,
+    link_id: str,
+    state: Dict[str, Any],
+) -> bool:
+    message_type = decoded.get("t")
+    if message_type not in _OVERLAY_TRANSPORT_WIRE_TYPES:
+        return False
+    peer_key = str(decoded.get("r") or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_transport_ignored "
+            f"type={message_type} reason=invalid_peer_hash"
+        )
+        return True
+    now = time.time()
+    state["last_activity_at"] = now
+    state["last_rx_at"] = now
+    state["last_transport_control_rx_at"] = now
+    state["last_transport_control_rx_type"] = message_type
+    _ensure_managed_link_fields(state, kind="overlay")
+    state["manager_state"] = _LINK_STATE_ESTABLISHED
+    state["last_failure_reason"] = ""
+    state["backoff_until"] = 0.0
+    _note_peer_inbound_capacity_hint(peer_key, {
+        "inboundFull": decoded.get("f") is True,
+    })
+    if not _admit_overlay_peer_from_transport(peer_key, link_id, state, message_type.lower()):
+        return True
+    if message_type == _OVERLAY_HELLO_WIRE_TYPE:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_hello_received "
+            f"peer={peer_key} link={link_id} inbound_full={str(decoded.get('f') is True).lower()} "
+            f"build={str(decoded.get('b') or '')[:48]}"
+        )
+        if not isinstance(state.get("hello_sent_at"), (int, float)):
+            _send_overlay_transport_control(link, state, _OVERLAY_HELLO_WIRE_TYPE, "hello_reply")
+        emit_overlay_link_state(link_id, state, "overlay_hello")
+    elif message_type == _OVERLAY_PING_WIRE_TYPE:
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_ping "
+            f"peer={peer_key} direction=rx"
+        )
+        _send_overlay_transport_control(link, state, _OVERLAY_PONG_WIRE_TYPE, "ping")
+        emit_overlay_link_state(link_id, state, "overlay_ping")
+    elif message_type == _OVERLAY_PONG_WIRE_TYPE:
+        state["last_pong_rx_at"] = now
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum overlay_pong "
+            f"peer={peer_key} direction=rx"
+        )
+        emit_overlay_link_state(link_id, state, "overlay_pong")
+    _overlay_enqueue_dedup(peer_key, reason="dedup_same_peer")
+    return True
+
+
+def _send_overlay_hello_for_link(link_id: str, reason: str) -> None:
+    state = get_overlay_link_state(link_id)
+    if state is None or state.get("established") is not True:
+        return
+    link = state.get("link")
+    if link is None or not _overlay_link_is_current(link_id, link):
+        return
+    _send_overlay_transport_control(link, state, _OVERLAY_HELLO_WIRE_TYPE, reason)
+
+
+def _ping_established_overlay_links(reason: str) -> int:
+    sent = 0
+    now = time.time()
+    with _state_lock:
+        link_items = list(_overlay_links_by_id.items())
+    for link_id, state in link_items:
+        if state.get("established") is not True:
+            continue
+        link = state.get("link")
+        if link is None or not _overlay_link_is_current(link_id, link):
+            continue
+        last_ping = state.get("last_ping_sent_at")
+        if isinstance(last_ping, (int, float)) and now - float(last_ping) < _OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS:
+            continue
+        if _send_overlay_transport_control(link, state, _OVERLAY_PING_WIRE_TYPE, reason):
+            sent += 1
+    return sent
+
+
 def _retain_recent_rx_outbound_peer(peer_hash: str, state: Dict[str, Any], reason: str, now: float) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key or not _overlay_link_is_good_outbound_rx(state, now):
@@ -7270,6 +7520,7 @@ def _admit_overlay_peer_if_allowed(peer_key: str, reason: str, incoming: bool = 
     direction = "inbound" if incoming else "outbound"
     limit = _OVERLAY_MAX_INBOUND_NEIGHBORS if incoming else _OVERLAY_MAX_OUTBOUND_NEIGHBORS
     if peer_key in target:
+        target[peer_key] = time.time()
         return True
     if len(target) >= limit:
         verbose_presence_log(
@@ -8587,6 +8838,8 @@ def _handle_overlay_link_packet(message, packet) -> None:
     state["last_failure_reason"] = ""
     state["backoff_until"] = 0.0
     t = decoded.get("t")
+    if _handle_overlay_transport_control(decoded, link, link_id, state):
+        return
     if isinstance(t, str) and t.startswith("PRESENCE_"):
         if _emit_presence_message(decoded, link_id):
             peer_hash = str(decoded.get("r") or "").strip().lower()
@@ -11057,6 +11310,8 @@ def on_outgoing_overlay_link_established(link) -> None:
     ph_out = str(state.get("peerPresenceHash") or "").strip().lower()
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _register_active_overlay_for_peer(ph_out, link_id)
+    _send_overlay_hello_for_link(link_id, "link_established")
+    if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _schedule_delayed_presence_announce_replay(ph_out, link_id, "link_established")
     if not _overlay_link_is_current(link_id, link):
         return
@@ -11169,6 +11424,18 @@ def _enqueue_latest_presence_announce_replay(peer_hash: str, reason: str) -> boo
         f"queued={str(bool(queued)).lower()}"
     )
     return bool(queued)
+
+
+def handle_clear_presence_cache(req_id: str, payload: Dict[str, Any]) -> None:
+    global _last_presence_wire, _last_presence_announce_wire, _last_presence_announce_id
+    _last_presence_wire = None
+    _last_presence_announce_wire = None
+    _last_presence_announce_id = ""
+    verbose_presence_log(
+        "[presence_bridge] target=presence-reticulum presence_cache_cleared "
+        f"reason={str(payload.get('reason') or 'unspecified')}"
+    )
+    emit_resp(req_id, True, payload={"cleared": True})
 
 
 def _presence_fanout_lane_for_peer(peer_hash: str) -> str:
@@ -13034,6 +13301,7 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
     if peer_key:
         _register_active_overlay_for_peer(peer_key, link_id)
     emit_overlay_link_state(link_id, state, "incoming")
+    _send_overlay_hello_for_link(link_id, f"incoming:{reason}")
     return link_id
 
 
@@ -13164,6 +13432,8 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         return
     peer_hash = ""
     if isinstance(decoded.get("t"), str) and str(decoded.get("t")).startswith("PRESENCE_"):
+        peer_hash = str(decoded.get("r") or "").strip().lower()
+    elif decoded.get("t") in _OVERLAY_TRANSPORT_WIRE_TYPES:
         peer_hash = str(decoded.get("r") or "").strip().lower()
     link_id = _register_incoming_overlay_link(
         link,
@@ -13305,6 +13575,7 @@ def ensure_started(config_dir: str):
         RNS.Transport.register_announce_handler(_announce_handler)
         ensure_transport_monitor_started()
         ensure_rns_callback_scheduler_monitor_started()
+        ensure_overlay_transport_maintenance_started()
         if _RNS_INTERNAL_TIMING_PROBES_ENABLED:
             install_rns_shared_frame_probe()
             install_rns_transport_inbound_probe()
@@ -15055,6 +15326,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_start(req_id, payload)
     elif action == "publish_presence":
         handle_publish_presence(req_id, payload)
+    elif action == "clear_presence_cache":
+        handle_clear_presence_cache(req_id, payload)
     elif action == "forward_presence":
         handle_forward_presence(req_id, payload)
     elif action == "overlay_sync_state":

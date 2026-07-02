@@ -135,6 +135,7 @@ export interface ReticulumChatEventPageOffer {
   channelId: string;
   direction: 'after' | 'before' | 'range';
   priority?: ReticulumChatFeedPriority;
+  includeCursor?: boolean;
   pageHash: string;
   sizeBytes: number;
   eventCount: number;
@@ -1641,6 +1642,8 @@ export class ReticulumChatManager extends EventEmitter {
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventPageOffers = new Map<string, ReticulumChatEventPageOffer>();
   private directHistoryPageRequests = new Map<string, ReticulumChatEventPageOffer>();
+  private directHistoryPageRequestKeys = new Map<string, string>();
+  private directHistoryPageTransferKeys = new Map<string, string>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3846,6 +3849,98 @@ export class ReticulumChatManager extends EventEmitter {
     return verifyReticulumChatHistoryPageRequest(groupId, request, timestamp) ? request : null;
   }
 
+  private historyPageCursorKey(cursor: ReticulumChatFeedCursor | null): string {
+    if (!cursor) return 'none';
+    return `${cursor.feedTimestamp}:${cursor.eventId}`;
+  }
+
+  private directHistoryPageRequestKey(
+    peerHash: string,
+    groupId: number,
+    channelId: string,
+    direction: 'after' | 'before',
+    cursor: ReticulumChatFeedCursor | null,
+    includeCursor: boolean,
+    priority?: ReticulumChatFeedPriority
+  ): string {
+    return [
+      peerHash.trim().toLowerCase(),
+      groupId,
+      channelId,
+      direction,
+      includeCursor ? 'inc' : 'exc',
+      priority ?? 'normal',
+      this.historyPageCursorKey(cursor),
+    ].join('|');
+  }
+
+  private trackDirectHistoryPageRequest(
+    key: string,
+    offer: ReticulumChatEventPageOffer
+  ): void {
+    this.directHistoryPageRequests.set(offer.transferId, offer);
+    this.directHistoryPageRequestKeys.set(key, offer.transferId);
+    this.directHistoryPageTransferKeys.set(offer.transferId, key);
+  }
+
+  private removeDirectHistoryPageRequest(transferId: string): ReticulumChatEventPageOffer | undefined {
+    const offer = this.directHistoryPageRequests.get(transferId);
+    this.directHistoryPageRequests.delete(transferId);
+    const key = this.directHistoryPageTransferKeys.get(transferId);
+    if (key) {
+      this.directHistoryPageTransferKeys.delete(transferId);
+      if (this.directHistoryPageRequestKeys.get(key) === transferId) {
+        this.directHistoryPageRequestKeys.delete(key);
+      }
+    }
+    return offer;
+  }
+
+  private cancelDirectHistoryPageRequest(transferId: string, reason: string): void {
+    const offer = this.removeDirectHistoryPageRequest(transferId);
+    if (!offer || !this.bridge || typeof this.bridge.cancelReticulumResourceDetailed !== 'function') {
+      return;
+    }
+    void this.bridge.cancelReticulumResourceDetailed({
+      transferId,
+      peerPresenceHash: offer.sourcePeerHash,
+      reason,
+    }).then((result) => {
+      if (!result.ok) {
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] history_page_link_cancel_failed group=${offer.groupId} peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} transfer=${transferId} reason=${failed.error ?? failed.reason ?? 'cancel_failed'}`
+        );
+      }
+    }).catch((err) => {
+      loggerWarn(
+        `[ReticulumChat] history_page_link_cancel_failed group=${offer.groupId} peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} transfer=${transferId} reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    });
+  }
+
+  private cancelRelatedDirectHistoryPageRequests(
+    offer: ReticulumChatEventPageOffer,
+    keepTransferId: string,
+    reason: string
+  ): void {
+    if (offer.direction === 'range') return;
+    const sourcePeerHash = (offer.sourcePeerHash || '').trim().toLowerCase();
+    for (const [transferId, pending] of [...this.directHistoryPageRequests]) {
+      if (transferId === keepTransferId) continue;
+      if (pending.direction === 'range') continue;
+      if (pending.groupId !== offer.groupId) continue;
+      if (pending.channelId !== offer.channelId) continue;
+      if (pending.direction !== offer.direction) continue;
+      if ((pending.priority ?? '') !== (offer.priority ?? '')) continue;
+      if (sourcePeerHash && (pending.sourcePeerHash || '').trim().toLowerCase() !== sourcePeerHash) continue;
+      loggerLog(
+        `[ReticulumChat] history_page_link_cancelled group=${offer.groupId} channel=${offer.channelId} peer=${(pending.sourcePeerHash || '').slice(0, 16) || 'unknown'} transfer=${transferId} reason=${reason}`
+      );
+      this.cancelDirectHistoryPageRequest(transferId, reason);
+    }
+  }
+
   private async requestLinkedHistoryPage(
     peerHash: string,
     groupId: number,
@@ -3859,26 +3954,70 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     const peer = peerHash.trim().toLowerCase();
     const fallbackPeer = fallbackPeerHash.trim().toLowerCase();
-    const request = await this.buildSignedHistoryPageRequest(
+    const normalizedChannelId =
+      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+        ? RETICULUM_CHAT_ALL_CHANNELS_ID
+        : normalizeReticulumChatChannelId(channelId);
+    const requestKey = this.directHistoryPageRequestKey(
+      peer,
       groupId,
-      channelId,
-      cursor,
+      normalizedChannelId,
       direction,
+      cursor,
       includeCursor,
       priority
     );
+    const existingTransferId = this.directHistoryPageRequestKeys.get(requestKey);
+    if (existingTransferId) {
+      const existingOffer = this.directHistoryPageRequests.get(existingTransferId);
+      if (existingOffer) {
+        loggerLog(
+          `[ReticulumChat] history_page_link_deduped group=${groupId} channel=${normalizedChannelId} peer=${peer.slice(0, 16)} transfer=${existingTransferId} direction=${direction} cursor=${cursor?.eventId ?? 'none'} reason=${reason}`
+        );
+        return;
+      }
+      this.directHistoryPageRequestKeys.delete(requestKey);
+      this.directHistoryPageTransferKeys.delete(existingTransferId);
+    }
     const fallbackWire: Extract<ReticulumChatWire, { k: 'feed_req' }> = {
       t: 'RCHAT',
       k: 'feed_req',
       g: groupId,
-      c: channelId,
+      c: normalizedChannelId,
       ...(direction === 'after' && cursor ? { after: this.cursorToWire(cursor) } : {}),
       ...(direction === 'before' && cursor ? { before: this.cursorToWire(cursor) } : {}),
       ...(includeCursor ? { inc: 1 as const } : {}),
       ...(feedPriorityToWire(priority) ? { p: feedPriorityToWire(priority) } : {}),
       limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
     };
-    if (!peer || !request || !this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
+    if (!peer || !this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
+      this.sendRepairFeedRequest(fallbackPeer || peer, fallbackWire, `${reason}:linked-unavailable`);
+      return;
+    }
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    this.trackDirectHistoryPageRequest(requestKey, {
+      transferId,
+      groupId,
+      channelId: normalizedChannelId,
+      direction,
+      ...(priority ? { priority } : {}),
+      ...(includeCursor ? { includeCursor: true } : {}),
+      pageHash: '',
+      sizeBytes: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
+      eventCount: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
+      ...(cursor ? { [direction === 'before' ? 'start' : 'end']: cursor } : {}),
+      sourcePeerHash: peer,
+    });
+    const request = await this.buildSignedHistoryPageRequest(
+      groupId,
+      normalizedChannelId,
+      cursor,
+      direction,
+      includeCursor,
+      priority
+    );
+    if (!request) {
+      this.removeDirectHistoryPageRequest(transferId);
       this.sendRepairFeedRequest(fallbackPeer || peer, fallbackWire, `${reason}:linked-unavailable`);
       return;
     }
@@ -3886,6 +4025,7 @@ export class ReticulumChatManager extends EventEmitter {
     try {
       const resolvedIdentity = await this.ensureResourcePeerIdentity(peer, 'history-page-resource');
       if (resolvedIdentity === null) {
+        this.removeDirectHistoryPageRequest(transferId);
         this.sendRepairFeedRequest(fallbackPeer || peer, fallbackWire, `${reason}:identity-unavailable`);
         return;
       }
@@ -3894,26 +4034,10 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] Linked history page identity resolve failed group=${groupId} peer=${peer.slice(0, 16)} reason=${err instanceof Error ? err.message : String(err)}`
       );
+      this.removeDirectHistoryPageRequest(transferId);
       this.sendRepairFeedRequest(fallbackPeer || peer, fallbackWire, `${reason}:identity-error`);
       return;
     }
-    const transferId = nodeCrypto.randomBytes(8).toString('hex');
-    const normalizedChannelId =
-      channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-        ? RETICULUM_CHAT_ALL_CHANNELS_ID
-        : normalizeReticulumChatChannelId(channelId);
-    this.directHistoryPageRequests.set(transferId, {
-      transferId,
-      groupId,
-      channelId: normalizedChannelId,
-      direction,
-      ...(priority ? { priority } : {}),
-      pageHash: '',
-      sizeBytes: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
-      eventCount: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
-      ...(cursor ? { [direction === 'before' ? 'start' : 'end']: cursor } : {}),
-      sourcePeerHash: peer,
-    });
     loggerLog(
       `[ReticulumChat] history_page_link_requested group=${groupId} channel=${normalizedChannelId} peer=${peer.slice(0, 16)} transfer=${transferId} direction=${direction} cursor=${cursor?.eventId ?? 'none'} reason=${reason}`
     );
@@ -3942,7 +4066,7 @@ export class ReticulumChatManager extends EventEmitter {
       },
     });
     if (!result.ok) {
-      this.directHistoryPageRequests.delete(transferId);
+      this.removeDirectHistoryPageRequest(transferId);
       const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
         `[ReticulumChat] history_page_link_failed group=${groupId} peer=${peer.slice(0, 16)} reason=${failed.error ?? failed.reason}; falling back to feed_req`
@@ -7341,6 +7465,14 @@ export class ReticulumChatManager extends EventEmitter {
       loggerLog(
         `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} skipped_known=${skippedKnownCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
       );
+      this.cancelRelatedDirectHistoryPageRequests(
+        {
+          ...offer,
+          sourcePeerHash,
+        },
+        payload.transferId,
+        'history_page_satisfied'
+      );
       if (page.more === true) {
         if (offer.direction === 'range') {
           if (sourcePeerHash) {
@@ -7373,7 +7505,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.handleEventPageResourceFailure(offer.transferId, 'page_import_failed');
     } finally {
       this.eventPageOffers.delete(payload.transferId);
-      this.directHistoryPageRequests.delete(payload.transferId);
+      this.removeDirectHistoryPageRequest(payload.transferId);
     }
   }
 
@@ -7527,7 +7659,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.directHistoryPageRequests.get(transferId);
     if (!offer) return;
     this.eventPageOffers.delete(transferId);
-    this.directHistoryPageRequests.delete(transferId);
+    this.removeDirectHistoryPageRequest(transferId);
     loggerWarn(
       `[ReticulumChat] Event page resource failed group=${offer.groupId} channel=${offer.channelId} peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} reason=${reason}`
     );

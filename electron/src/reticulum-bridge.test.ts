@@ -825,6 +825,7 @@ describe('ReticulumBridge group audio support', () => {
         reason: 'established',
         queuedPackets: 2,
         closedByReticulum: false,
+        overlayTransportAdmitted: true,
         lastRxAt: Date.now(),
       },
     });
@@ -835,6 +836,7 @@ describe('ReticulumBridge group audio support', () => {
         linkId: 'overlay-1',
         peerPresenceHash: 'peer-hash',
         incoming: false,
+        overlayTransportAdmitted: true,
         connectedAt: expect.any(Number),
         lastRxAt: expect.any(Number),
         lastActivityAt: expect.any(Number),
@@ -996,6 +998,7 @@ describe('ReticulumBridge group audio support', () => {
         linkId: 'overlay-1',
         peerPresenceHash: 'peer-hash',
         incoming: true,
+        overlayTransportAdmitted: false,
         connectedAt: 200_000,
         lastRxAt: 100_000,
         lastActivityAt: 199_000,
@@ -1363,6 +1366,25 @@ describe('ReticulumBridge publish_presence payload', () => {
 
     expect(internal.sendCommand).toHaveBeenCalledWith('publish_presence', {
       envelope,
+    });
+  });
+
+  it('clears cached presence replay state when presence stops', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: '1',
+      ok: true,
+      payload: {},
+    }));
+
+    await expect(bridge.clearPresenceCache('logout')).resolves.toBe(true);
+
+    expect(internal.sendCommand).toHaveBeenCalledWith('clear_presence_cache', {
+      reason: 'logout',
     });
   });
 
