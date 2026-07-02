@@ -2793,6 +2793,9 @@ async function validateQortalGroupMember(
     address: normalizedAddress,
   });
   try {
+    loggerLog(
+      `[ReticulumChat] group_admin_validation_start group=${groupId} address=${normalizedAddress}`
+    );
     const result = await main.webContents.executeJavaScript(
       `(async () => {
         const payload = ${payloadJson};
@@ -2826,7 +2829,9 @@ async function validateQortalGroupAdmin(
     return false;
   }
   const main = myCapacitorApp.getMainWindow();
-  if (!main || main.isDestroyed()) return false;
+  if (!main || main.isDestroyed()) {
+    throw new Error('No renderer available for group admin validation');
+  }
   const payloadJson = JSON.stringify({
     groupId,
     address: normalizedAddress,
@@ -2839,7 +2844,10 @@ async function validateQortalGroupAdmin(
           'validateGroupAdmins',
           { groupId: payload.groupId, addresses: [payload.address] },
           10000
-        ).catch(() => null);
+        );
+        if (!Array.isArray(rows)) {
+          throw new Error('Invalid group admin validation response');
+        }
         return Array.isArray(rows) && rows.some((item) =>
           item &&
           typeof item === 'object' &&
@@ -2849,10 +2857,16 @@ async function validateQortalGroupAdmin(
       })()`,
       true
     );
+    loggerLog(
+      `[ReticulumChat] group_admin_validation_result group=${groupId} address=${normalizedAddress} isAdmin=${result === true}`
+    );
     return result === true;
   } catch (err) {
-    loggerWarn('[ReticulumChat] Selected-node group admin validation failed:', err);
-    return false;
+    loggerWarn(
+      `[ReticulumChat] group_admin_validation_failed group=${groupId} address=${normalizedAddress}:`,
+      err
+    );
+    throw err;
   }
 }
 

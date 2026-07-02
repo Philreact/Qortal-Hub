@@ -518,6 +518,7 @@ const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_NEWEST_PAGE_PUSH_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
+const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
@@ -530,6 +531,9 @@ const RETICULUM_CHAT_RELAY_REPLICATION_TARGET = 3;
 const RETICULUM_CHAT_RELAY_QUERY_MAX_IDS = 16;
 const RETICULUM_CHAT_RELAY_QUERY_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_RELAY_DIGEST_PAGE_SIZE = 8;
+
+type ReticulumChatAdminValidationStatus = 'admin' | 'not_admin' | 'unknown';
+type ReticulumChatMetadataProjectionResult = 'applied' | 'skipped' | 'deferred';
 const RETICULUM_CHAT_RELAY_DIGEST_MAX_EVENTS_PER_SUB = 64;
 const RETICULUM_CHAT_RELAY_DIGEST_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_GROUP_KEY_DIGEST_REFRESH_MS = 60_000;
@@ -1644,6 +1648,7 @@ export class ReticulumChatManager extends EventEmitter {
   private channelMetadataProjectionQueue: string[] = [];
   private channelMetadataProjectionQueuedIds = new Set<string>();
   private channelMetadataProjectionAttemptedIds = new Set<string>();
+  private channelMetadataProjectionRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private channelMetadataProjectionActive = false;
   private channelMetadataProjectionRepairGroups = new Set<number>();
   private activeDigestGroups = new Map<number, number>();
@@ -1850,8 +1855,13 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceTransfer?.close();
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
     this.typingTimers.clear();
+    for (const timer of this.channelMetadataProjectionRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.channelMetadataProjectionRetryTimers.clear();
     this.channelMetadataProjectionQueue = [];
     this.channelMetadataProjectionQueuedIds.clear();
+    this.channelMetadataProjectionAttemptedIds.clear();
     this.channelMetadataProjectionRepairGroups.clear();
     this.db.close();
   }
@@ -4121,24 +4131,40 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   async applyChannelMetadataEvent(eventId: string, payload: unknown): Promise<boolean> {
-    if (this.isClosed) return false;
+    return (await this.applyChannelMetadataEventForProjection(eventId, payload)) === 'applied';
+  }
+
+  private async applyChannelMetadataEventForProjection(
+    eventId: string,
+    payload: unknown
+  ): Promise<ReticulumChatMetadataProjectionResult> {
+    if (this.isClosed) return 'deferred';
     const event = this.db.getEvent(eventId);
     if (!event || !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
       loggerWarn(
         `[ReticulumChat] Ignoring channel metadata event ${eventId}: event missing or wrong type`
       );
-      return false;
+      return 'skipped';
     }
-    const authorIsAdmin = await this.isValidatedGroupAdmin(event.groupId, event.authorAddress);
-    if (this.isClosed) return false;
-    if (!authorIsAdmin) {
+    const authorAdminStatus = await this.getValidatedGroupAdminStatus(
+      event.groupId,
+      event.authorAddress
+    );
+    if (this.isClosed) return 'deferred';
+    if (authorAdminStatus === 'unknown') {
       loggerWarn(
-        `[ReticulumChat] Ignoring channel metadata event ${event.eventId}: author is not a group admin`
+        `[ReticulumChat] channel_metadata_projection_deferred event=${event.eventId} group=${event.groupId} type=${event.eventType} author=${event.authorAddress} reason=admin_validation_unavailable`
       );
-      return false;
+      return 'deferred';
+    }
+    if (authorAdminStatus !== 'admin') {
+      loggerWarn(
+        `[ReticulumChat] channel_metadata_projection_skipped event=${event.eventId} group=${event.groupId} type=${event.eventType} author=${event.authorAddress} reason=author_not_group_admin`
+      );
+      return 'skipped';
     }
     if (await this.isSupersededChannelMetadataEvent(event, payload)) {
-      return true;
+      return 'applied';
     }
     if (event.eventType.startsWith('category_')) {
       const category = this.categoryFromMetadataPayload(event, payload);
@@ -4146,7 +4172,7 @@ export class ReticulumChatManager extends EventEmitter {
         loggerWarn(
           `[ReticulumChat] Ignoring category metadata event ${event.eventId}: invalid metadata payload`
         );
-        return false;
+        return 'skipped';
       }
       const changed =
         event.eventType === 'category_delete'
@@ -4161,10 +4187,13 @@ export class ReticulumChatManager extends EventEmitter {
           `[ReticulumChat] Failed to persist category metadata event ${event.eventId}:`,
           category
         );
-        return false;
+        return 'deferred';
       }
       this.emitSummaryChanged(event.groupId, event);
-      return true;
+      loggerLog(
+        `[ReticulumChat] channel_metadata_projection_applied event=${event.eventId} group=${event.groupId} type=${event.eventType} entity=category:${category.categoryId}`
+      );
+      return 'applied';
     }
 
     const channel = this.channelFromMetadataPayload(event, payload);
@@ -4172,7 +4201,7 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] Ignoring channel metadata event ${event.eventId}: invalid metadata payload`
       );
-      return false;
+      return 'skipped';
     }
     const changed = this.db.upsertChannel(channel);
     if (!changed && !this.db.getChannel(channel.groupId, channel.channelId)) {
@@ -4180,10 +4209,13 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] Failed to persist channel metadata event ${event.eventId}:`,
         channel
       );
-      return false;
+      return 'deferred';
     }
     this.emitSummaryChanged(event.groupId, event);
-    return true;
+    loggerLog(
+      `[ReticulumChat] channel_metadata_projection_applied event=${event.eventId} group=${event.groupId} type=${event.eventType} entity=channel:${channel.channelId}`
+    );
+    return 'applied';
   }
 
   getChannels(groupId: number, includeArchived = false): ReticulumGroupChannel[] {
@@ -4232,8 +4264,12 @@ export class ReticulumChatManager extends EventEmitter {
         if (this.channelMetadataProjectionAttemptedIds.has(eventId)) continue;
         const event = this.db.getEvent(eventId);
         if (!event || !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) continue;
-        this.channelMetadataProjectionAttemptedIds.add(eventId);
-        await this.tryApplyPublicChannelMetadata(event);
+        const result = await this.tryApplyPublicChannelMetadata(event);
+        if (result === 'deferred') {
+          this.scheduleChannelMetadataProjectionRetry(event.eventId);
+        } else {
+          this.channelMetadataProjectionAttemptedIds.add(eventId);
+        }
         await this.yieldEventPageImportTurn();
       }
     } finally {
@@ -4244,13 +4280,38 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
-  private async tryApplyPublicChannelMetadata(event: ReticulumChatEvent): Promise<void> {
-    if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return;
+  private async tryApplyPublicChannelMetadata(
+    event: ReticulumChatEvent
+  ): Promise<ReticulumChatMetadataProjectionResult> {
+    if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return 'skipped';
     try {
-      await this.applyChannelMetadataEvent(event.eventId, JSON.parse(event.encryptedPayload));
+      return await this.applyChannelMetadataEventForProjection(
+        event.eventId,
+        JSON.parse(event.encryptedPayload)
+      );
     } catch {
       // Invalid or legacy-encrypted metadata cannot be projected without a parsed payload.
+      return 'skipped';
     }
+  }
+
+  private scheduleChannelMetadataProjectionRetry(eventId: string): void {
+    if (this.isClosed || !eventId) return;
+    if (this.channelMetadataProjectionRetryTimers.has(eventId)) return;
+    loggerLog(
+      `[ReticulumChat] channel_metadata_projection_retry_scheduled event=${eventId} retryMs=${RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS}`
+    );
+    const timer = setTimeout(() => {
+      this.channelMetadataProjectionRetryTimers.delete(eventId);
+      if (this.isClosed) return;
+      const event = this.db.getEvent(eventId);
+      if (!event || !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) return;
+      loggerLog(
+        `[ReticulumChat] channel_metadata_projection_retry event=${eventId} group=${event.groupId} type=${event.eventType}`
+      );
+      this.queueChannelMetadataProjection(event);
+    }, RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS);
+    this.channelMetadataProjectionRetryTimers.set(eventId, timer);
   }
 
   private metadataEntityKey(event: ReticulumChatEvent, payload: unknown): string | null {
@@ -4458,29 +4519,45 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private async isValidatedGroupAdmin(groupId: number, address: string): Promise<boolean> {
-    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    return (await this.getValidatedGroupAdminStatus(groupId, address)) === 'admin';
+  }
+
+  private async getValidatedGroupAdminStatus(
+    groupId: number,
+    address: string
+  ): Promise<ReticulumChatAdminValidationStatus> {
+    if (!Number.isInteger(groupId) || groupId <= 0) return 'not_admin';
     const normalizedAddress = address.trim();
-    if (!normalizedAddress) return false;
-    if (!this.validateGroupAdmin) return this.localGroupIds.has(groupId);
+    if (!normalizedAddress) return 'not_admin';
+    if (!this.validateGroupAdmin) return this.localGroupIds.has(groupId) ? 'admin' : 'not_admin';
     const cacheKey = `${groupId}:${normalizedAddress}`;
     const cached = this.groupAdminValidationCache.get(cacheKey);
     const now = this.now();
-    if (cached && cached.expiresAt > now) return cached.isAdmin;
+    if (cached && cached.expiresAt > now) {
+      const status = cached.isAdmin ? 'admin' : 'not_admin';
+      loggerLog(
+        `[ReticulumChat] group_admin_validation_cache_hit group=${groupId} address=${normalizedAddress} status=${status} ttlMs=${cached.expiresAt - now}`
+      );
+      return status;
+    }
     let isAdmin = false;
     try {
       isAdmin = await this.validateGroupAdmin(groupId, normalizedAddress);
     } catch (err) {
       loggerWarn(
-        `[ReticulumChat] Group admin validation failed for group=${groupId} address=${normalizedAddress}:`,
+        `[ReticulumChat] group_admin_validation_unknown group=${groupId} address=${normalizedAddress}:`,
         err
       );
-      isAdmin = false;
+      return 'unknown';
     }
+    loggerLog(
+      `[ReticulumChat] group_admin_validation_resolved group=${groupId} address=${normalizedAddress} status=${isAdmin ? 'admin' : 'not_admin'}`
+    );
     this.groupAdminValidationCache.set(cacheKey, {
       isAdmin,
       expiresAt: now + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
     });
-    return isAdmin;
+    return isAdmin ? 'admin' : 'not_admin';
   }
 
   private async canAcceptEventForChannelWritePolicy(

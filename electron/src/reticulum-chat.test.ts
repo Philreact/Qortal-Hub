@@ -8057,6 +8057,53 @@ describe('reticulum chat manager', () => {
     adminManager.close();
   });
 
+  it('retries channel metadata projection when admin validation is temporarily unavailable', async () => {
+    const payload = {
+      channelId: 'deferred-admin-channel',
+      name: 'deferred-admin-channel',
+      position: 1,
+    };
+    const event = signedEvent({
+      eventId: 'event-channel-admin-validation-deferred',
+      groupId: 80,
+      channelId: 'deferred-admin-channel',
+      eventType: 'channel_create',
+      timestamp: 20_000,
+      encryptedPayload: JSON.stringify(payload),
+    });
+    let attempts = 0;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 20_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('temporary validation failure');
+        return true;
+      },
+    });
+    manager.setLocalGroupMemberships([80]);
+    expect((manager as any).acceptEvent(event, false)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(manager.getChannels(80, true).map((channel) => channel.channelId)).not.toContain(
+      'deferred-admin-channel'
+    );
+
+    manager.subscribeGroup(80);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect(manager.getChannels(80, true).map((channel) => channel.channelId)).toContain(
+      'deferred-admin-channel'
+    );
+    manager.close();
+  });
+
   it('stores channel write mode from admin metadata', async () => {
     const payload = {
       channelId: 'announcements',
