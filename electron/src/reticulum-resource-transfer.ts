@@ -496,6 +496,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     if (payload?.status === 'failed' && payload.transferId) {
+      this.rejectUnavailableProvider(payload.transferId, String(payload.reason || 'resource_failed'));
       this.finishTransfer(payload.transferId, false);
       return;
     }
@@ -505,6 +506,33 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     if (payload?.status !== 'received' || !payload.path || !payload.transferId) return;
     void this.importReceived(payload);
+  }
+
+  private rejectUnavailableProvider(transferId: string, reason: string): void {
+    if (
+      reason !== 'resource_unavailable' &&
+      reason !== 'manifest_not_found' &&
+      reason !== 'request_not_allowed'
+    ) {
+      return;
+    }
+    const offer = this.offers.get(transferId);
+    if (!offer?.sourcePeerHash) return;
+    const state = this.downloads.get(offer.fileHash);
+    if (!state) return;
+    const peerKey = offer.sourcePeerHash.trim().toLowerCase();
+    if (!peerKey) return;
+    const removed = state.peerHashes.delete(peerKey);
+    state.sourcePeerHashes.delete(peerKey);
+    state.peerBulkThrottleUntil.delete(peerKey);
+    state.peerBulkThrottleLoggedAt.delete(peerKey);
+    for (const peers of state.rangePeers.values()) peers.delete(peerKey);
+    if (removed) {
+      loggerWarn(
+        `[${this.loggerPrefix}] resource_provider_rejected fileHash=${offer.fileHash} ` +
+          `peer=${peerKey.slice(0, 16)} transfer=${transferId} reason=${reason}`
+      );
+    }
   }
 
   private emptyDownloadStatus(fileHash = ''): ReticulumResourceDownloadRuntimeStatus {

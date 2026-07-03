@@ -159,6 +159,10 @@ type ReticulumChatEventOfferOptions = {
   allowCachedServe?: boolean;
 };
 
+type ReticulumChatResourceServeCheck =
+  | { ok: true }
+  | { ok: false; reason: string };
+
 export interface ReticulumChatEventOfferWire {
   x: string;
   id: string;
@@ -1730,15 +1734,31 @@ export class ReticulumChatManager extends EventEmitter {
           ranges
         ),
       canServeRequest: async (groupId, request, manifest) => {
-        if (manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) return false;
-        if (!this.resourceManifestBelongsToGroup(manifest, groupId)) return false;
+        const fileHash = request.fileHash.toLowerCase();
+        if (manifest.fileHash.toLowerCase() !== fileHash) {
+          loggerWarn(
+            `[ReticulumChat] Refusing resource ${fileHash}: manifest hash mismatch`
+          );
+          return false;
+        }
+        if (!this.resourceManifestBelongsToGroup(manifest, groupId)) {
+          loggerWarn(
+            `[ReticulumChat] Refusing resource ${fileHash}: resource is not for group=${groupId}`
+          );
+          return false;
+        }
         if (request.eventId) {
           const event = this.db.getEvent(request.eventId);
-          if (!event || event.groupId !== groupId) return false;
+          if (!event || event.groupId !== groupId) {
+            loggerWarn(
+              `[ReticulumChat] Refusing resource ${fileHash}: event ${request.eventId} is not for group=${groupId}`
+            );
+            return false;
+          }
         }
         if (!request.requesterAddress) {
           loggerWarn(
-            `[ReticulumChat] Refusing resource ${request.fileHash}: signed requester address missing`
+            `[ReticulumChat] Refusing resource ${fileHash}: signed requester address missing`
           );
           return false;
         }
@@ -1749,10 +1769,13 @@ export class ReticulumChatManager extends EventEmitter {
         );
         if (!requesterIsMember) {
           loggerWarn(
-            `[ReticulumChat] Refusing resource ${request.fileHash}: requester is not a group member`
+            `[ReticulumChat] Refusing resource ${fileHash}: requester is not a group member`
           );
           return false;
         }
+        loggerLog(
+          `[ReticulumChat] cached_resource_serve_allowed group=${groupId} file=${fileHash.slice(0, 12)} requester=${request.requesterAddress}`
+        );
         return true;
       },
       parseAuthRequest: (groupId, auth, peerHash) =>
@@ -6126,27 +6149,23 @@ export class ReticulumChatManager extends EventEmitter {
     return verifyReticulumChatResourceFind(groupId, wire, this.now());
   }
 
-  private canServeResourceFindLocally(
+  private checkLocalResourceServeAvailability(
     groupId: number,
     fileHash: string,
     sizeBytes: number
-  ): boolean {
+  ): ReticulumChatResourceServeCheck {
     const manifest = this.resourceStore?.getManifest(fileHash);
-    if (
-      !manifest ||
-      manifest.fileHash.toLowerCase() !== fileHash ||
-      manifest.sizeBytes !== sizeBytes ||
-      !this.resourceManifestBelongsToGroup(manifest, groupId)
-    ) {
-      return false;
-    }
+    if (!manifest) return { ok: false, reason: 'manifest_missing' };
+    if (manifest.fileHash.toLowerCase() !== fileHash) return { ok: false, reason: 'hash_mismatch' };
+    if (manifest.sizeBytes !== sizeBytes) return { ok: false, reason: 'size_mismatch' };
+    if (!this.resourceManifestBelongsToGroup(manifest, groupId)) return { ok: false, reason: 'wrong_group' };
     try {
       const sourcePath =
         this.resourceStore?.getVerifiedAssembledPath(fileHash) ??
         this.resourceStore?.assembleResource(fileHash);
-      return Boolean(sourcePath);
+      return sourcePath ? { ok: true } : { ok: false, reason: 'not_complete' };
     } catch {
-      return false;
+      return { ok: false, reason: 'not_complete' };
     }
   }
 
@@ -6181,12 +6200,16 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: routeExpiresAt,
     });
 
-    if (this.canServeResourceFindLocally(groupId, fileHash, sizeBytes) && localPeerHash) {
+    const localServe = this.checkLocalResourceServeAvailability(groupId, fileHash, sizeBytes);
+    if (localServe.ok && localPeerHash) {
       const requesterAddress = deriveAddressFromPublicKey(wire.p);
       if (
         !requesterAddress ||
         !(await this.isValidatedRequesterGroupMember(groupId, requesterAddress, 'resource_find'))
       ) {
+        loggerWarn(
+          `[ReticulumChat] resource_find_local_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=requester_not_member`
+        );
         return;
       }
       const response: ReticulumChatWire = {
@@ -6206,6 +6229,15 @@ export class ReticulumChatManager extends EventEmitter {
         );
       }
       return;
+    }
+    if ('reason' in localServe) {
+      loggerLog(
+        `[ReticulumChat] resource_find_local_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=${localServe.reason}`
+      );
+    } else if (!localPeerHash) {
+      loggerLog(
+        `[ReticulumChat] resource_find_local_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=missing_local_peer`
+      );
     }
 
     if (wire.h >= wire.m || now >= wire.x) return;
@@ -6324,6 +6356,9 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
+    loggerLog(
+      `[ReticulumChat] cached_event_serve_allowed group=${groupId} event=${request.id} requester=${request.a}`
+    );
     await this.offerEventResource(peerHash, groupId, request.id, {
       ...this.relayResponseOptionsFromWire(wire),
       allowCachedServe: true,
@@ -6825,7 +6860,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
       return { ok: false, reason: 'send-command-failed', error: 'Bridge chat resource send unavailable' };
     }
-    if (!this.localGroupIds.has(groupId)) {
+    if (!options.allowCachedServe && !this.localGroupIds.has(groupId)) {
       return { ok: false, reason: 'send-command-failed', error: 'Not a local group member' };
     }
     if (events.length === 0) return { ok: false, reason: 'send-command-failed', error: 'No events to offer' };
@@ -7882,6 +7917,9 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('requester_not_group_member');
       return;
     }
+    loggerLog(
+      `[ReticulumChat] cached_history_serve_allowed group=${groupId} requester=${request.a} transfer=${payload.transferId}`
+    );
     const channelId =
       request.c === RETICULUM_CHAT_ALL_CHANNELS_ID
         ? RETICULUM_CHAT_ALL_CHANNELS_ID

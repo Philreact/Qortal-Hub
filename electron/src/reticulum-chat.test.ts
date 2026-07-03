@@ -5345,6 +5345,78 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
+  it('removes a resource provider candidate after resource_unavailable', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-unavailable-peer-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 11);
+    const manifest = {
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    };
+    const providerPeer = 'd'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      acceptReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([78]);
+    manager.subscribeGroup(78);
+
+    await expect(
+      manager.requestResource(78, manifest, 'event-with-image')
+    ).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: manifest.fileHash,
+        s: manifest.sizeBytes,
+      },
+      providerPeer
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toHaveLength(1);
+    expect(manager.getResourceDownloadStatus(manifest.fileHash).candidatePeerCount).toBe(1);
+
+    manager.handleGenericResourceEvent({
+      status: 'failed',
+      transferId: String(accepts[0].transferId),
+      reason: 'resource_unavailable',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.getResourceDownloadStatus(manifest.fileHash).candidatePeerCount).toBe(0);
+    manager.close();
+    resourceStore.close();
+  });
+
   it('clears exhausted range attempts when a user retries a resource download', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-user-retry-'));
     let nowMs = 100_000;
