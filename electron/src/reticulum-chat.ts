@@ -2186,7 +2186,7 @@ export class ReticulumChatManager extends EventEmitter {
       eventId,
       candidatePeers,
     });
-    void this.announceResourceDiscovery(groupId, manifest, candidatePeers);
+    void this.announceResourceDiscovery(groupId, manifest, candidatePeers, true);
     return { ok: true };
   }
 
@@ -5759,9 +5759,20 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     manifest: ReticulumResourceManifest
   ): Promise<Extract<ReticulumChatWire, { k: 'rf' }> | null> {
-    if (!this.signLocalFields) return null;
+    const fileHash = manifest.fileHash.toLowerCase();
+    if (!this.signLocalFields) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} reason=no_signer`
+      );
+      return null;
+    }
     const localPeerHash = this.getLocalResourcePeerHash();
-    if (!localPeerHash) return null;
+    if (!localPeerHash) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} reason=no_local_peer`
+      );
+      return null;
+    }
     const timestamp = this.now();
     const expiresAt = timestamp + RETICULUM_CHAT_RESOURCE_FIND_TTL_MS;
     const requestId = nodeCrypto.randomBytes(8).toString('hex');
@@ -5785,6 +5796,9 @@ export class ReticulumChatManager extends EventEmitter {
       typeof signed.authorPublicKey !== 'string' ||
       typeof signed.signature !== 'string'
     ) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} reason=invalid_signature_payload`
+      );
       return null;
     }
     const requesterIsMember = await this.isValidatedGroupMember(groupId, signed.authorAddress);
@@ -5800,7 +5814,7 @@ export class ReticulumChatManager extends EventEmitter {
       k: 'rf',
       g: groupId,
       q: requestId,
-      f: manifest.fileHash.toLowerCase(),
+      f: fileHash,
       s: manifest.sizeBytes,
       h: 0,
       m: maxHops,
@@ -5809,24 +5823,57 @@ export class ReticulumChatManager extends EventEmitter {
       ts: timestamp,
       sg: signed.signature,
     };
-    if (!verifyReticulumChatResourceFind(groupId, wire, timestamp)) return null;
-    return wireFitsReticulum(wire) ? wire : null;
+    if (!verifyReticulumChatResourceFind(groupId, wire, timestamp)) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=verify_failed`
+      );
+      return null;
+    }
+    if (!wireFitsReticulum(wire)) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+      );
+      return null;
+    }
+    return wire;
   }
 
   private async announceResourceDiscovery(
     groupId: number,
     manifest: ReticulumResourceManifest,
-    candidatePeers: string[]
+    candidatePeers: string[],
+    force = false
   ): Promise<void> {
     const fileHash = manifest.fileHash.toLowerCase();
-    if (!/^[0-9a-f]{64}$/i.test(fileHash)) return;
-    if (!Number.isInteger(manifest.sizeBytes) || manifest.sizeBytes <= 0) return;
+    if (!/^[0-9a-f]{64}$/i.test(fileHash)) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_skipped group=${groupId} file=${String(manifest.fileHash || '').slice(0, 12)} reason=invalid_file_hash`
+      );
+      return;
+    }
+    if (!Number.isInteger(manifest.sizeBytes) || manifest.sizeBytes <= 0) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_skipped group=${groupId} file=${fileHash.slice(0, 12)} reason=invalid_size`
+      );
+      return;
+    }
     const now = this.now();
     this.pruneResourceDiscoveryRequests(now);
     const key = `${groupId}:${fileHash}`;
-    if ((this.recentResourceDiscoveryRequests.get(key) ?? 0) > now) return;
+    const rateLimitedUntil = this.recentResourceDiscoveryRequests.get(key) ?? 0;
+    if (!force && rateLimitedUntil > now) {
+      loggerLog(
+        `[ReticulumChat] resource_find_skipped group=${groupId} file=${fileHash.slice(0, 12)} reason=rate_limited retryMs=${rateLimitedUntil - now}`
+      );
+      return;
+    }
     const wire = await this.buildSignedResourceFindWire(groupId, manifest);
-    if (!wire) return;
+    if (!wire) {
+      loggerWarn(
+        `[ReticulumChat] resource_find_skipped group=${groupId} file=${fileHash.slice(0, 12)} reason=build_failed`
+      );
+      return;
+    }
     const localPeerHash = this.getLocalResourcePeerHash();
     const exclude = [
       ...candidatePeers,
@@ -5844,6 +5891,11 @@ export class ReticulumChatManager extends EventEmitter {
       );
       loggerLog(
         `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.m}`
+      );
+    } else {
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[ReticulumChat] resource_find_send_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} reason=${failed.reason}`
       );
     }
   }
