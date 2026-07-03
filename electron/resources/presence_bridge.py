@@ -98,6 +98,7 @@ _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUN
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
 _OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS = 0.75
+_OVERLAY_DUPLICATE_CLOSE_GRACE_SECONDS = 2.0
 _OVERLAY_ANNOUNCE_RETRY_DEBOUNCE_SECONDS = 2.0
 _OVERLAY_CLOSE_DIAGNOSTIC_WINDOW_SECONDS = 5 * 60.0
 _OVERLAY_REPLAY_CLOSE_ASSOCIATION_SECONDS = 5.0
@@ -307,6 +308,7 @@ _active_overlay_link_id_by_peer_hash: Dict[str, str] = {}
 _overlay_open_pending_by_peer_hash: Set[str] = set()
 _overlay_close_pending_link_ids: Set[str] = set()
 _overlay_dedup_pending_by_peer_hash: Set[str] = set()
+_overlay_delayed_duplicate_close_pending: Set[str] = set()
 _overlay_announce_retry_last_at_by_peer_hash: Dict[str, float] = {}
 _overlay_close_diagnostics: "deque[Tuple[float, str, bool, bool]]" = deque(maxlen=512)
 _qchat_file_links_by_id: Dict[str, Dict[str, Any]] = {}
@@ -6790,6 +6792,109 @@ def _overlay_enqueue_close(link_id: str, reason: str) -> bool:
     return bool(queued)
 
 
+def _run_delayed_overlay_duplicate_close(
+    peer_key: str,
+    keep_id: str,
+    lose_id: str,
+    reason: str,
+) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    keep_id = str(keep_id or "").strip()
+    lose_id = str(lose_id or "").strip()
+    pending_key = f"{peer_key}:{keep_id}:{lose_id}"
+    try:
+        close_loser = False
+        promote_loser = False
+        with _state_lock:
+            keep_state = _overlay_links_by_id.get(keep_id)
+            lose_state = _overlay_links_by_id.get(lose_id)
+            active_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+            keep_usable = keep_state is not None and _overlay_link_is_fanout_usable(keep_state)
+            lose_usable = lose_state is not None and _overlay_link_is_fanout_usable(lose_state)
+            if lose_state is None:
+                return
+            if active_id and active_id != keep_id:
+                return
+            if keep_usable:
+                close_loser = True
+            elif lose_usable:
+                promote_loser = True
+            else:
+                _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+            if promote_loser:
+                _active_overlay_link_id_by_peer_hash[peer_key] = lose_id
+        if promote_loser:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                "overlay_link_duplicate_close_deferred_keep_lost "
+                f"peer={peer_key} keep={keep_id} promoted={lose_id}"
+            )
+            _overlay_enqueue_dedup(peer_key, reason="dedup_same_peer")
+            return
+        if not close_loser:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                "overlay_link_duplicate_close_deferred_no_usable_link "
+                f"peer={peer_key} keep={keep_id} backup={lose_id}"
+            )
+            _overlay_enqueue_open(peer_key, "duplicate_keep_lost", await_path=False)
+            return
+        if close_loser:
+            log(
+                "[presence_bridge] target=presence-reticulum overlay_link_duplicate_teardown "
+                f"peer={peer_key} keep={keep_id} teardown={lose_id} delayed=true"
+            )
+            _overlay_enqueue_close(lose_id, reason)
+    finally:
+        with _state_lock:
+            _overlay_delayed_duplicate_close_pending.discard(pending_key)
+
+
+def _schedule_overlay_duplicate_close(
+    peer_key: str,
+    keep_id: str,
+    lose_id: str,
+    reason: str = "dedup_same_peer",
+) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    keep_id = str(keep_id or "").strip()
+    lose_id = str(lose_id or "").strip()
+    if not peer_key or not keep_id or not lose_id or keep_id == lose_id:
+        return False
+    pending_key = f"{peer_key}:{keep_id}:{lose_id}"
+    with _state_lock:
+        if pending_key in _overlay_delayed_duplicate_close_pending:
+            return False
+        if lose_id not in _overlay_links_by_id:
+            return False
+        _overlay_delayed_duplicate_close_pending.add(pending_key)
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_link_duplicate_close_deferred "
+        f"peer={peer_key} keep={keep_id} teardown={lose_id} "
+        f"delay_ms={int(_OVERLAY_DUPLICATE_CLOSE_GRACE_SECONDS * 1000)}"
+    )
+
+    def fire() -> None:
+        queued = _enqueue_scheduler_task(
+            _overlay_io_lane_for_peer(peer_key),
+            f"overlay-dedup-close:{peer_key[:8]}",
+            _run_delayed_overlay_duplicate_close,
+            peer_key,
+            keep_id,
+            lose_id,
+            reason,
+            drop_oldest=False,
+        )
+        if not queued:
+            with _state_lock:
+                _overlay_delayed_duplicate_close_pending.discard(pending_key)
+
+    timer = threading.Timer(_OVERLAY_DUPLICATE_CLOSE_GRACE_SECONDS, fire)
+    timer.daemon = True
+    timer.start()
+    return True
+
+
 def _overlay_enqueue_dedup(peer_hash: str, reason: str = "dedup_same_peer") -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
@@ -6847,6 +6952,25 @@ def remove_overlay_link(link_id: str) -> Optional[Dict[str, Any]]:
             state["_was_active_overlay"] = existing == link_id
             if existing == link_id:
                 _active_overlay_link_id_by_peer_hash.pop(peer_hash, None)
+                fallback_candidates = [
+                    (candidate_id, candidate_state)
+                    for candidate_id, candidate_state in _overlay_links_by_id.items()
+                    if str(candidate_state.get("peerPresenceHash") or "").strip().lower() == peer_hash
+                ]
+                if fallback_candidates:
+                    keep_id, keep_state = fallback_candidates[0]
+                    for candidate_id, candidate_state in fallback_candidates[1:]:
+                        keep_id, _lose_id = _dedup_pick_keep_link(
+                            peer_hash,
+                            keep_id,
+                            keep_state,
+                            candidate_id,
+                            candidate_state,
+                        )
+                        keep_state = _overlay_links_by_id.get(keep_id, keep_state)
+                    if keep_state is not None and _overlay_link_is_fanout_usable(keep_state):
+                        _active_overlay_link_id_by_peer_hash[peer_hash] = keep_id
+                        state["_promoted_overlay_link_id"] = keep_id
         return state
 
 
@@ -7632,6 +7756,12 @@ def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
             )
     state["established"] = False
     emit_overlay_link_state(link_id, state, reason)
+    promoted_link_id = str(state.get("_promoted_overlay_link_id") or "")
+    if peer_hash and promoted_link_id:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_link_backup_promoted "
+            f"peer={peer_hash} closed={link_id} promoted={promoted_link_id} reason={reason}"
+        )
     if peer_hash and _overlay_teardown_should_demote(reason):
         _demote_overlay_fanout_peer(peer_hash, f"link_teardown:{reason}")
 
@@ -7743,7 +7873,7 @@ def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[D
         keep_state = _overlay_links_by_id.get(keep_id)
     if lose_id:
         log(
-            "[presence_bridge] target=presence-reticulum overlay_link_duplicate_teardown "
+            "[presence_bridge] target=presence-reticulum overlay_link_duplicate_detected "
             f"peer={peer_key} keep={keep_id} teardown={lose_id}"
         )
         if keep_state is not None:
@@ -7752,7 +7882,7 @@ def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[D
                 f"peer={peer_key} link={keep_id} incoming={str(keep_state.get('incoming') is True).lower()} "
                 f"established={str(keep_state.get('established') is True).lower()}"
             )
-        _overlay_enqueue_close(lose_id, "dedup_same_peer")
+        _schedule_overlay_duplicate_close(peer_key, keep_id, lose_id, "dedup_same_peer")
     return keep_state
 
 
@@ -7815,10 +7945,10 @@ def _dedup_overlay_links_for_peer(
 
     for lose_id in dict.fromkeys(lose_ids):
         log(
-            "[presence_bridge] target=presence-reticulum overlay_link_duplicate_teardown "
+            "[presence_bridge] target=presence-reticulum overlay_link_duplicate_detected "
             f"peer={peer_key} keep={keep_id} teardown={lose_id}"
         )
-        _overlay_enqueue_close(lose_id, reason)
+        _schedule_overlay_duplicate_close(peer_key, keep_id, lose_id, reason)
     return keep_state
 
 
