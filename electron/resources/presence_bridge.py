@@ -5031,6 +5031,17 @@ def _mark_candidate_peer(peer_key: str, source: str) -> None:
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
         return
+    if (
+        peer_key in _active_overlay_neighbors
+        or peer_key in _inbound_overlay_neighbors
+        or _overlay_peer_is_admitted(peer_key)
+    ):
+        verbose_presence_log(
+            "[presence_bridge] target=presence-reticulum candidate_skipped "
+            f"peer_hash={peer_key} source={source} reason=already_admitted"
+        )
+        _candidate_peers.pop(peer_key, None)
+        return
     if _overlay_peer_inbound_full(peer_key):
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum candidate_skipped "
@@ -5286,11 +5297,9 @@ def _note_overlay_peer_failure(peer_key: str, reason: str) -> None:
 def _set_verified_overlay_peers(
     verified_peers: list[Dict[str, Any]], active_neighbor_hashes: list[str]
 ) -> None:
-    global _verified_overlay_peers, _active_overlay_neighbors
+    global _verified_overlay_peers
     now = time.time()
     local_hex = _local_presence_hash_hex()
-    prev_verified = dict(_verified_overlay_peers)
-    prev_neighbors = dict(_active_overlay_neighbors)
     next_verified: Dict[str, Dict[str, Any]] = {}
     for peer in verified_peers:
         if not isinstance(peer, dict):
@@ -5322,11 +5331,16 @@ def _set_verified_overlay_peers(
             "address": address,
             "last_seen": float(last_seen),
         }
-        _candidate_peers.pop(peer_hash, None)
     _verified_overlay_peers = next_verified
-    next_neighbors: Dict[str, float] = {}
+
+    for peer_hash in list(_active_overlay_neighbors.keys()):
+        if not _overlay_peer_has_established_link(peer_hash):
+            _active_overlay_neighbors.pop(peer_hash, None)
+    _prune_candidate_peers()
+
+    seeded_candidates = 0
     for raw_hash in active_neighbor_hashes:
-        if len(next_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        if len(_active_overlay_neighbors) + len(_candidate_peers) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
             break
         peer_hash = str(raw_hash or "").strip().lower()
         if not peer_hash:
@@ -5335,38 +5349,24 @@ def _set_verified_overlay_peers(
             continue
         if not _overlay_peer_available_for_new_outbound(peer_hash):
             continue
-        if peer_hash not in _known_peers:
-            ensure_known_peer_from_recall(peer_hash, "ts_seed")
-        # Fanout list from TS: verified neighbors plus candidate backfill
-        # (bootstrap). Keep the lease even if local RNS identity recall is
-        # temporarily empty; _sync_overlay_links will defer opening the link
-        # until recall/path data is available. Dropping it here can collapse
-        # verified=N into publish_fanout=0 and drain the overlay.
-        next_neighbors[peer_hash] = now
-    retained_neighbors = 0
-    for peer_hash, seen_at in prev_neighbors.items():
-        if len(next_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
-            break
-        if peer_hash in next_neighbors:
-            continue
-        if not _overlay_peer_available_for_new_outbound(peer_hash):
-            continue
-        if not isinstance(seen_at, (int, float)):
-            continue
-        if now - float(seen_at) > _OVERLAY_NEIGHBOR_GRACE_SECONDS:
+        if peer_hash in _active_overlay_neighbors or peer_hash in _candidate_peers or peer_hash in _inbound_overlay_neighbors:
             continue
         if peer_hash not in _known_peers:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
-        next_neighbors[peer_hash] = float(seen_at)
-        retained_neighbors += 1
-    if len(next_neighbors) < _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        if peer_hash not in _known_peers:
+            continue
+        _mark_candidate_peer(peer_hash, "overlay_sync")
+        seeded_candidates += 1
+    if len(_active_overlay_neighbors) + len(_candidate_peers) < _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
         candidates: list[tuple[float, str]] = []
         direct_cutoff = now - _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS
         for peer_hash, peer in next_verified.items():
             peer_key = str(peer_hash or "").strip().lower()
             if (
                 not peer_key
-                or peer_key in next_neighbors
+                or peer_key in _active_overlay_neighbors
+                or peer_key in _candidate_peers
+                or peer_key in _inbound_overlay_neighbors
                 or (local_hex and peer_key == local_hex)
                 or not _overlay_peer_available_for_new_outbound(peer_key)
             ):
@@ -5377,19 +5377,22 @@ def _set_verified_overlay_peers(
             candidates.append((activity, peer_key))
         candidates.sort(key=lambda item: (-item[0], item[1]))
         for _last_seen, peer_key in candidates:
-            if len(next_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            if len(_active_overlay_neighbors) + len(_candidate_peers) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
                 break
             if peer_key not in _known_peers:
                 ensure_known_peer_from_recall(peer_key, "ts_seed")
-            next_neighbors[peer_key] = now
-    _active_overlay_neighbors = next_neighbors
+            if peer_key not in _known_peers:
+                continue
+            _mark_candidate_peer(peer_key, "overlay_sync_backfill")
+            seeded_candidates += 1
     publish_fanout_count = len(set(_active_overlay_neighbors.keys()) | set(_inbound_overlay_neighbors.keys()))
     verbose_presence_log(
         "[presence_bridge] target=presence-reticulum overlay_sync "
         f"verified={len(_verified_overlay_peers)} outbound_fanout={len(_active_overlay_neighbors)} "
         f"inbound_fanout={len(_inbound_overlay_neighbors)} "
+        f"candidates={len(_candidate_peers)} "
         f"publish_fanout={publish_fanout_count} "
-        f"retained={retained_neighbors}"
+        f"seeded_candidates={seeded_candidates}"
     )
 
 
@@ -5402,11 +5405,7 @@ def _overlay_peer_has_established_link(peer_hash: str) -> bool:
         if not link_id:
             return False
         state = _overlay_links_by_id.get(link_id)
-        return bool(
-            state is not None
-            and state.get("established") is True
-            and state.get("link") is not None
-        )
+        return bool(state is not None and _overlay_link_is_fanout_usable(state))
 
 
 def _coerce_epoch_seconds(value: Any) -> Optional[float]:
@@ -5467,7 +5466,7 @@ def _resolve_overlay_neighbor_hashes(
             continue
         if peer_hash not in _known_peers:
             continue
-        if established_only and not _overlay_peer_has_established_link(peer_hash):
+        if not _overlay_peer_has_established_link(peer_hash):
             continue
         # Refresh the active-neighbor lease on real fanout use. Overlay sync from
         # Electron is event-driven, so steady 25 s presence heartbeats must keep a
@@ -5481,7 +5480,7 @@ def _resolve_overlay_neighbor_hashes(
             continue
         if peer_hash not in _known_peers:
             continue
-        if established_only and not _overlay_peer_has_established_link(peer_hash):
+        if not _overlay_peer_has_established_link(peer_hash):
             continue
         if not _overlay_peer_recently_rx_active(peer_hash, now):
             _inbound_overlay_neighbors.pop(peer_hash, None)
@@ -5524,7 +5523,10 @@ def _overlay_peer_is_admitted(peer_key: str) -> bool:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
         return False
-    return peer_key in _active_overlay_neighbors or peer_key in _inbound_overlay_neighbors
+    with _state_lock:
+        link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        state = _overlay_links_by_id.get(link_id) if link_id else None
+        return bool(state is not None and _overlay_link_is_fanout_usable(state))
 
 
 def _overlay_peer_is_outbound(peer_key: str) -> bool:
@@ -5540,8 +5542,8 @@ def _overlay_peer_is_inbound(peer_key: str) -> bool:
 def _promote_recent_verified_overlay_neighbors(
     reason: str, exclude_hashes: Optional[Set[str]] = None
 ) -> int:
-    global _active_overlay_neighbors
-    if len(_active_overlay_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+    _prune_candidate_peers()
+    if len(_active_overlay_neighbors) + len(_candidate_peers) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
         return 0
     exclude = {
         str(h).strip().lower() for h in (exclude_hashes or set()) if str(h).strip()
@@ -5560,6 +5562,7 @@ def _promote_recent_verified_overlay_neighbors(
         if (
             peer_key in exclude
             or peer_key in _active_overlay_neighbors
+            or peer_key in _candidate_peers
             or peer_key in _inbound_overlay_neighbors
         ):
             continue
@@ -5570,21 +5573,20 @@ def _promote_recent_verified_overlay_neighbors(
     if not candidates:
         return 0
     candidates.sort(key=lambda item: (-item[0], item[1]))
-    now = time.time()
     selected: list[str] = []
     for _last_seen, peer_key in candidates:
-        if len(_active_overlay_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        if len(_active_overlay_neighbors) + len(_candidate_peers) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
             break
         if peer_key not in _known_peers:
             ensure_known_peer_from_recall(peer_key, "ts_seed")
         if peer_key not in _known_peers:
             continue
-        _active_overlay_neighbors[peer_key] = now
+        _mark_candidate_peer(peer_key, f"promote:{reason}")
         selected.append(peer_key)
     if selected:
         verbose_presence_log(
-            "[presence_bridge] target=presence-reticulum overlay_fanout_promote "
-            f"reason={reason} selected={len(selected)} total={len(_active_overlay_neighbors)} "
+            "[presence_bridge] target=presence-reticulum overlay_candidate_promote "
+            f"reason={reason} selected={len(selected)} candidates={len(_candidate_peers)} "
             f"fanout_hashes={','.join(selected)}"
         )
     return len(selected)
@@ -5722,7 +5724,7 @@ def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:
     This only creates send targets. Peers become overlay-admitted after
     Reticulum-level HELLO/PING/PONG traffic; Qortal presence is separate.
     """
-    global _active_overlay_neighbors
+    _prune_candidate_peers()
     if len(_active_overlay_neighbors) >= _OVERLAY_MIN_HEALTHY_FANOUT:
         return 0
     local_hex = _local_presence_hash_hex()
@@ -5734,22 +5736,29 @@ def _bootstrap_overlay_neighbors_if_degraded(reason: str) -> int:
             continue
         if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
-        if peer_key in _active_overlay_neighbors or peer_key in _inbound_overlay_neighbors:
+        if (
+            peer_key in _active_overlay_neighbors
+            or peer_key in _inbound_overlay_neighbors
+            or peer_key in _candidate_peers
+        ):
             continue
         candidates.append(peer_key)
     if not candidates:
         return 0
     candidates.sort(key=_overlay_bootstrap_peer_sort_key)
-    now = time.time()
-    needed = max(0, _OVERLAY_BOOTSTRAP_MAX_OUTBOUND_NEIGHBORS - len(_active_overlay_neighbors))
+    needed = max(
+        0,
+        _OVERLAY_BOOTSTRAP_MAX_OUTBOUND_NEIGHBORS
+        - len(_active_overlay_neighbors)
+        - len(_candidate_peers),
+    )
     selected = candidates[:needed]
-    for peer_key in selected:
-        _active_overlay_neighbors[peer_key] = now
     for peer_key in selected:
         _mark_candidate_peer(peer_key, f"bootstrap:{reason}")
     log(
         "[presence_bridge] target=presence-reticulum overlay_bootstrap "
-        f"reason={reason} selected={len(selected)} total={len(_active_overlay_neighbors)} "
+        f"reason={reason} selected={len(selected)} active={len(_active_overlay_neighbors)} "
+        f"candidates={len(_candidate_peers)} "
         f"known_peers={len(_known_peers)} "
         f"fanout_hashes={','.join(selected)}"
     )
@@ -5764,7 +5773,6 @@ def _recover_zero_overlay_fanout(reason: str) -> int:
     overlay links, it can also prevent recovery, so retry only the best known
     peers and let normal RX-based verification decide whether they stay good.
     """
-    global _active_overlay_neighbors
     global _last_overlay_zero_fanout_recovery_at
     if _overlay_links_by_id:
         return 0
@@ -5803,7 +5811,6 @@ def _recover_zero_overlay_fanout(reason: str) -> int:
     for peer_key in selected:
         if _clear_overlay_peer_failure_for_recovery(peer_key, f"zero_fanout:{reason}"):
             cleared += 1
-        _active_overlay_neighbors[peer_key] = now
         _mark_candidate_peer(peer_key, f"zero_fanout:{reason}")
     log(
         "[presence_bridge] target=presence-reticulum overlay_zero_fanout_recover "
@@ -7254,9 +7261,7 @@ def _overlay_link_recent_rx_age_seconds(state: Dict[str, Any], now: float) -> Op
 def _overlay_link_is_good_outbound_rx(state: Dict[str, Any], now: float) -> bool:
     if state.get("incoming") is True:
         return False
-    if state.get("established") is not True:
-        return False
-    if state.get("link") is None:
+    if not _overlay_link_is_fanout_usable(state):
         return False
     age = _overlay_link_recent_rx_age_seconds(state, now)
     return age is not None and age <= _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS
@@ -7267,6 +7272,8 @@ def _overlay_link_is_fanout_usable(state: Dict[str, Any]) -> bool:
         return False
     if state.get("link") is None:
         return False
+    if state.get("overlay_transport_admitted") is not True:
+        return False
     manager_state = str(state.get("manager_state") or "").upper()
     if manager_state in {
         _LINK_STATE_DEGRADED,
@@ -7276,6 +7283,45 @@ def _overlay_link_is_fanout_usable(state: Dict[str, Any]) -> bool:
     }:
         return False
     return True
+
+
+def _mark_overlay_peer_admitted_neighbor(peer_key: str, state: Dict[str, Any], now: float) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return
+    with _state_lock:
+        _candidate_peers.pop(peer_key, None)
+        if state.get("incoming") is True:
+            _inbound_overlay_neighbors[peer_key] = now
+            return
+        if peer_key not in _active_overlay_neighbors and len(_active_overlay_neighbors) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            evict_peer = ""
+            evict_seen_at = float("inf")
+            for existing_peer, seen_at in _active_overlay_neighbors.items():
+                existing_key = str(existing_peer or "").strip().lower()
+                if not existing_key or existing_key == peer_key:
+                    continue
+                existing_link_id = _active_overlay_link_id_by_peer_hash.get(existing_key) or ""
+                existing_state = _overlay_links_by_id.get(existing_link_id) if existing_link_id else None
+                if existing_state is not None and _overlay_link_is_fanout_usable(existing_state):
+                    continue
+                sort_ts = float(seen_at) if isinstance(seen_at, (int, float)) else 0.0
+                if sort_ts < evict_seen_at:
+                    evict_seen_at = sort_ts
+                    evict_peer = existing_key
+            if not evict_peer:
+                for existing_peer, seen_at in _active_overlay_neighbors.items():
+                    existing_key = str(existing_peer or "").strip().lower()
+                    if not existing_key or existing_key == peer_key:
+                        continue
+                    sort_ts = float(seen_at) if isinstance(seen_at, (int, float)) else 0.0
+                    if sort_ts < evict_seen_at:
+                        evict_seen_at = sort_ts
+                        evict_peer = existing_key
+            if evict_peer:
+                _active_overlay_neighbors.pop(evict_peer, None)
+        if peer_key in _active_overlay_neighbors or len(_active_overlay_neighbors) < _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            _active_overlay_neighbors[peer_key] = now
 
 
 def _overlay_link_peer_hash(state: Dict[str, Any]) -> str:
@@ -7365,15 +7411,19 @@ def _admit_overlay_peer_from_transport(
         return False
     state["peerPresenceHash"] = peer_key
     state["overlay_transport_admitted"] = True
-    state["overlay_transport_admitted_at"] = time.time()
+    now = time.time()
+    state["overlay_transport_admitted_at"] = now
     _note_overlay_peer_alive(peer_key, reason)
     admitted_state = _register_active_overlay_for_peer(peer_key, link_id)
     if admitted_state is None:
         return False
+    _mark_overlay_peer_admitted_neighbor(peer_key, admitted_state, now)
+    active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or link_id
     log(
         "[presence_bridge] target=presence-reticulum overlay_peer_admitted "
-        f"peer={peer_key} link={link_id} incoming={str(state.get('incoming') is True).lower()} reason={reason}"
+        f"peer={peer_key} link={active_link_id} incoming={str(admitted_state.get('incoming') is True).lower()} reason={reason}"
     )
+    _flush_overlay_link_pending(active_link_id)
     return True
 
 
@@ -7774,7 +7824,7 @@ def _dedup_overlay_links_for_peer(
 
 def _flush_overlay_link_pending(link_id: str) -> None:
     state = get_overlay_link_state(link_id)
-    if state is None or state.get("established") is not True:
+    if state is None or not _overlay_link_is_fanout_usable(state):
         return
     link = state.get("link")
     pending = state.get("pending_packets")
@@ -8160,7 +8210,19 @@ def _sync_overlay_links() -> None:
 
     _bootstrap_overlay_neighbors_if_degraded("sync")
     _recover_zero_overlay_fanout("sync")
+    _prune_candidate_peers()
     desired_outbound = set(_active_overlay_neighbors.keys())
+    for peer_hash in sorted(_candidate_peers.keys(), key=_overlay_bootstrap_peer_sort_key):
+        peer_key = str(peer_hash or "").strip().lower()
+        if not _valid_presence_destination_hash_hex(peer_key):
+            continue
+        if len(desired_outbound) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            break
+        if peer_key in desired_outbound or peer_key in _inbound_overlay_neighbors:
+            continue
+        if not _overlay_peer_available_for_new_outbound(peer_key):
+            continue
+        desired_outbound.add(peer_key)
     desired = desired_outbound | set(_inbound_overlay_neighbors.keys())
     target_outbound_links = min(_OVERLAY_MAX_OUTBOUND_NEIGHBORS, len(desired_outbound))
     maintained_outbound_links = 0
@@ -11336,7 +11398,7 @@ def _send_wire_to_overlay_peer(
         )
         return False
     link = state.get("link")
-    if state.get("established") is True and link is not None:
+    if _overlay_link_is_fanout_usable(state) and link is not None:
         ok = _send_packet_on_link(
             link,
             wire_bytes,
@@ -11351,14 +11413,18 @@ def _send_wire_to_overlay_peer(
             return False
         emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
         return True
-    if queue_if_pending:
-        _queue_overlay_packet(state, traffic, wire_bytes)
+    if state.get("established") is True and state.get("overlay_transport_admitted") is not True:
         emit_overlay_link_state(
             _active_overlay_link_id_by_peer_hash.get(peer_key, ""),
             state,
-            f"queued:{traffic}",
+            f"not_admitted:{traffic}",
         )
-        return True
+        return False
+    emit_overlay_link_state(
+        _active_overlay_link_id_by_peer_hash.get(peer_key, ""),
+        state,
+        f"not_ready:{traffic}",
+    )
     return False
 
 

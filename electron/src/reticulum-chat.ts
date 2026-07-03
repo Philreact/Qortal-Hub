@@ -156,6 +156,7 @@ type ReticulumChatEventOfferOptions = {
   relayStore?: boolean;
   relayCached?: boolean;
   relayBlobId?: string;
+  allowCachedServe?: boolean;
 };
 
 export interface ReticulumChatEventOfferWire {
@@ -1729,24 +1730,28 @@ export class ReticulumChatManager extends EventEmitter {
           ranges
         ),
       canServeRequest: async (groupId, request, manifest) => {
-        if (!this.localGroupIds.has(groupId)) return false;
         if (manifest.fileHash.toLowerCase() !== request.fileHash.toLowerCase()) return false;
         if (!this.resourceManifestBelongsToGroup(manifest, groupId)) return false;
         if (request.eventId) {
           const event = this.db.getEvent(request.eventId);
           if (!event || event.groupId !== groupId) return false;
         }
-        if (request.requesterAddress) {
-          const requesterIsMember = await this.isValidatedGroupMember(
-            groupId,
-            request.requesterAddress
+        if (!request.requesterAddress) {
+          loggerWarn(
+            `[ReticulumChat] Refusing resource ${request.fileHash}: signed requester address missing`
           );
-          if (!requesterIsMember) {
-            loggerWarn(
-              `[ReticulumChat] Refusing resource ${request.fileHash}: requester is not a group member`
-            );
-            return false;
-          }
+          return false;
+        }
+        const requesterIsMember = await this.isValidatedRequesterGroupMember(
+          groupId,
+          request.requesterAddress,
+          'resource'
+        );
+        if (!requesterIsMember) {
+          loggerWarn(
+            `[ReticulumChat] Refusing resource ${request.fileHash}: requester is not a group member`
+          );
+          return false;
         }
         return true;
       },
@@ -3941,6 +3946,19 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  private didDirectHistoryPageCursorAdvance(
+    offer: ReticulumChatEventPageOffer,
+    cursor: ReticulumChatFeedCursor
+  ): boolean {
+    if (offer.direction === 'before') {
+      return !offer.start || this.compareCursors(cursor, offer.start) < 0;
+    }
+    if (offer.direction === 'after') {
+      return !offer.end || this.compareCursors(cursor, offer.end) > 0;
+    }
+    return true;
+  }
+
   private async requestLinkedHistoryPage(
     peerHash: string,
     groupId: number,
@@ -4616,6 +4634,10 @@ export class ReticulumChatManager extends EventEmitter {
     return this.localGroupIds.has(groupId);
   }
 
+  private hasLocalGroupHistory(groupId: number): boolean {
+    return this.db.getKnownGroupIds().includes(groupId);
+  }
+
   private async isValidatedGroupMember(groupId: number, address: string): Promise<boolean> {
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
     const normalizedAddress = address.trim();
@@ -4640,6 +4662,20 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: now + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
     });
     return isMember;
+  }
+
+  private async isValidatedRequesterGroupMember(
+    groupId: number,
+    address: string,
+    context: string
+  ): Promise<boolean> {
+    if (!this.validateGroupMember) {
+      loggerWarn(
+        `[ReticulumChat] Refusing ${context} request for group=${groupId}: membership validator unavailable`
+      );
+      return false;
+    }
+    return this.isValidatedGroupMember(groupId, address);
   }
 
   private async isValidatedGroupAdmin(groupId: number, address: string): Promise<boolean> {
@@ -6147,7 +6183,10 @@ export class ReticulumChatManager extends EventEmitter {
 
     if (this.canServeResourceFindLocally(groupId, fileHash, sizeBytes) && localPeerHash) {
       const requesterAddress = deriveAddressFromPublicKey(wire.p);
-      if (!requesterAddress || !(await this.isValidatedGroupMember(groupId, requesterAddress))) {
+      if (
+        !requesterAddress ||
+        !(await this.isValidatedRequesterGroupMember(groupId, requesterAddress, 'resource_find'))
+      ) {
         return;
       }
       const response: ReticulumChatWire = {
@@ -6258,7 +6297,7 @@ export class ReticulumChatManager extends EventEmitter {
     const request = candidate as ReticulumChatEventRequestWire;
     if (!verifyReticulumChatEventRequest(groupId, request, this.now())) return;
     const event = this.db.getEvent(request.id);
-    if (!event || this.db.isEventPayloadScrubbed(request.id) || !this.canServeGroupHistory(groupId)) {
+    if (!event || event.groupId !== groupId || this.db.isEventPayloadScrubbed(request.id)) {
       this.relayGroupControlRequest(
         'event_req',
         groupId,
@@ -6274,14 +6313,21 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
-    const requesterIsMember = await this.isValidatedGroupMember(groupId, request.a);
+    const requesterIsMember = await this.isValidatedRequesterGroupMember(
+      groupId,
+      request.a,
+      'event_resource'
+    );
     if (!requesterIsMember) {
       loggerWarn(
         `[ReticulumChat] Refusing event resource ${request.id}: requester is not a group member`
       );
       return;
     }
-    await this.offerEventResource(peerHash, groupId, request.id, this.relayResponseOptionsFromWire(wire));
+    await this.offerEventResource(peerHash, groupId, request.id, {
+      ...this.relayResponseOptionsFromWire(wire),
+      allowCachedServe: true,
+    });
   }
 
   private isRelayEligibleEvent(event: ReticulumChatEvent): boolean {
@@ -6878,7 +6924,7 @@ export class ReticulumChatManager extends EventEmitter {
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
     if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
-    if (!this.localGroupIds.has(groupId)) {
+    if (!options.allowCachedServe && !this.localGroupIds.has(groupId)) {
       return { ok: false, reason: 'send-command-failed', error: 'Not a local group member' };
     }
     const event = this.db.getEvent(eventId);
@@ -7324,6 +7370,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async importReceivedEventPageResource(payload: ReticulumChatResourcePayload): Promise<void> {
     if (!payload.path || !payload.transferId) return;
+    const isDirectHistoryPageRequest = this.directHistoryPageRequests.has(payload.transferId);
     const offer =
       this.eventPageOffers.get(payload.transferId) ??
       this.directHistoryPageRequests.get(payload.transferId);
@@ -7486,17 +7533,26 @@ export class ReticulumChatManager extends EventEmitter {
         } else {
           const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
           if (cursor && sourcePeerHash) {
-            void this.requestLinkedHistoryPage(
-              sourcePeerHash,
-              offer.groupId,
-              offer.channelId,
-              cursor,
-              offer.direction,
-              false,
-              'event-page-more',
-              sourcePeerHash,
-              offer.priority
-            );
+            if (
+              isDirectHistoryPageRequest &&
+              !this.didDirectHistoryPageCursorAdvance(offer, cursor)
+            ) {
+              loggerWarn(
+                `[ReticulumChat] history_page_more_stalled group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} direction=${offer.direction} cursor=${cursor.eventId}`
+              );
+            } else {
+              void this.requestLinkedHistoryPage(
+                sourcePeerHash,
+                offer.groupId,
+                offer.channelId,
+                cursor,
+                offer.direction,
+                false,
+                'event-page-more',
+                sourcePeerHash,
+                offer.priority
+              );
+            }
           }
         }
       }
@@ -7806,7 +7862,7 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('invalid_history_priority');
       return;
     }
-    if (!this.canServeGroupHistory(groupId)) {
+    if (!this.hasLocalGroupHistory(groupId)) {
       await reject('history_unavailable');
       return;
     }
@@ -7814,7 +7870,11 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('bad_history_page_auth');
       return;
     }
-    const requesterIsMember = await this.isValidatedGroupMember(groupId, request.a);
+    const requesterIsMember = await this.isValidatedRequesterGroupMember(
+      groupId,
+      request.a,
+      'history_page'
+    );
     if (!requesterIsMember) {
       loggerWarn(
         `[ReticulumChat] Refusing history page group=${groupId}: requester is not a group member`
@@ -7997,18 +8057,15 @@ export class ReticulumChatManager extends EventEmitter {
     for (const wire of wires) {
       const key = this.subscriptionFanoutKey(wire);
       if (!key) continue;
-      if (wire.k === 'group_digest') {
-        if (this.subscriptionFanoutQueuedKeys.has(key)) {
-          this.replaceQueuedSubscriptionFanout(key, wire);
-          continue;
-        }
-      } else if (this.subscriptionFanoutQueuedKeys.has(key)) {
+      if (wire.k === 'group_digest' && this.subscriptionFanoutQueuedKeys.has(key)) {
+        this.replaceQueuedSubscriptionFanout(key, wire);
         continue;
       }
-      if (wire.k !== 'group_digest') {
-        const lastSentAt = this.subscriptionFanoutLastSentAt.get(key) ?? 0;
-        if (now - lastSentAt < RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS) continue;
+      if (this.subscriptionFanoutQueuedKeys.has(key)) {
+        continue;
       }
+      const lastSentAt = this.subscriptionFanoutLastSentAt.get(key) ?? 0;
+      if (now - lastSentAt < RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS) continue;
       this.subscriptionFanoutQueuedKeys.add(key);
       this.subscriptionFanoutQueue.push(wire);
     }

@@ -2835,7 +2835,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('serves a linked history page request with the newest available group events', async () => {
+  it('serves a linked history page request with cached group events', async () => {
     const sentResources: Array<Record<string, unknown>> = [];
     const authorizations: Array<Record<string, unknown>> = [];
     const rejections: Array<Record<string, unknown>> = [];
@@ -2862,7 +2862,7 @@ describe('reticulum chat manager', () => {
       now: () => 100_000,
       validateGroupMember: async () => true,
     });
-    manager.setLocalGroupMemberships([69]);
+    manager.setLocalGroupMemberships([999]);
     const events = signedAuthorEvents(
       Array.from({ length: 105 }, (_, index) => ({
         eventId: `linked-history-${String(index + 1).padStart(3, '0')}`,
@@ -2936,7 +2936,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('serves linked metadata history pages without normal messages', async () => {
+  it('serves linked metadata history pages from cached group events without normal messages', async () => {
     const sentResources: Array<Record<string, any>> = [];
     const authorizations: Array<Record<string, unknown>> = [];
     const requesterPeerHash = 'f'.repeat(32);
@@ -2959,7 +2959,7 @@ describe('reticulum chat manager', () => {
       now: () => 100_000,
       validateGroupMember: async () => true,
     });
-    manager.setLocalGroupMemberships([70]);
+    manager.setLocalGroupMemberships([999]);
     const events = signedAuthorEvents([
       {
         eventId: 'linked-meta-1',
@@ -4884,7 +4884,7 @@ describe('reticulum chat manager', () => {
       now: () => 100_000,
       validateGroupMember: async () => true,
     });
-    manager.setLocalGroupMemberships([81]);
+    manager.setLocalGroupMemberships([999]);
 
     const range: [number, number] = [0, RETICULUM_RESOURCE_RANGE_SIZE];
     const request = signedResourceRequestWire({
@@ -6687,6 +6687,42 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('debounces repeated subscription group digests during reannounce bursts', async () => {
+    let now = 80_000;
+    const sent: Record<string, unknown>[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+        sent.push(...messages);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([56, 57, 58]);
+    manager.subscribeGroup(56);
+    manager.subscribeGroup(57);
+    manager.subscribeGroup(58);
+    sent.length = 0;
+
+    manager.reannounceSubscriptions();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(sent.filter((wire) => wire.k === 'group_sub')).toHaveLength(1);
+    expect(sent.filter((wire) => wire.k === 'group_digest')).toHaveLength(0);
+
+    now += 31_000;
+    manager.reannounceSubscriptions();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(sent.filter((wire) => wire.k === 'group_digest')).toHaveLength(3);
+    manager.close();
+  });
+
   it('reopening an already-restored channel still sends one active digest', async () => {
     const knownGroups = vi
       .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
@@ -7756,6 +7792,79 @@ describe('reticulum chat manager', () => {
 
     expect(validateGroupMember).not.toHaveBeenCalled();
     expect(eventSpy).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('does not continue a direct history page when the page cursor does not advance', async () => {
+    const dbPath = tempDbPath();
+    const acceptedTransfers: unknown[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+          acceptedTransfers.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const events = signedAuthorEvents(
+      Array.from({ length: 5 }, (_unused, index) => {
+        const seq = index + 1;
+        return {
+          eventId: `event-page-stalled-${seq}`,
+          groupId: 57,
+          channelId: 'general',
+          authorSeq: seq,
+          timestamp: 10_000 + seq,
+        };
+      })
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, false)).toBe(true);
+    }
+    const page = {
+      v: 1,
+      g: 57,
+      c: 'general',
+      d: 'before',
+      more: true,
+      start: { id: events[0].eventId, ts: events[0].timestamp },
+      end: { id: events[events.length - 1].eventId, ts: events[events.length - 1].timestamp },
+      wh: (manager as any).db.computeWindowHash(events),
+      events,
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const transferId = 'stalled-direct-page-transfer';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).directHistoryPageRequests.set(transferId, {
+      transferId,
+      groupId: 57,
+      channelId: 'general',
+      direction: 'before',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: events.length,
+      start: { eventId: events[0].eventId, feedTimestamp: events[0].timestamp },
+      sourcePeerHash: 'peer-known',
+      hasMore: true,
+    });
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-known',
+    });
+
+    expect(acceptedTransfers).toHaveLength(0);
     manager.close();
   });
 
@@ -9040,7 +9149,7 @@ describe('reticulum chat manager', () => {
       bridge: bridge as any,
       now: () => 100_000,
     });
-    manager.setLocalGroupMemberships([76]);
+    manager.setLocalGroupMemberships([999]);
 
     const event = signedEvent({
       eventId: 'event-cached-non-member-author',
@@ -9056,8 +9165,7 @@ describe('reticulum chat manager', () => {
         blockedKp.secretKey
       )
     );
-    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
-    sentResources.length = 0;
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
     manager.setRuntimeCallbacks({
       validateGroupMember: async (_groupId, address) => address !== blockedAddress,
     });
