@@ -431,25 +431,26 @@ function signedResourceFindWire(params: {
     authorPublicKey,
     timestamp: params.timestamp,
   });
-  return {
+  const wire: Extract<ReticulumChatWire, { k: 'rf' }> = {
     t: 'RCHAT',
     k: 'rf',
     g: params.groupId,
     q: params.requestId,
     f: params.fileHash,
     s: params.sizeBytes,
-    h: params.hop,
-    m: params.maxHops,
     x: params.expiresAt,
     p: authorPublicKey,
-    ts: params.timestamp,
-    sg: base58Encode(
+    n: params.timestamp,
+    z: base58Encode(
       nacl.sign.detached(
         new Uint8Array(canonicalizeForSigning(fields)),
         kp.secretKey
       )
     ),
   };
+  if (params.hop > 0) wire.h = params.hop;
+  if (params.maxHops !== 5) wire.m = params.maxHops;
+  return wire;
 }
 
 function tempDbPath(): string {
@@ -5271,9 +5272,9 @@ describe('reticulum chat manager', () => {
       g: 78,
       f: manifest.fileHash,
       s: manifest.sizeBytes,
-      h: 0,
-      m: 5,
     });
+    expect(findWire?.h).toBeUndefined();
+    expect(findWire?.m).toBeUndefined();
     manager.close();
     resourceStore.close();
   });
@@ -5612,8 +5613,8 @@ describe('reticulum chat manager', () => {
       k: 'rf',
       q: findWire.q,
       h: 1,
-      m: 5,
     });
+    expect(forwarded?.messages[0]?.m).toBeUndefined();
 
     manager.handleWire(
       {

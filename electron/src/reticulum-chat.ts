@@ -378,12 +378,12 @@ export type ReticulumChatWire =
       q: string;
       f: string;
       s: number;
-      h: number;
-      m: number;
+      h?: number;
+      m?: number;
       x: number;
       p: string;
-      ts: number;
-      sg: string;
+      n: number;
+      z: string;
     }
   | { t: 'RCHAT'; k: 'resource_have'; g: number; fh: string; s: number; rid?: string; sp?: string; rk?: string }
   | {
@@ -1446,15 +1446,17 @@ export function getReticulumChatResourceFindRejectReason(
     if (typeof wire.q !== 'string' || !/^[0-9a-f]{8,64}$/i.test(wire.q)) return 'invalid_request_id';
     if (typeof wire.f !== 'string' || !/^[0-9a-f]{64}$/i.test(wire.f)) return 'invalid_file_hash';
     if (!Number.isInteger(wire.s) || wire.s <= 0) return 'invalid_size';
-    if (!Number.isInteger(wire.h) || wire.h < 0) return 'invalid_hop';
-    if (!Number.isInteger(wire.m) || wire.m < 0 || wire.m > RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS) return 'invalid_max_hops';
+    const hop = wire.h == null ? 0 : wire.h;
+    const maxHops = wire.m == null ? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS : wire.m;
+    if (!Number.isInteger(hop) || hop < 0) return 'invalid_hop';
+    if (!Number.isInteger(maxHops) || maxHops < 0 || maxHops > RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS) return 'invalid_max_hops';
     if (!Number.isFinite(wire.x) || wire.x <= now) return 'expired';
     if (wire.x - now > RETICULUM_CHAT_RESOURCE_FIND_TTL_MS + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return 'expires_too_far';
     if (typeof wire.p !== 'string' || !wire.p) return 'missing_public_key';
-    if (typeof wire.sg !== 'string' || !wire.sg) return 'missing_signature';
-    if (!Number.isFinite(wire.ts)) return 'invalid_timestamp';
-    if (wire.ts - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return 'timestamp_in_future';
-    if (now - wire.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return 'timestamp_too_old';
+    if (typeof wire.z !== 'string' || !wire.z) return 'missing_signature';
+    if (!Number.isFinite(wire.n)) return 'invalid_timestamp';
+    if (wire.n - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return 'timestamp_in_future';
+    if (now - wire.n > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return 'timestamp_too_old';
     const authorAddress = deriveAddressFromPublicKey(wire.p);
     if (!authorAddress) return 'invalid_public_key';
     const ok = nacl.sign.detached.verify(
@@ -1465,15 +1467,15 @@ export function getReticulumChatResourceFindRejectReason(
             requestId: wire.q.toLowerCase(),
             fileHash: wire.f.toLowerCase(),
             sizeBytes: wire.s,
-            maxHops: wire.m,
+            maxHops,
             expiresAt: wire.x,
             authorAddress,
             authorPublicKey: wire.p,
-            timestamp: wire.ts,
+            timestamp: wire.n,
           })
         )
       ),
-      new Uint8Array(base58Decode(wire.sg)),
+      new Uint8Array(base58Decode(wire.z)),
       new Uint8Array(base58Decode(wire.p))
     );
     return ok ? null : 'bad_signature';
@@ -5775,7 +5777,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const timestamp = this.now();
     const expiresAt = timestamp + RETICULUM_CHAT_RESOURCE_FIND_TTL_MS;
-    const requestId = nodeCrypto.randomBytes(8).toString('hex');
+    const requestId = nodeCrypto.randomBytes(4).toString('hex');
     const maxHops = RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS;
     const signed = await this.signLocalFields({
       expiresAt,
@@ -5816,12 +5818,10 @@ export class ReticulumChatManager extends EventEmitter {
       q: requestId,
       f: fileHash,
       s: manifest.sizeBytes,
-      h: 0,
-      m: maxHops,
       x: expiresAt,
       p: signed.authorPublicKey,
-      ts: timestamp,
-      sg: signed.signature,
+      n: timestamp,
+      z: signed.signature,
     };
     if (!verifyReticulumChatResourceFind(groupId, wire, timestamp)) {
       loggerWarn(
@@ -5890,7 +5890,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.now() + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS
       );
       loggerLog(
-        `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.m}`
+        `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS}`
       );
     } else {
       const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
@@ -6218,6 +6218,8 @@ export class ReticulumChatManager extends EventEmitter {
     const requestId = this.normalizeResourceFindRequestId(wire.q);
     const fileHash = wire.f.toLowerCase();
     const sizeBytes = Number(wire.s);
+    const hop = wire.h ?? 0;
+    const maxHops = wire.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS;
     if (!requestId) {
       loggerWarn(
         `[ReticulumChat] resource_find_rejected group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestIdForLog} peer=${reversePeerHash.slice(0, 16)} reason=invalid_request_id`
@@ -6296,15 +6298,15 @@ export class ReticulumChatManager extends EventEmitter {
       );
     }
 
-    if (wire.h >= wire.m || now >= wire.x) {
+    if (hop >= maxHops || now >= wire.x) {
       loggerLog(
-        `[ReticulumChat] resource_find_forward_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=${wire.h >= wire.m ? 'max_hops' : 'expired'}`
+        `[ReticulumChat] resource_find_forward_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=${hop >= maxHops ? 'max_hops' : 'expired'}`
       );
       return;
     }
     const forwarded: ReticulumChatWire = {
       ...wire,
-      h: wire.h + 1,
+      h: hop + 1,
     };
     if (!wireFitsReticulum(forwarded)) {
       loggerWarn(
@@ -6319,7 +6321,7 @@ export class ReticulumChatManager extends EventEmitter {
     const result = await this.fanoutOnce(forwarded, exclude);
     if (result.ok) {
       loggerLog(
-        `[ReticulumChat] resource_find_forwarded group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} hop=${forwarded.h}/${forwarded.m}`
+        `[ReticulumChat] resource_find_forwarded group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} hop=${forwarded.h}/${maxHops}`
       );
     } else {
       const reason = 'reason' in result ? result.reason : 'send_failed';
