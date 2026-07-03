@@ -375,7 +375,7 @@ export type ReticulumChatWire =
       t: 'RCHAT';
       k: 'rf';
       g: number;
-      r: string;
+      q: string;
       f: string;
       s: number;
       h: number;
@@ -1443,7 +1443,7 @@ export function getReticulumChatResourceFindRejectReason(
 ): string | null {
   try {
     if (!Number.isInteger(groupId) || groupId <= 0) return 'invalid_group';
-    if (typeof wire.r !== 'string' || !/^[0-9a-f]{8,64}$/i.test(wire.r)) return 'invalid_request_id';
+    if (typeof wire.q !== 'string' || !/^[0-9a-f]{8,64}$/i.test(wire.q)) return 'invalid_request_id';
     if (typeof wire.f !== 'string' || !/^[0-9a-f]{64}$/i.test(wire.f)) return 'invalid_file_hash';
     if (!Number.isInteger(wire.s) || wire.s <= 0) return 'invalid_size';
     if (!Number.isInteger(wire.h) || wire.h < 0) return 'invalid_hop';
@@ -1462,7 +1462,7 @@ export function getReticulumChatResourceFindRejectReason(
         canonicalizeForSigning(
           buildReticulumChatResourceFindSignedFields({
             groupId,
-            requestId: wire.r.toLowerCase(),
+            requestId: wire.q.toLowerCase(),
             fileHash: wire.f.toLowerCase(),
             sizeBytes: wire.s,
             maxHops: wire.m,
@@ -5799,7 +5799,7 @@ export class ReticulumChatManager extends EventEmitter {
       t: 'RCHAT',
       k: 'rf',
       g: groupId,
-      r: requestId,
+      q: requestId,
       f: manifest.fileHash.toLowerCase(),
       s: manifest.sizeBytes,
       h: 0,
@@ -5839,11 +5839,11 @@ export class ReticulumChatManager extends EventEmitter {
         this.now() + RETICULUM_CHAT_RESOURCE_DISCOVERY_TTL_MS
       );
       this.localResourceFindRequests.set(
-        wire.r,
+        wire.q,
         this.now() + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS
       );
       loggerLog(
-        `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.r.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.m}`
+        `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.m}`
       );
     }
   }
@@ -6148,7 +6148,7 @@ export class ReticulumChatManager extends EventEmitter {
     fromPeerHash: string
   ): Promise<void> {
     const reversePeerHash = this.normalizeResourcePeerHash(fromPeerHash);
-    const requestIdForLog = typeof wire.r === 'string' ? wire.r.slice(0, 12) : '-';
+    const requestIdForLog = typeof wire.q === 'string' ? wire.q.slice(0, 12) : '-';
     const fileHashForLog = typeof wire.f === 'string' ? wire.f.slice(0, 12) : '-';
     if (!reversePeerHash) {
       loggerWarn(
@@ -6163,7 +6163,7 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
-    const requestId = this.normalizeResourceFindRequestId(wire.r);
+    const requestId = this.normalizeResourceFindRequestId(wire.q);
     const fileHash = wire.f.toLowerCase();
     const sizeBytes = Number(wire.s);
     if (!requestId) {

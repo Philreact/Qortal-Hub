@@ -435,7 +435,7 @@ function signedResourceFindWire(params: {
     t: 'RCHAT',
     k: 'rf',
     g: params.groupId,
-    r: params.requestId,
+    q: params.requestId,
     f: params.fileHash,
     s: params.sizeBytes,
     h: params.hop,
@@ -5610,7 +5610,7 @@ describe('reticulum chat manager', () => {
     expect(forwarded?.exclude).toEqual([reversePeer, localPeer]);
     expect(forwarded?.messages[0]).toMatchObject({
       k: 'rf',
-      r: findWire.r,
+      q: findWire.q,
       h: 1,
       m: 5,
     });
@@ -5622,7 +5622,7 @@ describe('reticulum chat manager', () => {
         g: 78,
         fh: fileHash,
         s: 1_048_576,
-        rid: findWire.r,
+        rid: findWire.q,
         sp: providerPeer,
       },
       providerHop
@@ -5632,7 +5632,7 @@ describe('reticulum chat manager', () => {
     expect(direct.some((item) =>
       item.peer === reversePeer &&
       item.wire.k === 'resource_have' &&
-      item.wire.rid === findWire.r &&
+      item.wire.rid === findWire.q &&
       typeof item.wire.sp === 'string'
     )).toBe(true);
     manager.close();
@@ -5811,7 +5811,7 @@ describe('reticulum chat manager', () => {
     expect(direct.some((item) =>
       item.peer === '2'.repeat(32) &&
       item.wire.k === 'resource_have' &&
-      item.wire.rid === findWire.r
+      item.wire.rid === findWire.q
     )).toBe(true);
 
     manager.close();
@@ -5892,7 +5892,7 @@ describe('reticulum chat manager', () => {
         g: 78,
         fh: manifest.fileHash,
         s: manifest.sizeBytes,
-        rid: findWire!.r,
+        rid: findWire!.q,
         sp: providerPeer,
       },
       nextHop
