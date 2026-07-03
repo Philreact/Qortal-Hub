@@ -2784,20 +2784,20 @@ async function signReticulumChatControlFields(
 async function validateQortalGroupMember(
   groupId: number,
   address: string
-): Promise<boolean> {
+): Promise<boolean | null> {
   const normalizedAddress = address.trim();
   if (!Number.isInteger(groupId) || groupId <= 0 || !normalizedAddress) {
     return false;
   }
   const main = myCapacitorApp.getMainWindow();
-  if (!main || main.isDestroyed()) return false;
+  if (!main || main.isDestroyed()) return null;
   const payloadJson = JSON.stringify({
     groupId,
     address: normalizedAddress,
   });
   try {
     loggerLog(
-      `[ReticulumChat] group_admin_validation_start group=${groupId} address=${normalizedAddress}`
+      `[ReticulumChat] group_member_validation_start group=${groupId} address=${normalizedAddress}`
     );
     const result = await main.webContents.executeJavaScript(
       `(async () => {
@@ -2806,8 +2806,11 @@ async function validateQortalGroupMember(
           'validateGroupMembers',
           { groupId: payload.groupId, addresses: [payload.address] },
           10000
-        ).catch(() => null);
-        return Array.isArray(rows) && rows.some((item) =>
+        ).catch(() => '__RETICULUM_VALIDATION_UNAVAILABLE__');
+        if (rows === '__RETICULUM_VALIDATION_UNAVAILABLE__' || !Array.isArray(rows)) {
+          return null;
+        }
+        return rows.some((item) =>
           item &&
           typeof item === 'object' &&
           item.address === payload.address &&
@@ -2816,10 +2819,12 @@ async function validateQortalGroupMember(
       })()`,
       true
     );
-    return result === true;
+    if (result === true) return true;
+    if (result === false) return false;
+    return null;
   } catch (err) {
     loggerWarn('[ReticulumChat] Selected-node group membership validation failed:', err);
-    return false;
+    return null;
   }
 }
 

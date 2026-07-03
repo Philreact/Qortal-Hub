@@ -77,6 +77,35 @@ import { getData, storeData } from '../utils/chromeStorage';
 import publicKeyToAddress from '../utils/generateWallet/publicKeyToAddress';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages.ts';
 
+const QORTAL_PUBLIC_VALIDATION_NODE = 'https://ext-node.qortal.link';
+
+function isPublicValidationNode(apiUrl: string): boolean {
+  return String(apiUrl || '').toLowerCase().includes('ext-node.qortal.link');
+}
+
+async function fetchGroupMemberValidationRows(
+  apiUrl: string,
+  groupId: number,
+  addresses: string[]
+): Promise<unknown> {
+  const normalizedApiUrl = String(apiUrl || '').replace(/\/+$/u, '');
+  if (!normalizedApiUrl) {
+    throw new Error('Group member validation failed: missing API URL');
+  }
+  const response = await fetch(
+    `${normalizedApiUrl}/groups/members/${groupId}/validate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(addresses),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`Group member validation failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 export function versionCase(request, event) {
   event.source.postMessage(
     {
@@ -205,18 +234,19 @@ export async function validateGroupMembersCase(request, event) {
       throw new Error('Invalid groupId or addresses');
     }
     const validApi = await getBaseApi();
-    const response = await fetch(
-      `${validApi.replace(/\/+$/u, '')}/groups/members/${groupId}/validate`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(addresses),
+    let result: unknown;
+    try {
+      result = await fetchGroupMemberValidationRows(validApi, groupId, addresses);
+    } catch (error) {
+      if (isPublicValidationNode(validApi)) {
+        throw error;
       }
-    );
-    if (!response.ok) {
-      throw new Error(`Group member validation failed: ${response.status}`);
+      result = await fetchGroupMemberValidationRows(
+        QORTAL_PUBLIC_VALIDATION_NODE,
+        groupId,
+        addresses
+      );
     }
-    const result = await response.json();
     event.source.postMessage(
       {
         requestId: request.requestId,

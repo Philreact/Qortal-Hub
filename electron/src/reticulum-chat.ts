@@ -462,7 +462,7 @@ export interface ReticulumChatManagerOptions {
   signLocalFields?: (
     fields: Record<string, unknown>
   ) => Promise<ReticulumChatLocalSignature | null>;
-  validateGroupMember?: (groupId: number, address: string) => Promise<boolean>;
+  validateGroupMember?: (groupId: number, address: string) => Promise<boolean | null>;
   validateGroupAdmin?: (groupId: number, address: string) => Promise<boolean>;
   getVerifiedReticulumPeers?: () => ReticulumChatVerifiedReticulumPeer[];
   resourceStore?: ReticulumResourceStore | null;
@@ -525,7 +525,7 @@ const RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS = 10 * 60 * 1_000;
 const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_NEWEST_PAGE_PUSH_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
-const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 15 * 60_000;
+const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
@@ -1618,7 +1618,7 @@ export class ReticulumChatManager extends EventEmitter {
   private signLocalFields?: (
     fields: Record<string, unknown>
   ) => Promise<ReticulumChatLocalSignature | null>;
-  private validateGroupMember?: (groupId: number, address: string) => Promise<boolean>;
+  private validateGroupMember?: (groupId: number, address: string) => Promise<boolean | null>;
   private validateGroupAdmin?: (groupId: number, address: string) => Promise<boolean>;
   private getVerifiedReticulumPeers?: () => ReticulumChatVerifiedReticulumPeer[];
   private resourceStore: ReticulumResourceStore | null;
@@ -1780,9 +1780,9 @@ export class ReticulumChatManager extends EventEmitter {
           request.requesterAddress,
           'resource'
         );
-        if (!requesterIsMember) {
+        if (requesterIsMember !== true) {
           loggerWarn(
-            `[ReticulumChat] Refusing resource ${fileHash}: requester is not a group member`
+            `[ReticulumChat] Refusing resource ${fileHash}: ${requesterIsMember === null ? 'requester membership validation unavailable' : 'requester is not a group member'}`
           );
           return false;
         }
@@ -4688,7 +4688,7 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getKnownGroupIds().includes(groupId);
   }
 
-  private async isValidatedGroupMember(groupId: number, address: string): Promise<boolean> {
+  private async isValidatedGroupMember(groupId: number, address: string): Promise<boolean | null> {
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
     const normalizedAddress = address.trim();
     if (!normalizedAddress) return false;
@@ -4697,7 +4697,7 @@ export class ReticulumChatManager extends EventEmitter {
     const cached = this.groupMemberValidationCache.get(cacheKey);
     const now = this.now();
     if (cached && cached.expiresAt > now) return cached.isMember;
-    let isMember = false;
+    let isMember: boolean | null = null;
     try {
       isMember = await this.validateGroupMember(groupId, normalizedAddress);
     } catch (err) {
@@ -4705,7 +4705,13 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}:`,
         err
       );
-      isMember = false;
+      return null;
+    }
+    if (isMember == null) {
+      loggerWarn(
+        `[ReticulumChat] Group membership validation unavailable for group=${groupId} address=${normalizedAddress}`
+      );
+      return null;
     }
     this.groupMemberValidationCache.set(cacheKey, {
       isMember,
@@ -4718,7 +4724,7 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     address: string,
     context: string
-  ): Promise<boolean> {
+  ): Promise<boolean | null> {
     if (!this.validateGroupMember) {
       loggerWarn(
         `[ReticulumChat] Refusing ${context} request for group=${groupId}: membership validator unavailable`
@@ -6267,12 +6273,12 @@ export class ReticulumChatManager extends EventEmitter {
     const localServe = this.checkLocalResourceServeAvailability(groupId, fileHash, sizeBytes);
     if (localServe.ok && localPeerHash) {
       const requesterAddress = deriveAddressFromPublicKey(wire.p);
-      if (
-        !requesterAddress ||
-        !(await this.isValidatedRequesterGroupMember(groupId, requesterAddress, 'resource_find'))
-      ) {
+      const requesterMembership = requesterAddress
+        ? await this.isValidatedRequesterGroupMember(groupId, requesterAddress, 'resource_find')
+        : false;
+      if (requesterMembership !== true) {
         loggerWarn(
-          `[ReticulumChat] resource_find_local_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=requester_not_member`
+          `[ReticulumChat] resource_find_local_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=${requesterMembership === null ? 'requester_membership_unavailable' : 'requester_not_member'}`
         );
         return;
       }
@@ -6439,9 +6445,9 @@ export class ReticulumChatManager extends EventEmitter {
       request.a,
       'event_resource'
     );
-    if (!requesterIsMember) {
+    if (requesterIsMember !== true) {
       loggerWarn(
-        `[ReticulumChat] Refusing event resource ${request.id}: requester is not a group member`
+        `[ReticulumChat] Refusing event resource ${request.id}: ${requesterIsMember === null ? 'requester membership validation unavailable' : 'requester is not a group member'}`
       );
       return;
     }
@@ -7999,11 +8005,13 @@ export class ReticulumChatManager extends EventEmitter {
       request.a,
       'history_page'
     );
-    if (!requesterIsMember) {
+    if (requesterIsMember !== true) {
+      const reason =
+        requesterIsMember === null ? 'requester_membership_unavailable' : 'requester_not_group_member';
       loggerWarn(
-        `[ReticulumChat] Refusing history page group=${groupId}: requester is not a group member`
+        `[ReticulumChat] Refusing history page group=${groupId}: reason=${reason}`
       );
-      await reject('requester_not_group_member');
+      await reject(reason);
       return;
     }
     loggerLog(

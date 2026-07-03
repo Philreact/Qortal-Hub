@@ -84,10 +84,11 @@ _CANDIDATE_PROOF_WINDOW_SECONDS = 90.0
 _CANDIDATE_FAILURE_LIMIT = 2
 _OVERLAY_DEFAULT_HOPS = 4
 _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 5.0
-_OVERLAY_LINK_PATH_AWAIT_SECONDS = 0.35
+_OVERLAY_LINK_PATH_AWAIT_SECONDS = 2.0
+_OVERLAY_LINK_CACHED_PATH_SETTLE_SECONDS = 1.5
 _DIRECT_LINK_PATH_PROVEN_SECONDS = 30.0
 _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
-_UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 30.0
+_UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
@@ -95,7 +96,7 @@ _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 60.0
 _OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
-_OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 15.0
+_OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 60.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
 _OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS = 0.75
 _OVERLAY_DUPLICATE_CLOSE_GRACE_SECONDS = 2.0
@@ -6338,13 +6339,24 @@ def _nudge_overlay_link_path(
     if _reticulum_has_path(destination_hash):
         if _peer_has_recent_direct_activity(peer_key):
             return True
-        _nudge_cached_reticulum_path(
+        nudged = _nudge_cached_reticulum_path(
             destination_hash,
             peer_key,
             target="presence-reticulum",
             reason="overlay_link_cached_path_unproven",
             cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
         )
+        settle_seconds = min(
+            _OVERLAY_LINK_CACHED_PATH_SETTLE_SECONDS,
+            max(0.0, float(await_seconds or 0.0)),
+        )
+        if nudged and settle_seconds > 0:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                "overlay_link_cached_path_settle "
+                f"peer={peer_key} await={settle_seconds}"
+            )
+            time.sleep(settle_seconds)
         return True
 
     now = time.time()
@@ -8381,7 +8393,7 @@ def _sync_overlay_links() -> None:
             ensure_known_peer_from_recall(peer_hash, "ts_seed")
         if opens >= _OVERLAY_RECONCILE_MAX_OPENS or not budget_available():
             continue
-        if _overlay_enqueue_open(peer_hash, "sync", await_path=False):
+        if _overlay_enqueue_open(peer_hash, "sync", await_path=True):
             opens += 1
             maintained_outbound_links += 1
     for peer_hash, link_id in list(_active_overlay_link_id_by_peer_hash.items()):

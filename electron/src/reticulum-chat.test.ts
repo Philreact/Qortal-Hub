@@ -1673,6 +1673,29 @@ describe('reticulum chat manager', () => {
     });
   }
 
+  it('does not cache unavailable group membership validation as not-member', async () => {
+    let calls = 0;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: async () => {
+        calls += 1;
+        return calls === 1 ? null : true;
+      },
+    });
+    const validate = (manager as unknown as {
+      isValidatedGroupMember: (
+        groupId: number,
+        address: string
+      ) => Promise<boolean | null>;
+    }).isValidatedGroupMember.bind(manager);
+
+    await expect(validate(716, 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91')).resolves.toBeNull();
+    await expect(validate(716, 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91')).resolves.toBe(true);
+    await expect(validate(716, 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91')).resolves.toBe(true);
+    expect(calls).toBe(2);
+    manager.close();
+  });
+
   it('publishes durable events as bounded digest when no peers are subscribed', async () => {
     const sent: Record<string, unknown>[] = [];
     const bridge = {
