@@ -2917,8 +2917,12 @@ export class ReticulumChatManager extends EventEmitter {
       if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) {
         continue;
       }
-      if (this.subscribedGroups.has(groupId) && this.localGroupIds.has(groupId)) {
+      const localMemberSubscription =
+        this.subscribedGroups.has(groupId) && this.localGroupIds.has(groupId);
+      if (localMemberSubscription || this.hasLocalGroupHistory(groupId)) {
         void this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
+      }
+      if (localMemberSubscription) {
         if (hops === 0 && originPeerHash === inboundPeerHash) {
           void this.pushMetadataHistoryPageToPeer(peerHash, groupId, 'group_sub');
         }

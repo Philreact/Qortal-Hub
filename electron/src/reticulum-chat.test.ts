@@ -2619,6 +2619,53 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('advertises cached history digest for group_sub without pushing unsigned history when local signer is not a group member', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([999]);
+    const event = signedEvent({
+      eventId: 'cached-provider-digest-event',
+      groupId: 69,
+      timestamp: 80_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' }, 'peer-a');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          k: 'group_digest',
+          g: 69,
+          latest: { id: event.eventId, ts: event.timestamp },
+        }),
+      })
+    );
+    expect(direct.some((item) => item.wire.k === 'event_page_offer')).toBe(false);
+    expect(resources).toEqual([]);
+    manager.close();
+  });
+
   it('opens a linked history page resource when a group digest shows missing recent history', async () => {
     const providerHash = 'c'.repeat(32);
     const accepts: Array<Record<string, unknown>> = [];
@@ -2934,6 +2981,77 @@ describe('reticulum chat manager', () => {
     expect(page.events).toHaveLength(100);
     expect(page.events[0].eventId).toBe('linked-history-006');
     expect(page.events[99].eventId).toBe('linked-history-105');
+    manager.close();
+  });
+
+  it('rejects cached linked history when the signed requester is not a group member', async () => {
+    const sentResources: Array<Record<string, unknown>> = [];
+    const authorizations: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        authorizations.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        rejections.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => false,
+    });
+    manager.setLocalGroupMemberships([999]);
+    const event = signedEvent({
+      eventId: 'linked-history-rejected',
+      groupId: 69,
+      timestamp: 80_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const request = signedHistoryPageRequestWire({
+      groupId: 69,
+      channelId: '*',
+      direction: 'before',
+      cursor: { id: event.eventId, ts: event.timestamp },
+      includeCursor: true,
+      limit: 100,
+      timestamp: 100_000,
+    });
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'history-link-rejected',
+      transferId: 'history-transfer-rejected',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        transferId: 'history-transfer-rejected',
+        groupId: 69,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(sentResources).toEqual([]);
+    expect(authorizations).toEqual([]);
+    expect(rejections).toEqual([
+      {
+        linkId: 'history-link-rejected',
+        transferId: 'history-transfer-rejected',
+        reason: 'requester_not_group_member',
+      },
+    ]);
     manager.close();
   });
 
