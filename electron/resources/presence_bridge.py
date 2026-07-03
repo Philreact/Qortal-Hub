@@ -13625,6 +13625,7 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         "QCHAT_FILE_LINK_AUTH",
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
         _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
     ):
         link_id = _register_incoming_qchat_file_link(
