@@ -6227,8 +6227,9 @@ export class ReticulumChatManager extends EventEmitter {
           `[ReticulumChat] resource_have_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} peer=${reversePeerHash.slice(0, 16)}`
         );
       } else {
+        const reason = 'reason' in result ? result.reason : 'send_failed';
         loggerWarn(
-          `[ReticulumChat] resource_have_send_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} peer=${reversePeerHash.slice(0, 16)} reason=${result.reason}`
+          `[ReticulumChat] resource_have_send_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} peer=${reversePeerHash.slice(0, 16)} reason=${reason}`
         );
       }
       return;
@@ -6269,8 +6270,9 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] resource_find_forwarded group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} hop=${forwarded.h}/${forwarded.m}`
       );
     } else {
+      const reason = 'reason' in result ? result.reason : 'send_failed';
       loggerWarn(
-        `[ReticulumChat] resource_find_forward_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=${result.reason}`
+        `[ReticulumChat] resource_find_forward_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=${reason}`
       );
     }
   }
