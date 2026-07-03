@@ -146,6 +146,7 @@ export interface ReticulumChatEventPageOffer {
   senderReticulumDestinationHash?: string;
   senderReticulumIdentityPublicKeyBase64?: string;
   relayRequestId?: string;
+  requestedAt?: number;
 }
 
 type ReticulumChatEventOfferOptions = {
@@ -511,6 +512,7 @@ const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
 const RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY = 4;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
+const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 60_000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
 const RETICULUM_CHAT_ALL_CHANNELS_ID = '*';
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_MS = RETICULUM_CHAT_BACKGROUND_DIGEST_REFRESH_MS;
@@ -4027,13 +4029,22 @@ export class ReticulumChatManager extends EventEmitter {
     if (existingTransferId) {
       const existingOffer = this.directHistoryPageRequests.get(existingTransferId);
       if (existingOffer) {
-        loggerLog(
-          `[ReticulumChat] history_page_link_deduped group=${groupId} channel=${normalizedChannelId} peer=${peer.slice(0, 16)} transfer=${existingTransferId} direction=${direction} cursor=${cursor?.eventId ?? 'none'} reason=${reason}`
+        const requestedAt = Number(existingOffer.requestedAt ?? 0);
+        const ageMs = requestedAt > 0 ? this.now() - requestedAt : Number.POSITIVE_INFINITY;
+        if (ageMs < RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS) {
+          loggerLog(
+            `[ReticulumChat] history_page_link_deduped group=${groupId} channel=${normalizedChannelId} peer=${peer.slice(0, 16)} transfer=${existingTransferId} direction=${direction} cursor=${cursor?.eventId ?? 'none'} ageMs=${Math.max(0, Math.round(ageMs))} reason=${reason}`
+          );
+          return;
+        }
+        loggerWarn(
+          `[ReticulumChat] history_page_link_stale_retry group=${groupId} channel=${normalizedChannelId} peer=${peer.slice(0, 16)} oldTransfer=${existingTransferId} direction=${direction} cursor=${cursor?.eventId ?? 'none'} ageMs=${Number.isFinite(ageMs) ? Math.max(0, Math.round(ageMs)) : -1} reason=${reason}`
         );
-        return;
+        this.removeDirectHistoryPageRequest(existingTransferId);
+      } else {
+        this.directHistoryPageRequestKeys.delete(requestKey);
+        this.directHistoryPageTransferKeys.delete(existingTransferId);
       }
-      this.directHistoryPageRequestKeys.delete(requestKey);
-      this.directHistoryPageTransferKeys.delete(existingTransferId);
     }
     const fallbackWire: Extract<ReticulumChatWire, { k: 'feed_req' }> = {
       t: 'RCHAT',
@@ -4063,6 +4074,7 @@ export class ReticulumChatManager extends EventEmitter {
       eventCount: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
       ...(cursor ? { [direction === 'before' ? 'start' : 'end']: cursor } : {}),
       sourcePeerHash: peer,
+      requestedAt: this.now(),
     });
     const request = await this.buildSignedHistoryPageRequest(
       groupId,

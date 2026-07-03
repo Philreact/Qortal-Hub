@@ -2815,6 +2815,67 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('retries a linked history page request when the pending transfer is stale', async () => {
+    const providerHash = 'c'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    let now = 100_000;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    const cursor = { eventId: 'stale-cursor-event', feedTimestamp: 99_000 };
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-stale'
+    );
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-stale'
+    );
+    expect(accepts).toHaveLength(1);
+
+    now += 61_000;
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-stale'
+    );
+
+    expect(accepts).toHaveLength(2);
+    expect(accepts[1].transferId).not.toBe(accepts[0].transferId);
+    manager.close();
+  });
+
   it('requests channel metadata first when a digest differs', async () => {
     const providerHash = 'e'.repeat(32);
     const accepts: Array<Record<string, any>> = [];

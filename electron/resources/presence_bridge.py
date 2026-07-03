@@ -9142,6 +9142,19 @@ def _qchat_file_emit(status: str, payload: Dict[str, Any]) -> None:
         emit_event("qchat_file_transfer", event_payload)
 
 
+def _qchat_file_state_event_payload(state: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "transferId": state.get("transferId") or "",
+        "peerPresenceHash": state.get("peerPresenceHash") or "",
+        "fileName": state.get("fileName") or "",
+        "size": int(state.get("size") or 0),
+        "resourceType": state.get("resourceType") or "",
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _qchat_file_progress_payload(
     state: Dict[str, Any],
     progress: float,
@@ -10792,12 +10805,7 @@ def _send_qchat_file_auth_message(link, state: Dict[str, Any], log_label: str) -
         if ok:
             _qchat_file_emit(
                 "auth_sent",
-                {
-                    "transferId": state.get("transferId") or "",
-                    "peerPresenceHash": state.get("peerPresenceHash") or "",
-                    "fileName": state.get("fileName") or "",
-                    "size": int(state.get("size") or 0),
-                },
+                _qchat_file_state_event_payload(state),
             )
             previous_timer = state.pop("auth_timeout_timer", None)
             if previous_timer is not None:
@@ -10811,13 +10819,13 @@ def _send_qchat_file_auth_message(link, state: Dict[str, Any], log_label: str) -
                     return
                 _qchat_file_emit(
                     "failed",
-                    {
-                        "transferId": state.get("transferId") or "",
-                        "peerPresenceHash": state.get("peerPresenceHash") or "",
-                        "fileName": state.get("fileName") or "",
-                        "reason": "sender_auth_timeout",
-                        "error": "Sender did not authorize the file transfer",
-                    },
+                    _qchat_file_state_event_payload(
+                        state,
+                        {
+                            "reason": "sender_auth_timeout",
+                            "error": "Sender did not authorize the file transfer",
+                        },
+                    ),
                 )
                 _teardown_reticulum_link_bounded(
                     link,
@@ -10831,23 +10839,23 @@ def _send_qchat_file_auth_message(link, state: Dict[str, Any], log_label: str) -
             return True
         _qchat_file_emit(
             "failed",
-            {
-                "transferId": state.get("transferId") or "",
-                "peerPresenceHash": state.get("peerPresenceHash") or "",
-                "fileName": state.get("fileName") or "",
-                "reason": "auth_send_failed",
-            },
+            _qchat_file_state_event_payload(
+                state,
+                {
+                    "reason": "auth_send_failed",
+                },
+            ),
         )
     except Exception as exc:
         _qchat_file_emit(
             "failed",
-            {
-                "transferId": state.get("transferId") or "",
-                "peerPresenceHash": state.get("peerPresenceHash") or "",
-                "fileName": state.get("fileName") or "",
-                "reason": "auth_send_failed",
-                "error": str(exc),
-            },
+            _qchat_file_state_event_payload(
+                state,
+                {
+                    "reason": "auth_send_failed",
+                    "error": str(exc),
+                },
+            ),
         )
     return False
 
