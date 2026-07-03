@@ -5186,7 +5186,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('requests resource ranges from the manifest owner before event relay peers', async () => {
+  it('does not seed resource downloads from the manifest owner presence account', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-owner-peer-'));
     const resourceStore = new ReticulumResourceStore({
       dbPath: path.join(tempRoot, 'resources.db'),
@@ -5252,16 +5252,17 @@ describe('reticulum chat manager', () => {
 
     expect(accepts).toHaveLength(1);
     expect(accepts[0]).toMatchObject({
-      peerPresenceHash: ownerPeer,
+      peerPresenceHash: relayPeer,
       resourceType: 'reticulum_group_resource_range',
     });
+    expect(accepts.some((item) => item.peerPresenceHash === ownerPeer)).toBe(false);
     expect((accepts[0].authMessage as Record<string, unknown>)?.type).toBe(
       'RETICULUM_GROUP_RESOURCE_AUTH'
     );
     const findFanout = fanouts.find((call) =>
       call.messages.some((wire) => wire.k === 'rf')
     );
-    expect(findFanout?.exclude).toEqual([ownerPeer, relayPeer, localPeer]);
+    expect(findFanout?.exclude).toEqual([relayPeer, localPeer]);
     const findWire = findFanout?.messages.find((wire) => wire.k === 'rf') as
       | Record<string, unknown>
       | undefined;
@@ -5747,6 +5748,72 @@ describe('reticulum chat manager', () => {
     expect(validateGroupMember).toHaveBeenCalledTimes(1);
     expect(direct.some((item) => item.wire.k === 'resource_have')).toBe(false);
     expect(fanouts.some((call) => call.messages.some((wire) => wire.k === 'rf'))).toBe(false);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('answers resource discovery from cached data even when the provider account is not locally in the group', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-cache-provider-'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const contents = Buffer.from('cached image bytes');
+    const fileHash = nodeCrypto.createHash('sha256').update(contents).digest('hex');
+    resourceStore.storeManifest({
+      namespace: 'reticulum-chat-image',
+      ownerId: '78:sender',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash,
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 78 },
+    });
+    resourceStore.storeByteRange(fileHash, 0, contents.length, contents);
+
+    const direct: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const validateGroupMember = vi.fn(async (groupId, address) => groupId === 78 && Boolean(address));
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => '4'.repeat(32),
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      resourceStore,
+      now: () => 100_000,
+      validateGroupMember,
+    });
+    const findWire = signedResourceFindWire({
+      groupId: 78,
+      requestId: 'f'.repeat(16),
+      fileHash,
+      sizeBytes: contents.length,
+      hop: 0,
+      maxHops: 5,
+      expiresAt: 130_000,
+      timestamp: 100_000,
+    });
+
+    manager.handleWire(findWire, '2'.repeat(32));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(validateGroupMember).toHaveBeenCalledTimes(1);
+    expect(direct.some((item) =>
+      item.peer === '2'.repeat(32) &&
+      item.wire.k === 'resource_have' &&
+      item.wire.rid === findWire.r
+    )).toBe(true);
+
     manager.close();
     resourceStore.close();
   });
