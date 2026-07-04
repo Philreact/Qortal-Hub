@@ -542,6 +542,8 @@ const RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY = 4;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 60_000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
+const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_RETRY_MS = 1_000;
+const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_MAX_RETRIES = 15;
 const RETICULUM_CHAT_ALL_CHANNELS_ID = '*';
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_MS = RETICULUM_CHAT_BACKGROUND_DIGEST_REFRESH_MS;
 const RETICULUM_CHAT_SUBSCRIPTION_REFRESH_JITTER_MS = 10_000;
@@ -1747,6 +1749,8 @@ export class ReticulumChatManager extends EventEmitter {
   private recentAuthorGapRepairRequests = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventPageOffers = new Map<string, ReticulumChatEventPageOffer>();
+  private signedResourceAuthRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private signedResourceAuthRetryAttempts = new Map<string, number>();
   private directHistoryPageRequests = new Map<string, ReticulumChatEventPageOffer>();
   private directHistoryPageRequestKeys = new Map<string, string>();
   private directHistoryPageTransferKeys = new Map<string, string>();
@@ -1962,6 +1966,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.groupMemberValidationCache.clear();
     this.groupAdminValidationCache.clear();
+    if (this.signLocalFields) this.retryPendingSignedResourceAuthOffers();
   }
 
   close(): void {
@@ -1996,6 +2001,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceTransfer?.close();
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
     this.typingTimers.clear();
+    for (const timer of this.signedResourceAuthRetryTimers.values()) clearTimeout(timer);
+    this.signedResourceAuthRetryTimers.clear();
+    this.signedResourceAuthRetryAttempts.clear();
     for (const timer of this.channelMetadataProjectionRetryTimers.values()) {
       clearTimeout(timer);
     }
@@ -7698,6 +7706,98 @@ export class ReticulumChatManager extends EventEmitter {
     return false;
   }
 
+  private signedResourceAuthRetryKey(kind: 'event' | 'event_page', transferId: string): string {
+    return `${kind}:${transferId}`;
+  }
+
+  private clearSignedResourceAuthRetry(kind: 'event' | 'event_page', transferId: string): void {
+    const key = this.signedResourceAuthRetryKey(kind, transferId);
+    const timer = this.signedResourceAuthRetryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.signedResourceAuthRetryTimers.delete(key);
+    this.signedResourceAuthRetryAttempts.delete(key);
+  }
+
+  private scheduleSignedResourceAuthRetry(
+    kind: 'event',
+    peerHash: string,
+    offer: ReticulumChatEventOffer
+  ): boolean;
+  private scheduleSignedResourceAuthRetry(
+    kind: 'event_page',
+    peerHash: string,
+    offer: ReticulumChatEventPageOffer
+  ): boolean;
+  private scheduleSignedResourceAuthRetry(
+    kind: 'event' | 'event_page',
+    peerHash: string,
+    offer: ReticulumChatEventOffer | ReticulumChatEventPageOffer
+  ): boolean {
+    if (this.isClosed) return false;
+    const key = this.signedResourceAuthRetryKey(kind, offer.transferId);
+    const attempts = (this.signedResourceAuthRetryAttempts.get(key) ?? 0) + 1;
+    if (attempts > RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_MAX_RETRIES) {
+      this.clearSignedResourceAuthRetry(kind, offer.transferId);
+      return false;
+    }
+    this.signedResourceAuthRetryAttempts.set(key, attempts);
+    if (this.signedResourceAuthRetryTimers.has(key)) return true;
+    loggerWarn(
+      `[ReticulumChat] Deferring ${kind === 'event_page' ? 'event page' : 'event'} resource accept group=${offer.groupId} transfer=${offer.transferId} reason=signed_auth_unavailable attempt=${attempts}`
+    );
+    const timer = setTimeout(() => {
+      this.signedResourceAuthRetryTimers.delete(key);
+      if (this.isClosed) return;
+      if (kind === 'event') {
+        const currentOffer = this.resourceOffers.get(offer.transferId);
+        if (!currentOffer) {
+          this.signedResourceAuthRetryAttempts.delete(key);
+          return;
+        }
+        void this.acceptEventResource(peerHash, currentOffer);
+        return;
+      }
+      const currentOffer =
+        this.eventPageOffers.get(offer.transferId) ??
+        this.directHistoryPageRequests.get(offer.transferId);
+      if (!currentOffer) {
+        this.signedResourceAuthRetryAttempts.delete(key);
+        return;
+      }
+      void this.acceptEventPageResource(peerHash, currentOffer);
+    }, RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_RETRY_MS);
+    this.signedResourceAuthRetryTimers.set(key, timer);
+    return true;
+  }
+
+  private retryPendingSignedResourceAuthOffers(): void {
+    for (const key of [...this.signedResourceAuthRetryAttempts.keys()]) {
+      const [kind, transferId] = key.split(':', 2);
+      if (!transferId) continue;
+      if (kind === 'event') {
+        const offer = this.resourceOffers.get(transferId);
+        const peerHash = (
+          offer?.sourcePeerHash ||
+          offer?.senderReticulumDestinationHash ||
+          ''
+        ).trim().toLowerCase();
+        if (offer && peerHash) void this.acceptEventResource(peerHash, offer);
+        continue;
+      }
+      if (kind === 'event_page') {
+        const offer =
+          this.eventPageOffers.get(transferId) ??
+          this.directHistoryPageRequests.get(transferId);
+        const peerHash = (
+          offer?.sourcePeerHash ||
+          offer?.senderReticulumDestinationHash ||
+          ''
+        ).trim().toLowerCase();
+        if (offer && peerHash) void this.acceptEventPageResource(peerHash, offer);
+      }
+    }
+  }
+
   private async acceptEventResource(peerHash: string, offer: ReticulumChatEventOffer): Promise<void> {
     if (!this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
       this.handleEventResourceFailure(offer.transferId, 'accept_unavailable');
@@ -7730,9 +7830,11 @@ export class ReticulumChatManager extends EventEmitter {
         }
       : await this.buildSignedResourceAuthWire(offer.groupId, offer.transferId, 'RCR');
     if (!authMessage) {
+      if (this.scheduleSignedResourceAuthRetry('event', senderHash, offer)) return;
       this.handleEventResourceFailure(offer.transferId, 'signed_auth_unavailable');
       return;
     }
+    this.clearSignedResourceAuthRetry('event', offer.transferId);
     const result = await this.bridge.acceptReticulumChatResourceDetailed({
       peerPresenceHash: senderHash,
       reticulumIdentityPublicKeyBase64,
@@ -7790,9 +7892,11 @@ export class ReticulumChatManager extends EventEmitter {
     const authMessage =
       await this.buildSignedResourceAuthWire(offer.groupId, offer.transferId, 'RCP');
     if (!authMessage) {
+      if (this.scheduleSignedResourceAuthRetry('event_page', senderHash, offer)) return;
       this.handleEventPageResourceFailure(offer.transferId, 'signed_auth_unavailable');
       return;
     }
+    this.clearSignedResourceAuthRetry('event_page', offer.transferId);
     const result = await this.bridge.acceptReticulumChatResourceDetailed({
       peerPresenceHash: senderHash,
       reticulumIdentityPublicKeyBase64,

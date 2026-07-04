@@ -10957,6 +10957,61 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('defers event page resource accept until local signing is available', async () => {
+    const accepted: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        accepted.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    const offer = {
+      transferId: 'event-page-transfer-deferred-auth',
+      groupId: 74,
+      channelId: '*',
+      direction: 'before' as const,
+      pageHash: 'c'.repeat(64),
+      sizeBytes: 123,
+      eventCount: 100,
+      sourcePeerHash: 'peer',
+      start: { eventId: 'event-page-deferred-start', feedTimestamp: 90_000 },
+      end: { eventId: 'event-page-deferred-end', feedTimestamp: 100_000 },
+    };
+    (manager as any).eventPageOffers.set(offer.transferId, offer);
+
+    await (manager as any).acceptEventPageResource('peer', offer);
+    expect(accepted).toEqual([]);
+    expect((manager as any).eventPageOffers.has(offer.transferId)).toBe(true);
+
+    manager.setRuntimeCallbacks({
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].authMessage).toEqual(
+      expect.objectContaining({
+        t: 'RCP',
+        x: 'event-page-transfer-deferred-auth',
+        g: 74,
+        a: expect.any(String),
+        p: expect.any(String),
+        ts: 100_000,
+        z: expect.any(String),
+      })
+    );
+    manager.close();
+  });
+
   it('rejects unsigned event page resource auth', async () => {
     const authorized: unknown[] = [];
     const rejected: unknown[] = [];
