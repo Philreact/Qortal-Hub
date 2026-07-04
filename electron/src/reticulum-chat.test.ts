@@ -12,9 +12,11 @@ import {
   buildReticulumChatGroupKeyRequestSignedFields,
   buildReticulumChatGroupKeyResponseSignedFields,
   buildReticulumChatHistoryPageRequestSignedFields,
+  buildReticulumChatResourceAuthSignedFields,
   buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
   hashReticulumChatPayload,
+  isDisabledRelayCache,
   ReticulumChatManager,
   serializeReticulumChatEvent,
   type ReticulumChatEvent,
@@ -49,6 +51,9 @@ import {
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
   RETICULUM_RESOURCE_TRANSFER_PULL_THROTTLE_MS,
 } from './reticulum-resource-transfer';
+
+const relayCacheIt = isDisabledRelayCache ? it.skip : it;
+const relayCacheDisabledIt = isDisabledRelayCache ? it : it.skip;
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
   const kp = nacl.sign.keyPair();
@@ -192,6 +197,19 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         timestamp: fullFields.timestamp,
       });
     } else if (
+      fullFields.type === 'RCHAT_RESOURCE_AUTH' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.transferId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumChatResourceAuthSignedFields({
+        groupId: fullFields.groupId,
+        transferId: fullFields.transferId,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
       fullFields.type === 'RCHAT_GROUP_KEY_DIGEST' &&
       typeof fullFields.groupId === 'number' &&
       typeof fullFields.epoch === 'number' &&
@@ -313,11 +331,13 @@ function signedEventRequestWire(params: {
 
 function signedResourceRequestWire(params: {
   groupId: number;
+  eventId?: string;
   fileHash: string;
   byteRanges: Array<[number, number]>;
   timestamp: number;
 }): {
   fh: string;
+  eid?: string;
   b: Array<[number, number]>;
   pk: string;
   ts: number;
@@ -329,6 +349,7 @@ function signedResourceRequestWire(params: {
   const ranges = [...params.byteRanges].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const fields = buildReticulumChatResourceRequestSignedFields({
     groupId: params.groupId,
+    eventId: params.eventId,
     fileHash: params.fileHash,
     byteRanges: ranges,
     authorAddress,
@@ -337,6 +358,7 @@ function signedResourceRequestWire(params: {
   });
   return {
     fh: params.fileHash,
+    ...(params.eventId ? { eid: params.eventId } : {}),
     b: ranges,
     pk: authorPublicKey,
     ts: params.timestamp,
@@ -451,6 +473,29 @@ function signedResourceFindWire(params: {
   if (params.hop > 0) wire.h = params.hop;
   if (params.maxHops !== 5) wire.m = params.maxHops;
   return wire;
+}
+
+function upsertTestChannel(
+  manager: ReticulumChatManager,
+  input: {
+    groupId: number;
+    channelId: string;
+    writeMode?: 'members' | 'admins';
+    readMode?: 'members' | 'admins';
+  }
+): void {
+  (manager as any).db.upsertChannel({
+    groupId: input.groupId,
+    channelId: input.channelId,
+    name: input.channelId,
+    position: input.channelId === 'general' ? 0 : 1,
+    archived: false,
+    writeMode: input.writeMode ?? 'members',
+    readMode: input.readMode ?? 'members',
+    createdBy: 'Qcreator',
+    createdAt: 10_000,
+    updatedAt: 10_000,
+  });
 }
 
 function tempDbPath(): string {
@@ -1754,12 +1799,118 @@ describe('reticulum chat manager', () => {
     const privateKey = await (admin as any).createGroupKeyIfAdmin(88);
     const publicKey = await (admin as any).createGroupKeyIfAdmin(90);
     expect(hello.f).not.toContain('group_keys');
+    expect(hello.f).not.toContain('relay_cache');
     expect(privateKey).toBeNull();
     expect(publicKey).toBeNull();
     expect((admin as any).db.getActiveGroupKey(88)).toBeNull();
     expect((admin as any).db.getActiveGroupKey(90)).toBeNull();
     expect(sent.some((wire) => wire.k === 'gkd')).toBe(false);
     admin.close();
+  });
+
+  relayCacheDisabledIt('keeps relay cache disabled behind the kill switch', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    const hello = (manager as any).buildHelloWire();
+    expect(hello.f).not.toContain('relay_cache');
+    manager.setLocalGroupMemberships([702]);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [999], mode: 'summary' },
+      'relay-peer'
+    );
+    const event = signedEvent({
+      eventId: 'relay-disabled-publish-event',
+      groupId: 702,
+      timestamp: 100_000,
+    });
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(resources).toHaveLength(0);
+    expect(direct).not.toContainEqual(
+      expect.objectContaining({
+        peer: 'relay-peer',
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          o: expect.objectContaining({ rs: 1 }),
+        }),
+      })
+    );
+    manager.close();
+  });
+
+  relayCacheDisabledIt('does not serve relay digests or relay queries while disabled', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+    });
+    const event = signedEvent({
+      eventId: 'relay-disabled-cached-event',
+      groupId: 703,
+      timestamp: now,
+    });
+    (manager as any).db.storeRelayEventBlob(
+      event,
+      serializeReticulumChatEvent(event),
+      'source-peer',
+      now
+    );
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [703], mode: 'summary' },
+      'requester-peer'
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'relay_query',
+        g: 703,
+        q: { ids: [event.eventId] },
+      },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(direct.some((item) => item.wire.k === 'relay_digest')).toBe(false);
+    expect(direct.some((item) => item.wire.k === 'event_offer')).toBe(false);
+    expect(resources).toHaveLength(0);
+    manager.close();
   });
 
   it('publishes oversized live events as event resource offers and digest discovery', async () => {
@@ -1827,7 +1978,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('stores relay event resources without importing them into normal chat history', async () => {
+  relayCacheIt('stores relay event resources without importing them into normal chat history', async () => {
     const acceptedTransfers: unknown[] = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const resources: unknown[] = [];
@@ -1917,7 +2068,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('queues relay-store uploads for eligible published events', async () => {
+  relayCacheIt('queues relay-store uploads for eligible published events', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const resources: unknown[] = [];
     const bridge = {
@@ -1968,7 +2119,121 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('serves relay digests for cached events after group_sub', async () => {
+  it('does not relay-store admin-private published events', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const resources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+        direct.push({ peer, wire });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([{ groupId: 702, isAdmin: true, localAddress: 'Qadmin' }]);
+    upsertTestChannel(manager, {
+      groupId: 702,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [999], mode: 'summary' },
+      'relay-peer'
+    );
+    const event = signedEvent({
+      eventId: 'relay-admin-private-publish-event',
+      groupId: 702,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(resources).toHaveLength(0);
+    expect(direct).not.toContainEqual(
+      expect.objectContaining({
+        peer: 'relay-peer',
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          o: expect.objectContaining({
+            id: event.eventId,
+            rs: 1,
+          }),
+        }),
+      })
+    );
+    manager.close();
+  });
+
+  it('does not offer relay-cached admin-private event resources to non-admin requesters', async () => {
+    const resources: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      rejectReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 702,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'relay-cached-admin-private-event',
+      groupId: 702,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    (manager as any).db.storeRelayEventBlob(
+      event,
+      serializeReticulumChatEvent(event),
+      'source-peer',
+      100_000
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'relay_query',
+        g: 702,
+        q: { ids: [event.eventId] },
+      },
+      'requester-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(resources).toHaveLength(0);
+    manager.close();
+  });
+
+  relayCacheIt('serves relay digests for cached events after group_sub', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const bridge = {
       on: () => undefined,
@@ -2022,7 +2287,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('does not serve empty or duplicate relay digests for repeated group_sub', async () => {
+  relayCacheIt('does not serve empty or duplicate relay digests for repeated group_sub', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const bridge = {
       on: () => undefined,
@@ -2074,7 +2339,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('keeps relay digest pages inside the Reticulum wire limit', async () => {
+  relayCacheIt('keeps relay digest pages inside the Reticulum wire limit', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const bridge = {
       on: () => undefined,
@@ -2120,7 +2385,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('uses relay digest discovery to fetch an offline cached event', async () => {
+  relayCacheIt('uses relay digest discovery to fetch an offline cached event', async () => {
     const relayDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const relayResources: Array<Record<string, any>> = [];
     const receiverDirect: Array<{ peer: string; wire: Record<string, unknown> }> = [];
@@ -2211,7 +2476,7 @@ describe('reticulum chat manager', () => {
     receiver.close();
   });
 
-  it('routes relay digest fetches through an intermediate overlay peer', async () => {
+  relayCacheIt('routes relay digest fetches through an intermediate overlay peer', async () => {
     const receiverPeer = 'aaaaaaaaaaaaaaaa';
     const intermediatePeer = 'bbbbbbbbbbbbbbbb';
     const relayPeer = 'cccccccccccccccc';
@@ -2371,7 +2636,7 @@ describe('reticulum chat manager', () => {
     relay.close();
   });
 
-  it('prefers established overlay peers for relay-store uploads and randomizes selection', async () => {
+  relayCacheIt('prefers established overlay peers for relay-store uploads and randomizes selection', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const resources: unknown[] = [];
     const bridge = {
@@ -3262,6 +3527,7 @@ describe('reticulum chat manager', () => {
         },
       } as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([69]);
     manager.subscribeGroup(69);
@@ -3324,6 +3590,7 @@ describe('reticulum chat manager', () => {
         },
       } as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([69]);
     manager.subscribeGroup(69);
@@ -3658,6 +3925,7 @@ describe('reticulum chat manager', () => {
       bridge: bridge as any,
       now: () => 100_000,
       signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
     });
     manager.setLocalGroupMemberships([70]);
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [70], mode: 'summary' }, 'peer-a');
@@ -3695,6 +3963,7 @@ describe('reticulum chat manager', () => {
       bridge: bridge as any,
       now: () => 100_000,
       signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
     });
     manager.setLocalGroupMemberships([71]);
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [71], mode: 'active' }, 'peer-a');
@@ -3793,6 +4062,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     const event = signedEvent({ groupId: 9, timestamp: 90_000 });
     manager.setLocalGroupMemberships([9]);
@@ -3850,6 +4120,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     const event = signedEvent({ groupId: 9, timestamp: 90_000 });
     manager.setLocalGroupMemberships([9]);
@@ -4033,6 +4304,114 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
     manager.close();
+  });
+
+  it('keeps admin-private events out of generic group digest latest and hash', async () => {
+    const groupId = 91;
+    const baseManager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+      } as any,
+      now: () => 100_000,
+    });
+    const privateManager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+      } as any,
+      now: () => 100_000,
+    });
+    const publicEvent = signedEvent({
+      eventId: 'event-digest-public-latest',
+      groupId,
+      channelId: 'general',
+      timestamp: 50_000,
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-digest-admin-private-hidden',
+      groupId,
+      channelId: 'admin-private',
+      timestamp: 60_000,
+    });
+
+    expect((baseManager as any).db.insertEvent(publicEvent, true)).toBe(true);
+    expect((privateManager as any).db.insertEvent(publicEvent, true)).toBe(true);
+    upsertTestChannel(privateManager, {
+      groupId,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    expect((privateManager as any).db.insertEvent(privateEvent, true)).toBe(true);
+
+    const baseDigest = (baseManager as any).buildGroupDigestWire(groupId);
+    const privateDigest = (privateManager as any).buildGroupDigestWire(groupId);
+
+    expect(privateDigest.latest).toEqual({ id: publicEvent.eventId, ts: publicEvent.timestamp });
+    expect(privateDigest.digestHash).toBe(baseDigest.digestHash);
+    baseManager.close();
+    privateManager.close();
+  });
+
+  it('does not request repair when only admin-private digest content differs', async () => {
+    const groupId = 92;
+    const direct: Record<string, unknown>[] = [];
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+          direct.push(message);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    const peer = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+      } as any,
+      now: () => 100_000,
+    });
+    receiver.setLocalGroupMemberships([groupId]);
+    receiver.subscribeGroup(groupId);
+    direct.length = 0;
+
+    const publicEvent = signedEvent({
+      eventId: 'event-digest-repair-public',
+      groupId,
+      channelId: 'general',
+      timestamp: 50_000,
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-digest-repair-admin-private',
+      groupId,
+      channelId: 'admin-private',
+      timestamp: 60_000,
+    });
+    expect((receiver as any).db.insertEvent(publicEvent, true)).toBe(true);
+    expect((peer as any).db.insertEvent(publicEvent, true)).toBe(true);
+    upsertTestChannel(peer, {
+      groupId,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    expect((peer as any).db.insertEvent(privateEvent, true)).toBe(true);
+    const peerDigest = (peer as any).buildGroupDigestWire(groupId);
+
+    receiver.handleWire(peerDigest, 'peer');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(0);
+    receiver.close();
+    peer.close();
   });
 
   it('builds reduced channel digest variants for tight wire packets', () => {
@@ -4531,6 +4910,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
@@ -4560,6 +4940,7 @@ describe('reticulum chat manager', () => {
       },
       'peer-a'
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(acceptedTransfers).toHaveLength(1);
 
     manager.handleResourceEvent({
@@ -4602,6 +4983,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
@@ -4635,6 +5017,7 @@ describe('reticulum chat manager', () => {
       },
       'peer-a'
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(acceptedTransfers).toHaveLength(1);
 
     manager.handleResourceEvent({
@@ -4675,6 +5058,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async () => true,
     });
     manager.setLocalGroupMemberships([72]);
@@ -4721,6 +5105,7 @@ describe('reticulum chat manager', () => {
       },
       'peer-a'
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(acceptedTransfers).toHaveLength(1);
 
     manager.handleResourceEvent({
@@ -4757,6 +5142,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async () => true,
     });
     manager.setLocalGroupMemberships([72]);
@@ -4803,6 +5189,7 @@ describe('reticulum chat manager', () => {
       },
       'peer-a'
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(acceptedTransfers).toHaveLength(1);
 
     manager.handleResourceEvent({
@@ -4813,12 +5200,14 @@ describe('reticulum chat manager', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(direct).toContainEqual(
+    expect(direct).toEqual([]);
+    expect(acceptedTransfers).toHaveLength(2);
+    expect(acceptedTransfers[1]).toEqual(
       expect.objectContaining({
-        peer: 'peer-a',
-        wire: expect.objectContaining({
-          k: 'feed_req',
-          g: 72,
+        peerPresenceHash: 'peer-a',
+        authMessage: expect.objectContaining({
+          type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+          groupId: 72,
           c: 'general',
           after: { ts: events[1].timestamp, id: events[1].eventId },
           limit: 100,
@@ -5149,6 +5538,206 @@ describe('reticulum chat manager', () => {
         transferId: 'linked-transfer-1',
       },
     ]);
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('refuses linked byte-range resource requests for admin-private channel events from non-admin requesters', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-admin-private-deny-'));
+    const sourcePath = path.join(tempRoot, 'source.bin');
+    fs.writeFileSync(sourcePath, Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 17));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const manifest = resourceStore.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-chat-file',
+      ownerId: '81:sender',
+      fileName: 'source.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+      metadata: { groupId: 81 },
+    });
+
+    const offeredResources: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+          offeredResources.push(payload);
+          return { ok: true as const };
+        },
+        authorizeReticulumResourceDetailed: async () => ({ ok: true as const }),
+        rejectReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+          rejections.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      resourceStore,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 81,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-admin-private-byte-range-hidden',
+      groupId: 81,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    resourceStore.recordGroupReference({
+      fileHash: manifest.fileHash,
+      groupId: 81,
+      eventId: event.eventId,
+    });
+
+    const range: [number, number] = [0, RETICULUM_RESOURCE_RANGE_SIZE];
+    const request = signedResourceRequestWire({
+      groupId: 81,
+      eventId: event.eventId,
+      fileHash: manifest.fileHash,
+      byteRanges: [range],
+      timestamp: 100_000,
+    });
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-admin-private-deny',
+      transferId: 'linked-transfer-admin-private-deny',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_GROUP_RESOURCE_AUTH',
+        transferId: 'linked-transfer-admin-private-deny',
+        groupId: 81,
+        contextId: 81,
+        fileHash: manifest.fileHash,
+        totalSizeBytes: manifest.sizeBytes,
+        byteRanges: [range],
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(offeredResources).toEqual([]);
+    expect(rejections).toContainEqual(
+      expect.objectContaining({
+        transferId: 'linked-transfer-admin-private-deny',
+        reason: 'request_not_allowed',
+      })
+    );
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('serves linked byte-range resource requests for admin-private channel events to admin requesters', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-admin-private-allow-'));
+    const sourcePath = path.join(tempRoot, 'source.bin');
+    fs.writeFileSync(sourcePath, Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE, 19));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+      now: () => 100_000,
+    });
+    const manifest = resourceStore.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-chat-file',
+      ownerId: '81:sender',
+      fileName: 'source.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+      metadata: { groupId: 81 },
+    });
+
+    const offeredResources: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+          offeredResources.push(payload);
+          return { ok: true as const };
+        },
+        authorizeReticulumResourceDetailed: async () => ({ ok: true as const }),
+        rejectReticulumResourceDetailed: async (payload: Record<string, unknown>) => {
+          rejections.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      resourceStore,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    upsertTestChannel(manager, {
+      groupId: 81,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-admin-private-byte-range-visible',
+      groupId: 81,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    resourceStore.recordGroupReference({
+      fileHash: manifest.fileHash,
+      groupId: 81,
+      eventId: event.eventId,
+    });
+
+    const range: [number, number] = [0, RETICULUM_RESOURCE_RANGE_SIZE];
+    const request = signedResourceRequestWire({
+      groupId: 81,
+      eventId: event.eventId,
+      fileHash: manifest.fileHash,
+      byteRanges: [range],
+      timestamp: 100_000,
+    });
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-admin-private-allow',
+      transferId: 'linked-transfer-admin-private-allow',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_GROUP_RESOURCE_AUTH',
+        transferId: 'linked-transfer-admin-private-allow',
+        groupId: 81,
+        contextId: 81,
+        fileHash: manifest.fileHash,
+        totalSizeBytes: manifest.sizeBytes,
+        byteRanges: [range],
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(rejections).toEqual([]);
+    expect(offeredResources).toHaveLength(1);
+    expect(offeredResources[0]).toEqual(
+      expect.objectContaining({
+        allowedRecipientAddress: requesterPeerHash,
+        transferId: 'linked-transfer-admin-private-allow',
+        resourceType: 'reticulum_group_resource_range',
+      })
+    );
     manager.close();
     resourceStore.close();
   });
@@ -7378,6 +7967,65 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('filters admin-private events from unsigned group-wide feed responses', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const resources: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, message: Record<string, unknown>) => {
+        direct.push(message);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        resources.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([50]);
+    upsertTestChannel(manager, {
+      groupId: 50,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const publicEvent = signedEvent({
+      eventId: 'event-unsigned-feed-public-visible',
+      groupId: 50,
+      channelId: 'general',
+      timestamp: 10_000,
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-unsigned-feed-admin-private-hidden',
+      groupId: 50,
+      channelId: 'admin-private',
+      timestamp: 11_000,
+    });
+    expect((manager as any).db.insertEvent(publicEvent, true)).toBe(true);
+    expect((manager as any).db.insertEvent(privateEvent, true)).toBe(true);
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'feed_req', g: 50, c: '*', limit: 10 },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(direct.some((wire) => wire.k === 'event_page_offer')).toBe(true);
+    expect(resources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(String(resources[0].filePath), 'utf8')) as {
+      events: ReticulumChatEvent[];
+    };
+    expect(page.events.map((event) => event.eventId)).toEqual([publicEvent.eventId]);
+    manager.close();
+  });
+
   it('responds to author range requests with events for that author only', async () => {
     const direct: Record<string, unknown>[] = [];
     const resources: Record<string, any>[] = [];
@@ -8660,6 +9308,420 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('stores admin-only channel read mode from admin metadata', async () => {
+    const payload = {
+      channelId: 'admin-private',
+      name: 'admin-private',
+      position: 1,
+      writeMode: 'admins',
+      readMode: 'admins',
+    };
+    const event = signedEvent({
+      eventId: 'event-channel-admin-read-mode',
+      groupId: 79,
+      channelId: 'admin-private',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([79]);
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    await expect(
+      manager.applyChannelMetadataEvent(event.eventId, payload)
+    ).resolves.toBe(true);
+    expect(manager.getChannels(79, true)).toContainEqual(
+      expect.objectContaining({
+        channelId: 'admin-private',
+        writeMode: 'admins',
+        readMode: 'admins',
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects non-admin linked history requests for admin-private channels', async () => {
+    const sentResources: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          sentResources.push(payload);
+          return { ok: true as const };
+        },
+        authorizeReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+        rejectReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          rejections.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 79,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-admin-private-history-hidden',
+      groupId: 79,
+      channelId: 'admin-private',
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    const request = signedHistoryPageRequestWire({
+      groupId: 79,
+      channelId: 'admin-private',
+      direction: 'before',
+      cursor: { id: event.eventId, ts: event.timestamp },
+      includeCursor: true,
+      limit: 10,
+      timestamp: 100_000,
+    });
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'admin-private-history-link',
+      transferId: 'admin-private-history-transfer',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        groupId: 79,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sentResources).toEqual([]);
+    expect(rejections).toContainEqual(
+      expect.objectContaining({
+        transferId: 'admin-private-history-transfer',
+        reason: 'channel_read_forbidden',
+      })
+    );
+    manager.close();
+  });
+
+  it('allows admin linked history requests for admin-private channels', async () => {
+    const sentResources: Array<Record<string, unknown>> = [];
+    const rejections: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          sentResources.push(payload);
+          return { ok: true as const };
+        },
+        authorizeReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+        rejectReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          rejections.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    upsertTestChannel(manager, {
+      groupId: 79,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-admin-private-history-visible',
+      groupId: 79,
+      channelId: 'admin-private',
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    const request = signedHistoryPageRequestWire({
+      groupId: 79,
+      channelId: 'admin-private',
+      direction: 'before',
+      cursor: { id: event.eventId, ts: event.timestamp },
+      includeCursor: true,
+      limit: 10,
+      timestamp: 100_000,
+    });
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'admin-private-history-link-admin',
+      transferId: 'admin-private-history-transfer-admin',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        groupId: 79,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(rejections).toEqual([]);
+    expect(sentResources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(String(sentResources[0].filePath), 'utf8')) as {
+      events: ReticulumChatEvent[];
+    };
+    expect(page.events.map((item) => item.eventId)).toEqual([event.eventId]);
+    manager.close();
+  });
+
+  it('filters admin-private channel events from non-admin all-channel history pages', async () => {
+    const sentResources: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          sentResources.push(payload);
+          return { ok: true as const };
+        },
+        authorizeReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+        rejectReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 79,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const publicEvent = signedEvent({
+      eventId: 'event-all-channel-public-visible',
+      groupId: 79,
+      channelId: 'general',
+      timestamp: 80_000,
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-all-channel-admin-private-hidden',
+      groupId: 79,
+      channelId: 'admin-private',
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(publicEvent, true)).toBe(true);
+    expect((manager as any).db.insertEvent(privateEvent, true)).toBe(true);
+
+    const request = signedHistoryPageRequestWire({
+      groupId: 79,
+      channelId: '*',
+      direction: 'before',
+      cursor: { id: privateEvent.eventId, ts: privateEvent.timestamp },
+      includeCursor: true,
+      limit: 10,
+      timestamp: 100_000,
+    });
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'all-channel-history-link',
+      transferId: 'all-channel-history-transfer',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        groupId: 79,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sentResources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(String(sentResources[0].filePath), 'utf8')) as {
+      events: ReticulumChatEvent[];
+    };
+    expect(page.events.map((item) => item.eventId)).toEqual([publicEvent.eventId]);
+    manager.close();
+  });
+
+  it('includes admin-private channel events in admin all-channel history pages', async () => {
+    const sentResources: Array<Record<string, unknown>> = [];
+    const requesterPeerHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          sentResources.push(payload);
+          return { ok: true as const };
+        },
+        authorizeReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+        rejectReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    upsertTestChannel(manager, {
+      groupId: 79,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const publicEvent = signedEvent({
+      eventId: 'event-all-channel-admin-public-visible',
+      groupId: 79,
+      channelId: 'general',
+      timestamp: 80_000,
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-all-channel-admin-private-visible',
+      groupId: 79,
+      channelId: 'admin-private',
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(publicEvent, true)).toBe(true);
+    expect((manager as any).db.insertEvent(privateEvent, true)).toBe(true);
+
+    const request = signedHistoryPageRequestWire({
+      groupId: 79,
+      channelId: '*',
+      direction: 'before',
+      cursor: { id: privateEvent.eventId, ts: privateEvent.timestamp },
+      includeCursor: true,
+      limit: 10,
+      timestamp: 100_000,
+    });
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'all-channel-history-link-admin',
+      transferId: 'all-channel-history-transfer-admin',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...request,
+        type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
+        groupId: 79,
+        requesterPeerHash,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sentResources).toHaveLength(1);
+    const page = JSON.parse(fs.readFileSync(String(sentResources[0].filePath), 'utf8')) as {
+      events: ReticulumChatEvent[];
+    };
+    expect(page.events.map((item) => item.eventId)).toEqual([
+      publicEvent.eventId,
+      privateEvent.eventId,
+    ]);
+    manager.close();
+  });
+
+  it('does not import admin-private event batches for local non-admins', async () => {
+    const groupId = 89;
+    const localAddress = 'QlocalNonAdminReadHidden';
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async (_groupId, address) => address !== localAddress,
+    });
+    manager.setLocalGroupMemberships([{ groupId, localAddress }]);
+    manager.subscribeGroup(groupId);
+    upsertTestChannel(manager, {
+      groupId,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-batch-admin-private-hidden',
+      groupId,
+      channelId: 'admin-private',
+      timestamp: 10_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: groupId,
+        c: 'admin-private',
+        batch: { events: [privateEvent] },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect((manager as any).db.hasEvent(privateEvent.eventId)).toBe(false);
+    manager.close();
+  });
+
+  it('imports admin-private event batches for local admins', async () => {
+    const groupId = 90;
+    const localAddress = 'QlocalAdminReadPrivate';
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([{ groupId, localAddress }]);
+    manager.subscribeGroup(groupId);
+    upsertTestChannel(manager, {
+      groupId,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const privateEvent = signedEvent({
+      eventId: 'event-batch-admin-private-visible',
+      groupId,
+      channelId: 'admin-private',
+      timestamp: 10_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_batch',
+        g: groupId,
+        c: 'admin-private',
+        batch: { events: [privateEvent] },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect((manager as any).db.hasEvent(privateEvent.eventId)).toBe(true);
+    manager.close();
+  });
+
   it('keeps admin-only write mode effective time across later channel updates', async () => {
     const groupId = 79;
     const channelId = 'announcements';
@@ -9401,6 +10463,894 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('refuses signed event resource requests for admin-private channels from non-admin requesters', async () => {
+    const sentResources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 74,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-resource-admin-private-hidden',
+      groupId: 74,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 74,
+        q: signedEventRequestWire({
+          groupId: 74,
+          eventId: event.eventId,
+          timestamp: 100_000,
+        }),
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sentResources).toEqual([]);
+    manager.close();
+  });
+
+  it('serves signed event resource requests for admin-private channels to admin requesters', async () => {
+    const sentResources: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async (payload: unknown) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    upsertTestChannel(manager, {
+      groupId: 74,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-resource-admin-private-visible',
+      groupId: 74,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 74,
+        q: signedEventRequestWire({
+          groupId: 74,
+          eventId: event.eventId,
+          timestamp: 100_000,
+        }),
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sentResources).toHaveLength(1);
+    expect(sentResources[0]).toMatchObject({
+      metadata: expect.objectContaining({
+        eventId: event.eventId,
+        groupId: 74,
+        resourceType: 'reticulum_chat_event',
+      }),
+    });
+    manager.close();
+  });
+
+  it('rejects unsigned live event resource auth for normal channels', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    const event = signedEvent({
+      eventId: 'event-live-normal-unsigned-hidden',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-normal-link-unsigned',
+      transferId: 'live-normal-transfer-unsigned',
+      eventId: event.eventId,
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_RESOURCE_AUTH',
+        transferId: 'live-normal-transfer-unsigned',
+        eventId: event.eventId,
+        groupId: 74,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-normal-transfer-unsigned',
+        reason: 'signed_request_required',
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects signed live event resource auth for normal channels from non-members', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const event = signedEvent({
+      eventId: 'event-live-normal-non-member-hidden',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    const request = signedEventRequestWire({
+      groupId: 74,
+      eventId: event.eventId,
+      timestamp: 100_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address !== request.a,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-normal-link-non-member',
+      transferId: 'live-normal-transfer-non-member',
+      eventId: event.eventId,
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_RESOURCE_AUTH',
+        transferId: 'live-normal-transfer-non-member',
+        eventId: event.eventId,
+        groupId: 74,
+        ...request,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-normal-transfer-non-member',
+        reason: 'requester_not_group_member',
+      })
+    );
+    manager.close();
+  });
+
+  it('authorizes signed live event resource auth for normal channels from members', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    const event = signedEvent({
+      eventId: 'event-live-normal-member-visible',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-normal-link-member',
+      transferId: 'live-normal-transfer-member',
+      eventId: event.eventId,
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_RESOURCE_AUTH',
+        transferId: 'live-normal-transfer-member',
+        eventId: event.eventId,
+        groupId: 74,
+        ...signedEventRequestWire({
+          groupId: 74,
+          eventId: event.eventId,
+          timestamp: 100_000,
+        }),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(rejected).toEqual([]);
+    expect(authorized).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-normal-transfer-member',
+      })
+    );
+    manager.close();
+  });
+
+  it('authorizes compact signed live event resource auth for normal channels from members', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    const event = signedEvent({
+      eventId: 'event-live-normal-compact-member-visible',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const authMessage = await (manager as any).buildSignedResourceAuthWire(
+      74,
+      'live-normal-transfer-compact-member',
+      'RCR'
+    );
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-normal-link-compact-member',
+      transferId: 'live-normal-transfer-compact-member',
+      eventId: event.eventId,
+      groupId: 74,
+      metadata: {
+        eventId: event.eventId,
+        groupId: 74,
+      },
+      auth: authMessage,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(rejected).toEqual([]);
+    expect(authorized).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-normal-transfer-compact-member',
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects unsigned live event resource auth for admin-private channels', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupAdmin: async () => true,
+    });
+    upsertTestChannel(manager, {
+      groupId: 74,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-live-admin-private-unsigned-hidden',
+      groupId: 74,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-admin-private-link-unsigned',
+      transferId: 'live-admin-private-transfer-unsigned',
+      eventId: event.eventId,
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_RESOURCE_AUTH',
+        transferId: 'live-admin-private-transfer-unsigned',
+        eventId: event.eventId,
+        groupId: 74,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-admin-private-transfer-unsigned',
+        reason: 'signed_request_required',
+      })
+    );
+    manager.close();
+  });
+
+  it('includes signed requester fields when accepting live event resources', async () => {
+    const accepted: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        accepted.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+
+    await (manager as any).acceptEventResource('peer', {
+      transferId: 'live-event-transfer-signed-auth',
+      eventId: 'event-live-auth-signed',
+      groupId: 74,
+      payloadHash: 'a'.repeat(64),
+      wireHash: 'b'.repeat(64),
+      sizeBytes: 123,
+    });
+
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].authMessage).toEqual(
+      expect.objectContaining({
+        t: 'RCR',
+        x: 'live-event-transfer-signed-auth',
+        g: 74,
+        a: expect.any(String),
+        p: expect.any(String),
+        ts: 100_000,
+        z: expect.any(String),
+      })
+    );
+    expect(byteLengthUtf8JsonWithBridgeSender(accepted[0].authMessage)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
+  it('keeps signed event page auth messages inside the Reticulum wire limit', async () => {
+    const accepted: Array<Record<string, any>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        accepted.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+
+    await (manager as any).acceptEventPageResource('peer', {
+      transferId: 'event-page-transfer-signed-auth',
+      groupId: 74,
+      channelId: '*',
+      direction: 'before',
+      pageHash: 'c'.repeat(64),
+      sizeBytes: 123,
+      eventCount: 100,
+      start: { eventId: 'event-page-auth-start', feedTimestamp: 90_000 },
+      end: { eventId: 'event-page-auth-end', feedTimestamp: 100_000 },
+    });
+
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].authMessage).toEqual(
+      expect.objectContaining({
+        t: 'RCP',
+        x: 'event-page-transfer-signed-auth',
+        g: 74,
+        a: expect.any(String),
+        p: expect.any(String),
+        ts: 100_000,
+        z: expect.any(String),
+      })
+    );
+    expect(byteLengthUtf8JsonWithBridgeSender(accepted[0].authMessage)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
+  it('rejects unsigned event page resource auth', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    const event = signedEvent({
+      eventId: 'event-page-live-unsigned-event',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    (manager as any).outboundEventPageResources.set('event-page-transfer-unsigned', {
+      groupId: 74,
+      channelId: 'general',
+      pageHash: 'c'.repeat(64),
+      eventIds: new Set([event.eventId]),
+      expiresAt: 120_000,
+    });
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'event-page-link-unsigned',
+      transferId: 'event-page-transfer-unsigned',
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH',
+        transferId: 'event-page-transfer-unsigned',
+        groupId: 74,
+        channelId: 'general',
+        pageHash: 'c'.repeat(64),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'event-page-transfer-unsigned',
+        reason: 'signed_request_required',
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects signed event page resource auth from non-members', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const event = signedEvent({
+      eventId: 'event-page-live-non-member-event',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    const request = signedHistoryPageRequestWire({
+      groupId: 74,
+      channelId: 'general',
+      direction: 'before',
+      limit: 100,
+      timestamp: 100_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address !== request.a,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    (manager as any).outboundEventPageResources.set('event-page-transfer-non-member', {
+      groupId: 74,
+      channelId: 'general',
+      pageHash: 'd'.repeat(64),
+      eventIds: new Set([event.eventId]),
+      expiresAt: 120_000,
+    });
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'event-page-link-non-member',
+      transferId: 'event-page-transfer-non-member',
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH',
+        transferId: 'event-page-transfer-non-member',
+        groupId: 74,
+        channelId: 'general',
+        pageHash: 'd'.repeat(64),
+        ...request,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'event-page-transfer-non-member',
+        reason: 'requester_not_group_member',
+      })
+    );
+    manager.close();
+  });
+
+  it('authorizes signed event page resource auth from members', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    const event = signedEvent({
+      eventId: 'event-page-live-member-event',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    (manager as any).outboundEventPageResources.set('event-page-transfer-member', {
+      groupId: 74,
+      channelId: 'general',
+      pageHash: 'e'.repeat(64),
+      eventIds: new Set([event.eventId]),
+      expiresAt: 120_000,
+    });
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'event-page-link-member',
+      transferId: 'event-page-transfer-member',
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH',
+        transferId: 'event-page-transfer-member',
+        groupId: 74,
+        channelId: 'general',
+        pageHash: 'e'.repeat(64),
+        ...signedHistoryPageRequestWire({
+          groupId: 74,
+          channelId: 'general',
+          direction: 'before',
+          limit: 100,
+          timestamp: 100_000,
+        }),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(rejected).toEqual([]);
+    expect(authorized).toContainEqual(
+      expect.objectContaining({
+        transferId: 'event-page-transfer-member',
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects signed live event resource auth for admin-private channels from non-admin requesters', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 74,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-live-admin-private-non-admin-hidden',
+      groupId: 74,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-admin-private-link-non-admin',
+      transferId: 'live-admin-private-transfer-non-admin',
+      eventId: event.eventId,
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_RESOURCE_AUTH',
+        transferId: 'live-admin-private-transfer-non-admin',
+        eventId: event.eventId,
+        groupId: 74,
+        ...signedEventRequestWire({
+          groupId: 74,
+          eventId: event.eventId,
+          timestamp: 100_000,
+        }),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-admin-private-transfer-non-admin',
+        reason: 'channel_read_forbidden',
+      })
+    );
+    manager.close();
+  });
+
+  it('rejects compact signed live event resource auth for admin-private channels from non-admin requesters', async () => {
+    const authorized: unknown[] = [];
+    const rejected: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => false,
+    });
+    upsertTestChannel(manager, {
+      groupId: 74,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-live-admin-private-compact-non-admin-hidden',
+      groupId: 74,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const authMessage = await (manager as any).buildSignedResourceAuthWire(
+      74,
+      'live-admin-private-transfer-compact-non-admin',
+      'RCR'
+    );
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-admin-private-link-compact-non-admin',
+      transferId: 'live-admin-private-transfer-compact-non-admin',
+      eventId: event.eventId,
+      groupId: 74,
+      metadata: {
+        eventId: event.eventId,
+        groupId: 74,
+      },
+      auth: authMessage,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toEqual([]);
+    expect(rejected).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-admin-private-transfer-compact-non-admin',
+        reason: 'channel_read_forbidden',
+      })
+    );
+    manager.close();
+  });
+
+  it('authorizes signed live event resource auth for admin-private channels from admin requesters', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    upsertTestChannel(manager, {
+      groupId: 74,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-live-admin-private-admin-visible',
+      groupId: 74,
+      channelId: 'admin-private',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-admin-private-link-admin',
+      transferId: 'live-admin-private-transfer-admin',
+      eventId: event.eventId,
+      groupId: 74,
+      auth: {
+        type: 'RETICULUM_CHAT_RESOURCE_AUTH',
+        transferId: 'live-admin-private-transfer-admin',
+        eventId: event.eventId,
+        groupId: 74,
+        ...signedEventRequestWire({
+          groupId: 74,
+          eventId: event.eventId,
+          timestamp: 100_000,
+        }),
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(rejected).toEqual([]);
+    expect(authorized).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-admin-private-transfer-admin',
+      })
+    );
+    manager.close();
+  });
+
   it('refuses downloaded event resources when Core membership validation rejects the event author', async () => {
     const acceptedTransfers: unknown[] = [];
     const blockedKp = nacl.sign.keyPair();
@@ -9418,6 +11368,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async (_groupId, address) => address !== blockedAddress,
     });
     manager.setLocalGroupMemberships([75]);
@@ -9457,6 +11408,7 @@ describe('reticulum chat manager', () => {
       },
       'peer'
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(acceptedTransfers).toHaveLength(1);
 
     manager.handleResourceEvent({

@@ -274,10 +274,13 @@ const getGroupIdsFromGroupLikeList = (groups: unknown): number[] => {
 
 const getReticulumGroupMembershipsFromGroupLikeList = (
   groups: unknown,
-  groupsProperties: Record<string, unknown>
-): Array<{ groupId: number; isPrivate: boolean }> => {
+  groupsProperties: Record<string, unknown>,
+  localAddress?: string
+): Array<{ groupId: number; isPrivate: boolean; localAddress?: string }> => {
   if (!Array.isArray(groups)) return [];
   const byGroupId = new Map<number, boolean>();
+  const normalizedLocalAddress =
+    typeof localAddress === 'string' ? localAddress.trim() : '';
   for (const group of groups) {
     const groupId = getGroupIdFromGroupLike(group);
     if (groupId == null) continue;
@@ -294,7 +297,11 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
       groupProperty?.isOpen === false;
     byGroupId.set(groupId, byGroupId.get(groupId) === true || isPrivate);
   }
-  return [...byGroupId.entries()].map(([groupId, isPrivate]) => ({ groupId, isPrivate }));
+  return [...byGroupId.entries()].map(([groupId, isPrivate]) => ({
+    groupId,
+    isPrivate,
+    ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
+  }));
 };
 
 const collectReticulumPlainText = (value: unknown, out: string[]): void => {
@@ -1171,7 +1178,8 @@ export const Group = ({
     const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
     const reticulumMemberships = getReticulumGroupMembershipsFromGroupLikeList(
       memberGroupsForReticulum,
-      groupsProperties
+      groupsProperties,
+      myAddress
     );
     if (groupIds.length === 0) {
       for (const groupId of reticulumSubscribedGroupIdsRef.current) {

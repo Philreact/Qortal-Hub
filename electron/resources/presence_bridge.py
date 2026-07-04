@@ -323,6 +323,8 @@ _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _RETICULUM_RESOURCE_TYPE = "reticulum_resource"
 _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
 _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH"
+_RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE = "RCR"
+_RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE = "RCP"
 _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE = "RETICULUM_CHAT_HISTORY_PAGE_REQUEST"
 _RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
@@ -9615,32 +9617,41 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
                 f"target=qchat-file-reticulum sender_rejected_auth transfer={state.get('transferId') or ''}",
             )
         return
-    if decoded.get("type") not in (
+    decoded_type = decoded.get("type")
+    decoded_compact_type = decoded.get("t")
+    if decoded_type not in (
         "QCHAT_FILE_LINK_AUTH",
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
         _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
+    ) and decoded_compact_type not in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
     ):
         return
-    transfer_id = str(decoded.get("transferId") or "").strip()
+    transfer_id = str(decoded.get("transferId") or decoded.get("x") or "").strip()
     state["transferId"] = transfer_id
     if "retryChunkIndex" in decoded:
         try:
             state["requestedChunkIndex"] = int(decoded.get("retryChunkIndex"))
         except Exception:
             state.pop("requestedChunkIndex", None)
-    if decoded.get("type") in (
+    if decoded_type in (
         _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
+    ) or decoded_compact_type in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
     ):
         resource_type = _RETICULUM_CHAT_RESOURCE_TYPE
-    elif decoded.get("type") == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
+    elif decoded_type == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
         resource_type = _RETICULUM_RESOURCE_TYPE
     else:
         resource_type = "qchat-dm-file"
     state["resourceType"] = resource_type
+    state_metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
     _qchat_file_emit(
         "auth",
         {
@@ -9649,8 +9660,9 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             "peerPresenceHash": state.get("peerPresenceHash") or "",
             "auth": decoded,
             "resourceType": resource_type,
-            "eventId": decoded.get("eventId"),
-            "groupId": decoded.get("groupId"),
+            "eventId": decoded.get("eventId") or decoded.get("id") or state_metadata.get("eventId"),
+            "groupId": decoded.get("groupId") or decoded.get("g") or state_metadata.get("groupId"),
+            "metadata": state_metadata,
         },
     )
 
@@ -13639,11 +13651,14 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
         _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
         _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
+    ) or decoded.get("t") in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
     ):
         link_id = _register_incoming_qchat_file_link(
             link,
             "",
-            str(decoded.get("transferId") or ""),
+            str(decoded.get("transferId") or decoded.get("x") or ""),
         )
         on_qchat_file_link_packet(message, packet)
         return

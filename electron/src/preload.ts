@@ -1364,7 +1364,16 @@ try {
       isEnabled: async () =>
         ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
       setLocalGroupMemberships: async (
-        groupIds: Array<number | { groupId: number; isPrivate?: boolean; isOpen?: boolean }>
+        groupIds: Array<
+          number | {
+            groupId: number;
+            isPrivate?: boolean;
+            isOpen?: boolean;
+            localAddress?: string;
+            address?: string;
+            isAdmin?: boolean;
+          }
+        >
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalGroupMemberships',
@@ -1624,7 +1633,16 @@ try {
       isEnabled: async () =>
         ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
       setLocalGroupMemberships: async (
-        groupIds: Array<number | { groupId: number; isPrivate?: boolean; isOpen?: boolean }>
+        groupIds: Array<
+          number | {
+            groupId: number;
+            isPrivate?: boolean;
+            isOpen?: boolean;
+            localAddress?: string;
+            address?: string;
+            isAdmin?: boolean;
+          }
+        >
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalGroupMemberships',

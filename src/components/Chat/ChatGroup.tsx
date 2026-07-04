@@ -145,17 +145,65 @@ type ReticulumGroupChannel = {
   position: number;
   archived: boolean;
   writeMode?: ReticulumGroupChannelWriteMode;
+  readMode?: ReticulumGroupChannelReadMode;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
 };
 
 type ReticulumGroupChannelWriteMode = 'members' | 'admins';
+type ReticulumGroupChannelReadMode = 'members' | 'admins';
+type ReticulumGroupChannelAccessMode = 'regular' | 'admin_write' | 'admin_private';
 
 const RETICULUM_CHANNEL_WRITE_MODE_MEMBERS: ReticulumGroupChannelWriteMode =
   'members';
 const RETICULUM_CHANNEL_WRITE_MODE_ADMINS: ReticulumGroupChannelWriteMode =
   'admins';
+const RETICULUM_CHANNEL_READ_MODE_MEMBERS: ReticulumGroupChannelReadMode =
+  'members';
+const RETICULUM_CHANNEL_READ_MODE_ADMINS: ReticulumGroupChannelReadMode =
+  'admins';
+const RETICULUM_CHANNEL_ACCESS_REGULAR: ReticulumGroupChannelAccessMode =
+  'regular';
+const RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE: ReticulumGroupChannelAccessMode =
+  'admin_write';
+const RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE: ReticulumGroupChannelAccessMode =
+  'admin_private';
+
+function reticulumChannelAccessFromModes(
+  writeMode?: ReticulumGroupChannelWriteMode,
+  readMode?: ReticulumGroupChannelReadMode
+): ReticulumGroupChannelAccessMode {
+  if (readMode === RETICULUM_CHANNEL_READ_MODE_ADMINS) {
+    return RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE;
+  }
+  if (writeMode === RETICULUM_CHANNEL_WRITE_MODE_ADMINS) {
+    return RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE;
+  }
+  return RETICULUM_CHANNEL_ACCESS_REGULAR;
+}
+
+function reticulumChannelModesFromAccess(accessMode: ReticulumGroupChannelAccessMode): {
+  writeMode: ReticulumGroupChannelWriteMode;
+  readMode: ReticulumGroupChannelReadMode;
+} {
+  if (accessMode === RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE) {
+    return {
+      writeMode: RETICULUM_CHANNEL_WRITE_MODE_ADMINS,
+      readMode: RETICULUM_CHANNEL_READ_MODE_ADMINS,
+    };
+  }
+  if (accessMode === RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE) {
+    return {
+      writeMode: RETICULUM_CHANNEL_WRITE_MODE_ADMINS,
+      readMode: RETICULUM_CHANNEL_READ_MODE_MEMBERS,
+    };
+  }
+  return {
+    writeMode: RETICULUM_CHANNEL_WRITE_MODE_MEMBERS,
+    readMode: RETICULUM_CHANNEL_READ_MODE_MEMBERS,
+  };
+}
 
 type ReticulumGroupCategory = {
   categoryId: string;
@@ -631,18 +679,18 @@ export const ChatGroup = ({
   const [newReticulumChannelError, setNewReticulumChannelError] = useState('');
   const [newReticulumChannelCategoryId, setNewReticulumChannelCategoryId] =
     useState('');
-  const [newReticulumChannelWriteMode, setNewReticulumChannelWriteMode] =
-    useState<ReticulumGroupChannelWriteMode>(
-      RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+  const [newReticulumChannelAccessMode, setNewReticulumChannelAccessMode] =
+    useState<ReticulumGroupChannelAccessMode>(
+      RETICULUM_CHANNEL_ACCESS_REGULAR
     );
   const [reticulumChannelSettingsOpen, setReticulumChannelSettingsOpen] =
     useState(false);
   const [editingReticulumChannel, setEditingReticulumChannel] =
     useState<ReticulumGroupChannel | null>(null);
   const [reticulumChannelName, setReticulumChannelName] = useState('');
-  const [reticulumChannelWriteMode, setReticulumChannelWriteMode] =
-    useState<ReticulumGroupChannelWriteMode>(
-      RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+  const [reticulumChannelAccessMode, setReticulumChannelAccessMode] =
+    useState<ReticulumGroupChannelAccessMode>(
+      RETICULUM_CHANNEL_ACCESS_REGULAR
     );
   const [reticulumChannelError, setReticulumChannelError] = useState('');
   const [isReticulumCategoryDialogOpen, setIsReticulumCategoryDialogOpen] =
@@ -920,7 +968,7 @@ export const ChatGroup = ({
       : [];
     if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
     setReticulumChannelStateGroupId(String(groupId));
-    const visibleChannels = parsedChannels.length
+    const availableChannels = parsedChannels.length
       ? parsedChannels.filter((channel) => !channel.archived)
       : [
           {
@@ -930,15 +978,16 @@ export const ChatGroup = ({
             position: 0,
             archived: false,
             writeMode: RETICULUM_CHANNEL_WRITE_MODE_MEMBERS,
+            readMode: RETICULUM_CHANNEL_READ_MODE_MEMBERS,
             createdBy: '',
             createdAt: 0,
             updatedAt: 0,
           },
         ];
     setReticulumCategories(parsedCategories);
-    setReticulumChannels(visibleChannels);
+    setReticulumChannels(availableChannels);
     setSelectedReticulumChannelId((current) =>
-      visibleChannels.some((channel) => channel.channelId === current)
+      availableChannels.some((channel) => channel.channelId === current)
         ? current
         : DEFAULT_RETICULUM_CHANNEL_ID
     );
@@ -967,14 +1016,55 @@ export const ChatGroup = ({
   }, [reticulumChatSummaries, selectedGroup]);
 
   const selectedReticulumGroupKey = selectedGroup ? String(selectedGroup) : '';
-  const reticulumChannelsForSelectedGroup =
+  const reticulumAllChannelsForSelectedGroup =
     reticulumChannelStateGroupId === selectedReticulumGroupKey
       ? reticulumChannels
       : [];
-  const reticulumCategoriesForSelectedGroup =
+  const reticulumAllCategoriesForSelectedGroup =
     reticulumChannelStateGroupId === selectedReticulumGroupKey
       ? reticulumCategories
       : [];
+  const reticulumChannelsForSelectedGroup = useMemo(
+    () =>
+      reticulumAllChannelsForSelectedGroup.filter(
+        (channel) =>
+          channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID ||
+          channel.readMode !== RETICULUM_CHANNEL_READ_MODE_ADMINS ||
+          isReticulumChannelAdmin
+      ),
+    [isReticulumChannelAdmin, reticulumAllChannelsForSelectedGroup]
+  );
+  const reticulumCategoriesForSelectedGroup = useMemo(() => {
+    if (isReticulumChannelAdmin) return reticulumAllCategoriesForSelectedGroup;
+    const visibleCategoryIds = new Set(
+      reticulumChannelsForSelectedGroup
+        .map((channel) => channel.categoryId)
+        .filter((categoryId): categoryId is string => Boolean(categoryId))
+    );
+    return reticulumAllCategoriesForSelectedGroup.filter((category) =>
+      visibleCategoryIds.has(category.categoryId)
+    );
+  }, [
+    isReticulumChannelAdmin,
+    reticulumAllCategoriesForSelectedGroup,
+    reticulumChannelsForSelectedGroup,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled) return;
+    if (
+      reticulumChannelsForSelectedGroup.some(
+        (channel) => channel.channelId === selectedReticulumChannelId
+      )
+    ) {
+      return;
+    }
+    setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
+  }, [
+    reticulumChannelsForSelectedGroup,
+    reticulumChatEnabled,
+    selectedReticulumChannelId,
+  ]);
 
   const reticulumChannelsByCategory = useMemo(() => {
     const categoryIds = new Set(
@@ -2138,6 +2228,16 @@ export const ChatGroup = ({
         typeof event.eventType === 'string' &&
         (event.eventType.startsWith('channel_') ||
           event.eventType.startsWith('category_'));
+      const eventChannel = reticulumAllChannelsForSelectedGroup.find(
+        (channel) => channel.channelId === eventChannelId
+      );
+      if (
+        !isChannelMetadataEvent &&
+        eventChannel?.readMode === RETICULUM_CHANNEL_READ_MODE_ADMINS &&
+        !isReticulumChannelAdmin
+      ) {
+        return null;
+      }
       if (
         !isChannelMetadataEvent &&
         eventChannelId !== selectedReticulumChannelId
@@ -2298,10 +2398,12 @@ export const ChatGroup = ({
     },
     [
       isPrivate,
+      isReticulumChannelAdmin,
       myAddress,
       myName,
       refreshReticulumChannels,
       reticulumChatEnabled,
+      reticulumAllChannelsForSelectedGroup,
       resolveMentionedAddresses,
       selectedGroup,
       selectedReticulumChannelId,
@@ -3495,7 +3597,7 @@ export const ChatGroup = ({
   const openCreateReticulumChannelDialog = useCallback((categoryId = '') => {
     setNewReticulumChannelCategoryId(categoryId);
     setNewReticulumChannelName('');
-    setNewReticulumChannelWriteMode(RETICULUM_CHANNEL_WRITE_MODE_MEMBERS);
+    setNewReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
     setNewReticulumChannelError('');
     setIsCreateReticulumChannelOpen(true);
   }, []);
@@ -3505,7 +3607,7 @@ export const ChatGroup = ({
     setNewReticulumChannelName('');
     setNewReticulumChannelError('');
     setNewReticulumChannelCategoryId('');
-    setNewReticulumChannelWriteMode(RETICULUM_CHANNEL_WRITE_MODE_MEMBERS);
+    setNewReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
   }, []);
 
   const createReticulumChannel = useCallback(async () => {
@@ -3531,20 +3633,24 @@ export const ChatGroup = ({
       ? newReticulumChannelCategoryId
       : '';
     const position = reticulumChannelsByCategory.get(categoryId)?.length ?? 0;
+    const channelModes = reticulumChannelModesFromAccess(
+      newReticulumChannelAccessMode
+    );
     await publishReticulumChannelMetadata('channel_create', {
       channelId,
       categoryId,
       name,
       position,
-      writeMode: newReticulumChannelWriteMode,
+      writeMode: channelModes.writeMode,
+      readMode: channelModes.readMode,
     });
     setSelectedReticulumChannelId(channelId);
     closeCreateReticulumChannelDialog();
   }, [
     closeCreateReticulumChannelDialog,
     newReticulumChannelCategoryId,
+    newReticulumChannelAccessMode,
     newReticulumChannelName,
-    newReticulumChannelWriteMode,
     publishReticulumChannelMetadata,
     reticulumCategoriesForSelectedGroup,
     reticulumChannelsForSelectedGroup,
@@ -3555,10 +3661,8 @@ export const ChatGroup = ({
     (channel: ReticulumGroupChannel) => {
       setEditingReticulumChannel(channel);
       setReticulumChannelName(channel.name || channel.channelId);
-      setReticulumChannelWriteMode(
-        channel.writeMode === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
-          ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
-          : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+      setReticulumChannelAccessMode(
+        reticulumChannelAccessFromModes(channel.writeMode, channel.readMode)
       );
       setReticulumChannelError('');
       setReticulumChannelSettingsOpen(true);
@@ -3570,7 +3674,7 @@ export const ChatGroup = ({
     setReticulumChannelSettingsOpen(false);
     setEditingReticulumChannel(null);
     setReticulumChannelName('');
-    setReticulumChannelWriteMode(RETICULUM_CHANNEL_WRITE_MODE_MEMBERS);
+    setReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
     setReticulumChannelError('');
   }, []);
 
@@ -3590,20 +3694,24 @@ export const ChatGroup = ({
       setReticulumChannelError('Channel already exists');
       return;
     }
+    const channelModes = reticulumChannelModesFromAccess(
+      reticulumChannelAccessMode
+    );
     await publishReticulumChannelMetadata('channel_update', {
       channelId: editingReticulumChannel.channelId,
       categoryId: editingReticulumChannel.categoryId || '',
       name,
       position: editingReticulumChannel.position,
-      writeMode: reticulumChannelWriteMode,
+      writeMode: channelModes.writeMode,
+      readMode: channelModes.readMode,
     });
     closeReticulumChannelSettings();
   }, [
     closeReticulumChannelSettings,
     editingReticulumChannel,
     publishReticulumChannelMetadata,
+    reticulumChannelAccessMode,
     reticulumChannelName,
-    reticulumChannelWriteMode,
     reticulumChannelsForSelectedGroup,
   ]);
 
@@ -4650,21 +4758,26 @@ export const ChatGroup = ({
             fullWidth
             margin="dense"
             label="Channel type"
-            value={newReticulumChannelWriteMode}
+            value={newReticulumChannelAccessMode}
             onChange={(event) =>
-              setNewReticulumChannelWriteMode(
-                event.target.value === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
-                  ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
-                  : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+              setNewReticulumChannelAccessMode(
+                event.target.value === RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE
+                  ? RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE
+                  : event.target.value === RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE
+                    ? RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE
+                    : RETICULUM_CHANNEL_ACCESS_REGULAR
               )
             }
-            helperText="Regular channels allow all members to write. Admin announcement channels are read-only for non-admins."
+            helperText="Regular channels allow all members to write. Admin announcement channels are readable by everyone. Admin private channels are visible to admins only."
           >
-            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_MEMBERS}>
+            <MenuItem value={RETICULUM_CHANNEL_ACCESS_REGULAR}>
               Regular
             </MenuItem>
-            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_ADMINS}>
+            <MenuItem value={RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE}>
               Admins can write, everyone can read
+            </MenuItem>
+            <MenuItem value={RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE}>
+              Admins can write and read
             </MenuItem>
           </TextField>
         </DialogContent>
@@ -4711,21 +4824,26 @@ export const ChatGroup = ({
             fullWidth
             margin="dense"
             label="Channel type"
-            value={reticulumChannelWriteMode}
+            value={reticulumChannelAccessMode}
             onChange={(event) =>
-              setReticulumChannelWriteMode(
-                event.target.value === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
-                  ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
-                  : RETICULUM_CHANNEL_WRITE_MODE_MEMBERS
+              setReticulumChannelAccessMode(
+                event.target.value === RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE
+                  ? RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE
+                  : event.target.value === RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE
+                    ? RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE
+                    : RETICULUM_CHANNEL_ACCESS_REGULAR
               )
             }
-            helperText="Regular channels allow all members to write. Admin announcement channels are read-only for non-admins."
+            helperText="Regular channels allow all members to write. Admin announcement channels are readable by everyone. Admin private channels are visible to admins only."
           >
-            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_MEMBERS}>
+            <MenuItem value={RETICULUM_CHANNEL_ACCESS_REGULAR}>
               Regular
             </MenuItem>
-            <MenuItem value={RETICULUM_CHANNEL_WRITE_MODE_ADMINS}>
+            <MenuItem value={RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE}>
               Admins can write, everyone can read
+            </MenuItem>
+            <MenuItem value={RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE}>
+              Admins can write and read
             </MenuItem>
           </TextField>
           {editingReticulumChannel?.channelId !==

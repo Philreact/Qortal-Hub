@@ -11,10 +11,16 @@ export const RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES = 32 * 1024;
 export const RETICULUM_CHAT_DEFAULT_CHANNEL_ID = 'general';
 export const RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS = 'members';
 export const RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS = 'admins';
+export const RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS = 'members';
+export const RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS = 'admins';
 
 export type ReticulumGroupChannelWriteMode =
   | typeof RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
   | typeof RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS;
+
+export type ReticulumGroupChannelReadMode =
+  | typeof RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
+  | typeof RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS;
 
 export type ReticulumGroupChannel = {
   channelId: string;
@@ -25,6 +31,7 @@ export type ReticulumGroupChannel = {
   position: number;
   archived: boolean;
   writeMode: ReticulumGroupChannelWriteMode;
+  readMode: ReticulumGroupChannelReadMode;
   writeModeUpdatedAt: number;
   createdBy: string;
   createdAt: number;
@@ -33,8 +40,9 @@ export type ReticulumGroupChannel = {
 
 type ReticulumGroupChannelInput = Omit<
   ReticulumGroupChannel,
-  'writeModeUpdatedAt'
+  'readMode' | 'writeModeUpdatedAt'
 > & {
+  readMode?: ReticulumGroupChannelReadMode;
   writeModeUpdatedAt?: number;
 };
 
@@ -601,6 +609,14 @@ function normalizeReticulumChannelWriteMode(
     : RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS;
 }
 
+function normalizeReticulumChannelReadMode(
+  value: unknown
+): ReticulumGroupChannelReadMode {
+  return value === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
+    ? RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
+    : RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS;
+}
+
 function buildSearchTerms(query: string): string[] {
   return query
     .split(/\s+/)
@@ -773,6 +789,7 @@ export class ReticulumChatDatabase {
     this.db.pragma('synchronous = NORMAL');
     this.initSchema();
     this.migrateChannelWriteModeSchema();
+    this.migrateChannelReadModeSchema();
     this.migrateChannelWriteModeUpdatedAtSchema();
     this.migrateEventMentionTargetsSchema();
     this.migrateEventScrubbedAtSchema();
@@ -1204,9 +1221,9 @@ export class ReticulumChatDatabase {
     `);
     this.stmtUpsertChannel = this.db.prepare(`
       INSERT OR REPLACE INTO reticulum_chat_channels
-        (group_id, channel_id, category_id, name, description, position, archived, write_mode, write_mode_updated_at, created_by, created_at, updated_at)
+        (group_id, channel_id, category_id, name, description, position, archived, write_mode, read_mode, write_mode_updated_at, created_by, created_at, updated_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.stmtGetChannels = this.db.prepare(`
       SELECT * FROM reticulum_chat_channels
@@ -3536,6 +3553,7 @@ export class ReticulumChatDatabase {
       position: number;
       archived: number;
       write_mode?: string | null;
+      read_mode?: string | null;
       write_mode_updated_at?: number | null;
       created_by: string;
       created_at: number;
@@ -3550,6 +3568,7 @@ export class ReticulumChatDatabase {
       position: row.position,
       archived: row.archived === 1,
       writeMode: normalizeReticulumChannelWriteMode(row.write_mode),
+      readMode: normalizeReticulumChannelReadMode(row.read_mode),
       writeModeUpdatedAt: Number.isFinite(row.write_mode_updated_at ?? NaN)
         ? Number(row.write_mode_updated_at)
         : 0,
@@ -3596,6 +3615,7 @@ export class ReticulumChatDatabase {
       position: Math.max(0, Math.floor(channel.position)),
       archived: channel.archived === true,
       writeMode: normalizeReticulumChannelWriteMode(channel.writeMode),
+      readMode: normalizeReticulumChannelReadMode(channel.readMode),
       writeModeUpdatedAt: Number.isFinite(Number(channel.writeModeUpdatedAt))
         ? Math.max(0, Math.floor(Number(channel.writeModeUpdatedAt)))
         : Math.max(0, Math.floor(Number(channel.updatedAt))),
@@ -3614,6 +3634,7 @@ export class ReticulumChatDatabase {
       normalizedChannel.position,
       normalizedChannel.archived ? 1 : 0,
       normalizedChannel.writeMode,
+      normalizedChannel.readMode,
       normalizedChannel.writeModeUpdatedAt,
       normalizedChannel.createdBy,
       normalizedChannel.createdAt,
@@ -3630,6 +3651,7 @@ export class ReticulumChatDatabase {
       position: 0,
       archived: false,
       writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
+      readMode: RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS,
       writeModeUpdatedAt: 0,
       createdBy: '',
       createdAt: 0,
@@ -4559,6 +4581,7 @@ export class ReticulumChatDatabase {
         position INTEGER NOT NULL,
         archived INTEGER NOT NULL DEFAULT 0,
         write_mode TEXT NOT NULL DEFAULT 'members',
+        read_mode TEXT NOT NULL DEFAULT 'members',
         write_mode_updated_at INTEGER NOT NULL DEFAULT 0,
         created_by TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -4685,6 +4708,18 @@ export class ReticulumChatDatabase {
     this.db.exec(`
       ALTER TABLE reticulum_chat_channels
         ADD COLUMN write_mode TEXT NOT NULL DEFAULT 'members'
+    `);
+  }
+
+  private migrateChannelReadModeSchema(): void {
+    const columns = this.db
+      .prepare('PRAGMA table_info(reticulum_chat_channels)')
+      .all() as Array<{ name?: string }>;
+    const hasReadMode = columns.some((column) => column.name === 'read_mode');
+    if (hasReadMode) return;
+    this.db.exec(`
+      ALTER TABLE reticulum_chat_channels
+        ADD COLUMN read_mode TEXT NOT NULL DEFAULT 'members'
     `);
   }
 
