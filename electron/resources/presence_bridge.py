@@ -329,6 +329,7 @@ _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_EVENT_PAGE_RESOU
 _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE = "RCR"
 _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE = "RCP"
 _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE = "RETICULUM_CHAT_HISTORY_PAGE_REQUEST"
+_RETICULUM_CHAT_DM_PAGE_REQUEST_TYPE = "RETICULUM_CHAT_DM_PAGE_REQUEST"
 _RETICULUM_GROUP_RESOURCE_AUTH_TYPE = "RETICULUM_GROUP_RESOURCE_AUTH"
 _QCHAT_FILE_PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 _QCHAT_FILE_PROGRESS_MIN_DELTA = 0.005
@@ -9111,18 +9112,52 @@ def _qchat_file_overlay_promotion_allowed(
     return float(pending.get("expires_at") or 0) >= time.time()
 
 
-def _promote_misclassified_overlay_link_to_qchat_file(
+def _is_qchat_file_auth_packet(decoded: Dict[str, Any]) -> bool:
+    if not isinstance(decoded, dict):
+        return False
+    decoded_type = decoded.get("type")
+    decoded_compact_type = decoded.get("t")
+    return decoded_type in (
+        "QCHAT_FILE_LINK_AUTH",
+        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
+        _RETICULUM_CHAT_DM_PAGE_REQUEST_TYPE,
+        _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
+    ) or decoded_compact_type in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
+    )
+
+
+def _qchat_file_auth_resource_type(decoded: Dict[str, Any]) -> str:
+    decoded_type = decoded.get("type")
+    decoded_compact_type = decoded.get("t")
+    if decoded_type in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
+        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
+        _RETICULUM_CHAT_DM_PAGE_REQUEST_TYPE,
+    ) or decoded_compact_type in (
+        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
+        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
+    ):
+        return _RETICULUM_CHAT_RESOURCE_TYPE
+    if decoded_type == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
+        return _RETICULUM_RESOURCE_TYPE
+    return "qchat-dm-file"
+
+
+def _promote_overlay_link_to_qchat_file(
     link,
     overlay_link_id: str,
     transfer_id: str,
-    peer_hash: str,
+    peer_hash: str = "",
 ) -> str:
     if link is None or not overlay_link_id:
         return ""
     transfer_id = str(transfer_id or "").strip()
     peer_hash = str(peer_hash or "").strip().lower()
-    if not _qchat_file_overlay_promotion_allowed(transfer_id, peer_hash):
-        return ""
     state = get_overlay_link_state(overlay_link_id)
     if state is None or state.get("incoming") is not True:
         return ""
@@ -9138,9 +9173,29 @@ def _promote_misclassified_overlay_link_to_qchat_file(
     if link_id:
         log(
             "[presence_bridge] target=qchat-file-reticulum overlay_link_promoted_to_qchat_file "
-            f"overlay_link={overlay_link_id} file_link={link_id} peer={peer_hash} transfer={transfer_id}"
+            f"overlay_link={overlay_link_id} file_link={link_id} peer={peer_hash or 'unknown'} transfer={transfer_id}"
         )
     return link_id
+
+
+def _promote_misclassified_overlay_link_to_qchat_file(
+    link,
+    overlay_link_id: str,
+    transfer_id: str,
+    peer_hash: str,
+) -> str:
+    if link is None or not overlay_link_id:
+        return ""
+    transfer_id = str(transfer_id or "").strip()
+    peer_hash = str(peer_hash or "").strip().lower()
+    if not _qchat_file_overlay_promotion_allowed(transfer_id, peer_hash):
+        return ""
+    return _promote_overlay_link_to_qchat_file(
+        link,
+        overlay_link_id,
+        transfer_id,
+        peer_hash,
+    )
 
 
 def _handle_overlay_link_packet(message, packet) -> None:
@@ -9181,15 +9236,22 @@ def _handle_overlay_link_packet(message, packet) -> None:
         if audio_link_id:
             on_audio_link_packet(message, packet)
         return
-    if decoded.get("type") == "QCHAT_FILE_LINK_AUTH":
-        transfer_id = str(decoded.get("transferId") or "").strip()
-        peer_hash = _qchat_file_overlay_promotion_peer_hash(decoded)
-        file_link_id = _promote_misclassified_overlay_link_to_qchat_file(
-            link,
-            link_id,
-            transfer_id,
-            peer_hash,
-        )
+    if _is_qchat_file_auth_packet(decoded):
+        transfer_id = str(decoded.get("transferId") or decoded.get("x") or "").strip()
+        if decoded.get("type") == "QCHAT_FILE_LINK_AUTH":
+            peer_hash = _qchat_file_overlay_promotion_peer_hash(decoded)
+            file_link_id = _promote_misclassified_overlay_link_to_qchat_file(
+                link,
+                link_id,
+                transfer_id,
+                peer_hash,
+            )
+        else:
+            file_link_id = _promote_overlay_link_to_qchat_file(
+                link,
+                link_id,
+                transfer_id,
+            )
         if file_link_id:
             on_qchat_file_link_packet(message, packet)
         return
@@ -9774,18 +9836,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
                 f"target=qchat-file-reticulum sender_rejected_auth transfer={state.get('transferId') or ''}",
             )
         return
-    decoded_type = decoded.get("type")
-    decoded_compact_type = decoded.get("t")
-    if decoded_type not in (
-        "QCHAT_FILE_LINK_AUTH",
-        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
-        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
-        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
-        _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
-    ) and decoded_compact_type not in (
-        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
-        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
-    ):
+    if not _is_qchat_file_auth_packet(decoded):
         return
     transfer_id = str(decoded.get("transferId") or decoded.get("x") or "").strip()
     state["transferId"] = transfer_id
@@ -9794,19 +9845,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             state["requestedChunkIndex"] = int(decoded.get("retryChunkIndex"))
         except Exception:
             state.pop("requestedChunkIndex", None)
-    if decoded_type in (
-        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
-        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
-        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
-    ) or decoded_compact_type in (
-        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
-        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
-    ):
-        resource_type = _RETICULUM_CHAT_RESOURCE_TYPE
-    elif decoded_type == _RETICULUM_GROUP_RESOURCE_AUTH_TYPE:
-        resource_type = _RETICULUM_RESOURCE_TYPE
-    else:
-        resource_type = "qchat-dm-file"
+    resource_type = _qchat_file_auth_resource_type(decoded)
     state["resourceType"] = resource_type
     state_metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
     _qchat_file_emit(
@@ -13802,16 +13841,7 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         configure_audio_link(link, link_id)
         on_audio_link_packet(message, packet)
         return
-    if decoded.get("type") in (
-        "QCHAT_FILE_LINK_AUTH",
-        _RETICULUM_CHAT_RESOURCE_AUTH_TYPE,
-        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_TYPE,
-        _RETICULUM_CHAT_HISTORY_PAGE_REQUEST_TYPE,
-        _RETICULUM_GROUP_RESOURCE_AUTH_TYPE,
-    ) or decoded.get("t") in (
-        _RETICULUM_CHAT_RESOURCE_AUTH_COMPACT_TYPE,
-        _RETICULUM_CHAT_EVENT_PAGE_RESOURCE_AUTH_COMPACT_TYPE,
-    ):
+    if _is_qchat_file_auth_packet(decoded):
         link_id = _register_incoming_qchat_file_link(
             link,
             "",
