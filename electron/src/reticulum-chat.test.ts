@@ -9915,6 +9915,99 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('stops and suppresses automatic history pages that contain only known events', async () => {
+    const dbPath = tempDbPath();
+    const acceptedTransfers: unknown[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+          acceptedTransfers.push(payload);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const events = signedAuthorEvents(
+      Array.from({ length: 5 }, (_unused, index) => {
+        const seq = index + 1;
+        return {
+          eventId: `event-page-known-more-${seq}`,
+          groupId: 57,
+          channelId: 'general',
+          authorSeq: seq,
+          timestamp: 10_000 + seq,
+        };
+      })
+    );
+    for (const event of events) {
+      expect((manager as any).db.insertEvent(event, false)).toBe(true);
+    }
+    const page = {
+      v: 1,
+      g: 57,
+      c: 'general',
+      d: 'before',
+      more: true,
+      start: { id: events[0].eventId, ts: events[0].timestamp },
+      end: { id: events[events.length - 1].eventId, ts: events[events.length - 1].timestamp },
+      wh: (manager as any).db.computeWindowHash(events),
+      events,
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const transferId = 'known-page-more-transfer';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).eventPageOffers.set(transferId, {
+      transferId,
+      groupId: 57,
+      channelId: 'general',
+      direction: 'before',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: events.length,
+      sourcePeerHash: 'peer-known-more',
+      hasMore: true,
+    });
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-known-more',
+    });
+
+    expect(acceptedTransfers).toHaveLength(0);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_page_offer',
+        g: 57,
+        p: {
+          x: 'known-page-more-repeat-transfer',
+          c: 'general',
+          d: 'b',
+          ph: pageHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+          n: events.length,
+          more: 1,
+        },
+      },
+      'peer-known-more'
+    );
+
+    expect(acceptedTransfers).toHaveLength(0);
+    manager.close();
+  });
+
   it('does not continue a direct history page when the page cursor does not advance', async () => {
     const dbPath = tempDbPath();
     const acceptedTransfers: unknown[] = [];

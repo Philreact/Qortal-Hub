@@ -781,6 +781,8 @@ const RETICULUM_CHAT_NEWEST_PAGE_PUSH_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS = 10 * 60_000;
 const RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_MAX = 4096;
+const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS = 10 * 60_000;
+const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
@@ -2629,6 +2631,8 @@ export class ReticulumChatManager extends EventEmitter {
   private recentNewestPagePushes = new Map<string, number>();
   private recentAuthorGapRepairRequests = new Map<string, number>();
   private authorGapNoProgressSuppressions = new Map<string, number>();
+  private historyPageNoProgressSuppressions = new Map<string, number>();
+  private historyPageHashNoProgressSuppressions = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventPageOffers = new Map<string, ReticulumChatEventPageOffer>();
   private signedResourceAuthRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -5648,6 +5652,100 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
+  private compactHistoryPageNoProgressSuppressions(now = this.now()): void {
+    for (const [key, expiresAt] of this.historyPageNoProgressSuppressions) {
+      if (expiresAt <= now) this.historyPageNoProgressSuppressions.delete(key);
+    }
+    for (const [key, expiresAt] of this.historyPageHashNoProgressSuppressions) {
+      if (expiresAt <= now) this.historyPageHashNoProgressSuppressions.delete(key);
+    }
+    if (this.historyPageNoProgressSuppressions.size > RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX) {
+      const sorted = [...this.historyPageNoProgressSuppressions.entries()]
+        .sort((a, b) => a[1] - b[1]);
+      for (
+        const [key] of sorted.slice(
+          0,
+          this.historyPageNoProgressSuppressions.size - RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX
+        )
+      ) {
+        this.historyPageNoProgressSuppressions.delete(key);
+      }
+    }
+    if (this.historyPageHashNoProgressSuppressions.size > RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX) {
+      const sorted = [...this.historyPageHashNoProgressSuppressions.entries()]
+        .sort((a, b) => a[1] - b[1]);
+      for (
+        const [key] of sorted.slice(
+          0,
+          this.historyPageHashNoProgressSuppressions.size - RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX
+        )
+      ) {
+        this.historyPageHashNoProgressSuppressions.delete(key);
+      }
+    }
+  }
+
+  private historyPageHashSuppressionKey(
+    peerHash: string,
+    offer: ReticulumChatEventPageOffer
+  ): string {
+    return [
+      peerHash.trim().toLowerCase(),
+      offer.groupId,
+      offer.channelId,
+      offer.direction,
+      offer.priority ?? 'normal',
+      offer.pageHash.trim().toLowerCase(),
+    ].join('|');
+  }
+
+  private isHistoryPageRequestSuppressed(requestKey: string, now = this.now()): boolean {
+    this.compactHistoryPageNoProgressSuppressions(now);
+    const expiresAt = this.historyPageNoProgressSuppressions.get(requestKey) ?? 0;
+    if (expiresAt <= now) {
+      this.historyPageNoProgressSuppressions.delete(requestKey);
+      return false;
+    }
+    return true;
+  }
+
+  private isHistoryPageHashSuppressed(
+    peerHash: string,
+    offer: ReticulumChatEventPageOffer,
+    now = this.now()
+  ): boolean {
+    this.compactHistoryPageNoProgressSuppressions(now);
+    const key = this.historyPageHashSuppressionKey(peerHash, offer);
+    const expiresAt = this.historyPageHashNoProgressSuppressions.get(key) ?? 0;
+    if (expiresAt <= now) {
+      this.historyPageHashNoProgressSuppressions.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  private markHistoryPageNoProgress(
+    peerHash: string,
+    offer: ReticulumChatEventPageOffer,
+    reason: string
+  ): void {
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer || offer.direction === 'range') return;
+    const expiresAt = this.now() + RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS;
+    const requestKey = this.directHistoryPageTransferKeys.get(offer.transferId);
+    if (requestKey) {
+      this.historyPageNoProgressSuppressions.set(requestKey, expiresAt);
+    }
+    this.historyPageHashNoProgressSuppressions.set(
+      this.historyPageHashSuppressionKey(peer, offer),
+      expiresAt
+    );
+    this.compactHistoryPageNoProgressSuppressions();
+    loggerLog(
+      `[ReticulumChat] history_page_no_progress_suppressed group=${offer.groupId} channel=${offer.channelId} peer=${peer.slice(0, 16)} direction=${offer.direction} page=${offer.pageHash.slice(0, 12)} ttlMs=${RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS} reason=${reason}`
+    );
+  }
+
   private requestKnownAuthorGaps(
     groupId: number,
     peerHash: string,
@@ -6163,6 +6261,12 @@ export class ReticulumChatManager extends EventEmitter {
       includeCursor,
       priority
     );
+    if (this.isHistoryPageRequestSuppressed(requestKey)) {
+      loggerLog(
+        `[ReticulumChat] history_page_link_suppressed_no_progress group=${groupId} channel=${normalizedChannelId} peer=${peer.slice(0, 16)} direction=${direction} cursor=${cursor?.eventId ?? 'none'} reason=${reason}`
+      );
+      return;
+    }
     const existingTransferId = this.directHistoryPageRequestKeys.get(requestKey);
     if (existingTransferId) {
       const existingOffer = this.directHistoryPageRequests.get(existingTransferId);
@@ -10116,6 +10220,12 @@ export class ReticulumChatManager extends EventEmitter {
       ...offer,
       sourcePeerHash,
     };
+    if (this.isHistoryPageHashSuppressed(sourcePeerHash, trackedOffer)) {
+      loggerLog(
+        `[ReticulumChat] event_page_offer_suppressed_no_progress group=${trackedOffer.groupId} channel=${trackedOffer.channelId} peer=${sourcePeerHash.slice(0, 16)} direction=${trackedOffer.direction} page=${trackedOffer.pageHash.slice(0, 12)}`
+      );
+      return;
+    }
     this.eventPageOffers.set(trackedOffer.transferId, trackedOffer);
     void this.acceptEventPageResource(sourcePeerHash, trackedOffer);
   }
@@ -10838,6 +10948,19 @@ export class ReticulumChatManager extends EventEmitter {
       if (repairRange && sourcePeerHash && insertedRepairRangeCount > 0) {
         this.clearAuthorGapRangeSuppression(sourcePeerHash, offer.groupId, repairRange);
       }
+      const noProgressKnownPage =
+        insertedCount === 0 &&
+        skippedKnownCount > 0 &&
+        rejectedInvalidCount === 0 &&
+        rejectedOutOfBoundsCount === 0 &&
+        rejectedNonMemberCount === 0;
+      if (noProgressKnownPage && sourcePeerHash && offer.direction !== 'range') {
+        this.markHistoryPageNoProgress(
+          sourcePeerHash,
+          offer,
+          page.more === true ? 'known_page_more' : 'known_page'
+        );
+      }
       loggerLog(
         `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} skipped_known=${skippedKnownCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
       );
@@ -10866,6 +10989,10 @@ export class ReticulumChatManager extends EventEmitter {
               true
             );
           }
+        } else if (noProgressKnownPage) {
+          loggerLog(
+            `[ReticulumChat] history_page_more_stopped_no_progress group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} direction=${offer.direction}`
+          );
         } else {
           const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
           if (cursor && sourcePeerHash) {
