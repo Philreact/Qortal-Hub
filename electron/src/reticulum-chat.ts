@@ -4257,7 +4257,8 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const source = this.normalizeResourcePeerHash(sourcePeerHash);
     if (!source || !this.localDmAddressForConversation(addressA, addressB)) return;
-    const key = `${source}:${conversationId}:${remoteTimestamp}:${remoteEventId}`;
+    const requestKeyPart = options.requestId ? `:${options.requestId}` : '';
+    const key = `${source}:${conversationId}:${remoteTimestamp}:${remoteEventId}${requestKeyPart}`;
     const now = this.now();
     this.pruneDmDiscoveryRoutes(now);
     const last = this.recentDmRequests.get(key) || 0;

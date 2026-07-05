@@ -2626,6 +2626,75 @@ describe('reticulum chat manager', () => {
     receiver.close();
   });
 
+  it('does not suppress distinct direct DM notifies received close together', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const inboundPeerHash = 'c'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => requesterPeerHash,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: bridge as any,
+    });
+    receiver.setLocalDmAddresses([recipient.address]);
+    await flushAsyncWork();
+
+    const buildNotify = (requestId: string, timestamp: number): Extract<ReticulumChatWire, { k: 'dm_notify' }> => {
+      const signedFields = buildReticulumDmNotifySignedFields({
+        peerAddress: recipient.address,
+        sourcePeerHash,
+        requestId,
+        maxHops: 5,
+        authorAddress: sender.address,
+        authorPublicKey: sender.publicKey,
+        timestamp,
+      });
+      return {
+        t: 'RCHAT',
+        k: 'dm_notify',
+        d: {
+          b: recipient.address,
+          sp: sourcePeerHash,
+          q: requestId,
+          p: sender.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              sender.secretKey
+            )
+          ),
+        },
+      };
+    };
+
+    const timestamp = Date.now();
+    await (receiver as any).handleDirectNotify(
+      buildNotify('d'.repeat(8), timestamp),
+      inboundPeerHash
+    );
+    await (receiver as any).handleDirectNotify(
+      buildNotify('e'.repeat(8), timestamp + 1),
+      inboundPeerHash
+    );
+    await flushAsyncWork();
+
+    const requests = sent.filter((item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req');
+    expect(requests).toHaveLength(2);
+    expect((requests[0].wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.q).toBe('d'.repeat(8));
+    expect((requests[1].wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.q).toBe('e'.repeat(8));
+    receiver.close();
+  });
+
   it('answers DM probes from another device using the same local address', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
