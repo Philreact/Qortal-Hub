@@ -91,6 +91,7 @@ _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
 _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 60.0
 _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES = 3
 _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS = 5 * 60.0
+_OVERLAY_LINK_HARD_REFRESH_COOLDOWN_SECONDS = 20.0
 _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS = 2.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
@@ -5960,6 +5961,76 @@ def _drop_reticulum_path(destination_hash: bytes) -> bool:
     return dropped
 
 
+def _force_overlay_peer_path_refresh(
+    peer_hash: str,
+    *,
+    target: str,
+    reason: str,
+    cooldown_seconds: float = _OVERLAY_LINK_HARD_REFRESH_COOLDOWN_SECONDS,
+) -> bool:
+    peer = str(peer_hash or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer):
+        return False
+    try:
+        destination_hash = bytes.fromhex(peer)
+    except Exception:
+        return False
+
+    now = time.time()
+    st = _lifecycle_state_for_peer(peer)
+    last_refresh = st.get("last_overlay_link_hard_refresh_at") if st is not None else None
+    if (
+        isinstance(last_refresh, (int, float))
+        and now - float(last_refresh) < cooldown_seconds
+    ):
+        log(
+            f"[presence_bridge] target={target} overlay_hard_path_refresh_skipped "
+            f"peer={peer} reason=recent_hard_refresh trigger={reason} "
+            f"age_ms={int((now - float(last_refresh)) * 1000.0)}"
+        )
+        return False
+
+    before = _reticulum_path_snapshot(destination_hash)
+    dropped = _drop_reticulum_path(destination_hash)
+    if st is not None:
+        st["last_overlay_link_hard_refresh_at"] = now
+        st["last_overlay_link_hard_refresh_reason"] = reason
+        st["last_request_path_at"] = now
+    log(
+        f"[presence_bridge] target={target} overlay_hard_path_refresh "
+        f"peer={peer} dropped={str(dropped).lower()} trigger={reason} "
+        f"before={_format_reticulum_path_snapshot(before)}"
+    )
+    resolved = False
+    try:
+        RNS.Transport.request_path(destination_hash)
+        resolved = _await_destination_path(
+            destination_hash,
+            _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS,
+        )
+        after = _reticulum_path_snapshot(destination_hash)
+        log(
+            f"[presence_bridge] target={target} overlay_hard_path_refresh_request "
+            f"peer={peer} resolved={str(resolved).lower()} "
+            f"after={_format_reticulum_path_snapshot(after)}"
+        )
+    except Exception as exc:
+        log(
+            f"[presence_bridge] target={target} overlay_hard_path_refresh_request_failed "
+            f"peer={peer} trigger={reason} err={exc}"
+        )
+    try:
+        announce_local_destination(
+            f"overlay_hard_path_refresh peer={peer[:16]} trigger={reason}"
+        )
+    except Exception as exc:
+        log(
+            f"[presence_bridge] target={target} overlay_hard_path_refresh_announce_failed "
+            f"peer={peer} trigger={reason} err={exc}"
+        )
+    return resolved
+
+
 def _peer_has_recent_direct_activity(peer_key: str, now: Optional[float] = None) -> bool:
     peer = str(peer_key or "").strip().lower()
     if not peer:
@@ -7186,13 +7257,23 @@ def _maybe_request_path_after_unestablished_link_close(
         st["unestablished_link_failures"] = failure_count
         st["last_unestablished_link_failure_at"] = now
         st["last_unestablished_link_failure_reason"] = reason
-    hard_refresh_due = failure_count >= _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES
+    with _state_lock:
+        overlay_fanout_count = len(set(_active_overlay_neighbors.keys()) | set(_inbound_overlay_neighbors.keys()))
+    hard_refresh_due = (
+        failure_count >= _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES
+        or (target == "presence-reticulum" and overlay_fanout_count <= 0)
+    )
     last_hard_refresh = (
         st.get("last_unestablished_link_hard_refresh_at") if st is not None else None
     )
+    hard_refresh_cooldown = (
+        _OVERLAY_LINK_HARD_REFRESH_COOLDOWN_SECONDS
+        if target == "presence-reticulum"
+        else _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS
+    )
     hard_refresh_cooling_down = (
         isinstance(last_hard_refresh, (int, float))
-        and now - float(last_hard_refresh) < _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS
+        and now - float(last_hard_refresh) < hard_refresh_cooldown
     )
     if hard_refresh_due:
         if hard_refresh_cooling_down:
@@ -7217,7 +7298,7 @@ def _maybe_request_path_after_unestablished_link_close(
             log(
                 f"[presence_bridge] target={target} hard_path_refresh "
                 f"peer={peer_hash} failures={failure_count} dropped={str(dropped).lower()} "
-                f"reason=unestablished_link_closed:{reason} "
+                f"fanout={overlay_fanout_count} reason=unestablished_link_closed:{reason} "
                 f"before={_format_reticulum_path_snapshot(before)}"
             )
             try:
@@ -7685,6 +7766,19 @@ def _send_overlay_transport_control(
                 "[presence_bridge] target=presence-reticulum overlay_pong "
                 f"peer={peer_key} direction=tx reason={reason}"
             )
+    else:
+        state["last_failure_reason"] = "overlay_transport_packet_send_false"
+        link_id = str(state.get("linkId") or "")
+        if not link_id:
+            with _state_lock:
+                link_id = _overlay_link_ids_by_object.get(id(link)) or ""
+        if link_id:
+            _overlay_enqueue_close(link_id, "overlay_transport_packet_send_false")
+        _force_overlay_peer_path_refresh(
+            peer_key,
+            target="presence-reticulum",
+            reason=f"overlay_transport_send:{message_type}:{reason}:packet_send_false",
+        )
     return ok
 
 
@@ -8284,6 +8378,7 @@ def _ensure_overlay_link(
             else:
                 now = time.time()
                 state = {
+                    "linkId": link_id,
                     "link": link,
                     "peerPresenceHash": peer_key,
                     "incoming": False,
@@ -8475,6 +8570,7 @@ def _sync_overlay_links() -> None:
 
     stale_ids: List[Tuple[str, str]] = []
     pressure_ids: List[str] = []
+    hard_refresh_peers: List[Tuple[str, str]] = []
     with _state_lock:
         for link_id, state in list(_overlay_links_by_id.items()):
             _ensure_managed_link_fields(state, kind="overlay")
@@ -8495,6 +8591,9 @@ def _sync_overlay_links() -> None:
                 state["manager_state"] = _LINK_STATE_DEGRADED
                 state["last_failure_reason"] = "rx_idle_timeout"
                 stale_ids.append((link_id, "rx_idle_timeout"))
+                peer_hash = _overlay_link_peer_hash(state)
+                if peer_hash:
+                    hard_refresh_peers.append((peer_hash, "rx_idle_timeout"))
         excess = len(_overlay_links_by_id) - _OVERLAY_MAX_TOTAL_LINKS
         if excess > 0:
             candidates = sorted(_overlay_links_by_id.items(), key=_overlay_link_pressure_sort_key)
@@ -8504,6 +8603,14 @@ def _sync_overlay_links() -> None:
             break
         if _overlay_enqueue_close(link_id, reason):
             closes += 1
+    for peer_hash, reason in hard_refresh_peers:
+        if not budget_available():
+            break
+        _force_overlay_peer_path_refresh(
+            peer_hash,
+            target="presence-reticulum",
+            reason=f"overlay_link_close:{reason}",
+        )
     for link_id in pressure_ids:
         if closes >= _OVERLAY_RECONCILE_MAX_CLOSES or not budget_available():
             break
@@ -13706,6 +13813,7 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
     link_id = str(uuid.uuid4())
     now = time.time()
     state = {
+        "linkId": link_id,
         "link": link,
         "peerPresenceHash": peer_key,
         "incoming": True,

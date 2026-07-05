@@ -3478,7 +3478,7 @@ export class ReticulumChatManager extends EventEmitter {
       contextId: RETICULUM_DM_RESOURCE_CONTEXT_ID,
       manifest,
       eventId,
-      candidatePeers,
+      candidatePeers: [],
       featureData: {
         conversationId,
         requesterAddress: localAddress,
@@ -8624,11 +8624,33 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const localPeerHash = this.getLocalResourcePeerHash();
+    const directPeers = [
+      ...new Set(
+        candidatePeers
+          .map((peer) => this.normalizeResourcePeerHash(peer))
+          .filter((peer): peer is string => Boolean(peer) && peer !== localPeerHash)
+      ),
+    ];
+    let directSent = false;
+    for (const peer of directPeers) {
+      const direct = await this.sendToPeer(peer, wire);
+      if (direct.ok) {
+        directSent = true;
+        loggerLog(
+          `[ReticulumChat] dm_resource_find_sent_direct conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} peer=${peer.slice(0, 16)}`
+        );
+      } else {
+        const failed = direct as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] dm_resource_find_direct_failed conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} peer=${peer.slice(0, 16)} reason=${failed.reason}`
+        );
+      }
+    }
     const exclude = [
-      ...candidatePeers,
+      ...(directSent ? directPeers : []),
       ...(localPeerHash ? [localPeerHash] : []),
     ];
-    const result = await this.fanoutOnce(wire, exclude);
+    const result = directSent ? { ok: true as const } : await this.fanoutOnce(wire, exclude);
     if (result.ok) {
       this.recentDirectResourceDiscoveryRequests.set(
         key,
@@ -8639,7 +8661,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.now() + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS
       );
       loggerLog(
-        `[ReticulumChat] dm_resource_find_sent conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.q.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS}`
+        `[ReticulumChat] dm_resource_find_sent conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} direct=${directSent ? directPeers.length : 0} excluded=${exclude.length} maxHops=${wire.q.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS}`
       );
     } else {
       const failed = result as Exclude<ReticulumSendResult, { ok: true }>;

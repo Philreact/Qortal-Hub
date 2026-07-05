@@ -873,6 +873,99 @@ describe('reticulum chat protocol', () => {
     expect(wireFitsReticulum(wire)).toBe(true);
   });
 
+  it('targets DM resource discovery at candidate providers before opening ranges', async () => {
+    vi.useFakeTimers();
+    try {
+      const requester = createDmIdentity();
+      const peer = createDmIdentity();
+      const localPeerHash = 'a'.repeat(32);
+      const providerPeerHash = 'b'.repeat(32);
+      const conversationId = reticulumDmConversationId(requester.address, peer.address);
+      const direct: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+      const fanout: ReticulumChatWire[] = [];
+      const accepts: unknown[] = [];
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-dm-resource-discovery-'));
+      const resourceStore = new ReticulumResourceStore({
+        dbPath: path.join(tempRoot, 'resources.db'),
+        rootDir: path.join(tempRoot, 'resources'),
+      });
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        signLocalFields: createDmSigner(requester),
+        resourceStore,
+        getVerifiedReticulumPeers: () => [
+          {
+            destinationHash: providerPeerHash,
+            address: peer.address,
+            lastSeenAt: Date.now(),
+          },
+        ],
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getLocalDestinationHash: () => localPeerHash,
+          sendReticulumChatDetailed: async (targetPeer: string, wire: ReticulumChatWire) => {
+            direct.push({ peer: targetPeer, wire });
+            return { ok: true as const };
+          },
+          fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+            fanout.push(...messages);
+            return { ok: true as const };
+          },
+          acceptReticulumResourceDetailed: async (payload: unknown) => {
+            accepts.push(payload);
+            return { ok: true as const };
+          },
+        } as any,
+      });
+      const manifest = {
+        namespace: 'reticulum-dm',
+        ownerId: `dm:${conversationId}:image.png`,
+        fileName: 'image.png',
+        mimeType: 'image/png',
+        sizeBytes: 194_393,
+        fileHash: 'a46a783ffa63a444bfb46b0ccdd4e3368700ef3932a4e072f9c04470fd23c0a8',
+        encrypted: false,
+        createdAt: Date.now(),
+        metadata: {
+          conversationId,
+          senderAddress: peer.address,
+          recipientAddress: requester.address,
+        },
+      };
+
+      const result = await manager.requestDirectResource(
+        requester.address,
+        peer.address,
+        manifest,
+        'dm-resource-event-id'
+      );
+      await flushAsyncWork();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(result).toEqual({ ok: true });
+      expect(direct).toHaveLength(1);
+      expect(direct[0]).toMatchObject({
+        peer: providerPeerHash,
+        wire: {
+          t: 'RCHAT',
+          k: 'dm_resource_find',
+        },
+      });
+      expect((direct[0].wire as Extract<ReticulumChatWire, { k: 'dm_resource_find' }>).q).toMatchObject({
+        a: requester.address,
+        b: peer.address,
+        f: manifest.fileHash,
+      });
+      expect(fanout).toHaveLength(0);
+      expect(accepts).toHaveLength(0);
+      manager.close();
+      resourceStore.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects rewritten signed DM discovery controls', () => {
     const now = Date.now();
     const notify = signedDmNotifyWire({
