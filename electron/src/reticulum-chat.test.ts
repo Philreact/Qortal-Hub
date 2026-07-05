@@ -19,6 +19,7 @@ import {
   buildReticulumDmNotifySignedFields,
   buildReticulumDmProbeSignedFields,
   buildReticulumDmRequestSignedFields,
+  getReticulumDmResourceFindRejectReason,
   hashReticulumChatPayload,
   isDisabledRelayCache,
   ReticulumChatManager,
@@ -838,6 +839,38 @@ describe('reticulum chat protocol', () => {
     expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_notify', d: notify })).toBe(true);
     expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_probe', q: probe })).toBe(true);
     expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_req', q: request })).toBe(true);
+  });
+
+  it('keeps DM resource discovery as a compact locator packet', () => {
+    const now = Date.now();
+    const authorKeyPair = nacl.sign.keyPair();
+    const peerKeyPair = nacl.sign.keyPair();
+    const authorPublicKey = base58Encode(authorKeyPair.publicKey);
+    const peerAddress = deriveAddressFromPublicKey(base58Encode(peerKeyPair.publicKey));
+    const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+    const requestId = 'a1b2c3d4';
+    const fileHash = 'f'.repeat(64);
+    const expiresAt = now + 60_000;
+    const wire = {
+      t: 'RCHAT' as const,
+      k: 'dm_resource_find' as const,
+      q: {
+        a: authorAddress,
+        b: peerAddress,
+        q: requestId,
+        f: fileHash,
+        x: expiresAt,
+      },
+    };
+
+    expect(getReticulumDmResourceFindRejectReason(wire.q, now)).toBeNull();
+    expect(wire.q).not.toHaveProperty('c');
+    expect(wire.q).not.toHaveProperty('p');
+    expect(wire.q).not.toHaveProperty('z');
+    expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    expect(wireFitsReticulum(wire)).toBe(true);
   });
 
   it('rejects rewritten signed DM discovery controls', () => {

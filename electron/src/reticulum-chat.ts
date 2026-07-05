@@ -544,17 +544,18 @@ export type ReticulumDmResourceRequestWire = {
 };
 
 export type ReticulumDmResourceFindWire = {
-  c: string;
+  c?: string;
+  a?: string;
   b: string;
   q: string;
   f: string;
-  s: number;
+  s?: number;
   h?: number;
   m?: number;
   x: number;
-  p: string;
-  n: number;
-  z: string;
+  p?: string;
+  n?: number;
+  z?: string;
 };
 
 export type ReticulumDmPageOfferWire = {
@@ -2007,27 +2008,34 @@ export function getReticulumDmResourceFindRejectReason(
   now = Date.now()
 ): string | null {
   try {
-    const conversationId = normalizeReticulumDmConversationId(wire?.c);
     const peerAddress = typeof wire?.b === 'string' ? wire.b.trim() : '';
-    if (!conversationId) return 'invalid_conversation';
+    const requesterAddressFromWire = typeof wire?.a === 'string' ? wire.a.trim() : '';
     if (!peerAddress) return 'missing_peer_address';
+    if (!requesterAddressFromWire && !wire?.p) return 'missing_requester_address';
     if (typeof wire.q !== 'string' || !/^[0-9a-f]{8,64}$/i.test(wire.q)) return 'invalid_request_id';
     if (typeof wire.f !== 'string' || !/^[0-9a-f]{64}$/i.test(wire.f)) return 'invalid_file_hash';
-    if (!Number.isInteger(wire.s) || wire.s <= 0) return 'invalid_size';
+    if (wire.s != null && (!Number.isInteger(wire.s) || wire.s <= 0)) return 'invalid_size';
     const hop = wire.h == null ? 0 : wire.h;
     const maxHops = wire.m == null ? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS : wire.m;
     if (!Number.isInteger(hop) || hop < 0) return 'invalid_hop';
     if (!Number.isInteger(maxHops) || maxHops < 0 || maxHops > RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS) return 'invalid_max_hops';
     if (!Number.isFinite(wire.x) || wire.x <= now) return 'expired';
     if (wire.x - now > RETICULUM_CHAT_RESOURCE_FIND_TTL_MS + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return 'expires_too_far';
+    const authorAddress = wire.p ? deriveAddressFromPublicKey(wire.p) : requesterAddressFromWire;
+    if (!authorAddress || authorAddress === peerAddress) return 'invalid_requester_address';
+    if (requesterAddressFromWire && requesterAddressFromWire !== authorAddress) return 'requester_mismatch';
+    const derivedConversationId = reticulumDmConversationId(authorAddress, peerAddress);
+    const providedConversationId = normalizeReticulumDmConversationId(wire?.c);
+    const conversationId = providedConversationId || derivedConversationId;
+    if (!conversationId) return 'invalid_conversation';
+    if (!derivedConversationId || derivedConversationId !== conversationId) return 'conversation_mismatch';
+    if (!wire.p && !wire.z && wire.n == null) return null;
     if (typeof wire.p !== 'string' || !wire.p) return 'missing_public_key';
     if (typeof wire.z !== 'string' || !wire.z) return 'missing_signature';
     if (!Number.isFinite(wire.n)) return 'invalid_timestamp';
     if (wire.n - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return 'timestamp_in_future';
     if (now - wire.n > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return 'timestamp_too_old';
-    const authorAddress = deriveAddressFromPublicKey(wire.p);
-    if (!authorAddress || authorAddress === peerAddress) return 'invalid_public_key';
-    if (reticulumDmConversationId(authorAddress, peerAddress) !== conversationId) return 'conversation_mismatch';
+    if (wire.s == null) return 'missing_signed_size';
     const ok = nacl.sign.detached.verify(
       new Uint8Array(
         canonicalizeForSigning(
@@ -8560,15 +8568,11 @@ export class ReticulumChatManager extends EventEmitter {
       t: 'RCHAT',
       k: 'dm_resource_find',
       q: {
-        c: conversationId,
+        a: signed.authorAddress,
         b: peerAddress,
         q: requestId,
         f: fileHash,
-        s: manifest.sizeBytes,
         x: expiresAt,
-        p: signed.authorPublicKey,
-        n: timestamp,
-        z: signed.signature,
       },
     };
     const rejectReason = getReticulumDmResourceFindRejectReason(wire.q, timestamp);
@@ -9014,12 +9018,12 @@ export class ReticulumChatManager extends EventEmitter {
   private checkLocalDirectResourceServeAvailability(
     conversationId: string,
     fileHash: string,
-    sizeBytes: number
+    sizeBytes?: number
   ): ReticulumChatResourceServeCheck {
     const manifest = this.resourceStore?.getManifest(fileHash);
     if (!manifest) return { ok: false, reason: 'manifest_missing' };
     if (manifest.fileHash.toLowerCase() !== fileHash) return { ok: false, reason: 'hash_mismatch' };
-    if (manifest.sizeBytes !== sizeBytes) return { ok: false, reason: 'size_mismatch' };
+    if (sizeBytes != null && manifest.sizeBytes !== sizeBytes) return { ok: false, reason: 'size_mismatch' };
     if (!this.resourceManifestBelongsToDirectConversation(manifest, conversationId)) {
       return { ok: false, reason: 'wrong_conversation' };
     }
@@ -9254,10 +9258,15 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const requestId = this.normalizeResourceFindRequestId(query.q);
-    const conversationId = normalizeReticulumDmConversationId(query.c);
     const peerAddress = query.b.trim();
+    const requesterAddress =
+      (typeof query.a === 'string' ? query.a.trim() : '') ||
+      (query.p ? deriveAddressFromPublicKey(query.p) : '');
+    const conversationId =
+      normalizeReticulumDmConversationId(query.c) ||
+      reticulumDmConversationId(requesterAddress, peerAddress);
     const fileHash = query.f.toLowerCase();
-    const sizeBytes = Number(query.s);
+    const requestedSizeBytes = Number(query.s);
     const hop = query.h ?? 0;
     const maxHops = query.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS;
     if (!requestId || !conversationId) return;
@@ -9277,16 +9286,17 @@ export class ReticulumChatManager extends EventEmitter {
       reversePeerHash,
       conversationId,
       fileHash,
-      sizeBytes,
+      sizeBytes: Number.isInteger(requestedSizeBytes) && requestedSizeBytes > 0 ? requestedSizeBytes : 0,
       expiresAt: Math.min(query.x, now + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS),
     });
 
-    const requesterAddress = deriveAddressFromPublicKey(query.p);
     const localServe = this.checkLocalDirectResourceServeAvailability(
       conversationId,
       fileHash,
-      sizeBytes
+      Number.isInteger(requestedSizeBytes) && requestedSizeBytes > 0 ? requestedSizeBytes : undefined
     );
+    const localManifest = this.resourceStore?.getManifest(fileHash);
+    const sizeBytes = localManifest?.sizeBytes ?? requestedSizeBytes;
     if (
       localServe.ok &&
       localPeerHash &&
@@ -9388,7 +9398,7 @@ export class ReticulumChatManager extends EventEmitter {
         !route ||
         route.conversationId !== conversationId ||
         route.fileHash !== fileHash ||
-        route.sizeBytes !== sizeBytes ||
+        (route.sizeBytes > 0 && route.sizeBytes !== sizeBytes) ||
         route.expiresAt <= this.now()
       ) {
         return;
