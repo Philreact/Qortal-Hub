@@ -1467,6 +1467,19 @@ try {
           manifest,
           eventId
         ) as Promise<{ success: boolean; error?: string }>,
+      requestDirectResource: async (
+        myAddress: string,
+        peerAddress: string,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestDirectResource',
+          myAddress,
+          peerAddress,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
       cancelResource: async (fileHash: string) =>
         ipcRenderer.invoke(
           'reticulumChat:cancelResource',
@@ -1794,6 +1807,19 @@ try {
         ipcRenderer.invoke(
           'reticulumChat:requestResource',
           groupId,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
+      requestDirectResource: async (
+        myAddress: string,
+        peerAddress: string,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestDirectResource',
+          myAddress,
+          peerAddress,
           manifest,
           eventId
         ) as Promise<{ success: boolean; error?: string }>,

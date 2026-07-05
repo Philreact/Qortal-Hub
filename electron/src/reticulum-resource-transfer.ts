@@ -39,6 +39,8 @@ export type ReticulumResourceTransferRequest = {
   ranges: ReticulumResourceByteRange[];
   requesterAddress?: string;
   requesterPeerHash?: string;
+  conversationId?: string;
+  peerAddress?: string;
   relayRequestId?: string;
 };
 

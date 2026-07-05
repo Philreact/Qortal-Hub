@@ -2148,7 +2148,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('sends compact direct DM events within Reticulum wire size', async () => {
+  it('publishes direct DMs as compact notify packets instead of inline events', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
     const recipientPeerHash = 'b'.repeat(32);
@@ -2182,7 +2182,7 @@ describe('reticulum chat manager', () => {
       eventId: '0123456789abcdef',
       senderSeq: Date.now() * 1000,
       timestamp: Date.now(),
-      payload: 'hello',
+      payload: 'x'.repeat(512),
     });
 
     const result = await manager.publishDirectEvent(event);
@@ -2190,7 +2190,7 @@ describe('reticulum chat manager', () => {
     expect(result).toEqual({ ok: true });
     expect(sent).toHaveLength(1);
     expect(sent[0].peer).toBe(recipientPeerHash);
-    expect(sent[0].wire.k).toBe('dm_event');
+    expect(sent[0].wire.k).toBe('dm_notify');
     expect(wireFitsReticulum(sent[0].wire)).toBe(true);
     expect(byteLengthUtf8JsonWithBridgeSender(sent[0].wire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
@@ -2238,8 +2238,13 @@ describe('reticulum chat manager', () => {
     const requesterPeerHash = 'b'.repeat(32);
     const conversationId = reticulumDmConversationId(sender.address, recipient.address);
     const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const sentResources: Array<Record<string, any>> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => sourcePeerHash,
+      sendReticulumChatResourceDetailed: async (payload: Record<string, any>) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
       sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
         sent.push({ peer, wire });
         return { ok: true as const };
@@ -2312,10 +2317,19 @@ describe('reticulum chat manager', () => {
     expect(sent[0].peer).toBe(requesterPeerHash);
     expect(sent[0].wire).toMatchObject({
       t: 'RCHAT',
-      k: 'dm_page',
-      m: 1,
+      k: 'dm_page_offer',
+      p: {
+        c: conversationId,
+        more: 1,
+        n: 1,
+      },
     });
-    expect((sent[0].wire as Extract<ReticulumChatWire, { k: 'dm_page' }>).e).toHaveLength(1);
+    expect(sentResources).toHaveLength(1);
+    expect(sentResources[0].metadata).toMatchObject({
+      logicalResourceType: 'reticulum_chat_dm_page',
+      conversationId,
+      eventCount: 1,
+    });
     source.close();
   });
 
@@ -2382,6 +2396,109 @@ describe('reticulum chat manager', () => {
         Date.now()
       )
     ).toBe(true);
+    receiver.close();
+  });
+
+  it('imports direct DM pages from resource transfers and continues when truncated', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const transferId = 'dm-page-resource-test';
+    const conversationId = reticulumDmConversationId(sender.address, recipient.address);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => requesterPeerHash,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: bridge as any,
+    });
+    receiver.setLocalDmAddresses([recipient.address]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const first = signedDmEvent({
+      sender,
+      recipient,
+      eventId: '0123456789abcdf0',
+      senderSeq: 1,
+      timestamp: Date.now() - 1_000,
+    });
+    const pagePath = path.join(os.tmpdir(), `qortal-dm-page-${Date.now()}-${Math.random()}.json`);
+    fs.writeFileSync(
+      pagePath,
+      JSON.stringify({
+        v: 1,
+        c: conversationId,
+        after: 0,
+        more: true,
+        events: [
+          [
+            'v2',
+            first.eventId,
+            first.recipientAddress,
+            first.senderPublicKey,
+            first.senderSeq,
+            first.timestamp,
+            'm',
+            first.payload,
+            first.signature,
+          ],
+        ],
+      })
+    );
+    (receiver as any).directDmPageRequests.set(transferId, {
+      transferId,
+      conversationId,
+      pageHash: '',
+      sizeBytes: fs.statSync(pagePath).size,
+      eventCount: 1,
+      sourcePeerHash,
+      requestedAt: Date.now(),
+      requesterAddress: recipient.address,
+      requesterPeerHash,
+      peerAddress: sender.address,
+      after: 0,
+      limit: 1,
+      requestId: 'd'.repeat(8),
+    });
+    const acceptSpy = vi.spyOn(receiver as any, 'acceptDirectEvent').mockReturnValue(true);
+    (receiver as any).db.getDirectLatestEvent = () => first;
+
+    receiver.handleResourceEvent({
+      status: 'received',
+      transferId,
+      path: pagePath,
+    } as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(acceptSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: first.eventId,
+        conversationId,
+        senderAddress: sender.address,
+        recipientAddress: recipient.address,
+      }),
+      false
+    );
+    const request = sent.find((item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req');
+    expect(request).toBeDefined();
+    expect(request?.wire).toMatchObject({
+      t: 'RCHAT',
+      k: 'dm_req',
+      q: {
+        b: sender.address,
+        a: first.timestamp - 1,
+        l: 50,
+      },
+    });
+    fs.rmSync(pagePath, { force: true });
     receiver.close();
   });
 

@@ -75,6 +75,7 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     repliedTo: otherData.repliedTo || event.replyToEventId,
     timestamp: event.timestamp,
     sender: event.senderAddress,
+    recipientAddress: event.recipientAddress,
     text: payload.messageText || '',
     message: payload.messageText || '',
     unread: false,

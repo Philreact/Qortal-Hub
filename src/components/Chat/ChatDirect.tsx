@@ -80,6 +80,7 @@ import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 import { useIsOnline } from '../../hooks/usePresence';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
+import { fileToBase64 } from '../../utils/fileReading';
 
 const uid = new ShortUniqueId({ length: 5 });
 
@@ -95,6 +96,30 @@ const QCHAT_FILE_DEFAULT_EXPIRY_HOURS = 2;
 const QCHAT_FILE_COMPLETED_CACHE_KEY = 'qchat-dm-file-transfer-completed-v1';
 const QCHAT_FILE_COMPLETED_CACHE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const QCHAT_FILE_COMPLETED_CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
+type PendingReticulumDirectFile = {
+  filePath?: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  isImage: boolean;
+  base64?: string;
+  previewUrl?: string;
+};
+
+const sha256Hex = async (value: string): Promise<string> => {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+const reticulumDirectConversationId = async (addressA: string, addressB: string) => {
+  const [a, b] = [String(addressA || '').trim(), String(addressB || '').trim()].sort();
+  if (!a || !b) return '';
+  return sha256Hex(`rchat-dm-v1:${a}:${b}`);
+};
 
 const formatQchatFileSize = (bytes?: number) => {
   const size = Number(bytes || 0);
@@ -384,6 +409,9 @@ export const ChatDirect = ({
   const [replyMessage, setReplyMessage] = useState(null);
   const [qchatFileTransferStates, setQchatFileTransferStates] = useState({});
   const [qchatCompletedTransfers, setQchatCompletedTransfers] = useState({});
+  const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
+    PendingReticulumDirectFile[]
+  >([]);
   const {
     enabled: reticulumDirectEnabled,
     messages: reticulumDirectMessages,
@@ -1595,6 +1623,164 @@ export const ChatDirect = ({
     };
   }, []);
 
+  const clearPendingReticulumFiles = useCallback(() => {
+    setPendingReticulumFiles((files) => {
+      files.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+      return [];
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      pendingReticulumFiles.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+    };
+  }, [pendingReticulumFiles]);
+
+  const addPendingReticulumFile = useCallback(
+    async (file: File) => {
+      if (!reticulumDirectEnabled) return false;
+      if (!selectedDirect?.address || isNewChat) {
+        setInfoSnack({
+          type: 'error',
+          message: 'Select a direct chat before attaching files',
+        });
+        setOpenSnack(true);
+        return false;
+      }
+      const filePath =
+        window.reticulumResources?.getPathForFile?.(file) ||
+        (typeof (file as File & { path?: unknown }).path === 'string'
+          ? String((file as File & { path?: unknown }).path)
+          : '');
+      const isImage = file.type?.startsWith('image/') === true;
+      if (!isImage && !filePath) {
+        setInfoSnack({
+          type: 'error',
+          message: 'This file source cannot be streamed from disk',
+        });
+        setOpenSnack(true);
+        return false;
+      }
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+      const base64 = isImage && !filePath ? await fileToBase64(file) : undefined;
+      clearPendingReticulumFiles();
+      setPendingReticulumFiles([
+        {
+          ...(filePath ? { filePath } : {}),
+          fileName: file.name || 'resource.bin',
+          mimeType: file.type || 'application/octet-stream',
+          sizeBytes: file.size || 0,
+          isImage,
+          ...(typeof base64 === 'string' && base64 ? { base64 } : {}),
+          ...(previewUrl ? { previewUrl } : {}),
+        },
+      ]);
+      return true;
+    },
+    [
+      clearPendingReticulumFiles,
+      isNewChat,
+      reticulumDirectEnabled,
+      selectedDirect?.address,
+    ]
+  );
+
+  const insertFiles = useCallback(
+    async (files: File[]) => {
+      const file = files.find((item) => item && item.size >= 0);
+      if (!file) return;
+      if (!reticulumDirectEnabled) {
+        setInfoSnack({
+          type: 'error',
+          message: 'Reticulum direct chat is required for direct attachments',
+        });
+        setOpenSnack(true);
+        return;
+      }
+      if (pendingReticulumFiles.length > 0) {
+        setInfoSnack({
+          type: 'error',
+          message: 'Send or remove the current attachment first',
+        });
+        setOpenSnack(true);
+        return;
+      }
+      await addPendingReticulumFile(file);
+    },
+    [addPendingReticulumFile, pendingReticulumFiles.length, reticulumDirectEnabled]
+  );
+
+  const buildReticulumDirectResourcePayload = useCallback(async () => {
+    if (!reticulumDirectEnabled || pendingReticulumFiles.length === 0) {
+      return { images: [], attachments: [] };
+    }
+    if (!myAddress || !selectedDirect?.address) {
+      throw new Error('Missing direct chat participants');
+    }
+    const conversationId = await reticulumDirectConversationId(
+      myAddress,
+      selectedDirect.address
+    );
+    if (!conversationId) throw new Error('Invalid direct chat conversation');
+    const images: Record<string, unknown>[] = [];
+    const attachments: Record<string, unknown>[] = [];
+    for (const [index, file] of pendingReticulumFiles.entries()) {
+      const metadata = {
+        feature: 'reticulum-direct-chat',
+        conversationId,
+        senderAddress: myAddress,
+        recipientAddress: selectedDirect.address,
+        attachmentKind: file.isImage ? 'image' : 'file',
+        originalMimeType: file.mimeType,
+      };
+      const commonPayload = {
+        namespace: 'reticulum-dm-resource',
+        ownerId: `dm:${conversationId}:${myAddress}`,
+        fileName:
+          file.fileName ||
+          `${file.isImage ? 'direct-image' : 'direct-file'}-${Date.now()}-${index}`,
+        mimeType: file.mimeType || 'application/octet-stream',
+        encrypted: false,
+        metadata,
+      };
+      const imported = file.filePath
+        ? await window.reticulumResources?.importFilePath?.({
+            ...commonPayload,
+            filePath: file.filePath,
+          })
+        : await window.reticulumResources?.importBase64?.({
+            ...commonPayload,
+            base64: file.base64,
+          });
+      if (!imported?.success || !imported.manifest) {
+        throw new Error(
+          imported?.error || 'Reticulum direct resource import failed'
+        );
+      }
+      const resource = {
+        ...(imported.manifest as Record<string, unknown>),
+        reticulumResource: true,
+        reticulumDirectResource: true,
+        conversationId,
+        senderAddress: myAddress,
+        recipientAddress: selectedDirect.address,
+        timestamp: Date.now(),
+      };
+      if (file.isImage) images.push(resource);
+      else attachments.push(resource);
+    }
+    return { images, attachments };
+  }, [
+    myAddress,
+    pendingReticulumFiles,
+    reticulumDirectEnabled,
+    selectedDirect?.address,
+  ]);
+
   useEffect(() => {
     if (!editorRef?.current) return;
     const handleUpdate = () => {
@@ -1626,8 +1812,13 @@ export const ChatDirect = ({
       if (isSending) return;
       if (editorRef.current) {
         const htmlContent = editorRef.current.getHTML();
+        const hasPendingReticulumResources =
+          reticulumDirectEnabled && pendingReticulumFiles.length > 0;
 
-        if (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') return;
+        if (
+          (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') &&
+          !hasPendingReticulumResources
+        ) return;
         setIsSending(true);
         pauseAllQueues();
         const message = JSON.stringify(htmlContent);
@@ -1643,11 +1834,22 @@ export const ChatDirect = ({
         }
         const chatReference = onEditMessage?.signature;
 
+        const reticulumResources =
+          hasPendingReticulumResources
+            ? await buildReticulumDirectResourcePayload()
+            : { images: [], attachments: [] };
+
         const otherData = {
           ...(onEditMessage?.decryptedData || {}),
           specialId: uid.rnd(),
           repliedTo: onEditMessage ? onEditMessage?.repliedTo : repliedTo,
           type: chatReference ? 'edit' : '',
+          ...(reticulumResources.images.length > 0
+            ? { images: reticulumResources.images }
+            : {}),
+          ...(reticulumResources.attachments.length > 0
+            ? { attachments: reticulumResources.attachments }
+            : {}),
         };
         const sendMessageFunc = async () => {
           return await sendChatDirect(
@@ -1683,6 +1885,7 @@ export const ChatDirect = ({
           executeEvent('sent-new-message-group', {});
         }, 150);
         clearEditorContent();
+        clearPendingReticulumFiles();
         setReplyMessage(null);
         setOnEditMessage(null);
       }
@@ -2619,7 +2822,57 @@ export const ChatDirect = ({
             isChat
             disableEnter={false}
             setIsFocusedParent={setIsFocusedParent}
+            insertFiles={insertFiles}
           />
+          {pendingReticulumFiles.length > 0 && (
+            <Box
+              sx={{
+                alignItems: 'center',
+                border: `1px solid ${theme.palette.divider}`,
+                borderRadius: '8px',
+                display: 'flex',
+                gap: '10px',
+                maxWidth: '100%',
+                padding: '8px 10px',
+                width: 'fit-content',
+              }}
+            >
+              {pendingReticulumFiles[0].previewUrl ? (
+                <Box
+                  component="img"
+                  src={pendingReticulumFiles[0].previewUrl}
+                  sx={{
+                    borderRadius: '6px',
+                    height: 38,
+                    objectFit: 'cover',
+                    width: 38,
+                  }}
+                />
+              ) : (
+                <ReticulumFileTransferIcon sx={{ fontSize: 26 }} />
+              )}
+              <Box sx={{ minWidth: 0 }}>
+                <Typography
+                  sx={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    maxWidth: 260,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {pendingReticulumFiles[0].fileName}
+                </Typography>
+                <Typography sx={{ color: 'text.secondary', fontSize: 12 }}>
+                  {formatQchatFileSize(pendingReticulumFiles[0].sizeBytes)}
+                </Typography>
+              </Box>
+              <IconButton size="small" onClick={clearPendingReticulumFiles}>
+                <ExitIcon />
+              </IconButton>
+            </Box>
+          )}
           {messageSize > MESSAGE_LIMIT_WARNING && (
             <Box
               sx={{

@@ -3602,6 +3602,73 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle(
+  'reticulumChat:requestDirectResource',
+  async (
+    _event,
+    myAddress: string,
+    peerAddress: string,
+    manifest: unknown,
+    eventId?: string
+  ) => {
+    const manifestRecord =
+      manifest && typeof manifest === 'object'
+        ? (manifest as Record<string, unknown>)
+        : null;
+    const fileHash =
+      typeof manifestRecord?.fileHash === 'string' ? manifestRecord.fileHash : '';
+    const resourceName =
+      typeof manifestRecord?.fileName === 'string' ? manifestRecord.fileName : '';
+    const resourceSize =
+      typeof manifestRecord?.sizeBytes === 'number' ? manifestRecord.sizeBytes : 0;
+    const shortHash = fileHash ? fileHash.slice(0, 12) : 'missing';
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      loggerLog(
+        `[ReticulumResource] request_direct_resource_received conversation=${String(myAddress || '').slice(0, 8)}:${String(peerAddress || '').slice(0, 8)} file=${shortHash} size=${resourceSize} name=${resourceName || 'unknown'} event=${
+          typeof eventId === 'string' && eventId ? eventId : 'none'
+        }`
+      );
+      const result = await manager.requestDirectResource(
+        myAddress,
+        peerAddress,
+        manifest as any,
+        typeof eventId === 'string' && eventId ? eventId : undefined
+      );
+      if (result.ok) {
+        loggerLog(
+          `[ReticulumResource] request_direct_resource_accepted file=${shortHash}`
+        );
+        return { success: true };
+      }
+      const failed = result as Exclude<typeof result, { ok: true }>;
+      loggerWarn(
+        `[ReticulumResource] request_direct_resource_rejected file=${shortHash} reason=${
+          failed.error ?? failed.reason ?? 'unknown'
+        }`
+      );
+      return { success: false, error: failed.error ?? failed.reason };
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumResource] request_direct_resource_error file=${shortHash} reason=${
+          err instanceof Error ? err.message : 'unknown'
+        }`
+      );
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Reticulum direct resource request failed',
+      };
+    }
+  }
+);
+
 ipcMain.handle('reticulumChat:cancelResource', async (_event, fileHash: string) => {
   const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
   if (!hash) return { success: false, error: 'Invalid file hash' };

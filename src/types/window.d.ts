@@ -604,6 +604,12 @@ declare global {
         manifest: unknown,
         eventId?: string
       ) => Promise<{ success: boolean; error?: string }>;
+      requestDirectResource: (
+        myAddress: string,
+        peerAddress: string,
+        manifest: unknown,
+        eventId?: string
+      ) => Promise<{ success: boolean; error?: string }>;
       cancelResource: (
         fileHash: string
       ) => Promise<{ success: boolean; canceled?: boolean; error?: string }>;

@@ -367,8 +367,21 @@ export const MessageItemComponent = ({
   );
 
   const qchatFileTransfer = getQchatFileTransfer(message);
+  const isReticulumMessageWithResources =
+    message?.reticulumChat === true || message?.reticulumDirect === true;
+  const isReticulumDirectResourceMessage = message?.reticulumDirect === true;
+  const reticulumDirectPeerAddress =
+    isReticulumDirectResourceMessage
+      ? message?.sender === myAddress
+        ? typeof message?.recipientAddress === 'string'
+          ? message.recipientAddress
+          : ''
+        : typeof message?.sender === 'string'
+          ? message.sender
+          : ''
+      : '';
   const isReticulumResourceImage =
-    message?.reticulumChat === true &&
+    isReticulumMessageWithResources &&
     message?.images?.[0]?.reticulumResource === true &&
     typeof message?.images?.[0]?.fileHash === 'string';
   const imageResourceId =
@@ -417,7 +430,7 @@ export const MessageItemComponent = ({
       ? `${imageResourceWidth} / ${imageResourceHeight}`
       : '4 / 3';
   const reticulumFileAttachment =
-    message?.reticulumChat === true && Array.isArray(message?.attachments)
+    isReticulumMessageWithResources && Array.isArray(message?.attachments)
       ? message.attachments.find(
           (attachment) =>
             attachment &&
@@ -489,20 +502,26 @@ export const MessageItemComponent = ({
 
   useEffect(() => {
     if (
-      !message?.reticulumChat ||
       !isReticulumResourceImage ||
       !shouldAutoDownloadReticulumImage ||
       !imageResourceId ||
       !imageResourceManifest ||
-      !Number.isInteger(reticulumResourceGroupId) ||
-      reticulumResourceGroupId <= 0
+      (!isReticulumDirectResourceMessage &&
+        (!Number.isInteger(reticulumResourceGroupId) ||
+          reticulumResourceGroupId <= 0)) ||
+      (isReticulumDirectResourceMessage &&
+        (!myAddress || !reticulumDirectPeerAddress))
     ) {
       return;
     }
 
-    const key = `${reticulumResourceGroupId}:${imageResourceId}:${
-      reticulumResourceEventId || ''
-    }`;
+    const key = isReticulumDirectResourceMessage
+      ? `dm:${myAddress}:${reticulumDirectPeerAddress}:${imageResourceId}:${
+          reticulumResourceEventId || ''
+        }`
+      : `${reticulumResourceGroupId}:${imageResourceId}:${
+          reticulumResourceEventId || ''
+        }`;
     if (!shouldRequestReticulumImageResource(key, Date.now())) return;
 
     let cancelled = false;
@@ -515,11 +534,18 @@ export const MessageItemComponent = ({
           return;
         }
 
-        const response = await window.reticulumChat?.requestResource?.(
-          reticulumResourceGroupId,
-          imageResourceManifest,
-          reticulumResourceEventId || undefined
-        );
+        const response = isReticulumDirectResourceMessage
+          ? await window.reticulumChat?.requestDirectResource?.(
+              myAddress,
+              reticulumDirectPeerAddress,
+              imageResourceManifest,
+              reticulumResourceEventId || undefined
+            )
+          : await window.reticulumChat?.requestResource?.(
+              reticulumResourceGroupId,
+              imageResourceManifest,
+              reticulumResourceEventId || undefined
+            );
         if (cancelled) return;
         if (!response?.success) {
           console.warn(
@@ -545,7 +571,9 @@ export const MessageItemComponent = ({
     imageResourceId,
     imageResourceManifest,
     isReticulumResourceImage,
-    message?.reticulumChat,
+    isReticulumDirectResourceMessage,
+    myAddress,
+    reticulumDirectPeerAddress,
     reticulumResourceEventId,
     reticulumResourceGroupId,
     shouldAutoDownloadReticulumImage,
@@ -863,8 +891,11 @@ export const MessageItemComponent = ({
     if (
       !reticulumDownloadAttachment ||
       !reticulumFileResourceId ||
-      !Number.isInteger(reticulumResourceGroupId) ||
-      reticulumResourceGroupId <= 0
+      (!isReticulumDirectResourceMessage &&
+        (!Number.isInteger(reticulumResourceGroupId) ||
+          reticulumResourceGroupId <= 0)) ||
+      (isReticulumDirectResourceMessage &&
+        (!myAddress || !reticulumDirectPeerAddress))
     ) {
       return { success: false, error: 'Invalid resource attachment' };
     }
@@ -889,11 +920,18 @@ export const MessageItemComponent = ({
           }
         : null
     );
-    const response = await window.reticulumChat?.requestResource?.(
-      reticulumResourceGroupId,
-      reticulumDownloadAttachment,
-      reticulumResourceEventId || undefined
-    );
+    const response = isReticulumDirectResourceMessage
+      ? await window.reticulumChat?.requestDirectResource?.(
+          myAddress,
+          reticulumDirectPeerAddress,
+          reticulumDownloadAttachment,
+          reticulumResourceEventId || undefined
+        )
+      : await window.reticulumChat?.requestResource?.(
+          reticulumResourceGroupId,
+          reticulumDownloadAttachment,
+          reticulumResourceEventId || undefined
+        );
     if (response?.success === false) {
       setFileResourceStatus('error');
       return response;
@@ -905,7 +943,10 @@ export const MessageItemComponent = ({
     reticulumFileResourceId,
     reticulumResourceEventId,
     reticulumResourceGroupId,
+    isReticulumDirectResourceMessage,
     markFileResourceReadyIfComplete,
+    myAddress,
+    reticulumDirectPeerAddress,
   ]);
 
   const cancelReticulumFileResource = useCallback(async () => {
