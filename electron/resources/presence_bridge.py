@@ -89,6 +89,9 @@ _OVERLAY_LINK_CACHED_PATH_SETTLE_SECONDS = 1.5
 _DIRECT_LINK_PATH_PROVEN_SECONDS = 30.0
 _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
 _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 60.0
+_UNESTABLISHED_LINK_HARD_REFRESH_FAILURES = 3
+_UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS = 5 * 60.0
+_UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS = 2.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
@@ -5251,6 +5254,22 @@ def _note_overlay_peer_alive(peer_key: str, source: str) -> None:
             "[presence_bridge] target=presence-reticulum overlay_peer_failure_reset "
             f"peer={peer_key} source={source}"
         )
+    st = _peer_lifecycle.get(peer_key)
+    if isinstance(st, dict):
+        had_unestablished_failures = int(st.get("unestablished_link_failures") or 0)
+        for key in (
+            "unestablished_link_failures",
+            "last_unestablished_link_failure_at",
+            "last_unestablished_link_failure_reason",
+            "last_unestablished_link_path_request_at",
+            "last_unestablished_link_path_request_reason",
+        ):
+            st.pop(key, None)
+        if had_unestablished_failures > 0:
+            log(
+                "[presence_bridge] target=presence-reticulum hard_path_refresh_failure_reset "
+                f"peer={peer_key} source={source} failures={had_unestablished_failures}"
+            )
 
 
 def _clear_overlay_peer_failure_for_recovery(peer_key: str, reason: str) -> bool:
@@ -5869,6 +5888,75 @@ def _reticulum_has_path(destination_hash: bytes) -> bool:
         return bool(RNS.Transport.has_path(destination_hash))
     except Exception:
         return False
+
+
+def _reticulum_path_snapshot(destination_hash: bytes) -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "has_path": False,
+        "hops": None,
+        "next_hop": "",
+        "interface": "",
+    }
+    try:
+        info["has_path"] = bool(RNS.Transport.has_path(destination_hash))
+    except Exception:
+        info["has_path"] = False
+    if not info["has_path"]:
+        return info
+    try:
+        hops = RNS.Transport.hops_to(destination_hash)
+        if isinstance(hops, int):
+            info["hops"] = hops
+    except Exception:
+        pass
+    try:
+        next_hop = RNS.Transport.next_hop(destination_hash)
+        if isinstance(next_hop, (bytes, bytearray)):
+            info["next_hop"] = bytes(next_hop).hex()
+    except Exception:
+        pass
+    try:
+        iface = RNS.Transport.next_hop_interface(destination_hash)
+        if iface is not None:
+            info["interface"] = str(iface)
+    except Exception:
+        pass
+    return info
+
+
+def _format_reticulum_path_snapshot(info: Dict[str, Any]) -> str:
+    hops = info.get("hops")
+    hops_label = str(hops) if isinstance(hops, int) else "na"
+    next_hop = str(info.get("next_hop") or "na")
+    interface = str(info.get("interface") or "na").replace(" ", "_")
+    return (
+        f"has_path={str(info.get('has_path') is True).lower()} "
+        f"hops={hops_label} next_hop={next_hop} interface={interface}"
+    )
+
+
+def _drop_reticulum_path(destination_hash: bytes) -> bool:
+    dropped = False
+    try:
+        if _reticulum is not None and hasattr(_reticulum, "drop_path"):
+            dropped = bool(_reticulum.drop_path(destination_hash))
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=presence-reticulum hard_path_refresh_drop_failed "
+            f"peer={destination_hash_hex(destination_hash)} via=reticulum err={exc}"
+        )
+    try:
+        dropped = bool(RNS.Transport.expire_path(destination_hash)) or dropped
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=presence-reticulum hard_path_refresh_drop_failed "
+            f"peer={destination_hash_hex(destination_hash)} via=transport err={exc}"
+        )
+    try:
+        RNS.Transport.mark_path_unknown_state(destination_hash)
+    except Exception:
+        pass
+    return dropped
 
 
 def _peer_has_recent_direct_activity(peer_key: str, now: Optional[float] = None) -> bool:
@@ -7091,6 +7179,73 @@ def _maybe_request_path_after_unestablished_link_close(
         return
     now = time.time()
     st = _lifecycle_state_for_peer(peer_hash)
+    failure_count = 1
+    if st is not None:
+        failure_count = int(st.get("unestablished_link_failures") or 0) + 1
+        st["unestablished_link_failures"] = failure_count
+        st["last_unestablished_link_failure_at"] = now
+        st["last_unestablished_link_failure_reason"] = reason
+    hard_refresh_due = failure_count >= _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES
+    last_hard_refresh = (
+        st.get("last_unestablished_link_hard_refresh_at") if st is not None else None
+    )
+    hard_refresh_cooling_down = (
+        isinstance(last_hard_refresh, (int, float))
+        and now - float(last_hard_refresh) < _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS
+    )
+    if hard_refresh_due:
+        if hard_refresh_cooling_down:
+            log(
+                f"[presence_bridge] target={target} hard_path_refresh_skipped "
+                f"peer={peer_hash} reason=recent_hard_refresh failures={failure_count} "
+                f"age_ms={int((now - float(last_hard_refresh)) * 1000.0)}"
+            )
+        else:
+            before = _reticulum_path_snapshot(destination_hash)
+            dropped = _drop_reticulum_path(destination_hash)
+            if st is not None:
+                st["last_unestablished_link_hard_refresh_at"] = now
+                st["last_unestablished_link_hard_refresh_reason"] = (
+                    f"unestablished_link_closed:{reason}"
+                )
+                st["last_request_path_at"] = now
+                st["last_unestablished_link_path_request_at"] = now
+                st["last_unestablished_link_path_request_reason"] = (
+                    f"hard_refresh:{reason}"
+                )
+            log(
+                f"[presence_bridge] target={target} hard_path_refresh "
+                f"peer={peer_hash} failures={failure_count} dropped={str(dropped).lower()} "
+                f"reason=unestablished_link_closed:{reason} "
+                f"before={_format_reticulum_path_snapshot(before)}"
+            )
+            try:
+                RNS.Transport.request_path(destination_hash)
+                resolved = _await_destination_path(
+                    destination_hash,
+                    _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS,
+                )
+                after = _reticulum_path_snapshot(destination_hash)
+                log(
+                    f"[presence_bridge] target={target} hard_path_refresh_request "
+                    f"peer={peer_hash} resolved={str(resolved).lower()} "
+                    f"after={_format_reticulum_path_snapshot(after)}"
+                )
+            except Exception as exc:
+                log(
+                    f"[presence_bridge] target={target} hard_path_refresh_request_failed "
+                    f"peer={peer_hash} reason=unestablished_link_closed:{reason} err={exc}"
+                )
+            try:
+                announce_local_destination(
+                    f"hard_path_refresh peer={peer_hash[:16]} failures={failure_count}"
+                )
+            except Exception as exc:
+                log(
+                    f"[presence_bridge] target={target} hard_path_refresh_announce_failed "
+                    f"peer={peer_hash} err={exc}"
+                )
+            return
     last_request = (
         st.get("last_unestablished_link_path_request_at") if st is not None else None
     )
@@ -7101,7 +7256,7 @@ def _maybe_request_path_after_unestablished_link_close(
         log(
             f"[presence_bridge] target={target} cached_path_refresh_skipped "
             f"peer={peer_hash} reason=recent_request close_reason={reason} "
-            f"age_ms={int((now - float(last_request)) * 1000.0)}"
+            f"failures={failure_count} age_ms={int((now - float(last_request)) * 1000.0)}"
         )
         return
     try:
@@ -7114,7 +7269,7 @@ def _maybe_request_path_after_unestablished_link_close(
             )
         log(
             f"[presence_bridge] target={target} cached_path_refresh_request "
-            f"peer={peer_hash} reason=unestablished_link_closed:{reason}"
+            f"peer={peer_hash} failures={failure_count} reason=unestablished_link_closed:{reason}"
         )
     except Exception as exc:
         log(

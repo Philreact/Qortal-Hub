@@ -460,7 +460,24 @@ export type ReticulumDmEventTupleWire = [
   replyToEventId?: string,
 ];
 
-export type ReticulumDmEventWire = ReticulumDmEventTupleWire | ReticulumDmEventObjectWire;
+export type ReticulumDmEventCompactTupleWire = [
+  version: 'v2',
+  id: string,
+  recipientAddress: string,
+  senderPublicKey: string,
+  senderSeq: number,
+  timestamp: number,
+  eventType: ReticulumDmEventTypeWire,
+  payload: string,
+  signature: string,
+  targetEventId?: string,
+  replyToEventId?: string,
+];
+
+export type ReticulumDmEventWire =
+  | ReticulumDmEventTupleWire
+  | ReticulumDmEventCompactTupleWire
+  | ReticulumDmEventObjectWire;
 
 export type ReticulumDmRequestWire = {
   b: string;
@@ -2143,9 +2160,9 @@ function reticulumDmEventTypeFromWire(eventType: unknown): ReticulumDmEventType 
 }
 
 function reticulumDmEventForWire(event: ReticulumDmEvent): ReticulumDmEventWire {
-  const tuple: ReticulumDmEventTupleWire = [
+  const tuple: ReticulumDmEventCompactTupleWire = [
+    'v2',
     event.eventId,
-    event.senderAddress,
     event.recipientAddress,
     event.senderPublicKey,
     event.senderSeq,
@@ -2163,6 +2180,40 @@ function reticulumDmEventForWire(event: ReticulumDmEvent): ReticulumDmEventWire 
 
 function reticulumDmEventFromWire(wire: unknown): ReticulumDmEvent | null {
   if (Array.isArray(wire)) {
+    if (wire[0] === 'v2') {
+      const [
+        _version,
+        eventId,
+        recipientAddress,
+        senderPublicKey,
+        senderSeq,
+        timestamp,
+        eventType,
+        payload,
+        signature,
+        targetEventId,
+        replyToEventId,
+      ] = wire as ReticulumDmEventCompactTupleWire;
+      const normalizedPayload = String(payload ?? '');
+      const normalizedSenderPublicKey = String(senderPublicKey || '');
+      const senderAddress = deriveReticulumControlAuthor(normalizedSenderPublicKey);
+      const normalizedRecipientAddress = String(recipientAddress || '');
+      return {
+        eventId: String(eventId || ''),
+        conversationId: reticulumDmConversationId(senderAddress, normalizedRecipientAddress),
+        senderAddress,
+        recipientAddress: normalizedRecipientAddress,
+        senderPublicKey: normalizedSenderPublicKey,
+        senderSeq: Number(senderSeq || 0),
+        timestamp: Number(timestamp || 0),
+        eventType: reticulumDmEventTypeFromWire(eventType),
+        ...(typeof targetEventId === 'string' && targetEventId ? { targetEventId } : {}),
+        ...(typeof replyToEventId === 'string' && replyToEventId ? { replyToEventId } : {}),
+        payload: normalizedPayload,
+        payloadHash: hashReticulumChatPayload(normalizedPayload),
+        signature: String(signature || ''),
+      };
+    }
     const [
       eventId,
       senderAddress,

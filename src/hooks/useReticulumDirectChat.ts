@@ -38,8 +38,28 @@ const parsePayload = (payload: string): any => {
     const parsed = JSON.parse(payload);
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
-    return {};
+    return { messageText: payload };
   }
+};
+
+const hasPayloadData = (value: unknown): value is Record<string, unknown> =>
+  Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value as Record<string, unknown>).length > 0
+  );
+
+const randomDirectEventId = () => {
+  const bytes = new Uint8Array(8);
+  const browserCrypto = globalThis.crypto;
+  if (typeof browserCrypto?.getRandomValues === 'function') {
+    browserCrypto.getRandomValues(bytes);
+    return Array.from(bytes)
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 };
 
 export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
@@ -177,12 +197,16 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       }
       const conversationId = await conversationIdFor(myAddress, actualPeerAddress);
       const timestamp = Date.now();
-      const eventId = crypto.randomUUID?.() || `${timestamp}-${Math.random()}`;
-      const payload = JSON.stringify({
-        chatReference: chatReference || undefined,
-        messageText,
-        otherData: otherData || {},
-      });
+      const eventId = randomDirectEventId();
+      const hasOtherData = hasPayloadData(otherData);
+      const payload =
+        !chatReference && !hasOtherData
+          ? messageText
+          : JSON.stringify({
+              ...(chatReference ? { chatReference } : {}),
+              messageText,
+              ...(hasOtherData ? { otherData } : {}),
+            });
       const payloadHash = await sha256Hex(payload);
       const existingSeqs = events
         .filter((event) => event.senderAddress === myAddress)

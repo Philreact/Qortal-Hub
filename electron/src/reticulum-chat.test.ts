@@ -2148,6 +2148,56 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('sends compact direct DM events within Reticulum wire size', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const recipientPeerHash = 'b'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(sender),
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: recipientPeerHash,
+          address: recipient.address,
+          lastSeenAt: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+          sent.push({ peer, wire });
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+    });
+    manager.setLocalDmAddresses([sender.address]);
+    await flushAsyncWork();
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: '0123456789abcdef',
+      senderSeq: Date.now() * 1000,
+      timestamp: Date.now(),
+      payload: 'hello',
+    });
+
+    const result = await manager.publishDirectEvent(event);
+
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].peer).toBe(recipientPeerHash);
+    expect(sent[0].wire.k).toBe('dm_event');
+    expect(wireFitsReticulum(sent[0].wire)).toBe(true);
+    expect(byteLengthUtf8JsonWithBridgeSender(sent[0].wire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.close();
+  });
+
   it('runs recurring direct DM probes while overlay health stays good', async () => {
     vi.useFakeTimers();
     try {
