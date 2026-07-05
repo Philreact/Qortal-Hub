@@ -188,6 +188,7 @@ export interface ReticulumChatEventPageOffer {
   relayRequestId?: string;
   requestedAt?: number;
   requesterAddress?: string;
+  repairRange?: ReticulumChatAuthorRange;
 }
 
 export interface ReticulumDmPageOffer {
@@ -221,6 +222,13 @@ type ReticulumChatEventOfferOptions = {
   relayCached?: boolean;
   relayBlobId?: string;
   allowCachedServe?: boolean;
+  repairRange?: ReticulumChatAuthorRange;
+};
+
+type ReticulumChatAuthorRange = {
+  a: string;
+  from: number;
+  to: number;
 };
 
 type ReticulumChatResourceServeCheck =
@@ -263,6 +271,7 @@ export interface ReticulumChatEventPageOfferWire {
   sp?: string;
   sd?: string;
   rk?: string;
+  r?: [string, number, number];
 }
 
 export interface ReticulumChatEventRequestWire {
@@ -770,6 +779,8 @@ const RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS = 10 * 60 * 1_000;
 const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_NEWEST_PAGE_PUSH_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
+const RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS = 10 * 60_000;
+const RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
@@ -1342,10 +1353,46 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
   };
 }
 
+function normalizeReticulumChatAuthorRange(range: unknown): ReticulumChatAuthorRange | null {
+  if (!range || typeof range !== 'object' || Array.isArray(range)) return null;
+  const candidate = range as { a?: unknown; from?: unknown; to?: unknown };
+  const authorAddress = typeof candidate.a === 'string' ? candidate.a.trim() : '';
+  const fromSeq = Number(candidate.from);
+  const toSeq = Number(candidate.to);
+  if (
+    !authorAddress ||
+    !Number.isInteger(fromSeq) ||
+    !Number.isInteger(toSeq) ||
+    fromSeq <= 0 ||
+    toSeq < fromSeq
+  ) {
+    return null;
+  }
+  return { a: authorAddress, from: fromSeq, to: toSeq };
+}
+
+function authorRangeToWireTuple(range: ReticulumChatAuthorRange | undefined): [string, number, number] | undefined {
+  const normalized = normalizeReticulumChatAuthorRange(range);
+  if (!normalized) return undefined;
+  return [normalized.a, normalized.from, normalized.to];
+}
+
+function authorRangeFromWireTuple(tuple: unknown): ReticulumChatAuthorRange | null {
+  if (!Array.isArray(tuple) || tuple.length !== 3) return null;
+  return normalizeReticulumChatAuthorRange({
+    a: tuple[0],
+    from: tuple[1],
+    to: tuple[2],
+  });
+}
+
 function eventPageOfferToWire(offer: ReticulumChatEventPageOffer): ReticulumChatEventPageOfferWire {
   const providerDestinationHash =
     normalizeRoutePeerHash(offer.senderReticulumDestinationHash) ??
     normalizeRoutePeerHash(offer.sourcePeerHash);
+  const repairRange = offer.direction === 'range'
+    ? authorRangeToWireTuple(offer.repairRange)
+    : undefined;
   return {
     x: offer.transferId,
     c: offer.channelId,
@@ -1357,6 +1404,7 @@ function eventPageOfferToWire(offer: ReticulumChatEventPageOffer): ReticulumChat
     ...(offer.hasMore ? { more: 1 as const } : {}),
     ...(offer.relayRequestId ? { rr: offer.relayRequestId } : {}),
     ...(providerDestinationHash ? { sd: compactPeerHashForWire(providerDestinationHash) } : {}),
+    ...(repairRange ? { r: repairRange } : {}),
   };
 }
 
@@ -1385,6 +1433,9 @@ function eventPageOfferFromWire(groupId: number, wire: unknown): ReticulumChatEv
     typeof p.eid === 'string' && Number.isFinite(Number(p.ets))
       ? { eventId: p.eid, feedTimestamp: Number(p.ets) }
       : undefined;
+  const direction = p.d === 'b' ? 'before' : p.d === 'r' ? 'range' : 'after';
+  const repairRange = direction === 'range' ? authorRangeFromWireTuple(p.r) : null;
+  if (p.r != null && !repairRange) return null;
   return {
     transferId: String(p.x || ''),
     groupId,
@@ -1392,7 +1443,7 @@ function eventPageOfferFromWire(groupId: number, wire: unknown): ReticulumChatEv
       p.c === RETICULUM_CHAT_ALL_CHANNELS_ID
         ? RETICULUM_CHAT_ALL_CHANNELS_ID
         : normalizeReticulumChatChannelId(p.c),
-    direction: p.d === 'b' ? 'before' : p.d === 'r' ? 'range' : 'after',
+    direction,
     ...(priority ? { priority } : {}),
     pageHash: String(p.ph || ''),
     sizeBytes: Number(p.s || 0),
@@ -1404,6 +1455,7 @@ function eventPageOfferFromWire(groupId: number, wire: unknown): ReticulumChatEv
     ...(typeof p.sp === 'string' && p.sp ? { sourcePeerHash: normalizePeerHashFromWire(p.sp) ?? p.sp } : {}),
     ...(typeof p.sd === 'string' && p.sd ? { senderReticulumDestinationHash: normalizePeerHashFromWire(p.sd) ?? p.sd } : {}),
     ...(typeof p.rk === 'string' && p.rk ? { senderReticulumIdentityPublicKeyBase64: p.rk } : {}),
+    ...(repairRange ? { repairRange } : {}),
   };
 }
 
@@ -2576,6 +2628,7 @@ export class ReticulumChatManager extends EventEmitter {
   private recentMetadataPagePushes = new Map<string, number>();
   private recentNewestPagePushes = new Map<string, number>();
   private recentAuthorGapRepairRequests = new Map<string, number>();
+  private authorGapNoProgressSuppressions = new Map<string, number>();
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventPageOffers = new Map<string, ReticulumChatEventPageOffer>();
   private signedResourceAuthRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -5363,12 +5416,9 @@ export class ReticulumChatManager extends EventEmitter {
     const limit = this.normalizeFeedLimit(wire.limit);
     let budget = limit;
     for (const rawRange of wire.ranges.slice(0, RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE)) {
-      if (!rawRange || typeof rawRange !== 'object' || Array.isArray(rawRange)) continue;
-      const range = rawRange as { a?: unknown; from?: unknown; to?: unknown };
-      const author = typeof range.a === 'string' ? range.a : '';
-      const from = Number(range.from);
-      const to = Number(range.to);
-      if (!author || !Number.isInteger(from) || !Number.isInteger(to) || from <= 0 || to < from) continue;
+      const normalizedRange = normalizeReticulumChatAuthorRange(rawRange);
+      if (!normalizedRange) continue;
+      const { a: author, from, to } = normalizedRange;
       if (budget <= 0) break;
       const eventsWithProbe = this.db.getAuthorEventsRange(groupId, author, from, to, budget + 1);
       const events = eventsWithProbe.slice(0, budget);
@@ -5384,7 +5434,10 @@ export class ReticulumChatManager extends EventEmitter {
         readableEvents,
         hasMore,
         'range',
-        this.relayResponseOptionsFromWire(wire)
+        {
+          ...this.relayResponseOptionsFromWire(wire),
+          repairRange: normalizedRange,
+        }
       );
       budget -= readableEvents.length;
       if (budget <= 0) break;
@@ -5505,6 +5558,90 @@ export class ReticulumChatManager extends EventEmitter {
     return true;
   }
 
+  private authorGapSuppressionKey(
+    peerHash: string,
+    groupId: number,
+    range: ReticulumChatAuthorRange
+  ): string {
+    return [
+      peerHash.trim().toLowerCase(),
+      groupId,
+      range.a.trim(),
+      Math.max(1, Math.floor(range.from)),
+      Math.max(1, Math.floor(range.to)),
+    ].join('|');
+  }
+
+  private compactAuthorGapNoProgressSuppressions(now = this.now()): void {
+    for (const [key, expiresAt] of this.authorGapNoProgressSuppressions) {
+      if (expiresAt <= now) this.authorGapNoProgressSuppressions.delete(key);
+    }
+    if (this.authorGapNoProgressSuppressions.size <= RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_MAX) {
+      return;
+    }
+    const sorted = [...this.authorGapNoProgressSuppressions.entries()]
+      .sort((a, b) => a[1] - b[1]);
+    for (
+      const [key] of sorted.slice(
+        0,
+        this.authorGapNoProgressSuppressions.size - RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_MAX
+      )
+    ) {
+      this.authorGapNoProgressSuppressions.delete(key);
+    }
+  }
+
+  private isAuthorGapRangeSuppressed(
+    peerHash: string,
+    groupId: number,
+    range: ReticulumChatAuthorRange,
+    now = this.now()
+  ): boolean {
+    this.compactAuthorGapNoProgressSuppressions(now);
+    const key = this.authorGapSuppressionKey(peerHash, groupId, range);
+    const expiresAt = this.authorGapNoProgressSuppressions.get(key) ?? 0;
+    if (expiresAt <= now) {
+      this.authorGapNoProgressSuppressions.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  private markAuthorGapRangeNoProgress(
+    peerHash: string,
+    groupId: number,
+    range: ReticulumChatAuthorRange,
+    reason: string
+  ): void {
+    const normalized = normalizeReticulumChatAuthorRange(range);
+    if (!normalized) return;
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer) return;
+    const expiresAt = this.now() + RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS;
+    this.authorGapNoProgressSuppressions.set(
+      this.authorGapSuppressionKey(peer, groupId, normalized),
+      expiresAt
+    );
+    this.compactAuthorGapNoProgressSuppressions();
+    loggerLog(
+      `[ReticulumChat] author_gap_range_no_progress_suppressed group=${groupId} peer=${peer.slice(0, 16)} author=${normalized.a} from=${normalized.from} to=${normalized.to} ttlMs=${RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS} reason=${reason}`
+    );
+  }
+
+  private clearAuthorGapRangeSuppression(
+    peerHash: string,
+    groupId: number,
+    range: ReticulumChatAuthorRange
+  ): void {
+    const normalized = normalizeReticulumChatAuthorRange(range);
+    if (!normalized) return;
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer) return;
+    this.authorGapNoProgressSuppressions.delete(
+      this.authorGapSuppressionKey(peer, groupId, normalized)
+    );
+  }
+
   private requestKnownAuthorGaps(
     groupId: number,
     peerHash: string,
@@ -5525,7 +5662,15 @@ export class ReticulumChatManager extends EventEmitter {
       this.recentAuthorGapRepairRequests.set(`${peer}:${groupId}`, this.now());
     }
     const now = this.now();
-    const ranges = gaps.map((gap) => {
+    const ranges = gaps.flatMap((gap) => {
+      const range = { a: gap.authorAddress, from: gap.fromSeq, to: gap.toSeq };
+      const pagedRange = this.newestAuthorRangePage(range);
+      if (
+        this.isAuthorGapRangeSuppressed(peer, groupId, range, now) ||
+        this.isAuthorGapRangeSuppressed(peer, groupId, pagedRange, now)
+      ) {
+        return [];
+      }
       this.db.upsertMissingRange(
         groupId,
         gap.authorAddress,
@@ -5534,8 +5679,14 @@ export class ReticulumChatManager extends EventEmitter {
         peer,
         now
       );
-      return { a: gap.authorAddress, from: gap.fromSeq, to: gap.toSeq };
+      return [range];
     });
+    if (ranges.length === 0) {
+      loggerLog(
+        `[ReticulumChat] author_gap_repair_suppressed group=${groupId} peer=${peer.slice(0, 16)} gaps=${gaps.length} reason=${reason}`
+      );
+      return false;
+    }
     loggerLog(
       `[ReticulumChat] Requesting author gap repair group=${groupId} peer=${peer.slice(0, 16)} gaps=${ranges.length} reason=${reason}`
     );
@@ -5551,7 +5702,18 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     const peer = peerHash.trim().toLowerCase();
     for (const range of ranges) {
-      const pagedRange = this.newestAuthorRangePage(range);
+      const normalizedRange = normalizeReticulumChatAuthorRange(range);
+      if (!normalizedRange) continue;
+      const pagedRange = this.newestAuthorRangePage(normalizedRange);
+      if (
+        this.isAuthorGapRangeSuppressed(peer, groupId, normalizedRange) ||
+        this.isAuthorGapRangeSuppressed(peer, groupId, pagedRange)
+      ) {
+        loggerLog(
+          `[ReticulumChat] author_gap_range_repair_suppressed group=${groupId} peer=${peer.slice(0, 16)} author=${normalizedRange.a} from=${normalizedRange.from} to=${normalizedRange.to} reason=${reason}`
+        );
+        continue;
+      }
       const wire: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'range_req',
@@ -9758,6 +9920,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(localResourceIdentity.destinationHash
         ? { senderReticulumDestinationHash: localResourceIdentity.destinationHash }
         : {}),
+      ...(direction === 'range' && options.repairRange ? { repairRange: options.repairRange } : {}),
     };
     const wire = buildEventPageOfferControlWire(groupId, offer);
     if (!wireFitsReticulum(wire)) {
@@ -10540,8 +10703,12 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       }
       const sourcePeerHash = offer.sourcePeerHash || payload.peerPresenceHash || '';
+      const repairRange = offer.direction === 'range'
+        ? normalizeReticulumChatAuthorRange(offer.repairRange)
+        : null;
       const validWindowEvents: ReticulumChatEvent[] = [];
       let insertedCount = 0;
+      let insertedRepairRangeCount = 0;
       let rejectedInvalidCount = 0;
       let rejectedOutOfBoundsCount = 0;
       let rejectedNonMemberCount = 0;
@@ -10618,6 +10785,14 @@ export class ReticulumChatManager extends EventEmitter {
         this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
         if (this.acceptValidatedEvent(event, false, { emitSummary: false })) {
           insertedCount += 1;
+          if (
+            repairRange &&
+            event.authorAddress === repairRange.a &&
+            event.authorSeq >= repairRange.from &&
+            event.authorSeq <= repairRange.to
+          ) {
+            insertedRepairRangeCount += 1;
+          }
           this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
           this.emit('event', { event });
         }
@@ -10654,6 +10829,9 @@ export class ReticulumChatManager extends EventEmitter {
       if (insertedCount > 0) {
         this.emitSummaryChanged(offer.groupId);
       }
+      if (repairRange && sourcePeerHash && insertedRepairRangeCount > 0) {
+        this.clearAuthorGapRangeSuppression(sourcePeerHash, offer.groupId, repairRange);
+      }
       loggerLog(
         `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} skipped_known=${skippedKnownCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} more=${page.more === true}`
       );
@@ -10667,7 +10845,14 @@ export class ReticulumChatManager extends EventEmitter {
       );
       if (page.more === true) {
         if (offer.direction === 'range') {
-          if (sourcePeerHash) {
+          if (sourcePeerHash && repairRange && insertedRepairRangeCount === 0) {
+            this.markAuthorGapRangeNoProgress(
+              sourcePeerHash,
+              offer.groupId,
+              repairRange,
+              'range_page_more_no_progress'
+            );
+          } else if (sourcePeerHash) {
             this.requestKnownAuthorGaps(
               offer.groupId,
               sourcePeerHash,
@@ -10700,6 +10885,13 @@ export class ReticulumChatManager extends EventEmitter {
             }
           }
         }
+      } else if (repairRange && sourcePeerHash && insertedRepairRangeCount === 0) {
+        this.markAuthorGapRangeNoProgress(
+          sourcePeerHash,
+          offer.groupId,
+          repairRange,
+          'range_page_no_progress'
+        );
       }
     } catch (err) {
       loggerWarn('[ReticulumChat] Failed to import event page resource:', err);

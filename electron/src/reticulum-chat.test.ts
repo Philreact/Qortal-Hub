@@ -8990,7 +8990,7 @@ describe('reticulum chat manager', () => {
 
     expect(direct.some((wire) => wire.k === 'event_page_offer')).toBe(true);
     const offer = direct.find((wire) => wire.k === 'event_page_offer') as any;
-    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 2 });
+    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 2, r: [first.authorAddress, 1, 2] });
     expect(resources).toHaveLength(1);
     expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
@@ -9046,7 +9046,7 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const offer = direct.find((wire) => wire.k === 'event_page_offer') as any;
-    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 100, more: 1 });
+    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 100, more: 1, r: [events[0].authorAddress, 1, 105] });
     manager.close();
   });
 
@@ -9611,6 +9611,7 @@ describe('reticulum chat manager', () => {
       eventCount: pageEvents.length,
       sourcePeerHash: 'peer-range',
       hasMore: true,
+      repairRange: { a: localFirst.authorAddress, from: 2, to: 102 },
     });
     direct.length = 0;
 
@@ -9626,6 +9627,91 @@ describe('reticulum chat manager', () => {
       k: 'range_req',
       g: 57,
       ranges: [{ a: localFirst.authorAddress, from: 2, to: 3 }],
+    }));
+    manager.close();
+  });
+
+  it('suppresses no-progress author gap range pages only for the serving peer', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (peer: string, message: Record<string, unknown>) => {
+        direct.push({ peer, wire: message });
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const dbPath = tempDbPath();
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: bridge as any,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const events = signedAuthorEvents([
+      { eventId: 'event-gap-suppress-local-1', groupId: 57, authorSeq: 1, timestamp: 10_001 },
+      { eventId: 'event-gap-suppress-local-103', groupId: 57, authorSeq: 103, timestamp: 10_103 },
+    ]);
+    const localFirst = events[0];
+    const localLatest = events[1];
+    expect((manager as any).db.insertEvent(localFirst, true)).toBe(true);
+    expect((manager as any).db.insertEvent(localLatest, true)).toBe(true);
+    const page = {
+      v: 1,
+      g: 57,
+      c: '*',
+      d: 'range',
+      more: true,
+      start: { id: localLatest.eventId, ts: localLatest.timestamp },
+      end: { id: localLatest.eventId, ts: localLatest.timestamp },
+      wh: (manager as any).db.computeWindowHash([localLatest]),
+      events: [localLatest],
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const transferId = 'range-page-no-progress-transfer';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).eventPageOffers.set(transferId, {
+      transferId,
+      groupId: 57,
+      channelId: '*',
+      direction: 'range',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: 1,
+      sourcePeerHash: 'peer-range',
+      hasMore: true,
+      repairRange: { a: localFirst.authorAddress, from: 3, to: 102 },
+    });
+    direct.length = 0;
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-range',
+    });
+
+    expect(direct).toHaveLength(0);
+
+    expect((manager as any).requestKnownAuthorGaps(57, 'peer-range', 'test', true)).toBe(false);
+    expect(direct).toHaveLength(0);
+
+    expect((manager as any).requestKnownAuthorGaps(57, 'peer-other', 'test', true)).toBe(true);
+    expect(direct).toContainEqual(expect.objectContaining({
+      peer: 'peer-other',
+      wire: expect.objectContaining({
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 57,
+        ranges: [{ a: localFirst.authorAddress, from: 3, to: 102 }],
+      }),
     }));
     manager.close();
   });
