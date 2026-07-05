@@ -59,6 +59,9 @@ export type ReticulumChatSummaryAtomEntry = {
 export const reticulumChatSummariesAtom = atomWithReset<
   Record<string, ReticulumChatSummaryAtomEntry>
 >({});
+export const reticulumDirectSummariesAtom = atomWithReset<Record<string, any>>(
+  {}
+);
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);

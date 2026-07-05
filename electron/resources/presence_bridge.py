@@ -663,6 +663,8 @@ _RETICULUM_CHAT_SOFT_FANOUT_TYPES = {
     "hello",
     "group_sub",
     "group_digest",
+    "dm_notify",
+    "dm_probe",
     "typing",
 }
 _reticulum_chat_digest_fanout_recent: Dict[Tuple[str, str, str], float] = {}

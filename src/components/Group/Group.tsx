@@ -65,6 +65,7 @@ import {
   memberGroupsAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
+  reticulumDirectSummariesAtom,
   reticulumChatSummariesAtom,
   selectedGroupIdAtom,
   timestampEnterDataAtom,
@@ -511,6 +512,10 @@ export const Group = ({
     groupChatTimestampsAtom
   );
   const setReticulumChatSummaries = useSetAtom(reticulumChatSummariesAtom);
+  const [reticulumDirectSummaries, setReticulumDirectSummaries] = useAtom(
+    reticulumDirectSummariesAtom
+  );
+  const [reticulumDirectEnabled, setReticulumDirectEnabled] = useState(false);
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
   const reticulumBackgroundProcessedEventIdsRef = useRef<Map<string, number>>(
     new Map()
@@ -1267,6 +1272,62 @@ export const Group = ({
     };
   }, [refreshReticulumChatSummaries, scheduleReticulumChatSummariesRefresh]);
 
+  const refreshReticulumDirectSummaries = useCallback(async (enabled = reticulumDirectEnabled) => {
+    if (!myAddress || !enabled) {
+      setReticulumDirectSummaries({});
+      return;
+    }
+    try {
+      const summaries = await window.reticulumChat?.getDirectSummaries?.(
+        myAddress
+      );
+      if (!Array.isArray(summaries)) {
+        setReticulumDirectSummaries({});
+        return;
+      }
+      const next = summaries.reduce((acc, summary: any) => {
+        const peerAddress = String(summary?.peerAddress || '').trim();
+        if (!peerAddress) return acc;
+        acc[peerAddress] = summary;
+        return acc;
+      }, {} as Record<string, any>);
+      setReticulumDirectSummaries(next);
+    } catch (error) {
+      console.error('[ReticulumChat] Failed to refresh DM summaries:', error);
+    }
+  }, [myAddress, reticulumDirectEnabled, setReticulumDirectSummaries]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const enabled = (await window.reticulumChat?.isEnabled?.()) === true;
+      if (cancelled) return;
+      setReticulumDirectEnabled(enabled);
+      if (!enabled || !myAddress) {
+        setReticulumDirectSummaries({});
+        void window.reticulumChat?.setLocalDmAddresses?.([]);
+        return;
+      }
+      await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
+      await refreshReticulumDirectSummaries(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [myAddress, refreshReticulumDirectSummaries, setReticulumDirectSummaries]);
+
+  useEffect(() => {
+    if (!reticulumDirectEnabled || !myAddress) return;
+    const offSummaryChanged =
+      window.reticulumChat?.onDirectSummaryChanged?.(() => {
+        void refreshReticulumDirectSummaries();
+      });
+    void refreshReticulumDirectSummaries();
+    return () => {
+      offSummaryChanged?.();
+    };
+  }, [myAddress, refreshReticulumDirectSummaries, reticulumDirectEnabled]);
+
   const refreshHomeDataFunc = useCallback(() => {
     setGroupSection('default');
     setTimeout(() => {
@@ -1325,32 +1386,78 @@ export const Group = ({
     }
   }, []);
 
+  const reticulumDirectRows = useMemo(() => {
+    if (!reticulumDirectEnabled) return [];
+    return Object.values(reticulumDirectSummaries || {})
+      .map((summary: any) => {
+        const peerAddress = String(summary?.peerAddress || '').trim();
+        const lastEvent = summary?.lastEvent || null;
+        if (!peerAddress || !lastEvent) return null;
+        const friend = dmFriendsByAddress?.[peerAddress];
+        return {
+          address: peerAddress,
+          name: friend?.name || peerAddress,
+          timestamp: Number(summary?.updatedAt || lastEvent.timestamp || 0),
+          sender: lastEvent.senderAddress,
+          senderName:
+            lastEvent.senderAddress === myAddress
+              ? userInfo?.name
+              : friend?.name || peerAddress,
+          reticulumDirect: true,
+          unreadCount: Number(summary?.unreadCount || 0),
+        };
+      })
+      .filter(Boolean);
+  }, [
+    dmFriendsByAddress,
+    myAddress,
+    reticulumDirectEnabled,
+    reticulumDirectSummaries,
+    userInfo?.name,
+  ]);
+
+  const mergedDirectRows = useMemo(() => {
+    if (!reticulumDirectEnabled || reticulumDirectRows.length === 0) return directs;
+    const byAddress = new Map<string, any>();
+    for (const direct of directs || []) {
+      if (direct?.address) byAddress.set(direct.address, direct);
+    }
+    for (const direct of reticulumDirectRows) {
+      const existing = byAddress.get(direct.address);
+      if (!existing || Number(direct.timestamp || 0) >= Number(existing.timestamp || 0)) {
+        byAddress.set(direct.address, { ...(existing || {}), ...direct });
+      }
+    }
+    return [...byAddress.values()];
+  }, [directs, reticulumDirectEnabled, reticulumDirectRows]);
+
   const directChatHasUnread = useMemo(() => {
     let hasUnread = false;
-    directs.forEach((direct) => {
+    mergedDirectRows.forEach((direct) => {
       if (
-        direct?.sender !== myAddress &&
-        direct?.timestamp &&
-        ((!timestampEnterData[direct?.address] &&
-          Date.now() - direct?.timestamp <
-            timeDifferenceForNotificationChats) ||
-          timestampEnterData[direct?.address] < direct?.timestamp)
+        Number(direct?.unreadCount || 0) > 0 ||
+        (direct?.sender !== myAddress &&
+          direct?.timestamp &&
+          ((!timestampEnterData[direct?.address] &&
+            Date.now() - direct?.timestamp <
+              timeDifferenceForNotificationChats) ||
+            timestampEnterData[direct?.address] < direct?.timestamp))
       ) {
         hasUnread = true;
       }
     });
     return hasUnread;
-  }, [timestampEnterData, directs, myAddress]);
+  }, [timestampEnterData, mergedDirectRows, myAddress]);
 
   const displayDirects = useMemo(
     () =>
       mergeDirectsWithFriends(
-        directs,
+        mergedDirectRows,
         dmFriendsByAddress,
         myAddress,
         userInfo?.name
       ),
-    [directs, dmFriendsByAddress, myAddress, userInfo?.name]
+    [mergedDirectRows, dmFriendsByAddress, myAddress, userInfo?.name]
   );
 
   const getSecretKey = useCallback(
@@ -1691,7 +1798,8 @@ export const Group = ({
     if (!myAddress) return;
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
-    void window.reticulumChat?.isEnabled?.().then((enabled) => {
+    void (async () => {
+      const enabled = await window.reticulumChat?.isEnabled?.();
       if (cancelled || enabled !== true) return;
       unsubscribe = window.reticulumChat?.onEvent?.((payload) => {
         const event = payload?.event as ReticulumBackgroundEvent | undefined;
@@ -1704,7 +1812,7 @@ export const Group = ({
         });
       });
       if (cancelled) unsubscribe?.();
-    });
+    })();
     return () => {
       cancelled = true;
       unsubscribe?.();
@@ -1716,7 +1824,8 @@ export const Group = ({
     const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
     if (groupIds.length === 0) return;
     let cancelled = false;
-    void window.reticulumChat?.isEnabled?.().then(async (enabled) => {
+    void (async () => {
+      const enabled = await window.reticulumChat?.isEnabled?.();
       if (cancelled || enabled !== true) return;
       for (const groupId of groupIds) {
         if (cancelled) return;
@@ -1731,7 +1840,7 @@ export const Group = ({
           await processReticulumBackgroundEvent(event);
         }
       }
-    });
+    })();
     return () => {
       cancelled = true;
     };

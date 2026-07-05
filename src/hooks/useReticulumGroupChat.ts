@@ -105,9 +105,10 @@ export function useReticulumGroupChat(
 
   useEffect(() => {
     let cancelled = false;
-    void window.reticulumChat?.isEnabled?.().then((value) => {
+    void (async () => {
+      const value = await window.reticulumChat?.isEnabled?.();
       if (!cancelled) setEnabled(value === true);
-    });
+    })();
     return () => {
       cancelled = true;
     };

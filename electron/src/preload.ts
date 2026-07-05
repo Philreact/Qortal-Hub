@@ -1379,6 +1379,11 @@ try {
           'reticulumChat:setLocalGroupMemberships',
           groupIds
         ) as Promise<{ success: boolean; error?: string }>,
+      setLocalDmAddresses: async (addresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalDmAddresses',
+          addresses
+        ) as Promise<{ success: boolean; error?: string }>,
       subscribeGroup: async (groupId: number) =>
         ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
           success: boolean;
@@ -1406,6 +1411,38 @@ try {
           success: boolean;
           error?: string;
         }>,
+      publishDirectEvent: async (event: unknown) =>
+        ipcRenderer.invoke('reticulumChat:publishDirectEvent', event) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      getDirectHistory: async (
+        myAddress: string,
+        peerAddress: string,
+        limit?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectHistory',
+          myAddress,
+          peerAddress,
+          limit
+        ) as Promise<unknown[]>,
+      getDirectSummaries: async (myAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectSummaries',
+          myAddress
+        ) as Promise<unknown[]>,
+      markDirectRead: async (
+        myAddress: string,
+        peerAddress: string,
+        upToTimestamp: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markDirectRead',
+          myAddress,
+          peerAddress,
+          upToTimestamp
+        ) as Promise<{ success: boolean; error?: string }>,
       sendTyping: async (
         groupId: number,
         channelId: string,
@@ -1555,6 +1592,30 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
           ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onDirectEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directEvent', handler);
+        ipcRenderer.send('reticulumChat:directEvent:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directEvent', handler);
+          ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
+        };
+      },
+      onDirectSummaryChanged: (
+        cb: (payload: { conversationId?: string; peerAddress?: string }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { conversationId?: string; peerAddress?: string });
+        };
+        ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
+        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directSummaryChanged', handler);
+          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
         };
       },
       onResource: (
@@ -1648,6 +1709,11 @@ try {
           'reticulumChat:setLocalGroupMemberships',
           groupIds
         ) as Promise<{ success: boolean; error?: string }>,
+      setLocalDmAddresses: async (addresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalDmAddresses',
+          addresses
+        ) as Promise<{ success: boolean; error?: string }>,
       subscribeGroup: async (groupId: number) =>
         ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
           success: boolean;
@@ -1675,6 +1741,38 @@ try {
           success: boolean;
           error?: string;
         }>,
+      publishDirectEvent: async (event: unknown) =>
+        ipcRenderer.invoke('reticulumChat:publishDirectEvent', event) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      getDirectHistory: async (
+        myAddress: string,
+        peerAddress: string,
+        limit?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectHistory',
+          myAddress,
+          peerAddress,
+          limit
+        ) as Promise<unknown[]>,
+      getDirectSummaries: async (myAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectSummaries',
+          myAddress
+        ) as Promise<unknown[]>,
+      markDirectRead: async (
+        myAddress: string,
+        peerAddress: string,
+        upToTimestamp: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markDirectRead',
+          myAddress,
+          peerAddress,
+          upToTimestamp
+        ) as Promise<{ success: boolean; error?: string }>,
       sendTyping: async (
         groupId: number,
         channelId: string,
@@ -1824,6 +1922,30 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
           ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onDirectEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directEvent', handler);
+        ipcRenderer.send('reticulumChat:directEvent:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directEvent', handler);
+          ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
+        };
+      },
+      onDirectSummaryChanged: (
+        cb: (payload: { conversationId?: string; peerAddress?: string }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { conversationId?: string; peerAddress?: string });
+        };
+        ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
+        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directSummaryChanged', handler);
+          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
         };
       },
       onResource: (

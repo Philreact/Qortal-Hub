@@ -2,7 +2,12 @@ import Database, { type Database as DB, type Statement } from 'better-sqlite3';
 import * as nodeCrypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ReticulumChatEvent, ReticulumChatMentionTarget } from './reticulum-chat';
+import type {
+  ReticulumChatEvent,
+  ReticulumChatMentionTarget,
+  ReticulumDmEvent,
+  ReticulumDmSummary,
+} from './reticulum-chat';
 
 export const RETICULUM_CHAT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
 export const RETICULUM_CHAT_RELAY_CACHE_MAX_BYTES = 50 * 1024 * 1024;
@@ -206,6 +211,28 @@ type EventRow = {
   scrubbed_at?: number | null;
 };
 
+type DirectEventRow = {
+  event_id: string;
+  conversation_id: string;
+  sender_address: string;
+  recipient_address: string;
+  sender_public_key: string;
+  sender_seq: number;
+  timestamp: number;
+  event_type: string;
+  target_event_id: string | null;
+  reply_to_event_id: string | null;
+  payload: string;
+  payload_hash: string;
+  signature: string;
+  own_event: number;
+  read_at: number;
+  stored_at: number;
+  wire_bytes: number;
+  delivery_status?: string;
+  delivery_updated_at?: number;
+};
+
 type MessageProjectionRow = {
   root_event_id: string;
   group_id: number;
@@ -359,6 +386,33 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
   };
 }
 
+function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
+  return {
+    eventId: row.event_id,
+    conversationId: row.conversation_id,
+    senderAddress: row.sender_address,
+    recipientAddress: row.recipient_address,
+    senderPublicKey: row.sender_public_key,
+    senderSeq: row.sender_seq,
+    timestamp: row.timestamp,
+    eventType: row.event_type as ReticulumDmEvent['eventType'],
+    ...(row.target_event_id ? { targetEventId: row.target_event_id } : {}),
+    ...(row.reply_to_event_id ? { replyToEventId: row.reply_to_event_id } : {}),
+    payload: row.payload,
+    payloadHash: row.payload_hash,
+    signature: row.signature,
+    localDeliveryStatus:
+      row.delivery_status === 'pending' ||
+      row.delivery_status === 'sent' ||
+      row.delivery_status === 'received'
+        ? row.delivery_status
+        : undefined,
+    ...(Number.isFinite(Number(row.delivery_updated_at))
+      ? { localDeliveryUpdatedAt: Number(row.delivery_updated_at) }
+      : {}),
+  };
+}
+
 function messageProjectionRowToEvent(row: MessageProjectionRow): ReticulumChatEvent {
   const mentionTargets = parseMentionTargets(row.mention_targets);
   return {
@@ -377,6 +431,23 @@ function messageProjectionRowToEvent(row: MessageProjectionRow): ReticulumChatEv
     ...(mentionTargets.length > 0 ? { mentionTargets } : {}),
     signature: row.signature,
   };
+}
+
+export function normalizeReticulumDmConversationId(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(normalized) ? normalized : '';
+}
+
+export function reticulumDmConversationId(addressA: string, addressB: string): string {
+  const first = String(addressA || '').trim();
+  const second = String(addressB || '').trim();
+  if (!first || !second) return '';
+  const [a, b] = [first, second].sort();
+  return nodeCrypto
+    .createHash('sha256')
+    .update(`rchat-dm-v1:${a}:${b}`, 'utf8')
+    .digest('hex');
 }
 
 export function normalizeReticulumChatChannelId(value: unknown): string {
@@ -793,6 +864,7 @@ export class ReticulumChatDatabase {
     this.migrateChannelWriteModeUpdatedAtSchema();
     this.migrateEventMentionTargetsSchema();
     this.migrateEventScrubbedAtSchema();
+    this.migrateDirectDeliveryStatusSchema();
     this.initRelayCacheSchema();
     this.initGroupKeySchema();
 
@@ -1545,6 +1617,203 @@ export class ReticulumChatDatabase {
 
   close(): void {
     this.db.close();
+  }
+
+  insertDirectEvent(
+    event: ReticulumDmEvent,
+    ownEvent: boolean,
+    deliveryStatus?: 'pending' | 'sent' | 'received'
+  ): boolean {
+    const conversationId = normalizeReticulumDmConversationId(event.conversationId);
+    if (!conversationId) return false;
+    const now = Date.now();
+    const status = deliveryStatus || (ownEvent ? 'pending' : 'received');
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO rchat_dm_events
+        (event_id, conversation_id, sender_address, recipient_address, sender_public_key,
+         sender_seq, timestamp, event_type, target_event_id, reply_to_event_id, payload,
+         payload_hash, signature, own_event, read_at, stored_at, wire_bytes,
+         delivery_status, delivery_updated_at)
+      VALUES
+        (@event_id, @conversation_id, @sender_address, @recipient_address, @sender_public_key,
+         @sender_seq, @timestamp, @event_type, @target_event_id, @reply_to_event_id, @payload,
+         @payload_hash, @signature, @own_event, @read_at, @stored_at, @wire_bytes,
+         @delivery_status, @delivery_updated_at)
+    `).run({
+      event_id: event.eventId,
+      conversation_id: conversationId,
+      sender_address: event.senderAddress,
+      recipient_address: event.recipientAddress,
+      sender_public_key: event.senderPublicKey,
+      sender_seq: event.senderSeq,
+      timestamp: event.timestamp,
+      event_type: event.eventType,
+      target_event_id: event.targetEventId ?? null,
+      reply_to_event_id: event.replyToEventId ?? null,
+      payload: event.payload,
+      payload_hash: event.payloadHash,
+      signature: event.signature,
+      own_event: ownEvent ? 1 : 0,
+      read_at: ownEvent ? now : 0,
+      stored_at: now,
+      wire_bytes: Buffer.byteLength(JSON.stringify(event), 'utf8'),
+      delivery_status: status,
+      delivery_updated_at: now,
+    });
+    return result.changes > 0;
+  }
+
+  markDirectDeliveryStatus(
+    eventId: string,
+    status: 'pending' | 'sent' | 'received'
+  ): void {
+    if (!eventId) return;
+    this.db
+      .prepare(`
+        UPDATE rchat_dm_events
+        SET delivery_status = ?,
+            delivery_updated_at = ?
+        WHERE event_id = ?
+      `)
+      .run(status, Date.now(), eventId);
+  }
+
+  hasDirectEvent(eventId: string): boolean {
+    if (!eventId) return false;
+    const row = this.db
+      .prepare('SELECT 1 FROM rchat_dm_events WHERE event_id = ? LIMIT 1')
+      .get(eventId);
+    return !!row;
+  }
+
+  getDirectEvent(eventId: string): ReticulumDmEvent | null {
+    if (!eventId) return null;
+    const row = this.db
+      .prepare('SELECT * FROM rchat_dm_events WHERE event_id = ? LIMIT 1')
+      .get(eventId) as DirectEventRow | undefined;
+    return row ? rowToDirectEvent(row) : null;
+  }
+
+  getDirectHistory(conversationId: string, limit = 100): ReticulumDmEvent[] {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized) return [];
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM (
+          SELECT * FROM rchat_dm_events
+          WHERE conversation_id = ?
+          ORDER BY timestamp DESC, event_id DESC
+          LIMIT ?
+        )
+        ORDER BY timestamp ASC, event_id ASC
+      `)
+      .all(normalized, safeLimit) as DirectEventRow[];
+    return rows.map(rowToDirectEvent);
+  }
+
+  getDirectEventsAfter(
+    conversationId: string,
+    afterTimestamp: number,
+    limit = 50
+  ): ReticulumDmEvent[] {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized) return [];
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ? AND timestamp > ?
+        ORDER BY timestamp ASC, event_id ASC
+        LIMIT ?
+      `)
+      .all(normalized, Math.max(0, Math.floor(afterTimestamp || 0)), safeLimit) as DirectEventRow[];
+    return rows.map(rowToDirectEvent);
+  }
+
+  getDirectLatestEvent(conversationId: string): ReticulumDmEvent | null {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized) return null;
+    const row = this.db
+      .prepare(`
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ?
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT 1
+      `)
+      .get(normalized) as DirectEventRow | undefined;
+    return row ? rowToDirectEvent(row) : null;
+  }
+
+  getDirectAuthorMaxSeq(conversationId: string, senderAddress: string): number {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized || !senderAddress) return 0;
+    const row = this.db
+      .prepare(`
+        SELECT MAX(sender_seq) AS max_seq
+        FROM rchat_dm_events
+        WHERE conversation_id = ? AND sender_address = ?
+      `)
+      .get(normalized, senderAddress) as { max_seq?: number | null } | undefined;
+    return Number(row?.max_seq || 0);
+  }
+
+  getDirectSummaries(myAddress: string): ReticulumDmSummary[] {
+    const address = String(myAddress || '').trim();
+    if (!address) return [];
+    const rows = this.db
+      .prepare(`
+        SELECT e.*
+        FROM rchat_dm_events e
+        WHERE (e.sender_address = ? OR e.recipient_address = ?)
+          AND e.event_id = (
+            SELECT latest.event_id
+            FROM rchat_dm_events latest
+            WHERE latest.conversation_id = e.conversation_id
+            ORDER BY latest.timestamp DESC, latest.event_id DESC
+            LIMIT 1
+          )
+        ORDER BY e.timestamp DESC, e.event_id DESC
+      `)
+      .all(address, address) as DirectEventRow[];
+    return rows.map((row) => {
+      const event = rowToDirectEvent(row);
+      const peerAddress =
+        event.senderAddress === address ? event.recipientAddress : event.senderAddress;
+      const unread = this.db
+        .prepare(`
+          SELECT COUNT(*) AS count
+          FROM rchat_dm_events
+          WHERE conversation_id = ?
+            AND recipient_address = ?
+            AND sender_address <> ?
+            AND read_at = 0
+        `)
+        .get(event.conversationId, address, address) as { count?: number } | undefined;
+      return {
+        peerAddress,
+        conversationId: event.conversationId,
+        lastEvent: event,
+        unreadCount: Number(unread?.count || 0),
+        updatedAt: event.timestamp,
+      };
+    });
+  }
+
+  markDirectRead(conversationId: string, myAddress: string, upToTimestamp: number): void {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    const address = String(myAddress || '').trim();
+    if (!normalized || !address || !Number.isFinite(upToTimestamp)) return;
+    this.db
+      .prepare(`
+        UPDATE rchat_dm_events
+        SET read_at = MAX(read_at, ?)
+        WHERE conversation_id = ?
+          AND recipient_address = ?
+          AND timestamp <= ?
+          AND read_at = 0
+      `)
+      .run(Date.now(), normalized, address, Math.floor(upToTimestamp));
   }
 
   insertEvent(event: ReticulumChatEvent, ownEvent: boolean): boolean {
@@ -4598,6 +4867,34 @@ export class ReticulumChatDatabase {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (group_id, category_id)
       );
+      CREATE TABLE IF NOT EXISTS rchat_dm_events (
+        event_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        sender_address TEXT NOT NULL,
+        recipient_address TEXT NOT NULL,
+        sender_public_key TEXT NOT NULL,
+        sender_seq INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        target_event_id TEXT,
+        reply_to_event_id TEXT,
+        payload TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        own_event INTEGER NOT NULL DEFAULT 0,
+        read_at INTEGER NOT NULL DEFAULT 0,
+        stored_at INTEGER NOT NULL,
+        wire_bytes INTEGER NOT NULL,
+        delivery_status TEXT NOT NULL DEFAULT 'received',
+        delivery_updated_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (conversation_id, sender_address, sender_seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_conversation_time
+        ON rchat_dm_events (conversation_id, timestamp, event_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_sender_seq
+        ON rchat_dm_events (conversation_id, sender_address, sender_seq);
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_unread
+        ON rchat_dm_events (conversation_id, recipient_address, read_at, timestamp);
     `);
   }
 
@@ -4759,5 +5056,30 @@ export class ReticulumChatDatabase {
       ALTER TABLE reticulum_chat_events
         ADD COLUMN scrubbed_at INTEGER
     `);
+  }
+
+  private migrateDirectDeliveryStatusSchema(): void {
+    const columns = this.db
+      .prepare('PRAGMA table_info(rchat_dm_events)')
+      .all() as Array<{ name?: string }>;
+    if (columns.length === 0) return;
+    const hasDeliveryStatus = columns.some(
+      (column) => column.name === 'delivery_status'
+    );
+    if (!hasDeliveryStatus) {
+      this.db.exec(`
+        ALTER TABLE rchat_dm_events
+          ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'received'
+      `);
+    }
+    const hasDeliveryUpdatedAt = columns.some(
+      (column) => column.name === 'delivery_updated_at'
+    );
+    if (!hasDeliveryUpdatedAt) {
+      this.db.exec(`
+        ALTER TABLE rchat_dm_events
+          ADD COLUMN delivery_updated_at INTEGER NOT NULL DEFAULT 0
+      `);
+    }
   }
 }

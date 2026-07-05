@@ -2450,6 +2450,14 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     validateGroupMember: validateQortalGroupMember,
     validateGroupAdmin: validateQortalGroupAdmin,
     getVerifiedReticulumPeers: () => getPresenceManager()?.getReticulumVerifiedPeers() ?? [],
+    hasGoodOverlayHealth: () => {
+      const manager = getPresenceManager();
+      if (!manager) return false;
+      return (
+        manager.getReticulumActiveNeighborHashes().length > 0 ||
+        manager.getReticulumVerifiedPeers().length > 0
+      );
+    },
     resourceStore: getReticulumResourceStore(),
   });
   attachReticulumChatListeners(reticulumChat);
@@ -2975,6 +2983,7 @@ export function attachPresenceListeners(
     const verified = typeof state?.verified === 'number' ? state.verified : 0;
     if (activeNeighbors > 0 || publishFanout > 0 || verified > 0) {
       scheduleReticulumChatSubscriptionReplay();
+      getReticulumChatManager()?.notifyOverlayHealthChanged(true);
     }
   });
   manager.on(
@@ -3224,6 +3233,8 @@ const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
+const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
+const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
 let reticulumChatListenersAttached = false;
 
@@ -3275,6 +3286,22 @@ export function attachReticulumChatListeners(
     )
   );
 
+  manager.on('directEvent', (payload: unknown) =>
+    broadcastToSet(
+      reticulumDirectEventSubscribers,
+      'reticulumChat:directEvent',
+      payload
+    )
+  );
+
+  manager.on('directSummaryChanged', (payload: unknown) =>
+    broadcastToSet(
+      reticulumDirectSummarySubscribers,
+      'reticulumChat:directSummaryChanged',
+      payload
+    )
+  );
+
   manager.on('resource', (payload: unknown) =>
     broadcastToSet(
       reticulumChatResourceSubscribers,
@@ -3309,6 +3336,79 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     manager.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
+    return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:setLocalDmAddresses',
+  async (_event, addresses: string[]) => {
+    const settings = await readAppSettings();
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    if (settings.reticulumChatEnabled !== true) {
+      manager.setLocalDmAddresses([]);
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    manager.setLocalDmAddresses(Array.isArray(addresses) ? addresses : []);
+    return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:publishDirectEvent',
+  async (_event, event: unknown) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    const result = await manager.publishDirectEvent(event as any);
+    if (result.ok) return { success: true };
+    const failed = result as Exclude<typeof result, { ok: true }>;
+    return { success: false, error: failed.error ?? failed.reason };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDirectHistory',
+  async (_event, myAddress: string, peerAddress: string, limit?: number) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) return [];
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.getDirectHistory(myAddress, peerAddress, limit)
+      : [];
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDirectSummaries',
+  async (_event, myAddress: string) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) return [];
+    const manager = getReticulumChatManager();
+    return manager ? manager.getDirectSummaries(myAddress) : [];
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:markDirectRead',
+  async (_event, myAddress: string, peerAddress: string, upToTimestamp: number) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    manager.markDirectRead(myAddress, peerAddress, Number(upToTimestamp));
     return { success: true };
   }
 );
@@ -3974,6 +4074,18 @@ ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:summaryChanged:unsubscribe', (event) => {
   reticulumChatSummarySubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:directEvent:subscribe', (event) => {
+  reticulumDirectEventSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:directEvent:unsubscribe', (event) => {
+  reticulumDirectEventSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:directSummaryChanged:subscribe', (event) => {
+  reticulumDirectSummarySubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:directSummaryChanged:unsubscribe', (event) => {
+  reticulumDirectSummarySubscribers.delete(event.sender);
 });
 
 ipcMain.on('reticulumChat:resource:subscribe', (event) => {

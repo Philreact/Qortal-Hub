@@ -15,14 +15,24 @@ import {
   buildReticulumChatResourceAuthSignedFields,
   buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
+  buildReticulumDmSignedFields,
+  buildReticulumDmNotifySignedFields,
+  buildReticulumDmProbeSignedFields,
+  buildReticulumDmRequestSignedFields,
   hashReticulumChatPayload,
   isDisabledRelayCache,
   ReticulumChatManager,
   serializeReticulumChatEvent,
   type ReticulumChatEvent,
   type ReticulumChatWire,
+  type ReticulumDmEvent,
+  validateReticulumDmEventShape,
   validateReticulumChatEventShape,
   verifyReticulumChatEvent,
+  verifyReticulumDmEvent,
+  verifyReticulumDmNotify,
+  verifyReticulumDmProbe,
+  verifyReticulumDmRequest,
   type ReticulumChatManagerOptions,
 } from './reticulum-chat';
 import {
@@ -34,6 +44,7 @@ import {
   hashReticulumChatMentionAddress,
   ReticulumChatDatabase,
   RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
+  reticulumDmConversationId,
 } from './reticulum-chat-db';
 import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
@@ -120,6 +131,122 @@ function signedAuthorEvents(
     event.signature = overrides.signature ?? base58Encode(sig);
     return event;
   });
+}
+
+function createDmIdentity() {
+  const kp = nacl.sign.keyPair();
+  const publicKey = base58Encode(kp.publicKey);
+  return {
+    address: deriveAddressFromPublicKey(publicKey),
+    publicKey,
+    secretKey: kp.secretKey,
+  };
+}
+
+function createDmSigner(identity: ReturnType<typeof createDmIdentity>): NonNullable<ReticulumChatManagerOptions['signLocalFields']> {
+  return async (fields) => {
+    const fullFields = {
+      ...fields,
+      authorAddress: identity.address,
+      authorPublicKey: identity.publicKey,
+    };
+    let signedFields: Record<string, unknown> = fullFields;
+    if (
+      fullFields.type === 'RCHAT_DM_REQ' &&
+      typeof fullFields.peerAddress === 'string' &&
+      typeof fullFields.after === 'number' &&
+      typeof fullFields.limit === 'number' &&
+      typeof fullFields.requesterPeerHash === 'string' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumDmRequestSignedFields({
+        peerAddress: fullFields.peerAddress,
+        after: fullFields.after,
+        limit: fullFields.limit,
+        requesterPeerHash: fullFields.requesterPeerHash,
+        requestId: fullFields.requestId,
+        authorAddress: identity.address,
+        authorPublicKey: identity.publicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_DM_NOTIFY' &&
+      typeof fullFields.peerAddress === 'string' &&
+      typeof fullFields.sourcePeerHash === 'string' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.maxHops === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumDmNotifySignedFields({
+        peerAddress: fullFields.peerAddress,
+        sourcePeerHash: fullFields.sourcePeerHash,
+        requestId: fullFields.requestId,
+        probeRequestId:
+          typeof fullFields.probeRequestId === 'string'
+            ? fullFields.probeRequestId
+            : undefined,
+        maxHops: fullFields.maxHops,
+        authorAddress: identity.address,
+        authorPublicKey: identity.publicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_DM_PROBE' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.maxHops === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumDmProbeSignedFields({
+        requestId: fullFields.requestId,
+        maxHops: fullFields.maxHops,
+        authorAddress: identity.address,
+        authorPublicKey: identity.publicKey,
+        timestamp: fullFields.timestamp,
+      });
+    }
+    return {
+      authorAddress: identity.address,
+      authorPublicKey: identity.publicKey,
+      signature: base58Encode(
+        nacl.sign.detached(
+          new Uint8Array(canonicalizeForSigning(signedFields)),
+          identity.secretKey
+        )
+      ),
+    };
+  };
+}
+
+function signedDmEvent(params: {
+  sender: ReturnType<typeof createDmIdentity>;
+  recipient: ReturnType<typeof createDmIdentity>;
+  eventId: string;
+  senderSeq: number;
+  timestamp: number;
+  payload?: string;
+}): ReticulumDmEvent {
+  const payload = params.payload ?? `message-${params.senderSeq}`;
+  const event: ReticulumDmEvent = {
+    eventId: params.eventId,
+    conversationId: reticulumDmConversationId(params.sender.address, params.recipient.address),
+    senderAddress: params.sender.address,
+    recipientAddress: params.recipient.address,
+    senderPublicKey: params.sender.publicKey,
+    senderSeq: params.senderSeq,
+    timestamp: params.timestamp,
+    eventType: 'message',
+    payload,
+    payloadHash: hashReticulumChatPayload(payload),
+    signature: '',
+  };
+  event.signature = base58Encode(
+    nacl.sign.detached(
+      new Uint8Array(canonicalizeForSigning(buildReticulumDmSignedFields(event))),
+      params.sender.secretKey
+    )
+  );
+  return event;
 }
 
 function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOptions['signLocalFields']> {
@@ -277,6 +404,59 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         sizeBytes: fullFields.sizeBytes,
         maxHops: fullFields.maxHops,
         expiresAt: fullFields.expiresAt,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_DM_NOTIFY' &&
+      typeof fullFields.peerAddress === 'string' &&
+      typeof fullFields.sourcePeerHash === 'string' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.maxHops === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumDmNotifySignedFields({
+        peerAddress: fullFields.peerAddress,
+        sourcePeerHash: fullFields.sourcePeerHash,
+        requestId: fullFields.requestId,
+        probeRequestId:
+          typeof fullFields.probeRequestId === 'string'
+            ? fullFields.probeRequestId
+            : undefined,
+        maxHops: fullFields.maxHops,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_DM_PROBE' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.maxHops === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumDmProbeSignedFields({
+        requestId: fullFields.requestId,
+        maxHops: fullFields.maxHops,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_DM_REQ' &&
+      typeof fullFields.peerAddress === 'string' &&
+      typeof fullFields.after === 'number' &&
+      typeof fullFields.limit === 'number' &&
+      typeof fullFields.requesterPeerHash === 'string' &&
+      typeof fullFields.requestId === 'string' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumDmRequestSignedFields({
+        peerAddress: fullFields.peerAddress,
+        after: fullFields.after,
+        limit: fullFields.limit,
+        requesterPeerHash: fullFields.requesterPeerHash,
+        requestId: fullFields.requestId,
         authorAddress,
         authorPublicKey,
         timestamp: fullFields.timestamp,
@@ -475,6 +655,107 @@ function signedResourceFindWire(params: {
   return wire;
 }
 
+function signedDmNotifyWire(params: {
+  addressB: string;
+  sourcePeerHash: string;
+  requestId: string;
+  probeRequestId?: string;
+  timestamp: number;
+}) {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumDmNotifySignedFields({
+    peerAddress: params.addressB,
+    sourcePeerHash: params.sourcePeerHash,
+    requestId: params.requestId,
+    probeRequestId: params.probeRequestId,
+    maxHops: 5,
+    authorAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    b: params.addressB,
+    sp: params.sourcePeerHash,
+    q: params.requestId,
+    ...(params.probeRequestId ? { r: params.probeRequestId } : {}),
+    p: authorPublicKey,
+    n: params.timestamp,
+    z: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
+}
+
+function signedDmProbeWire(params: {
+  requestId: string;
+  timestamp: number;
+}) {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const requesterAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumDmProbeSignedFields({
+    requestId: params.requestId,
+    maxHops: 5,
+    authorAddress: requesterAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    q: params.requestId,
+    p: authorPublicKey,
+    n: params.timestamp,
+    z: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
+}
+
+function signedDmRequestWire(params: {
+  addressB: string;
+  after: number;
+  limit: number;
+  requesterPeerHash: string;
+  requestId: string;
+  timestamp: number;
+}) {
+  const kp = nacl.sign.keyPair();
+  const authorPublicKey = base58Encode(kp.publicKey);
+  const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+  const fields = buildReticulumDmRequestSignedFields({
+    peerAddress: params.addressB,
+    after: params.after,
+    limit: params.limit,
+    requesterPeerHash: params.requesterPeerHash,
+    requestId: params.requestId,
+    authorAddress,
+    authorPublicKey,
+    timestamp: params.timestamp,
+  });
+  return {
+    b: params.addressB,
+    after: params.after,
+    limit: params.limit,
+    q: params.requestId,
+    rp: params.requesterPeerHash,
+    p: authorPublicKey,
+    n: params.timestamp,
+    z: base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        kp.secretKey
+      )
+    ),
+  };
+}
+
 function upsertTestChannel(
   manager: ReticulumChatManager,
   input: {
@@ -505,6 +786,12 @@ function tempDbPath(): string {
   );
 }
 
+async function flushAsyncWork(ticks = 8): Promise<void> {
+  for (let i = 0; i < ticks; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('reticulum chat protocol', () => {
   it('validates event shape and signature', () => {
     const event = signedEvent();
@@ -522,6 +809,56 @@ describe('reticulum chat protocol', () => {
     event.authorSeq += 1;
     expect(validateReticulumChatEventShape(event)).toBe(true);
     expect(verifyReticulumChatEvent(event)).toBe(false);
+  });
+
+  it('validates compact signed DM discovery controls', () => {
+    const now = Date.now();
+    const notify = signedDmNotifyWire({
+      addressB: 'Qrecipient',
+      sourcePeerHash: 'a'.repeat(32),
+      requestId: 'b'.repeat(8),
+      timestamp: now,
+    });
+    const probe = signedDmProbeWire({
+      requestId: 'c'.repeat(8),
+      timestamp: now,
+    });
+    const request = signedDmRequestWire({
+      addressB: 'Qrecipient',
+      after: now - 10_000,
+      limit: 50,
+      requesterPeerHash: 'd'.repeat(32),
+      requestId: 'e'.repeat(16),
+      timestamp: now,
+    });
+
+    expect(verifyReticulumDmNotify(notify, now)).toBe(true);
+    expect(verifyReticulumDmProbe(probe, now)).toBe(true);
+    expect(verifyReticulumDmRequest(request, now)).toBe(true);
+    expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_notify', d: notify })).toBe(true);
+    expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_probe', q: probe })).toBe(true);
+    expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_req', q: request })).toBe(true);
+  });
+
+  it('rejects rewritten signed DM discovery controls', () => {
+    const now = Date.now();
+    const notify = signedDmNotifyWire({
+      addressB: 'Qrecipient',
+      sourcePeerHash: 'a'.repeat(32),
+      requestId: 'b'.repeat(8),
+      timestamp: now,
+    });
+    const request = signedDmRequestWire({
+      addressB: 'Qrecipient',
+      after: now - 10_000,
+      limit: 50,
+      requesterPeerHash: 'd'.repeat(32),
+      requestId: 'e'.repeat(16),
+      timestamp: now,
+    });
+
+    expect(verifyReticulumDmNotify({ ...notify, sp: 'f'.repeat(32) }, now)).toBe(false);
+    expect(verifyReticulumDmRequest({ ...request, rp: 'f'.repeat(32) }, now)).toBe(false);
   });
 });
 
@@ -1739,6 +2076,421 @@ describe('reticulum chat manager', () => {
     await expect(validate(716, 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91')).resolves.toBe(true);
     expect(calls).toBe(2);
     manager.close();
+  });
+
+  it('defers the first direct DM probe until overlay health is good', async () => {
+    const local = createDmIdentity();
+    let healthy = false;
+    const fanout: ReticulumChatWire[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => healthy,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+
+    manager.setLocalDmAddresses([local.address]);
+    await flushAsyncWork();
+    expect(fanout.some((wire) => wire.k === 'dm_probe')).toBe(false);
+
+    healthy = true;
+    manager.notifyOverlayHealthChanged(true);
+    await flushAsyncWork();
+
+    const probes = fanout.filter(
+      (wire): wire is Extract<ReticulumChatWire, { k: 'dm_probe' }> =>
+        wire.k === 'dm_probe'
+    );
+    expect(probes).toHaveLength(1);
+    expect(verifyReticulumDmProbe(probes[0].q, Date.now())).toBe(true);
+    manager.close();
+  });
+
+  it('does not bypass explicit unhealthy overlay state with verified peers', async () => {
+    const local = createDmIdentity();
+    const fanout: ReticulumChatWire[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => false,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: 'b'.repeat(32),
+          address: 'Qpeer',
+          lastSeenAt: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+
+    manager.setLocalDmAddresses([local.address]);
+    await flushAsyncWork();
+    manager.notifyOverlayHealthChanged(true);
+    await flushAsyncWork();
+
+    expect(fanout.some((wire) => wire.k === 'dm_probe')).toBe(false);
+    manager.close();
+  });
+
+  it('runs recurring direct DM probes while overlay health stays good', async () => {
+    vi.useFakeTimers();
+    try {
+      const local = createDmIdentity();
+      const fanout: ReticulumChatWire[] = [];
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        signLocalFields: createDmSigner(local),
+        hasGoodOverlayHealth: () => true,
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getLocalDestinationHash: () => 'a'.repeat(32),
+          fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+            fanout.push(...messages);
+            return { ok: true as const };
+          },
+        } as any,
+      });
+
+      manager.setLocalDmAddresses([local.address]);
+      await flushAsyncWork();
+      expect(fanout.some((wire) => wire.k === 'dm_probe')).toBe(true);
+
+      fanout.length = 0;
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(fanout.some((wire) => wire.k === 'dm_probe')).toBe(true);
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks direct DM pages as continued when more events remain', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const conversationId = reticulumDmConversationId(sender.address, recipient.address);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => sourcePeerHash,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const source = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+    });
+    source.setLocalDmAddresses([sender.address]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sent.length = 0;
+
+    const first = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dm-source-page-1',
+      senderSeq: 1,
+      timestamp: Date.now() - 2_000,
+    });
+    const second = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dm-source-page-2',
+      senderSeq: 2,
+      timestamp: Date.now() - 1_000,
+    });
+    expect(validateReticulumDmEventShape(first)).toBe(true);
+    expect(verifyReticulumDmEvent(first)).toBe(true);
+    expect((source as any).localDmAddresses.has(sender.address)).toBe(true);
+    (source as any).db.getDirectEventsAfter = () => [first, second];
+
+    const requestId = 'c'.repeat(8);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmRequestSignedFields({
+      peerAddress: sender.address,
+      after: 0,
+      limit: 1,
+      requesterPeerHash,
+      requestId,
+      authorAddress: recipient.address,
+      authorPublicKey: recipient.publicKey,
+      timestamp,
+    });
+    await (source as any).handleDirectRequest(
+      {
+        t: 'RCHAT',
+        k: 'dm_req',
+        q: {
+          b: sender.address,
+          after: 0,
+          limit: 1,
+          q: requestId,
+          rp: requesterPeerHash,
+          p: recipient.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              recipient.secretKey
+            )
+          ),
+        },
+      },
+      requesterPeerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].peer).toBe(requesterPeerHash);
+    expect(sent[0].wire).toMatchObject({
+      t: 'RCHAT',
+      k: 'dm_page',
+      m: 1,
+    });
+    expect((sent[0].wire as Extract<ReticulumChatWire, { k: 'dm_page' }>).e).toHaveLength(1);
+    source.close();
+  });
+
+  it('continues direct DM pulls after importing a partial page', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const conversationId = reticulumDmConversationId(sender.address, recipient.address);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => requesterPeerHash,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: bridge as any,
+    });
+    receiver.setLocalDmAddresses([recipient.address]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sent.length = 0;
+    expect((receiver as any).localDmAddresses.has(recipient.address)).toBe(true);
+
+    const first = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dm-receiver-page-1',
+      senderSeq: 1,
+      timestamp: Date.now() - 1_000,
+    });
+    (receiver as any).acceptDirectEvent = () => true;
+    (receiver as any).db.getDirectLatestEvent = () => first;
+    (receiver as any).handleDirectPage(
+      {
+        t: 'RCHAT',
+        k: 'dm_page',
+        c: conversationId,
+        m: 1,
+        e: [first],
+      },
+      sourcePeerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const request = sent.find((item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req');
+    expect(request).toBeDefined();
+    expect(request?.wire).toMatchObject({
+      t: 'RCHAT',
+      k: 'dm_req',
+      q: {
+        b: sender.address,
+        a: first.timestamp - 1,
+        l: 50,
+      },
+    });
+    expect(
+      verifyReticulumDmRequest(
+        (request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q,
+        Date.now()
+      )
+    ).toBe(true);
+    receiver.close();
+  });
+
+  it('reuses DM notify route ids for missing-event pulls', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const inboundPeerHash = 'c'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => requesterPeerHash,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: bridge as any,
+    });
+    receiver.setLocalDmAddresses([recipient.address]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sent.length = 0;
+
+    const requestId = 'd'.repeat(8);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmNotifySignedFields({
+      peerAddress: recipient.address,
+      sourcePeerHash,
+      requestId,
+      maxHops: 5,
+      authorAddress: sender.address,
+      authorPublicKey: sender.publicKey,
+      timestamp,
+    });
+    await (receiver as any).handleDirectNotify(
+      {
+        t: 'RCHAT',
+        k: 'dm_notify',
+        d: {
+          b: recipient.address,
+          sp: sourcePeerHash,
+          q: requestId,
+          p: sender.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              sender.secretKey
+            )
+          ),
+        },
+      },
+      inboundPeerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const request = sent.find((item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req');
+    expect(request).toBeDefined();
+    expect((request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.q).toBe(requestId);
+    expect(
+      verifyReticulumDmRequest(
+        (request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q,
+        Date.now()
+      )
+    ).toBe(true);
+    receiver.close();
+  });
+
+  it('answers DM probes from another device using the same local address', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const providerPeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => providerPeerHash,
+      sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const provider = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: bridge as any,
+    });
+    provider.setLocalDmAddresses([recipient.address]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sent.length = 0;
+
+    expect((provider as any).localDmAddresses.has(recipient.address)).toBe(true);
+    const unique = nodeCrypto.randomBytes(4).toString('hex');
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: `dm-same-account-probe-event-${unique}`,
+      senderSeq: 100_000 + Number.parseInt(unique.slice(0, 4), 16),
+      timestamp: Date.now() - 1_000,
+    });
+    expect(validateReticulumDmEventShape(event)).toBe(true);
+    expect(verifyReticulumDmEvent(event)).toBe(true);
+    expect((provider as any).acceptsDirectConversation(event)).toBe(true);
+    (provider as any).db.getDirectSummaries = (address: string) =>
+      address === recipient.address
+        ? [
+            {
+              peerAddress: sender.address,
+              conversationId: event.conversationId,
+              lastEvent: event,
+              unreadCount: 0,
+              updatedAt: event.timestamp,
+            },
+          ]
+        : [];
+
+    const requestId = 'e'.repeat(8);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmProbeSignedFields({
+      requestId,
+      maxHops: 5,
+      authorAddress: recipient.address,
+      authorPublicKey: recipient.publicKey,
+      timestamp,
+    });
+    await (provider as any).handleDirectProbe(
+      {
+        t: 'RCHAT',
+        k: 'dm_probe',
+        q: {
+          q: requestId,
+          p: recipient.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              recipient.secretKey
+            )
+          ),
+        },
+      },
+      requesterPeerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const notify = sent.find(
+      (item) => item.peer === requesterPeerHash && item.wire.k === 'dm_notify'
+    );
+    expect(notify).toBeDefined();
+    expect((notify!.wire as Extract<ReticulumChatWire, { k: 'dm_notify' }>).d.r).toBe(requestId);
+    expect(
+      verifyReticulumDmNotify(
+        (notify!.wire as Extract<ReticulumChatWire, { k: 'dm_notify' }>).d,
+        Date.now()
+      )
+    ).toBe(true);
+    provider.close();
   });
 
   it('publishes durable events as bounded digest when no peers are subscribed', async () => {

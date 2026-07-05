@@ -79,6 +79,7 @@ import { buildDirectVoiceCallChatId } from '../../lib/call/directVoiceCallChatId
 import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 import { useIsOnline } from '../../hooks/usePresence';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 
 const uid = new ShortUniqueId({ length: 5 });
 
@@ -383,6 +384,12 @@ export const ChatDirect = ({
   const [replyMessage, setReplyMessage] = useState(null);
   const [qchatFileTransferStates, setQchatFileTransferStates] = useState({});
   const [qchatCompletedTransfers, setQchatCompletedTransfers] = useState({});
+  const {
+    enabled: reticulumDirectEnabled,
+    messages: reticulumDirectMessages,
+    publish: publishReticulumDirectEvent,
+    markRead: markReticulumDirectRead,
+  } = useReticulumDirectChat(myAddress, selectedDirect?.address);
   const [pendingQchatFileOffer, setPendingQchatFileOffer] = useState(null);
   const [qchatFileExpiryHours, setQchatFileExpiryHours] = useState(
     QCHAT_FILE_DEFAULT_EXPIRY_HOURS
@@ -512,6 +519,21 @@ export const ChatDirect = ({
       getPublicKeyFunc(publicKeyOfRecipientRef.current);
     }
   }, [selectedDirect?.address]);
+
+  useEffect(() => {
+    if (!reticulumDirectEnabled || !selectedDirect?.address) return;
+    const latestTimestamp = reticulumDirectMessages.reduce(
+      (max, message: any) => Math.max(max, Number(message?.timestamp || 0)),
+      0
+    );
+    if (latestTimestamp <= 0) return;
+    void markReticulumDirectRead(latestTimestamp);
+  }, [
+    markReticulumDirectRead,
+    reticulumDirectEnabled,
+    reticulumDirectMessages,
+    selectedDirect?.address,
+  ]);
 
   const middletierFunc = async (
     data: any,
@@ -1000,6 +1022,12 @@ export const ChatDirect = ({
   );
 
   useEffect(() => {
+    if (reticulumDirectEnabled) {
+      forceCloseWebSocket();
+      setIsLoading(false);
+      hasInitializedWebsocket.current = false;
+      return;
+    }
     if (hasInitializedWebsocket.current || isNewChat) return;
     setIsLoading(true);
     initWebsocketMessageGroup();
@@ -1008,7 +1036,7 @@ export const ChatDirect = ({
     return () => {
       forceCloseWebSocket(); // Clean up WebSocket on component unmount
     };
-  }, [selectedDirect?.address, myAddress, isNewChat]);
+  }, [selectedDirect?.address, myAddress, isNewChat, reticulumDirectEnabled]);
 
   const sendChatDirect = async (
     { chatReference = undefined, messageText, otherData }: any,
@@ -1020,6 +1048,38 @@ export const ChatDirect = ({
       const directTo = isNewChatVar ? directToValue : address;
 
       if (!directTo) return;
+      if (reticulumDirectEnabled) {
+        const result = await publishReticulumDirectEvent({
+          chatReference,
+          messageText,
+          otherData,
+          peerAddressOverride: directTo,
+        });
+        if (!result?.success) {
+          throw new Error(result?.error || 'Reticulum direct message failed');
+        }
+        if (isNewChatVar) {
+          let getRecipientName = null;
+          try {
+            getRecipientName = await getNameInfo(directTo);
+          } catch (error) {
+            console.error('Error fetching recipient name:', error);
+          }
+          setSelectedDirect({
+            address: directTo,
+            name: getRecipientName,
+            timestamp: Date.now(),
+            sender: myAddress,
+            senderName: myName,
+          });
+          setNewChat(null);
+        }
+        return {
+          recipient: directTo,
+          timestamp: Date.now(),
+          reticulumDirect: true,
+        };
+      }
       return new Promise((res, rej) => {
         window
           .sendMessage(
@@ -1609,12 +1669,16 @@ export const ChatDirect = ({
           },
           chatReference,
         };
-        addToQueue(
-          sendMessageFunc,
-          messageObj,
-          'chat-direct',
-          selectedDirect?.address
-        );
+        if (reticulumDirectEnabled) {
+          await sendMessageFunc();
+        } else {
+          addToQueue(
+            sendMessageFunc,
+            messageObj,
+            'chat-direct',
+            selectedDirect?.address
+          );
+        }
         setTimeout(() => {
           executeEvent('sent-new-message-group', {});
         }, 150);
@@ -2320,7 +2384,9 @@ export const ChatDirect = ({
           onEdit={onEdit}
           onReply={onReply}
           chatId={selectedDirect?.address}
-          initialMessages={messages}
+          initialMessages={
+            reticulumDirectEnabled ? reticulumDirectMessages : messages
+          }
           myAddress={myAddress}
           tempMessages={tempMessages}
           tempChatReferences={tempChatReferences}

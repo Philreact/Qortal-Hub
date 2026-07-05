@@ -559,6 +559,9 @@ declare global {
           }
         >
       ) => Promise<{ success: boolean; error?: string }>;
+      setLocalDmAddresses: (
+        addresses: string[]
+      ) => Promise<{ success: boolean; error?: string }>;
       subscribeGroup: (
         groupId: number
       ) => Promise<{ success: boolean; error?: string }>;
@@ -575,6 +578,20 @@ declare global {
       ) => Promise<{ success: boolean; error?: string }>;
       publishEvent: (
         event: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      publishDirectEvent: (
+        event: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      getDirectHistory: (
+        myAddress: string,
+        peerAddress: string,
+        limit?: number
+      ) => Promise<unknown[]>;
+      getDirectSummaries: (myAddress: string) => Promise<unknown[]>;
+      markDirectRead: (
+        myAddress: string,
+        peerAddress: string,
+        upToTimestamp: number
       ) => Promise<{ success: boolean; error?: string }>;
       sendTyping: (
         groupId: number,
@@ -649,6 +666,15 @@ declare global {
           groupId: number;
           eventId?: string;
           timestamp?: number;
+        }) => void
+      ) => () => void;
+      onDirectEvent: (
+        cb: (payload: { event: unknown }) => void
+      ) => () => void;
+      onDirectSummaryChanged: (
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
         }) => void
       ) => () => void;
       onTyping: (
