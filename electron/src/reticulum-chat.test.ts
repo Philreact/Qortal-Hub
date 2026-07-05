@@ -2198,6 +2198,62 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('requests direct DM pages from the notified sender cursor instead of the conversation latest', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const conversationId = reticulumDmConversationId(sender.address, recipient.address);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => requesterPeerHash,
+        sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+          sent.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    manager.setLocalDmAddresses([recipient.address]);
+    await flushAsyncWork();
+
+    const lastIncomingFromSender = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dm-remote-known-before-gap',
+      senderSeq: 1,
+      timestamp: 1_000,
+    });
+    const newerLocalOutgoing = signedDmEvent({
+      sender: recipient,
+      recipient: sender,
+      eventId: 'dm-local-newer-than-missing-remote',
+      senderSeq: 1,
+      timestamp: 3_000,
+    });
+    (manager as any).db.getDirectLatestEvent = () => newerLocalOutgoing;
+    (manager as any).db.getDirectLatestEventFromSender = () => lastIncomingFromSender;
+
+    await (manager as any).requestDirectMissingEvents(
+      conversationId,
+      sender.address,
+      recipient.address,
+      sourcePeerHash,
+      '',
+      Number.MAX_SAFE_INTEGER
+    );
+    await flushAsyncWork();
+
+    const request = sent.find((item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req');
+    expect(request).toBeDefined();
+    expect((request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.a).toBe(999);
+    manager.close();
+  });
+
   it('runs recurring direct DM probes while overlay health stays good', async () => {
     vi.useFakeTimers();
     try {

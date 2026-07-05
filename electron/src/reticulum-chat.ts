@@ -4234,6 +4234,10 @@ export class ReticulumChatManager extends EventEmitter {
     options: { force?: boolean; requestId?: string } = {}
   ): Promise<void> {
     const localLatest = this.db.getDirectLatestEvent(conversationId);
+    const senderLatest = this.db.getDirectLatestEventFromSender(conversationId, addressA);
+    const cursorLatest =
+      senderLatest ||
+      (localLatest && localLatest.senderAddress === addressA ? localLatest : null);
     if (
       localLatest &&
       remoteEventId === localLatest.eventId &&
@@ -4243,10 +4247,11 @@ export class ReticulumChatManager extends EventEmitter {
       this.markDirectEventSent(localLatest);
     }
     if (
-      localLatest &&
-      (localLatest.timestamp > remoteTimestamp ||
-        (localLatest.timestamp === remoteTimestamp &&
-          (!remoteEventId || localLatest.eventId >= remoteEventId)))
+      cursorLatest &&
+      remoteTimestamp < Number.MAX_SAFE_INTEGER &&
+      (cursorLatest.timestamp > remoteTimestamp ||
+        (cursorLatest.timestamp === remoteTimestamp &&
+          (!remoteEventId || cursorLatest.eventId >= remoteEventId)))
     ) {
       return;
     }
@@ -4262,7 +4267,7 @@ export class ReticulumChatManager extends EventEmitter {
       conversationId,
       addressA,
       addressB,
-      localLatest ? Math.max(0, localLatest.timestamp - 1) : 0,
+      cursorLatest ? Math.max(0, cursorLatest.timestamp - 1) : 0,
       50,
       options.requestId
     );

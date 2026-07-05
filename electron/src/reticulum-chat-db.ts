@@ -1745,6 +1745,24 @@ export class ReticulumChatDatabase {
     return row ? rowToDirectEvent(row) : null;
   }
 
+  getDirectLatestEventFromSender(
+    conversationId: string,
+    senderAddress: string
+  ): ReticulumDmEvent | null {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    const sender = String(senderAddress || '').trim();
+    if (!normalized || !sender) return null;
+    const row = this.db
+      .prepare(`
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ? AND sender_address = ?
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT 1
+      `)
+      .get(normalized, sender) as DirectEventRow | undefined;
+    return row ? rowToDirectEvent(row) : null;
+  }
+
   getDirectAuthorMaxSeq(conversationId: string, senderAddress: string): number {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     if (!normalized || !senderAddress) return 0;

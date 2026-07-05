@@ -9576,6 +9576,7 @@ def on_qchat_file_link_closed(link) -> None:
         )
         transfer_id = str(state.get("transferId") or "")
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        resource_type = str(state.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
         with _state_lock:
             receive_pending = _qchat_file_get_pending_receive(peer_hash, transfer_id)
             send_pending = _qchat_file_pending_sends_by_transfer.get(transfer_id)
@@ -9603,6 +9604,7 @@ def on_qchat_file_link_closed(link) -> None:
                             "transferId": transfer_id_retry,
                             "peerPresenceHash": peer_hash_retry,
                             "fileName": state.get("fileName") or "",
+                            "resourceType": resource_type,
                             "reason": "file_link_retry_queue_full",
                         },
                     )
@@ -9616,6 +9618,7 @@ def on_qchat_file_link_closed(link) -> None:
                     "transferId": transfer_id_retry,
                     "peerPresenceHash": peer_hash_retry,
                     "fileName": state.get("fileName") or "",
+                    "resourceType": resource_type,
                     "attempt": int(state.get("open_attempts") or 0) + 1,
                     "maxAttempts": _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS,
                 },
@@ -9628,6 +9631,7 @@ def on_qchat_file_link_closed(link) -> None:
                     "transferId": transfer_id,
                     "peerPresenceHash": peer_hash,
                     "fileName": state.get("fileName") or "",
+                    "resourceType": resource_type,
                     "reason": "file_link_closed",
                 },
             )

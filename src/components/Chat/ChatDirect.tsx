@@ -97,6 +97,24 @@ const QCHAT_FILE_COMPLETED_CACHE_KEY = 'qchat-dm-file-transfer-completed-v1';
 const QCHAT_FILE_COMPLETED_CACHE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const QCHAT_FILE_COMPLETED_CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
+const isReticulumChatInternalTransferEvent = (payload: any): boolean => {
+  const resourceType = String(
+    payload?.resourceType ??
+      payload?.metadata?.resourceType ??
+      payload?.metadata?.logicalResourceType ??
+      ''
+  ).trim();
+  if (
+    resourceType === 'reticulum_chat_event' ||
+    resourceType === 'reticulum_chat_event_page' ||
+    resourceType === 'reticulum_chat_history_page' ||
+    resourceType === 'reticulum_chat_dm_page'
+  ) {
+    return true;
+  }
+  return String(payload?.reason || '') === 'channel_read_forbidden';
+};
+
 type PendingReticulumDirectFile = {
   filePath?: string;
   fileName: string;
@@ -1530,6 +1548,7 @@ export const ChatDirect = ({
     const unsubscribe = (window as any).electronAPI?.onQchatFileTransferEvent?.(
       (payload) => {
         if (!payload?.status || !payload?.transferId) return;
+        if (isReticulumChatInternalTransferEvent(payload)) return;
         const incomingFailure =
           payload.status === 'failed' || payload.status === 'rejected';
         if (
