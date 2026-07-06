@@ -1,12 +1,14 @@
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { Box, IconButton, TextField, Typography, useTheme } from '@mui/material';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.png';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 
 type LandPlayerState = {
   authorAddress: string;
   sessionId: string;
   sequence: number;
+  roomId: LandRoomId;
   x: number;
   y: number;
   fromX: number;
@@ -15,11 +17,16 @@ type LandPlayerState = {
   displayY: number;
   direction: string;
   movement: string;
+  sentAt: number;
   receivedAt: number;
   lastSeenAt: number;
+  interpolationMs: number;
+  velocityX: number;
+  velocityY: number;
 };
 
 type LocalLandState = {
+  roomId: LandRoomId;
   x: number;
   y: number;
   direction: string;
@@ -49,11 +56,34 @@ const FLOOR_BOTTOM_Y = 690;
 const LAND_SEND_INTERVAL_MS = 125;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
-const LAND_REMOTE_INTERPOLATION_MS = 220;
+const LAND_REMOTE_MIN_INTERPOLATION_MS = 220;
+const LAND_REMOTE_MAX_INTERPOLATION_MS = 950;
+const LAND_REMOTE_EXTRAPOLATE_MS = 1100;
+const LAND_REMOTE_STOP_WALKING_AFTER_MS = 1450;
+const LAND_REMOTE_MAX_VELOCITY_PX_PER_MS = 0.32;
+const LAND_REMOTE_MAX_EXTRAPOLATE_DISTANCE = 180;
 const LAND_CHAT_BUBBLE_TTL_MS = 15000;
 const LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const LAND_CHAT_MAX_INPUT_CHARS = 420;
 const QORTAL_LAND_CHANNEL_ID = 'qortal-land';
+const LAND_CHARACTER_SPRITESHEET_KEY = 'qortalland-default-character';
+const LAND_CHARACTER_IDLE_SIDE_ANIM_KEY = 'qortalland-default-character-idle-side';
+const LAND_CHARACTER_WALK_SIDE_ANIM_KEY = 'qortalland-default-character-walk-side';
+const LAND_CHARACTER_IDLE_DOWN_ANIM_KEY = 'qortalland-default-character-idle-down';
+const LAND_CHARACTER_WALK_DOWN_ANIM_KEY = 'qortalland-default-character-walk-down';
+const LAND_CHARACTER_IDLE_UP_ANIM_KEY = 'qortalland-default-character-idle-up';
+const LAND_CHARACTER_WALK_UP_ANIM_KEY = 'qortalland-default-character-walk-up';
+const LAND_CHARACTER_FRAME_SIZE = 320;
+const LAND_CHARACTER_FRAMES_PER_DIRECTION = 7;
+const LAND_CHARACTER_FEET_BASELINE = 292;
+const LAND_CHARACTER_RENDER_SCALE = 0.56;
+const LAND_CHARACTER_LABEL_OFFSET = 248;
+const LAND_CHARACTER_CHAT_BUBBLE_OFFSET = 292;
+type LandRoomId = 'club' | 'skywalk' | 'mall' | 'park';
+const QORTAL_LAND_DEFAULT_ROOM_ID: LandRoomId = 'club';
+const QORTAL_LAND_SKYWALK_ROOM_ID: LandRoomId = 'skywalk';
+const QORTAL_LAND_MALL_ROOM_ID: LandRoomId = 'mall';
+const QORTAL_LAND_PARK_ROOM_ID: LandRoomId = 'park';
 
 type ReticulumChatEventForLand = {
   eventId?: unknown;
@@ -123,25 +153,120 @@ const displayNameForAddress = (
   return primaryName || shortAddress(address);
 };
 
-const initialPositionForAddress = (address: string): { x: number; y: number } => {
+const clampNumber = (value: number, min: number, max: number): number => {
+  return Math.max(min, Math.min(max, value));
+};
+
+const finiteNumber = (value: unknown): number | null => {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+};
+
+const estimateRemoteInterpolationMs = (distance: number, stateGapMs: number): number => {
+  const distanceWindow = distance * 3.2;
+  const gapWindow = stateGapMs > LAND_SEND_INTERVAL_MS * 2 ? stateGapMs * 0.42 : 0;
+  return clampNumber(
+    Math.max(LAND_REMOTE_MIN_INTERPOLATION_MS, distanceWindow, gapWindow),
+    LAND_REMOTE_MIN_INTERPOLATION_MS,
+    LAND_REMOTE_MAX_INTERPOLATION_MS
+  );
+};
+
+const clampRemoteVelocity = (velocity: number): number => {
+  return clampNumber(velocity, -LAND_REMOTE_MAX_VELOCITY_PX_PER_MS, LAND_REMOTE_MAX_VELOCITY_PX_PER_MS);
+};
+
+const normalizeLandRoomId = (value: unknown): LandRoomId => {
+  return value === QORTAL_LAND_SKYWALK_ROOM_ID ||
+    value === QORTAL_LAND_MALL_ROOM_ID ||
+    value === QORTAL_LAND_PARK_ROOM_ID
+    ? value
+    : QORTAL_LAND_DEFAULT_ROOM_ID;
+};
+
+const initialPositionForAddress = (address: string): { roomId: LandRoomId; x: number; y: number } => {
   const hue = addressHue(address);
   return {
+    roomId: QORTAL_LAND_DEFAULT_ROOM_ID,
     x: 430 + (hue % 8) * 110,
     y: 490 + (hue % 4) * 28,
   };
 };
 
-const floorBoundsForY = (y: number): { minX: number; maxX: number } => {
-  const ratio = Math.max(0, Math.min(1, (y - FLOOR_TOP_Y) / (FLOOR_BOTTOM_Y - FLOOR_TOP_Y)));
+const roomFloorRange = (roomId: LandRoomId): { top: number; bottom: number } => {
+  if (roomId === QORTAL_LAND_SKYWALK_ROOM_ID) return { top: 338, bottom: 666 };
+  if (roomId === QORTAL_LAND_MALL_ROOM_ID) return { top: 332, bottom: 700 };
+  if (roomId === QORTAL_LAND_PARK_ROOM_ID) return { top: 326, bottom: 704 };
+  return { top: FLOOR_TOP_Y, bottom: FLOOR_BOTTOM_Y };
+};
+
+const floorBoundsForRoomY = (roomId: LandRoomId, y: number): { minX: number; maxX: number } => {
+  const range = roomFloorRange(roomId);
+  const ratio = Math.max(0, Math.min(1, (y - range.top) / (range.bottom - range.top)));
+  if (roomId === QORTAL_LAND_SKYWALK_ROOM_ID) {
+    return {
+      minX: 128 + ratio * 22,
+      maxX: 1672 - ratio * 22,
+    };
+  }
+  if (roomId === QORTAL_LAND_MALL_ROOM_ID) {
+    return {
+      minX: 150 - ratio * 80,
+      maxX: 1650 + ratio * 80,
+    };
+  }
+  if (roomId === QORTAL_LAND_PARK_ROOM_ID) {
+    return {
+      minX: 110 - ratio * 86,
+      maxX: 1690 + ratio * 86,
+    };
+  }
   return {
     minX: 205 - ratio * 130,
     maxX: 1595 + ratio * 130,
   };
 };
 
-const floorScaleForY = (y: number): number => {
-  const ratio = Math.max(0, Math.min(1, (y - FLOOR_TOP_Y) / (FLOOR_BOTTOM_Y - FLOOR_TOP_Y)));
+const floorBoundsForY = (y: number): { minX: number; maxX: number } => {
+  return floorBoundsForRoomY(QORTAL_LAND_DEFAULT_ROOM_ID, y);
+};
+
+const floorScaleForRoomY = (roomId: LandRoomId, y: number): number => {
+  const range = roomFloorRange(roomId);
+  const ratio = Math.max(0, Math.min(1, (y - range.top) / (range.bottom - range.top)));
   return 0.78 + ratio * 0.36;
+};
+
+const characterScaleForRoomY = (roomId: LandRoomId, y: number): number => {
+  return floorScaleForRoomY(roomId, y) * LAND_CHARACTER_RENDER_SCALE;
+};
+
+const avatarScaleXForDirection = (direction: string, scale: number): number => {
+  return direction === 'l' ? -scale : scale;
+};
+
+const avatarAnimationKeyForDirection = (direction: string, moving: boolean): string => {
+  if (direction === 'u') {
+    return moving ? LAND_CHARACTER_WALK_UP_ANIM_KEY : LAND_CHARACTER_IDLE_UP_ANIM_KEY;
+  }
+  if (direction === 'd') {
+    return moving ? LAND_CHARACTER_WALK_DOWN_ANIM_KEY : LAND_CHARACTER_IDLE_DOWN_ANIM_KEY;
+  }
+  return moving ? LAND_CHARACTER_WALK_SIDE_ANIM_KEY : LAND_CHARACTER_IDLE_SIDE_ANIM_KEY;
+};
+
+const clampLandPosition = (
+  roomId: LandRoomId,
+  x: number,
+  y: number
+): { x: number; y: number } => {
+  const range = roomFloorRange(roomId);
+  const nextY = Math.max(range.top + 24, Math.min(range.bottom - 28, y));
+  const bounds = floorBoundsForRoomY(roomId, nextY);
+  return {
+    x: Math.max(bounds.minX + 35, Math.min(bounds.maxX - 35, x)),
+    y: nextY,
+  };
 };
 
 export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
@@ -154,6 +279,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
   const primaryNameLookupTimerRef = useRef<number | null>(null);
+  const currentRoomRef = useRef<LandRoomId>(QORTAL_LAND_DEFAULT_ROOM_ID);
   const localStateRef = useRef<LocalLandState>({
     ...initialPositionForAddress(myAddress || ''),
     direction: 'r',
@@ -344,6 +470,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       const key = `${payload.authorAddress}:${payload.sessionId}`;
       const existing = remotePlayersRef.current.get(key);
       const now = Date.now();
+      const roomId = normalizeLandRoomId(payload.roomId);
       if (payload.movement === 'leave') {
         if (!existing || payload.sequence >= existing.sequence) {
           remotePlayersRef.current.delete(key);
@@ -352,16 +479,32 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       }
       if (existing && payload.sequence <= existing.sequence) {
         existing.lastSeenAt = now;
-        existing.movement = payload.movement || existing.movement || 'idle';
-        existing.direction = payload.direction || existing.direction || 'r';
         return;
       }
-      const fromX = existing?.displayX ?? existing?.x ?? payload.x;
-      const fromY = existing?.displayY ?? existing?.y ?? payload.y;
+      const sentAt = finiteNumber(payload.timestamp) ?? now;
+      const roomChanged = Boolean(existing && existing.roomId !== roomId);
+      const fromX = roomChanged ? payload.x : existing?.displayX ?? existing?.x ?? payload.x;
+      const fromY = roomChanged ? payload.y : existing?.displayY ?? existing?.y ?? payload.y;
+      const stateGapMs = existing
+        ? clampNumber(
+            sentAt > existing.sentAt ? sentAt - existing.sentAt : now - existing.receivedAt,
+            LAND_SEND_INTERVAL_MS,
+            5000
+          )
+        : LAND_SEND_INTERVAL_MS;
+      const velocitySourceMs = Math.max(stateGapMs, 1);
+      const velocityX = existing && !roomChanged
+        ? clampRemoteVelocity((payload.x - existing.x) / velocitySourceMs)
+        : 0;
+      const velocityY = existing && !roomChanged
+        ? clampRemoteVelocity((payload.y - existing.y) / velocitySourceMs)
+        : 0;
+      const distance = Math.hypot(payload.x - fromX, payload.y - fromY);
       remotePlayersRef.current.set(key, {
         authorAddress: payload.authorAddress,
         sessionId: payload.sessionId,
         sequence: payload.sequence,
+        roomId,
         x: payload.x,
         y: payload.y,
         fromX,
@@ -370,8 +513,12 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         displayY: fromY,
         direction: payload.direction || existing?.direction || 'r',
         movement: payload.movement || 'idle',
+        sentAt,
         receivedAt: now,
         lastSeenAt: now,
+        interpolationMs: estimateRemoteInterpolationMs(distance, stateGapMs),
+        velocityX,
+        velocityY,
       });
     });
     return () => {
@@ -479,21 +626,36 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           super('QortalLandScene');
         }
 
+        preload() {
+          this.load.spritesheet(LAND_CHARACTER_SPRITESHEET_KEY, defaultCharacterSpritesheetUrl, {
+            frameWidth: LAND_CHARACTER_FRAME_SIZE,
+            frameHeight: LAND_CHARACTER_FRAME_SIZE,
+          });
+        }
+
         create() {
           this.cameras.main.setBounds(0, 0, LAND_WIDTH, LAND_HEIGHT);
+          this.ensureCharacterAnimations();
+          currentRoomRef.current = localStateRef.current.roomId;
           this.drawWorld();
           const start = localStateRef.current;
+          const startScale = characterScaleForRoomY(start.roomId, start.y);
           this.localAvatar = this.createAvatar(start.x, start.y, localColor, true);
           this.localLabel = this.add
-            .text(start.x, start.y - 48, displayNameForAddress(myAddress, primaryNameCacheRef.current), {
+            .text(
+              start.x,
+              start.y - LAND_CHARACTER_LABEL_OFFSET * startScale,
+              displayNameForAddress(myAddress, primaryNameCacheRef.current),
+              {
               color: '#f8fbff',
               fontFamily: 'Inter, Arial, sans-serif',
               fontSize: '12px',
               stroke: '#10151c',
               strokeThickness: 4,
-            })
+              }
+            )
             .setOrigin(0.5);
-          this.localAvatar.setScale(floorScaleForY(start.y));
+          this.localAvatar.setScale(startScale);
           this.localAvatar.setDepth(start.y + 20);
           this.localLabel.setDepth(start.y + 90);
           this.cameras.main.centerOn(start.x, start.y);
@@ -523,13 +685,48 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           this.propLayers.forEach((layer) => layer.destroy());
           this.propLayers = [];
           const g = this.add.graphics();
+          const roomId = currentRoomRef.current;
+          if (roomId === QORTAL_LAND_SKYWALK_ROOM_ID) {
+            this.drawSkywalkWorld(g);
+            this.background = g;
+            g.setDepth(-100);
+            this.drawSkywalkDepthProps();
+            this.lightSweep = this.add.graphics();
+            this.lightSweep.setDepth(-80);
+            this.foreground = this.add.graphics();
+            this.drawForeground(this.foreground);
+            this.foreground.setDepth(roomFloorRange(roomId).bottom + 170);
+            return;
+          }
+          if (roomId === QORTAL_LAND_MALL_ROOM_ID) {
+            this.drawMallWorld(g);
+            this.background = g;
+            g.setDepth(-100);
+            this.drawMallDepthProps();
+            this.lightSweep = this.add.graphics();
+            this.lightSweep.setDepth(-80);
+            this.foreground = this.add.graphics();
+            this.drawForeground(this.foreground);
+            this.foreground.setDepth(roomFloorRange(roomId).bottom + 170);
+            return;
+          }
+          if (roomId === QORTAL_LAND_PARK_ROOM_ID) {
+            this.drawParkWorld(g);
+            this.background = g;
+            g.setDepth(-100);
+            this.drawParkDepthProps();
+            this.lightSweep = this.add.graphics();
+            this.lightSweep.setDepth(-80);
+            this.foreground = this.add.graphics();
+            this.drawForeground(this.foreground);
+            this.foreground.setDepth(roomFloorRange(roomId).bottom + 170);
+            return;
+          }
           g.fillStyle(0x070914, 1);
           g.fillRect(0, 0, LAND_WIDTH, LAND_HEIGHT);
           g.fillStyle(0x10152a, 1);
           g.fillRect(0, 0, LAND_WIDTH, FLOOR_TOP_Y);
-          this.drawWallPanels(g);
           this.drawSideWalls(g);
-          this.drawCityWindows(g);
           this.drawCeilingRig(g);
 
           g.fillStyle(0x0c0d19, 1);
@@ -587,6 +784,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           g.strokeRoundedRect(778, 110, 244, 36, 14);
 
           this.drawNeonText(g, 803, 118);
+          this.drawSkywalkDoor(g, 1478, 118);
           this.drawDanceFloor(g);
           this.drawLightBeams(g);
           this.background = g;
@@ -600,32 +798,86 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           this.foreground.setDepth(FLOOR_BOTTOM_Y + 170);
         }
 
-        private createAvatar(x: number, y: number, color: number, local: boolean) {
-          const glow = this.add.ellipse(0, 25, local ? 54 : 48, local ? 18 : 15, local ? 0x2cf8ff : color, 0.22);
-          const shadow = this.add.ellipse(0, 29, local ? 42 : 36, 11, 0x000000, 0.42);
-          const coat = this.add.rectangle(0, 0, local ? 31 : 27, local ? 42 : 38, color, 1);
-          coat.setStrokeStyle(3, local ? 0x2cf8ff : 0x111827, local ? 0.88 : 0.72);
-          const shirt = this.add.rectangle(0, -2, local ? 12 : 10, local ? 32 : 28, 0x0b1020, 1);
-          const neck = this.add.rectangle(0, -27, 8, 8, 0xd8a986, 1);
-          const face = this.add.circle(0, -38, local ? 13 : 12, 0xf0c19c, 1);
-          const hair = this.add.ellipse(0, -46, local ? 27 : 24, 14, 0x101018, 1);
-          const visor = this.add.rectangle(0, -39, local ? 20 : 17, 4, local ? 0xff2bd6 : 0x2cf8ff, 0.9);
-          const legLeft = this.add.rectangle(-8, 25, 8, 18, 0x0a0d18, 1);
-          const legRight = this.add.rectangle(8, 25, 8, 18, 0x0a0d18, 1);
-          const avatar = this.add.container(x, y, [
-            glow,
-            shadow,
-            legLeft,
-            legRight,
-            coat,
-            shirt,
-            neck,
-            face,
-            hair,
-            visor,
-          ]);
-          avatar.setSize(54, 80);
+        private ensureCharacterAnimations() {
+          if (!this.anims.exists(LAND_CHARACTER_IDLE_SIDE_ANIM_KEY)) {
+            this.anims.create({
+              key: LAND_CHARACTER_IDLE_SIDE_ANIM_KEY,
+              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, { start: 0, end: 0 }),
+              frameRate: 1,
+              repeat: 0,
+            });
+          }
+          if (!this.anims.exists(LAND_CHARACTER_WALK_SIDE_ANIM_KEY)) {
+            this.anims.create({
+              key: LAND_CHARACTER_WALK_SIDE_ANIM_KEY,
+              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
+                start: 0,
+                end: LAND_CHARACTER_FRAMES_PER_DIRECTION - 1,
+              }),
+              frameRate: 10,
+              repeat: -1,
+            });
+          }
+          if (!this.anims.exists(LAND_CHARACTER_IDLE_DOWN_ANIM_KEY)) {
+            this.anims.create({
+              key: LAND_CHARACTER_IDLE_DOWN_ANIM_KEY,
+              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
+                start: LAND_CHARACTER_FRAMES_PER_DIRECTION,
+                end: LAND_CHARACTER_FRAMES_PER_DIRECTION,
+              }),
+              frameRate: 1,
+              repeat: 0,
+            });
+          }
+          if (!this.anims.exists(LAND_CHARACTER_WALK_DOWN_ANIM_KEY)) {
+            this.anims.create({
+              key: LAND_CHARACTER_WALK_DOWN_ANIM_KEY,
+              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
+                start: LAND_CHARACTER_FRAMES_PER_DIRECTION,
+                end: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2 - 1,
+              }),
+              frameRate: 10,
+              repeat: -1,
+            });
+          }
+          if (!this.anims.exists(LAND_CHARACTER_IDLE_UP_ANIM_KEY)) {
+            this.anims.create({
+              key: LAND_CHARACTER_IDLE_UP_ANIM_KEY,
+              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
+                start: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2,
+                end: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2,
+              }),
+              frameRate: 1,
+              repeat: 0,
+            });
+          }
+          if (!this.anims.exists(LAND_CHARACTER_WALK_UP_ANIM_KEY)) {
+            this.anims.create({
+              key: LAND_CHARACTER_WALK_UP_ANIM_KEY,
+              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
+                start: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2,
+                end: LAND_CHARACTER_FRAMES_PER_DIRECTION * 3 - 1,
+              }),
+              frameRate: 10,
+              repeat: -1,
+            });
+          }
+        }
+
+        private createAvatar(x: number, y: number, _color: number, _local: boolean) {
+          const avatar = this.add.sprite(x, y, LAND_CHARACTER_SPRITESHEET_KEY, LAND_CHARACTER_FRAMES_PER_DIRECTION);
+          avatar.setOrigin(0.5, LAND_CHARACTER_FEET_BASELINE / LAND_CHARACTER_FRAME_SIZE);
+          avatar.setSize(104, 174);
+          avatar.play(LAND_CHARACTER_IDLE_DOWN_ANIM_KEY);
+          avatar.setData('lastAnimation', LAND_CHARACTER_IDLE_DOWN_ANIM_KEY);
           return avatar;
+        }
+
+        private animateAvatar(avatar: any, moving: boolean, direction: string) {
+          const animationKey = avatarAnimationKeyForDirection(direction, moving);
+          if (avatar?.getData?.('lastAnimation') === animationKey) return;
+          avatar?.play?.(animationKey, true);
+          avatar?.setData?.('lastAnimation', animationKey);
         }
 
         private createPropLayer(depth: number) {
@@ -650,22 +902,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           g.fillStyle(0xffae00, 1);
           g.fillRoundedRect(x + 146, y, 14, 24, 4);
           g.fillRoundedRect(x + 164, y, 14, 24, 4);
-        }
-
-        private drawWallPanels(g: any) {
-          g.fillStyle(0x090d1d, 0.55);
-          for (let x = 0; x < LAND_WIDTH; x += 300) {
-            const panelHeight = 112 + ((x / 150) % 3) * 18;
-            g.fillRoundedRect(x + 16, 120, 118, panelHeight, 8);
-            g.lineStyle(2, x % 300 === 0 ? 0x2cf8ff : 0xff2bd6, 0.08);
-            g.strokeRoundedRect(x + 16, 120, 118, panelHeight, 8);
-            g.fillStyle(0x050712, 0.62);
-            g.fillRoundedRect(x + 32, 138, 86, 16, 4);
-            g.fillRoundedRect(x + 32, 164, 62, 10, 3);
-            g.fillStyle(0x090d1d, 0.55);
-          }
-          g.lineStyle(2, 0xff2bd6, 0.06);
-          g.lineBetween(0, 258, LAND_WIDTH, 282);
         }
 
         private drawFloorTexture(g: any) {
@@ -716,22 +952,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           g.lineBetween(LAND_WIDTH, 128, 1595, FLOOR_TOP_Y);
         }
 
-        private drawCityWindows(g: any) {
-          for (let tower = 0; tower < 9; tower += 1) {
-            const x = 70 + tower * 195;
-            const height = 86 + (tower % 4) * 22;
-            g.fillStyle(0x060817, 0.82);
-            g.fillRect(x, FLOOR_TOP_Y - height - 18, 88, height);
-            for (let row = 0; row < 4; row += 1) {
-              for (let col = 0; col < 3; col += 1) {
-                const lit = (row + col + tower) % 2 === 0;
-                g.fillStyle(lit ? 0x2cf8ff : 0x1a2448, lit ? 0.45 : 0.25);
-                g.fillRoundedRect(x + 14 + col * 22, FLOOR_TOP_Y - height + 8 + row * 18, 12, 8, 2);
-              }
-            }
-          }
-        }
-
         private drawCeilingRig(g: any) {
           g.lineStyle(5, 0x050611, 0.9);
           g.lineBetween(360, 78, 1440, 78);
@@ -752,6 +972,398 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           for (let offset = -20; offset <= 20; offset += 10) {
             g.lineBetween(900 + offset, 61, 900 - offset, 111);
             g.lineBetween(875, 86 + offset, 925, 86 - offset);
+          }
+        }
+
+        private drawSkywalkDoor(g: any, x: number, y: number) {
+          g.fillStyle(0x070914, 0.96);
+          g.fillRoundedRect(x - 34, y - 20, 204, 238, 16);
+          g.lineStyle(2, 0x2cf8ff, 0.12);
+          g.strokeRoundedRect(x - 34, y - 20, 204, 238, 16);
+          g.fillStyle(0x2cf8ff, 0.055);
+          g.fillRoundedRect(x - 18, y - 4, 172, 208, 20);
+          g.fillStyle(0xff2bd6, 0.04);
+          g.fillRoundedRect(x - 5, y + 8, 146, 184, 18);
+          g.fillStyle(0x050713, 0.98);
+          g.fillRoundedRect(x, y, 136, 188, 16);
+          g.fillStyle(0x091225, 1);
+          g.fillRoundedRect(x + 14, y + 16, 108, 156, 12);
+          g.fillStyle(0x02030a, 1);
+          g.fillRoundedRect(x + 31, y + 34, 74, 120, 10);
+          g.fillStyle(0x101b3a, 0.92);
+          g.fillRoundedRect(x + 38, y + 42, 60, 104, 8);
+          for (let i = 0; i < 6; i += 1) {
+            const alpha = 0.18 + i * 0.055;
+            g.lineStyle(2, i % 2 === 0 ? 0x2cf8ff : 0xff2bd6, alpha);
+            g.lineBetween(x + 46 + i * 4, y + 50, x + 84 - i * 2, y + 140);
+          }
+          for (let i = 0; i < 7; i += 1) {
+            g.fillStyle(i % 2 === 0 ? 0x2cf8ff : 0xff2bd6, 0.42);
+            g.fillCircle(x + 52 + (i % 3) * 14, y + 55 + i * 13, 2.5);
+          }
+          g.lineStyle(5, 0x2cf8ff, 0.78);
+          g.strokeRoundedRect(x + 14, y + 16, 108, 156, 12);
+          g.lineStyle(3, 0xff2bd6, 0.5);
+          g.strokeRoundedRect(x + 26, y + 28, 84, 132, 10);
+          for (let i = 0; i < 4; i += 1) {
+            g.lineStyle(2, 0x2cf8ff, 0.28 - i * 0.04);
+            g.strokeRoundedRect(x + 5 - i * 7, y + 5 - i * 7, 126 + i * 14, 178 + i * 14, 16);
+          }
+          g.fillStyle(0xf8fbff, 0.74);
+          g.fillCircle(x + 104, y + 100, 5);
+          g.fillStyle(0x2cf8ff, 0.3);
+          g.fillRoundedRect(x + 18, y + 188, 100, 12, 6);
+          g.fillStyle(0xff2bd6, 0.24);
+          g.fillRoundedRect(x + 34, y + 204, 68, 8, 4);
+          g.fillStyle(0xffae00, 0.5);
+          g.fillTriangle(x + 68, y + 183, x + 58, y + 170, x + 78, y + 170);
+        }
+
+        private drawParkPortal(g: any, x: number, y: number, flip = false) {
+          const accent = 0x78ff9a;
+          const secondary = 0x2cf8ff;
+          g.fillStyle(0x02050a, 0.86);
+          g.fillEllipse(x + 72, y + 196, 168, 34);
+          for (let i = 0; i < 4; i += 1) {
+            g.lineStyle(3, i % 2 === 0 ? accent : secondary, 0.2 - i * 0.028);
+            g.strokeRoundedRect(x - i * 9, y - i * 7, 144 + i * 18, 202 + i * 14, 34);
+          }
+          g.fillStyle(0x061018, 0.98);
+          g.fillRoundedRect(x + 8, y + 8, 128, 184, 28);
+          g.fillStyle(0x10242a, 0.94);
+          g.fillRoundedRect(x + 21, y + 22, 102, 158, 24);
+          g.fillStyle(0x78ff9a, 0.12);
+          g.fillRoundedRect(x + 32, y + 34, 80, 136, 22);
+          for (let i = 0; i < 5; i += 1) {
+            const offset = flip ? -i * 7 : i * 7;
+            g.lineStyle(2, i % 2 === 0 ? accent : secondary, 0.28 + i * 0.04);
+            g.lineBetween(x + 44 + offset, y + 48, x + 96 - offset * 0.4, y + 158);
+          }
+          g.lineStyle(5, accent, 0.72);
+          g.strokeRoundedRect(x + 18, y + 18, 108, 164, 26);
+          g.lineStyle(2, secondary, 0.5);
+          g.strokeRoundedRect(x + 32, y + 34, 80, 132, 22);
+          g.fillStyle(0xf8fbff, 0.8);
+          g.fillCircle(x + (flip ? 42 : 103), y + 104, 4);
+          g.fillStyle(accent, 0.32);
+          g.fillRoundedRect(x + 24, y + 188, 96, 10, 5);
+          g.fillStyle(secondary, 0.22);
+          g.fillRoundedRect(x + 42, y + 202, 60, 7, 4);
+        }
+
+        private drawSkylineWindow(g: any, x: number, y: number, width: number, height: number) {
+          g.fillStyle(0x050817, 1);
+          g.fillRoundedRect(x, y, width, height, 18);
+          g.fillStyle(0x07142c, 1);
+          g.fillRoundedRect(x + 12, y + 12, width - 24, height - 24, 14);
+          g.lineStyle(4, 0x2cf8ff, 0.32);
+          g.strokeRoundedRect(x, y, width, height, 18);
+          g.lineStyle(2, 0xff2bd6, 0.18);
+          g.lineBetween(x + 40, y + height - 38, x + width - 40, y + height - 38);
+          g.fillStyle(0xff2bd6, 0.14);
+          g.fillCircle(x + width * 0.68, y + 74, 42);
+          g.fillStyle(0x2cf8ff, 0.08);
+          g.fillCircle(x + width * 0.25, y + 92, 62);
+          for (let tower = 0; tower < 17; tower += 1) {
+            const towerX = x + 54 + tower * ((width - 120) / 16);
+            const towerW = 34 + (tower % 4) * 9;
+            const towerH = 62 + (tower % 5) * 28;
+            const baseY = y + height - 42;
+            g.fillStyle(tower % 2 === 0 ? 0x070a18 : 0x0b1024, 0.96);
+            g.fillRect(towerX, baseY - towerH, towerW, towerH);
+            for (let row = 0; row < Math.floor(towerH / 18); row += 1) {
+              for (let col = 0; col < Math.max(1, Math.floor(towerW / 13)); col += 1) {
+                const lit = (tower + row + col) % 3 !== 0;
+                g.fillStyle(lit ? 0x2cf8ff : 0x17213c, lit ? 0.52 : 0.32);
+                g.fillRoundedRect(towerX + 6 + col * 13, baseY - towerH + 10 + row * 17, 7, 6, 2);
+              }
+            }
+          }
+          g.fillStyle(0x000000, 0.2);
+          g.fillRect(x + 18, y + height - 54, width - 36, 32);
+        }
+
+        private drawSkywalkWorld(g: any) {
+          const range = roomFloorRange(QORTAL_LAND_SKYWALK_ROOM_ID);
+          g.fillStyle(0x050714, 1);
+          g.fillRect(0, 0, LAND_WIDTH, LAND_HEIGHT);
+          g.fillStyle(0x0c1226, 1);
+          g.fillRect(0, 0, LAND_WIDTH, range.top);
+          this.drawSkylineWindow(g, 64, 42, LAND_WIDTH - 128, 238);
+          g.fillStyle(0x050711, 1);
+          g.fillPoints([
+            new Phaser.Geom.Point(128, range.top),
+            new Phaser.Geom.Point(1672, range.top),
+            new Phaser.Geom.Point(1650, range.bottom),
+            new Phaser.Geom.Point(150, range.bottom),
+          ], true);
+          g.fillStyle(0x10172d, 0.86);
+          g.fillPoints([
+            new Phaser.Geom.Point(150, range.top + 26),
+            new Phaser.Geom.Point(1650, range.top + 26),
+            new Phaser.Geom.Point(1605, range.bottom - 18),
+            new Phaser.Geom.Point(195, range.bottom - 18),
+          ], true);
+          g.lineStyle(3, 0x2cf8ff, 0.22);
+          g.strokePoints([
+            new Phaser.Geom.Point(128, range.top),
+            new Phaser.Geom.Point(1672, range.top),
+            new Phaser.Geom.Point(1650, range.bottom),
+            new Phaser.Geom.Point(150, range.bottom),
+            new Phaser.Geom.Point(128, range.top),
+          ], false);
+          for (let i = 0; i < 6; i += 1) {
+            const y = range.top + 56 + i * 44;
+            const bounds = floorBoundsForRoomY(QORTAL_LAND_SKYWALK_ROOM_ID, y);
+            g.lineStyle(1, 0xffffff, 0.035);
+            g.lineBetween(bounds.minX + 50, y, bounds.maxX - 50, y);
+          }
+          g.fillStyle(0x050711, 1);
+          g.fillRoundedRect(132, 292, 150, 118, 14);
+          g.lineStyle(3, 0xff2bd6, 0.4);
+          g.strokeRoundedRect(132, 292, 150, 118, 14);
+          g.fillStyle(0x2cf8ff, 0.1);
+          g.fillRoundedRect(154, 316, 106, 52, 10);
+          g.fillStyle(0xf8fbff, 0.8);
+          g.fillCircle(244, 352, 4);
+          this.drawParkPortal(g, 1518, 250, true);
+          this.drawEscalator(g, LAND_WIDTH / 2, 560, false);
+          g.fillStyle(0xffae00, 0.08);
+          g.fillEllipse(LAND_WIDTH / 2, 586, 360, 82);
+        }
+
+        private drawMallWorld(g: any) {
+          const range = roomFloorRange(QORTAL_LAND_MALL_ROOM_ID);
+          g.fillStyle(0x060811, 1);
+          g.fillRect(0, 0, LAND_WIDTH, LAND_HEIGHT);
+          g.fillStyle(0x10182a, 1);
+          g.fillRect(0, 0, LAND_WIDTH, range.top);
+          g.fillStyle(0x050711, 1);
+          g.fillPoints([
+            new Phaser.Geom.Point(150, range.top),
+            new Phaser.Geom.Point(1650, range.top),
+            new Phaser.Geom.Point(1730, range.bottom),
+            new Phaser.Geom.Point(70, range.bottom),
+          ], true);
+          g.fillStyle(0x0d1222, 1);
+          g.fillPoints([
+            new Phaser.Geom.Point(190, range.top + 42),
+            new Phaser.Geom.Point(1610, range.top + 42),
+            new Phaser.Geom.Point(1665, range.bottom - 12),
+            new Phaser.Geom.Point(135, range.bottom - 12),
+          ], true);
+          g.lineStyle(3, 0x2cf8ff, 0.16);
+          g.strokePoints([
+            new Phaser.Geom.Point(150, range.top),
+            new Phaser.Geom.Point(1650, range.top),
+            new Phaser.Geom.Point(1730, range.bottom),
+            new Phaser.Geom.Point(70, range.bottom),
+            new Phaser.Geom.Point(150, range.top),
+          ], false);
+          for (let row = 0; row < 5; row += 1) {
+            const y = range.top + 74 + row * 58;
+            const bounds = floorBoundsForRoomY(QORTAL_LAND_MALL_ROOM_ID, y);
+            g.lineStyle(1, 0xffffff, 0.035);
+            g.lineBetween(bounds.minX + 60, y, bounds.maxX - 60, y + 2);
+          }
+          this.drawEscalator(g, LAND_WIDTH / 2, 360, true);
+          this.drawCinemaStorefront(g, 480, 132, 840, 210);
+          g.fillStyle(0x2cf8ff, 0.05);
+          g.fillEllipse(900, 585, 840, 120);
+        }
+
+        private drawParkWorld(g: any) {
+          const range = roomFloorRange(QORTAL_LAND_PARK_ROOM_ID);
+          g.fillStyle(0x030711, 1);
+          g.fillRect(0, 0, LAND_WIDTH, LAND_HEIGHT);
+          g.fillStyle(0x071329, 1);
+          g.fillRect(0, 0, LAND_WIDTH, range.top + 18);
+
+          g.fillStyle(0x14224a, 0.62);
+          g.fillCircle(1390, 92, 58);
+          g.fillStyle(0x78ff9a, 0.08);
+          g.fillCircle(1390, 92, 86);
+          g.fillStyle(0xff2bd6, 0.08);
+          g.fillCircle(430, 154, 72);
+
+          for (let i = 0; i < 18; i += 1) {
+            const towerX = 70 + i * 96;
+            const towerW = 44 + (i % 4) * 14;
+            const towerH = 64 + (i % 6) * 22;
+            const baseY = range.top + 12;
+            g.fillStyle(i % 2 === 0 ? 0x070d1d : 0x091225, 0.92);
+            g.fillRect(towerX, baseY - towerH, towerW, towerH);
+            for (let row = 0; row < Math.floor(towerH / 22); row += 1) {
+              for (let col = 0; col < Math.max(1, Math.floor(towerW / 18)); col += 1) {
+                const lit = (i + row + col) % 4 !== 0;
+                g.fillStyle(lit ? 0x2cf8ff : 0x17213c, lit ? 0.38 : 0.22);
+                g.fillRoundedRect(towerX + 10 + col * 17, baseY - towerH + 14 + row * 20, 8, 7, 2);
+              }
+            }
+          }
+
+          g.fillStyle(0x07180f, 1);
+          g.fillPoints([
+            new Phaser.Geom.Point(110, range.top),
+            new Phaser.Geom.Point(1690, range.top),
+            new Phaser.Geom.Point(1776, range.bottom),
+            new Phaser.Geom.Point(24, range.bottom),
+          ], true);
+          g.fillStyle(0x102a18, 0.95);
+          g.fillPoints([
+            new Phaser.Geom.Point(150, range.top + 38),
+            new Phaser.Geom.Point(1650, range.top + 38),
+            new Phaser.Geom.Point(1714, range.bottom - 10),
+            new Phaser.Geom.Point(86, range.bottom - 10),
+          ], true);
+
+          g.fillStyle(0x06110d, 0.95);
+          g.fillPoints([
+            new Phaser.Geom.Point(520, range.top + 34),
+            new Phaser.Geom.Point(710, range.top + 34),
+            new Phaser.Geom.Point(1080, range.bottom - 14),
+            new Phaser.Geom.Point(830, range.bottom - 14),
+          ], true);
+          g.fillStyle(0x203723, 0.85);
+          g.fillPoints([
+            new Phaser.Geom.Point(552, range.top + 50),
+            new Phaser.Geom.Point(688, range.top + 50),
+            new Phaser.Geom.Point(1028, range.bottom - 26),
+            new Phaser.Geom.Point(868, range.bottom - 26),
+          ], true);
+
+          g.lineStyle(4, 0x78ff9a, 0.18);
+          g.strokePoints([
+            new Phaser.Geom.Point(110, range.top),
+            new Phaser.Geom.Point(1690, range.top),
+            new Phaser.Geom.Point(1776, range.bottom),
+            new Phaser.Geom.Point(24, range.bottom),
+            new Phaser.Geom.Point(110, range.top),
+          ], false);
+
+          g.fillStyle(0x2cf8ff, 0.12);
+          g.fillEllipse(1220, 560, 340, 110);
+          g.fillStyle(0x071922, 0.96);
+          g.fillEllipse(1220, 560, 290, 82);
+          g.lineStyle(3, 0x2cf8ff, 0.34);
+          g.strokeEllipse(1220, 560, 290, 82);
+          g.fillStyle(0xf8fbff, 0.24);
+          g.fillEllipse(1174, 540, 72, 12);
+          g.fillStyle(0x78ff9a, 0.16);
+          g.fillCircle(1220, 536, 34);
+
+          this.drawParkPortal(g, 126, 250);
+          this.drawParkTree(g, 310, 386, 0x78ff9a);
+          this.drawParkTree(g, 1510, 388, 0x2cf8ff);
+          this.drawParkTree(g, 420, 596, 0x78ff9a);
+          this.drawParkTree(g, 1470, 616, 0xff2bd6);
+          this.drawParkBench(g, 600, 482, 0x2cf8ff);
+          this.drawParkBench(g, 1330, 462, 0xffae00);
+          this.drawParkBench(g, 720, 642, 0x78ff9a);
+        }
+
+        private drawParkTree(g: any, x: number, y: number, color: number) {
+          g.fillStyle(0x02040a, 0.35);
+          g.fillEllipse(x, y + 62, 128, 28);
+          g.fillStyle(0x1b1020, 1);
+          g.fillRoundedRect(x - 13, y + 8, 26, 86, 10);
+          g.fillStyle(color, 0.16);
+          g.fillCircle(x, y, 64);
+          g.fillStyle(color, 0.22);
+          g.fillCircle(x - 34, y + 20, 42);
+          g.fillCircle(x + 34, y + 20, 42);
+          g.fillStyle(0x07180f, 0.96);
+          g.fillCircle(x, y + 10, 46);
+          g.lineStyle(2, color, 0.42);
+          g.strokeCircle(x, y + 10, 46);
+          g.fillStyle(color, 0.48);
+          g.fillCircle(x + 30, y - 10, 5);
+          g.fillCircle(x - 24, y + 22, 4);
+        }
+
+        private drawParkBench(g: any, x: number, y: number, color: number) {
+          g.fillStyle(0x02040a, 0.32);
+          g.fillEllipse(x + 82, y + 52, 190, 24);
+          g.fillStyle(0x070914, 0.98);
+          g.fillRoundedRect(x, y, 164, 32, 10);
+          g.fillStyle(0x11182b, 1);
+          g.fillRoundedRect(x + 12, y + 8, 140, 14, 7);
+          g.lineStyle(3, color, 0.42);
+          g.strokeRoundedRect(x, y, 164, 32, 10);
+          g.fillStyle(color, 0.28);
+          g.fillRoundedRect(x + 22, y + 36, 120, 12, 6);
+          g.fillStyle(0x050711, 1);
+          g.fillRoundedRect(x + 28, y + 26, 14, 38, 5);
+          g.fillRoundedRect(x + 122, y + 26, 14, 38, 5);
+        }
+
+        private drawEscalator(g: any, centerX: number, centerY: number, up: boolean) {
+          const topY = centerY - 92;
+          const bottomY = centerY + 112;
+          const topHalf = up ? 120 : 92;
+          const bottomHalf = up ? 72 : 150;
+          g.fillStyle(0x02040b, 0.62);
+          g.fillEllipse(centerX, bottomY + 30, 360, 48);
+          g.fillStyle(0x070a17, 0.98);
+          g.fillPoints([
+            new Phaser.Geom.Point(centerX - topHalf, topY),
+            new Phaser.Geom.Point(centerX + topHalf, topY),
+            new Phaser.Geom.Point(centerX + bottomHalf, bottomY),
+            new Phaser.Geom.Point(centerX - bottomHalf, bottomY),
+          ], true);
+          g.fillStyle(0x121a30, 1);
+          g.fillPoints([
+            new Phaser.Geom.Point(centerX - topHalf + 28, topY + 18),
+            new Phaser.Geom.Point(centerX + topHalf - 28, topY + 18),
+            new Phaser.Geom.Point(centerX + bottomHalf - 26, bottomY - 18),
+            new Phaser.Geom.Point(centerX - bottomHalf + 26, bottomY - 18),
+          ], true);
+          g.lineStyle(5, 0x2cf8ff, 0.34);
+          g.lineBetween(centerX - topHalf, topY, centerX - bottomHalf, bottomY);
+          g.lineBetween(centerX + topHalf, topY, centerX + bottomHalf, bottomY);
+          for (let i = 0; i < 7; i += 1) {
+            const t = i / 6;
+            const y = topY + 32 + t * (bottomY - topY - 64);
+            const half = topHalf + (bottomHalf - topHalf) * t - 38;
+            g.lineStyle(2, 0xffffff, 0.08);
+            g.lineBetween(centerX - half, y, centerX + half, y);
+          }
+          g.fillStyle(0xffae00, 0.18);
+          g.fillRoundedRect(centerX - 92, topY - 34, 184, 24, 10);
+          g.lineStyle(2, 0xffae00, 0.42);
+          g.strokeRoundedRect(centerX - 92, topY - 34, 184, 24, 10);
+        }
+
+        private drawCinemaStorefront(g: any, x: number, y: number, width: number, height: number) {
+          g.fillStyle(0x03040b, 1);
+          g.fillRoundedRect(x, y, width, height, 18);
+          g.fillStyle(0x0d1022, 1);
+          g.fillRoundedRect(x + 24, y + 26, width - 48, height - 52, 16);
+          g.lineStyle(5, 0xff2bd6, 0.52);
+          g.strokeRoundedRect(x, y, width, height, 18);
+          g.lineStyle(3, 0x2cf8ff, 0.38);
+          g.strokeRoundedRect(x + 24, y + 26, width - 48, height - 52, 16);
+          g.fillStyle(0x050711, 1);
+          g.fillRoundedRect(x + 82, y + 60, width - 164, 72, 14);
+          g.lineStyle(2, 0xffae00, 0.62);
+          g.strokeRoundedRect(x + 82, y + 60, width - 164, 72, 14);
+          g.fillStyle(0x2cf8ff, 1);
+          g.fillRoundedRect(x + 204, y + 82, 22, 30, 5);
+          g.fillRoundedRect(x + 234, y + 82, 22, 30, 5);
+          g.fillStyle(0xff2bd6, 1);
+          g.fillRoundedRect(x + 282, y + 82, 22, 30, 5);
+          g.fillRoundedRect(x + 312, y + 82, 88, 10, 5);
+          g.fillRoundedRect(x + 312, y + 102, 62, 10, 5);
+          g.fillStyle(0xffae00, 1);
+          g.fillRoundedRect(x + 428, y + 82, 84, 10, 5);
+          g.fillRoundedRect(x + 428, y + 102, 84, 10, 5);
+          g.fillStyle(0x050711, 1);
+          g.fillRoundedRect(x + width / 2 - 88, y + height - 62, 176, 62, 14);
+          g.lineStyle(2, 0xffffff, 0.1);
+          g.lineBetween(x + width / 2, y + height - 58, x + width / 2, y + height - 4);
+          for (let i = 0; i < 10; i += 1) {
+            g.fillStyle(i % 2 === 0 ? 0xffae00 : 0x2cf8ff, 0.72);
+            g.fillCircle(x + 70 + i * 78, y + 26, 6);
           }
         }
 
@@ -925,6 +1537,56 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           this.drawSpeakerStack(speakerLayer, 1606, 540, 0xff2bd6);
         }
 
+        private drawSkywalkDepthProps() {
+          const railLayer = this.createPropLayer(410);
+          railLayer.fillStyle(0x02040a, 0.72);
+          railLayer.fillRoundedRect(180, 382, 1440, 38, 16);
+          railLayer.lineStyle(3, 0x2cf8ff, 0.24);
+          railLayer.lineBetween(205, 392, 1595, 392);
+          for (let x = 240; x <= 1560; x += 120) {
+            railLayer.fillStyle(0x2cf8ff, 0.2);
+            railLayer.fillRoundedRect(x, 398, 10, 42, 5);
+          }
+          const kioskLayer = this.createPropLayer(610);
+          this.drawBooth(kioskLayer, 1225, 545, 0x2cf8ff);
+          this.drawFloorPlanter(kioskLayer, 380, 560, 0xff2bd6);
+        }
+
+        private drawMallDepthProps() {
+          const signLayer = this.createPropLayer(360);
+          signLayer.fillStyle(0x050711, 0.9);
+          signLayer.fillRoundedRect(300, 368, 260, 86, 16);
+          signLayer.lineStyle(3, 0xffae00, 0.4);
+          signLayer.strokeRoundedRect(300, 368, 260, 86, 16);
+          signLayer.fillStyle(0xffae00, 0.46);
+          signLayer.fillRoundedRect(332, 394, 128, 10, 5);
+          signLayer.fillRoundedRect(332, 418, 88, 8, 4);
+          const loungeLayer = this.createPropLayer(650);
+          this.drawBooth(loungeLayer, 210, 585, 0x2cf8ff);
+          this.drawBooth(loungeLayer, 1330, 585, 0xff2bd6);
+        }
+
+        private drawParkDepthProps() {
+          const railLayer = this.createPropLayer(365);
+          railLayer.fillStyle(0x02040a, 0.44);
+          railLayer.fillRoundedRect(260, 342, 1280, 24, 12);
+          railLayer.lineStyle(3, 0x78ff9a, 0.2);
+          railLayer.lineBetween(292, 354, 1508, 354);
+          for (let x = 340; x <= 1460; x += 140) {
+            railLayer.fillStyle(0x78ff9a, 0.2);
+            railLayer.fillRoundedRect(x, 360, 9, 32, 5);
+          }
+
+          const midLayer = this.createPropLayer(520);
+          this.drawParkBench(midLayer, 245, 468, 0x2cf8ff);
+          this.drawParkTree(midLayer, 1580, 490, 0x78ff9a);
+
+          const frontLayer = this.createPropLayer(682);
+          this.drawParkTree(frontLayer, 250, 638, 0x2cf8ff);
+          this.drawParkTree(frontLayer, 1605, 650, 0x78ff9a);
+          this.drawParkBench(frontLayer, 1110, 652, 0xff2bd6);
+        }
+
         private drawLightBeams(g: any) {
           g.fillStyle(0x2cf8ff, 0.032);
           g.fillTriangle(250, 75, 640, FLOOR_BOTTOM_Y, 860, FLOOR_BOTTOM_Y);
@@ -935,15 +1597,50 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         }
 
         private drawForeground(g: any) {
+          const roomId = currentRoomRef.current;
+          const range = roomFloorRange(roomId);
           g.fillStyle(0x050611, 0.82);
-          g.fillRoundedRect(120, FLOOR_BOTTOM_Y + 6, LAND_WIDTH - 240, 46, 18);
-          g.lineStyle(3, 0xff2bd6, 0.2);
-          g.lineBetween(150, FLOOR_BOTTOM_Y + 12, LAND_WIDTH - 150, FLOOR_BOTTOM_Y + 12);
+          g.fillRoundedRect(120, range.bottom + 6, LAND_WIDTH - 240, 46, 18);
+          const color =
+            roomId === QORTAL_LAND_MALL_ROOM_ID
+              ? 0x2cf8ff
+              : roomId === QORTAL_LAND_PARK_ROOM_ID
+                ? 0x78ff9a
+                : 0xff2bd6;
+          g.lineStyle(3, color, 0.2);
+          g.lineBetween(150, range.bottom + 12, LAND_WIDTH - 150, range.bottom + 12);
         }
 
         private animateRoom(time: number) {
           if (!this.lightSweep) return;
           this.lightSweep.clear();
+          const roomId = currentRoomRef.current;
+          if (roomId === QORTAL_LAND_SKYWALK_ROOM_ID) {
+            const pulse = 0.5 + Math.sin(time / 260) * 0.5;
+            this.lightSweep.fillStyle(0x2cf8ff, 0.035 + pulse * 0.025);
+            this.lightSweep.fillEllipse(900, 260, 1180, 58);
+            this.lightSweep.fillStyle(0xff2bd6, 0.025);
+            this.lightSweep.fillTriangle(250, 46, 850, 666, 1020, 666);
+            return;
+          }
+          if (roomId === QORTAL_LAND_MALL_ROOM_ID) {
+            const pulse = 0.5 + Math.sin(time / 220) * 0.5;
+            this.lightSweep.fillStyle(0xffae00, 0.035 + pulse * 0.018);
+            this.lightSweep.fillEllipse(900, 356, 600, 80);
+            this.lightSweep.fillStyle(0x2cf8ff, 0.028);
+            this.lightSweep.fillTriangle(900, 310, 560, 700, 1240, 700);
+            return;
+          }
+          if (roomId === QORTAL_LAND_PARK_ROOM_ID) {
+            const pulse = 0.5 + Math.sin(time / 360) * 0.5;
+            this.lightSweep.fillStyle(0x78ff9a, 0.025 + pulse * 0.018);
+            this.lightSweep.fillEllipse(1220, 560, 420, 120);
+            this.lightSweep.fillStyle(0x2cf8ff, 0.022);
+            this.lightSweep.fillTriangle(1388, 92, 1040, 704, 1420, 704);
+            this.lightSweep.fillStyle(0xff2bd6, 0.018);
+            this.lightSweep.fillEllipse(520, 470, 360, 70);
+            return;
+          }
           const sweepX = 260 + ((time / 18) % 1280);
           const pulse = 0.5 + Math.sin(time / 180) * 0.5;
           this.lightSweep.fillStyle(0x2cf8ff, 0.04);
@@ -1047,7 +1744,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             const rise = Math.min(12, ageMs / 700);
             const scale = Math.abs(avatar.scaleY || 1);
             bubbleObjects.container.setVisible(true);
-            bubbleObjects.container.setPosition(avatar.x, avatar.y - 84 * scale - rise);
+            bubbleObjects.container.setPosition(avatar.x, avatar.y - LAND_CHARACTER_CHAT_BUBBLE_OFFSET * scale - rise);
             bubbleObjects.container.setAlpha(remainingMs < 2000 ? fadeAlpha : 1);
             bubbleObjects.container.setDepth(avatar.depth + 120);
           }
@@ -1074,32 +1771,101 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
           if (up) {
             y -= step;
-            direction = 'u';
           }
           if (down) {
             y += step;
-            direction = 'd';
           }
-          y = Phaser.Math.Clamp(y, FLOOR_TOP_Y + 24, FLOOR_BOTTOM_Y - 28);
-          const bounds = floorBoundsForY(y);
-          x = Phaser.Math.Clamp(x, bounds.minX + 35, bounds.maxX - 35);
+          if (!left && !right) {
+            if (up) {
+              direction = 'u';
+            } else if (down) {
+              direction = 'd';
+            }
+          }
+          let roomId = currentRoomRef.current;
+          ({ x, y } = clampLandPosition(roomId, x, y));
+          const transition = this.getRoomTransition(roomId, x, y);
+          if (transition) {
+            roomId = transition.roomId;
+            currentRoomRef.current = roomId;
+            x = transition.x;
+            y = transition.y;
+            direction = transition.direction;
+            movementKeysRef.current.clear();
+            this.drawWorld();
+          }
           const moving = Boolean(left || right || up || down);
-          const scale = floorScaleForY(y);
+          const scale = characterScaleForRoomY(roomId, y);
           const localLabelText = displayNameForAddress(myAddress, primaryNameCacheRef.current);
           if (this.localLabel?.text !== localLabelText) {
             this.localLabel?.setText(localLabelText);
           }
           this.localAvatar.setPosition(x, y);
-          this.localAvatar.setScale(direction === 'l' ? -scale : scale, scale);
-          this.localLabel?.setPosition(x, y - 48 * scale);
+          this.localAvatar.setScale(avatarScaleXForDirection(direction, scale), scale);
+          this.animateAvatar(this.localAvatar, moving, direction);
+          this.localLabel?.setPosition(x, y - LAND_CHARACTER_LABEL_OFFSET * scale);
           this.localAvatar.setDepth(y + 20);
           this.localLabel?.setDepth(y + 90);
           localStateRef.current = {
+            roomId,
             x,
             y,
             direction,
             movement: moving ? 'walk' : 'idle',
           };
+        }
+
+        private getRoomTransition(
+          roomId: LandRoomId,
+          x: number,
+          y: number
+        ): { roomId: LandRoomId; x: number; y: number; direction: string } | null {
+          if (
+            roomId === QORTAL_LAND_DEFAULT_ROOM_ID &&
+            x >= 1450 &&
+            x <= 1645 &&
+            y <= FLOOR_TOP_Y + 58
+          ) {
+            return { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 220, y: 430, direction: 'r' };
+          }
+          if (
+            roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
+            x >= 1548 &&
+            y <= 466
+          ) {
+            return { roomId: QORTAL_LAND_PARK_ROOM_ID, x: 304, y: 500, direction: 'r' };
+          }
+          if (
+            roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
+            x >= 760 &&
+            x <= 1040 &&
+            y >= 526
+          ) {
+            return { roomId: QORTAL_LAND_MALL_ROOM_ID, x: 900, y: 565, direction: 'd' };
+          }
+          if (
+            roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
+            x <= 210 &&
+            y <= 440
+          ) {
+            return { roomId: QORTAL_LAND_DEFAULT_ROOM_ID, x: 1545, y: FLOOR_TOP_Y + 72, direction: 'd' };
+          }
+          if (
+            roomId === QORTAL_LAND_MALL_ROOM_ID &&
+            x >= 760 &&
+            x <= 1040 &&
+            y <= 460
+          ) {
+            return { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 900, y: 470, direction: 'u' };
+          }
+          if (
+            roomId === QORTAL_LAND_PARK_ROOM_ID &&
+            x <= 232 &&
+            y <= 470
+          ) {
+            return { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 1488, y: 492, direction: 'l' };
+          }
+          return null;
         }
 
         private updateRemotePlayers() {
@@ -1110,7 +1876,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             }
           }
           for (const [key, avatar] of this.remotes.entries()) {
-            if (remotePlayersRef.current.has(key)) continue;
+            const player = remotePlayersRef.current.get(key);
+            if (player && player.roomId === currentRoomRef.current) continue;
             avatar.destroy(true);
             this.remotes.delete(key);
             this.remoteLabels.get(key)?.destroy();
@@ -1118,8 +1885,10 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
           let remoteIndex = 0;
           for (const [key, player] of remotePlayersRef.current.entries()) {
+            if (player.roomId !== currentRoomRef.current) continue;
             let avatar = this.remotes.get(key);
             if (!avatar) {
+              const scale = characterScaleForRoomY(player.roomId, player.y);
               const color = Phaser.Display.Color.HSLToColor(
                 ((remoteHueBase + remoteIndex * 37) % 360) / 360,
                 0.6,
@@ -1128,36 +1897,67 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               avatar = this.createAvatar(player.x, player.y, color, false);
               this.remotes.set(key, avatar);
               const label = this.add
-                .text(player.x, player.y - 45, displayNameForAddress(player.authorAddress, primaryNameCacheRef.current), {
-                  color: '#f8fbff',
-                  fontFamily: 'Inter, Arial, sans-serif',
-                  fontSize: '12px',
-                  stroke: '#10151c',
-                  strokeThickness: 4,
-                })
+                .text(
+                  player.x,
+                  player.y - LAND_CHARACTER_LABEL_OFFSET * scale,
+                  displayNameForAddress(player.authorAddress, primaryNameCacheRef.current),
+                  {
+                    color: '#f8fbff',
+                    fontFamily: 'Inter, Arial, sans-serif',
+                    fontSize: '12px',
+                    stroke: '#10151c',
+                    strokeThickness: 4,
+                  }
+                )
                 .setOrigin(0.5);
               this.remoteLabels.set(key, label);
             }
+            const elapsedSinceUpdate = now - player.receivedAt;
             const interpolationProgress = Phaser.Math.Clamp(
-              (now - player.receivedAt) / LAND_REMOTE_INTERPOLATION_MS,
+              elapsedSinceUpdate / player.interpolationMs,
               0,
               1
             );
             const easedProgress = Phaser.Math.Easing.Sine.InOut(interpolationProgress);
-            const nextX = Phaser.Math.Linear(player.fromX, player.x, easedProgress);
-            const nextY = Phaser.Math.Linear(player.fromY, player.y, easedProgress);
+            let nextX = Phaser.Math.Linear(player.fromX, player.x, easedProgress);
+            let nextY = Phaser.Math.Linear(player.fromY, player.y, easedProgress);
+            const afterTargetMs = Math.max(0, elapsedSinceUpdate - player.interpolationMs);
+            const shouldPredict =
+              player.movement === 'walk' &&
+              afterTargetMs > 0 &&
+              afterTargetMs <= LAND_REMOTE_EXTRAPOLATE_MS &&
+              (Math.abs(player.velocityX) > 0.001 || Math.abs(player.velocityY) > 0.001);
+            if (shouldPredict) {
+              const velocityLength = Math.hypot(player.velocityX, player.velocityY);
+              const maxPredictionMs =
+                velocityLength > 0
+                  ? Math.min(afterTargetMs, LAND_REMOTE_MAX_EXTRAPOLATE_DISTANCE / velocityLength)
+                  : 0;
+              const predicted = clampLandPosition(
+                player.roomId,
+                player.x + player.velocityX * maxPredictionMs,
+                player.y + player.velocityY * maxPredictionMs
+              );
+              nextX = predicted.x;
+              nextY = predicted.y;
+            }
             player.displayX = nextX;
             player.displayY = nextY;
-            const scale = floorScaleForY(nextY);
+            const scale = characterScaleForRoomY(player.roomId, nextY);
             const label = this.remoteLabels.get(key);
             const labelText = displayNameForAddress(player.authorAddress, primaryNameCacheRef.current);
             if (label?.text !== labelText) {
               label?.setText(labelText);
             }
             avatar.setPosition(nextX, nextY);
-            avatar.setScale(player.direction === 'l' ? -scale : scale, scale);
+            avatar.setScale(avatarScaleXForDirection(player.direction, scale), scale);
+            this.animateAvatar(
+              avatar,
+              player.movement === 'walk' && elapsedSinceUpdate <= LAND_REMOTE_STOP_WALKING_AFTER_MS,
+              player.direction
+            );
             avatar.setDepth(nextY + 20);
-            label?.setPosition(nextX, nextY - 45 * scale);
+            label?.setPosition(nextX, nextY - LAND_CHARACTER_LABEL_OFFSET * scale);
             label?.setDepth(nextY + 90);
             remoteIndex += 1;
           }

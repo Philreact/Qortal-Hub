@@ -743,6 +743,7 @@ export type ReticulumChatWire =
       q: number;
       x: number;
       y: number;
+      r?: string;
       d?: string;
       m?: string;
       ts: number;
@@ -3653,6 +3654,7 @@ export class ReticulumChatManager extends EventEmitter {
       sequence?: unknown;
       x?: unknown;
       y?: unknown;
+      roomId?: unknown;
       direction?: unknown;
       movement?: unknown;
     }
@@ -3666,6 +3668,8 @@ export class ReticulumChatManager extends EventEmitter {
     const sequence = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(Number(state.sequence) || 0)));
     const x = Math.max(0, Math.min(4095, Math.round(Number(state.x) || 0)));
     const y = Math.max(0, Math.min(2047, Math.round(Number(state.y) || 0)));
+    const roomId =
+      typeof state.roomId === 'string' ? state.roomId.trim().toLowerCase().slice(0, 16) : '';
     const direction = typeof state.direction === 'string' ? state.direction.trim().slice(0, 1) : '';
     const movement = typeof state.movement === 'string' ? state.movement.trim().slice(0, 8) : '';
     if (!address || !sessionId) {
@@ -3680,6 +3684,7 @@ export class ReticulumChatManager extends EventEmitter {
       q: sequence,
       x,
       y,
+      ...(roomId ? { r: roomId } : {}),
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
       ts: this.now(),
@@ -12886,6 +12891,7 @@ export class ReticulumChatManager extends EventEmitter {
       sequence,
       x,
       y,
+      roomId: typeof wire.r === 'string' ? wire.r : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
       timestamp: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : this.now(),

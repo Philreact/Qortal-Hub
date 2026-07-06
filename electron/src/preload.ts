@@ -1486,6 +1486,7 @@ try {
           sequence?: unknown;
           x?: unknown;
           y?: unknown;
+          roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
         }
@@ -1963,6 +1964,7 @@ try {
           sequence?: unknown;
           x?: unknown;
           y?: unknown;
+          roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
         }

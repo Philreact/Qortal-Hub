@@ -617,6 +617,7 @@ declare global {
           sequence?: unknown;
           x?: unknown;
           y?: unknown;
+          roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
         }
@@ -731,6 +732,7 @@ declare global {
           sequence: number;
           x: number;
           y: number;
+          roomId?: string;
           direction?: string;
           movement?: string;
           timestamp?: number;

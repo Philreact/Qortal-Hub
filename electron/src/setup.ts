@@ -3624,6 +3624,7 @@ ipcMain.handle(
       sequence?: unknown;
       x?: unknown;
       y?: unknown;
+      roomId?: unknown;
       direction?: unknown;
       movement?: unknown;
     }
