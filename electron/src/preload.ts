@@ -1496,6 +1496,11 @@ try {
           authorAddress,
           state
         ) as Promise<{ success: boolean; error?: string }>,
+      sendLandChat: async (message: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandChat',
+          message
+        ) as Promise<{ success: boolean; error?: string }>,
       requestResource: async (
         groupId: number,
         manifest: unknown,
@@ -1785,6 +1790,37 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:landState', handler);
           ipcRenderer.send('reticulumChat:landState:unsubscribe');
+        };
+      },
+      onLandChat: (
+        cb: (payload: {
+          groupId: number;
+          messageId: string;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          timestamp: number;
+          text: string;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              messageId: string;
+              authorAddress: string;
+              sessionId: string;
+              sequence: number;
+              timestamp: number;
+              text: string;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landChat', handler);
+        ipcRenderer.send('reticulumChat:landChat:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landChat', handler);
+          ipcRenderer.send('reticulumChat:landChat:unsubscribe');
         };
       },
     });
@@ -1937,6 +1973,11 @@ try {
           authorAddress,
           state
         ) as Promise<{ success: boolean; error?: string }>,
+      sendLandChat: async (message: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandChat',
+          message
+        ) as Promise<{ success: boolean; error?: string }>,
       requestResource: async (
         groupId: number,
         manifest: unknown,
@@ -2226,6 +2267,37 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:landState', handler);
           ipcRenderer.send('reticulumChat:landState:unsubscribe');
+        };
+      },
+      onLandChat: (
+        cb: (payload: {
+          groupId: number;
+          messageId: string;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          timestamp: number;
+          text: string;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              messageId: string;
+              authorAddress: string;
+              sessionId: string;
+              sequence: number;
+              timestamp: number;
+              text: string;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landChat', handler);
+        ipcRenderer.send('reticulumChat:landChat:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landChat', handler);
+          ipcRenderer.send('reticulumChat:landChat:unsubscribe');
         };
       },
     });

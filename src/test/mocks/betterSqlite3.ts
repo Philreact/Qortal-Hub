@@ -5,8 +5,10 @@ type ReticulumResourceChunkRow = Record<string, any>;
 type MockStore = {
   reticulumChatEvents: ReticulumChatRow[];
   reticulumChatMessages: ReticulumChatRow[];
+  reticulumChatExpiredEventMarkers: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
+  schema: Map<string, Set<string>>;
 };
 
 const storesByPath = new Map<string, MockStore>();
@@ -18,6 +20,13 @@ class Statement {
   ) {}
 
   all(...args: any[]) {
+    const pragmaMatch = this.sql.match(/PRAGMA\s+table_info\(([^)]+)\)/i);
+    if (pragmaMatch) {
+      const tableName = pragmaMatch[1]?.trim().replace(/^["'`]|["'`]$/g, '') ?? '';
+      return [...(this.store.schema.get(tableName) ?? new Set<string>())].map(
+        (name, cid) => ({ cid, name })
+      );
+    }
     if (this.sql.includes('FROM rchat_message_projection')) {
       if (this.sql.includes('WHERE group_id = ? AND channel_id = ?')) {
         const [groupId, channelId, limit] = args;
@@ -57,6 +66,24 @@ class Statement {
           );
       }
     }
+    if (this.sql.includes('FROM rchat_expired_event_markers')) {
+      if (this.sql.includes('GROUP BY author_address')) {
+        const [groupId] = args;
+        const byAuthor = new Map<string, number>();
+        for (const row of this.store.reticulumChatExpiredEventMarkers) {
+          if (row.group_id !== groupId) continue;
+          byAuthor.set(
+            row.author_address,
+            Math.max(byAuthor.get(row.author_address) ?? 0, row.author_seq)
+          );
+        }
+        return [...byAuthor.entries()].map(([author_address, seq]) => ({
+          author_address,
+          seq,
+        }));
+      }
+      return this.store.reticulumChatExpiredEventMarkers;
+    }
     if (this.sql.includes('FROM reticulum_resource_chunks')) {
       const [fileHash] = args;
       return this.store.reticulumResourceChunks
@@ -92,7 +119,10 @@ class Statement {
       if (this.sql.includes('e.author_seq AS max_seq')) {
         const [groupId, _sameGroupId, limit] = args;
         const byAuthor = new Map<string, any>();
-        for (const row of this.store.reticulumChatEvents) {
+        for (const row of [
+          ...this.store.reticulumChatEvents,
+          ...this.store.reticulumChatExpiredEventMarkers,
+        ]) {
           if (row.group_id !== groupId) continue;
           const existing = byAuthor.get(row.author_address);
           if (existing && existing.author_seq >= row.author_seq) continue;
@@ -132,7 +162,10 @@ class Statement {
       if (this.sql.includes('GROUP BY author_address')) {
         const [groupId] = args;
         const byAuthor = new Map<string, number>();
-        for (const row of this.store.reticulumChatEvents) {
+        for (const row of [
+          ...this.store.reticulumChatEvents,
+          ...this.store.reticulumChatExpiredEventMarkers,
+        ]) {
           if (row.group_id !== groupId) continue;
           byAuthor.set(
             row.author_address,
@@ -238,6 +271,18 @@ class Statement {
         (row) => row.file_hash === fileHash && row.chunk_index === chunkIndex
       );
     }
+    if (this.sql.includes('FROM rchat_expired_event_markers')) {
+      if (this.sql.includes('MAX(author_seq) AS seq')) {
+        const [groupId, authorAddress] = args;
+        let seq = 0;
+        for (const row of this.store.reticulumChatExpiredEventMarkers) {
+          if (row.group_id === groupId && row.author_address === authorAddress) {
+            seq = Math.max(seq, Number(row.author_seq) || 0);
+          }
+        }
+        return { seq };
+      }
+    }
     if (this.sql.includes('FROM reticulum_chat_events')) {
       if (this.sql.includes('WHERE event_id = ?')) {
         const [eventId] = args;
@@ -248,10 +293,19 @@ class Statement {
         return this.sql.includes('SELECT 1') ? { 1: 1 } : row;
       }
       if (this.sql.includes('MAX(author_seq) AS seq')) {
-        const [groupId, authorAddress] = args;
+        const [groupId, authorAddress, markerGroupId, markerAuthorAddress] = args;
         let seq = 0;
-        for (const row of this.store.reticulumChatEvents) {
+        for (const row of [
+          ...this.store.reticulumChatEvents,
+          ...this.store.reticulumChatExpiredEventMarkers,
+        ]) {
           if (row.group_id === groupId && row.author_address === authorAddress) {
+            seq = Math.max(seq, Number(row.author_seq) || 0);
+          }
+          if (
+            row.group_id === markerGroupId &&
+            row.author_address === markerAuthorAddress
+          ) {
             seq = Math.max(seq, Number(row.author_seq) || 0);
           }
         }
@@ -356,6 +410,31 @@ class Statement {
       this.store.reticulumChatEvents.push({ ...params });
       return { changes: 1, lastInsertRowid: this.store.reticulumChatEvents.length };
     }
+    if (this.sql.includes('INSERT OR IGNORE INTO rchat_expired_event_markers')) {
+      const values = Array.from(arguments);
+      const [eventId, groupId, channelId, authorAddress, authorSeq, timestamp, expiredAt] =
+        values;
+      if (
+        this.store.reticulumChatExpiredEventMarkers.some(
+          (row) => row.event_id === eventId
+        )
+      ) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      this.store.reticulumChatExpiredEventMarkers.push({
+        event_id: eventId,
+        group_id: groupId,
+        channel_id: channelId,
+        author_address: authorAddress,
+        author_seq: authorSeq,
+        timestamp,
+        expired_at: expiredAt,
+      });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumChatExpiredEventMarkers.length,
+      };
+    }
     if (this.sql.includes('INSERT INTO rchat_message_projection')) {
       const index = this.store.reticulumChatMessages.findIndex(
         (row) => row.root_event_id === params.root_event_id
@@ -413,8 +492,10 @@ class MockDatabase {
     const store = storesByPath.get(key) ?? {
       reticulumChatEvents: [],
       reticulumChatMessages: [],
+      reticulumChatExpiredEventMarkers: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
+      schema: new Map<string, Set<string>>(),
     };
     storesByPath.set(key, store);
     this.store = store;
@@ -424,7 +505,8 @@ class MockDatabase {
     return undefined;
   }
 
-  exec() {
+  exec(sql = '') {
+    this.applySchemaSql(String(sql));
     return undefined;
   }
 
@@ -438,6 +520,48 @@ class MockDatabase {
 
   transaction<T extends (...args: any[]) => any>(fn: T): T {
     return ((...args: Parameters<T>) => fn(...args)) as T;
+  }
+
+  private applySchemaSql(sql: string): void {
+    const dropTablePattern = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_]+)/gi;
+    let dropMatch: RegExpExecArray | null;
+    while ((dropMatch = dropTablePattern.exec(sql))) {
+      this.store.schema.delete(dropMatch[1]);
+    }
+
+    const createTablePattern =
+      /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_]+)\s*\(([\s\S]*?)\);/gi;
+    let createMatch: RegExpExecArray | null;
+    while ((createMatch = createTablePattern.exec(sql))) {
+      const tableName = createMatch[1];
+      const columns = this.store.schema.get(tableName) ?? new Set<string>();
+      for (const line of createMatch[2].split('\n')) {
+        const trimmed = line.trim().replace(/,$/, '');
+        if (!trimmed) continue;
+        const [name = ''] = trimmed.split(/\s+/);
+        const normalized = name.replace(/^["'`]|["'`]$/g, '');
+        if (
+          !normalized ||
+          ['PRIMARY', 'UNIQUE', 'FOREIGN', 'CHECK', 'CONSTRAINT'].includes(
+            normalized.toUpperCase()
+          )
+        ) {
+          continue;
+        }
+        columns.add(normalized);
+      }
+      this.store.schema.set(tableName, columns);
+    }
+
+    const alterAddPattern =
+      /ALTER\s+TABLE\s+([A-Za-z0-9_]+)\s+ADD\s+COLUMN\s+([A-Za-z0-9_]+)/gi;
+    let alterMatch: RegExpExecArray | null;
+    while ((alterMatch = alterAddPattern.exec(sql))) {
+      const [, tableName, columnName] = alterMatch;
+      const columns = this.store.schema.get(tableName) ?? new Set<string>();
+      columns.add(columnName);
+      this.store.schema.set(tableName, columns);
+    }
   }
 }
 

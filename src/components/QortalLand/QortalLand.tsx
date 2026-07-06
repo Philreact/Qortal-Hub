@@ -1,4 +1,5 @@
-import { Box, Typography, useTheme } from '@mui/material';
+import SendRoundedIcon from '@mui/icons-material/SendRounded';
+import { Box, IconButton, TextField, Typography, useTheme } from '@mui/material';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 
@@ -8,8 +9,13 @@ type LandPlayerState = {
   sequence: number;
   x: number;
   y: number;
+  fromX: number;
+  fromY: number;
+  displayX: number;
+  displayY: number;
   direction: string;
   movement: string;
+  receivedAt: number;
   lastSeenAt: number;
 };
 
@@ -18,6 +24,16 @@ type LocalLandState = {
   y: number;
   direction: string;
   movement: string;
+};
+
+type LandChatBubble = {
+  messageId: string;
+  authorAddress: string;
+  sessionId: string;
+  sequence: number;
+  text: string;
+  createdAt: number;
+  expiresAt: number;
 };
 
 type QortalLandProps = {
@@ -32,7 +48,27 @@ const FLOOR_TOP_Y = 300;
 const FLOOR_BOTTOM_Y = 690;
 const LAND_SEND_INTERVAL_MS = 125;
 const LAND_HEARTBEAT_MS = 2000;
-const LAND_REMOTE_TTL_MS = 15000;
+const LAND_REMOTE_TTL_MS = 30000;
+const LAND_REMOTE_INTERPOLATION_MS = 220;
+const LAND_CHAT_BUBBLE_TTL_MS = 15000;
+const LAND_CHAT_MAX_TEXT_BYTES = 1024;
+const LAND_CHAT_MAX_INPUT_CHARS = 420;
+const QORTAL_LAND_CHANNEL_ID = 'qortal-land';
+
+type ReticulumChatEventForLand = {
+  eventId?: unknown;
+  groupId?: unknown;
+  channelId?: unknown;
+  authorAddress?: unknown;
+  authorPublicKey?: unknown;
+  authorSeq?: unknown;
+  timestamp?: unknown;
+  eventType?: unknown;
+  encryptedPayload?: unknown;
+  payloadHash?: unknown;
+  mentionAddressHashes?: unknown;
+  signature?: unknown;
+};
 
 const createSessionId = (): string => {
   const cryptoApi = globalThis.crypto;
@@ -40,6 +76,29 @@ const createSessionId = (): string => {
     return cryptoApi.randomUUID().replace(/-/g, '').slice(0, 24);
   }
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`.slice(0, 24);
+};
+
+const createLandChatMessageId = (): string => {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    return cryptoApi.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+};
+
+const utf8ByteLength = (value: string): number => new TextEncoder().encode(value).length;
+
+const sha256Hex = async (value: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+const isEditableTarget = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return tagName === 'input' || tagName === 'textarea' || target.isContentEditable;
 };
 
 const addressHue = (address: string): number => {
@@ -89,7 +148,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const theme = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
+  const movementKeysRef = useRef<Set<string>>(new Set());
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
+  const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
   const primaryNameLookupTimerRef = useRef<number | null>(null);
@@ -103,7 +164,12 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     sentAt: 0,
   });
   const sequenceRef = useRef(0);
+  const landChatSequenceRef = useRef(0);
+  const chatAuthorSeqRef = useRef(0);
   const [reticulumReady, setReticulumReady] = useState<boolean | null>(null);
+  const [chatText, setChatText] = useState('');
+  const [isSendingChat, setIsSendingChat] = useState(false);
+  const [chatError, setChatError] = useState('');
   const sessionId = useMemo(() => createSessionId(), []);
 
   const queuePrimaryNameLookups = useCallback((addresses: string[]) => {
@@ -162,32 +228,155 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   }, []);
 
   useEffect(() => {
+    const pressedKeys = movementKeysRef.current;
+    const normalizeMovementKey = (key: string): string => key.trim().toLowerCase();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isEditableTarget(event.target)) return;
+      const key = normalizeMovementKey(event.key);
+      if (!['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'a', 'd', 'w', 's'].includes(key)) return;
+      pressedKeys.add(key);
+      event.preventDefault();
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      pressedKeys.delete(normalizeMovementKey(event.key));
+    };
+    const clearKeys = () => {
+      pressedKeys.clear();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', clearKeys);
+    document.addEventListener('visibilitychange', clearKeys);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', clearKeys);
+      document.removeEventListener('visibilitychange', clearKeys);
+      clearKeys();
+    };
+  }, []);
+
+  const sendLandChat = useCallback(async () => {
+    if (isSendingChat || reticulumReady !== true) return;
+    const text = chatText.trim().replace(/\s+/g, ' ');
+    if (!text) return;
+    if (utf8ByteLength(text) > LAND_CHAT_MAX_TEXT_BYTES) {
+      setChatError('Message is too large');
+      return;
+    }
+    setIsSendingChat(true);
+    setChatError('');
+    try {
+      const timestamp = Date.now();
+      const eventId = createLandChatMessageId();
+      const syncState = await window.reticulumChat?.getSyncState?.(groupId);
+      const latestAuthorSeq = Math.max(
+        chatAuthorSeqRef.current,
+        Number(syncState?.[myAddress] ?? 0) || 0
+      );
+      const authorSeq = latestAuthorSeq + 1;
+      const landSequence = landChatSequenceRef.current + 1;
+      landChatSequenceRef.current = landSequence;
+      const encryptedPayload = JSON.stringify({
+        messageText: text,
+        qortalLand: true,
+        sessionId,
+        landSequence,
+        version: 1,
+      });
+      const payloadHash = await sha256Hex(encryptedPayload);
+      const baseFields = {
+        eventId,
+        groupId,
+        channelId: QORTAL_LAND_CHANNEL_ID,
+        authorSeq,
+        timestamp,
+        eventType: 'message',
+        targetEventId: null,
+        replyToEventId: null,
+        encryptedPayload,
+        payloadHash,
+        mentionAddressHashes: [],
+      };
+      const signed = await window.sendMessage?.('signReticulumChatEvent', baseFields, 10000) as
+        | {
+            authorAddress?: string;
+            authorPublicKey?: string;
+            signature?: string;
+            error?: string;
+          }
+        | undefined;
+      if (!signed || signed.error) {
+        throw new Error(signed?.error || 'Unable to sign QortalLand chat');
+      }
+      if (signed.authorAddress !== myAddress) {
+        throw new Error('Signed QortalLand chat author mismatch');
+      }
+      const result = await window.reticulumChat?.publishEvent?.({
+        ...baseFields,
+        authorAddress: signed.authorAddress,
+        authorPublicKey: signed.authorPublicKey,
+        signature: signed.signature,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'QortalLand chat send failed');
+      }
+      chatAuthorSeqRef.current = authorSeq;
+      setChatText('');
+      if (isEditableTarget(document.activeElement)) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'QortalLand chat send failed');
+    } finally {
+      setIsSendingChat(false);
+    }
+  }, [chatText, groupId, isSendingChat, myAddress, reticulumReady, sessionId]);
+
+  useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     void window.reticulumChat?.subscribeGroup?.(groupId);
+    void window.reticulumChat?.subscribeChannel?.(groupId, QORTAL_LAND_CHANNEL_ID);
     const unsubscribe = window.reticulumChat?.onLandState?.((payload) => {
       if (payload.groupId !== groupId) return;
       if (payload.authorAddress === myAddress && payload.sessionId === sessionId) return;
       queuePrimaryNameLookups([payload.authorAddress]);
       const key = `${payload.authorAddress}:${payload.sessionId}`;
+      const existing = remotePlayersRef.current.get(key);
+      const now = Date.now();
       if (payload.movement === 'leave') {
-        remotePlayersRef.current.delete(key);
+        if (!existing || payload.sequence >= existing.sequence) {
+          remotePlayersRef.current.delete(key);
+        }
         return;
       }
-      const existing = remotePlayersRef.current.get(key);
-      if (existing && payload.sequence <= existing.sequence) return;
+      if (existing && payload.sequence <= existing.sequence) {
+        existing.lastSeenAt = now;
+        existing.movement = payload.movement || existing.movement || 'idle';
+        existing.direction = payload.direction || existing.direction || 'r';
+        return;
+      }
+      const fromX = existing?.displayX ?? existing?.x ?? payload.x;
+      const fromY = existing?.displayY ?? existing?.y ?? payload.y;
       remotePlayersRef.current.set(key, {
         authorAddress: payload.authorAddress,
         sessionId: payload.sessionId,
         sequence: payload.sequence,
         x: payload.x,
         y: payload.y,
+        fromX,
+        fromY,
+        displayX: fromX,
+        displayY: fromY,
         direction: payload.direction || existing?.direction || 'r',
         movement: payload.movement || 'idle',
-        lastSeenAt: Date.now(),
+        receivedAt: now,
+        lastSeenAt: now,
       });
     });
     return () => {
       unsubscribe?.();
+      void window.reticulumChat?.unsubscribeChannel?.(groupId, QORTAL_LAND_CHANNEL_ID);
       void window.reticulumChat?.sendLandState?.(groupId, myAddress, {
         sessionId,
         sequence: sequenceRef.current + 1,
@@ -196,6 +385,49 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       });
     };
   }, [groupId, myAddress, queuePrimaryNameLookups, sessionId]);
+
+  useEffect(() => {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
+    const unsubscribe = window.reticulumChat?.onEvent?.(({ event }) => {
+      const payload = event as ReticulumChatEventForLand;
+      if (Number(payload.groupId) !== groupId) return;
+      if (payload.channelId !== QORTAL_LAND_CHANNEL_ID) return;
+      if (payload.eventType !== 'message') return;
+      if (
+        typeof payload.eventId !== 'string' ||
+        typeof payload.authorAddress !== 'string' ||
+        typeof payload.encryptedPayload !== 'string'
+      ) {
+        return;
+      }
+      let decoded: Record<string, unknown>;
+      try {
+        decoded = JSON.parse(payload.encryptedPayload) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (decoded.qortalLand !== true) return;
+      const text = String(decoded.messageText || decoded.message || '').trim();
+      if (!text) return;
+      const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : sessionId;
+      const sequence = Number(decoded.landSequence);
+      queuePrimaryNameLookups([payload.authorAddress]);
+      const now = Date.now();
+      landChatBubblesRef.current.set(payload.eventId, {
+        messageId: payload.eventId,
+        authorAddress: payload.authorAddress,
+        sessionId: session,
+        sequence: Number.isFinite(sequence) ? sequence : 0,
+        text,
+        createdAt: now,
+        expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
+      });
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [groupId, myAddress, queuePrimaryNameLookups, sessionId]);
+
 
   useEffect(() => {
     if (reticulumReady !== true || !Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -224,6 +456,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     if (!containerRef.current || !myAddress) return;
     let destroyed = false;
     let resizeObserver: ResizeObserver | null = null;
+    let resizeFrame = 0;
 
     void import('phaser').then((Phaser) => {
       if (destroyed || !containerRef.current) return;
@@ -232,12 +465,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       const remoteHueBase = (localHue + 145) % 360;
 
       class QortalLandScene extends Phaser.Scene {
-        private cursors?: any;
-        private keys?: Record<string, any>;
         private localAvatar?: any;
         private localLabel?: any;
         private remotes = new Map<string, any>();
         private remoteLabels = new Map<string, any>();
+        private chatBubbles = new Map<string, { container: any; background: any; text: any }>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
@@ -250,8 +482,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         create() {
           this.cameras.main.setBounds(0, 0, LAND_WIDTH, LAND_HEIGHT);
           this.drawWorld();
-          this.cursors = this.input.keyboard?.createCursorKeys();
-          this.keys = this.input.keyboard?.addKeys('W,A,S,D') as Record<string, any>;
           const start = localStateRef.current;
           this.localAvatar = this.createAvatar(start.x, start.y, localColor, true);
           this.localLabel = this.add
@@ -275,6 +505,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           this.animateRoom(time);
           this.updateLocalPlayer(delta);
           this.updateRemotePlayers();
+          try {
+            this.updateChatBubbles();
+          } catch (error) {
+            console.warn('[QortalLand] Chat bubble update failed', error);
+            landChatBubblesRef.current.clear();
+            for (const [messageId, bubbleObjects] of this.chatBubbles.entries()) {
+              this.removeChatBubble(messageId, bubbleObjects);
+            }
+          }
         }
 
         private drawWorld() {
@@ -722,13 +961,106 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
         }
 
+        private drawChatBubble(background: any, textObject: any) {
+          const width = Math.min(250, Math.max(78, Math.ceil(textObject.width) + 28));
+          const height = Math.max(34, Math.ceil(textObject.height) + 18);
+          background.clear();
+          background.fillStyle(0x070914, 0.88);
+          background.fillRoundedRect(-width / 2, -height, width, height, 12);
+          background.lineStyle(2, 0x2cf8ff, 0.68);
+          background.strokeRoundedRect(-width / 2, -height, width, height, 12);
+          background.fillStyle(0x070914, 0.88);
+          background.fillTriangle(-9, 0, 9, 0, 0, 10);
+          background.lineStyle(2, 0x2cf8ff, 0.42);
+          background.lineBetween(-9, 0, 0, 10);
+          background.lineBetween(9, 0, 0, 10);
+          textObject.setPosition(-width / 2 + 14, -height + 9);
+        }
+
+        private createChatBubble(bubble: LandChatBubble) {
+          const background = this.add.graphics();
+          const textObject = this.add.text(0, 0, bubble.text, {
+            align: 'center',
+            color: '#f8fbff',
+            fontFamily: 'Inter, Arial, sans-serif',
+            fontSize: '13px',
+            lineSpacing: 3,
+            wordWrap: { width: 220, useAdvancedWrap: true },
+          });
+          const container = this.add.container(0, 0, [background, textObject]);
+          container.setDepth(9999);
+          this.drawChatBubble(background, textObject);
+          return { container, background, text: textObject };
+        }
+
+        private removeChatBubble(
+          messageId: string,
+          bubbleObjects = this.chatBubbles.get(messageId)
+        ) {
+          if (!bubbleObjects) return;
+          this.chatBubbles.delete(messageId);
+          try {
+            if (typeof bubbleObjects.container?.removeAll === 'function') {
+              bubbleObjects.container.removeAll(true);
+            }
+            if (bubbleObjects.container?.scene) {
+              bubbleObjects.container.destroy();
+            }
+          } catch (error) {
+            console.warn('[QortalLand] Failed to remove chat bubble', error);
+          }
+        }
+
+        private updateChatBubbles() {
+          const now = Date.now();
+          for (const [messageId, bubble] of landChatBubblesRef.current.entries()) {
+            if (bubble.expiresAt > now) continue;
+            landChatBubblesRef.current.delete(messageId);
+          }
+          for (const [messageId, bubbleObjects] of this.chatBubbles.entries()) {
+            if (landChatBubblesRef.current.has(messageId)) continue;
+            this.removeChatBubble(messageId, bubbleObjects);
+          }
+          for (const [messageId, bubble] of landChatBubblesRef.current.entries()) {
+            let avatar: any | undefined;
+            if (bubble.authorAddress === myAddress && bubble.sessionId === sessionId) {
+              avatar = this.localAvatar;
+            } else {
+              avatar = this.remotes.get(`${bubble.authorAddress}:${bubble.sessionId}`);
+            }
+            let bubbleObjects = this.chatBubbles.get(messageId);
+            if (!bubbleObjects) {
+              bubbleObjects = this.createChatBubble(bubble);
+              this.chatBubbles.set(messageId, bubbleObjects);
+            }
+            if (!avatar) {
+              bubbleObjects.container.setVisible(false);
+              continue;
+            }
+            if (bubbleObjects.text.text !== bubble.text) {
+              bubbleObjects.text.setText(bubble.text);
+              this.drawChatBubble(bubbleObjects.background, bubbleObjects.text);
+            }
+            const remainingMs = bubble.expiresAt - now;
+            const fadeAlpha = Math.max(0, Math.min(1, remainingMs / 2000));
+            const ageMs = now - bubble.createdAt;
+            const rise = Math.min(12, ageMs / 700);
+            const scale = Math.abs(avatar.scaleY || 1);
+            bubbleObjects.container.setVisible(true);
+            bubbleObjects.container.setPosition(avatar.x, avatar.y - 84 * scale - rise);
+            bubbleObjects.container.setAlpha(remainingMs < 2000 ? fadeAlpha : 1);
+            bubbleObjects.container.setDepth(avatar.depth + 120);
+          }
+        }
+
         private updateLocalPlayer(delta: number) {
           if (!this.localAvatar) return;
           const step = (190 * delta) / 1000;
-          const left = this.cursors?.left?.isDown || this.keys?.A?.isDown;
-          const right = this.cursors?.right?.isDown || this.keys?.D?.isDown;
-          const up = this.cursors?.up?.isDown || this.keys?.W?.isDown;
-          const down = this.cursors?.down?.isDown || this.keys?.S?.isDown;
+          const pressedKeys = movementKeysRef.current;
+          const left = pressedKeys.has('arrowleft') || pressedKeys.has('a');
+          const right = pressedKeys.has('arrowright') || pressedKeys.has('d');
+          const up = pressedKeys.has('arrowup') || pressedKeys.has('w');
+          const down = pressedKeys.has('arrowdown') || pressedKeys.has('s');
           let x = this.localAvatar.x;
           let y = this.localAvatar.y;
           let direction = localStateRef.current.direction;
@@ -806,8 +1138,16 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                 .setOrigin(0.5);
               this.remoteLabels.set(key, label);
             }
-            const nextX = Phaser.Math.Linear(avatar.x, player.x, 0.2);
-            const nextY = Phaser.Math.Linear(avatar.y, player.y, 0.2);
+            const interpolationProgress = Phaser.Math.Clamp(
+              (now - player.receivedAt) / LAND_REMOTE_INTERPOLATION_MS,
+              0,
+              1
+            );
+            const easedProgress = Phaser.Math.Easing.Sine.InOut(interpolationProgress);
+            const nextX = Phaser.Math.Linear(player.fromX, player.x, easedProgress);
+            const nextY = Phaser.Math.Linear(player.fromY, player.y, easedProgress);
+            player.displayX = nextX;
+            player.displayY = nextY;
             const scale = floorScaleForY(nextY);
             const label = this.remoteLabels.get(key);
             const labelText = displayNameForAddress(player.authorAddress, primaryNameCacheRef.current);
@@ -827,7 +1167,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       const width = Math.max(320, containerRef.current.clientWidth || 900);
       const height = Math.max(320, containerRef.current.clientHeight || 560);
       const game = new Phaser.Game({
-        type: Phaser.AUTO,
+        type: Phaser.CANVAS,
         parent: containerRef.current,
         backgroundColor: '#101820',
         scale: {
@@ -841,20 +1181,27 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       resizeObserver = new ResizeObserver((entries) => {
         const entry = entries[0];
         if (!entry || destroyed) return;
-        game.scale.resize(
-          Math.max(320, Math.floor(entry.contentRect.width)),
-          Math.max(320, Math.floor(entry.contentRect.height))
-        );
+        if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+        resizeFrame = window.requestAnimationFrame(() => {
+          resizeFrame = 0;
+          if (destroyed) return;
+          game.scale.resize(
+            Math.max(320, Math.floor(entry.contentRect.width)),
+            Math.max(320, Math.floor(entry.contentRect.height))
+          );
+        });
       });
       resizeObserver.observe(containerRef.current);
     });
 
     return () => {
       destroyed = true;
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeObserver?.disconnect();
       gameRef.current?.destroy(true);
       gameRef.current = null;
       remotePlayersRef.current.clear();
+      landChatBubblesRef.current.clear();
     };
   }, [myAddress]);
 
@@ -903,6 +1250,90 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           },
         }}
       />
+      {reticulumReady === true && (
+        <Box
+          sx={{
+            alignItems: 'center',
+            backgroundColor: 'rgba(7, 9, 20, 0.82)',
+            border: '1px solid rgba(44, 248, 255, 0.24)',
+            borderRadius: '8px',
+            bottom: 16,
+            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.35)',
+            display: 'flex',
+            gap: 1,
+            left: '50%',
+            maxWidth: 620,
+            padding: '8px 10px',
+            position: 'absolute',
+            transform: 'translateX(-50%)',
+            width: 'min(620px, calc(100% - 32px))',
+            zIndex: 3,
+          }}
+        >
+          <TextField
+            autoComplete="off"
+            error={Boolean(chatError)}
+            helperText={chatError || `${utf8ByteLength(chatText.trim())}/${LAND_CHAT_MAX_TEXT_BYTES} bytes`}
+            placeholder="Say something"
+            size="small"
+            value={chatText}
+            variant="filled"
+            onChange={(event) => {
+              const next = event.target.value.slice(0, LAND_CHAT_MAX_INPUT_CHARS);
+              setChatText(next);
+              if (chatError) setChatError('');
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void sendLandChat();
+              }
+            }}
+            sx={{
+              flex: 1,
+              '& .MuiFilledInput-root': {
+                backgroundColor: 'rgba(11, 16, 32, 0.92)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '6px',
+                color: theme.palette.text.primary,
+                fontSize: 13,
+                minHeight: 42,
+                overflow: 'hidden',
+                '&:before, &:after': { display: 'none' },
+              },
+              '& .MuiFormHelperText-root': {
+                color: chatError ? theme.palette.error.light : 'rgba(248, 251, 255, 0.52)',
+                fontSize: 10,
+                lineHeight: 1.2,
+                marginLeft: 0.5,
+                marginTop: 0.35,
+              },
+            }}
+          />
+          <IconButton
+            aria-label="Send QortalLand chat"
+            disabled={isSendingChat || !chatText.trim()}
+            onClick={() => void sendLandChat()}
+            sx={{
+              backgroundColor: 'rgba(44, 248, 255, 0.16)',
+              border: '1px solid rgba(44, 248, 255, 0.28)',
+              borderRadius: '6px',
+              color: '#2cf8ff',
+              height: 42,
+              width: 42,
+              '&:hover': {
+                backgroundColor: 'rgba(44, 248, 255, 0.24)',
+              },
+              '&.Mui-disabled': {
+                color: 'rgba(248, 251, 255, 0.3)',
+              },
+            }}
+          >
+            <SendRoundedIcon fontSize="small" />
+          </IconButton>
+        </Box>
+      )}
       {reticulumReady === false && (
         <Box
           sx={{

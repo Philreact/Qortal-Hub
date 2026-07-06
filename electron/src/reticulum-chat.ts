@@ -26,6 +26,7 @@ import {
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
+  normalizeReticulumChatExpiryDurationMs,
   normalizeReticulumDmConversationId,
   reticulumChatRelayBlobId,
   reticulumDmConversationId,
@@ -126,6 +127,18 @@ export interface ReticulumDmEvent {
   localDeliveryUpdatedAt?: number;
 }
 
+export interface ReticulumLandChatMessage {
+  messageId: string;
+  groupId: number;
+  authorAddress: string;
+  authorPublicKey: string;
+  sessionId: string;
+  sequence: number;
+  timestamp: number;
+  text: string;
+  signature: string;
+}
+
 export type ReticulumDmSummary = {
   peerAddress: string;
   conversationId: string;
@@ -223,6 +236,24 @@ type ReticulumChatEventOfferOptions = {
   relayBlobId?: string;
   allowCachedServe?: boolean;
   repairRange?: ReticulumChatAuthorRange;
+};
+
+type ReticulumLandChatOffer = {
+  message: ReticulumLandChatMessage;
+  blob: string;
+  fileHash: string;
+  sizeBytes: number;
+  filePath: string;
+  expiresAt: number;
+};
+
+type ReticulumLandChatRequest = {
+  transferId: string;
+  groupId: number;
+  messageId: string;
+  fileHash: string;
+  sizeBytes: number;
+  sourcePeerHash: string;
 };
 
 type ReticulumChatAuthorRange = {
@@ -718,6 +749,18 @@ export type ReticulumChatWire =
       o?: string;
       h?: number;
     }
+  | {
+      t: 'RCHAT';
+      k: 'land_chat_hint';
+      g: number;
+      id: string;
+      fh: string;
+      s: number;
+      a: string;
+      ts: number;
+      o?: string;
+      h?: number;
+    }
   | { t: 'RCHAT'; k: 'typing'; g: number; c: string; a: string; ts: number; active: boolean; o?: string; h?: number };
 
 export interface ReticulumChatManagerOptions {
@@ -781,6 +824,13 @@ const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
 const RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY = 4;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
+const RETICULUM_LAND_CHAT_RESOURCE_TTL_MS = 2 * 60 * 1000;
+const RETICULUM_LAND_CHAT_MAX_TEXT_BYTES = 1024;
+const RETICULUM_LAND_CHAT_MAX_BLOB_BYTES = 8 * 1024;
+const RETICULUM_LAND_CHAT_MAX_AGE_MS = 5 * 60_000;
+const RETICULUM_LAND_CHAT_HINT_DEDUPE_MS = 2 * 60_000;
+const RETICULUM_LAND_CHAT_HINT_DEDUPE_MAX = 4096;
+const RETICULUM_LAND_CHAT_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]+$/;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 60_000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
 const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_RETRY_MS = 1_000;
@@ -1002,6 +1052,22 @@ export function buildReticulumDmSignedFields(
     senderSeq: event.senderSeq,
     targetEventId: event.targetEventId ?? null,
     timestamp: event.timestamp,
+  };
+}
+
+export function buildReticulumLandChatSignedFields(
+  message: ReticulumLandChatMessage
+): Record<string, unknown> {
+  return {
+    authorAddress: message.authorAddress,
+    authorPublicKey: message.authorPublicKey,
+    groupId: message.groupId,
+    messageId: message.messageId,
+    sequence: message.sequence,
+    sessionId: message.sessionId,
+    text: message.text,
+    timestamp: message.timestamp,
+    type: 'QORTAL_LAND_CHAT',
   };
 }
 
@@ -1582,6 +1648,40 @@ export function validateReticulumDmEventShape(
   }
 }
 
+export function validateReticulumLandChatMessageShape(
+  message: unknown,
+  now = Date.now()
+): message is ReticulumLandChatMessage {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const candidate = message as Partial<ReticulumLandChatMessage>;
+  if (
+    typeof candidate.messageId !== 'string' ||
+    candidate.messageId.length < 8 ||
+    candidate.messageId.length > 96 ||
+    !RETICULUM_LAND_CHAT_MESSAGE_ID_RE.test(candidate.messageId)
+  ) {
+    return false;
+  }
+  if (!Number.isInteger(candidate.groupId) || (candidate.groupId as number) <= 0) return false;
+  if (typeof candidate.authorAddress !== 'string' || !candidate.authorAddress) return false;
+  if (typeof candidate.authorPublicKey !== 'string' || !candidate.authorPublicKey) return false;
+  if (typeof candidate.sessionId !== 'string' || !candidate.sessionId || candidate.sessionId.length > 48) return false;
+  if (!Number.isInteger(candidate.sequence) || (candidate.sequence as number) < 0) return false;
+  if (!Number.isFinite(candidate.timestamp)) return false;
+  if ((candidate.timestamp as number) > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+  if ((candidate.timestamp as number) < now - RETICULUM_LAND_CHAT_MAX_AGE_MS) return false;
+  if (typeof candidate.text !== 'string') return false;
+  const text = candidate.text.trim();
+  if (!text) return false;
+  if (Buffer.byteLength(text, 'utf8') > RETICULUM_LAND_CHAT_MAX_TEXT_BYTES) return false;
+  if (typeof candidate.signature !== 'string' || !candidate.signature) return false;
+  try {
+    return deriveAddressFromPublicKey(candidate.authorPublicKey) === candidate.authorAddress;
+  } catch {
+    return false;
+  }
+}
+
 export function buildReticulumChatEventRequestSignedFields(input: {
   groupId: number;
   eventId: string;
@@ -1852,6 +1952,22 @@ export function verifyReticulumDmEvent(event: ReticulumDmEvent): boolean {
       ),
       new Uint8Array(base58Decode(event.signature)),
       new Uint8Array(base58Decode(event.senderPublicKey))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function verifyReticulumLandChatMessage(message: ReticulumLandChatMessage): boolean {
+  try {
+    const derived = deriveAddressFromPublicKey(message.authorPublicKey);
+    if (derived !== message.authorAddress) return false;
+    return nacl.sign.detached.verify(
+      new Uint8Array(
+        canonicalizeForSigning(buildReticulumLandChatSignedFields(message))
+      ),
+      new Uint8Array(base58Decode(message.signature)),
+      new Uint8Array(base58Decode(message.authorPublicKey))
     );
   } catch {
     return false;
@@ -2677,6 +2793,8 @@ export class ReticulumChatManager extends EventEmitter {
   private directHistoryPageRequestKeys = new Map<string, string>();
   private directHistoryPageTransferKeys = new Map<string, string>();
   private directDmPageRequests = new Map<string, ReticulumDmPageOffer>();
+  private outboundLandChatOffers = new Map<string, ReticulumLandChatOffer>();
+  private inboundLandChatRequests = new Map<string, ReticulumLandChatRequest>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -2691,6 +2809,7 @@ export class ReticulumChatManager extends EventEmitter {
   private activeDigestGroups = new Map<number, number>();
   private activeChannelSubscriptions = new Map<number, Set<string>>();
   private recentInboundControlWires = new Map<string, number>();
+  private recentLandChatHints = new Map<string, number>();
   private recentServedSyncRequests = new Map<string, number>();
   private recentRelayQueries = new Map<string, number>();
   private recentRelayDigestsServed = new Map<string, number>();
@@ -3075,6 +3194,12 @@ export class ReticulumChatManager extends EventEmitter {
     this.directResourceFindRoutes.clear();
     this.localDirectResourceFindRequests.clear();
     this.recentDirectResourceDiscoveryRequests.clear();
+    for (const offer of this.outboundLandChatOffers.values()) {
+      this.safeUnlink(offer.filePath);
+    }
+    this.outboundLandChatOffers.clear();
+    this.inboundLandChatRequests.clear();
+    this.recentLandChatHints.clear();
     this.groupInterestRoutes.clear();
     this.forwardedGroupSubKeys.clear();
     this.forwardedGroupControlKeys.clear();
@@ -3561,6 +3686,67 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
+  async sendLandChat(message: ReticulumLandChatMessage): Promise<ReticulumSendResult> {
+    if (!validateReticulumLandChatMessageShape(message, this.now())) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand chat message' };
+    }
+    if (!verifyReticulumLandChatMessage(message)) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand chat signature' };
+    }
+    this.assertLocalGroupMember(message.groupId);
+    if (!this.subscribedGroups.has(message.groupId)) {
+      this.subscribeGroup(message.groupId);
+    }
+    const authorIsMember = await this.isValidatedGroupMember(message.groupId, message.authorAddress);
+    if (!authorIsMember) {
+      return { ok: false, reason: 'send-command-failed', error: 'QortalLand chat author is not a group member' };
+    }
+    this.pruneLandChatOffers();
+    const outboundMessage: ReticulumLandChatMessage = { ...message };
+    const blob = JSON.stringify({ v: 1, message: outboundMessage });
+    const sizeBytes = Buffer.byteLength(blob, 'utf8');
+    if (sizeBytes <= 0 || sizeBytes > RETICULUM_LAND_CHAT_MAX_BLOB_BYTES) {
+      return { ok: false, reason: 'send-command-failed', error: 'QortalLand chat blob is too large' };
+    }
+    const fileHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+    const filePath = this.writeTempEventBlob(`land-chat-${outboundMessage.messageId}`, blob);
+    const offerKey = this.landChatOfferKey(outboundMessage.groupId, outboundMessage.messageId);
+    this.outboundLandChatOffers.set(offerKey, {
+      message: outboundMessage,
+      blob,
+      fileHash,
+      sizeBytes,
+      filePath,
+      expiresAt: this.now() + RETICULUM_LAND_CHAT_RESOURCE_TTL_MS,
+    });
+    const wire: Extract<ReticulumChatWire, { k: 'land_chat_hint' }> = {
+      t: 'RCHAT',
+      k: 'land_chat_hint',
+      g: outboundMessage.groupId,
+      id: outboundMessage.messageId,
+      fh: fileHash,
+      s: sizeBytes,
+      a: outboundMessage.authorAddress,
+      ts: outboundMessage.timestamp,
+    };
+    const result = await this.fanoutOnce(wire);
+    if (!result.ok) {
+      this.outboundLandChatOffers.delete(offerKey);
+      this.safeUnlink(filePath);
+      return result;
+    }
+    this.emit('landChat', {
+      groupId: outboundMessage.groupId,
+      messageId: outboundMessage.messageId,
+      authorAddress: outboundMessage.authorAddress,
+      sessionId: outboundMessage.sessionId,
+      sequence: outboundMessage.sequence,
+      timestamp: outboundMessage.timestamp,
+      text: outboundMessage.text,
+    });
+    return result;
+  }
+
   async requestResource(
     groupId: number,
     manifest: ReticulumResourceManifest,
@@ -3917,7 +4103,8 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'rf' &&
       kind !== 'feed_req' &&
       kind !== 'range_req' &&
-      kind !== 'event_batch'
+      kind !== 'event_batch' &&
+      kind !== 'land_chat_hint'
     ) {
       return false;
     }
@@ -4134,6 +4321,20 @@ export class ReticulumChatManager extends EventEmitter {
         if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
         if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
         this.applyLandState(groupId, wire as Extract<ReticulumChatWire, { k: 'land_state' }>);
+        return;
+      }
+      case 'land_chat_hint':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.forwardLandChatHintToInterestRoutes(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'land_chat_hint' }>,
+          peerHash
+        );
+        if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+        void this.handleLandChatHint(groupId, wire as Extract<ReticulumChatWire, { k: 'land_chat_hint' }>, peerHash);
         return;
       }
       case 'typing':
@@ -5104,6 +5305,51 @@ export class ReticulumChatManager extends EventEmitter {
       this.forwardedGroupControlKeys.set(
         key,
         this.now() + RETICULUM_CHAT_TYPING_TTL_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded);
+    }
+  }
+
+  private async forwardLandChatHintToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_chat_hint' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'land_chat_hint' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'land_chat_hint',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_LAND_CHAT_HINT_DEDUPE_MS
       );
       void this.sendToPeer(route.reversePeerHash, forwarded);
     }
@@ -7227,6 +7473,13 @@ export class ReticulumChatManager extends EventEmitter {
     const position = Number.isFinite(Number(data.position))
       ? Math.max(0, Math.floor(Number(data.position)))
       : existing?.position ?? (channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ? 0 : 1000);
+    const hasExpiryDuration = Object.prototype.hasOwnProperty.call(
+      data,
+      'expiryDurationMs'
+    );
+    const expiryDurationMs = hasExpiryDuration
+      ? normalizeReticulumChatExpiryDurationMs(data.expiryDurationMs)
+      : existing?.expiryDurationMs;
     if (event.eventType === 'channel_archive') {
       if (!existing || channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) return null;
       return { ...existing, archived: true, updatedAt: now };
@@ -7259,6 +7512,7 @@ export class ReticulumChatManager extends EventEmitter {
       writeMode,
       readMode,
       writeModeUpdatedAt,
+      ...(expiryDurationMs ? { expiryDurationMs } : {}),
       createdBy: existing?.createdBy || event.authorAddress,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
@@ -11085,7 +11339,12 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (payload?.status === 'failed' && payload.transferId) {
-      if (this.directDmPageRequests.has(payload.transferId)) {
+      if (this.inboundLandChatRequests.has(payload.transferId)) {
+        this.inboundLandChatRequests.delete(payload.transferId);
+        loggerWarn(
+          `[ReticulumChat] qortalland_chat_resource_failed transfer=${payload.transferId} reason=${typeof payload.reason === 'string' ? payload.reason : 'resource_failed'}`
+        );
+      } else if (this.directDmPageRequests.has(payload.transferId)) {
         this.directDmPageRequests.delete(payload.transferId);
       } else if (this.eventPageOffers.has(payload.transferId) || this.directHistoryPageRequests.has(payload.transferId)) {
         this.handleEventPageResourceFailure(
@@ -11101,7 +11360,9 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (payload?.status !== 'received' || !payload.path || !payload.transferId) return;
-    if (this.directDmPageRequests.has(payload.transferId)) {
+    if (this.inboundLandChatRequests.has(payload.transferId)) {
+      void this.importReceivedLandChatResource(payload);
+    } else if (this.directDmPageRequests.has(payload.transferId)) {
       void this.importReceivedDirectDmPageResource(payload);
     } else if (this.eventPageOffers.has(payload.transferId) || this.directHistoryPageRequests.has(payload.transferId)) {
       void this.importReceivedEventPageResource(payload);
@@ -11130,6 +11391,263 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     this.resourceTransfer?.handleResourceEvent(payload);
+  }
+
+  private async handleLandChatHint(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_chat_hint' }>,
+    peerHash: string
+  ): Promise<void> {
+    const messageId = typeof wire.id === 'string' ? wire.id.trim() : '';
+    const fileHash = typeof wire.fh === 'string' ? wire.fh.trim().toLowerCase() : '';
+    const sizeBytes = Math.max(0, Math.floor(Number(wire.s) || 0));
+    if (
+      messageId.length < 8 ||
+      messageId.length > 96 ||
+      !RETICULUM_LAND_CHAT_MESSAGE_ID_RE.test(messageId) ||
+      !/^[0-9a-f]{64}$/i.test(fileHash)
+    ) {
+      return;
+    }
+    if (sizeBytes <= 0 || sizeBytes > RETICULUM_LAND_CHAT_MAX_BLOB_BYTES) return;
+    const dedupeKey = `${groupId}:${messageId}:${fileHash}`;
+    if (
+      this.markRecentOrDuplicate(
+        this.recentLandChatHints,
+        dedupeKey,
+        RETICULUM_LAND_CHAT_HINT_DEDUPE_MS,
+        RETICULUM_LAND_CHAT_HINT_DEDUPE_MAX
+      )
+    ) {
+      return;
+    }
+    const sourcePeerHash =
+      this.routePeerHash(wire.o) ??
+      this.routePeerHash(peerHash) ??
+      peerHash.trim().toLowerCase();
+    if (!sourcePeerHash || !this.bridge || typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function') {
+      loggerWarn(
+        `[ReticulumChat] qortalland_chat_request_skipped group=${groupId} message=${messageId} reason=missing_source_peer`
+      );
+      return;
+    }
+    let reticulumIdentityPublicKeyBase64 = '';
+    const resolvedIdentity = await this.ensureResourcePeerIdentity(sourcePeerHash, 'qortalland-chat');
+    if (resolvedIdentity === null) {
+      loggerWarn(
+        `[ReticulumChat] qortalland_chat_request_skipped group=${groupId} message=${messageId} peer=${sourcePeerHash.slice(0, 16)} reason=identity_unavailable`
+      );
+      return;
+    }
+    reticulumIdentityPublicKeyBase64 = resolvedIdentity;
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    const authWire = await this.buildSignedResourceAuthWire(groupId, transferId, 'RCR');
+    if (!authWire) {
+      loggerWarn(
+        `[ReticulumChat] qortalland_chat_request_skipped group=${groupId} message=${messageId} reason=signed_auth_unavailable`
+      );
+      return;
+    }
+    this.inboundLandChatRequests.set(transferId, {
+      transferId,
+      groupId,
+      messageId,
+      fileHash,
+      sizeBytes,
+      sourcePeerHash,
+    });
+    loggerLog(
+      `[ReticulumChat] qortalland_chat_link_requested group=${groupId} message=${messageId} peer=${sourcePeerHash.slice(0, 16)} transfer=${transferId}`
+    );
+    const result = await this.bridge.acceptReticulumChatResourceDetailed({
+      peerPresenceHash: sourcePeerHash,
+      reticulumIdentityPublicKeyBase64,
+      transferId,
+      savePath: this.tempEventBlobPath(`${transferId}.qortalland-chat.recv`),
+      fileName: `${groupId}-${messageId}.qortalland-chat.json`,
+      size: sizeBytes,
+      sha256: fileHash,
+      metadata: {
+        resourceType: 'qortalland_chat',
+        logicalResourceType: 'qortalland_chat',
+        groupId,
+        messageId,
+      },
+      authMessage: {
+        type: 'RETICULUM_QORTAL_LAND_CHAT_REQUEST',
+        transferId,
+        groupId,
+        messageId,
+        fileHash,
+        requesterPeerHash: this.bridge.getLocalDestinationHash?.() ?? '',
+        ...authWire,
+      },
+    });
+    if (!result.ok) {
+      this.inboundLandChatRequests.delete(transferId);
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[ReticulumChat] qortalland_chat_link_failed group=${groupId} message=${messageId} peer=${sourcePeerHash.slice(0, 16)} reason=${failed.error ?? failed.reason}`
+      );
+    }
+  }
+
+  private async authorizeLandChatResource(
+    payload: ReticulumChatResourcePayload,
+    auth: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.bridge || !payload.linkId || !payload.transferId) return;
+    const reject = async (reason: string) => {
+      await this.bridge?.rejectReticulumChatResourceDetailed?.({
+        linkId: payload.linkId!,
+        transferId: payload.transferId!,
+        reason,
+      });
+    };
+    this.pruneLandChatOffers();
+    const groupId = Number(auth.groupId || auth.g || payload.groupId || 0);
+    const messageId = String(auth.messageId || auth.id || payload.metadata?.messageId || '').trim();
+    const fileHash = String(auth.fileHash || auth.fh || payload.sha256 || '').trim().toLowerCase();
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      messageId.length < 8 ||
+      messageId.length > 96 ||
+      !RETICULUM_LAND_CHAT_MESSAGE_ID_RE.test(messageId) ||
+      !/^[0-9a-f]{64}$/i.test(fileHash)
+    ) {
+      await reject('bad_land_chat_auth');
+      return;
+    }
+    const offer = this.outboundLandChatOffers.get(this.landChatOfferKey(groupId, messageId));
+    if (!offer || offer.expiresAt <= this.now()) {
+      await reject('land_chat_unavailable');
+      return;
+    }
+    if (offer.message.groupId !== groupId || offer.fileHash.toLowerCase() !== fileHash) {
+      await reject('bad_land_chat_auth');
+      return;
+    }
+    const authWire: ReticulumChatResourceAuthWire = {
+      t: 'RCR',
+      x: String(auth.x || auth.transferId || payload.transferId || ''),
+      g: groupId,
+      a: String(auth.a || ''),
+      p: String(auth.p || ''),
+      ts: Number(auth.ts || 0),
+      z: String(auth.z || ''),
+    };
+    if (authWire.x !== payload.transferId || !verifyReticulumChatResourceAuth(groupId, authWire, this.now())) {
+      await reject('signed_request_required');
+      return;
+    }
+    const requesterIsMember = await this.isValidatedRequesterGroupMember(
+      groupId,
+      authWire.a,
+      'qortalland_chat'
+    );
+    if (requesterIsMember !== true) {
+      await reject(
+        requesterIsMember === null
+          ? 'requester_membership_unavailable'
+          : 'requester_not_group_member'
+      );
+      return;
+    }
+    const requesterPeerHash = String(
+      auth.requesterPeerHash || payload.peerPresenceHash || ''
+    ).trim().toLowerCase();
+    if (!requesterPeerHash) {
+      await reject('missing_requester_peer');
+      return;
+    }
+    const registered = await this.bridge.sendReticulumChatResourceDetailed?.({
+      allowedRecipientAddress: requesterPeerHash,
+      transferId: payload.transferId,
+      filePath: offer.filePath,
+      fileName: `${groupId}-${messageId}.qortalland-chat.json`,
+      size: offer.sizeBytes,
+      sha256: offer.fileHash,
+      metadata: {
+        resourceType: 'qortalland_chat',
+        logicalResourceType: 'qortalland_chat',
+        groupId,
+        messageId,
+        size: offer.sizeBytes,
+      },
+      expiresAt: offer.expiresAt,
+    });
+    if (!registered?.ok) {
+      await reject('land_chat_register_failed');
+      return;
+    }
+    loggerLog(
+      `[ReticulumChat] qortalland_chat_link_authorized group=${groupId} message=${messageId} requester=${authWire.a} transfer=${payload.transferId}`
+    );
+    await this.bridge.authorizeReticulumChatResourceDetailed?.({
+      linkId: payload.linkId,
+      transferId: payload.transferId,
+    });
+  }
+
+  private async importReceivedLandChatResource(payload: ReticulumChatResourcePayload): Promise<void> {
+    if (!payload.path || !payload.transferId) return;
+    const request = this.inboundLandChatRequests.get(payload.transferId);
+    if (!request) return;
+    try {
+      const blob = fs.readFileSync(payload.path, 'utf8');
+      const actualHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+      if (actualHash !== request.fileHash.toLowerCase()) {
+        loggerWarn(
+          `[ReticulumChat] qortalland_chat_hash_mismatch group=${request.groupId} message=${request.messageId} transfer=${payload.transferId}`
+        );
+        return;
+      }
+      const parsed = JSON.parse(blob) as { v?: unknown; message?: unknown };
+      if (!parsed || parsed.v !== 1 || !validateReticulumLandChatMessageShape(parsed.message, this.now())) {
+        loggerWarn(
+          `[ReticulumChat] qortalland_chat_invalid_blob group=${request.groupId} message=${request.messageId} transfer=${payload.transferId}`
+        );
+        return;
+      }
+      const message = parsed.message;
+      if (
+        message.groupId !== request.groupId ||
+        message.messageId !== request.messageId ||
+        !verifyReticulumLandChatMessage(message)
+      ) {
+        loggerWarn(
+          `[ReticulumChat] qortalland_chat_invalid_signature group=${request.groupId} message=${request.messageId} transfer=${payload.transferId}`
+        );
+        return;
+      }
+      const authorIsMember = await this.isValidatedGroupMember(message.groupId, message.authorAddress);
+      if (!authorIsMember) {
+        loggerWarn(
+          `[ReticulumChat] qortalland_chat_rejected_non_member group=${message.groupId} message=${message.messageId} author=${message.authorAddress}`
+        );
+        return;
+      }
+      this.emit('landChat', {
+        groupId: message.groupId,
+        messageId: message.messageId,
+        authorAddress: message.authorAddress,
+        sessionId: message.sessionId,
+        sequence: message.sequence,
+        timestamp: message.timestamp,
+        text: message.text,
+      });
+      loggerLog(
+        `[ReticulumChat] qortalland_chat_imported group=${message.groupId} message=${message.messageId} peer=${request.sourcePeerHash.slice(0, 16)}`
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] qortalland_chat_import_failed transfer=${payload.transferId} reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      this.inboundLandChatRequests.delete(payload.transferId);
+      this.safeUnlink(payload.path);
+    }
   }
 
   private async importReceivedDirectDmPageResource(payload: ReticulumChatResourcePayload): Promise<void> {
@@ -11645,6 +12163,10 @@ export class ReticulumChatManager extends EventEmitter {
   private async authorizeResource(payload: ReticulumChatResourcePayload): Promise<void> {
     if (!this.bridge || !payload.linkId || !payload.transferId) return;
     const auth = payload.auth && typeof payload.auth === 'object' ? payload.auth : {};
+    if (auth.type === 'RETICULUM_QORTAL_LAND_CHAT_REQUEST') {
+      await this.authorizeLandChatResource(payload, auth);
+      return;
+    }
     if (auth.type === 'RETICULUM_CHAT_DM_PAGE_REQUEST') {
       await this.authorizeDirectDmPageResource(payload, auth);
       return;
@@ -12294,6 +12816,18 @@ export class ReticulumChatManager extends EventEmitter {
     } catch {
       // Best-effort cleanup for temporary event page files.
     }
+  }
+
+  private pruneLandChatOffers(now = this.now()): void {
+    for (const [offerKey, offer] of this.outboundLandChatOffers) {
+      if (offer.expiresAt > now) continue;
+      this.safeUnlink(offer.filePath);
+      this.outboundLandChatOffers.delete(offerKey);
+    }
+  }
+
+  private landChatOfferKey(groupId: number, messageId: string): string {
+    return `${groupId}:${messageId}`;
   }
 
   private applyTyping(

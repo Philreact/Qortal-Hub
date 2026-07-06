@@ -44,6 +44,8 @@ import {
 import {
   hashReticulumChatMentionAddress,
   ReticulumChatDatabase,
+  RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+  RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
   reticulumDmConversationId,
 } from './reticulum-chat-db';
@@ -1114,6 +1116,70 @@ describe('reticulum chat database', () => {
     expect(db.getRelayCacheBytes()).toBe(0);
     db.insertEvent(signedEvent({ eventId: 'relay-event' }), false);
     expect(db.getRelayCacheBytes()).toBeGreaterThan(0);
+  });
+
+  it('creates QortalLand as a default expiring channel', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+
+    const channel = db.getChannel(11, RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID);
+
+    expect(channel?.channelId).toBe(RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID);
+    expect(channel?.expiryDurationMs).toBe(RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS);
+  });
+
+  it('expires messages using message-level expiry when the channel has none', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const now = Date.now();
+    const event = signedEvent({
+      eventId: 'message-expiry-root',
+      groupId: 12,
+      authorSeq: 7,
+      timestamp: now - 2_000,
+      encryptedPayload: JSON.stringify({
+        messageText: 'short lived',
+        expiryDurationMs: 1_000,
+      }),
+    });
+
+    expect(db.insertEvent(event, true)).toBe(false);
+    expect(db.getRecentMessageEvents(12, 10, 'general')).toHaveLength(0);
+    expect(db.getSyncState(12)[event.authorAddress]).toBe(7);
+  });
+
+  it('lets channel expiry override a longer message-level expiry', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const now = Date.now();
+    db.upsertChannel({
+      groupId: 13,
+      channelId: 'short-lived',
+      name: 'short-lived',
+      position: 2,
+      archived: false,
+      writeMode: 'members',
+      readMode: 'members',
+      expiryDurationMs: 1_000,
+      createdBy: 'Qadmin',
+      createdAt: now - 10_000,
+      updatedAt: now - 10_000,
+    });
+    const event = signedEvent({
+      eventId: 'channel-expiry-root',
+      groupId: 13,
+      channelId: 'short-lived',
+      authorSeq: 9,
+      timestamp: now - 2_000,
+      encryptedPayload: JSON.stringify({
+        messageText: 'channel wins',
+        expiryDurationMs: 60_000,
+      }),
+    });
+
+    expect(db.insertEvent(event, true)).toBe(false);
+    expect(db.getRecentMessageEvents(13, 10, 'short-lived')).toHaveLength(0);
+    expect(db.getSyncState(13)[event.authorAddress]).toBe(9);
   });
 
   it('shares inserted events across open database connections', () => {
@@ -10937,6 +11003,7 @@ describe('reticulum chat manager', () => {
     ).resolves.toBe(false);
     expect(nonAdminManager.getChannels(78, true).map((channel) => channel.channelId)).toEqual([
       'general',
+      RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
     ]);
     nonAdminManager.close();
 

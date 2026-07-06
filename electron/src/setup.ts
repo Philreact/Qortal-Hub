@@ -3233,6 +3233,7 @@ const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandStateSubscribers = new Set<Electron.WebContents>();
+const reticulumChatLandChatSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
@@ -3284,6 +3285,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumChatLandStateSubscribers,
       'reticulumChat:landState',
+      payload
+    )
+  );
+
+  manager.on('landChat', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatLandChatSubscribers,
+      'reticulumChat:landChat',
       payload
     )
   );
@@ -3634,6 +3643,33 @@ ipcMain.handle(
       return {
         success: false,
         error: err instanceof Error ? err.message : 'QortalLand state send failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:sendLandChat',
+  async (_event, message: unknown) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      const result = await manager.sendLandChat(message as Parameters<typeof manager.sendLandChat>[0]);
+      if (!result.ok) {
+        const failed = result as Exclude<typeof result, { ok: true }>;
+        return { success: false, error: failed.error ?? failed.reason };
+      }
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'QortalLand chat send failed',
       };
     }
   }
@@ -4243,6 +4279,12 @@ ipcMain.on('reticulumChat:landState:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:landState:unsubscribe', (event) => {
   reticulumChatLandStateSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:landChat:subscribe', (event) => {
+  reticulumChatLandChatSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:landChat:unsubscribe', (event) => {
+  reticulumChatLandChatSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
   reticulumChatSummarySubscribers.add(event.sender);
