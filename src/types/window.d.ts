@@ -609,6 +609,18 @@ declare global {
         authorAddress: string,
         active: boolean
       ) => Promise<{ success: boolean; error?: string }>;
+      sendLandState: (
+        groupId: number,
+        authorAddress: string,
+        state: {
+          sessionId?: unknown;
+          sequence?: unknown;
+          x?: unknown;
+          y?: unknown;
+          direction?: unknown;
+          movement?: unknown;
+        }
+      ) => Promise<{ success: boolean; error?: string }>;
       requestResource: (
         groupId: number,
         manifest: unknown,
@@ -706,6 +718,19 @@ declare global {
           channelId: string;
           authorAddress: string;
           active: boolean;
+        }) => void
+      ) => () => void;
+      onLandState: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          x: number;
+          y: number;
+          direction?: string;
+          movement?: string;
+          timestamp?: number;
         }) => void
       ) => () => void;
       onResource: (

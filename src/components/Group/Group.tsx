@@ -118,6 +118,9 @@ const LazyManageMembers = lazy(() =>
 const LazyBlockedUsersModal = lazy(() =>
   import('./BlockedUsersModal').then((m) => ({ default: m.BlockedUsersModal }))
 );
+const LazyQortalLand = lazy(() =>
+  import('../QortalLand/QortalLand').then((m) => ({ default: m.QortalLand }))
+);
 
 // Re-export for backward compatibility with existing imports from Group.tsx
 export {
@@ -2796,6 +2799,12 @@ export const Group = ({
     setGroupSection('forum');
   }, []);
 
+  const goToQortalLand = useCallback(() => {
+    setSelectedDirect(null);
+    setNewChat(false);
+    setGroupSection('land');
+  }, []);
+
   const goToChat = useCallback(async () => {
     setGroupSection('default');
     await new Promise((res) => {
@@ -3022,6 +3031,7 @@ export const Group = ({
               hasUnreadAnnouncements={isUnread}
               isAnnouncement={groupSection === 'announcement'}
               isChat={groupSection === 'chat'}
+              isQortalLand={groupSection === 'land'}
               setGroupSection={setGroupSection}
               isForum={groupSection === 'forum'}
               onGroupCallClick={
@@ -3029,6 +3039,7 @@ export const Group = ({
                   ? handleGroupCallHeaderClick
                   : undefined
               }
+              onQortalLandClick={goToQortalLand}
               groupCallInCall={
                 inThisGroupGcall && gcallRoomState === 'connected'
               }
@@ -3231,6 +3242,18 @@ export const Group = ({
                     setDefaultThread={setDefaultThread}
                     isPrivate={isPrivate}
                   />
+                  {groupSection === 'land' && (
+                    <Suspense fallback={null}>
+                      <LazyQortalLand
+                        key={selectedGroup?.groupId}
+                        groupId={Number(selectedGroup?.groupId)}
+                        groupName={
+                          selectedGroup?.groupName || selectedGroup?.name || ''
+                        }
+                        myAddress={myAddress}
+                      />
+                    </Suspense>
+                  )}
                   {groupSection === 'adminSpace' && (
                     <AdminSpace
                       adminsWithNames={adminsWithNames}

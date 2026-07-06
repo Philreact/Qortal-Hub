@@ -703,6 +703,21 @@ export type ReticulumChatWire =
       m?: 1;
       more?: boolean;
     }
+  | {
+      t: 'RCHAT';
+      k: 'land_state';
+      g: number;
+      a: string;
+      s: string;
+      q: number;
+      x: number;
+      y: number;
+      d?: string;
+      m?: string;
+      ts: number;
+      o?: string;
+      h?: number;
+    }
   | { t: 'RCHAT'; k: 'typing'; g: number; c: string; a: string; ts: number; active: boolean; o?: string; h?: number };
 
 export interface ReticulumChatManagerOptions {
@@ -3505,6 +3520,47 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
+  sendLandState(
+    groupId: number,
+    authorAddress: string,
+    state: {
+      sessionId?: unknown;
+      sequence?: unknown;
+      x?: unknown;
+      y?: unknown;
+      direction?: unknown;
+      movement?: unknown;
+    }
+  ): void {
+    this.assertLocalGroupMember(groupId);
+    if (!this.subscribedGroups.has(groupId)) {
+      this.subscribeGroup(groupId);
+    }
+    const address = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const sessionId = typeof state.sessionId === 'string' ? state.sessionId.trim() : '';
+    const sequence = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(Number(state.sequence) || 0)));
+    const x = Math.max(0, Math.min(4095, Math.round(Number(state.x) || 0)));
+    const y = Math.max(0, Math.min(2047, Math.round(Number(state.y) || 0)));
+    const direction = typeof state.direction === 'string' ? state.direction.trim().slice(0, 1) : '';
+    const movement = typeof state.movement === 'string' ? state.movement.trim().slice(0, 8) : '';
+    if (!address || !sessionId) {
+      throw new Error('Invalid QortalLand state');
+    }
+    void this.fanout({
+      t: 'RCHAT',
+      k: 'land_state',
+      g: groupId,
+      a: address,
+      s: sessionId.slice(0, 24),
+      q: sequence,
+      x,
+      y,
+      ...(direction ? { d: direction } : {}),
+      ...(movement ? { m: movement } : {}),
+      ts: this.now(),
+    });
+  }
+
   async requestResource(
     groupId: number,
     manifest: ReticulumResourceManifest,
@@ -4065,6 +4121,21 @@ export class ReticulumChatManager extends EventEmitter {
       case 'dm_page':
         this.handleDirectPage(wire as Extract<ReticulumChatWire, { k: 'dm_page' }>, peerHash);
         return;
+      case 'land_state':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        if (typeof wire.a !== 'string') return;
+        void this.forwardLandStateToInterestRoutes(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'land_state' }>,
+          peerHash
+        );
+        if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+        this.applyLandState(groupId, wire as Extract<ReticulumChatWire, { k: 'land_state' }>);
+        return;
+      }
       case 'typing':
       {
         if (isDisabledTyping) return;
@@ -4980,6 +5051,51 @@ export class ReticulumChatManager extends EventEmitter {
       if (local && route.originPeerHash === local) continue;
       const key = this.groupControlRouteKey(
         'typing',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded);
+    }
+  }
+
+  private async forwardLandStateToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'land_state' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'land_state',
         groupId,
         route.originPeerHash,
         `${inbound}:${payloadKey}`
@@ -12217,6 +12333,29 @@ export class ReticulumChatManager extends EventEmitter {
     }, RETICULUM_CHAT_TYPING_TTL_MS);
     timer.unref?.();
     this.typingTimers.set(key, timer);
+  }
+
+  private applyLandState(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_state' }>
+  ): void {
+    const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    const sequence = Math.max(0, Math.floor(Number(wire.q) || 0));
+    const x = Math.max(0, Math.min(4095, Math.round(Number(wire.x) || 0)));
+    const y = Math.max(0, Math.min(2047, Math.round(Number(wire.y) || 0)));
+    if (!authorAddress || !sessionId) return;
+    this.emit('landState', {
+      groupId,
+      authorAddress,
+      sessionId,
+      sequence,
+      x,
+      y,
+      direction: typeof wire.d === 'string' ? wire.d : '',
+      movement: typeof wire.m === 'string' ? wire.m : '',
+      timestamp: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : this.now(),
+    });
   }
 
   private applyDirectTyping(

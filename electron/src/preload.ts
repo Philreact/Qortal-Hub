@@ -1478,6 +1478,24 @@ try {
           authorAddress,
           active
         ) as Promise<{ success: boolean; error?: string }>,
+      sendLandState: async (
+        groupId: number,
+        authorAddress: string,
+        state: {
+          sessionId?: unknown;
+          sequence?: unknown;
+          x?: unknown;
+          y?: unknown;
+          direction?: unknown;
+          movement?: unknown;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandState',
+          groupId,
+          authorAddress,
+          state
+        ) as Promise<{ success: boolean; error?: string }>,
       requestResource: async (
         groupId: number,
         manifest: unknown,
@@ -1732,6 +1750,41 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:typing', handler);
           ipcRenderer.send('reticulumChat:typing:unsubscribe');
+        };
+      },
+      onLandState: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          x: number;
+          y: number;
+          direction?: string;
+          movement?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              authorAddress: string;
+              sessionId: string;
+              sequence: number;
+              x: number;
+              y: number;
+              direction?: string;
+              movement?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landState', handler);
+        ipcRenderer.send('reticulumChat:landState:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landState', handler);
+          ipcRenderer.send('reticulumChat:landState:unsubscribe');
         };
       },
     });
@@ -1866,6 +1919,24 @@ try {
           authorAddress,
           active
         ) as Promise<{ success: boolean; error?: string }>,
+      sendLandState: async (
+        groupId: number,
+        authorAddress: string,
+        state: {
+          sessionId?: unknown;
+          sequence?: unknown;
+          x?: unknown;
+          y?: unknown;
+          direction?: unknown;
+          movement?: unknown;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandState',
+          groupId,
+          authorAddress,
+          state
+        ) as Promise<{ success: boolean; error?: string }>,
       requestResource: async (
         groupId: number,
         manifest: unknown,
@@ -2120,6 +2191,41 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:typing', handler);
           ipcRenderer.send('reticulumChat:typing:unsubscribe');
+        };
+      },
+      onLandState: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          x: number;
+          y: number;
+          direction?: string;
+          movement?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              authorAddress: string;
+              sessionId: string;
+              sequence: number;
+              x: number;
+              y: number;
+              direction?: string;
+              movement?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landState', handler);
+        ipcRenderer.send('reticulumChat:landState:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landState', handler);
+          ipcRenderer.send('reticulumChat:landState:unsubscribe');
         };
       },
     });

@@ -5268,6 +5268,79 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('emits and relays QortalLand state only along subscribed group interest routes', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const emitted: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.on('landState', (payload) => {
+      emitted.push(payload as Record<string, unknown>);
+    });
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' }, 'peer-a');
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'land_state',
+        g: 73,
+        a: 'Qsender',
+        s: 'session-1',
+        q: 7,
+        x: 512,
+        y: 420,
+        d: 'r',
+        m: 'walk',
+        ts: 100_000,
+      },
+      'peer-c'
+    );
+    await Promise.resolve();
+
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        groupId: 73,
+        authorAddress: 'Qsender',
+        sessionId: 'session-1',
+        sequence: 7,
+        x: 512,
+        y: 420,
+        direction: 'r',
+        movement: 'walk',
+      })
+    );
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: 'peer-a',
+        wire: expect.objectContaining({
+          t: 'RCHAT',
+          k: 'land_state',
+          g: 73,
+          a: 'Qsender',
+          s: 'session-1',
+          q: 7,
+          o: 'peer-c',
+          h: 1,
+        }),
+      })
+    );
+    manager.close();
+  });
+
   it('relays event requests and routes event offers back to the origin', async () => {
     const fanout: Array<Record<string, unknown>> = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];

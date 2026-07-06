@@ -3232,6 +3232,7 @@ const chatTypingSubscribers = new Set<Electron.WebContents>();
 const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
+const reticulumChatLandStateSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
@@ -3275,6 +3276,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumChatTypingSubscribers,
       'reticulumChat:typing',
+      payload
+    )
+  );
+
+  manager.on('landState', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatLandStateSubscribers,
+      'reticulumChat:landState',
       payload
     )
   );
@@ -3590,6 +3599,41 @@ ipcMain.handle(
       return {
         success: false,
         error: err instanceof Error ? err.message : 'Reticulum chat typing send failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:sendLandState',
+  async (
+    _event,
+    groupId: number,
+    authorAddress: string,
+    state: {
+      sessionId?: unknown;
+      sequence?: unknown;
+      x?: unknown;
+      y?: unknown;
+      direction?: unknown;
+      movement?: unknown;
+    }
+  ) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      manager.sendLandState(groupId, authorAddress, state);
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'QortalLand state send failed',
       };
     }
   }
@@ -4193,6 +4237,12 @@ ipcMain.on('reticulumChat:typing:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:typing:unsubscribe', (event) => {
   reticulumChatTypingSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:landState:subscribe', (event) => {
+  reticulumChatLandStateSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:landState:unsubscribe', (event) => {
+  reticulumChatLandStateSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
   reticulumChatSummarySubscribers.add(event.sender);
