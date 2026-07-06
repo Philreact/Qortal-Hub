@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
 
@@ -16,6 +17,8 @@ type ReticulumDmEvent = {
   payload: string;
   payloadHash: string;
   signature: string;
+  authorPrimaryName?: string;
+  senderName?: string;
   localDeliveryStatus?: 'pending' | 'sent' | 'received';
   localDeliveryUpdatedAt?: number;
 };
@@ -68,6 +71,10 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     payload.otherData && typeof payload.otherData === 'object'
       ? payload.otherData
       : {};
+  const senderName =
+    event.senderName?.trim() ||
+    event.authorPrimaryName?.trim() ||
+    event.senderAddress;
   return {
     id: event.eventId,
     signature: event.eventId,
@@ -75,6 +82,7 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     repliedTo: otherData.repliedTo || event.replyToEventId,
     timestamp: event.timestamp,
     sender: event.senderAddress,
+    senderName,
     recipientAddress: event.recipientAddress,
     text: payload.messageText || '',
     message: payload.messageText || '',
@@ -88,6 +96,45 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     },
     ...otherData,
   };
+};
+
+const addPrimaryNamesToDirectEvents = async (
+  events: ReticulumDmEvent[],
+  primaryNameCache: Map<string, string>
+): Promise<ReticulumDmEvent[]> => {
+  const addresses = Array.from(
+    new Set(
+      events
+        .map((event) => event.senderAddress)
+        .filter((address): address is string => typeof address === 'string' && !!address)
+    )
+  );
+  if (addresses.length === 0) return events;
+
+  const missingAddresses = addresses.filter(
+    (address) => !primaryNameCache.has(address)
+  );
+
+  if (missingAddresses.length > 0) {
+    try {
+      const primaryNames = await getPrimaryNamesForAddresses(missingAddresses);
+      for (const address of missingAddresses) {
+        primaryNameCache.set(address, primaryNames[address]?.trim() || '');
+      }
+    } catch (error) {
+      console.error('[useReticulumDirectChat] Failed to resolve primary names:', error);
+    }
+  }
+
+  return events.map((event) => {
+    const primaryName = primaryNameCache.get(event.senderAddress)?.trim() || '';
+    if (!primaryName) return event;
+    return {
+      ...event,
+      authorPrimaryName: primaryName,
+      senderName: event.senderName?.trim() || primaryName,
+    };
+  });
 };
 
 const mergeEvents = (prev: ReticulumDmEvent[], incoming: ReticulumDmEvent[]) => {
@@ -105,6 +152,8 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
   const pendingRef = useRef<ReticulumDmEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSenderSeqRef = useRef(0);
+  const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
+  const activeConversationGenerationRef = useRef(0);
 
   const valid = Boolean(myAddress && peerAddress);
   const messages = useMemo(() => events.map(reticulumDmEventToChatMessage), [events]);
@@ -117,7 +166,14 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       batchTimerRef.current = null;
     }
     if (pending.length === 0) return;
-    setEvents((prev) => mergeEvents(prev, pending));
+    const generation = activeConversationGenerationRef.current;
+    void addPrimaryNamesToDirectEvents(
+      pending,
+      primaryNameCacheRef.current
+    ).then((enriched) => {
+      if (activeConversationGenerationRef.current !== generation) return;
+      setEvents((prev) => mergeEvents(prev, enriched));
+    });
   }, []);
 
   const enqueue = useCallback(
@@ -150,10 +206,13 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
 
   useEffect(() => {
     if (!enabled || !valid || !myAddress || !peerAddress) {
+      activeConversationGenerationRef.current += 1;
       setEvents([]);
       setTypingUsers(new Set());
       return;
     }
+    const generation = activeConversationGenerationRef.current + 1;
+    activeConversationGenerationRef.current = generation;
     let cancelled = false;
     let currentConversationId = '';
     const currentConversationIdPromise = conversationIdFor(myAddress, peerAddress).then((conversationId) => {
@@ -163,7 +222,14 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     void window.reticulumChat?.getDirectHistory?.(myAddress, peerAddress, 200)
       ?.then((history) => {
         if (cancelled || !Array.isArray(history)) return;
-        setEvents(history as ReticulumDmEvent[]);
+        void addPrimaryNamesToDirectEvents(
+          history as ReticulumDmEvent[],
+          primaryNameCacheRef.current
+        ).then((enriched) => {
+          if (!cancelled && activeConversationGenerationRef.current === generation) {
+            setEvents(enriched);
+          }
+        });
       });
     const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
       const candidate = event as ReticulumDmEvent;
@@ -201,6 +267,7 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     });
     return () => {
       cancelled = true;
+      activeConversationGenerationRef.current += 1;
       off?.();
       offTyping?.();
       setTypingUsers(new Set());
@@ -208,6 +275,8 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
         clearTimeout(batchTimerRef.current);
         batchTimerRef.current = null;
       }
+      pendingRef.current = [];
+      primaryNameCacheRef.current.clear();
     };
   }, [enabled, enqueue, myAddress, peerAddress, valid]);
 
@@ -292,7 +361,13 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       };
       await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       const result = await window.reticulumChat?.publishDirectEvent?.(event);
-      if (result?.success) setEvents((prev) => mergeEvents(prev, [event]));
+      if (result?.success) {
+        const enriched = await addPrimaryNamesToDirectEvents(
+          [event],
+          primaryNameCacheRef.current
+        );
+        setEvents((prev) => mergeEvents(prev, enriched));
+      }
       return result;
     },
     [enabled, events, myAddress, peerAddress]

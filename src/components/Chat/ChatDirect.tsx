@@ -101,6 +101,7 @@ const QCHAT_FILE_COMPLETED_CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const isReticulumChatInternalTransferEvent = (payload: any): boolean => {
   const resourceType = String(
     payload?.resourceType ??
+      payload?.resource_type ??
       payload?.metadata?.resourceType ??
       payload?.metadata?.logicalResourceType ??
       ''
@@ -109,7 +110,11 @@ const isReticulumChatInternalTransferEvent = (payload: any): boolean => {
     resourceType === 'reticulum_chat_event' ||
     resourceType === 'reticulum_chat_event_page' ||
     resourceType === 'reticulum_chat_history_page' ||
-    resourceType === 'reticulum_chat_dm_page'
+    resourceType === 'reticulum_chat_dm_page' ||
+    resourceType === 'reticulum_group_resource' ||
+    resourceType === 'reticulum_group_resource_range' ||
+    resourceType === 'reticulum_resource_dm' ||
+    resourceType === 'reticulum_resource_dm_range'
   ) {
     return true;
   }
