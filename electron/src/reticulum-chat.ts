@@ -3221,7 +3221,7 @@ export class ReticulumChatManager extends EventEmitter {
       .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0))[0];
     await this.announceDirectNotifyForEvent(
       event,
-      recipientPeer?.destinationHash ? [recipientPeer.destinationHash] : [],
+      [],
       recipientPeer?.destinationHash ? [recipientPeer.destinationHash] : []
     );
     return { ok: true };

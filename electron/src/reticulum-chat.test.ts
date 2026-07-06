@@ -2427,6 +2427,64 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('still fanouts direct DM notify when the direct peer send has no route', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const recipientPeerHash = 'b'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const fanouts: Array<{ messages: ReticulumChatWire[]; exclude?: string[] }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(sender),
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: recipientPeerHash,
+          address: recipient.address,
+          lastSeenAt: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (peer: string, wire: ReticulumChatWire) => {
+          sent.push({ peer, wire });
+          return { ok: false as const, reason: 'no-route' as const };
+        },
+        fanoutReticulumChatDetailed: async (
+          messages: ReticulumChatWire[],
+          exclude?: string[]
+        ) => {
+          fanouts.push({ messages, exclude });
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    manager.setLocalDmAddresses([sender.address]);
+    await flushAsyncWork();
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: '0123456789abcdea',
+      senderSeq: Date.now() * 1000,
+      timestamp: Date.now(),
+      payload: 'hello',
+    });
+
+    const result = await manager.publishDirectEvent(event);
+
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].peer).toBe(recipientPeerHash);
+    const notifyFanout = fanouts.find((call) =>
+      call.messages.some((wire) => wire.k === 'dm_notify')
+    );
+    expect(notifyFanout).toBeTruthy();
+    expect(notifyFanout?.exclude ?? []).not.toContain(recipientPeerHash);
+    expect(notifyFanout?.exclude ?? []).toContain('a'.repeat(32));
+    manager.close();
+  });
+
   it('requests direct DM pages from the notified sender cursor instead of the conversation latest', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
