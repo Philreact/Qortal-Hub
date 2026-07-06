@@ -3234,6 +3234,7 @@ const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
+const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
 let reticulumChatListenersAttached = false;
@@ -3290,6 +3291,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumDirectEventSubscribers,
       'reticulumChat:directEvent',
+      payload
+    )
+  );
+
+  manager.on('directTyping', (payload: unknown) =>
+    broadcastToSet(
+      reticulumDirectTypingSubscribers,
+      'reticulumChat:directTyping',
       payload
     )
   );
@@ -3358,6 +3367,28 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'reticulumChat:setActiveDirectChat',
+  async (
+    _event,
+    localAddress: string,
+    peerAddress: string,
+    active: boolean
+  ) => {
+    const settings = await readAppSettings();
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    if (settings.reticulumChatEnabled !== true) {
+      manager.clearActiveDirectChats();
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    manager.setActiveDirectChat(localAddress, peerAddress, active === true);
+    return { success: true };
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:publishDirectEvent',
   async (_event, event: unknown) => {
     const settings = await readAppSettings();
@@ -3369,6 +3400,33 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     const result = await manager.publishDirectEvent(event as any);
+    if (result.ok) return { success: true };
+    const failed = result as Exclude<typeof result, { ok: true }>;
+    return { success: false, error: failed.error ?? failed.reason };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:sendDirectTyping',
+  async (
+    _event,
+    localAddress: string,
+    peerAddress: string,
+    active: boolean
+  ) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    const result = await manager.sendDirectTyping(
+      localAddress,
+      peerAddress,
+      active === true
+    );
     if (result.ok) return { success: true };
     const failed = result as Exclude<typeof result, { ok: true }>;
     return { success: false, error: failed.error ?? failed.reason };
@@ -4147,6 +4205,12 @@ ipcMain.on('reticulumChat:directEvent:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:directEvent:unsubscribe', (event) => {
   reticulumDirectEventSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:directTyping:subscribe', (event) => {
+  reticulumDirectTypingSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:directTyping:unsubscribe', (event) => {
+  reticulumDirectTypingSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:directSummaryChanged:subscribe', (event) => {
   reticulumDirectSummarySubscribers.add(event.sender);

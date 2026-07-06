@@ -690,6 +690,7 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'dm_notify'; d: ReticulumDmNotifyWire }
   | { t: 'RCHAT'; k: 'dm_probe'; q: ReticulumDmProbeWire }
   | { t: 'RCHAT'; k: 'dm_req'; q: ReticulumDmRequestWire }
+  | { t: 'RCHAT'; k: 'dm_typing'; c: string; a: string; ts: number; active: boolean }
   | { t: 'RCHAT'; k: 'dm_resource_find'; q: ReticulumDmResourceFindWire }
   | { t: 'RCHAT'; k: 'dm_resource_have'; c: string; fh: string; s: number; rid?: string; sp?: string; rk?: string }
   | { t: 'RCHAT'; k: 'dm_page_offer'; p: ReticulumDmPageOfferWire }
@@ -826,6 +827,7 @@ const RETICULUM_CHAT_DM_PROBE_MAX_HOPS = 5;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX = 4096;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_MS = 5 * 60_000;
+const RETICULUM_CHAT_ACTIVE_DM_LINK_GRACE_MS = 5 * 60_000;
 const RETICULUM_CHAT_GROUP_ROUTE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS = 8;
 const RETICULUM_CHAT_GROUP_ROUTE_MAX_ROUTES = 4096;
@@ -913,6 +915,14 @@ type ReticulumDmNotifyRoute = {
   conversationId: string;
   sourcePeerHash: string;
   expiresAt: number;
+};
+
+type ReticulumDmActiveLinkPreference = {
+  localAddress: string;
+  peerAddress: string;
+  active: boolean;
+  expiresAt: number;
+  lastWarmAt: number;
 };
 
 type ReticulumChatEventRelayRoute = {
@@ -2604,6 +2614,8 @@ export class ReticulumChatManager extends EventEmitter {
   private localGroupAdminIds = new Set<number>();
   private localGroupAddresses = new Map<number, string>();
   private localDmAddresses = new Set<string>();
+  private activeDmLinkPreferences = new Map<string, ReticulumDmActiveLinkPreference>();
+  private activeDmLinkPruneTimer: ReturnType<typeof setTimeout> | null = null;
   private subscribedGroups = new Set<number>();
   private peerSubscriptions = new Map<string, Map<number, number>>();
   private groupMemberValidationCache = new Map<string, { isMember: boolean; expiresAt: number }>();
@@ -2653,6 +2665,7 @@ export class ReticulumChatManager extends EventEmitter {
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private directTypingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private observedDbEventIds = new Set<string>();
   private channelMetadataProjectionQueue: string[] = [];
   private channelMetadataProjectionQueuedIds = new Set<string>();
@@ -3061,6 +3074,13 @@ export class ReticulumChatManager extends EventEmitter {
     this.directResourceTransfer?.close();
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
     this.typingTimers.clear();
+    for (const timer of this.directTypingTimers.values()) clearTimeout(timer);
+    this.directTypingTimers.clear();
+    if (this.activeDmLinkPruneTimer) {
+      clearTimeout(this.activeDmLinkPruneTimer);
+      this.activeDmLinkPruneTimer = null;
+    }
+    this.activeDmLinkPreferences.clear();
     for (const timer of this.signedResourceAuthRetryTimers.values()) clearTimeout(timer);
     this.signedResourceAuthRetryTimers.clear();
     this.signedResourceAuthRetryAttempts.clear();
@@ -3183,9 +3203,45 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  setActiveDirectChat(
+    localAddress: string,
+    peerAddress: string,
+    active: boolean
+  ): void {
+    const local = String(localAddress || '').trim();
+    const peer = String(peerAddress || '').trim();
+    if (!local || !peer) return;
+    const conversationId = reticulumDmConversationId(local, peer);
+    if (!conversationId) return;
+    const now = this.now();
+    const existing = this.activeDmLinkPreferences.get(conversationId);
+    this.activeDmLinkPreferences.set(conversationId, {
+      localAddress: local,
+      peerAddress: peer,
+      active,
+      expiresAt: now + RETICULUM_CHAT_ACTIVE_DM_LINK_GRACE_MS,
+      lastWarmAt: existing?.lastWarmAt ?? 0,
+    });
+    this.scheduleActiveDmLinkPrune();
+    if (active) void this.warmActiveDirectChatLink(conversationId, 'active-dm');
+  }
+
+  clearActiveDirectChats(): void {
+    this.activeDmLinkPreferences.clear();
+    if (this.activeDmLinkPruneTimer) {
+      clearTimeout(this.activeDmLinkPruneTimer);
+      this.activeDmLinkPruneTimer = null;
+    }
+  }
+
   notifyOverlayHealthChanged(isHealthy: boolean): void {
     if (!isHealthy) return;
     this.flushPendingDmDiscoveryIfHealthy('overlay-health');
+    for (const [conversationId, pref] of this.activeDmLinkPreferences) {
+      if (pref.active && pref.expiresAt > this.now()) {
+        void this.warmActiveDirectChatLink(conversationId, 'overlay-health');
+      }
+    }
   }
 
   getDirectHistory(myAddress: string, peerAddress: string, limit = 100): ReticulumDmEvent[] {
@@ -3215,16 +3271,53 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.db.hasDirectEvent(event.eventId)) {
       this.acceptDirectEvent(event, true, { deliveryStatus: 'pending' });
     }
-    const peers = this.getVerifiedReticulumPeers?.() ?? [];
-    const recipientPeer = peers
-      .filter((peer) => peer.address === event.recipientAddress)
-      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0))[0];
+    const directPeerHashes = this.getPreferredDirectPeerHashes(
+      event.senderAddress,
+      event.recipientAddress
+    );
     await this.announceDirectNotifyForEvent(
       event,
       [],
-      recipientPeer?.destinationHash ? [recipientPeer.destinationHash] : []
+      directPeerHashes
     );
     return { ok: true };
+  }
+
+  async sendDirectTyping(
+    localAddress: string,
+    peerAddress: string,
+    active: boolean
+  ): Promise<ReticulumSendResult> {
+    if (isDisabledTyping) return { ok: true };
+    const local = String(localAddress || '').trim();
+    const peer = String(peerAddress || '').trim();
+    if (!local || !peer || !this.localDmAddresses.has(local)) {
+      return { ok: false, reason: 'send-command-failed', error: 'Unknown local DM address' };
+    }
+    const conversationId = reticulumDmConversationId(local, peer);
+    if (!conversationId) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid DM conversation' };
+    }
+    const now = this.now();
+    const key = `${conversationId}:${local}`;
+    if (active && now - (this.lastTypingSentAt.get(key) ?? 0) < RETICULUM_CHAT_TYPING_REFRESH_MS) {
+      return { ok: true };
+    }
+    const directPeers = this.getActiveDirectPeerHashes(local, peer, active).slice(0, 1);
+    if (directPeers.length === 0) {
+      return { ok: false, reason: 'no-route', error: 'No active direct DM link' };
+    }
+    const wire: Extract<ReticulumChatWire, { k: 'dm_typing' }> = {
+      t: 'RCHAT',
+      k: 'dm_typing',
+      c: conversationId,
+      a: local,
+      ts: now,
+      active,
+    };
+    const result = await this.sendToPeerOnce(directPeers[0], wire);
+    if (active && result.ok) this.lastTypingSentAt.set(key, now);
+    return result;
   }
 
   getSubscriptions(): number[] {
@@ -3957,6 +4050,9 @@ export class ReticulumChatManager extends EventEmitter {
       case 'dm_req':
         void this.handleDirectRequest(wire as Extract<ReticulumChatWire, { k: 'dm_req' }>, peerHash);
         return;
+      case 'dm_typing':
+        this.handleDirectTyping(wire as Extract<ReticulumChatWire, { k: 'dm_typing' }>, peerHash);
+        return;
       case 'dm_resource_find':
         void this.handleDirectResourceFind(wire as Extract<ReticulumChatWire, { k: 'dm_resource_find' }>, peerHash);
         return;
@@ -4120,6 +4216,21 @@ export class ReticulumChatManager extends EventEmitter {
     if (!accepted) return;
   }
 
+  private handleDirectTyping(
+    wire: Extract<ReticulumChatWire, { k: 'dm_typing' }>,
+    peerHash: string
+  ): void {
+    if (isDisabledTyping) return;
+    const conversationId = normalizeReticulumDmConversationId(wire.c);
+    const authorAddress = String(wire.a || '').trim();
+    const sourcePeer = this.normalizeResourcePeerHash(peerHash);
+    if (!conversationId || !authorAddress || !sourcePeer) return;
+    if (!this.getVerifiedDmPeerHashes(authorAddress).includes(sourcePeer)) return;
+    const localAddress = this.localDmAddressForDirectTyping(conversationId, authorAddress);
+    if (!localAddress) return;
+    this.applyDirectTyping(conversationId, authorAddress, wire.active === true);
+  }
+
   private markDirectEventSent(event: ReticulumDmEvent): void {
     this.db.markDirectDeliveryStatus(event.eventId, 'sent');
     const peerAddress = ownAddressMatches(this.localDmAddresses, event.senderAddress)
@@ -4179,6 +4290,115 @@ export class ReticulumChatManager extends EventEmitter {
     if (ownAddressMatches(this.localDmAddresses, addressA)) return addressA;
     if (ownAddressMatches(this.localDmAddresses, addressB)) return addressB;
     return '';
+  }
+
+  private pruneActiveDmLinkPreferences(now = this.now()): void {
+    for (const [conversationId, pref] of this.activeDmLinkPreferences) {
+      if (pref.expiresAt <= now) this.activeDmLinkPreferences.delete(conversationId);
+    }
+    if (this.activeDmLinkPreferences.size === 0 && this.activeDmLinkPruneTimer) {
+      clearTimeout(this.activeDmLinkPruneTimer);
+      this.activeDmLinkPruneTimer = null;
+    }
+  }
+
+  private scheduleActiveDmLinkPrune(): void {
+    if (this.activeDmLinkPruneTimer || this.activeDmLinkPreferences.size === 0) return;
+    this.activeDmLinkPruneTimer = setTimeout(() => {
+      this.activeDmLinkPruneTimer = null;
+      this.pruneActiveDmLinkPreferences();
+      if (this.activeDmLinkPreferences.size > 0) this.scheduleActiveDmLinkPrune();
+    }, 30_000);
+    this.activeDmLinkPruneTimer.unref?.();
+  }
+
+  private getVerifiedDmPeerHashes(peerAddress: string): string[] {
+    const normalizedPeerAddress = String(peerAddress || '').trim();
+    if (!normalizedPeerAddress) return [];
+    const seen = new Set<string>();
+    const peers = (this.getVerifiedReticulumPeers?.() ?? [])
+      .filter((peer) => peer.address === normalizedPeerAddress)
+      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
+    const hashes: string[] = [];
+    for (const peer of peers) {
+      const hash = this.normalizeResourcePeerHash(peer.destinationHash);
+      if (!hash || seen.has(hash)) continue;
+      seen.add(hash);
+      hashes.push(hash);
+    }
+    return hashes;
+  }
+
+  private getPreferredDirectPeerHashes(
+    localAddress: string,
+    peerAddress: string
+  ): string[] {
+    const verified = this.getVerifiedDmPeerHashes(peerAddress);
+    if (verified.length === 0) return [];
+    const conversationId = reticulumDmConversationId(localAddress, peerAddress);
+    if (!conversationId) return verified;
+    this.pruneActiveDmLinkPreferences();
+    const pref = this.activeDmLinkPreferences.get(conversationId);
+    if (!pref || pref.expiresAt <= this.now()) return verified;
+    return verified;
+  }
+
+  private getActiveDirectPeerHashes(
+    localAddress: string,
+    peerAddress: string,
+    requireActive: boolean
+  ): string[] {
+    const conversationId = reticulumDmConversationId(localAddress, peerAddress);
+    if (!conversationId) return [];
+    this.pruneActiveDmLinkPreferences();
+    const pref = this.activeDmLinkPreferences.get(conversationId);
+    if (!pref || pref.expiresAt <= this.now()) return [];
+    if (requireActive && !pref.active) return [];
+    return this.getVerifiedDmPeerHashes(peerAddress);
+  }
+
+  private localDmAddressForDirectTyping(
+    conversationId: string,
+    authorAddress: string
+  ): string {
+    const normalizedConversationId = normalizeReticulumDmConversationId(conversationId);
+    const author = String(authorAddress || '').trim();
+    if (!normalizedConversationId || !author) return '';
+    for (const localAddress of this.localDmAddresses) {
+      if (localAddress === author) continue;
+      if (reticulumDmConversationId(localAddress, author) === normalizedConversationId) {
+        return localAddress;
+      }
+    }
+    return '';
+  }
+
+  private async warmActiveDirectChatLink(
+    conversationId: string,
+    reason: string
+  ): Promise<void> {
+    const pref = this.activeDmLinkPreferences.get(conversationId);
+    if (!pref || pref.expiresAt <= this.now()) return;
+    if (!this.localDmAddresses.has(pref.localAddress)) return;
+    const now = this.now();
+    if (now - pref.lastWarmAt < 25_000) return;
+    const peers = this.getPreferredDirectPeerHashes(pref.localAddress, pref.peerAddress).slice(0, 1);
+    if (peers.length === 0) return;
+    const probe = await this.buildSignedDirectProbeWire(pref.localAddress);
+    if (!probe) return;
+    pref.lastWarmAt = now;
+    this.activeDmLinkPreferences.set(conversationId, pref);
+    const result = await this.sendToPeer(peers[0], probe);
+    if (result.ok) {
+      loggerLog(
+        `[ReticulumChat] dm_live_link_warm peer=${peers[0].slice(0, 16)} conversation=${conversationId.slice(0, 16)} reason=${reason}`
+      );
+    } else {
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      loggerWarn(
+        `[ReticulumChat] dm_live_link_warm_failed peer=${peers[0].slice(0, 16)} conversation=${conversationId.slice(0, 16)} reason=${failed.reason}`
+      );
+    }
   }
 
   private async buildSignedDirectRequestWire(
@@ -7389,7 +7609,19 @@ export class ReticulumChatManager extends EventEmitter {
       for (const summary of summaries) {
         const latest = summary.lastEvent;
         if (!latest || !this.acceptsDirectConversation(latest)) continue;
-        await this.announceDirectNotifyForEvent(latest);
+        const localAddress = this.localDmAddressForConversation(
+          latest.senderAddress,
+          latest.recipientAddress
+        );
+        const peerAddress =
+          localAddress === latest.senderAddress
+            ? latest.recipientAddress
+            : latest.senderAddress;
+        await this.announceDirectNotifyForEvent(
+          latest,
+          [],
+          this.getPreferredDirectPeerHashes(localAddress, peerAddress)
+        );
       }
     }
   }
@@ -11985,6 +12217,43 @@ export class ReticulumChatManager extends EventEmitter {
     }, RETICULUM_CHAT_TYPING_TTL_MS);
     timer.unref?.();
     this.typingTimers.set(key, timer);
+  }
+
+  private applyDirectTyping(
+    conversationId: string,
+    authorAddress: string,
+    active: boolean
+  ): void {
+    const normalizedConversationId = normalizeReticulumDmConversationId(conversationId);
+    const author = String(authorAddress || '').trim();
+    if (!normalizedConversationId || !author) return;
+    const key = `${normalizedConversationId}:${author}`;
+    const existing = this.directTypingTimers.get(key);
+    if (existing) clearTimeout(existing);
+    if (!active) {
+      this.directTypingTimers.delete(key);
+      this.emit('directTyping', {
+        conversationId: normalizedConversationId,
+        authorAddress: author,
+        active: false,
+      });
+      return;
+    }
+    this.emit('directTyping', {
+      conversationId: normalizedConversationId,
+      authorAddress: author,
+      active: true,
+    });
+    const timer = setTimeout(() => {
+      this.directTypingTimers.delete(key);
+      this.emit('directTyping', {
+        conversationId: normalizedConversationId,
+        authorAddress: author,
+        active: false,
+      });
+    }, RETICULUM_CHAT_TYPING_TTL_MS);
+    timer.unref?.();
+    this.directTypingTimers.set(key, timer);
   }
 
   private startSubscriptionRefreshTimer(): void {

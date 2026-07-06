@@ -101,6 +101,7 @@ const mergeEvents = (prev: ReticulumDmEvent[], incoming: ReticulumDmEvent[]) => 
 export function useReticulumDirectChat(myAddress?: string, peerAddress?: string) {
   const [enabled, setEnabled] = useState(false);
   const [events, setEvents] = useState<ReticulumDmEvent[]>([]);
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const pendingRef = useRef<ReticulumDmEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSenderSeqRef = useRef(0);
@@ -150,9 +151,15 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
   useEffect(() => {
     if (!enabled || !valid || !myAddress || !peerAddress) {
       setEvents([]);
+      setTypingUsers(new Set());
       return;
     }
     let cancelled = false;
+    let currentConversationId = '';
+    const currentConversationIdPromise = conversationIdFor(myAddress, peerAddress).then((conversationId) => {
+      if (!cancelled) currentConversationId = conversationId;
+      return conversationId;
+    });
     void window.reticulumChat?.getDirectHistory?.(myAddress, peerAddress, 200)
       ?.then((history) => {
         if (cancelled || !Array.isArray(history)) return;
@@ -170,9 +177,33 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       ) return;
       enqueue(candidate);
     });
+    const offTyping = window.reticulumChat?.onDirectTyping?.((payload) => {
+      if (!payload || typeof payload !== 'object') return;
+      const applyTyping = (conversationId: string) => {
+        if (cancelled) return;
+        if (payload.conversationId !== conversationId) return;
+        if (payload.authorAddress === myAddress) return;
+        if (payload.authorAddress !== peerAddress) return;
+        setTypingUsers((prev) => {
+          const next = new Set(prev);
+          if (payload.active) next.add(payload.authorAddress);
+          else next.delete(payload.authorAddress);
+          return next;
+        });
+      };
+      if (currentConversationId) {
+        applyTyping(currentConversationId);
+        return;
+      }
+      void currentConversationIdPromise.then((conversationId) => {
+        applyTyping(conversationId);
+      });
+    });
     return () => {
       cancelled = true;
       off?.();
+      offTyping?.();
+      setTypingUsers(new Set());
       if (batchTimerRef.current) {
         clearTimeout(batchTimerRef.current);
         batchTimerRef.current = null;
@@ -279,11 +310,27 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     [enabled, myAddress, peerAddress]
   );
 
+  const sendTyping = useCallback(
+    async (active: boolean) => {
+      if (!enabled || !myAddress || !peerAddress) {
+        return { success: false, error: 'Reticulum chat is disabled' };
+      }
+      return window.reticulumChat?.sendDirectTyping?.(
+        myAddress,
+        peerAddress,
+        active
+      ) ?? { success: false, error: 'Reticulum chat is unavailable' };
+    },
+    [enabled, myAddress, peerAddress]
+  );
+
   return {
     enabled,
     events,
     messages,
+    typingUsers,
     publish,
     markRead,
+    sendTyping,
   };
 }

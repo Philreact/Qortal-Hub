@@ -83,6 +83,7 @@ import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 import { fileToBase64 } from '../../utils/fileReading';
 
 const uid = new ShortUniqueId({ length: 5 });
+const RETICULUM_DIRECT_TYPING_STOP_MS = 2500;
 
 const normalizeEditContent = (raw: unknown): string => {
   if (raw == null) return '<p></p>';
@@ -433,9 +434,93 @@ export const ChatDirect = ({
   const {
     enabled: reticulumDirectEnabled,
     messages: reticulumDirectMessages,
+    typingUsers: reticulumDirectTypingUsers,
     publish: publishReticulumDirectEvent,
     markRead: markReticulumDirectRead,
+    sendTyping: sendReticulumDirectTyping,
   } = useReticulumDirectChat(myAddress, selectedDirect?.address);
+  const [reticulumDirectLinkActive, setReticulumDirectLinkActive] =
+    useState(false);
+  const reticulumDirectTypingActiveRef = useRef(false);
+  const reticulumDirectTypingStopTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearReticulumDirectTypingStopTimer = useCallback(() => {
+    if (reticulumDirectTypingStopTimerRef.current) {
+      clearTimeout(reticulumDirectTypingStopTimerRef.current);
+      reticulumDirectTypingStopTimerRef.current = null;
+    }
+  }, []);
+
+  const sendReticulumDirectTypingState = useCallback(
+    async (active: boolean, allowGrace = false) => {
+      if (
+        !reticulumDirectEnabled ||
+        !selectedDirect?.address ||
+        isNewChat ||
+        !peerOnline ||
+        (!reticulumDirectLinkActive && !allowGrace)
+      ) {
+        return;
+      }
+      const result = await sendReticulumDirectTyping(active);
+      if (active) {
+        if (result?.success) reticulumDirectTypingActiveRef.current = true;
+      } else {
+        reticulumDirectTypingActiveRef.current = false;
+      }
+    },
+    [
+      isNewChat,
+      peerOnline,
+      reticulumDirectEnabled,
+      reticulumDirectLinkActive,
+      selectedDirect?.address,
+      sendReticulumDirectTyping,
+    ]
+  );
+
+  useEffect(() => {
+    if (
+      !reticulumDirectEnabled ||
+      !myAddress ||
+      !selectedDirect?.address ||
+      isNewChat ||
+      !peerOnline
+    ) {
+      setReticulumDirectLinkActive(false);
+      return;
+    }
+    let cancelled = false;
+    setReticulumDirectLinkActive(false);
+    void window.reticulumChat?.setActiveDirectChat?.(
+      myAddress,
+      selectedDirect.address,
+      true
+    )?.then((result) => {
+      if (!cancelled) setReticulumDirectLinkActive(result?.success === true);
+    });
+    return () => {
+      cancelled = true;
+      clearReticulumDirectTypingStopTimer();
+      reticulumDirectTypingActiveRef.current = false;
+      void sendReticulumDirectTyping(false);
+      setReticulumDirectLinkActive(false);
+      void window.reticulumChat?.setActiveDirectChat?.(
+        myAddress,
+        selectedDirect.address,
+        false
+      );
+    };
+  }, [
+    isNewChat,
+    myAddress,
+    peerOnline,
+    clearReticulumDirectTypingStopTimer,
+    reticulumDirectEnabled,
+    sendReticulumDirectTyping,
+    selectedDirect?.address,
+  ]);
   const [pendingQchatFileOffer, setPendingQchatFileOffer] = useState(null);
   const [qchatFileExpiryHours, setQchatFileExpiryHours] = useState(
     QCHAT_FILE_DEFAULT_EXPIRY_HOURS
@@ -1818,6 +1903,54 @@ export const ChatDirect = ({
     };
   }, [editorRef?.current]);
 
+  useEffect(() => {
+    if (!editorRef?.current) return;
+    const handleTypingUpdate = () => {
+      if (
+        !reticulumDirectEnabled ||
+        !reticulumDirectLinkActive ||
+        !selectedDirect?.address ||
+        isNewChat ||
+        !peerOnline
+      ) {
+        return;
+      }
+      const htmlContent = String(editorRef?.current?.getHTML?.() || '').trim();
+      const hasContent = Boolean(htmlContent && htmlContent !== '<p></p>');
+      clearReticulumDirectTypingStopTimer();
+      if (!hasContent) {
+        if (reticulumDirectTypingActiveRef.current) {
+          void sendReticulumDirectTypingState(false, true);
+        }
+        return;
+      }
+      if (!reticulumDirectTypingActiveRef.current) {
+        void sendReticulumDirectTypingState(true);
+      }
+      reticulumDirectTypingStopTimerRef.current = setTimeout(() => {
+        reticulumDirectTypingStopTimerRef.current = null;
+        if (reticulumDirectTypingActiveRef.current) {
+          void sendReticulumDirectTypingState(false, true);
+        }
+      }, RETICULUM_DIRECT_TYPING_STOP_MS);
+    };
+
+    editorRef.current.on('update', handleTypingUpdate);
+    return () => {
+      editorRef?.current?.off('update', handleTypingUpdate);
+      clearReticulumDirectTypingStopTimer();
+    };
+  }, [
+    clearReticulumDirectTypingStopTimer,
+    isNewChat,
+    peerOnline,
+    reticulumDirectEnabled,
+    reticulumDirectLinkActive,
+    selectedDirect?.address,
+    sendReticulumDirectTypingState,
+    editorRef?.current,
+  ]);
+
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
@@ -1903,6 +2036,10 @@ export const ChatDirect = ({
         setTimeout(() => {
           executeEvent('sent-new-message-group', {});
         }, 150);
+        clearReticulumDirectTypingStopTimer();
+        if (reticulumDirectTypingActiveRef.current) {
+          void sendReticulumDirectTypingState(false, true);
+        }
         clearEditorContent();
         clearPendingReticulumFiles();
         setReplyMessage(null);
@@ -2616,6 +2753,20 @@ export const ChatDirect = ({
           qchatFileTransferStates={qchatFileTransferStates}
           qchatCompletedTransfers={qchatCompletedTransfers}
         />
+        {reticulumDirectEnabled && reticulumDirectTypingUsers.size > 0 && (
+          <Typography
+            variant="caption"
+            sx={{
+              color: 'text.secondary',
+              flexShrink: 0,
+              fontStyle: 'italic',
+              px: 2,
+              py: 0.5,
+            }}
+          >
+            {selectedDirect?.name || selectedDirect?.address} is typing...
+          </Typography>
+        )}
       </Box>
 
       <Dialog

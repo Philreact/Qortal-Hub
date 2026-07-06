@@ -562,6 +562,11 @@ declare global {
       setLocalDmAddresses: (
         addresses: string[]
       ) => Promise<{ success: boolean; error?: string }>;
+      setActiveDirectChat: (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) => Promise<{ success: boolean; error?: string }>;
       subscribeGroup: (
         groupId: number
       ) => Promise<{ success: boolean; error?: string }>;
@@ -581,6 +586,11 @@ declare global {
       ) => Promise<{ success: boolean; error?: string }>;
       publishDirectEvent: (
         event: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendDirectTyping: (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
       ) => Promise<{ success: boolean; error?: string }>;
       getDirectHistory: (
         myAddress: string,
@@ -676,6 +686,13 @@ declare global {
       ) => () => void;
       onDirectEvent: (
         cb: (payload: { event: unknown }) => void
+      ) => () => void;
+      onDirectTyping: (
+        cb: (payload: {
+          conversationId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
       ) => () => void;
       onDirectSummaryChanged: (
         cb: (payload: {

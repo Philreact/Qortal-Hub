@@ -1384,6 +1384,17 @@ try {
           'reticulumChat:setLocalDmAddresses',
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
+      setActiveDirectChat: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setActiveDirectChat',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
       subscribeGroup: async (groupId: number) =>
         ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
           success: boolean;
@@ -1416,6 +1427,17 @@ try {
           success: boolean;
           error?: string;
         }>,
+      sendDirectTyping: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendDirectTyping',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
       getDirectHistory: async (
         myAddress: string,
         peerAddress: string,
@@ -1616,6 +1638,29 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:directEvent', handler);
           ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
+        };
+      },
+      onDirectTyping: (
+        cb: (payload: {
+          conversationId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              conversationId: string;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:directTyping', handler);
+        ipcRenderer.send('reticulumChat:directTyping:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directTyping', handler);
+          ipcRenderer.send('reticulumChat:directTyping:unsubscribe');
         };
       },
       onDirectSummaryChanged: (
@@ -1727,6 +1772,17 @@ try {
           'reticulumChat:setLocalDmAddresses',
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
+      setActiveDirectChat: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setActiveDirectChat',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
       subscribeGroup: async (groupId: number) =>
         ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
           success: boolean;
@@ -1759,6 +1815,17 @@ try {
           success: boolean;
           error?: string;
         }>,
+      sendDirectTyping: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendDirectTyping',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
       getDirectHistory: async (
         myAddress: string,
         peerAddress: string,
@@ -1959,6 +2026,29 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:directEvent', handler);
           ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
+        };
+      },
+      onDirectTyping: (
+        cb: (payload: {
+          conversationId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              conversationId: string;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:directTyping', handler);
+        ipcRenderer.send('reticulumChat:directTyping:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directTyping', handler);
+          ipcRenderer.send('reticulumChat:directTyping:unsubscribe');
         };
       },
       onDirectSummaryChanged: (

@@ -2377,6 +2377,169 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('warms the selected direct DM peer with a direct probe', async () => {
+    const local = createDmIdentity();
+    const peer = createDmIdentity();
+    const peerHash = 'b'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => false,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: peerHash,
+          address: peer.address,
+          lastSeen: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (targetPeer: string, wire: ReticulumChatWire) => {
+          sent.push({ peer: targetPeer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+    });
+
+    manager.setLocalDmAddresses([local.address]);
+    manager.setActiveDirectChat(local.address, peer.address, true);
+    await flushAsyncWork();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].peer).toBe(peerHash);
+    expect(sent[0].wire.k).toBe('dm_probe');
+    expect(verifyReticulumDmProbe(
+      (sent[0].wire as Extract<ReticulumChatWire, { k: 'dm_probe' }>).q,
+      Date.now()
+    )).toBe(true);
+    manager.close();
+  });
+
+  it('sends direct DM typing only to the active direct DM peer', async () => {
+    const local = createDmIdentity();
+    const peer = createDmIdentity();
+    const peerHash = 'b'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => false,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: peerHash,
+          address: peer.address,
+          lastSeen: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (targetPeer: string, wire: ReticulumChatWire) => {
+          sent.push({ peer: targetPeer, wire });
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async () => {
+          throw new Error('DM typing must not use fanout');
+        },
+      } as any,
+    });
+
+    manager.setLocalDmAddresses([local.address]);
+    manager.setActiveDirectChat(local.address, peer.address, true);
+    await flushAsyncWork();
+    sent.length = 0;
+
+    const result = await manager.sendDirectTyping(local.address, peer.address, true);
+
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].peer).toBe(peerHash);
+    expect(sent[0].wire.k).toBe('dm_typing');
+    expect((sent[0].wire as Extract<ReticulumChatWire, { k: 'dm_typing' }>).active).toBe(true);
+    expect(wireFitsReticulum(sent[0].wire)).toBe(true);
+    manager.close();
+  });
+
+  it('does not send direct DM typing without an active direct DM preference', async () => {
+    const local = createDmIdentity();
+    const peer = createDmIdentity();
+    const sent: ReticulumChatWire[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: 'b'.repeat(32),
+          address: peer.address,
+          lastSeen: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (_targetPeer: string, wire: ReticulumChatWire) => {
+          sent.push(wire);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+
+    manager.setLocalDmAddresses([local.address]);
+    const result = await manager.sendDirectTyping(local.address, peer.address, true);
+
+    expect(result).toMatchObject({ ok: false, reason: 'no-route' });
+    expect(sent).toHaveLength(0);
+    manager.close();
+  });
+
+  it('accepts direct DM typing only from the verified Reticulum peer for that address', async () => {
+    const local = createDmIdentity();
+    const peer = createDmIdentity();
+    const peerHash = 'b'.repeat(32);
+    const conversationId = reticulumDmConversationId(local.address, peer.address);
+    const typing: unknown[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: peerHash,
+          address: peer.address,
+          lastSeen: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+      } as any,
+    });
+    manager.on('directTyping', (payload) => typing.push(payload));
+    manager.setLocalDmAddresses([local.address]);
+
+    (manager as any).handleWire(
+      { t: 'RCHAT', k: 'dm_typing', c: conversationId, a: peer.address, ts: Date.now(), active: true },
+      'c'.repeat(32),
+      'c'.repeat(32)
+    );
+    (manager as any).handleWire(
+      { t: 'RCHAT', k: 'dm_typing', c: conversationId, a: peer.address, ts: Date.now(), active: true },
+      peerHash,
+      peerHash
+    );
+
+    expect(typing).toHaveLength(1);
+    expect(typing[0]).toMatchObject({
+      conversationId,
+      authorAddress: peer.address,
+      active: true,
+    });
+    manager.close();
+  });
+
   it('publishes direct DMs as compact notify packets instead of inline events', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
