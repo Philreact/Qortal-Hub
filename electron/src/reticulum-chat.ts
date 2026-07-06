@@ -812,6 +812,7 @@ const RETICULUM_CHAT_RESOURCE_FIND_TTL_MS = 30_000;
 const RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS = 5;
 const RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_RESOURCE_FIND_ROUTE_MAX = 4096;
+const RETICULUM_CHAT_DIRECT_RESOURCE_FIND_FANOUT_FALLBACK_MS = 2_000;
 const RETICULUM_DM_RESOURCE_CONTEXT_ID = 1;
 const RETICULUM_CHAT_IDENTITY_REQUEST_TTL_MS = 30_000;
 const RETICULUM_CHAT_IDENTITY_REQUEST_MAX_HOPS = 5;
@@ -8623,6 +8624,8 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
+    const requestExpiresAt = this.now() + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS;
+    this.localDirectResourceFindRequests.set(wire.q.q, requestExpiresAt);
     const localPeerHash = this.getLocalResourcePeerHash();
     const directPeers = [
       ...new Set(
@@ -8656,14 +8659,37 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_CHAT_RESOURCE_DISCOVERY_TTL_MS
       );
-      this.localDirectResourceFindRequests.set(
-        wire.q.q,
-        this.now() + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS
-      );
       loggerLog(
         `[ReticulumChat] dm_resource_find_sent conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} direct=${directSent ? directPeers.length : 0} excluded=${exclude.length} maxHops=${wire.q.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS}`
       );
+      if (directSent) {
+        setTimeout(() => {
+          const status = this.directResourceTransfer?.getDownloadStatus(fileHash);
+          if (
+            !status?.active ||
+            status.candidatePeerCount > 0 ||
+            status.advertisedPeerCount > 0
+          ) {
+            return;
+          }
+          const routeExpiresAt = this.localDirectResourceFindRequests.get(wire.q.q) ?? 0;
+          if (routeExpiresAt <= this.now()) return;
+          void this.fanoutOnce(wire, exclude).then((fallback) => {
+            if (fallback.ok) {
+              loggerLog(
+                `[ReticulumChat] dm_resource_find_fallback_fanout conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} excluded=${exclude.length}`
+              );
+            } else {
+              const failed = fallback as Exclude<ReticulumSendResult, { ok: true }>;
+              loggerWarn(
+                `[ReticulumChat] dm_resource_find_fallback_failed conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} reason=${failed.reason}`
+              );
+            }
+          });
+        }, RETICULUM_CHAT_DIRECT_RESOURCE_FIND_FANOUT_FALLBACK_MS).unref?.();
+      }
     } else {
+      this.localDirectResourceFindRequests.delete(wire.q.q);
       const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
         `[ReticulumChat] dm_resource_find_send_failed conversation=${normalizedConversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${wire.q.q.slice(0, 12)} reason=${failed.reason}`
@@ -9325,7 +9351,6 @@ export class ReticulumChatManager extends EventEmitter {
       requesterAddress &&
       reticulumDmConversationId(requesterAddress, peerAddress) === conversationId
     ) {
-      const localIdentity = await this.localReticulumResourceIdentity();
       const response: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'dm_resource_have',
@@ -9334,7 +9359,6 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(localPeerHash),
-        ...(localIdentity.identityPublicKeyBase64 ? { rk: localIdentity.identityPublicKeyBase64 } : {}),
       };
       if (!wireFitsReticulum(response)) {
         loggerWarn(
@@ -9423,6 +9447,9 @@ export class ReticulumChatManager extends EventEmitter {
         (route.sizeBytes > 0 && route.sizeBytes !== sizeBytes) ||
         route.expiresAt <= this.now()
       ) {
+        loggerLog(
+          `[ReticulumChat] dm_resource_have_ignored conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} peer=${sourcePeerHash.slice(0, 16)} reason=unknown_route`
+        );
         return;
       }
       const response: ReticulumChatWire = {
@@ -9433,7 +9460,6 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
-        ...(wire.rk ? { rk: wire.rk } : {}),
       };
       if (!wireFitsReticulum(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);
@@ -9446,6 +9472,17 @@ export class ReticulumChatManager extends EventEmitter {
       manifest.sizeBytes !== sizeBytes ||
       !this.resourceManifestBelongsToDirectConversation(manifest, conversationId)
     ) {
+      loggerLog(
+        `[ReticulumChat] dm_resource_have_ignored conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)}${requestId ? ` rid=${requestId.slice(0, 12)}` : ''} peer=${sourcePeerHash.slice(0, 16)} reason=${
+          !manifest
+            ? 'manifest_missing'
+            : manifest.fileHash.toLowerCase() !== fileHash
+              ? 'hash_mismatch'
+              : manifest.sizeBytes !== sizeBytes
+                ? 'size_mismatch'
+                : 'wrong_conversation'
+        }`
+      );
       return;
     }
     await this.noteResourceIdentityPublicKey(sourcePeerHash, wire.rk);
