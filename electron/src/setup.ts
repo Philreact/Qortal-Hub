@@ -88,6 +88,7 @@ import {
   getReticulumChatManager,
   readReticulumChatHistoryFromDb,
   readReticulumChatMessageHistoryFromDb,
+  readReticulumChatMessageWindowAroundEventFromDb,
   readReticulumChatChannelMetadataHistoryFromDb,
   readReticulumChatChannelsFromDb,
   readReticulumChatCategoriesFromDb,
@@ -4148,7 +4149,23 @@ ipcMain.handle(
   async (
     _event,
     query: string,
-    options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
+    options?: {
+      groupIds?: number[];
+      channelIds?: string[];
+      authorAddresses?: string[];
+      eventTypes?: Array<'message' | 'attachment_manifest'>;
+      beforeTimestamp?: number;
+      afterTimestamp?: number;
+      hasAttachment?: boolean;
+      hasLink?: boolean;
+      sort?: 'relevance' | 'newest' | 'oldest';
+      limit?: number;
+      offset?: number;
+      cursor?: {
+        createdAt: number;
+        eventId: string;
+      };
+    }
   ) => {
     const safeQuery = typeof query === 'string' ? query : '';
     const safeOptions = options && typeof options === 'object' ? options : {};
@@ -4156,6 +4173,32 @@ ipcMain.handle(
     return manager
       ? manager.searchEvents(safeQuery, safeOptions)
       : searchReticulumChatFromDb(safeQuery, safeOptions);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getMessageWindowAroundEvent',
+  async (
+    _event,
+    groupId: number,
+    channelId: string,
+    eventId: string,
+    options?: {
+      beforeLimit?: number;
+      afterLimit?: number;
+    }
+  ) => {
+    const safeOptions = options && typeof options === 'object' ? options : {};
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.getMessageWindowAroundEvent(groupId, channelId, eventId, safeOptions)
+      : readReticulumChatMessageWindowAroundEventFromDb(
+          groupId,
+          channelId,
+          eventId,
+          safeOptions.beforeLimit,
+          safeOptions.afterLimit
+        );
   }
 );
 

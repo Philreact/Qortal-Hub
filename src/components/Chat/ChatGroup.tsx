@@ -54,6 +54,8 @@ import {
   Box,
   Button,
   ButtonBase,
+  Chip,
+  Divider,
   Dialog,
   DialogActions,
   DialogContent,
@@ -87,6 +89,7 @@ import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRena
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import ImageIcon from '@mui/icons-material/Image';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendIcon from '@mui/icons-material/Send';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { messageHasImage } from '../../utils/chat';
@@ -102,7 +105,11 @@ import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
-import { getGroupAdminsAddress, getGroupMembers } from '../Group/groupApi';
+import {
+  getGroupAdminsAddress,
+  getGroupMembers,
+  getPrimaryNamesForAddresses,
+} from '../Group/groupApi';
 import Compressor from 'compressorjs';
 import {
   closestCenter,
@@ -155,6 +162,34 @@ type ReticulumGroupChannelWriteMode = 'members' | 'admins';
 type ReticulumGroupChannelReadMode = 'members' | 'admins';
 type ReticulumGroupChannelAccessMode = 'regular' | 'admin_write' | 'admin_private';
 
+type ReticulumSearchResult = {
+  event: {
+    eventId: string;
+    groupId: number;
+    channelId?: string;
+    authorAddress?: string;
+    authorPrimaryName?: string;
+    senderName?: string;
+    timestamp?: number;
+    eventType?: string;
+    encryptedPayload?: string;
+  };
+  snippet?: string;
+  cursor?: ReticulumSearchCursor;
+};
+
+type ReticulumSearchCursor = {
+  createdAt: number;
+  eventId: string;
+};
+
+const RETICULUM_SEARCH_CHANNEL_CURRENT = '__current__';
+const RETICULUM_SEARCH_CHANNEL_ALL = '__all__';
+const RETICULUM_SEARCH_HAS_ANY = 'any';
+const RETICULUM_SEARCH_HAS_ATTACHMENT = 'attachment';
+const RETICULUM_SEARCH_HAS_LINK = 'link';
+const RETICULUM_SEARCH_PAGE_SIZE = 20;
+
 const RETICULUM_CHANNEL_WRITE_MODE_MEMBERS: ReticulumGroupChannelWriteMode =
   'members';
 const RETICULUM_CHANNEL_WRITE_MODE_ADMINS: ReticulumGroupChannelWriteMode =
@@ -203,6 +238,104 @@ function reticulumChannelModesFromAccess(accessMode: ReticulumGroupChannelAccess
     writeMode: RETICULUM_CHANNEL_WRITE_MODE_MEMBERS,
     readMode: RETICULUM_CHANNEL_READ_MODE_MEMBERS,
   };
+}
+
+function cleanReticulumSearchSnippet(snippet?: string): string {
+  return (typeof snippet === 'string' ? snippet : '')
+    .replace(/<\s*br\s*\/?>/gi, ' ')
+    .replace(/<\/\s*(p|div|li|h[1-6]|blockquote)\s*>/gi, ' ')
+    .replace(/<(?!\/?mark\b)[^>]+>/gi, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function renderReticulumSearchSnippet(snippet?: string): ReactNode {
+  const text = cleanReticulumSearchSnippet(snippet);
+  if (!text) return '';
+  const parts = text.split(/(<mark>|<\/mark>)/g);
+  let highlighted = false;
+  return parts
+    .filter((part) => part.length > 0)
+    .map((part, index) => {
+      if (part === '<mark>') {
+        highlighted = true;
+        return null;
+      }
+      if (part === '</mark>') {
+        highlighted = false;
+        return null;
+      }
+      return highlighted ? (
+        <Box
+          component="mark"
+          key={`${part}-${index}`}
+          sx={{
+            backgroundColor: (theme) => alpha(theme.palette.warning.main, 0.3),
+            borderRadius: '3px',
+            color: 'inherit',
+            px: '2px',
+          }}
+        >
+          {part}
+        </Box>
+      ) : (
+        <span key={`${part}-${index}`}>{part}</span>
+      );
+    });
+}
+
+function reticulumAttachmentNamesFromRecord(record: unknown): string[] {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return [];
+  const attachments = (record as Record<string, unknown>).attachments;
+  if (!Array.isArray(attachments)) return [];
+  return [
+    ...new Set(
+      attachments
+        .map((attachment) => {
+          if (!attachment || typeof attachment !== 'object') return '';
+          const item = attachment as Record<string, unknown>;
+          return typeof item.fileName === 'string' && item.fileName.trim()
+            ? item.fileName.trim()
+            : typeof item.name === 'string' && item.name.trim()
+              ? item.name.trim()
+              : '';
+        })
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function reticulumAttachmentNamesFromPayload(payload?: string): string[] {
+  if (!payload) return [];
+  try {
+    return reticulumAttachmentNamesFromRecord(JSON.parse(payload));
+  } catch {
+    return [];
+  }
+}
+
+function buildReticulumSearchIndexText(
+  messageText: string,
+  decryptedData: unknown
+): string {
+  const attachmentNames = reticulumAttachmentNamesFromRecord(decryptedData);
+  return [messageText, ...attachmentNames]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function localDateStringToTimestamp(dateString: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return undefined;
+  const [year, month, day] = dateString.split('-').map(Number);
+  const timestamp = new Date(year, month - 1, day).getTime();
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 type ReticulumGroupCategory = {
@@ -672,6 +805,45 @@ export const ChatGroup = ({
   const [selectedReticulumChannelId, setSelectedReticulumChannelId] = useState(
     DEFAULT_RETICULUM_CHANNEL_ID
   );
+  const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
+  const [reticulumSearchQuery, setReticulumSearchQuery] = useState('');
+  const [reticulumSearchChannelFilter, setReticulumSearchChannelFilter] =
+    useState(RETICULUM_SEARCH_CHANNEL_CURRENT);
+  const [reticulumSearchAuthorFilter, setReticulumSearchAuthorFilter] =
+    useState('');
+  const [reticulumSearchHasFilter, setReticulumSearchHasFilter] = useState(
+    RETICULUM_SEARCH_HAS_ANY
+  );
+  const [reticulumSearchAfterDate, setReticulumSearchAfterDate] = useState('');
+  const [reticulumSearchBeforeDate, setReticulumSearchBeforeDate] =
+    useState('');
+  const [reticulumSearchSort, setReticulumSearchSort] = useState<
+    'relevance' | 'newest' | 'oldest'
+  >('relevance');
+  const [reticulumSearchFilterMenu, setReticulumSearchFilterMenu] = useState<
+    'in' | 'from' | 'has' | 'date' | 'sort' | null
+  >(null);
+  const [reticulumSearchFilterAnchorEl, setReticulumSearchFilterAnchorEl] =
+    useState<HTMLElement | null>(null);
+  const [reticulumSearchResults, setReticulumSearchResults] = useState<
+    ReticulumSearchResult[]
+  >([]);
+  const [reticulumSearchPage, setReticulumSearchPage] = useState(0);
+  const [reticulumSearchHasNextPage, setReticulumSearchHasNextPage] =
+    useState(false);
+  const [isReticulumSearchLoading, setIsReticulumSearchLoading] =
+    useState(false);
+  const [reticulumSearchError, setReticulumSearchError] = useState('');
+  const [reticulumSearchScrollTarget, setReticulumSearchScrollTarget] =
+    useState<{
+      messageId: string;
+      nonce: number;
+    } | null>(null);
+  const reticulumSearchRequestSeqRef = useRef(0);
+  const reticulumSearchPageCursorsRef = useRef<
+    Array<ReticulumSearchCursor | null>
+  >([null]);
+  const reticulumPrimaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const [isReticulumChannelAdmin, setIsReticulumChannelAdmin] = useState(false);
   const [isCreateReticulumChannelOpen, setIsCreateReticulumChannelOpen] =
     useState(false);
@@ -1099,6 +1271,137 @@ export const ChatGroup = ({
       ) || null,
     [reticulumChannelsForSelectedGroup, selectedReticulumChannelId]
   );
+  const reticulumVisibleChannelIds = useMemo(
+    () =>
+      new Set(
+        reticulumChannelsForSelectedGroup.map((channel) =>
+          normalizeReticulumChannelName(channel.channelId)
+        )
+      ),
+    [reticulumChannelsForSelectedGroup]
+  );
+  const reticulumVisibleChannelNameById = useMemo(() => {
+    const entries = reticulumChannelsForSelectedGroup.map((channel) => [
+      normalizeReticulumChannelName(channel.channelId),
+      channel.name || channel.channelId,
+    ]);
+    return new Map(entries);
+  }, [reticulumChannelsForSelectedGroup]);
+  const reticulumMemberNameByAddress = useMemo(() => {
+    const entries = groupMentionMembers
+      .filter((member) => member.address)
+      .map((member) => [member.address, member.name || member.address]);
+    if (myAddress && myName) entries.push([myAddress, myName]);
+    return new Map(entries);
+  }, [groupMentionMembers, myAddress, myName]);
+  const reticulumSearchAuthorOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of groupMentionMembers) {
+      if (member.address) map.set(member.address, member.name || member.address);
+    }
+    for (const message of messages) {
+      if (message?.sender) {
+        map.set(
+          message.sender,
+          message.senderName || reticulumMemberNameByAddress.get(message.sender) || message.sender
+        );
+      }
+    }
+    if (myAddress) map.set(myAddress, myName || myAddress);
+    return [...map.entries()]
+      .map(([address, name]) => ({ address, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [groupMentionMembers, messages, myAddress, myName, reticulumMemberNameByAddress]);
+  const reticulumSearchActiveFilterCount = useMemo(() => {
+    return [
+      reticulumSearchChannelFilter !== RETICULUM_SEARCH_CHANNEL_CURRENT,
+      Boolean(reticulumSearchAuthorFilter),
+      reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY,
+      Boolean(reticulumSearchAfterDate),
+      Boolean(reticulumSearchBeforeDate),
+      reticulumSearchSort !== 'relevance',
+    ].filter(Boolean).length;
+  }, [
+    reticulumSearchAfterDate,
+    reticulumSearchAuthorFilter,
+    reticulumSearchBeforeDate,
+    reticulumSearchChannelFilter,
+    reticulumSearchHasFilter,
+    reticulumSearchSort,
+  ]);
+  const reticulumSearchChannelFilterLabel = useMemo(() => {
+    if (reticulumSearchChannelFilter === RETICULUM_SEARCH_CHANNEL_CURRENT) {
+      const selectedChannelName =
+        reticulumVisibleChannelNameById.get(selectedReticulumChannelId) ||
+        selectedReticulumChannelId;
+      return `#${selectedChannelName}`;
+    }
+    if (reticulumSearchChannelFilter === RETICULUM_SEARCH_CHANNEL_ALL) {
+      return 'All channels';
+    }
+    return `#${
+      reticulumVisibleChannelNameById.get(reticulumSearchChannelFilter) ||
+      reticulumSearchChannelFilter
+    }`;
+  }, [
+    reticulumSearchChannelFilter,
+    reticulumVisibleChannelNameById,
+    selectedReticulumChannelId,
+  ]);
+  const reticulumSearchAuthorFilterLabel = useMemo(() => {
+    if (!reticulumSearchAuthorFilter) return 'Anyone';
+    return (
+      reticulumSearchAuthorOptions.find(
+        (author) => author.address === reticulumSearchAuthorFilter
+      )?.name || reticulumSearchAuthorFilter
+    );
+  }, [reticulumSearchAuthorFilter, reticulumSearchAuthorOptions]);
+  const reticulumSearchHasFilterLabel =
+    reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_ATTACHMENT
+      ? 'Attachment'
+      : reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_LINK
+        ? 'Link'
+        : 'Anything';
+  const reticulumSearchSortLabel =
+    reticulumSearchSort === 'newest'
+      ? 'Newest'
+      : reticulumSearchSort === 'oldest'
+        ? 'Oldest'
+        : 'Relevant';
+  const reticulumSearchDateFilterLabel =
+    reticulumSearchAfterDate || reticulumSearchBeforeDate
+      ? `${reticulumSearchAfterDate || 'any'} -> ${
+          reticulumSearchBeforeDate || 'any'
+        }`
+      : 'Any time';
+  const reticulumSearchVisiblePageNumbers = useMemo(() => {
+    const pages = new Set<number>([0, reticulumSearchPage]);
+    if (reticulumSearchPage > 0) pages.add(reticulumSearchPage - 1);
+    if (reticulumSearchHasNextPage) pages.add(reticulumSearchPage + 1);
+    return [...pages].sort((a, b) => a - b);
+  }, [reticulumSearchHasNextPage, reticulumSearchPage]);
+  const clearReticulumSearchFilters = useCallback(() => {
+    setReticulumSearchChannelFilter(RETICULUM_SEARCH_CHANNEL_CURRENT);
+    setReticulumSearchAuthorFilter('');
+    setReticulumSearchHasFilter(RETICULUM_SEARCH_HAS_ANY);
+    setReticulumSearchAfterDate('');
+    setReticulumSearchBeforeDate('');
+    setReticulumSearchSort('relevance');
+  }, []);
+  const openReticulumSearchFilterMenu = useCallback(
+    (
+      menu: 'in' | 'from' | 'has' | 'date' | 'sort',
+      event: ReactMouseEvent<HTMLElement>
+    ) => {
+      setReticulumSearchFilterMenu(menu);
+      setReticulumSearchFilterAnchorEl(event.currentTarget);
+    },
+    []
+  );
+  const closeReticulumSearchFilterMenu = useCallback(() => {
+    setReticulumSearchFilterMenu(null);
+    setReticulumSearchFilterAnchorEl(null);
+  }, []);
   const selectedReticulumChannelWriteMode =
     selectedReticulumChannel?.writeMode === RETICULUM_CHANNEL_WRITE_MODE_ADMINS
       ? RETICULUM_CHANNEL_WRITE_MODE_ADMINS
@@ -2217,9 +2520,17 @@ export const ChatGroup = ({
   );
 
   const convertReticulumEventToChatItem = useCallback(
-    async (event) => {
+    async (
+      event,
+      options?: {
+        channelId?: string;
+      }
+    ) => {
       if (!event || Number(event.groupId) !== Number(selectedGroup))
         return null;
+      const activeChannelId =
+        normalizeReticulumChannelName(options?.channelId || '') ||
+        selectedReticulumChannelId;
       const eventChannelId =
         normalizeReticulumChannelName(
           event.channelId || DEFAULT_RETICULUM_CHANNEL_ID
@@ -2240,7 +2551,7 @@ export const ChatGroup = ({
       }
       if (
         !isChannelMetadataEvent &&
-        eventChannelId !== selectedReticulumChannelId
+        eventChannelId !== activeChannelId
       ) {
         return null;
       }
@@ -2253,6 +2564,7 @@ export const ChatGroup = ({
         senderName:
           event.senderName ||
           event.authorPrimaryName ||
+          reticulumMemberNameByAddress.get(event.authorAddress) ||
           (event.authorAddress === myAddress ? myName : undefined),
         timestamp: event.timestamp,
         data: event.encryptedPayload,
@@ -2299,6 +2611,10 @@ export const ChatGroup = ({
       const normalizedText = normalizeChatHtmlContent(
         decryptedData.message || decryptedData.messageText
       );
+      const searchIndexText = buildReticulumSearchIndexText(
+        normalizedText,
+        decryptedData
+      );
       const mentionedAddresses = [
         ...new Set([
           ...mentionedAddressesFromPayload(decryptedData),
@@ -2311,11 +2627,11 @@ export const ChatGroup = ({
       } else if (
         event.eventType === 'edit' &&
         event.targetEventId &&
-        normalizedText
+        searchIndexText
       ) {
         void window.reticulumChat?.indexSearchText?.(
           event.eventId,
-          normalizedText
+          searchIndexText
         );
         void window.reticulumChat?.replaceMentions?.(
           event.eventId,
@@ -2324,11 +2640,11 @@ export const ChatGroup = ({
       } else if (
         (event.eventType === 'message' ||
           event.eventType === 'attachment_manifest') &&
-        normalizedText
+        searchIndexText
       ) {
         void window.reticulumChat?.indexSearchText?.(
           event.eventId,
-          normalizedText
+          searchIndexText
         );
         void window.reticulumChat?.replaceMentions?.(
           event.eventId,
@@ -2404,9 +2720,294 @@ export const ChatGroup = ({
       refreshReticulumChannels,
       reticulumChatEnabled,
       reticulumAllChannelsForSelectedGroup,
+      reticulumMemberNameByAddress,
       resolveMentionedAddresses,
       selectedGroup,
       selectedReticulumChannelId,
+    ]
+  );
+
+  useEffect(() => {
+    reticulumSearchPageCursorsRef.current = [null];
+    setReticulumSearchPage(0);
+  }, [
+    reticulumSearchAfterDate,
+    reticulumSearchAuthorFilter,
+    reticulumSearchBeforeDate,
+    reticulumSearchChannelFilter,
+    reticulumSearchHasFilter,
+    reticulumSearchQuery,
+    reticulumSearchSort,
+    selectedGroup,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !reticulumSearchOpen || !selectedGroup) {
+      setReticulumSearchResults([]);
+      setReticulumSearchError('');
+      setReticulumSearchHasNextPage(false);
+      setIsReticulumSearchLoading(false);
+      return;
+    }
+    const query = reticulumSearchQuery.trim();
+    const hasExplicitFilters =
+      reticulumSearchChannelFilter !== RETICULUM_SEARCH_CHANNEL_CURRENT ||
+      Boolean(reticulumSearchAuthorFilter) ||
+      reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY ||
+      Boolean(reticulumSearchAfterDate) ||
+      Boolean(reticulumSearchBeforeDate) ||
+      reticulumSearchSort !== 'relevance';
+    if (query.length < 2 && !hasExplicitFilters) {
+      setReticulumSearchResults([]);
+      setReticulumSearchError('');
+      setReticulumSearchHasNextPage(false);
+      setIsReticulumSearchLoading(false);
+      return;
+    }
+    const requestSeq = reticulumSearchRequestSeqRef.current + 1;
+    reticulumSearchRequestSeqRef.current = requestSeq;
+    setIsReticulumSearchLoading(true);
+    setReticulumSearchError('');
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const channelIds =
+            reticulumSearchChannelFilter === RETICULUM_SEARCH_CHANNEL_CURRENT
+              ? [selectedReticulumChannelId]
+              : reticulumSearchChannelFilter === RETICULUM_SEARCH_CHANNEL_ALL
+                ? undefined
+                : [reticulumSearchChannelFilter];
+          const afterTimestamp = localDateStringToTimestamp(
+            reticulumSearchAfterDate
+          );
+          const beforeTimestamp = localDateStringToTimestamp(
+            reticulumSearchBeforeDate
+          );
+          const canUseCursorPaging =
+            reticulumSearchSort === 'newest' ||
+            reticulumSearchSort === 'oldest' ||
+            query.length < 2;
+          const cursor =
+            canUseCursorPaging && reticulumSearchPage > 0
+              ? reticulumSearchPageCursorsRef.current[reticulumSearchPage]
+              : null;
+          const results = (await window.reticulumChat?.search?.(query, {
+            groupIds: [Number(selectedGroup)],
+            channelIds,
+            authorAddresses: reticulumSearchAuthorFilter
+              ? [reticulumSearchAuthorFilter]
+              : undefined,
+            beforeTimestamp,
+            afterTimestamp,
+            hasAttachment:
+              reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_ATTACHMENT,
+            hasLink: reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_LINK,
+            sort: reticulumSearchSort,
+            limit: RETICULUM_SEARCH_PAGE_SIZE + 1,
+            offset: cursor
+              ? undefined
+              : reticulumSearchPage * RETICULUM_SEARCH_PAGE_SIZE,
+            cursor: cursor ?? undefined,
+          })) as ReticulumSearchResult[] | undefined;
+          if (reticulumSearchRequestSeqRef.current !== requestSeq) return;
+          const visibleResults = (results ?? []).filter((result) => {
+            const channelId =
+              normalizeReticulumChannelName(result?.event?.channelId || '') ||
+              DEFAULT_RETICULUM_CHANNEL_ID;
+            return reticulumVisibleChannelIds.has(channelId);
+          });
+          setReticulumSearchHasNextPage(
+            visibleResults.length > RETICULUM_SEARCH_PAGE_SIZE
+          );
+          setReticulumSearchResults(
+            visibleResults.slice(0, RETICULUM_SEARCH_PAGE_SIZE)
+          );
+          const pageResults = visibleResults.slice(
+            0,
+            RETICULUM_SEARCH_PAGE_SIZE
+          );
+          const nextCursor = pageResults[pageResults.length - 1]?.cursor;
+          if (canUseCursorPaging) {
+            const nextPageCursors =
+              reticulumSearchPageCursorsRef.current.slice(
+                0,
+                reticulumSearchPage + 1
+              );
+            if (
+              visibleResults.length > RETICULUM_SEARCH_PAGE_SIZE &&
+              nextCursor
+            ) {
+              nextPageCursors[reticulumSearchPage + 1] = nextCursor;
+            }
+            reticulumSearchPageCursorsRef.current = nextPageCursors;
+          }
+        } catch (error) {
+          if (reticulumSearchRequestSeqRef.current !== requestSeq) return;
+          console.error('[ReticulumChat] search failed', error);
+          setReticulumSearchResults([]);
+          setReticulumSearchHasNextPage(false);
+          setReticulumSearchError('Search failed');
+        } finally {
+          if (reticulumSearchRequestSeqRef.current === requestSeq) {
+            setIsReticulumSearchLoading(false);
+          }
+        }
+      })();
+    }, 220);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    myAddress,
+    reticulumChatEnabled,
+    reticulumSearchAfterDate,
+    reticulumSearchAuthorFilter,
+    reticulumSearchBeforeDate,
+    reticulumSearchChannelFilter,
+    reticulumSearchHasFilter,
+    reticulumSearchOpen,
+    reticulumSearchPage,
+    reticulumSearchQuery,
+    reticulumSearchSort,
+    reticulumVisibleChannelIds,
+    selectedGroup,
+    selectedReticulumChannelId,
+  ]);
+
+  const reticulumSearchAuthorName = useCallback(
+    (event: ReticulumSearchResult['event']) => {
+      const address = event?.authorAddress || '';
+      return (
+        event?.senderName ||
+        event?.authorPrimaryName ||
+        reticulumMemberNameByAddress.get(address) ||
+        address
+      );
+    },
+    [reticulumMemberNameByAddress]
+  );
+
+  const resolvePrimaryNamesForReticulumEvents = useCallback(
+    async (events: any[]) => {
+      const missingAddresses = Array.from(
+        new Set(
+          events
+            .map((event) =>
+              typeof event?.authorAddress === 'string'
+                ? event.authorAddress.trim()
+                : ''
+            )
+            .filter((address) => {
+              if (!address || address === myAddress) return false;
+              if (reticulumMemberNameByAddress.get(address)) return false;
+              return !reticulumPrimaryNameCacheRef.current.has(address);
+            })
+        )
+      );
+
+      if (missingAddresses.length > 0) {
+        try {
+          const primaryNames =
+            await getPrimaryNamesForAddresses(missingAddresses);
+          for (const address of missingAddresses) {
+            reticulumPrimaryNameCacheRef.current.set(
+              address,
+              primaryNames[address]?.trim() || ''
+            );
+          }
+        } catch (error) {
+          console.error(
+            '[ReticulumChat] Failed to resolve search window primary names',
+            error
+          );
+          for (const address of missingAddresses) {
+            if (!reticulumPrimaryNameCacheRef.current.has(address)) {
+              reticulumPrimaryNameCacheRef.current.set(address, '');
+            }
+          }
+        }
+      }
+
+      return events.map((event) => {
+        const authorAddress =
+          typeof event?.authorAddress === 'string'
+            ? event.authorAddress.trim()
+            : '';
+        const resolvedName =
+          (authorAddress === myAddress ? myName : '') ||
+          reticulumMemberNameByAddress.get(authorAddress) ||
+          reticulumPrimaryNameCacheRef.current.get(authorAddress) ||
+          '';
+        if (!resolvedName) return event;
+        return {
+          ...event,
+          authorPrimaryName: event.authorPrimaryName || resolvedName,
+          senderName: event.senderName || resolvedName,
+        };
+      });
+    },
+    [myAddress, myName, reticulumMemberNameByAddress]
+  );
+
+  const handleReticulumSearchResultClick = useCallback(
+    async (result: ReticulumSearchResult) => {
+      const event = result?.event;
+      if (!event?.eventId || !selectedGroup) return;
+      const channelId =
+        normalizeReticulumChannelName(event.channelId || '') ||
+        DEFAULT_RETICULUM_CHANNEL_ID;
+      if (!reticulumVisibleChannelIds.has(channelId)) return;
+      setSelectedReticulumChannelId(channelId);
+      setIsLoading(true);
+      try {
+        const windowEvents =
+          (await window.reticulumChat?.getMessageWindowAroundEvent?.(
+            Number(selectedGroup),
+            channelId,
+            event.eventId,
+            {
+              beforeLimit: 80,
+              afterLimit: 40,
+            }
+          )) ?? [];
+        const namedWindowEvents =
+          await resolvePrimaryNamesForReticulumEvents(windowEvents);
+        const converted = await Promise.all(
+          namedWindowEvents.map((windowEvent) =>
+            convertReticulumEventToChatItem(windowEvent, { channelId })
+          )
+        );
+        const convertedMessages = converted.filter(Boolean);
+        const hasTargetMessage = convertedMessages.some(
+          (message) => message?.signature === event.eventId
+        );
+        if (!hasTargetMessage) {
+          throw new Error('search_result_window_missing_target');
+        }
+        setChatReferences({});
+        setMessages(convertedMessages);
+        setReticulumSearchScrollTarget((current) => ({
+          messageId: event.eventId,
+          nonce: (current?.nonce ?? 0) + 1,
+        }));
+        setReticulumSearchOpen(false);
+      } catch (error) {
+        console.error('[ReticulumChat] search result window failed', error);
+        setInfoSnack({
+          type: 'error',
+          message: 'Unable to load search result',
+        });
+        setOpenSnack(true);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [
+      convertReticulumEventToChatItem,
+      myAddress,
+      reticulumVisibleChannelIds,
+      resolvePrimaryNamesForReticulumEvents,
+      selectedGroup,
     ]
   );
 
@@ -4229,21 +4830,47 @@ export const ChatGroup = ({
           }}
         >
           {reticulumChatEnabled && (
-            <Typography
+            <Box
               sx={{
+                alignItems: 'center',
                 borderBottom: `1px solid ${theme.palette.divider}`,
+                display: 'flex',
                 flexShrink: 0,
-                fontSize: 18,
-                fontWeight: 700,
+                gap: 1,
                 mb: 1,
                 pb: 1,
               }}
             >
-              #{' '}
-              {reticulumChannelsForSelectedGroup.find(
-                (channel) => channel.channelId === selectedReticulumChannelId
-              )?.name || selectedReticulumChannelId}
-            </Typography>
+              <Typography
+                sx={{
+                  flex: 1,
+                  fontSize: 18,
+                  fontWeight: 700,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                #{' '}
+                {reticulumChannelsForSelectedGroup.find(
+                  (channel) => channel.channelId === selectedReticulumChannelId
+                )?.name || selectedReticulumChannelId}
+              </Typography>
+              <Tooltip title="Search chat">
+                <IconButton
+                  onClick={() => setReticulumSearchOpen(true)}
+                  size="small"
+                  sx={{
+                    border: '1px solid',
+                    borderColor: theme.palette.divider,
+                    borderRadius: '8px',
+                  }}
+                >
+                  <SearchRoundedIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+            </Box>
           )}
           <ChatList
             chatId={
@@ -4269,6 +4896,8 @@ export const ChatGroup = ({
             secretKeyObject={secretKey}
             tempChatReferences={tempChatReferences}
             tempMessages={tempMessages}
+            scrollToMessageId={reticulumSearchScrollTarget?.messageId}
+            scrollToMessageNonce={reticulumSearchScrollTarget?.nonce}
           />
 
           {reticulumTypingText && (
@@ -4681,6 +5310,829 @@ export const ChatGroup = ({
           )}
         </Box>
       </Box>
+
+      {reticulumChatEnabled && reticulumSearchOpen && (
+        <Portal>
+          <Box
+            sx={{
+              backgroundColor: theme.palette.background.paper,
+              borderLeft: `1px solid ${theme.palette.divider}`,
+              bottom: 0,
+              boxShadow: theme.shadows[8],
+              display: 'flex',
+              flexDirection: 'column',
+              position: 'fixed',
+              right: 0,
+              top: appHeighOffsetPx,
+              width: { xs: '100vw', sm: 430 },
+              zIndex: 1300,
+            }}
+          >
+            <Box
+              sx={{
+                alignItems: 'center',
+                borderBottom: `1px solid ${theme.palette.divider}`,
+                display: 'flex',
+                gap: 1,
+                p: 2,
+              }}
+            >
+              <SearchRoundedIcon sx={{ color: theme.palette.text.secondary }} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontSize: 16, fontWeight: 800 }}>
+                  Search Results
+                </Typography>
+              </Box>
+              <IconButton
+                onClick={() => setReticulumSearchOpen(false)}
+                size="small"
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Box>
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 1.5,
+                p: 2,
+              }}
+            >
+              <TextField
+                autoFocus
+                fullWidth
+                onChange={(event) => setReticulumSearchQuery(event.target.value)}
+                placeholder={`Search ${
+                  reticulumSearchChannelFilter ===
+                  RETICULUM_SEARCH_CHANNEL_CURRENT
+                    ? reticulumSearchChannelFilterLabel
+                    : 'messages'
+                }`}
+                size="small"
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    backgroundColor: alpha(theme.palette.common.black, 0.24),
+                    borderRadius: '4px',
+                    fontSize: 14,
+                    height: 40,
+                    '& fieldset': {
+                      borderColor: alpha(theme.palette.common.white, 0.16),
+                    },
+                    '&:hover fieldset': {
+                      borderColor: alpha(theme.palette.primary.main, 0.55),
+                    },
+                    '&.Mui-focused fieldset': {
+                      borderColor: theme.palette.primary.main,
+                    },
+                  },
+                }}
+                value={reticulumSearchQuery}
+              />
+              {reticulumSearchActiveFilterCount > 0 && (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                  {reticulumSearchChannelFilter !==
+                    RETICULUM_SEARCH_CHANNEL_CURRENT && (
+                    <Chip
+                      label={`in: ${reticulumSearchChannelFilterLabel}`}
+                      onDelete={() =>
+                        setReticulumSearchChannelFilter(
+                          RETICULUM_SEARCH_CHANNEL_CURRENT
+                        )
+                      }
+                      size="small"
+                      sx={{
+                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        borderRadius: '4px',
+                        color: theme.palette.primary.light,
+                        height: 24,
+                      }}
+                    />
+                  )}
+                  {reticulumSearchAuthorFilter && (
+                    <Chip
+                      label={`from: ${reticulumSearchAuthorFilterLabel}`}
+                      onDelete={() => setReticulumSearchAuthorFilter('')}
+                      size="small"
+                      sx={{
+                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        borderRadius: '4px',
+                        color: theme.palette.primary.light,
+                        height: 24,
+                      }}
+                    />
+                  )}
+                  {reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY && (
+                    <Chip
+                      label={`has: ${reticulumSearchHasFilterLabel}`}
+                      onDelete={() =>
+                        setReticulumSearchHasFilter(RETICULUM_SEARCH_HAS_ANY)
+                      }
+                      size="small"
+                      sx={{
+                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        borderRadius: '4px',
+                        color: theme.palette.primary.light,
+                        height: 24,
+                      }}
+                    />
+                  )}
+                  {(reticulumSearchAfterDate ||
+                    reticulumSearchBeforeDate) && (
+                    <Chip
+                      label={`date: ${reticulumSearchDateFilterLabel}`}
+                      onDelete={() => {
+                        setReticulumSearchAfterDate('');
+                        setReticulumSearchBeforeDate('');
+                      }}
+                      size="small"
+                      sx={{
+                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        borderRadius: '4px',
+                        color: theme.palette.primary.light,
+                        height: 24,
+                      }}
+                    />
+                  )}
+                  {reticulumSearchSort !== 'relevance' && (
+                    <Chip
+                      label={`sort: ${reticulumSearchSortLabel}`}
+                      onDelete={() => setReticulumSearchSort('relevance')}
+                      size="small"
+                      sx={{
+                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        borderRadius: '4px',
+                        color: theme.palette.primary.light,
+                        height: 24,
+                      }}
+                    />
+                  )}
+                </Box>
+              )}
+              <Box>
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    mb: 0.75,
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 11,
+                      fontWeight: 800,
+                      letterSpacing: 0.4,
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    Filter By
+                  </Typography>
+                  {reticulumSearchActiveFilterCount > 0 && (
+                    <Button
+                      onClick={clearReticulumSearchFilters}
+                      size="small"
+                      sx={{ fontSize: 11, minWidth: 0, p: 0 }}
+                      variant="text"
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                  {[
+                    {
+                      key: 'from' as const,
+                      label: 'from:',
+                      value: reticulumSearchAuthorFilter
+                        ? reticulumSearchAuthorFilterLabel
+                        : '',
+                    },
+                    {
+                      key: 'in' as const,
+                      label: 'in:',
+                      value:
+                        reticulumSearchChannelFilter !==
+                        RETICULUM_SEARCH_CHANNEL_CURRENT
+                          ? reticulumSearchChannelFilterLabel
+                          : '',
+                    },
+                    {
+                      key: 'has' as const,
+                      label: 'has:',
+                      value:
+                        reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY
+                          ? reticulumSearchHasFilterLabel
+                          : '',
+                    },
+                    {
+                      key: 'date' as const,
+                      label: 'date:',
+                      value:
+                        reticulumSearchAfterDate || reticulumSearchBeforeDate
+                          ? reticulumSearchDateFilterLabel
+                          : '',
+                    },
+                    {
+                      key: 'sort' as const,
+                      label: 'sort:',
+                      value:
+                        reticulumSearchSort !== 'relevance'
+                          ? reticulumSearchSortLabel
+                          : '',
+                    },
+                  ].map((option) => (
+                    <ButtonBase
+                      key={option.key}
+                      onClick={(event) =>
+                        openReticulumSearchFilterMenu(option.key, event)
+                      }
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: alpha(theme.palette.common.black, 0.12),
+                        border: `1px solid ${alpha(
+                          theme.palette.common.white,
+                          0.12
+                        )}`,
+                        borderRadius: '4px',
+                        display: 'flex',
+                        gap: 0.5,
+                        justifyContent: 'flex-start',
+                        maxWidth: '100%',
+                        minHeight: 28,
+                        px: 0.75,
+                        py: 0.35,
+                        textAlign: 'left',
+                        '&:hover': {
+                          backgroundColor: alpha(
+                            theme.palette.primary.main,
+                            0.12
+                          ),
+                          borderColor: alpha(theme.palette.primary.main, 0.45),
+                        },
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          color: theme.palette.primary.main,
+                          fontSize: 12,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {option.label}
+                      </Typography>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          display: option.value ? 'block' : 'none',
+                          fontSize: 12,
+                          maxWidth: 142,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {option.value}
+                      </Typography>
+                      <ChevronRightRoundedIcon
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: 14,
+                        }}
+                      />
+                    </ButtonBase>
+                  ))}
+                </Box>
+              </Box>
+            </Box>
+            <Menu
+              anchorEl={reticulumSearchFilterAnchorEl}
+              onClose={closeReticulumSearchFilterMenu}
+              open={Boolean(reticulumSearchFilterAnchorEl)}
+              PaperProps={{
+                sx: {
+                  maxHeight: 340,
+                  minWidth: 260,
+                },
+              }}
+            >
+              {reticulumSearchFilterMenu === 'from' && (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      setReticulumSearchAuthorFilter('');
+                      closeReticulumSearchFilterMenu();
+                    }}
+                  >
+                    Anyone
+                  </MenuItem>
+                  <Divider />
+                  {reticulumSearchAuthorOptions.map((author) => (
+                    <MenuItem
+                      key={author.address}
+                      onClick={() => {
+                        setReticulumSearchAuthorFilter(author.address);
+                        closeReticulumSearchFilterMenu();
+                      }}
+                    >
+                      {author.name}
+                    </MenuItem>
+                  ))}
+                </>
+              )}
+              {reticulumSearchFilterMenu === 'in' && (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      setReticulumSearchChannelFilter(
+                        RETICULUM_SEARCH_CHANNEL_CURRENT
+                      );
+                      closeReticulumSearchFilterMenu();
+                    }}
+                  >
+                    Current channel
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      setReticulumSearchChannelFilter(
+                        RETICULUM_SEARCH_CHANNEL_ALL
+                      );
+                      closeReticulumSearchFilterMenu();
+                    }}
+                  >
+                    All channels
+                  </MenuItem>
+                  <Divider />
+                  {reticulumChannelsForSelectedGroup.map((channel) => (
+                    <MenuItem
+                      key={channel.channelId}
+                      onClick={() => {
+                        setReticulumSearchChannelFilter(channel.channelId);
+                        closeReticulumSearchFilterMenu();
+                      }}
+                    >
+                      #{channel.name || channel.channelId}
+                    </MenuItem>
+                  ))}
+                </>
+              )}
+              {reticulumSearchFilterMenu === 'has' && (
+                <>
+                  {[
+                    [RETICULUM_SEARCH_HAS_ANY, 'Anything'],
+                    [RETICULUM_SEARCH_HAS_ATTACHMENT, 'Attachment'],
+                    [RETICULUM_SEARCH_HAS_LINK, 'Link'],
+                  ].map(([value, label]) => (
+                    <MenuItem
+                      key={value}
+                      onClick={() => {
+                        setReticulumSearchHasFilter(value);
+                        closeReticulumSearchFilterMenu();
+                      }}
+                    >
+                      {label}
+                    </MenuItem>
+                  ))}
+                </>
+              )}
+              {reticulumSearchFilterMenu === 'sort' && (
+                <>
+                  {[
+                    ['relevance', 'Relevant'],
+                    ['newest', 'Newest'],
+                    ['oldest', 'Oldest'],
+                  ].map(([value, label]) => (
+                    <MenuItem
+                      key={value}
+                      onClick={() => {
+                        setReticulumSearchSort(
+                          value as 'relevance' | 'newest' | 'oldest'
+                        );
+                        closeReticulumSearchFilterMenu();
+                      }}
+                    >
+                      {label}
+                    </MenuItem>
+                  ))}
+                </>
+              )}
+              {reticulumSearchFilterMenu === 'date' && (
+                <Box sx={{ display: 'grid', gap: 1, p: 1.5, width: 280 }}>
+                  <TextField
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    label="After"
+                    onChange={(event) =>
+                      setReticulumSearchAfterDate(event.target.value)
+                    }
+                    size="small"
+                    type="date"
+                    value={reticulumSearchAfterDate}
+                  />
+                  <TextField
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    label="Before"
+                    onChange={(event) =>
+                      setReticulumSearchBeforeDate(event.target.value)
+                    }
+                    size="small"
+                    type="date"
+                    value={reticulumSearchBeforeDate}
+                  />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Button
+                      onClick={() => {
+                        setReticulumSearchAfterDate('');
+                        setReticulumSearchBeforeDate('');
+                      }}
+                      size="small"
+                    >
+                      Clear dates
+                    </Button>
+                    <Button
+                      onClick={closeReticulumSearchFilterMenu}
+                      size="small"
+                      variant="contained"
+                    >
+                      Done
+                    </Button>
+                  </Box>
+                </Box>
+              )}
+            </Menu>
+            <Box
+              sx={{
+                borderTop: `1px solid ${theme.palette.divider}`,
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                p: 1,
+              }}
+            >
+              {isReticulumSearchLoading && (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+                  <CircularProgress size={22} />
+                </Box>
+              )}
+              {!isReticulumSearchLoading && reticulumSearchError && (
+                <Typography
+                  sx={{
+                    color: theme.palette.error.main,
+                    fontSize: 13,
+                    px: 1,
+                    py: 2,
+                  }}
+                >
+                  {reticulumSearchError}
+                </Typography>
+              )}
+              {!isReticulumSearchLoading &&
+                !reticulumSearchError &&
+                (reticulumSearchQuery.trim().length >= 2 ||
+                  reticulumSearchActiveFilterCount > 0) &&
+                reticulumSearchResults.length === 0 && (
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 13,
+                      px: 1,
+                      py: 2,
+                    }}
+                  >
+                    No results
+                  </Typography>
+                )}
+              {!isReticulumSearchLoading &&
+                !reticulumSearchError &&
+                reticulumSearchQuery.trim().length < 2 &&
+                reticulumSearchActiveFilterCount === 0 && (
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 13,
+                      px: 1,
+                      py: 2,
+                    }}
+                  >
+                    Type at least 2 characters or choose a filter.
+                  </Typography>
+                )}
+              {reticulumSearchResults.map((result) => {
+                const event = result.event;
+                const channelId =
+                  normalizeReticulumChannelName(event.channelId || '') ||
+                  DEFAULT_RETICULUM_CHANNEL_ID;
+                const channelName =
+                  reticulumVisibleChannelNameById.get(channelId) || channelId;
+                const authorName = reticulumSearchAuthorName(event);
+                const timestamp = Number(event.timestamp || 0);
+                const attachmentNames = reticulumAttachmentNamesFromPayload(
+                  event.encryptedPayload
+                );
+                return (
+                  <ButtonBase
+                    key={event.eventId}
+                    onClick={() => void handleReticulumSearchResultClick(result)}
+                    sx={{
+                      alignItems: 'stretch',
+                      backgroundColor: alpha(theme.palette.action.hover, 0.35),
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: '8px',
+                      display: 'flex',
+                      mb: 1,
+                      p: 1.25,
+                      textAlign: 'left',
+                      width: '100%',
+                      transition:
+                        'background-color 0.15s ease, border-color 0.15s ease',
+                      '&:hover': {
+                        backgroundColor: theme.palette.action.hover,
+                        borderColor: alpha(theme.palette.primary.main, 0.45),
+                      },
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0, width: '100%' }}>
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          gap: 0.75,
+                          minWidth: 0,
+                        }}
+                      >
+                        <Typography
+                          sx={{
+                            color: theme.palette.primary.main,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          #{channelName}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: 11,
+                            ml: 'auto',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {timestamp
+                            ? new Date(timestamp).toLocaleString([], {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })
+                            : ''}
+                        </Typography>
+                      </Box>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          mt: 0.5,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {authorName}
+                      </Typography>
+                      <Typography
+                        component="div"
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: 12,
+                          lineHeight: 1.45,
+                          mt: 0.5,
+                          maxHeight: 52,
+                          overflow: 'hidden',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {renderReticulumSearchSnippet(result.snippet)}
+                      </Typography>
+                      {attachmentNames.length > 0 && (
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 0.5,
+                            mt: 0.75,
+                          }}
+                        >
+                          {attachmentNames.slice(0, 3).map((fileName) => (
+                            <Box
+                              key={fileName}
+                              sx={{
+                                alignItems: 'center',
+                                backgroundColor: alpha(
+                                  theme.palette.common.black,
+                                  0.18
+                                ),
+                                border: `1px solid ${alpha(
+                                  theme.palette.common.white,
+                                  0.1
+                                )}`,
+                                borderRadius: '6px',
+                                color: theme.palette.text.primary,
+                                display: 'flex',
+                                gap: 0.75,
+                                maxWidth: '100%',
+                                px: 0.75,
+                                py: 0.5,
+                              }}
+                            >
+                              <InsertDriveFileRoundedIcon
+                                sx={{
+                                  color: theme.palette.text.secondary,
+                                  flexShrink: 0,
+                                  fontSize: 16,
+                                }}
+                              />
+                              <Typography
+                                sx={{
+                                  fontSize: 12,
+                                  minWidth: 0,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {fileName}
+                              </Typography>
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+                    </Box>
+                  </ButtonBase>
+                );
+              })}
+            </Box>
+            {(reticulumSearchPage > 0 || reticulumSearchHasNextPage) && (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: theme.palette.background.paper,
+                  borderTop: `1px solid ${theme.palette.divider}`,
+                  display: 'flex',
+                  flexShrink: 0,
+                  gap: 0.5,
+                  justifyContent: 'center',
+                  minHeight: 52,
+                  px: 1.5,
+                }}
+              >
+                <ButtonBase
+                  disabled={reticulumSearchPage === 0 || isReticulumSearchLoading}
+                  onClick={() => {
+                    setReticulumSearchHasNextPage(false);
+                    setReticulumSearchPage((page) => Math.max(0, page - 1));
+                  }}
+                  sx={{
+                    alignItems: 'center',
+                    borderRadius: '4px',
+                    color:
+                      reticulumSearchPage === 0 || isReticulumSearchLoading
+                        ? theme.palette.text.disabled
+                        : theme.palette.text.secondary,
+                    display: 'inline-flex',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    gap: 0.25,
+                    minHeight: 32,
+                    px: 0.75,
+                    '&:hover': {
+                      backgroundColor:
+                        reticulumSearchPage === 0 || isReticulumSearchLoading
+                          ? 'transparent'
+                          : theme.palette.action.hover,
+                    },
+                  }}
+                >
+                  <ChevronRightRoundedIcon
+                    sx={{ fontSize: 17, transform: 'rotate(180deg)' }}
+                  />
+                  Back
+                </ButtonBase>
+                {reticulumSearchVisiblePageNumbers.map((pageNumber, index) => (
+                  <Box
+                    key={pageNumber}
+                    sx={{ alignItems: 'center', display: 'inline-flex' }}
+                  >
+                    {index > 0 &&
+                      pageNumber >
+                        reticulumSearchVisiblePageNumbers[index - 1] + 1 && (
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: 13,
+                            fontWeight: 700,
+                            px: 0.5,
+                          }}
+                        >
+                          ...
+                        </Typography>
+                      )}
+                    <ButtonBase
+                      disabled={
+                        isReticulumSearchLoading ||
+                        pageNumber === reticulumSearchPage
+                      }
+                      onClick={() => {
+                        if (pageNumber !== reticulumSearchPage) {
+                          setReticulumSearchHasNextPage(false);
+                          setReticulumSearchPage(pageNumber);
+                        }
+                      }}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor:
+                          pageNumber === reticulumSearchPage
+                            ? theme.palette.primary.main
+                            : 'transparent',
+                        borderRadius: '50%',
+                        color:
+                          pageNumber === reticulumSearchPage
+                            ? theme.palette.primary.contrastText
+                            : theme.palette.text.primary,
+                        display: 'inline-flex',
+                        fontSize: 13,
+                        fontWeight: 800,
+                        height: 30,
+                        justifyContent: 'center',
+                        width: 30,
+                        '&:hover': {
+                          backgroundColor:
+                            pageNumber === reticulumSearchPage
+                              ? theme.palette.primary.main
+                              : theme.palette.action.hover,
+                        },
+                      }}
+                    >
+                      {pageNumber + 1}
+                    </ButtonBase>
+                  </Box>
+                ))}
+                {reticulumSearchHasNextPage &&
+                  reticulumSearchVisiblePageNumbers[
+                    reticulumSearchVisiblePageNumbers.length - 1
+                  ] > reticulumSearchPage + 1 && (
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      px: 0.5,
+                    }}
+                  >
+                    ...
+                  </Typography>
+                )}
+                <ButtonBase
+                  disabled={!reticulumSearchHasNextPage || isReticulumSearchLoading}
+                  onClick={() => {
+                    setReticulumSearchHasNextPage(false);
+                    setReticulumSearchPage((page) =>
+                      reticulumSearchHasNextPage ? page + 1 : page
+                    );
+                  }}
+                  sx={{
+                    alignItems: 'center',
+                    borderRadius: '4px',
+                    color:
+                      !reticulumSearchHasNextPage || isReticulumSearchLoading
+                        ? theme.palette.text.disabled
+                        : theme.palette.text.primary,
+                    display: 'inline-flex',
+                    fontSize: 13,
+                    fontWeight: 800,
+                    gap: 0.25,
+                    minHeight: 32,
+                    px: 0.75,
+                    '&:hover': {
+                      backgroundColor:
+                        !reticulumSearchHasNextPage || isReticulumSearchLoading
+                          ? 'transparent'
+                          : theme.palette.action.hover,
+                    },
+                  }}
+                >
+                  Next
+                  <ChevronRightRoundedIcon sx={{ fontSize: 17 }} />
+                </ButtonBase>
+              </Box>
+            )}
+          </Box>
+        </Portal>
+      )}
 
       <Dialog
         open={Boolean(reticulumLargeImageChoice)}

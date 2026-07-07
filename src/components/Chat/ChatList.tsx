@@ -42,6 +42,8 @@ type ChatListProps = {
   secretKeyObject?: any;
   compactScrollButton?: boolean;
   chatId?: any;
+  scrollToMessageId?: string;
+  scrollToMessageNonce?: number;
 };
 
 export const ChatList = ({
@@ -68,6 +70,8 @@ export const ChatList = ({
   secretKeyObject,
   compactScrollButton = false,
   chatId,
+  scrollToMessageId,
+  scrollToMessageNonce,
 }: ChatListProps) => {
   const theme = useTheme();
   const parentRef = useRef(null);
@@ -85,6 +89,7 @@ export const ChatList = ({
   const scrollRetryTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const scrollRetryFrameRef = useRef<number | null>(null);
   const scrollRetrySequenceRef = useRef(0);
+  const lastHandledScrollTargetRef = useRef('');
   const lastSeenUnreadMessageTimestamp = useRef(null);
 
   const chatIdentity = useMemo(() => {
@@ -321,6 +326,10 @@ export const ChatList = ({
         }
       }
       if (!hasLoadedInitialRef.current) {
+        if (scrollToMessageId) {
+          hasLoadedInitialRef.current = true;
+          return;
+        }
         const findDivideIndex = totalMessages.findIndex(
           (item) => !!item?.divide
         );
@@ -330,7 +339,7 @@ export const ChatList = ({
         hasLoadedInitialRef.current = true;
       }
     }, 500);
-  }, [chatIdentity, initialMessages, tempMessages]);
+  }, [chatIdentity, initialMessages, tempMessages, scrollToMessageId]);
 
   const scrollToBottom = (initialMsgs?: unknown[], divideIndex?: number) => {
     const index = initialMsgs ? initialMsgs.length - 1 : messages.length - 1;
@@ -390,6 +399,33 @@ export const ChatList = ({
       highlightTimeoutRef.current = null;
     }, 1200);
   }, []);
+
+  useEffect(() => {
+    if (!scrollToMessageId) return;
+    const targetRequestKey = `${scrollToMessageId}:${
+      scrollToMessageNonce ?? 0
+    }`;
+    if (lastHandledScrollTargetRef.current === targetRequestKey) return;
+    const targetIndex = messages.findIndex((message) => {
+      if (!message || typeof message !== 'object') return false;
+      return (
+        message.signature === scrollToMessageId ||
+        message.tempSignature === scrollToMessageId ||
+        message.identifier === scrollToMessageId ||
+        message.message?.signature === scrollToMessageId
+      );
+    });
+    if (targetIndex === -1) return;
+    lastHandledScrollTargetRef.current = targetRequestKey;
+    goToMessage(targetIndex);
+    handleMessageSeen();
+  }, [
+    goToMessage,
+    handleMessageSeen,
+    messages,
+    scrollToMessageId,
+    scrollToMessageNonce,
+  ]);
 
   // Memoize per-row payload so MessageItem receives stable references and memo can skip re-renders
   const processedRows = useMemo(() => {

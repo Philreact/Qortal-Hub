@@ -35,6 +35,8 @@ import {
   type ReticulumGroupChannelWriteMode,
   type ReticulumGroupCategory,
   type ReticulumGroupChatSummary,
+  type ReticulumChatMessageWindowOptions,
+  type ReticulumChatSearchOptions,
   type ReticulumChatSearchResult,
 } from './reticulum-chat-db';
 import type {
@@ -3902,9 +3904,60 @@ export class ReticulumChatManager extends EventEmitter {
 
   searchEvents(
     query: string,
-    options: { groupIds?: number[]; channelIds?: string[]; limit?: number } = {}
-  ): ReticulumChatSearchResult[] {
-    return this.db.searchEvents(query, options);
+    options: ReticulumChatSearchOptions = {}
+  ): Promise<ReticulumChatSearchResult[]> {
+    const requestedGroupIds = (options.groupIds ?? [])
+      .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+    const canIncludeAdminPrivate =
+      requestedGroupIds.length > 0
+        ? requestedGroupIds.some(
+            (groupId) =>
+              this.localGroupAdminIds.has(groupId) &&
+              !!this.localGroupAddresses.get(groupId)
+          )
+        : this.localGroupAdminIds.size > 0;
+    const results = this.db.searchEvents(query, {
+      ...options,
+      includeAdminPrivate: canIncludeAdminPrivate,
+    });
+    if (results.length === 0) {
+      return Promise.resolve(results);
+    }
+    const byGroup = new Map<number, ReticulumChatSearchResult[]>();
+    for (const result of results) {
+      const groupResults = byGroup.get(result.event.groupId) ?? [];
+      groupResults.push(result);
+      byGroup.set(result.event.groupId, groupResults);
+    }
+    return Promise.all(
+      [...byGroup.entries()].map(async ([groupId, groupResults]) => {
+        const localAddress = this.localGroupAddresses.get(groupId) || '';
+        const readableEvents = await this.filterEventsForRequesterReadAccess(
+          groupId,
+          groupResults.map((result) => result.event),
+          localAddress
+        );
+        const readableIds = new Set(readableEvents.map((event) => event.eventId));
+        return groupResults.filter((result) => readableIds.has(result.event.eventId));
+      })
+    ).then((groups) => groups.flat());
+  }
+
+  async getMessageWindowAroundEvent(
+    groupId: number,
+    channelId: string,
+    eventId: string,
+    options: ReticulumChatMessageWindowOptions = {}
+  ): Promise<ReticulumChatEvent[]> {
+    this.assertGroupId(groupId);
+    const localAddress = this.localGroupAddresses.get(groupId) || '';
+    const canIncludeAdminPrivate =
+      this.localGroupAdminIds.has(groupId) && !!localAddress;
+    const events = this.db.getMessageWindowAroundEvent(groupId, channelId, eventId, {
+      ...options,
+      includeAdminPrivate: canIncludeAdminPrivate,
+    });
+    return this.filterEventsForRequesterReadAccess(groupId, events, localAddress);
   }
 
   indexSearchText(eventId: string, text: string): boolean {
@@ -13465,6 +13518,26 @@ export function readReticulumChatMessageHistoryFromDb(
   }
 }
 
+export function readReticulumChatMessageWindowAroundEventFromDb(
+  groupId: number,
+  channelId: string,
+  eventId: string,
+  beforeLimit = 80,
+  afterLimit = 40
+): ReticulumChatEvent[] {
+  const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
+  try {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    return db.getMessageWindowAroundEvent(groupId, channelId, eventId, {
+      beforeLimit,
+      afterLimit,
+      includeAdminPrivate: false,
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export function readReticulumChatChannelMetadataHistoryFromDb(
   groupId: number,
   limit = 200
@@ -13519,11 +13592,14 @@ export function markReticulumChatReadInDb(
 
 export function searchReticulumChatFromDb(
   query: string,
-  options: { groupIds?: number[]; channelIds?: string[]; limit?: number } = {}
+  options: ReticulumChatSearchOptions = {}
 ): ReticulumChatSearchResult[] {
   const db = new ReticulumChatDatabase(defaultReticulumChatDbPath());
   try {
-    return db.searchEvents(query, options);
+    return db.searchEvents(query, {
+      ...options,
+      includeAdminPrivate: false,
+    });
   } finally {
     db.close();
   }

@@ -1578,11 +1578,43 @@ try {
         >,
       search: async (
         query: string,
-        options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
+        options?: {
+          groupIds?: number[];
+          channelIds?: string[];
+          authorAddresses?: string[];
+          eventTypes?: Array<'message' | 'attachment_manifest'>;
+          beforeTimestamp?: number;
+          afterTimestamp?: number;
+          hasAttachment?: boolean;
+          hasLink?: boolean;
+          sort?: 'relevance' | 'newest' | 'oldest';
+          limit?: number;
+          offset?: number;
+          cursor?: {
+            createdAt: number;
+            eventId: string;
+          };
+        }
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:search',
           query,
+          options
+        ) as Promise<unknown[]>,
+      getMessageWindowAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowAroundEvent',
+          groupId,
+          channelId,
+          eventId,
           options
         ) as Promise<unknown[]>,
       indexSearchText: async (eventId: string, text: string) =>
@@ -2056,11 +2088,43 @@ try {
         >,
       search: async (
         query: string,
-        options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
+        options?: {
+          groupIds?: number[];
+          channelIds?: string[];
+          authorAddresses?: string[];
+          eventTypes?: Array<'message' | 'attachment_manifest'>;
+          beforeTimestamp?: number;
+          afterTimestamp?: number;
+          hasAttachment?: boolean;
+          hasLink?: boolean;
+          sort?: 'relevance' | 'newest' | 'oldest';
+          limit?: number;
+          offset?: number;
+          cursor?: {
+            createdAt: number;
+            eventId: string;
+          };
+        }
       ) =>
         ipcRenderer.invoke(
           'reticulumChat:search',
           query,
+          options
+        ) as Promise<unknown[]>,
+      getMessageWindowAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowAroundEvent',
+          groupId,
+          channelId,
+          eventId,
           options
         ) as Promise<unknown[]>,
       indexSearchText: async (eventId: string, text: string) =>

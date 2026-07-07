@@ -1445,6 +1445,167 @@ describe('reticulum chat database', () => {
     expect(db.searchEvents('alpha phrase', { groupIds: [99] })).toEqual([]);
   });
 
+  it('filters message search by author, channel, type, link, date and sort', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const [aliceGeneral, aliceAttachment, aliceLink, aliceImage, aliceFile] =
+      signedAuthorEvents([
+      {
+        eventId: 'event-search-filter-alice-general',
+        groupId: 420,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: 1_000,
+        encryptedPayload: JSON.stringify({ messageText: 'alpha general note' }),
+      },
+      {
+        eventId: 'event-search-filter-alice-attachment',
+        groupId: 420,
+        channelId: 'ops',
+        authorSeq: 2,
+        timestamp: 2_000,
+        eventType: 'attachment_manifest',
+        encryptedPayload: JSON.stringify({
+          messageText: 'alpha attachment manifest',
+          attachments: [{ name: 'report.pdf' }],
+        }),
+      },
+      {
+        eventId: 'event-search-filter-alice-link',
+        groupId: 420,
+        channelId: 'ops',
+        authorSeq: 3,
+        timestamp: 3_000,
+        encryptedPayload: JSON.stringify({
+          messageText: 'alpha link https://example.com',
+        }),
+      },
+      {
+        eventId: 'event-search-filter-alice-image',
+        groupId: 420,
+        channelId: 'general',
+        authorSeq: 4,
+        timestamp: 5_000,
+        encryptedPayload: JSON.stringify({
+          messageText: 'alpha image resource',
+          images: [
+            {
+              reticulumResource: true,
+              fileHash: 'a'.repeat(64),
+              fileName: 'photo.webp',
+            },
+          ],
+        }),
+      },
+      {
+        eventId: 'event-search-filter-alice-file',
+        groupId: 420,
+        channelId: 'general',
+        authorSeq: 5,
+        timestamp: 6_000,
+        encryptedPayload: JSON.stringify({
+          messageText: 'alpha file resource',
+          attachments: [
+            {
+              reticulumResource: true,
+              fileHash: 'b'.repeat(64),
+              fileName: 'report.pdf',
+            },
+          ],
+        }),
+      },
+    ]);
+    const bobGeneral = signedEvent({
+      eventId: 'event-search-filter-bob-general',
+      groupId: 420,
+      channelId: 'general',
+      timestamp: 4_000,
+      encryptedPayload: JSON.stringify({ messageText: 'alpha bob note' }),
+    });
+    [
+      aliceGeneral,
+      aliceAttachment,
+      aliceLink,
+      aliceImage,
+      aliceFile,
+      bobGeneral,
+    ].forEach((event) => db.insertEvent(event, true));
+
+    expect(
+      db
+        .searchEvents('', {
+          groupIds: [420],
+          authorAddresses: [aliceGeneral.authorAddress],
+          sort: 'oldest',
+        })
+        .map((item) => item.event.eventId)
+    ).toEqual([
+      aliceGeneral.eventId,
+      aliceAttachment.eventId,
+      aliceLink.eventId,
+      aliceImage.eventId,
+      aliceFile.eventId,
+    ]);
+    expect(
+      db
+        .searchEvents('alpha', {
+          groupIds: [420],
+          channelIds: ['ops'],
+          sort: 'oldest',
+        })
+        .map((item) => item.event.eventId)
+    ).toEqual([aliceAttachment.eventId, aliceLink.eventId]);
+    expect(
+      db
+        .searchEvents('', { groupIds: [420], hasAttachment: true })
+        .map((item) => item.event.eventId)
+    ).toEqual([aliceFile.eventId, aliceAttachment.eventId]);
+    expect(
+      db
+        .searchEvents('', { groupIds: [420], hasLink: true })
+        .map((item) => item.event.eventId)
+    ).toEqual([aliceLink.eventId]);
+    expect(
+      db
+        .searchEvents('', {
+          groupIds: [420],
+          sort: 'oldest',
+          limit: 2,
+          offset: 2,
+        })
+        .map((item) => item.event.eventId)
+    ).toEqual([aliceLink.eventId, bobGeneral.eventId]);
+    const oldestFirstPage = db.searchEvents('', {
+      groupIds: [420],
+      sort: 'oldest',
+      limit: 2,
+    });
+    expect(oldestFirstPage.map((item) => item.event.eventId)).toEqual([
+      aliceGeneral.eventId,
+      aliceAttachment.eventId,
+    ]);
+    expect(
+      db
+        .searchEvents('', {
+          groupIds: [420],
+          sort: 'oldest',
+          limit: 2,
+          cursor: oldestFirstPage[1]?.cursor,
+        })
+        .map((item) => item.event.eventId)
+    ).toEqual([aliceLink.eventId, bobGeneral.eventId]);
+    expect(
+      db
+        .searchEvents('', {
+          groupIds: [420],
+          afterTimestamp: 2_000,
+          beforeTimestamp: 4_000,
+          sort: 'oldest',
+        })
+        .map((item) => item.event.eventId)
+    ).toEqual([aliceAttachment.eventId, aliceLink.eventId]);
+  });
+
   it('indexes decrypted search text for encrypted/private events', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);

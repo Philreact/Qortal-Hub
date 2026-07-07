@@ -117,6 +117,34 @@ export type ReticulumGroupChatSummary = {
 export type ReticulumChatSearchResult = {
   event: ReticulumChatEvent;
   snippet: string;
+  cursor?: ReticulumChatSearchCursor;
+};
+
+export type ReticulumChatSearchCursor = {
+  createdAt: number;
+  eventId: string;
+};
+
+export type ReticulumChatSearchOptions = {
+  groupIds?: number[];
+  channelIds?: string[];
+  authorAddresses?: string[];
+  eventTypes?: Array<'message' | 'attachment_manifest'>;
+  beforeTimestamp?: number;
+  afterTimestamp?: number;
+  hasAttachment?: boolean;
+  hasLink?: boolean;
+  sort?: 'relevance' | 'newest' | 'oldest';
+  limit?: number;
+  offset?: number;
+  cursor?: ReticulumChatSearchCursor;
+  includeAdminPrivate?: boolean;
+};
+
+export type ReticulumChatMessageWindowOptions = {
+  beforeLimit?: number;
+  afterLimit?: number;
+  includeAdminPrivate?: boolean;
 };
 
 export type ReticulumChatRelayCacheEntry = {
@@ -261,6 +289,7 @@ type MessageProjectionRow = {
   deleted_at: number | null;
   deleted_event_id: string | null;
   expires_at?: number | null;
+  has_attachment?: number | null;
 };
 
 type RelayCacheRow = {
@@ -683,6 +712,22 @@ function searchTextFromPayload(payload: string): string {
   }
 }
 
+function payloadHasReticulumFileAttachment(payload: string): boolean {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return false;
+    }
+    const record = parsed as Record<string, unknown>;
+    const hasAttachmentEntry = (value: unknown): boolean =>
+      Array.isArray(value) &&
+      value.some((item) => item && typeof item === 'object');
+    return hasAttachmentEntry(record.attachments);
+  } catch {
+    return false;
+  }
+}
+
 function messageExpiryDurationFromPayload(payload: string): number | undefined {
   try {
     const parsed = JSON.parse(payload) as unknown;
@@ -696,8 +741,21 @@ function messageExpiryDurationFromPayload(payload: string): number | undefined {
   }
 }
 
+function stripSearchHtml(text: string): string {
+  return text
+    .replace(/<\s*br\s*\/?>/gi, ' ')
+    .replace(/<\/\s*(p|div|li|h[1-6]|blockquote)\s*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
 function normalizeSearchText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, 20_000);
+  return stripSearchHtml(text).replace(/\s+/g, ' ').trim().slice(0, 20_000);
 }
 
 function normalizeReticulumChannelWriteMode(
@@ -727,8 +785,47 @@ function buildSearchTerms(query: string): string[] {
 
 function buildFtsQuery(query: string): string {
   return buildSearchTerms(query)
-    .map((term) => `${term}*`)
+    .map((term) => `"${term}"*`)
     .join(' AND ');
+}
+
+function normalizeSearchCursor(
+  cursor: ReticulumChatSearchCursor | undefined
+): ReticulumChatSearchCursor | null {
+  if (!cursor || typeof cursor !== 'object') return null;
+  const createdAt = Number(cursor.createdAt);
+  const eventId = typeof cursor.eventId === 'string' ? cursor.eventId.trim() : '';
+  if (!Number.isFinite(createdAt) || !eventId) return null;
+  return { createdAt, eventId };
+}
+
+function isProjectionAfterSearchCursor(
+  projection: MessageProjectionRow,
+  cursor: ReticulumChatSearchCursor | null,
+  sort: 'newest' | 'oldest'
+): boolean {
+  if (!cursor) return true;
+  if (sort === 'oldest') {
+    return (
+      projection.created_at > cursor.createdAt ||
+      (projection.created_at === cursor.createdAt &&
+        projection.root_event_id > cursor.eventId)
+    );
+  }
+  return (
+    projection.created_at < cursor.createdAt ||
+    (projection.created_at === cursor.createdAt &&
+      projection.root_event_id < cursor.eventId)
+  );
+}
+
+function searchCursorFromProjection(
+  projection: MessageProjectionRow
+): ReticulumChatSearchCursor {
+  return {
+    createdAt: projection.created_at,
+    eventId: projection.root_event_id,
+  };
 }
 
 function buildPlainSnippet(text: string, terms: string[]): string {
@@ -831,7 +928,6 @@ export class ReticulumChatDatabase {
   private stmtSearchMirror: Statement;
   private stmtUpsertSearchText: Statement;
   private stmtDeleteSearchText: Statement;
-  private stmtSearchEvents: Statement;
   private stmtUpsertChannel: Statement;
   private stmtGetChannels: Statement;
   private stmtGetChannel: Statement;
@@ -948,13 +1044,13 @@ export class ReticulumChatDatabase {
          author_seq, created_at, root_event_type, current_event_id, updated_at,
          reply_to_event_id, encrypted_payload, payload_hash,
          mention_address_hashes, mention_targets, signature, deleted_at,
-         deleted_event_id, expires_at)
+         deleted_event_id, expires_at, has_attachment)
       VALUES
         (@root_event_id, @group_id, @channel_id, @author_address, @author_public_key,
          @author_seq, @created_at, @root_event_type, @current_event_id, @updated_at,
          @reply_to_event_id, @encrypted_payload, @payload_hash,
          @mention_address_hashes, @mention_targets, @signature, @deleted_at,
-         @deleted_event_id, @expires_at)
+         @deleted_event_id, @expires_at, @has_attachment)
       ON CONFLICT(root_event_id) DO UPDATE SET
         group_id = excluded.group_id,
         channel_id = excluded.channel_id,
@@ -973,7 +1069,8 @@ export class ReticulumChatDatabase {
         signature = excluded.signature,
         deleted_at = excluded.deleted_at,
         deleted_event_id = excluded.deleted_event_id,
-        expires_at = excluded.expires_at
+        expires_at = excluded.expires_at,
+        has_attachment = excluded.has_attachment
     `);
     this.stmtGetMessageProjectionEvents = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
@@ -1351,14 +1448,6 @@ export class ReticulumChatDatabase {
     this.stmtDeleteSearchText = this.db.prepare(
       'DELETE FROM reticulum_chat_search_fts WHERE event_id = ?'
     );
-    this.stmtSearchEvents = this.db.prepare(`
-      SELECT event_id,
-             snippet(reticulum_chat_search_fts, 5, '<mark>', '</mark>', '...', 12) AS snippet
-      FROM reticulum_chat_search_fts
-      WHERE reticulum_chat_search_fts MATCH ?
-      ORDER BY rank
-      LIMIT ?
-    `);
     this.stmtUpsertChannel = this.db.prepare(`
       INSERT OR REPLACE INTO reticulum_chat_channels
         (group_id, channel_id, category_id, name, description, position, archived, write_mode, read_mode, write_mode_updated_at, expiry_duration_ms, created_by, created_at, updated_at)
@@ -2486,6 +2575,11 @@ export class ReticulumChatDatabase {
       deleted_at: deletedAt,
       deleted_event_id: deletedEventId,
       expires_at: expiresAt,
+      has_attachment:
+        root.eventType === 'attachment_manifest' ||
+        payloadHasReticulumFileAttachment(current.encryptedPayload)
+          ? 1
+          : 0,
     });
   }
 
@@ -2974,6 +3068,11 @@ export class ReticulumChatDatabase {
       deleted_at: deletedAt,
       deleted_event_id: deletedEventId,
       expires_at: expiresAt,
+      has_attachment:
+        root.eventType === 'attachment_manifest' ||
+        payloadHasReticulumFileAttachment(current.encryptedPayload)
+          ? 1
+          : 0,
     };
   }
 
@@ -3089,40 +3188,333 @@ export class ReticulumChatDatabase {
 
   searchEvents(
     query: string,
-    options: { groupIds?: number[]; channelIds?: string[]; limit?: number } = {}
+    options: ReticulumChatSearchOptions = {}
   ): ReticulumChatSearchResult[] {
+    const now = Date.now();
+    this.pruneExpiredMessagesThrottled(now);
     const ftsQuery = buildFtsQuery(query);
-    if (!ftsQuery) return [];
     const terms = buildSearchTerms(query);
     const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 50)));
+    const offset = Math.max(0, Math.min(10_000, Math.floor(options.offset ?? 0)));
     const groupIds = (options.groupIds ?? [])
       .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
       .slice(0, 500);
-    const queryLimit = groupIds.length > 0 ? Math.max(limit * 10, 200) : limit;
     const allowedGroups = groupIds.length > 0 ? new Set(groupIds) : null;
     const channelIds = (options.channelIds ?? [])
       .map(normalizeReticulumChatChannelId)
       .filter(Boolean);
     const allowedChannels = channelIds.length > 0 ? new Set(channelIds) : null;
-    const rows = this.stmtSearchEvents.all(ftsQuery, queryLimit) as Array<{
-      event_id: string;
-      snippet?: string;
-    }>;
+    const authorAddresses = (options.authorAddresses ?? [])
+      .map((address) => (typeof address === 'string' ? address.trim() : ''))
+      .filter(Boolean)
+      .slice(0, 500);
+    const allowedAuthors =
+      authorAddresses.length > 0 ? new Set(authorAddresses) : null;
+    const eventTypes = (options.eventTypes ?? [])
+      .filter(
+        (eventType) =>
+          eventType === 'message' || eventType === 'attachment_manifest'
+      )
+      .slice(0, 2);
+    const hasAttachment = options.hasAttachment === true;
+    const normalizedEventTypes = eventTypes;
+    const allowedEventTypes =
+      normalizedEventTypes.length > 0 ? new Set(normalizedEventTypes) : null;
+    const beforeTimestamp = Number.isFinite(Number(options.beforeTimestamp))
+      ? Number(options.beforeTimestamp)
+      : null;
+    const afterTimestamp = Number.isFinite(Number(options.afterTimestamp))
+      ? Number(options.afterTimestamp)
+      : null;
+    const hasLink = options.hasLink === true;
+    const sort =
+      options.sort === 'newest' || options.sort === 'oldest'
+        ? options.sort
+        : 'relevance';
+    const effectiveCursorSort: 'newest' | 'oldest' | null =
+      sort === 'oldest' ? 'oldest' : sort === 'newest' || !ftsQuery ? 'newest' : null;
+    const cursor = effectiveCursorSort
+      ? normalizeSearchCursor(options.cursor)
+      : null;
+    const includeAdminPrivate = options.includeAdminPrivate === true;
+    const hasAnyFilter =
+      groupIds.length > 0 ||
+      channelIds.length > 0 ||
+      authorAddresses.length > 0 ||
+      normalizedEventTypes.length > 0 ||
+      beforeTimestamp !== null ||
+      afterTimestamp !== null ||
+      hasAttachment ||
+      hasLink;
+    if (!ftsQuery && !hasAnyFilter) return [];
+
+    const usesFts = Boolean(ftsQuery);
+    const searchTextExpression = usesFts
+      ? 'reticulum_chat_search_fts.search_text'
+      : 'reticulum_chat_search_index.search_text';
+    const clauses = [
+      'p.deleted_at IS NULL',
+      '(p.expires_at IS NULL OR p.expires_at > ?)',
+    ];
+    const params: Array<string | number> = [now];
+    if (usesFts) {
+      clauses.unshift('reticulum_chat_search_fts MATCH ?');
+      params.unshift(ftsQuery);
+    }
+    if (groupIds.length > 0) {
+      clauses.push(`p.group_id IN (${groupIds.map(() => '?').join(', ')})`);
+      params.push(...groupIds);
+    }
+    if (channelIds.length > 0) {
+      clauses.push(`p.channel_id IN (${channelIds.map(() => '?').join(', ')})`);
+      params.push(...channelIds);
+    }
+    if (authorAddresses.length > 0) {
+      clauses.push(
+        `p.author_address IN (${authorAddresses.map(() => '?').join(', ')})`
+      );
+      params.push(...authorAddresses);
+    }
+    if (normalizedEventTypes.length > 0) {
+      clauses.push(
+        `p.root_event_type IN (${normalizedEventTypes
+          .map(() => '?')
+          .join(', ')})`
+      );
+      params.push(...normalizedEventTypes);
+    }
+    if (afterTimestamp !== null) {
+      clauses.push('p.created_at >= ?');
+      params.push(afterTimestamp);
+    }
+    if (beforeTimestamp !== null) {
+      clauses.push('p.created_at < ?');
+      params.push(beforeTimestamp);
+    }
+    if (hasAttachment) {
+      clauses.push('p.has_attachment = 1');
+    }
+    if (hasLink) {
+      clauses.push(
+        `(lower(COALESCE(${searchTextExpression}, '')) LIKE ? OR lower(COALESCE(${searchTextExpression}, '')) LIKE ?)`
+      );
+      params.push('%http%', '%www.%');
+    }
+    if (!includeAdminPrivate) {
+      clauses.push("(c.read_mode IS NULL OR c.read_mode != 'admins')");
+    }
+    if (cursor && effectiveCursorSort === 'oldest') {
+      clauses.push(
+        '(p.created_at > ? OR (p.created_at = ? AND p.root_event_id > ?))'
+      );
+      params.push(cursor.createdAt, cursor.createdAt, cursor.eventId);
+    } else if (cursor && effectiveCursorSort === 'newest') {
+      clauses.push(
+        '(p.created_at < ? OR (p.created_at = ? AND p.root_event_id < ?))'
+      );
+      params.push(cursor.createdAt, cursor.createdAt, cursor.eventId);
+    }
+    const orderBy =
+      sort === 'oldest'
+        ? 'p.created_at ASC, p.root_event_id ASC'
+        : sort === 'newest' || !usesFts
+          ? 'p.created_at DESC, p.root_event_id DESC'
+          : 'bm25(reticulum_chat_search_fts) ASC, p.created_at DESC, p.root_event_id DESC';
+    params.push(limit, cursor ? 0 : offset);
+    const sql = usesFts
+      ? `
+          SELECT
+            p.*,
+            reticulum_chat_search_fts.search_text AS search_text,
+            snippet(reticulum_chat_search_fts, 6, '<mark>', '</mark>', '...', 18) AS snippet
+          FROM reticulum_chat_search_fts
+          JOIN rchat_message_projection p
+            ON p.root_event_id = reticulum_chat_search_fts.event_id
+          LEFT JOIN reticulum_chat_channels c
+            ON c.group_id = p.group_id AND c.channel_id = p.channel_id
+          WHERE ${clauses.join(' AND ')}
+          ORDER BY ${orderBy}
+          LIMIT ? OFFSET ?
+        `
+      : `
+          SELECT
+            p.*,
+            reticulum_chat_search_index.search_text AS search_text,
+            NULL AS snippet
+          FROM rchat_message_projection p
+          LEFT JOIN reticulum_chat_search_index
+            ON reticulum_chat_search_index.event_id = p.root_event_id
+          LEFT JOIN reticulum_chat_channels c
+            ON c.group_id = p.group_id AND c.channel_id = p.channel_id
+          WHERE ${clauses.join(' AND ')}
+          ORDER BY ${orderBy}
+          LIMIT ? OFFSET ?
+        `;
+    const rows = this.db
+      .prepare(sql)
+      .all(...params) as Array<
+        MessageProjectionRow & { search_text?: string; snippet?: string }
+      >;
     const results: ReticulumChatSearchResult[] = [];
     for (const row of rows) {
-      if (this.isEventPayloadScrubbed(row.event_id)) continue;
-      const event = this.getEvent(row.event_id);
-      if (!event) continue;
-      if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
-      if (allowedChannels && !allowedChannels.has(normalizeReticulumChatChannelId(event.channelId))) continue;
-      results.push({ event, snippet: row.snippet ?? '' });
+      if (this.isEventPayloadScrubbed(row.root_event_id)) continue;
+      results.push({
+        event: messageProjectionRowToEvent(row),
+        snippet: row.snippet || buildPlainSnippet(row.search_text ?? '', terms),
+        cursor: searchCursorFromProjection(row),
+      });
       if (results.length >= limit) break;
     }
     if (results.length > 0) return results;
-    const mirrorResults = this.searchEventsMirror(terms, allowedGroups, allowedChannels, limit);
+    const mirrorResults = this.searchEventsMirror(
+      terms,
+      allowedGroups,
+      allowedChannels,
+      allowedAuthors,
+      allowedEventTypes,
+      includeAdminPrivate,
+      beforeTimestamp,
+      afterTimestamp,
+      hasAttachment,
+      hasLink,
+      sort,
+      now,
+      limit,
+      cursor ? 0 : offset,
+      cursor,
+      effectiveCursorSort
+    );
     return mirrorResults.length > 0
       ? mirrorResults
-      : this.searchEventsMemory(terms, allowedGroups, allowedChannels, limit);
+      : this.searchEventsMemory(
+          terms,
+          allowedGroups,
+          allowedChannels,
+          allowedAuthors,
+          allowedEventTypes,
+          includeAdminPrivate,
+          beforeTimestamp,
+          afterTimestamp,
+          hasAttachment,
+          hasLink,
+          sort,
+          now,
+          limit,
+          cursor ? 0 : offset,
+          cursor,
+          effectiveCursorSort
+        );
+  }
+
+  getMessageWindowAroundEvent(
+    groupId: number,
+    channelId: string,
+    eventId: string,
+    options: ReticulumChatMessageWindowOptions = {}
+  ): ReticulumChatEvent[] {
+    if (!Number.isInteger(groupId) || groupId <= 0) return [];
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const rootEventId = typeof eventId === 'string' ? eventId.trim() : '';
+    if (!normalizedChannelId || !rootEventId) return [];
+    const now = Date.now();
+    this.pruneExpiredMessagesThrottled(now);
+    const includeAdminPrivate = options.includeAdminPrivate === true;
+    const readClause = includeAdminPrivate
+      ? ''
+      : "AND (c.read_mode IS NULL OR c.read_mode != 'admins')";
+    const target = this.db
+      .prepare(
+        `
+          SELECT p.*
+          FROM rchat_message_projection p
+          LEFT JOIN reticulum_chat_channels c
+            ON c.group_id = p.group_id AND c.channel_id = p.channel_id
+          WHERE p.group_id = ?
+            AND p.channel_id = ?
+            AND p.root_event_id = ?
+            AND p.deleted_at IS NULL
+            AND (p.expires_at IS NULL OR p.expires_at > ?)
+            ${readClause}
+          LIMIT 1
+        `
+      )
+      .get(groupId, normalizedChannelId, rootEventId, now) as
+      | MessageProjectionRow
+      | undefined;
+    if (!target) return [];
+    const beforeLimit = Math.max(
+      0,
+      Math.min(250, Math.floor(options.beforeLimit ?? 80))
+    );
+    const afterLimit = Math.max(
+      0,
+      Math.min(250, Math.floor(options.afterLimit ?? 40))
+    );
+    const beforeRows = beforeLimit > 0
+      ? (this.db
+          .prepare(
+            `
+              SELECT p.*
+              FROM rchat_message_projection p
+              LEFT JOIN reticulum_chat_channels c
+                ON c.group_id = p.group_id AND c.channel_id = p.channel_id
+              WHERE p.group_id = ?
+                AND p.channel_id = ?
+                AND p.deleted_at IS NULL
+                AND (p.expires_at IS NULL OR p.expires_at > ?)
+                AND (
+                  p.created_at < ?
+                  OR (p.created_at = ? AND p.root_event_id < ?)
+                )
+                ${readClause}
+              ORDER BY p.created_at DESC, p.root_event_id DESC
+              LIMIT ?
+            `
+          )
+          .all(
+            groupId,
+            normalizedChannelId,
+            now,
+            target.created_at,
+            target.created_at,
+            target.root_event_id,
+            beforeLimit
+          ) as MessageProjectionRow[])
+      : [];
+    const afterRows = afterLimit > 0
+      ? (this.db
+          .prepare(
+            `
+              SELECT p.*
+              FROM rchat_message_projection p
+              LEFT JOIN reticulum_chat_channels c
+                ON c.group_id = p.group_id AND c.channel_id = p.channel_id
+              WHERE p.group_id = ?
+                AND p.channel_id = ?
+                AND p.deleted_at IS NULL
+                AND (p.expires_at IS NULL OR p.expires_at > ?)
+                AND (
+                  p.created_at > ?
+                  OR (p.created_at = ? AND p.root_event_id > ?)
+                )
+                ${readClause}
+              ORDER BY p.created_at ASC, p.root_event_id ASC
+              LIMIT ?
+            `
+          )
+          .all(
+            groupId,
+            normalizedChannelId,
+            now,
+            target.created_at,
+            target.created_at,
+            target.root_event_id,
+            afterLimit
+          ) as MessageProjectionRow[])
+      : [];
+    return [...beforeRows.reverse(), target, ...afterRows].map(
+      messageProjectionRowToEvent
+    );
   }
 
   getRecentEvents(groupId: number, limit: number, channelId: string | null = null): ReticulumChatEvent[] {
@@ -4832,44 +5224,130 @@ export class ReticulumChatDatabase {
     terms: string[],
     allowedGroups: Set<number> | null,
     allowedChannels: Set<string> | null,
-    limit: number
+    allowedAuthors: Set<string> | null,
+    allowedEventTypes: Set<string> | null,
+    includeAdminPrivate: boolean,
+    beforeTimestamp: number | null,
+    afterTimestamp: number | null,
+    hasAttachment: boolean,
+    hasLink: boolean,
+    sort: 'relevance' | 'newest' | 'oldest',
+    now: number,
+    limit: number,
+    offset: number,
+    cursor: ReticulumChatSearchCursor | null,
+    cursorSort: 'newest' | 'oldest' | null
   ): ReticulumChatSearchResult[] {
     const firstTerm = terms[0];
-    if (!firstTerm) return [];
-    const rows = this.stmtSearchMirror.all(`%${firstTerm}%`, Math.max(limit * 20, 500)) as Array<{
-      event_id: string;
-      search_text: string;
-    }>;
+    const rows = firstTerm
+      ? (this.stmtSearchMirror.all(
+          `%${firstTerm}%`,
+          cursor ? 500 : Math.max((offset + limit) * 20, 500)
+        ) as Array<{
+          event_id: string;
+          search_text: string;
+        }>)
+      : [];
     const results: ReticulumChatSearchResult[] = [];
     for (const row of rows) {
       const lower = row.search_text.toLowerCase();
       if (!terms.every((term) => lower.includes(term))) continue;
+      if (hasLink && !lower.includes('http') && !lower.includes('www.')) {
+        continue;
+      }
       const event = this.getEvent(row.event_id);
       if (!event) continue;
       const rootEventId = this.rootEventIdForIndexEvent(event);
       const projection = this.computeMessageProjectionForRoot(rootEventId);
       if (!projection || projection.deleted_at !== null) continue;
-      if (allowedGroups && !allowedGroups.has(event.groupId)) continue;
+      if (
+        projection.expires_at !== null &&
+        projection.expires_at !== undefined &&
+        projection.expires_at <= now
+      ) {
+        continue;
+      }
+      if (allowedGroups && !allowedGroups.has(projection.group_id)) continue;
       if (
         allowedChannels &&
-        !allowedChannels.has(normalizeReticulumChatChannelId(event.channelId))
+        !allowedChannels.has(
+          normalizeReticulumChatChannelId(projection.channel_id)
+        )
+      ) {
+        continue;
+      }
+      if (allowedAuthors && !allowedAuthors.has(projection.author_address)) {
+        continue;
+      }
+      if (
+        allowedEventTypes &&
+        !allowedEventTypes.has(projection.root_event_type)
+      ) {
+        continue;
+      }
+      if (afterTimestamp !== null && projection.created_at < afterTimestamp) {
+        continue;
+      }
+      if (beforeTimestamp !== null && projection.created_at >= beforeTimestamp) {
+        continue;
+      }
+      if (hasAttachment && projection.has_attachment !== 1) {
+        continue;
+      }
+      if (!includeAdminPrivate) {
+        const channel = this.getChannel(
+          projection.group_id,
+          normalizeReticulumChatChannelId(projection.channel_id)
+        );
+        if (channel?.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS) {
+          continue;
+        }
+      }
+      if (
+        cursorSort &&
+        !isProjectionAfterSearchCursor(projection, cursor, cursorSort)
       ) {
         continue;
       }
       results.push({
-        event,
+        event: messageProjectionRowToEvent(projection),
         snippet: buildPlainSnippet(row.search_text, terms),
+        cursor: searchCursorFromProjection(projection),
       });
-      if (results.length >= limit) break;
     }
-    return results;
+    if (sort === 'oldest') {
+      results.sort(
+        (a, b) =>
+          a.event.timestamp - b.event.timestamp ||
+          a.event.eventId.localeCompare(b.event.eventId)
+      );
+    } else if (sort === 'newest') {
+      results.sort(
+        (a, b) =>
+          b.event.timestamp - a.event.timestamp ||
+          b.event.eventId.localeCompare(a.event.eventId)
+      );
+    }
+    return results.slice(offset, offset + limit);
   }
 
   private searchEventsMemory(
     terms: string[],
     allowedGroups: Set<number> | null,
     allowedChannels: Set<string> | null,
-    limit: number
+    allowedAuthors: Set<string> | null,
+    allowedEventTypes: Set<string> | null,
+    includeAdminPrivate: boolean,
+    beforeTimestamp: number | null,
+    afterTimestamp: number | null,
+    hasAttachment: boolean,
+    hasLink: boolean,
+    sort: 'relevance' | 'newest' | 'oldest',
+    now: number,
+    limit: number,
+    offset: number,
+    cursor: ReticulumChatSearchCursor | null,
+    cursorSort: 'newest' | 'oldest' | null
   ): ReticulumChatSearchResult[] {
     const results: ReticulumChatSearchResult[] = [];
     const rootEventIds = new Set<string>();
@@ -4888,11 +5366,20 @@ export class ReticulumChatDatabase {
     const events = [...rootEventIds]
       .map((rootEventId) => this.computeMessageProjectionForRoot(rootEventId))
       .filter((projection): projection is MessageProjectionRow => {
-        return !!projection && projection.deleted_at === null;
+        return (
+          !!projection &&
+          projection.deleted_at === null &&
+          (projection.expires_at === null ||
+            projection.expires_at === undefined ||
+            projection.expires_at > now)
+        );
       })
-      .sort(
-        (a, b) =>
-          b.created_at - a.created_at || b.root_event_id.localeCompare(a.root_event_id)
+      .sort((a, b) =>
+        sort === 'oldest'
+          ? a.created_at - b.created_at ||
+            a.root_event_id.localeCompare(b.root_event_id)
+          : b.created_at - a.created_at ||
+            b.root_event_id.localeCompare(a.root_event_id)
       );
     for (const projection of events) {
       const event = messageProjectionRowToEvent(projection);
@@ -4903,15 +5390,54 @@ export class ReticulumChatDatabase {
       ) {
         continue;
       }
+      if (allowedAuthors && !allowedAuthors.has(projection.author_address)) {
+        continue;
+      }
+      if (
+        allowedEventTypes &&
+        !allowedEventTypes.has(projection.root_event_type)
+      ) {
+        continue;
+      }
+      if (afterTimestamp !== null && projection.created_at < afterTimestamp) {
+        continue;
+      }
+      if (beforeTimestamp !== null && projection.created_at >= beforeTimestamp) {
+        continue;
+      }
+      if (hasAttachment && projection.has_attachment !== 1) {
+        continue;
+      }
+      if (!includeAdminPrivate) {
+        const channel = this.getChannel(
+          projection.group_id,
+          normalizeReticulumChatChannelId(projection.channel_id)
+        );
+        if (channel?.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS) {
+          continue;
+        }
+      }
+      if (
+        cursorSort &&
+        !isProjectionAfterSearchCursor(projection, cursor, cursorSort)
+      ) {
+        continue;
+      }
       const text =
         this.memorySearchText.get(event.eventId) ??
         searchTextFromPayload(projection.encrypted_payload);
       const lower = text.toLowerCase();
       if (!terms.every((term) => lower.includes(term))) continue;
-      results.push({ event, snippet: buildPlainSnippet(text, terms) });
-      if (results.length >= limit) break;
+      if (hasLink && !lower.includes('http') && !lower.includes('www.')) {
+        continue;
+      }
+      results.push({
+        event,
+        snippet: buildPlainSnippet(text, terms),
+        cursor: searchCursorFromProjection(projection),
+      });
     }
-    return results;
+    return results.slice(offset, offset + limit);
   }
 
   private backfillSearchIndex(limit = 5000): void {
@@ -5029,12 +5555,16 @@ export class ReticulumChatDatabase {
         signature TEXT NOT NULL,
         deleted_at INTEGER,
         deleted_event_id TEXT,
-        expires_at INTEGER
+        expires_at INTEGER,
+        has_attachment INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_visible
         ON rchat_message_projection (group_id, channel_id, deleted_at, created_at, root_event_id);
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_group_visible
         ON rchat_message_projection (group_id, deleted_at, created_at, root_event_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_window
+        ON rchat_message_projection (group_id, channel_id, created_at, root_event_id)
+        WHERE deleted_at IS NULL;
       CREATE TABLE IF NOT EXISTS rchat_peer_group_state (
         peer_hash TEXT NOT NULL,
         group_id INTEGER NOT NULL,
@@ -5399,6 +5929,10 @@ export class ReticulumChatDatabase {
         run: () => this.migrateChannelWriteModeUpdatedAtSchema(),
       },
       { name: 'message-expiry', run: () => this.migrateExpirySchema() },
+      {
+        name: 'message-projection-attachments',
+        run: () => this.migrateMessageProjectionAttachmentSchema(),
+      },
       { name: 'event-mention-targets', run: () => this.migrateEventMentionTargetsSchema() },
       { name: 'event-scrubbed-at', run: () => this.migrateEventScrubbedAtSchema() },
       { name: 'dm-delivery-status', run: () => this.migrateDirectDeliveryStatusSchema() },
@@ -5439,7 +5973,7 @@ export class ReticulumChatDatabase {
       },
       {
         table: 'rchat_message_projection',
-        columns: ['expires_at'],
+        columns: ['expires_at', 'has_attachment'],
       },
       {
         table: 'reticulum_chat_channels',
@@ -5537,6 +6071,30 @@ export class ReticulumChatDatabase {
         ON reticulum_chat_events (expires_at);
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_expires
         ON rchat_message_projection (expires_at);
+    `);
+  }
+
+  private migrateMessageProjectionAttachmentSchema(): void {
+    this.ensureColumn(
+      'rchat_message_projection',
+      'has_attachment',
+      `
+        ALTER TABLE rchat_message_projection
+          ADD COLUMN has_attachment INTEGER NOT NULL DEFAULT 0
+      `
+    );
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_attachments
+        ON rchat_message_projection (group_id, has_attachment, deleted_at, created_at, root_event_id);
+    `);
+    this.db.exec(`
+      UPDATE rchat_message_projection
+      SET has_attachment = CASE
+        WHEN root_event_type = 'attachment_manifest'
+          OR encrypted_payload LIKE '%"attachments"%'
+        THEN 1
+        ELSE 0
+      END
     `);
   }
 

@@ -666,7 +666,32 @@ declare global {
       getSummaries: (myAddress?: string) => Promise<unknown[]>;
       search: (
         query: string,
-        options?: { groupIds?: number[]; channelIds?: string[]; limit?: number }
+        options?: {
+          groupIds?: number[];
+          channelIds?: string[];
+          authorAddresses?: string[];
+          eventTypes?: Array<'message' | 'attachment_manifest'>;
+          beforeTimestamp?: number;
+          afterTimestamp?: number;
+          hasAttachment?: boolean;
+          hasLink?: boolean;
+          sort?: 'relevance' | 'newest' | 'oldest';
+          limit?: number;
+          offset?: number;
+          cursor?: {
+            createdAt: number;
+            eventId: string;
+          };
+        }
+      ) => Promise<unknown[]>;
+      getMessageWindowAroundEvent: (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
       ) => Promise<unknown[]>;
       indexSearchText: (
         eventId: string,
