@@ -495,6 +495,11 @@ _audio_decoded_queue: "queue.Queue[Optional[list]]" = queue.Queue(
 _scheduler_queues: Dict[str, "queue.Queue[Optional[Tuple[float, str, Callable[..., Any], tuple, dict]]]"] = {}
 _scheduler_threads: list[threading.Thread] = []
 _scheduler_stats: Dict[str, Dict[str, Any]] = {}
+_latest_land_state_lock = threading.Lock()
+_latest_land_state_commands: Dict[str, Dict[str, Any]] = {}
+_latest_land_state_generations: Dict[str, int] = {}
+_latest_land_state_next_generation = 0
+_LATEST_LAND_STATE_MAX_PENDING = 4096
 _rns_wake_read_fd: Optional[int] = None
 _rns_wake_write_fd: Optional[int] = None
 if os.name != "nt":
@@ -676,6 +681,7 @@ _RETICULUM_CHAT_SOFT_FANOUT_TYPES = {
     "dm_notify",
     "dm_probe",
     "typing",
+    "land_state",
 }
 _reticulum_chat_digest_fanout_recent: Dict[Tuple[str, str, str], float] = {}
 _AUDIO_LINK_WIRE_TYPES = frozenset(
@@ -1255,6 +1261,143 @@ def _enqueue_scheduler_task(
     except queue.Full:
         _note_scheduler_drop(lane)
         return False
+
+
+def _land_state_coalesce_key(message: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+    action = str(message.get("action") or "")
+    payload = message.get("payload")
+    if not isinstance(payload, dict):
+        return None
+
+    target_key = ""
+    wire: Any = None
+    if action == "send_reticulum_chat":
+        peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
+        if not peer_hash:
+            return None
+        target_key = f"send:{peer_hash}"
+        wire = payload.get("message")
+    elif action == "fanout_reticulum_chat":
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or len(messages) != 1:
+            return None
+        exclude_hashes = payload.get("excludePeerPresenceHashes")
+        if isinstance(exclude_hashes, list):
+            excluded = ",".join(sorted(str(item).strip().lower() for item in exclude_hashes if str(item).strip()))
+        else:
+            excluded = ""
+        target_key = f"fanout:{excluded}"
+        wire = messages[0]
+    else:
+        return None
+
+    if not isinstance(wire, dict):
+        return None
+    if wire.get("t") != _RETICULUM_CHAT_WIRE_TYPE or wire.get("k") != "land_state":
+        return None
+
+    group_id = wire.get("g")
+    author = str(wire.get("a") or "").strip()
+    session_id = str(wire.get("s") or "").strip()
+    if not isinstance(group_id, int) or group_id <= 0 or not author or not session_id:
+        return None
+    try:
+        sequence = int(wire.get("q") or 0)
+    except Exception:
+        sequence = 0
+    return f"{target_key}:g={group_id}:a={author}:s={session_id}", sequence
+
+
+def _drain_latest_land_state_command(key: str, generation: int) -> None:
+    with _latest_land_state_lock:
+        if int(_latest_land_state_generations.get(key) or 0) != int(generation):
+            return
+        message = _latest_land_state_commands.pop(key, None)
+        _latest_land_state_generations.pop(key, None)
+    if message is not None:
+        handle_command(message)
+
+
+def _enqueue_latest_land_state_command(message: Dict[str, Any]) -> Optional[bool]:
+    global _latest_land_state_next_generation
+    parsed = _land_state_coalesce_key(message)
+    if parsed is None:
+        return None
+
+    key, sequence = parsed
+    req_id = str(message.get("id") or "")
+    schedule_needed = False
+    generation = 0
+    deferred_responses: List[Tuple[str, Dict[str, Any]]] = []
+    with _latest_land_state_lock:
+        existing = _latest_land_state_commands.get(key)
+        if existing is not None:
+            _existing_key, existing_sequence = _land_state_coalesce_key(existing) or (key, -1)
+            if existing_sequence >= sequence:
+                deferred_responses.append((req_id, {"coalesced": True, "dropped": "older_land_state"}))
+                schedule_needed = False
+                key = ""
+            existing_id = str(existing.get("id") or "") if key else ""
+            if existing_id and existing_id != req_id:
+                deferred_responses.append((existing_id, {"coalesced": True, "replacedByLatest": True}))
+
+        if not key:
+            pass
+        elif (
+            key not in _latest_land_state_commands
+            and len(_latest_land_state_commands) >= _LATEST_LAND_STATE_MAX_PENDING
+        ):
+            oldest_key = next(iter(_latest_land_state_commands), "")
+            if oldest_key:
+                oldest = _latest_land_state_commands.pop(oldest_key, None)
+                _latest_land_state_generations.pop(oldest_key, None)
+                oldest_id = str(oldest.get("id") or "") if isinstance(oldest, dict) else ""
+                if oldest_id:
+                    deferred_responses.append(
+                        (oldest_id, {"coalesced": True, "dropped": "land_state_queue_limit"})
+                    )
+
+        if key:
+            _latest_land_state_commands[key] = message
+            generation = int(_latest_land_state_generations.get(key) or 0)
+            if generation <= 0:
+                _latest_land_state_next_generation += 1
+                generation = _latest_land_state_next_generation
+                _latest_land_state_generations[key] = generation
+                schedule_needed = True
+
+    for response_id, payload in deferred_responses:
+        if response_id:
+            emit_resp(response_id, True, payload=payload)
+
+    if not key:
+        return True
+
+    if not schedule_needed:
+        return True
+
+    queued = _enqueue_scheduler_task(
+        "control-send",
+        "cmd:latest_land_state",
+        _drain_latest_land_state_command,
+        key,
+        generation,
+    )
+    if queued:
+        return True
+
+    with _latest_land_state_lock:
+        current = _latest_land_state_commands.get(key)
+        if current is message and int(_latest_land_state_generations.get(key) or 0) == int(generation):
+            _latest_land_state_commands.pop(key, None)
+            _latest_land_state_generations.pop(key, None)
+    if req_id:
+        emit_resp(
+            req_id,
+            True,
+            payload={"coalesced": True, "dropped": "land_state_scheduler_full"},
+        )
+    return True
 
 
 def _scheduler_worker_loop(lane: str) -> None:
@@ -4268,6 +4411,10 @@ def _handle_rns_command_message(
         _emit_audio_queue_state(force=True)
         return False
     action = message.get("action") if isinstance(message, dict) else None
+    land_state_queued = _enqueue_latest_land_state_command(message) if isinstance(message, dict) else None
+    if land_state_queued is not None:
+        _emit_audio_queue_state()
+        return True
     lane = _scheduler_lane_for_command(action)
     ok = _enqueue_scheduler_task(lane, f"cmd:{action or 'unknown'}", handle_command, message)
     if not ok:
@@ -11885,7 +12032,8 @@ def _send_wire_to_overlay_peer(
             now = time.time()
             state["last_send_ok_at"] = now
         else:
-            _queue_overlay_packet(state, traffic, wire_bytes)
+            if queue_if_pending:
+                _queue_overlay_packet(state, traffic, wire_bytes)
             emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
             return False
         emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
@@ -15401,6 +15549,7 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                     peer_hash,
                     wire_bytes,
                     "reticulum_chat_fanout",
+                    queue_if_pending=message_types[index] != "land_state",
                 ):
                     peer_delivered_all_frames = False
                 elif dedupe_key is not None:

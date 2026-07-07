@@ -3677,7 +3677,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!address || !sessionId) {
       throw new Error('Invalid QortalLand state');
     }
-    void this.fanout({
+    const wire: Extract<ReticulumChatWire, { k: 'land_state' }> = {
       t: 'RCHAT',
       k: 'land_state',
       g: groupId,
@@ -3690,7 +3690,8 @@ export class ReticulumChatManager extends EventEmitter {
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
       ts: this.now(),
-    });
+    };
+    void this.sendLocalGroupLiveControl(wire);
   }
 
   async sendLandChat(message: ReticulumLandChatMessage): Promise<ReticulumSendResult> {
@@ -3736,7 +3737,7 @@ export class ReticulumChatManager extends EventEmitter {
       a: outboundMessage.authorAddress,
       ts: outboundMessage.timestamp,
     };
-    const result = await this.fanoutOnce(wire);
+    const result = await this.sendLocalGroupLiveControl(wire);
     if (!result.ok) {
       this.outboundLandChatOffers.delete(offerKey);
       this.safeUnlink(filePath);
@@ -5321,6 +5322,55 @@ export class ReticulumChatManager extends EventEmitter {
       );
       void this.sendToPeer(route.reversePeerHash, forwarded);
     }
+  }
+
+  private async sendLocalGroupLiveControl(
+    wire:
+      | Extract<ReticulumChatWire, { k: 'land_state' }>
+      | Extract<ReticulumChatWire, { k: 'land_chat_hint' }>
+  ): Promise<ReticulumSendResult> {
+    const groupId = Number(wire.g);
+    if (!Number.isInteger(groupId) || groupId <= 0) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid group id' };
+    }
+
+    this.pruneGroupInterestRoutes();
+    const local = this.localPeerHash();
+    const targets: string[] = [];
+    const seen = new Set<string>();
+    if (local) {
+      const routes = [...this.groupInterestRoutes.values()]
+        .filter((route) => route.groupId === groupId)
+        .sort((a, b) => a.hops - b.hops || b.expiresAt - a.expiresAt);
+      for (const route of routes) {
+        const nextHop = this.routePeerHash(route.reversePeerHash);
+        if (!nextHop || nextHop === local || route.originPeerHash === local || seen.has(nextHop)) {
+          continue;
+        }
+        seen.add(nextHop);
+        targets.push(nextHop);
+      }
+    }
+
+    if (local && targets.length > 0) {
+      const routedWire = {
+        ...wire,
+        o: this.compactRoutePeerHash(local),
+        h: 0,
+      } as ReticulumChatWire;
+      let delivered = 0;
+      for (const peerHash of targets) {
+        const result = await this.sendToPeerOnce(peerHash, routedWire);
+        if (result.ok === true) {
+          delivered += 1;
+        }
+      }
+      if (wire.k === 'land_chat_hint' && delivered === targets.length) return { ok: true };
+      if (wire.k === 'land_chat_hint' && delivered > 0) return this.fanoutOnce(wire);
+      if (delivered > 0) return { ok: true };
+    }
+
+    return this.fanoutOnce(wire);
   }
 
   private async forwardLandStateToInterestRoutes(
