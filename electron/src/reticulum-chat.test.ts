@@ -15,6 +15,8 @@ import {
   buildReticulumChatResourceAuthSignedFields,
   buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
+  buildReticulumLandAuthSignedFields,
+  buildReticulumLandStateSignedFields,
   buildReticulumDmSignedFields,
   buildReticulumDmNotifySignedFields,
   buildReticulumDmProbeSignedFields,
@@ -143,6 +145,102 @@ function createDmIdentity() {
     address: deriveAddressFromPublicKey(publicKey),
     publicKey,
     secretKey: kp.secretKey,
+  };
+}
+
+function createLandAuthSigner() {
+  const identity = createDmIdentity();
+  const landKeyPair = nacl.sign.keyPair();
+  const landPublicKey = base58Encode(landKeyPair.publicKey);
+  const signLocalFields: NonNullable<ReticulumChatManagerOptions['signLocalFields']> =
+    async (fields) => {
+      const fullFields = {
+        ...fields,
+        authorAddress: identity.address,
+        authorPublicKey: identity.publicKey,
+      };
+      const signature = nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fullFields)),
+        identity.secretKey
+      );
+      return {
+        authorAddress: identity.address,
+        authorPublicKey: identity.publicKey,
+        signature: base58Encode(signature),
+      };
+    };
+  const landAuthWire = (groupId: number, sessionId: string, timestamp: number) => {
+    const fields = buildReticulumLandAuthSignedFields({
+      groupId,
+      authorAddress: identity.address,
+      authorPublicKey: identity.publicKey,
+      ephemeralPublicKey: landPublicKey,
+      sessionId,
+      timestamp,
+    });
+    const signature = nacl.sign.detached(
+      new Uint8Array(canonicalizeForSigning(fields)),
+      identity.secretKey
+    );
+    return {
+      t: 'RCHAT' as const,
+      k: 'land_auth' as const,
+      g: groupId,
+      s: sessionId,
+      n: timestamp,
+      p: identity.publicKey,
+      e: landPublicKey,
+      z: base58Encode(signature),
+    };
+  };
+  const landStateWire = (input: {
+    groupId: number;
+    sessionId: string;
+    sequence: number;
+    x: number;
+    y: number;
+    roomId?: string;
+    direction?: string;
+    movement?: string;
+    timestamp: number;
+  }) => {
+    const fields = buildReticulumLandStateSignedFields({
+      groupId: input.groupId,
+      authorAddress: identity.address,
+      sessionId: input.sessionId,
+      sequence: input.sequence,
+      x: input.x,
+      y: input.y,
+      roomId: input.roomId ?? '',
+      direction: input.direction ?? '',
+      movement: input.movement ?? '',
+      timestamp: input.timestamp,
+    });
+    const signature = nacl.sign.detached(
+      new Uint8Array(canonicalizeForSigning(fields)),
+      landKeyPair.secretKey
+    );
+    return {
+      t: 'RCHAT' as const,
+      k: 'land_state' as const,
+      g: input.groupId,
+      a: identity.address,
+      s: input.sessionId,
+      q: input.sequence,
+      x: input.x,
+      y: input.y,
+      ...(input.roomId ? { u: input.roomId } : {}),
+      ...(input.direction ? { d: input.direction } : {}),
+      ...(input.movement ? { m: input.movement } : {}),
+      ts: input.timestamp,
+      z: base58Encode(signature),
+    };
+  };
+  return {
+    ...identity,
+    signLocalFields,
+    landAuthWire,
+    landStateWire,
   };
 }
 
@@ -5420,6 +5518,7 @@ describe('reticulum chat manager', () => {
           direct.push({ peer, wire });
           return { ok: true as const };
         },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
       } as any,
       now: () => 100_000,
     });
@@ -5457,6 +5556,7 @@ describe('reticulum chat manager', () => {
           direct.push({ peer, wire });
           return { ok: true as const };
         },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
       } as any,
       now: () => 100_000,
     });
@@ -5498,6 +5598,9 @@ describe('reticulum chat manager', () => {
   it('emits and relays QortalLand state only along subscribed group interest routes', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const emitted: Array<Record<string, unknown>> = [];
+    const signer = createLandAuthSigner();
+    const peerA = 'bbbbbbbbbbbbbbbb';
+    const peerC = 'cccccccccccccccc';
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -5508,8 +5611,10 @@ describe('reticulum chat manager', () => {
           direct.push({ peer, wire });
           return { ok: true as const };
         },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
       } as any,
       now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
     });
 
     manager.setLocalGroupMemberships([73]);
@@ -5517,7 +5622,7 @@ describe('reticulum chat manager', () => {
     manager.on('landState', (payload) => {
       emitted.push(payload as Record<string, unknown>);
     });
-    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' }, 'peer-a');
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' }, peerA);
     direct.length = 0;
 
     manager.handleWire(
@@ -5525,46 +5630,212 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'land_state',
         g: 73,
-        a: 'Qsender',
+        a: signer.address,
         s: 'session-1',
-        q: 7,
-        x: 512,
-        y: 420,
+        q: 6,
+        x: 511,
+        y: 419,
         d: 'r',
         m: 'walk',
         ts: 100_000,
+        z: 'unsigned',
       },
-      'peer-c'
+      peerC
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(emitted).toHaveLength(0);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: peerA,
+        wire: expect.objectContaining({
+          t: 'RCHAT',
+          k: 'land_auth_req',
+          g: 73,
+          a: signer.address,
+          s: 'session-1',
+        }),
+      })
+    );
+    direct.length = 0;
+
+    manager.handleWire(signer.landAuthWire(73, 'session-1', 100_000), peerC);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'session-1',
+        sequence: 7,
+        x: 512,
+        y: 420,
+        roomId: 'skyline',
+        direction: 'r',
+        movement: 'walk',
+        timestamp: 100_000,
+      }),
+      peerC
     );
     await Promise.resolve();
 
     expect(emitted).toContainEqual(
       expect.objectContaining({
         groupId: 73,
-        authorAddress: 'Qsender',
+        authorAddress: signer.address,
         sessionId: 'session-1',
         sequence: 7,
         x: 512,
         y: 420,
+        roomId: 'skyline',
         direction: 'r',
         movement: 'walk',
       })
     );
     expect(direct).toContainEqual(
       expect.objectContaining({
-        peer: 'peer-a',
+        peer: peerA,
         wire: expect.objectContaining({
           t: 'RCHAT',
           k: 'land_state',
           g: 73,
-          a: 'Qsender',
+          a: signer.address,
           s: 'session-1',
           q: 7,
-          o: 'peer-c',
+          u: 'skyline',
+          o: peerC,
           h: 1,
         }),
       })
     );
+    manager.close();
+  });
+
+  it('answers QortalLand auth requests for active local movement sessions', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Array<Record<string, unknown>> = [];
+    const signer = createLandAuthSigner();
+    const peerA = 'bbbbbbbbbbbbbbbb';
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      signLocalFields: signer.signLocalFields,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' }, peerA);
+
+    await manager.sendLandState(73, signer.address, {
+      sessionId: 'session-1',
+      sequence: 1,
+      x: 20,
+      y: 30,
+      roomId: 'club',
+      direction: 'r',
+      movement: 'walk',
+    });
+    direct.length = 0;
+    fanout.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'land_auth_req',
+        g: 73,
+        a: signer.address,
+        s: 'session-1',
+      },
+      peerA
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      direct.some(({ peer, wire }) =>
+        peer === peerA &&
+        wire.t === 'RCHAT' &&
+        wire.k === 'land_auth' &&
+        wire.g === 73 &&
+        wire.s === 'session-1' &&
+        wire.p === signer.publicKey
+      )
+    ).toBe(true);
+    expect(fanout).toHaveLength(0);
+    manager.close();
+  });
+
+  it('requests missing QortalLand auth directly from the inbound relay peer without fanout', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Array<Record<string, unknown>> = [];
+    const signer = createLandAuthSigner();
+    const inboundPeer = 'bbbbbbbbbbbbbbbb';
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'land_state',
+        g: 73,
+        a: signer.address,
+        s: 'session-1',
+        q: 6,
+        x: 511,
+        y: 419,
+        d: 'r',
+        m: 'walk',
+        ts: 100_000,
+        z: 'unsigned',
+      },
+      inboundPeer
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(direct).toEqual([
+      {
+        peer: inboundPeer,
+        wire: expect.objectContaining({
+          t: 'RCHAT',
+          k: 'land_auth_req',
+          g: 73,
+          a: signer.address,
+          s: 'session-1',
+        }),
+      },
+    ]);
+    expect(fanout).toHaveLength(0);
     manager.close();
   });
 

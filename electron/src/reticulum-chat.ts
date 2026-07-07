@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import nacl from 'tweetnacl';
 import {
+  base58Encode,
   base58Decode,
   canonicalizeForSigning,
   deriveAddressFromPublicKey,
@@ -445,6 +446,16 @@ type ReticulumDmResourceFindRoute = {
   expiresAt: number;
 };
 
+type ReticulumLandAuthSession = {
+  expiresAt: number;
+  ephemeralPublicKey: string;
+};
+
+type ReticulumLocalLandAuthSession = {
+  publicKey: string;
+  secretKey: Uint8Array;
+};
+
 type ReticulumChatPullQueueItem = {
   hint: ReticulumChatEventHint;
   peerHashes: Set<string>;
@@ -738,6 +749,28 @@ export type ReticulumChatWire =
     }
   | {
       t: 'RCHAT';
+      k: 'land_auth';
+      g: number;
+      s: string;
+      n: number;
+      p: string;
+      e: string;
+      z: string;
+      a?: string;
+      o?: string;
+      h?: number;
+    }
+  | {
+      t: 'RCHAT';
+      k: 'land_auth_req';
+      g: number;
+      a: string;
+      s: string;
+      o?: string;
+      h?: number;
+    }
+  | {
+      t: 'RCHAT';
       k: 'land_state';
       g: number;
       a: string;
@@ -746,9 +779,11 @@ export type ReticulumChatWire =
       x: number;
       y: number;
       r?: string;
+      u?: string;
       d?: string;
       m?: string;
       ts: number;
+      z: string;
       o?: string;
       h?: number;
     }
@@ -834,6 +869,12 @@ const RETICULUM_LAND_CHAT_MAX_AGE_MS = 5 * 60_000;
 const RETICULUM_LAND_CHAT_HINT_DEDUPE_MS = 2 * 60_000;
 const RETICULUM_LAND_CHAT_HINT_DEDUPE_MAX = 4096;
 const RETICULUM_LAND_CHAT_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]+$/;
+const RETICULUM_LAND_AUTH_REFRESH_MS = 60_000;
+const RETICULUM_LAND_AUTH_SESSION_TTL_MS = 2 * 60_000;
+const RETICULUM_LAND_AUTH_SESSION_MAX = 4096;
+const RETICULUM_LAND_AUTH_REQ_DEDUPE_MS = 5_000;
+const RETICULUM_LAND_AUTH_REQ_RESPONSE_MS = 3_000;
+const RETICULUM_LAND_AUTH_REQ_MAX = 4096;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 60_000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
 const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_RETRY_MS = 1_000;
@@ -1071,6 +1112,52 @@ export function buildReticulumLandChatSignedFields(
     text: message.text,
     timestamp: message.timestamp,
     type: 'QORTAL_LAND_CHAT',
+  };
+}
+
+export function buildReticulumLandAuthSignedFields(input: {
+  groupId: number;
+  authorAddress: string;
+  authorPublicKey: string;
+  sessionId: string;
+  ephemeralPublicKey: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    authorPublicKey: input.authorPublicKey,
+    ephemeralPublicKey: input.ephemeralPublicKey,
+    groupId: input.groupId,
+    sessionId: input.sessionId,
+    timestamp: input.timestamp,
+    type: 'QORTAL_LAND_AUTH',
+  };
+}
+
+export function buildReticulumLandStateSignedFields(input: {
+  groupId: number;
+  authorAddress: string;
+  sessionId: string;
+  sequence: number;
+  x: number;
+  y: number;
+  roomId?: string;
+  direction?: string;
+  movement?: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    direction: input.direction ?? '',
+    groupId: input.groupId,
+    movement: input.movement ?? '',
+    roomId: input.roomId ?? '',
+    sequence: input.sequence,
+    sessionId: input.sessionId,
+    timestamp: input.timestamp,
+    type: 'QORTAL_LAND_STATE',
+    x: input.x,
+    y: input.y,
   };
 }
 
@@ -1977,6 +2064,46 @@ export function verifyReticulumLandChatMessage(message: ReticulumLandChatMessage
   }
 }
 
+export function verifyReticulumLandAuthWire(
+  wire: Extract<ReticulumChatWire, { k: 'land_auth' }>,
+  now = Date.now()
+): boolean {
+  try {
+    const groupId = Number(wire.g);
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    const timestamp = Number(wire.n);
+    const authorPublicKey = typeof wire.p === 'string' ? wire.p.trim() : '';
+    const ephemeralPublicKey = typeof wire.e === 'string' ? wire.e.trim() : '';
+    const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
+    const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    if (!authorAddress || !sessionId || sessionId.length > 24) return false;
+    if (!Number.isFinite(timestamp)) return false;
+    if (timestamp > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+    if (timestamp < now - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
+    if (!authorPublicKey || !ephemeralPublicKey || !signature) return false;
+    if (typeof wire.a === 'string' && wire.a.trim() && wire.a.trim() !== authorAddress) return false;
+    return nacl.sign.detached.verify(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumLandAuthSignedFields({
+            groupId,
+            authorAddress,
+            authorPublicKey,
+            ephemeralPublicKey,
+            sessionId,
+            timestamp,
+          })
+        )
+      ),
+      new Uint8Array(base58Decode(signature)),
+      new Uint8Array(base58Decode(authorPublicKey))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function normalizeReticulumControlRequestId(value: unknown): string {
   if (typeof value !== 'string') return '';
   const normalized = value.trim().toLowerCase();
@@ -2798,6 +2925,11 @@ export class ReticulumChatManager extends EventEmitter {
   private directDmPageRequests = new Map<string, ReticulumDmPageOffer>();
   private outboundLandChatOffers = new Map<string, ReticulumLandChatOffer>();
   private inboundLandChatRequests = new Map<string, ReticulumLandChatRequest>();
+  private localLandAuthSentAt = new Map<string, number>();
+  private localLandAuthSessions = new Map<string, ReticulumLocalLandAuthSession>();
+  private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
+  private recentLandAuthRequests = new Map<string, number>();
+  private recentLandAuthRequestResponses = new Map<string, number>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3202,6 +3334,11 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.outboundLandChatOffers.clear();
     this.inboundLandChatRequests.clear();
+    this.localLandAuthSentAt.clear();
+    this.localLandAuthSessions.clear();
+    this.landAuthSessions.clear();
+    this.recentLandAuthRequests.clear();
+    this.recentLandAuthRequestResponses.clear();
     this.recentLandChatHints.clear();
     this.groupInterestRoutes.clear();
     this.forwardedGroupSubKeys.clear();
@@ -3648,7 +3785,125 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
-  sendLandState(
+  private landAuthSessionKey(groupId: number, authorAddress: string, sessionId: string): string {
+    return `${groupId}:${authorAddress.trim()}:${sessionId.trim()}`;
+  }
+
+  private landAuthRequestKey(groupId: number, authorAddress: string, sessionId: string): string {
+    return this.landAuthSessionKey(groupId, authorAddress, sessionId);
+  }
+
+  private pruneLandAuthSessions(): void {
+    const now = this.now();
+    for (const [key, session] of this.landAuthSessions) {
+      if (session.expiresAt <= now) this.landAuthSessions.delete(key);
+    }
+    if (this.landAuthSessions.size > RETICULUM_LAND_AUTH_SESSION_MAX) {
+      const excess = this.landAuthSessions.size - RETICULUM_LAND_AUTH_SESSION_MAX;
+      const oldest = [...this.landAuthSessions.entries()]
+        .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+        .slice(0, excess);
+      for (const [key] of oldest) this.landAuthSessions.delete(key);
+    }
+  }
+
+  private getValidLandAuthSession(
+    groupId: number,
+    authorAddress: string,
+    sessionId: string
+  ): ReticulumLandAuthSession | null {
+    this.pruneLandAuthSessions();
+    const session = this.landAuthSessions.get(this.landAuthSessionKey(groupId, authorAddress, sessionId));
+    return session && session.expiresAt > this.now() ? session : null;
+  }
+
+  private rememberLandAuthSession(
+    groupId: number,
+    authorAddress: string,
+    sessionId: string,
+    ephemeralPublicKey: string
+  ): void {
+    this.pruneLandAuthSessions();
+    this.landAuthSessions.set(
+      this.landAuthSessionKey(groupId, authorAddress, sessionId),
+      {
+        ephemeralPublicKey,
+        expiresAt: this.now() + RETICULUM_LAND_AUTH_SESSION_TTL_MS,
+      }
+    );
+  }
+
+  private async ensureLocalLandAuth(
+    groupId: number,
+    authorAddress: string,
+    sessionId: string,
+    force = false
+  ): Promise<void> {
+    if (!this.signLocalFields) {
+      throw new Error('QortalLand state signing unavailable');
+    }
+    const key = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+    const now = this.now();
+    if (!force && (this.localLandAuthSentAt.get(key) ?? 0) > now - RETICULUM_LAND_AUTH_REFRESH_MS) {
+      return;
+    }
+    const authorIsMember = await this.isValidatedGroupMember(groupId, authorAddress);
+    if (!authorIsMember) {
+      throw new Error('QortalLand state author is not a group member');
+    }
+    let session = this.localLandAuthSessions.get(key);
+    if (!session) {
+      const keyPair = nacl.sign.keyPair();
+      session = {
+        publicKey: base58Encode(keyPair.publicKey),
+        secretKey: keyPair.secretKey,
+      };
+      this.localLandAuthSessions.set(key, session);
+    }
+    const signed = await this.signLocalFields({
+      ephemeralPublicKey: session.publicKey,
+      groupId,
+      sessionId,
+      timestamp: now,
+      type: 'QORTAL_LAND_AUTH',
+    }).catch((err) => {
+      loggerWarn('[ReticulumChat] Failed to sign QortalLand auth:', err);
+      return null;
+    });
+    if (
+      !signed ||
+      signed.authorAddress !== authorAddress ||
+      typeof signed.authorPublicKey !== 'string' ||
+      typeof signed.signature !== 'string'
+    ) {
+      throw new Error('Invalid QortalLand state signature');
+    }
+    const wire: Extract<ReticulumChatWire, { k: 'land_auth' }> = {
+      t: 'RCHAT',
+      k: 'land_auth',
+      g: groupId,
+      s: sessionId,
+      n: now,
+      p: signed.authorPublicKey,
+      e: session.publicKey,
+      z: signed.signature,
+    };
+    if (!verifyReticulumLandAuthWire(wire, now)) {
+      throw new Error('Invalid QortalLand state signature');
+    }
+    if (!wireFitsReticulum(wire)) {
+      throw new Error('QortalLand auth exceeds Reticulum wire size');
+    }
+    this.localLandAuthSentAt.set(key, now);
+    this.rememberLandAuthSession(groupId, authorAddress, sessionId, session.publicKey);
+    const result = await this.sendLocalGroupLiveControl(wire);
+    if (result.ok !== true) {
+      this.localLandAuthSentAt.delete(key);
+      throw new Error(result.error || result.reason || 'QortalLand auth send failed');
+    }
+  }
+
+  async sendLandState(
     groupId: number,
     authorAddress: string,
     state: {
@@ -3660,7 +3915,7 @@ export class ReticulumChatManager extends EventEmitter {
       direction?: unknown;
       movement?: unknown;
     }
-  ): void {
+  ): Promise<void> {
     this.assertLocalGroupMember(groupId);
     if (!this.subscribedGroups.has(groupId)) {
       this.subscribeGroup(groupId);
@@ -3677,20 +3932,67 @@ export class ReticulumChatManager extends EventEmitter {
     if (!address || !sessionId) {
       throw new Error('Invalid QortalLand state');
     }
+    const compactSessionId = sessionId.slice(0, 24);
+    const authKey = this.landAuthSessionKey(groupId, address, compactSessionId);
+    const lastAuthSentAt = this.localLandAuthSentAt.get(authKey) ?? 0;
+    const hasLocalSession = this.localLandAuthSessions.has(authKey);
+    if (!hasLocalSession || lastAuthSentAt <= this.now() - RETICULUM_LAND_AUTH_SESSION_TTL_MS) {
+      await this.ensureLocalLandAuth(groupId, address, compactSessionId);
+    } else if (lastAuthSentAt <= this.now() - RETICULUM_LAND_AUTH_REFRESH_MS) {
+      this.localLandAuthSentAt.set(authKey, this.now());
+      void this.ensureLocalLandAuth(groupId, address, compactSessionId, true).catch((err) => {
+        this.localLandAuthSentAt.delete(authKey);
+        loggerWarn(
+          `[ReticulumChat] land_auth_refresh_failed group=${groupId} author=${address} session=${compactSessionId} error=${String(
+            err?.message ?? err
+          )}`
+        );
+      });
+    }
+    const localSession = this.localLandAuthSessions.get(
+      authKey
+    );
+    if (!localSession) {
+      throw new Error('QortalLand state signing unavailable');
+    }
+    const timestamp = this.now();
+    const signature = nacl.sign.detached(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumLandStateSignedFields({
+            groupId,
+            authorAddress: address,
+            sessionId: compactSessionId,
+            sequence,
+            x,
+            y,
+            roomId,
+            direction,
+            movement,
+            timestamp,
+          })
+        )
+      ),
+      localSession.secretKey
+    );
     const wire: Extract<ReticulumChatWire, { k: 'land_state' }> = {
       t: 'RCHAT',
       k: 'land_state',
       g: groupId,
       a: address,
-      s: sessionId.slice(0, 24),
+      s: compactSessionId,
       q: sequence,
       x,
       y,
-      ...(roomId ? { r: roomId } : {}),
+      ...(roomId ? { u: roomId } : {}),
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
-      ts: this.now(),
+      ts: timestamp,
+      z: base58Encode(signature),
     };
+    if (!wireFitsReticulum(wire)) {
+      throw new Error('QortalLand state exceeds Reticulum wire size');
+    }
     void this.sendLocalGroupLiveControl(wire);
   }
 
@@ -4367,19 +4669,28 @@ export class ReticulumChatManager extends EventEmitter {
       case 'dm_page':
         this.handleDirectPage(wire as Extract<ReticulumChatWire, { k: 'dm_page' }>, peerHash);
         return;
+      case 'land_auth':
+      {
+        void this.handleLandAuthWire(
+          wire as Extract<ReticulumChatWire, { k: 'land_auth' }>,
+          peerHash
+        );
+        return;
+      }
+      case 'land_auth_req':
+      {
+        void this.handleLandAuthReqWire(
+          wire as Extract<ReticulumChatWire, { k: 'land_auth_req' }>,
+          peerHash
+        );
+        return;
+      }
       case 'land_state':
       {
-        const groupId = Number(wire.g);
-        if (!Number.isInteger(groupId) || groupId <= 0) return;
-        if (typeof wire.a !== 'string') return;
-        void this.forwardLandStateToInterestRoutes(
-          groupId,
+        void this.handleLandStateWire(
           wire as Extract<ReticulumChatWire, { k: 'land_state' }>,
           peerHash
         );
-        if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
-        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
-        this.applyLandState(groupId, wire as Extract<ReticulumChatWire, { k: 'land_state' }>);
         return;
       }
       case 'land_chat_hint':
@@ -5326,6 +5637,8 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async sendLocalGroupLiveControl(
     wire:
+      | Extract<ReticulumChatWire, { k: 'land_auth' }>
+      | Extract<ReticulumChatWire, { k: 'land_auth_req' }>
       | Extract<ReticulumChatWire, { k: 'land_state' }>
       | Extract<ReticulumChatWire, { k: 'land_chat_hint' }>
   ): Promise<ReticulumSendResult> {
@@ -5371,6 +5684,271 @@ export class ReticulumChatManager extends EventEmitter {
     }
 
     return this.fanoutOnce(wire);
+  }
+
+  private async handleLandAuthWire(
+    wire: Extract<ReticulumChatWire, { k: 'land_auth' }>,
+    peerHash: string
+  ): Promise<void> {
+    const groupId = Number(wire.g);
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    if (!verifyReticulumLandAuthWire(wire, this.now())) {
+      loggerWarn(
+        `[ReticulumChat] land_auth_rejected group=${Number.isInteger(groupId) ? groupId : 'invalid'} reason=bad_signature`
+      );
+      return;
+    }
+    const authorAddress = deriveAddressFromPublicKey(wire.p);
+    const ephemeralPublicKey = typeof wire.e === 'string' ? wire.e.trim() : '';
+    if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId || !ephemeralPublicKey) return;
+    const isMember = await this.isValidatedGroupMember(groupId, authorAddress);
+    if (!isMember) {
+      loggerWarn(
+        `[ReticulumChat] land_auth_rejected group=${groupId} author=${authorAddress} reason=not_group_member`
+      );
+      return;
+    }
+    this.rememberLandAuthSession(groupId, authorAddress, sessionId, ephemeralPublicKey);
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+    await this.forwardLandAuthToInterestRoutes(groupId, wire, peerHash);
+  }
+
+  private requestLandAuthForState(
+    groupId: number,
+    authorAddress: string,
+    sessionId: string,
+    inboundPeerHash = ''
+  ): void {
+    const key = this.landAuthRequestKey(groupId, authorAddress, sessionId);
+    if (
+      this.markRecentOrDuplicate(
+        this.recentLandAuthRequests,
+        key,
+        RETICULUM_LAND_AUTH_REQ_DEDUPE_MS,
+        RETICULUM_LAND_AUTH_REQ_MAX
+      )
+    ) {
+      return;
+    }
+    const wire: Extract<ReticulumChatWire, { k: 'land_auth_req' }> = {
+      t: 'RCHAT',
+      k: 'land_auth_req',
+      g: groupId,
+      a: authorAddress,
+      s: sessionId,
+    };
+    if (!wireFitsReticulum(wire)) return;
+    if (this.localGroupIds.has(groupId) && this.subscribedGroups.has(groupId)) {
+      void this.sendLocalGroupLiveControl(wire).then((result) => {
+        if (result.ok !== true) this.recentLandAuthRequests.delete(key);
+      });
+      return;
+    }
+    const inbound = this.routePeerHash(inboundPeerHash);
+    if (!inbound) {
+      this.recentLandAuthRequests.delete(key);
+      return;
+    }
+    void this.sendToPeerOnce(inbound, wire).then((result) => {
+      if (result.ok !== true) this.recentLandAuthRequests.delete(key);
+    });
+  }
+
+  private async handleLandAuthReqWire(
+    wire: Extract<ReticulumChatWire, { k: 'land_auth_req' }>,
+    peerHash: string
+  ): Promise<void> {
+    const groupId = Number(wire.g);
+    const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !authorAddress ||
+      !sessionId ||
+      sessionId.length > 24
+    ) {
+      return;
+    }
+    await this.forwardLandAuthReqToInterestRoutes(groupId, wire, peerHash);
+
+    const localSessionKey = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+    if (!this.localLandAuthSessions.has(localSessionKey)) return;
+    if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+    const responseKey = this.landAuthRequestKey(groupId, authorAddress, sessionId);
+    if (
+      this.markRecentOrDuplicate(
+        this.recentLandAuthRequestResponses,
+        responseKey,
+        RETICULUM_LAND_AUTH_REQ_RESPONSE_MS,
+        RETICULUM_LAND_AUTH_REQ_MAX
+      )
+    ) {
+      return;
+    }
+    await this.ensureLocalLandAuth(groupId, authorAddress, sessionId, true).catch((err) => {
+      loggerWarn(
+        `[ReticulumChat] land_auth_req_response_failed group=${groupId} author=${authorAddress} session=${sessionId} error=${String(
+          err?.message ?? err
+        )}`
+      );
+    });
+  }
+
+  private async handleLandStateWire(
+    wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
+    peerHash: string
+  ): Promise<void> {
+    const groupId = Number(wire.g);
+    const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId) return;
+    const session = this.getValidLandAuthSession(groupId, authorAddress, sessionId);
+    if (!session) {
+      this.requestLandAuthForState(groupId, authorAddress, sessionId, peerHash);
+      return;
+    }
+    if (!this.verifyLandStateWire(wire, session.ephemeralPublicKey)) {
+      return;
+    }
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+    await this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
+    if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+    this.applyLandState(groupId, wire);
+  }
+
+  private verifyLandStateWire(
+    wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
+    ephemeralPublicKey: string
+  ): boolean {
+    try {
+      const groupId = Number(wire.g);
+      const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+      const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+      const sequence = Math.max(0, Math.floor(Number(wire.q) || 0));
+      const x = Math.max(0, Math.min(4095, Math.round(Number(wire.x) || 0)));
+      const y = Math.max(0, Math.min(2047, Math.round(Number(wire.y) || 0)));
+      const timestamp = Number(wire.ts);
+      const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
+      if (!Number.isInteger(groupId) || groupId <= 0) return false;
+      if (!authorAddress || !sessionId || sessionId.length > 24) return false;
+      if (!Number.isFinite(timestamp)) return false;
+      if (timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+      if (timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
+      if (!ephemeralPublicKey || !signature) return false;
+      return nacl.sign.detached.verify(
+        new Uint8Array(
+          canonicalizeForSigning(
+            buildReticulumLandStateSignedFields({
+              groupId,
+              authorAddress,
+              sessionId,
+              sequence,
+              x,
+              y,
+              roomId: typeof wire.u === 'string' ? wire.u : '',
+              direction: typeof wire.d === 'string' ? wire.d : '',
+              movement: typeof wire.m === 'string' ? wire.m : '',
+              timestamp,
+            })
+          )
+        ),
+        new Uint8Array(base58Decode(signature)),
+        new Uint8Array(base58Decode(ephemeralPublicKey))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async forwardLandAuthToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_auth' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'land_auth' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'land_auth',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded);
+    }
+  }
+
+  private async forwardLandAuthReqToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_auth_req' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'land_auth_req' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'land_auth_req',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded);
+    }
   }
 
   private async forwardLandStateToInterestRoutes(
@@ -12994,7 +13572,7 @@ export class ReticulumChatManager extends EventEmitter {
       sequence,
       x,
       y,
-      roomId: typeof wire.r === 'string' ? wire.r : '',
+      roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
       timestamp: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : this.now(),

@@ -3639,7 +3639,7 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     try {
-      manager.sendLandState(groupId, authorAddress, state);
+      await manager.sendLandState(groupId, authorAddress, state);
       return { success: true };
     } catch (err) {
       return {
