@@ -875,6 +875,7 @@ const RETICULUM_LAND_AUTH_SESSION_MAX = 4096;
 const RETICULUM_LAND_AUTH_REQ_DEDUPE_MS = 5_000;
 const RETICULUM_LAND_AUTH_REQ_RESPONSE_MS = 3_000;
 const RETICULUM_LAND_AUTH_REQ_MAX = 4096;
+const RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS = 30_000;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 60_000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
 const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_RETRY_MS = 1_000;
@@ -2930,6 +2931,8 @@ export class ReticulumChatManager extends EventEmitter {
   private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
   private recentLandAuthRequests = new Map<string, number>();
   private recentLandAuthRequestResponses = new Map<string, number>();
+  private recentLandStateVerifiedLogs = new Map<string, number>();
+  private recentLandStateAppliedLogs = new Map<string, number>();
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3339,6 +3342,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.landAuthSessions.clear();
     this.recentLandAuthRequests.clear();
     this.recentLandAuthRequestResponses.clear();
+    this.recentLandStateVerifiedLogs.clear();
+    this.recentLandStateAppliedLogs.clear();
     this.recentLandChatHints.clear();
     this.groupInterestRoutes.clear();
     this.forwardedGroupSubKeys.clear();
@@ -4769,6 +4774,113 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
+  private shouldPruneGroupInterestRouteOnSendFailure(reason: ReticulumSendFailureReason): boolean {
+    return (
+      reason === 'no-route' ||
+      reason === 'packet-send-false' ||
+      reason === 'unknown-peer-presence-hash'
+    );
+  }
+
+  private pruneGroupInterestRoutesForNextHop(
+    groupId: number,
+    reversePeerHash: string,
+    reason: ReticulumSendFailureReason
+  ): void {
+    if (!this.shouldPruneGroupInterestRouteOnSendFailure(reason)) return;
+    const reverse = this.routePeerHash(reversePeerHash);
+    if (!reverse) return;
+    let removed = 0;
+    for (const [key, route] of this.groupInterestRoutes) {
+      if (route.groupId !== groupId || route.reversePeerHash !== reverse) continue;
+      this.groupInterestRoutes.delete(key);
+      removed += 1;
+    }
+    if (removed > 0) {
+      loggerWarn(
+        `[ReticulumChat] group_interest_route_pruned group=${groupId} nextHop=${reverse.slice(0, 16)} removed=${removed} reason=${reason}`
+      );
+    }
+  }
+
+  private getGroupInterestNextHops(
+    groupId: number,
+    excludePeerHashes: string[] = []
+  ): string[] {
+    this.pruneGroupInterestRoutes();
+    const local = this.localPeerHash();
+    const excluded = new Set(
+      excludePeerHashes
+        .map((hash) => this.routePeerHash(hash))
+        .filter((hash): hash is string => !!hash)
+    );
+    if (local) excluded.add(local);
+    const seen = new Set<string>();
+    const nextHops: string[] = [];
+    const routes = [...this.groupInterestRoutes.values()]
+      .filter((route) => route.groupId === groupId)
+      .sort((a, b) => a.hops - b.hops || b.expiresAt - a.expiresAt);
+    for (const route of routes) {
+      const nextHop = this.routePeerHash(route.reversePeerHash);
+      if (!nextHop || excluded.has(nextHop) || seen.has(nextHop)) continue;
+      if (local && route.originPeerHash === local) continue;
+      seen.add(nextHop);
+      nextHops.push(nextHop);
+    }
+    return nextHops;
+  }
+
+  private async sendGroupRoutedControl(
+    groupId: number,
+    wire: ReticulumChatWire,
+    options: {
+      excludePeerHashes?: string[];
+      fallbackFanout?: boolean;
+      fallbackOnPartialFailure?: boolean;
+      useRetryQueue?: boolean;
+      context?: string;
+    } = {}
+  ): Promise<ReticulumSendResult> {
+    const excludePeerHashes = options.excludePeerHashes ?? [];
+    const nextHops = this.getGroupInterestNextHops(groupId, excludePeerHashes);
+    let delivered = 0;
+    let lastFailure: Exclude<ReticulumSendResult, { ok: true }> | null = null;
+    for (const peerHash of nextHops) {
+      const result = options.useRetryQueue === true
+        ? await this.sendToPeer(peerHash, wire)
+        : await this.sendToPeerOnce(peerHash, wire);
+      if (result.ok === true) {
+        delivered += 1;
+        continue;
+      }
+      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      lastFailure = failed;
+      this.pruneGroupInterestRoutesForNextHop(groupId, peerHash, failed.reason);
+      loggerWarn(
+        `[ReticulumChat] group_routed_control_failed group=${groupId} kind=${wire.k} peer=${peerHash.slice(0, 16)} reason=${failed.reason}${
+          options.context ? ` context=${options.context}` : ''
+        }`
+      );
+    }
+    if (
+      delivered > 0
+      && lastFailure
+      && options.fallbackOnPartialFailure === true
+      && options.fallbackFanout !== false
+    ) {
+      return options.useRetryQueue === true
+        ? this.fanout(wire, excludePeerHashes)
+        : this.fanoutOnce(wire, excludePeerHashes);
+    }
+    if (delivered > 0) return { ok: true };
+    if (options.fallbackFanout !== false) {
+      return options.useRetryQueue === true
+        ? this.fanout(wire, excludePeerHashes)
+        : this.fanoutOnce(wire, excludePeerHashes);
+    }
+    return lastFailure ?? { ok: false, reason: 'no-route', error: 'No group interest route' };
+  }
+
   private shouldForwardGroupSub(
     groupId: number,
     originPeerHash: string,
@@ -4844,7 +4956,11 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
       );
-      void this.sendToPeer(route.reversePeerHash, wire as ReticulumChatWire);
+      void this.sendToPeer(route.reversePeerHash, wire as ReticulumChatWire).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
     }
   }
 
@@ -5631,7 +5747,11 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_CHAT_TYPING_TTL_MS
       );
-      void this.sendToPeer(route.reversePeerHash, forwarded);
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
     }
   }
 
@@ -5646,44 +5766,18 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Number.isInteger(groupId) || groupId <= 0) {
       return { ok: false, reason: 'send-command-failed', error: 'Invalid group id' };
     }
-
-    this.pruneGroupInterestRoutes();
     const local = this.localPeerHash();
-    const targets: string[] = [];
-    const seen = new Set<string>();
-    if (local) {
-      const routes = [...this.groupInterestRoutes.values()]
-        .filter((route) => route.groupId === groupId)
-        .sort((a, b) => a.hops - b.hops || b.expiresAt - a.expiresAt);
-      for (const route of routes) {
-        const nextHop = this.routePeerHash(route.reversePeerHash);
-        if (!nextHop || nextHop === local || route.originPeerHash === local || seen.has(nextHop)) {
-          continue;
-        }
-        seen.add(nextHop);
-        targets.push(nextHop);
-      }
-    }
-
-    if (local && targets.length > 0) {
-      const routedWire = {
+    const routedWire = local
+      ? ({
         ...wire,
         o: this.compactRoutePeerHash(local),
         h: 0,
-      } as ReticulumChatWire;
-      let delivered = 0;
-      for (const peerHash of targets) {
-        const result = await this.sendToPeerOnce(peerHash, routedWire);
-        if (result.ok === true) {
-          delivered += 1;
-        }
-      }
-      if (wire.k === 'land_chat_hint' && delivered === targets.length) return { ok: true };
-      if (wire.k === 'land_chat_hint' && delivered > 0) return this.fanoutOnce(wire);
-      if (delivered > 0) return { ok: true };
-    }
-
-    return this.fanoutOnce(wire);
+      } as ReticulumChatWire)
+      : wire;
+    return this.sendGroupRoutedControl(groupId, routedWire, {
+      fallbackFanout: true,
+      context: `local-${wire.k}`,
+    });
   }
 
   private async handleLandAuthWire(
@@ -5692,6 +5786,7 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     const groupId = Number(wire.g);
     const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    const peer = this.routePeerHash(peerHash) || peerHash.trim().toLowerCase();
     if (!verifyReticulumLandAuthWire(wire, this.now())) {
       loggerWarn(
         `[ReticulumChat] land_auth_rejected group=${Number.isInteger(groupId) ? groupId : 'invalid'} reason=bad_signature`
@@ -5701,7 +5796,18 @@ export class ReticulumChatManager extends EventEmitter {
     const authorAddress = deriveAddressFromPublicKey(wire.p);
     const ephemeralPublicKey = typeof wire.e === 'string' ? wire.e.trim() : '';
     if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId || !ephemeralPublicKey) return;
+    loggerLog(
+      `[ReticulumChat] land_auth_received group=${groupId} author=${authorAddress} session=${sessionId} peer=${peer.slice(0, 16)}`
+    );
+    loggerLog(
+      `[ReticulumChat] land_auth_member_validation_start group=${groupId} author=${authorAddress} session=${sessionId}`
+    );
     const isMember = await this.isValidatedGroupMember(groupId, authorAddress);
+    loggerLog(
+      `[ReticulumChat] land_auth_member_validation_resolved group=${groupId} author=${authorAddress} session=${sessionId} status=${
+        isMember === true ? 'member' : isMember === false ? 'not_member' : 'unavailable'
+      }`
+    );
     if (!isMember) {
       loggerWarn(
         `[ReticulumChat] land_auth_rejected group=${groupId} author=${authorAddress} reason=not_group_member`
@@ -5709,6 +5815,9 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     this.rememberLandAuthSession(groupId, authorAddress, sessionId, ephemeralPublicKey);
+    loggerLog(
+      `[ReticulumChat] land_auth_cached group=${groupId} author=${authorAddress} session=${sessionId} ttlMs=${RETICULUM_LAND_AUTH_SESSION_TTL_MS}`
+    );
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     await this.forwardLandAuthToInterestRoutes(groupId, wire, peerHash);
   }
@@ -5809,7 +5918,23 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (!this.verifyLandStateWire(wire, session.ephemeralPublicKey)) {
+      loggerWarn(
+        `[ReticulumChat] land_state_rejected group=${groupId} author=${authorAddress} session=${sessionId} reason=bad_signature`
+      );
       return;
+    }
+    const diagnosticKey = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+    if (
+      !this.markRecentOrDuplicate(
+        this.recentLandStateVerifiedLogs,
+        diagnosticKey,
+        RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS,
+        RETICULUM_LAND_AUTH_REQ_MAX
+      )
+    ) {
+      loggerLog(
+        `[ReticulumChat] land_state_verified group=${groupId} author=${authorAddress} session=${sessionId} seq=${Math.floor(Number(wire.q) || 0)} peer=${(this.routePeerHash(peerHash) || peerHash.trim().toLowerCase()).slice(0, 16)}`
+      );
     }
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     await this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
@@ -5902,7 +6027,11 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
       );
-      void this.sendToPeer(route.reversePeerHash, forwarded);
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
     }
   }
 
@@ -5947,7 +6076,11 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
       );
-      void this.sendToPeer(route.reversePeerHash, forwarded);
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
     }
   }
 
@@ -5992,7 +6125,11 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_CHAT_TYPING_TTL_MS
       );
-      void this.sendToPeer(route.reversePeerHash, forwarded);
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
     }
   }
 
@@ -6037,7 +6174,11 @@ export class ReticulumChatManager extends EventEmitter {
         key,
         this.now() + RETICULUM_LAND_CHAT_HINT_DEDUPE_MS
       );
-      void this.sendToPeer(route.reversePeerHash, forwarded);
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
     }
   }
 
@@ -6116,7 +6257,13 @@ export class ReticulumChatManager extends EventEmitter {
     if (kind === 'event_req' && !wireFitsReticulum(forwarded)) {
       delete (forwarded as Partial<Extract<ReticulumChatWire, { k: 'event_req' }>>).rid;
     }
-    void this.fanout(forwarded, [inbound, origin, ...(local ? [local] : [])]);
+    void this.sendGroupRoutedControl(groupId, forwarded, {
+      excludePeerHashes: [inbound, origin, ...(local ? [local] : [])],
+      fallbackFanout: true,
+      fallbackOnPartialFailure: true,
+      useRetryQueue: true,
+      context: `relay-${kind}`,
+    });
     return true;
   }
 
@@ -7187,7 +7334,16 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
 
-    const digestResult = await this.fanout(this.buildGroupDigestWire(event.groupId));
+    const digestResult = await this.sendGroupRoutedControl(
+      event.groupId,
+      this.buildGroupDigestWire(event.groupId),
+      {
+        fallbackFanout: true,
+        fallbackOnPartialFailure: true,
+        useRetryQueue: true,
+        context: 'published-event-digest',
+      }
+    );
     if (digestResult.ok || offeredCount > 0) return { ok: true };
     if (interestedPeers.length > 0 && lastOfferFailure) return lastOfferFailure;
     return digestResult;
@@ -8984,24 +9140,30 @@ export class ReticulumChatManager extends EventEmitter {
   private async sendEventHintToInterestedPeers(
     event: ReticulumChatEvent,
     excludePeerPresenceHashes: string[] = []
-  ): Promise<string[]> {
+  ): Promise<void> {
     const peerHashes = this.getInterestedPeers(event.groupId, excludePeerPresenceHashes);
-    if (!peerHashes.length) return [];
     const wire = this.buildEventHintWire(event);
-    const deliveredPeerHashes: string[] = [];
+    const deliveredPeerHashes = new Set<string>();
     for (const peerHash of peerHashes) {
       const result = await this.sendToPeer(peerHash, wire);
       if (result.ok) {
-        deliveredPeerHashes.push(peerHash);
+        deliveredPeerHashes.add(peerHash);
       } else {
         const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
         loggerWarn(
         `[ReticulumChat] Targeted event batch failed for ${event.eventId}:`,
           failed.error ?? failed.reason
         );
+        this.pruneGroupInterestRoutesForNextHop(event.groupId, peerHash, failed.reason);
       }
     }
-    return deliveredPeerHashes;
+    await this.sendGroupRoutedControl(event.groupId, wire, {
+      excludePeerHashes: [...excludePeerPresenceHashes, ...deliveredPeerHashes],
+      fallbackFanout: true,
+      fallbackOnPartialFailure: true,
+      useRetryQueue: true,
+      context: 'event-hint',
+    });
   }
 
   private async buildSignedEventRequestWire(
@@ -12737,9 +12899,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.emit('event', { event });
         this.requestFeedContinuationFromOffer(offer, event, sourcePeerHash);
         const exclude = payload.peerPresenceHash ? [payload.peerPresenceHash] : [];
-        void this.sendEventHintToInterestedPeers(event, exclude).then((targetedPeers) => {
-          void this.fanout(this.buildEventHintWire(event), [...exclude, ...targetedPeers]);
-        });
+        void this.sendEventHintToInterestedPeers(event, exclude);
       } else {
         this.retryEventPullAfterResourceFailure(offer, 'invalid_event_resource');
       }
@@ -13565,6 +13725,21 @@ export class ReticulumChatManager extends EventEmitter {
     const x = Math.max(0, Math.min(4095, Math.round(Number(wire.x) || 0)));
     const y = Math.max(0, Math.min(2047, Math.round(Number(wire.y) || 0)));
     if (!authorAddress || !sessionId) return;
+    const diagnosticKey = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+    if (
+      !this.markRecentOrDuplicate(
+        this.recentLandStateAppliedLogs,
+        diagnosticKey,
+        RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS,
+        RETICULUM_LAND_AUTH_REQ_MAX
+      )
+    ) {
+      loggerLog(
+        `[ReticulumChat] land_state_applied group=${groupId} author=${authorAddress} session=${sessionId} seq=${sequence} room=${
+          typeof wire.u === 'string' ? wire.u : ''
+        }`
+      );
+    }
     this.emit('landState', {
       groupId,
       authorAddress,
