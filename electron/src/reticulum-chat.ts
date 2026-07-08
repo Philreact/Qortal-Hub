@@ -53,6 +53,10 @@ import {
   wireFitsReticulum,
 } from './reticulum-wire-size';
 import {
+  verifyCallRequestDetached,
+  verifyCallSignedDetached,
+} from './ed25519-verify-common';
+import {
   ReticulumResourceStore,
   type ReticulumResourceManifest,
 } from './reticulum-resource-store';
@@ -817,6 +821,39 @@ export type ReticulumChatWire =
       o?: string;
       h?: number;
     }
+  | {
+      t: 'RCHAT';
+      k: 'land_call';
+      g: number;
+      ct: string;
+      c: string;
+      a: string;
+      to: string;
+      H?: string;
+      p?: string;
+      z?: string;
+      r?: string;
+      u?: string;
+      ts: number;
+      o?: string;
+      h?: number;
+    }
+  | {
+      t: 'RCHAT';
+      k: 'lc';
+      g: number;
+      y: string;
+      c: string;
+      a?: string;
+      b: string;
+      p?: string;
+      z?: string;
+      n?: string;
+      u?: string;
+      s: number;
+      o?: string;
+      h?: number;
+    }
   | { t: 'RCHAT'; k: 'typing'; g: number; c: string; a: string; ts: number; active: boolean; o?: string; h?: number };
 
 export interface ReticulumChatManagerOptions {
@@ -1178,6 +1215,38 @@ export function buildReticulumLandStateSignedFields(input: {
     x: input.x,
     y: input.y,
   };
+}
+
+function buildLandDirectCallChatId(addressA: string, addressB: string): string {
+  const first = String(addressA || '').trim();
+  const second = String(addressB || '').trim();
+  if (!first || !second) return '';
+  return `direct:${[first, second].sort().join(':')}`;
+}
+
+function encodeLandCallType(callType: string): string {
+  switch (callType) {
+    case 'request': return 'q';
+    case 'accept': return 'a';
+    case 'reject': return 'j';
+    case 'hangup': return 'h';
+    case 'status': return 's';
+    case 'ended': return 'e';
+    default: return '';
+  }
+}
+
+function decodeLandCallType(callType: unknown): string {
+  const value = typeof callType === 'string' ? callType.trim().toLowerCase() : '';
+  switch (value) {
+    case 'q': return 'request';
+    case 'a': return 'accept';
+    case 'j': return 'reject';
+    case 'h': return 'hangup';
+    case 's': return 'status';
+    case 'e': return 'ended';
+    default: return value;
+  }
 }
 
 export function buildReticulumDmNotifySignedFields(input: {
@@ -4094,6 +4163,112 @@ export class ReticulumChatManager extends EventEmitter {
     return result;
   }
 
+  async sendLandCall(
+    groupId: number,
+    call: {
+      callType?: unknown;
+      callId?: unknown;
+      fromAddress?: unknown;
+      toAddress?: unknown;
+      chatId?: unknown;
+      fromPublicKey?: unknown;
+      signature?: unknown;
+      reason?: unknown;
+      roomId?: unknown;
+      timestamp?: unknown;
+    }
+  ): Promise<ReticulumSendResult> {
+    this.assertLocalGroupMember(groupId);
+    if (!this.subscribedGroups.has(groupId)) {
+      this.subscribeGroup(groupId);
+    }
+    const callType = decodeLandCallType(call.callType).slice(0, 16);
+    const callId = typeof call.callId === 'string' ? call.callId.trim().slice(0, 64) : '';
+    const fromAddress = typeof call.fromAddress === 'string' ? call.fromAddress.trim() : '';
+    const toAddress = typeof call.toAddress === 'string' ? call.toAddress.trim() : '';
+    const chatId = buildLandDirectCallChatId(fromAddress, toAddress);
+    const fromPublicKey = typeof call.fromPublicKey === 'string' ? call.fromPublicKey.trim() : '';
+    const signature = typeof call.signature === 'string' ? call.signature.trim() : '';
+    const roomId = typeof call.roomId === 'string' ? call.roomId.trim().toLowerCase().slice(0, 16) : '';
+    const timestamp = Number.isFinite(Number(call.timestamp)) ? Number(call.timestamp) : this.now();
+    if (!callId || !fromAddress || !toAddress || !['request', 'accept', 'reject', 'hangup', 'status', 'ended'].includes(callType)) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand call' };
+    }
+    const [fromIsMember, toIsMember] = await Promise.all([
+      this.isValidatedGroupMember(groupId, fromAddress),
+      this.isValidatedGroupMember(groupId, toAddress),
+    ]);
+    if (!fromIsMember || !toIsMember) {
+      return { ok: false, reason: 'send-command-failed', error: 'QortalLand call participant is not a group member' };
+    }
+    if (['request', 'accept', 'reject', 'hangup'].includes(callType)) {
+      if (!fromPublicKey || !signature) {
+        return { ok: false, reason: 'send-command-failed', error: 'QortalLand call signature is missing' };
+      }
+      try {
+        if (deriveAddressFromPublicKey(fromPublicKey) !== fromAddress) {
+          return { ok: false, reason: 'send-command-failed', error: 'QortalLand call signer mismatch' };
+        }
+      } catch {
+        return { ok: false, reason: 'send-command-failed', error: 'QortalLand call public key is invalid' };
+      }
+      const signatureOk = callType === 'request'
+        ? Boolean(chatId) && verifyCallRequestDetached(
+          {
+            type: 'CALL_REQUEST',
+            callId,
+            chatId,
+            fromAddress,
+            fromPublicKey,
+            timestamp,
+          },
+          signature,
+          fromPublicKey
+        )
+        : verifyCallSignedDetached(
+          callType === 'accept'
+            ? 'CALL_ACCEPT'
+            : callType === 'reject'
+              ? 'CALL_REJECT'
+              : 'CALL_HANGUP',
+          callId,
+          timestamp,
+          signature,
+          fromPublicKey,
+          fromAddress
+        );
+      if (!signatureOk) {
+        return { ok: false, reason: 'send-command-failed', error: 'QortalLand call signature is invalid' };
+      }
+    }
+    const wireType = encodeLandCallType(callType);
+    if (!wireType) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand call' };
+    }
+    const signedControl = ['request', 'accept', 'reject', 'hangup'].includes(callType);
+    const wire: Extract<ReticulumChatWire, { k: 'lc' }> = {
+      t: 'RCHAT',
+      k: 'lc',
+      g: groupId,
+      y: wireType,
+      c: callId,
+      b: toAddress,
+      ...(fromPublicKey ? { p: fromPublicKey } : {}),
+      ...(signature ? { z: signature } : {}),
+      ...(!signedControl ? { a: fromAddress } : {}),
+      ...(roomId && !signedControl ? { u: roomId } : {}),
+      s: timestamp,
+    };
+    if (!wireFitsReticulum(wire)) {
+      return { ok: false, reason: 'send-command-failed', error: 'QortalLand call exceeds Reticulum wire size' };
+    }
+    const result = await this.sendLocalGroupLiveControl(wire);
+    if (result.ok === true) {
+      this.applyLandCall(groupId, wire);
+    }
+    return result;
+  }
+
   async sendLandChat(message: ReticulumLandChatMessage): Promise<ReticulumSendResult> {
     if (!validateReticulumLandChatMessageShape(message, this.now())) {
       return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand chat message' };
@@ -4564,7 +4739,9 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'range_req' &&
       kind !== 'event_batch' &&
       kind !== 'land_chat_hint' &&
-      kind !== 'land_action'
+      kind !== 'land_action' &&
+      kind !== 'land_call' &&
+      kind !== 'lc'
     ) {
       return false;
     }
@@ -4818,6 +4995,21 @@ export class ReticulumChatManager extends EventEmitter {
         if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
         if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
         void this.handleLandActionWire(groupId, wire as Extract<ReticulumChatWire, { k: 'land_action' }>);
+        return;
+      }
+      case 'land_call':
+      case 'lc':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.forwardLandCallToInterestRoutes(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>,
+          peerHash
+        );
+        if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+        void this.handleLandCallWire(groupId, wire as Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>);
         return;
       }
       case 'typing':
@@ -5974,6 +6166,7 @@ export class ReticulumChatManager extends EventEmitter {
       | Extract<ReticulumChatWire, { k: 'land_state' }>
       | Extract<ReticulumChatWire, { k: 'land_chat_hint' }>
       | Extract<ReticulumChatWire, { k: 'land_action' }>
+      | Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>
   ): Promise<ReticulumSendResult> {
     const groupId = Number(wire.g);
     if (!Number.isInteger(groupId) || groupId <= 0) {
@@ -6191,6 +6384,97 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     this.applyLandAction(groupId, wire);
+  }
+
+  private async handleLandCallWire(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>
+  ): Promise<void> {
+    const callType = decodeLandCallType('ct' in wire ? wire.ct : wire.y);
+    const callId = typeof wire.c === 'string' ? wire.c.trim() : '';
+    let fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const toAddress =
+      'to' in wire && typeof wire.to === 'string'
+        ? wire.to.trim()
+        : 'b' in wire && typeof wire.b === 'string'
+          ? wire.b.trim()
+          : '';
+    const wireChatId = 'H' in wire && typeof wire.H === 'string' ? wire.H.trim() : '';
+    const chatId =
+      wireChatId
+        ? wireChatId
+        : buildLandDirectCallChatId(fromAddress, toAddress);
+    const fromPublicKey = typeof wire.p === 'string' ? wire.p.trim() : '';
+    const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
+    const timestamp = Number('ts' in wire ? wire.ts : wire.s);
+    if (!fromAddress && fromPublicKey) {
+      try {
+        fromAddress = deriveAddressFromPublicKey(fromPublicKey);
+      } catch {
+        fromAddress = '';
+      }
+    }
+    if (
+      !callId ||
+      !fromAddress ||
+      !toAddress ||
+      !['request', 'accept', 'reject', 'hangup', 'status', 'ended'].includes(callType) ||
+      !Number.isFinite(timestamp) ||
+      timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS ||
+      timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS
+    ) {
+      return;
+    }
+    const [fromIsMember, toIsMember] = await Promise.all([
+      this.isValidatedGroupMember(groupId, fromAddress),
+      this.isValidatedGroupMember(groupId, toAddress),
+    ]);
+    if (!fromIsMember || !toIsMember) {
+      loggerWarn(
+        `[ReticulumChat] land_call_rejected group=${groupId} type=${callType} reason=participant_not_group_member`
+      );
+      return;
+    }
+    if (['request', 'accept', 'reject', 'hangup'].includes(callType)) {
+      if (!fromPublicKey || !signature) return;
+      try {
+        if (deriveAddressFromPublicKey(fromPublicKey) !== fromAddress) return;
+      } catch {
+        return;
+      }
+      const signatureOk = callType === 'request'
+        ? Boolean(chatId) && verifyCallRequestDetached(
+          {
+            type: 'CALL_REQUEST',
+            callId,
+            chatId,
+            fromAddress,
+            fromPublicKey,
+            timestamp,
+          },
+          signature,
+          fromPublicKey
+        )
+        : verifyCallSignedDetached(
+          callType === 'accept'
+            ? 'CALL_ACCEPT'
+            : callType === 'reject'
+              ? 'CALL_REJECT'
+              : 'CALL_HANGUP',
+          callId,
+          timestamp,
+          signature,
+          fromPublicKey,
+          fromAddress
+        );
+      if (!signatureOk) {
+        loggerWarn(
+          `[ReticulumChat] land_call_rejected group=${groupId} type=${callType} reason=bad_signature`
+        );
+        return;
+      }
+    }
+    this.applyLandCall(groupId, wire);
   }
 
   private verifyLandStateWire(
@@ -6465,6 +6749,55 @@ export class ReticulumChatManager extends EventEmitter {
       if (local && route.originPeerHash === local) continue;
       const key = this.groupControlRouteKey(
         'land_action',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
+    }
+  }
+
+  private async forwardLandCallToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'land_call',
         groupId,
         route.originPeerHash,
         `${inbound}:${payloadKey}`
@@ -14119,6 +14452,47 @@ export class ReticulumChatManager extends EventEmitter {
       amount,
       roomId: typeof wire.u === 'string' ? wire.u : '',
       timestamp: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : this.now(),
+    });
+  }
+
+  private applyLandCall(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>
+  ): void {
+    const callType = decodeLandCallType('ct' in wire ? wire.ct : wire.y);
+    const callId = typeof wire.c === 'string' ? wire.c.trim() : '';
+    let fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const toAddress =
+      'to' in wire && typeof wire.to === 'string'
+        ? wire.to.trim()
+        : 'b' in wire && typeof wire.b === 'string'
+          ? wire.b.trim()
+          : '';
+    if (!fromAddress && typeof wire.p === 'string' && wire.p.trim()) {
+      try {
+        fromAddress = deriveAddressFromPublicKey(wire.p.trim());
+      } catch {
+        fromAddress = '';
+      }
+    }
+    if (!callId || !fromAddress || !toAddress) return;
+    this.emit('landCall', {
+      groupId,
+      callType,
+      callId,
+      fromAddress,
+      toAddress,
+      chatId:
+        'H' in wire && typeof wire.H === 'string' && wire.H
+          ? wire.H
+          : buildLandDirectCallChatId(fromAddress, toAddress),
+      fromPublicKey: typeof wire.p === 'string' ? wire.p : '',
+      signature: typeof wire.z === 'string' ? wire.z : '',
+      reason: 'n' in wire && typeof wire.n === 'string' ? wire.n : '',
+      roomId: typeof wire.u === 'string' ? wire.u : '',
+      timestamp: Number.isFinite(Number('ts' in wire ? wire.ts : wire.s))
+        ? Number('ts' in wire ? wire.ts : wire.s)
+        : this.now(),
     });
   }
 

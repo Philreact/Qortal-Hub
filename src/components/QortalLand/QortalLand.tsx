@@ -1,4 +1,6 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import CallRoundedIcon from '@mui/icons-material/CallRounded';
+import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import PaidRoundedIcon from '@mui/icons-material/PaidRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import {
@@ -19,8 +21,9 @@ import {
 } from '@mui/material';
 import { useAtomValue } from 'jotai';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { balanceAtom } from '../../atoms/global';
+import { balanceAtom, userInfoAtom } from '../../atoms/global';
 import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.png';
+import { useVoiceCall, type VoiceCallApi } from '../../hooks/useVoiceCall';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 
 type LandPlayerState = {
@@ -83,6 +86,13 @@ type LandActionAnimation = {
   expiresAt: number;
 };
 
+type LandCallPresence = {
+  callId: string;
+  peerAddress: string;
+  roomId: LandRoomId;
+  expiresAt: number;
+};
+
 type QortalLandProps = {
   groupId: number;
   groupName: string;
@@ -106,6 +116,8 @@ const LAND_CHAT_BUBBLE_TTL_MS = 15000;
 const LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const LAND_CHAT_MAX_INPUT_CHARS = 420;
 const LAND_ACTION_ANIMATION_TTL_MS = 3200;
+const LAND_CALL_STATUS_INTERVAL_MS = 10000;
+const LAND_CALL_STATUS_TTL_MS = 26000;
 const QORTAL_LAND_CHANNEL_ID = 'qortal-land';
 const LAND_CHARACTER_SPRITESHEET_KEY = 'qortalland-default-character';
 const LAND_CHARACTER_IDLE_SIDE_ANIM_KEY = 'qortalland-default-character-idle-side';
@@ -192,6 +204,10 @@ const displayNameForAddress = (
 ): string => {
   const primaryName = primaryNameCache.get(address)?.trim();
   return primaryName || shortAddress(address);
+};
+
+const buildDirectVoiceCallChatId = (addressA: string, addressB: string): string => {
+  return `direct:${[addressA, addressB].sort().join(':')}`;
 };
 
 const clampNumber = (value: number, min: number, max: number): number => {
@@ -333,12 +349,23 @@ const clampLandPosition = (
 export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const theme = useTheme();
   const balance = useAtomValue(balanceAtom);
+  const userInfo = useAtomValue(userInfoAtom);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
   const movementKeysRef = useRef<Set<string>>(new Set());
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
   const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
   const landActionAnimationsRef = useRef<Map<string, LandActionAnimation>>(new Map());
+  const landCallPresenceRef = useRef<Map<string, LandCallPresence>>(new Map());
+  const landCallPeerPublicKeysRef = useRef<Map<string, string>>(new Map());
+  const landCallPeersRef = useRef<Map<string, { peerAddress: string; chatId: string }>>(new Map());
+  const landCallListenersRef = useRef<Set<(event: string, payload: unknown) => void>>(new Set());
+  const activeLandCallIdRef = useRef<string | null>(null);
+  const lastAnnouncedLandCallRef = useRef<{
+    callId: string;
+    peerAddress: string;
+    chatId: string;
+  } | null>(null);
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
   const primaryNameLookupTimerRef = useRef<number | null>(null);
@@ -364,8 +391,165 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [sendQortAmount, setSendQortAmount] = useState('1');
   const [sendQortError, setSendQortError] = useState('');
   const [isSendingQort, setIsSendingQort] = useState(false);
+  const [activeLandCallPeerAddress, setActiveLandCallPeerAddress] = useState<string | null>(null);
+  const [landCallPresenceVersion, setLandCallPresenceVersion] = useState(0);
   const sessionId = useMemo(() => createSessionId(), []);
   const qortBalance = useMemo(() => normalizeQortBalance(balance), [balance]);
+
+  const emitLandCallEvent = useCallback((event: string, payload: unknown) => {
+    for (const listener of landCallListenersRef.current) {
+      listener(event, payload);
+    }
+  }, []);
+
+  const sendLandCallSignal = useCallback(
+    async (payload: Record<string, unknown>) => {
+      const result = await window.reticulumChat?.sendLandCall?.(groupId, payload);
+      return result?.success === true
+        ? { success: true }
+        : { success: false, error: result?.error || 'QortalLand call signal failed' };
+    },
+    [groupId]
+  );
+
+  const landCallApi = useMemo<VoiceCallApi>(() => ({
+    initiate: async (
+      targetAddress,
+      chatId,
+      localAddress,
+      signature,
+      publicKey,
+      callId,
+      timestamp
+    ) => {
+      landCallPeersRef.current.set(callId, { peerAddress: targetAddress, chatId });
+      activeLandCallIdRef.current = callId;
+      setActiveLandCallPeerAddress(targetAddress);
+      const result = await sendLandCallSignal({
+        callType: 'request',
+        callId,
+        fromAddress: localAddress,
+        toAddress: targetAddress,
+        chatId,
+        fromPublicKey: publicKey,
+        signature,
+        roomId: currentRoomRef.current,
+        timestamp,
+      });
+      return result.success ? { success: true, callId } : result;
+    },
+    accept: async (callId, signature, publicKey, timestamp) => {
+      const peer = landCallPeersRef.current.get(callId);
+      if (!peer) return { success: false, error: 'Unknown QortalLand call' };
+      activeLandCallIdRef.current = callId;
+      setActiveLandCallPeerAddress(peer.peerAddress);
+      return sendLandCallSignal({
+        callType: 'accept',
+        callId,
+        fromAddress: myAddress,
+        toAddress: peer.peerAddress,
+        chatId: peer.chatId,
+        fromPublicKey: publicKey,
+        signature,
+        roomId: currentRoomRef.current,
+        timestamp,
+      });
+    },
+    reject: async (callId, reason, signature, publicKey, timestamp) => {
+      const peer = landCallPeersRef.current.get(callId);
+      if (!peer) return { success: true };
+      const result = await sendLandCallSignal({
+        callType: 'reject',
+        callId,
+        fromAddress: myAddress,
+        toAddress: peer.peerAddress,
+        chatId: peer.chatId,
+        fromPublicKey: publicKey,
+        signature,
+        reason: reason || 'rejected',
+        roomId: currentRoomRef.current,
+        timestamp: timestamp ?? Date.now(),
+      });
+      landCallPeersRef.current.delete(callId);
+      if (activeLandCallIdRef.current === callId) {
+        activeLandCallIdRef.current = null;
+        setActiveLandCallPeerAddress(null);
+      }
+      return result;
+    },
+    hangup: async (callId, signature, publicKey, timestamp) => {
+      const peer = landCallPeersRef.current.get(callId);
+      if (!peer) return { success: true };
+      const result = await sendLandCallSignal({
+        callType: 'hangup',
+        callId,
+        fromAddress: myAddress,
+        toAddress: peer.peerAddress,
+        chatId: peer.chatId,
+        fromPublicKey: publicKey,
+        signature,
+        roomId: currentRoomRef.current,
+        timestamp,
+      });
+      landCallPeersRef.current.delete(callId);
+      if (activeLandCallIdRef.current === callId) {
+        activeLandCallIdRef.current = null;
+        setActiveLandCallPeerAddress(null);
+      }
+      return result;
+    },
+    setLocalAddresses: async () => ({ success: true }),
+    onEvent: (cb) => {
+      landCallListenersRef.current.add(cb);
+      return () => {
+        landCallListenersRef.current.delete(cb);
+      };
+    },
+  }), [myAddress, sendLandCallSignal]);
+
+  const landVoiceCall = useVoiceCall({
+    callApi: landCallApi,
+    skipSystemReadiness: true,
+    skipDirectFriendValidation: true,
+    getPeerPublicKey: (address) => landCallPeerPublicKeysRef.current.get(address),
+    createCallId: () => createSessionId().slice(0, 20),
+    suppressGlobalSnackbars: true,
+  });
+  const landVoiceCallStateRef = useRef(landVoiceCall.callState);
+  useEffect(() => {
+    landVoiceCallStateRef.current = landVoiceCall.callState;
+  }, [landVoiceCall.callState]);
+
+  const touchLandCallPresence = useCallback((
+    address: string,
+    peerAddress: string,
+    callId: string,
+    roomId: LandRoomId,
+    ttlMs = LAND_CALL_STATUS_TTL_MS
+  ) => {
+    const normalized = address.trim();
+    if (!normalized || !callId) return;
+    landCallPresenceRef.current.set(normalized, {
+      callId,
+      peerAddress,
+      roomId,
+      expiresAt: Date.now() + ttlMs,
+    });
+    setLandCallPresenceVersion((value) => value + 1);
+  }, []);
+
+  const clearLandCallPresence = useCallback((addresses: string[]) => {
+    let changed = false;
+    for (const address of addresses) {
+      if (address && landCallPresenceRef.current.delete(address)) changed = true;
+    }
+    if (changed) setLandCallPresenceVersion((value) => value + 1);
+  }, []);
+
+  const isAddressInLandCall = useCallback((address: string): boolean => {
+    const presence = landCallPresenceRef.current.get(address);
+    return Boolean(presence && presence.expiresAt > Date.now());
+  }, []);
 
   const queuePrimaryNameLookups = useCallback((addresses: string[]) => {
     const missingAddresses = addresses
@@ -652,6 +836,42 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     sendQortTarget,
   ]);
 
+  const signLandCallFields = useCallback(
+    async (fields: Record<string, unknown>) => {
+      if (!userInfo?.publicKey) {
+        throw new Error('Missing local public key');
+      }
+      const response = await window.sendMessage?.('signPresenceMessage', fields, 10_000) as
+        | { signature?: string; error?: string }
+        | undefined;
+      if (!response?.signature || response.error) {
+        throw new Error(response?.error || 'Unable to sign QortalLand call');
+      }
+      return {
+        signature: response.signature,
+        publicKey: userInfo.publicKey,
+      };
+    },
+    [userInfo?.publicKey]
+  );
+
+  const startLandCall = useCallback(
+    (target: LandActionTarget) => {
+      if (!myAddress || landVoiceCall.callState !== 'idle') return;
+      if (isAddressInLandCall(target.authorAddress)) return;
+      const chatId = buildDirectVoiceCallChatId(myAddress, target.authorAddress);
+      setActionTarget(null);
+      setActiveLandCallPeerAddress(target.authorAddress);
+      void landVoiceCall.initiateCall(target.authorAddress, chatId, signLandCallFields);
+    },
+    [
+      isAddressInLandCall,
+      landVoiceCall,
+      myAddress,
+      signLandCallFields,
+    ]
+  );
+
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     void window.reticulumChat?.subscribeGroup?.(groupId);
@@ -796,6 +1016,126 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   }, [addQortReceivedAnimation, groupId, myAddress, queuePrimaryNameLookups]);
 
   useEffect(() => {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
+    const unsubscribe = window.reticulumChat?.onLandCall?.((payload) => {
+      if (payload.groupId !== groupId) return;
+      const callType = typeof payload.callType === 'string' ? payload.callType : '';
+      const callId = typeof payload.callId === 'string' ? payload.callId : '';
+      const fromAddress = typeof payload.fromAddress === 'string' ? payload.fromAddress : '';
+      const toAddress = typeof payload.toAddress === 'string' ? payload.toAddress : '';
+      const chatId =
+        typeof payload.chatId === 'string' && payload.chatId
+          ? payload.chatId
+          : fromAddress && toAddress
+            ? buildDirectVoiceCallChatId(fromAddress, toAddress)
+            : '';
+      const roomId = normalizeLandRoomId(payload.roomId);
+      if (!callId || !fromAddress || !toAddress) return;
+      if (payload.fromPublicKey) {
+        landCallPeerPublicKeysRef.current.set(fromAddress, payload.fromPublicKey);
+      }
+
+      if (callType === 'request') {
+        const localBusy = toAddress === myAddress
+          ? landVoiceCallStateRef.current !== 'idle' || Boolean(activeLandCallIdRef.current)
+          : false;
+        if (toAddress !== myAddress || fromAddress === myAddress) return;
+        if (localBusy) {
+          void (async () => {
+            const timestamp = Date.now();
+            const signed = await signLandCallFields({
+              type: 'CALL_REJECT',
+              callId,
+              timestamp,
+            });
+            await sendLandCallSignal({
+              callType: 'reject',
+              callId,
+              fromAddress: myAddress,
+              toAddress: fromAddress,
+              chatId,
+              fromPublicKey: signed.publicKey,
+              signature: signed.signature,
+              reason: 'busy',
+              roomId: currentRoomRef.current,
+              timestamp,
+            });
+          })().catch(() => {});
+          return;
+        }
+        landCallPeersRef.current.set(callId, { peerAddress: fromAddress, chatId });
+        activeLandCallIdRef.current = callId;
+        setActiveLandCallPeerAddress(fromAddress);
+        queuePrimaryNameLookups([fromAddress]);
+        emitLandCallEvent('call:incoming', {
+          callId,
+          fromAddress,
+          chatId,
+        });
+        return;
+      }
+
+      if (callType === 'accept') {
+        touchLandCallPresence(fromAddress, toAddress, callId, roomId);
+        touchLandCallPresence(toAddress, fromAddress, callId, roomId);
+        if (toAddress !== myAddress) return;
+        landCallPeersRef.current.set(callId, { peerAddress: fromAddress, chatId });
+        activeLandCallIdRef.current = callId;
+        setActiveLandCallPeerAddress(fromAddress);
+        queuePrimaryNameLookups([fromAddress]);
+        emitLandCallEvent('call:accepted', { callId });
+        return;
+      }
+
+      if (callType === 'reject') {
+        clearLandCallPresence([fromAddress, toAddress]);
+        if (toAddress === myAddress) {
+          emitLandCallEvent('call:rejected', { callId, reason: payload.reason || 'rejected' });
+        }
+        landCallPeersRef.current.delete(callId);
+        if (activeLandCallIdRef.current === callId) {
+          activeLandCallIdRef.current = null;
+          setActiveLandCallPeerAddress(null);
+        }
+        return;
+      }
+
+      if (callType === 'hangup' || callType === 'ended') {
+        clearLandCallPresence([fromAddress, toAddress]);
+        if (callType === 'ended') {
+          return;
+        }
+        if (toAddress === myAddress) {
+          emitLandCallEvent('call:hangup', { callId });
+        }
+        landCallPeersRef.current.delete(callId);
+        if (activeLandCallIdRef.current === callId) {
+          activeLandCallIdRef.current = null;
+          setActiveLandCallPeerAddress(null);
+        }
+        return;
+      }
+
+      if (callType === 'status') {
+        touchLandCallPresence(fromAddress, toAddress, callId, roomId);
+      }
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [
+    clearLandCallPresence,
+    emitLandCallEvent,
+    groupId,
+    isAddressInLandCall,
+    myAddress,
+    queuePrimaryNameLookups,
+    sendLandCallSignal,
+    signLandCallFields,
+    touchLandCallPresence,
+  ]);
+
+  useEffect(() => {
     if (reticulumReady !== true || !Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     const interval = window.setInterval(() => {
       const now = Date.now();
@@ -819,6 +1159,75 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   }, [groupId, myAddress, reticulumReady, sessionId]);
 
   useEffect(() => {
+    if (!myAddress || reticulumReady !== true) return;
+    const callActive = landVoiceCall.callState === 'connected';
+    const callId = activeLandCallIdRef.current;
+    const peer = callId ? landCallPeersRef.current.get(callId) : null;
+    if (!callActive || !callId || !peer) return;
+    const sendStatus = () => {
+      touchLandCallPresence(myAddress, peer.peerAddress, callId, currentRoomRef.current);
+      void sendLandCallSignal({
+        callType: 'status',
+        callId,
+        fromAddress: myAddress,
+        toAddress: peer.peerAddress,
+        chatId: peer.chatId,
+        roomId: currentRoomRef.current,
+        timestamp: Date.now(),
+      });
+    };
+    sendStatus();
+    const interval = window.setInterval(sendStatus, LAND_CALL_STATUS_INTERVAL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [
+    landVoiceCall.callState,
+    myAddress,
+    reticulumReady,
+    sendLandCallSignal,
+    touchLandCallPresence,
+  ]);
+
+  useEffect(() => {
+    const callActive = landVoiceCall.callState === 'connected';
+    const callId = activeLandCallIdRef.current;
+    const peer = callId ? landCallPeersRef.current.get(callId) : null;
+    if (callActive && callId && peer) {
+      lastAnnouncedLandCallRef.current = {
+        callId,
+        peerAddress: peer.peerAddress,
+        chatId: peer.chatId,
+      };
+      return;
+    }
+    const previous = lastAnnouncedLandCallRef.current;
+    if (!previous || !myAddress || reticulumReady !== true) return;
+    lastAnnouncedLandCallRef.current = null;
+    void sendLandCallSignal({
+      callType: 'ended',
+      callId: previous.callId,
+      fromAddress: myAddress,
+      toAddress: previous.peerAddress,
+      chatId: previous.chatId,
+      roomId: currentRoomRef.current,
+      timestamp: Date.now(),
+    });
+    clearLandCallPresence([myAddress, previous.peerAddress]);
+    landCallPeersRef.current.delete(previous.callId);
+    if (activeLandCallIdRef.current === previous.callId) {
+      activeLandCallIdRef.current = null;
+      setActiveLandCallPeerAddress(null);
+    }
+  }, [
+    clearLandCallPresence,
+    landVoiceCall.callState,
+    myAddress,
+    reticulumReady,
+    sendLandCallSignal,
+  ]);
+
+  useEffect(() => {
     if (!containerRef.current || !myAddress) return;
     let destroyed = false;
     let resizeObserver: ResizeObserver | null = null;
@@ -837,6 +1246,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         private remoteLabels = new Map<string, any>();
         private chatBubbles = new Map<string, { container: any; background: any; text: any }>();
         private actionAnimations = new Map<string, { container: any; coins: any[]; text: any }>();
+        private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
@@ -903,6 +1313,14 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             landActionAnimationsRef.current.clear();
             for (const [actionId, animationObjects] of this.actionAnimations.entries()) {
               this.removeActionAnimation(actionId, animationObjects);
+            }
+          }
+          try {
+            this.updateCallIndicators();
+          } catch (error) {
+            console.warn('[QortalLand] Call indicator update failed', error);
+            for (const [indicatorKey, indicatorObjects] of this.callIndicators.entries()) {
+              this.removeCallIndicator(indicatorKey, indicatorObjects);
             }
           }
         }
@@ -2072,6 +2490,109 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
         }
 
+        private createCallIndicator() {
+          const container = this.add.container(0, 0);
+          const badge = this.add.graphics();
+          badge.fillStyle(0x020714, 0.82);
+          badge.fillCircle(0, 0, 20);
+          badge.fillStyle(0x2cf8ff, 0.95);
+          badge.fillCircle(0, 0, 15);
+          badge.lineStyle(2, 0xf8fbff, 0.86);
+          badge.strokeCircle(0, 0, 15);
+          badge.lineStyle(2, 0x2cf8ff, 0.28);
+          badge.strokeCircle(0, 0, 22);
+          const phone = this.add.text(0, -1, '☎', {
+            align: 'center',
+            color: '#06101d',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '20px',
+            fontStyle: 'bold',
+          }).setOrigin(0.5);
+          container.add([badge, phone]);
+          container.setDepth(13000);
+          return { container, badge, phone };
+        }
+
+        private removeCallIndicator(
+          indicatorKey: string,
+          indicatorObjects = this.callIndicators.get(indicatorKey)
+        ) {
+          if (!indicatorObjects) return;
+          this.callIndicators.delete(indicatorKey);
+          try {
+            if (typeof indicatorObjects.container?.removeAll === 'function') {
+              indicatorObjects.container.removeAll(true);
+            }
+            if (indicatorObjects.container?.scene) {
+              indicatorObjects.container.destroy();
+            }
+          } catch (error) {
+            console.warn('[QortalLand] Failed to remove call indicator', error);
+          }
+        }
+
+        private updateCallIndicators() {
+          const now = Date.now();
+          for (const [address, presence] of landCallPresenceRef.current.entries()) {
+            if (presence.expiresAt > now) continue;
+            landCallPresenceRef.current.delete(address);
+          }
+
+          const activeIndicators = new Map<string, { avatar: any; roomId: LandRoomId }>();
+          const localPresence = landCallPresenceRef.current.get(myAddress);
+          if (
+            this.localAvatar &&
+            localPresence &&
+            localPresence.expiresAt > now &&
+            localPresence.roomId === currentRoomRef.current
+          ) {
+            activeIndicators.set(`local:${myAddress}`, {
+              avatar: this.localAvatar,
+              roomId: localPresence.roomId,
+            });
+          }
+
+          for (const [key, player] of remotePlayersRef.current.entries()) {
+            const presence = landCallPresenceRef.current.get(player.authorAddress);
+            const avatar = this.remotes.get(key);
+            if (
+              !presence ||
+              presence.expiresAt <= now ||
+              presence.roomId !== currentRoomRef.current ||
+              player.roomId !== currentRoomRef.current ||
+              !avatar
+            ) {
+              continue;
+            }
+            activeIndicators.set(`remote:${key}`, {
+              avatar,
+              roomId: presence.roomId,
+            });
+          }
+
+          for (const [indicatorKey, indicatorObjects] of this.callIndicators.entries()) {
+            if (activeIndicators.has(indicatorKey)) continue;
+            this.removeCallIndicator(indicatorKey, indicatorObjects);
+          }
+
+          for (const [indicatorKey, { avatar }] of activeIndicators.entries()) {
+            let indicatorObjects = this.callIndicators.get(indicatorKey);
+            if (!indicatorObjects) {
+              indicatorObjects = this.createCallIndicator();
+              this.callIndicators.set(indicatorKey, indicatorObjects);
+            }
+            const scale = Math.abs(avatar.scaleY || 1);
+            indicatorObjects.container.setVisible(true);
+            indicatorObjects.container.setPosition(
+              avatar.x + 36 * scale,
+              avatar.y - (LAND_CHARACTER_LABEL_OFFSET + 28) * scale
+            );
+            indicatorObjects.container.setScale(Math.max(0.78, Math.min(1.04, scale * 0.9)));
+            indicatorObjects.container.setAlpha(0.9 + Math.sin(this.time.now / 260) * 0.08);
+            indicatorObjects.container.setDepth(avatar.depth + 220);
+          }
+        }
+
         private updateLocalPlayer(delta: number) {
           if (!this.localAvatar) return;
           const step = (190 * delta) / 1000;
@@ -2354,6 +2875,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       remotePlayersRef.current.clear();
       landChatBubblesRef.current.clear();
       landActionAnimationsRef.current.clear();
+      landCallPresenceRef.current.clear();
     };
   }, [myAddress]);
 
@@ -2371,6 +2893,30 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     sendQortAmountNumber <= qortBalance &&
     reticulumReady === true &&
     !isSendingQort;
+  void landCallPresenceVersion;
+  const actionTargetInCall = actionTarget ? isAddressInLandCall(actionTarget.authorAddress) : false;
+  const localLandCallActive = ['calling', 'ringing', 'connected'].includes(landVoiceCall.callState);
+  const canStartLandCall =
+    Boolean(actionTarget) &&
+    reticulumReady === true &&
+    landVoiceCall.callState === 'idle' &&
+    !actionTargetInCall;
+  const activeLandCallPeerName = activeLandCallPeerAddress
+    ? displayNameForAddress(activeLandCallPeerAddress, primaryNameCacheRef.current)
+    : '';
+  const incomingLandCallName = landVoiceCall.incomingCall
+    ? displayNameForAddress(landVoiceCall.incomingCall.fromAddress, primaryNameCacheRef.current)
+    : '';
+  const activeLandCallSubtitle = (() => {
+    if (landVoiceCall.callState === 'calling') return landVoiceCall.startupStatus.detail || 'Calling...';
+    if (landVoiceCall.callState === 'ringing') return 'Incoming call';
+    if (landVoiceCall.callState === 'connected') {
+      const minutes = Math.floor(landVoiceCall.callDuration / 60).toString().padStart(2, '0');
+      const seconds = Math.floor(landVoiceCall.callDuration % 60).toString().padStart(2, '0');
+      return landVoiceCall.callMediaReady ? `Connected ${minutes}:${seconds}` : landVoiceCall.startupStatus.detail || 'Connecting audio...';
+    }
+    return '';
+  })();
 
   return (
     <Box
@@ -2585,8 +3131,93 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             >
               Send QORT
             </Button>
+            <Button
+              disabled={!canStartLandCall}
+              fullWidth
+              startIcon={<CallRoundedIcon fontSize="small" />}
+              onClick={() => startLandCall(actionTarget)}
+              sx={{
+                backgroundColor: actionTargetInCall ? alpha('#fff', 0.05) : alpha('#2cf8ff', 0.12),
+                border: `1px solid ${actionTargetInCall ? alpha('#fff', 0.1) : alpha('#2cf8ff', 0.3)}`,
+                borderRadius: '8px',
+                color: actionTargetInCall ? alpha(theme.palette.text.secondary, 0.9) : '#9ffcff',
+                fontSize: 12,
+                fontWeight: 800,
+                justifyContent: 'flex-start',
+                marginTop: 1,
+                textTransform: 'none',
+                '&:hover': {
+                  backgroundColor: alpha('#2cf8ff', 0.2),
+                },
+                '&.Mui-disabled': {
+                  color: actionTargetInCall ? alpha('#ffcf5a', 0.72) : alpha('#fff', 0.32),
+                },
+              }}
+            >
+              {actionTargetInCall ? 'In a call' : 'Call'}
+            </Button>
           </Box>
         </ClickAwayListener>
+      )}
+      {localLandCallActive && (
+        <Box
+          sx={{
+            alignItems: 'center',
+            background: `linear-gradient(135deg, ${alpha('#091425', 0.94)}, ${alpha('#070914', 0.9)})`,
+            border: `1px solid ${alpha('#2cf8ff', 0.26)}`,
+            borderRadius: '12px',
+            boxShadow: `0 18px 42px ${alpha('#000', 0.42)}, 0 0 28px ${alpha('#2cf8ff', 0.08)}`,
+            display: 'flex',
+            gap: 1.25,
+            left: 16,
+            maxWidth: 'min(360px, calc(100% - 32px))',
+            padding: '10px 12px',
+            position: 'absolute',
+            top: 56,
+            zIndex: 4,
+          }}
+        >
+          <Box
+            sx={{
+              alignItems: 'center',
+              backgroundColor: alpha('#2cf8ff', 0.16),
+              border: `1px solid ${alpha('#2cf8ff', 0.42)}`,
+              borderRadius: '50%',
+              color: '#9ffcff',
+              display: 'flex',
+              height: 38,
+              justifyContent: 'center',
+              width: 38,
+            }}
+          >
+            <CallRoundedIcon fontSize="small" />
+          </Box>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ color: theme.palette.text.primary, fontSize: 13, fontWeight: 800 }}>
+              {activeLandCallPeerName || 'QortalLand call'}
+            </Typography>
+            <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.92), fontSize: 11 }}>
+              {activeLandCallSubtitle}
+            </Typography>
+          </Box>
+          <IconButton
+            aria-label="End QortalLand call"
+            onClick={() => void landVoiceCall.hangUp()}
+            sx={{
+              backgroundColor: alpha('#ff4f6d', 0.16),
+              border: `1px solid ${alpha('#ff4f6d', 0.34)}`,
+              color: '#ff9aaa',
+              height: 34,
+              marginLeft: 'auto',
+              width: 34,
+              '&:hover': {
+                backgroundColor: alpha('#ff4f6d', 0.28),
+              },
+            }}
+          >
+            <CallEndRoundedIcon fontSize="small" />
+          </IconButton>
+        </Box>
       )}
       <Dialog
         open={Boolean(sendQortTarget)}
@@ -2743,6 +3374,68 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             }}
           >
             {isSendingQort ? 'Sending...' : 'Send QORT'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={Boolean(landVoiceCall.incomingCall)}
+        onClose={() => landVoiceCall.rejectCall()}
+        PaperProps={{
+          sx: {
+            background: `linear-gradient(180deg, ${alpha('#10182a', 0.98)}, ${alpha('#070914', 0.98)})`,
+            border: `1px solid ${alpha('#2cf8ff', 0.28)}`,
+            borderRadius: '12px',
+            boxShadow: `0 24px 70px ${alpha('#000', 0.55)}, 0 0 34px ${alpha('#2cf8ff', 0.08)}`,
+            color: theme.palette.text.primary,
+            width: 'min(390px, calc(100vw - 36px))',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: 1,
+            padding: '18px 20px 8px',
+          }}
+        >
+          <CallRoundedIcon sx={{ color: '#9ffcff' }} />
+          <Box>
+            <Typography sx={{ fontSize: 17, fontWeight: 800 }}>Incoming Call</Typography>
+            <Typography sx={{ color: theme.palette.text.secondary, fontSize: 12 }}>
+              {incomingLandCallName || 'QortalLand player'}
+            </Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ padding: '10px 20px 4px' }}>
+          <Typography sx={{ color: theme.palette.text.secondary, fontSize: 13, lineHeight: 1.45 }}>
+            Accept this QortalLand voice call?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ padding: '12px 20px 18px' }}>
+          <Button
+            onClick={() => landVoiceCall.rejectCall()}
+            sx={{ color: theme.palette.text.secondary, textTransform: 'none' }}
+          >
+            Decline
+          </Button>
+          <Button
+            onClick={() => void landVoiceCall.acceptCall()}
+            startIcon={<CallRoundedIcon fontSize="small" />}
+            sx={{
+              backgroundColor: alpha('#2cf8ff', 0.16),
+              border: `1px solid ${alpha('#2cf8ff', 0.38)}`,
+              borderRadius: '8px',
+              color: '#9ffcff',
+              fontWeight: 800,
+              minWidth: 108,
+              textTransform: 'none',
+              '&:hover': {
+                backgroundColor: alpha('#2cf8ff', 0.26),
+              },
+            }}
+          >
+            Accept
           </Button>
         </DialogActions>
       </Dialog>

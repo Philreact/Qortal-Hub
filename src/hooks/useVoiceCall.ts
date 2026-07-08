@@ -166,6 +166,50 @@ export interface UseVoiceCallReturn {
   toggleHearCall: () => void;
 }
 
+export type VoiceCallApi = {
+  initiate?: (
+    targetAddress: string,
+    chatId: string,
+    localAddress: string,
+    signature: string,
+    publicKey: string,
+    callId: string,
+    timestamp: number
+  ) => Promise<{ success: boolean; callId?: string; error?: string }>;
+  accept?: (
+    callId: string,
+    signature: string,
+    publicKey: string,
+    timestamp: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  reject?: (
+    callId: string,
+    reason?: string,
+    signature?: string,
+    publicKey?: string,
+    timestamp?: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  hangup?: (
+    callId: string,
+    signature: string,
+    publicKey: string,
+    timestamp: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  setLocalAddresses?: (
+    addresses: string[]
+  ) => Promise<{ success: boolean; error?: string }>;
+  onEvent?: (cb: (event: string, payload: unknown) => void) => () => void;
+};
+
+export interface UseVoiceCallOptions {
+  callApi?: VoiceCallApi;
+  skipSystemReadiness?: boolean;
+  skipDirectFriendValidation?: boolean;
+  getPeerPublicKey?: (address: string) => string | undefined;
+  createCallId?: () => string;
+  suppressGlobalSnackbars?: boolean;
+}
+
 async function signPresenceFields(
   fields: Record<string, unknown>,
   publicKey: string
@@ -205,12 +249,16 @@ async function isSystemReadyForCall(
   return true;
 }
 
-export function useVoiceCall(): UseVoiceCallReturn {
+export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallReturn {
   const userInfo = useAtomValue(userInfoAtom);
   const blockedAddresses = useAtomValue(blockedAddressesAtom);
   const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
   const setInfoSnackGlobal = useSetAtom(infoSnackGlobalAtom);
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const callApiRef = useRef<VoiceCallApi | null>(null);
+  callApiRef.current = options.callApi ?? ((window as any).call as VoiceCallApi | undefined) ?? null;
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [audioMode, setAudioMode] = useState<AudioMode>(null);
@@ -230,12 +278,20 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const setCallAudioDevicesRef = useRef(setCallAudioDevices);
   setCallAudioDevicesRef.current = setCallAudioDevices;
 
-  const showSystemNotReadyForCall = useCallback(
-    (message: string) => {
-      setInfoSnackGlobal({ type: 'error', message });
+  const showGlobalCallSnack = useCallback(
+    (type: 'error' | 'info', message: string) => {
+      if (optionsRef.current.suppressGlobalSnackbars === true) return;
+      setInfoSnackGlobal({ type, message });
       setOpenSnackGlobal(true);
     },
     [setInfoSnackGlobal, setOpenSnackGlobal]
+  );
+
+  const showSystemNotReadyForCall = useCallback(
+    (message: string) => {
+      showGlobalCallSnack('error', message);
+    },
+    [showGlobalCallSnack]
   );
 
   const callIdRef = useRef<string | null>(null);
@@ -721,7 +777,10 @@ export function useVoiceCall(): UseVoiceCallReturn {
       if (!roomId || !peer || !roomKey || !callSessionId || !myAddr) {
         return false;
       }
-      const friendPk = dmFriendsByAddressRef.current[peer]?.publicKey ?? '';
+      const friendPk =
+        dmFriendsByAddressRef.current[peer]?.publicKey ??
+        optionsRef.current.getPeerPublicKey?.(peer) ??
+        '';
       if (!friendPk) {
         pushDirectVoiceUiLog(
           'warn',
@@ -936,7 +995,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
           publicKeyRef.current
         )
           .then(({ signature, publicKey }) =>
-            (window as any).call?.hangup(id, signature, publicKey, timestamp)
+            callApiRef.current?.hangup?.(id, signature, publicKey, timestamp)
           )
           .catch(() => {})
           .finally(() => {
@@ -984,7 +1043,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
             { type: 'CALL_HANGUP', callId: id, timestamp },
             publicKeyRef.current
           );
-          await (window as any).call?.hangup(
+          await callApiRef.current?.hangup?.(
             id,
             signature,
             publicKey,
@@ -1254,25 +1313,21 @@ export function useVoiceCall(): UseVoiceCallReturn {
         'key-applied'
       );
       if (!ready) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (Reticulum route not ready)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (Reticulum route not ready)'
+        );
         endCall(true);
         return;
       }
       const mediaStarted = await startDirectVoiceMediaOnAudioSurface();
       if (!mediaStarted) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (audio surface unavailable)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (audio surface unavailable)'
+        );
         endCall(true);
         return;
       }
@@ -1288,8 +1343,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
       clearDmRoomKeyRequestTimers,
       endCall,
       resetDmVoiceMediaSession,
-      setInfoSnackGlobal,
-      setOpenSnackGlobal,
+      showGlobalCallSnack,
       startDirectVoiceMediaOnAudioSurface,
       waitForDmPeerMediaReadiness,
     ]
@@ -1548,13 +1602,11 @@ export function useVoiceCall(): UseVoiceCallReturn {
     const retHash = await fetchLocalReticulumDestinationHash();
     if (!retHash) {
       pushDirectVoiceUiLog('warn', 'Reticulum destination hash unavailable');
-      setInfoSnackGlobal({
-        type: 'info',
-        message:
-          i18n.t('core:voice_call.failed') ??
-          'Voice call failed (Reticulum not ready)',
-      });
-      setOpenSnackGlobal(true);
+      showGlobalCallSnack(
+        'info',
+        i18n.t('core:voice_call.failed') ??
+          'Voice call failed (Reticulum not ready)'
+      );
       endCall(true);
       return;
     }
@@ -1587,13 +1639,11 @@ export function useVoiceCall(): UseVoiceCallReturn {
         error: joinRes.error ?? 'unknown',
         success: joinRes.success,
       });
-      setInfoSnackGlobal({
-        type: 'info',
-        message:
-          i18n.t('core:voice_call.failed') ??
-          'Voice call failed (could not join media room)',
-      });
-      setOpenSnackGlobal(true);
+      showGlobalCallSnack(
+        'info',
+        i18n.t('core:voice_call.failed') ??
+          'Voice call failed (could not join media room)'
+      );
       endCall(true);
       return;
     }
@@ -1621,25 +1671,21 @@ export function useVoiceCall(): UseVoiceCallReturn {
         'caller-start'
       );
       if (!ready) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (Reticulum route not ready)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (Reticulum route not ready)'
+        );
         endCall(true);
         return;
       }
       const mediaStarted = await startDirectVoiceMediaOnAudioSurface();
       if (!mediaStarted) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (audio surface unavailable)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (audio surface unavailable)'
+        );
         endCall(true);
         return;
       }
@@ -1671,8 +1717,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
     scheduleDmRoomKeyReplays,
     scheduleDmRoomKeyRequests,
     sendCurrentDmRoomKey,
-    setInfoSnackGlobal,
-    setOpenSnackGlobal,
+    showGlobalCallSnack,
     startDirectVoiceMediaOnAudioSurface,
     startReticulumCapture,
     waitForDmPeerMediaReadiness,
@@ -1844,7 +1889,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
             { type: 'CALL_REJECT', callId: incCallId, timestamp: rejectTs },
             publicKeyRef.current
           );
-          await (window as any).call?.reject(
+          await callApiRef.current?.reject?.(
             incCallId,
             reason,
             signature,
@@ -1858,7 +1903,10 @@ export function useVoiceCall(): UseVoiceCallReturn {
             await rejectIncoming('blocked');
             break;
           }
-          if (!dmFriendsByAddressRef.current[incFrom]) {
+          if (
+            optionsRef.current.skipDirectFriendValidation !== true &&
+            !dmFriendsByAddressRef.current[incFrom]
+          ) {
             await rejectIncoming('not_friend');
             break;
           }
@@ -1931,8 +1979,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
           rejectReason === 'media unavailable'
             ? i18n.t('core:voice_call.rejected_media')
             : i18n.t('core:voice_call.rejected_declined');
-        setInfoSnackGlobal({ type: 'info', message });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack('info', message);
         endCall(false);
         break;
       }
@@ -1951,7 +1998,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
   };
 
   useEffect(() => {
-    const callAPI = (window as any).call;
+    const callAPI = callApiRef.current;
     if (!callAPI?.onEvent) {
       console.warn(
         '[DM voice] window.call is undefined — call IPC unavailable'
@@ -1994,7 +2041,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const reassertCallLocalAddress = useCallback(
     async (reason: string, opts?: { requireReticulumReady?: boolean }) => {
       const addr = userInfo?.address;
-      const callApi = (window as any).call;
+      const callApi = callApiRef.current;
       if (!addr) {
         if (
           registeredCallLocalAddressRef.current &&
@@ -2064,9 +2111,16 @@ export function useVoiceCall(): UseVoiceCallReturn {
       if (callStateRef.current !== 'idle') return;
       const localAddress = userInfo?.address;
       if (!localAddress) return;
-      if (!(await isSystemReadyForCall(showSystemNotReadyForCall))) return;
+      if (
+        optionsRef.current.skipSystemReadiness !== true &&
+        !(await isSystemReadyForCall(showSystemNotReadyForCall))
+      ) {
+        return;
+      }
 
-      const callId = crypto.randomUUID();
+      const callId =
+        optionsRef.current.createCallId?.() ||
+        crypto.randomUUID();
       const timestamp = Date.now();
       const myPublicKey = userInfo?.publicKey ?? '';
 
@@ -2087,7 +2141,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
       setCallMediaReady(false);
       updateCallState('calling');
 
-      const result = await (window as any).call?.initiate(
+      const result = await callApiRef.current?.initiate?.(
         targetAddress,
         chatId,
         localAddress,
@@ -2125,7 +2179,12 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const acceptCall = useCallback(async () => {
     const incoming = incomingCallRef.current;
     if (!incoming || callStateRef.current !== 'ringing') return;
-    if (!(await isSystemReadyForCall(showSystemNotReadyForCall))) return;
+    if (
+      optionsRef.current.skipSystemReadiness !== true &&
+      !(await isSystemReadyForCall(showSystemNotReadyForCall))
+    ) {
+      return;
+    }
 
     await reticulumTeardownChainRef.current.catch(() => {});
     isOutboundCallRef.current = false;
@@ -2163,7 +2222,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
       { type: 'CALL_ACCEPT', callId: incoming.callId, timestamp: acceptTs },
       publicKeyRef.current
     );
-    const acceptResult = await (window as any).call?.accept(
+    const acceptResult = await callApiRef.current?.accept?.(
       incoming.callId,
       signature,
       publicKey,
@@ -2207,7 +2266,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
       { type: 'CALL_REJECT', callId: incoming.callId, timestamp: rejectTs },
       publicKeyRef.current
     );
-    await (window as any).call?.reject(
+    await callApiRef.current?.reject?.(
       incoming.callId,
       'rejected',
       signature,
