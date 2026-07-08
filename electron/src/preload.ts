@@ -1502,6 +1502,12 @@ try {
           'reticulumChat:sendLandChat',
           message
         ) as Promise<{ success: boolean; error?: string }>,
+      sendLandAction: async (groupId: number, action: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandAction',
+          groupId,
+          action
+        ) as Promise<{ success: boolean; error?: string }>,
       requestResource: async (
         groupId: number,
         manifest: unknown,
@@ -1854,6 +1860,41 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:landChat', handler);
           ipcRenderer.send('reticulumChat:landChat:unsubscribe');
+        };
+      },
+      onLandAction: (
+        cb: (payload: {
+          groupId: number;
+          actionId: string;
+          actionType: string;
+          fromAddress: string;
+          toAddress: string;
+          targetSessionId: string;
+          amount: number;
+          roomId?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              actionId: string;
+              actionType: string;
+              fromAddress: string;
+              toAddress: string;
+              targetSessionId: string;
+              amount: number;
+              roomId?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landAction', handler);
+        ipcRenderer.send('reticulumChat:landAction:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landAction', handler);
+          ipcRenderer.send('reticulumChat:landAction:unsubscribe');
         };
       },
     });
@@ -2012,6 +2053,12 @@ try {
           'reticulumChat:sendLandChat',
           message
         ) as Promise<{ success: boolean; error?: string }>,
+      sendLandAction: async (groupId: number, action: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandAction',
+          groupId,
+          action
+        ) as Promise<{ success: boolean; error?: string }>,
       requestResource: async (
         groupId: number,
         manifest: unknown,
@@ -2364,6 +2411,41 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:landChat', handler);
           ipcRenderer.send('reticulumChat:landChat:unsubscribe');
+        };
+      },
+      onLandAction: (
+        cb: (payload: {
+          groupId: number;
+          actionId: string;
+          actionType: string;
+          fromAddress: string;
+          toAddress: string;
+          targetSessionId: string;
+          amount: number;
+          roomId?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              actionId: string;
+              actionType: string;
+              fromAddress: string;
+              toAddress: string;
+              targetSessionId: string;
+              amount: number;
+              roomId?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landAction', handler);
+        ipcRenderer.send('reticulumChat:landAction:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landAction', handler);
+          ipcRenderer.send('reticulumChat:landAction:unsubscribe');
         };
       },
     });

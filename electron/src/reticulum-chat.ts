@@ -802,6 +802,21 @@ export type ReticulumChatWire =
       o?: string;
       h?: number;
     }
+  | {
+      t: 'RCHAT';
+      k: 'land_action';
+      g: number;
+      id: string;
+      at: string;
+      a: string;
+      to: string;
+      s: string;
+      amt: number;
+      u?: string;
+      ts: number;
+      o?: string;
+      h?: number;
+    }
   | { t: 'RCHAT'; k: 'typing'; g: number; c: string; a: string; ts: number; active: boolean; o?: string; h?: number };
 
 export interface ReticulumChatManagerOptions {
@@ -4022,6 +4037,63 @@ export class ReticulumChatManager extends EventEmitter {
     void this.sendLocalGroupLiveControl(wire);
   }
 
+  async sendLandAction(
+    groupId: number,
+    action: {
+      actionId?: unknown;
+      actionType?: unknown;
+      fromAddress?: unknown;
+      toAddress?: unknown;
+      targetSessionId?: unknown;
+      amount?: unknown;
+      roomId?: unknown;
+    }
+  ): Promise<ReticulumSendResult> {
+    this.assertLocalGroupMember(groupId);
+    if (!this.subscribedGroups.has(groupId)) {
+      this.subscribeGroup(groupId);
+    }
+    const actionId = typeof action.actionId === 'string' ? action.actionId.trim().slice(0, 64) : '';
+    const actionType = typeof action.actionType === 'string' ? action.actionType.trim().slice(0, 32) : '';
+    const fromAddress = typeof action.fromAddress === 'string' ? action.fromAddress.trim() : '';
+    const toAddress = typeof action.toAddress === 'string' ? action.toAddress.trim() : '';
+    const targetSessionId =
+      typeof action.targetSessionId === 'string' ? action.targetSessionId.trim().slice(0, 24) : '';
+    const amount = Math.max(0, Math.min(1_000_000_000, Number(action.amount) || 0));
+    const roomId = typeof action.roomId === 'string' ? action.roomId.trim().toLowerCase().slice(0, 16) : '';
+    if (!actionId || actionType !== 'qort_received' || !fromAddress || !toAddress || !targetSessionId || amount <= 0) {
+      return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand action' };
+    }
+    const [fromIsMember, toIsMember] = await Promise.all([
+      this.isValidatedGroupMember(groupId, fromAddress),
+      this.isValidatedGroupMember(groupId, toAddress),
+    ]);
+    if (!fromIsMember || !toIsMember) {
+      return { ok: false, reason: 'send-command-failed', error: 'QortalLand action participant is not a group member' };
+    }
+    const wire: Extract<ReticulumChatWire, { k: 'land_action' }> = {
+      t: 'RCHAT',
+      k: 'land_action',
+      g: groupId,
+      id: actionId,
+      at: actionType,
+      a: fromAddress,
+      to: toAddress,
+      s: targetSessionId,
+      amt: Number(amount.toFixed(8)),
+      ...(roomId ? { u: roomId } : {}),
+      ts: this.now(),
+    };
+    if (!wireFitsReticulum(wire)) {
+      return { ok: false, reason: 'send-command-failed', error: 'QortalLand action exceeds Reticulum wire size' };
+    }
+    const result = await this.sendLocalGroupLiveControl(wire);
+    if (result.ok === true) {
+      this.applyLandAction(groupId, wire);
+    }
+    return result;
+  }
+
   async sendLandChat(message: ReticulumLandChatMessage): Promise<ReticulumSendResult> {
     if (!validateReticulumLandChatMessageShape(message, this.now())) {
       return { ok: false, reason: 'send-command-failed', error: 'Invalid QortalLand chat message' };
@@ -4491,7 +4563,8 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'feed_req' &&
       kind !== 'range_req' &&
       kind !== 'event_batch' &&
-      kind !== 'land_chat_hint'
+      kind !== 'land_chat_hint' &&
+      kind !== 'land_action'
     ) {
       return false;
     }
@@ -4731,6 +4804,20 @@ export class ReticulumChatManager extends EventEmitter {
         if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
         if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
         void this.handleLandChatHint(groupId, wire as Extract<ReticulumChatWire, { k: 'land_chat_hint' }>, peerHash);
+        return;
+      }
+      case 'land_action':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.forwardLandActionToInterestRoutes(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'land_action' }>,
+          peerHash
+        );
+        if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
+        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+        void this.handleLandActionWire(groupId, wire as Extract<ReticulumChatWire, { k: 'land_action' }>);
         return;
       }
       case 'typing':
@@ -5886,6 +5973,7 @@ export class ReticulumChatManager extends EventEmitter {
       | Extract<ReticulumChatWire, { k: 'land_auth_req' }>
       | Extract<ReticulumChatWire, { k: 'land_state' }>
       | Extract<ReticulumChatWire, { k: 'land_chat_hint' }>
+      | Extract<ReticulumChatWire, { k: 'land_action' }>
   ): Promise<ReticulumSendResult> {
     const groupId = Number(wire.g);
     if (!Number.isInteger(groupId) || groupId <= 0) {
@@ -6065,6 +6153,44 @@ export class ReticulumChatManager extends EventEmitter {
     await this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
     this.applyLandState(groupId, wire);
+  }
+
+  private async handleLandActionWire(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_action' }>
+  ): Promise<void> {
+    const actionId = typeof wire.id === 'string' ? wire.id.trim() : '';
+    const actionType = typeof wire.at === 'string' ? wire.at.trim() : '';
+    const fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const toAddress = typeof wire.to === 'string' ? wire.to.trim() : '';
+    const targetSessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    const amount = Number(wire.amt);
+    const timestamp = Number(wire.ts);
+    if (
+      !actionId ||
+      actionType !== 'qort_received' ||
+      !fromAddress ||
+      !toAddress ||
+      !targetSessionId ||
+      !Number.isFinite(amount) ||
+      amount <= 0 ||
+      !Number.isFinite(timestamp) ||
+      timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS ||
+      timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS
+    ) {
+      return;
+    }
+    const [fromIsMember, toIsMember] = await Promise.all([
+      this.isValidatedGroupMember(groupId, fromAddress),
+      this.isValidatedGroupMember(groupId, toAddress),
+    ]);
+    if (!fromIsMember || !toIsMember) {
+      loggerWarn(
+        `[ReticulumChat] land_action_rejected group=${groupId} action=${actionType} reason=participant_not_group_member`
+      );
+      return;
+    }
+    this.applyLandAction(groupId, wire);
   }
 
   private verifyLandStateWire(
@@ -6298,6 +6424,55 @@ export class ReticulumChatManager extends EventEmitter {
       this.forwardedGroupControlKeys.set(
         key,
         this.now() + RETICULUM_LAND_CHAT_HINT_DEDUPE_MS
+      );
+      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+        if (result.ok === false) {
+          this.pruneGroupInterestRoutesForNextHop(groupId, route.reversePeerHash, result.reason);
+        }
+      });
+    }
+  }
+
+  private async forwardLandActionToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_action' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    const inbound = this.routePeerHash(inboundPeerHash);
+    const origin = this.routePeerHash(wire.o) ?? inbound;
+    if (!inbound || !origin) return;
+    const hops = Math.max(
+      0,
+      Math.min(
+        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
+      )
+    );
+    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
+    this.pruneGroupInterestRoutes();
+    this.pruneGroupControlRoutes();
+    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
+    const local = this.localPeerHash();
+    const forwarded: Extract<ReticulumChatWire, { k: 'land_action' }> = {
+      ...wire,
+      o: this.compactRoutePeerHash(origin),
+      h: hops + 1,
+    };
+    const payloadKey = this.hashControlPayload(forwarded);
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId) continue;
+      if (route.reversePeerHash === inbound) continue;
+      if (local && route.originPeerHash === local) continue;
+      const key = this.groupControlRouteKey(
+        'land_action',
+        groupId,
+        route.originPeerHash,
+        `${inbound}:${payloadKey}`
+      );
+      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
+      this.forwardedGroupControlKeys.set(
+        key,
+        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
       );
       void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
         if (result.ok === false) {
@@ -13909,6 +14084,40 @@ export class ReticulumChatManager extends EventEmitter {
       roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
+      timestamp: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : this.now(),
+    });
+  }
+
+  private applyLandAction(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_action' }>
+  ): void {
+    const actionId = typeof wire.id === 'string' ? wire.id.trim() : '';
+    const actionType = typeof wire.at === 'string' ? wire.at.trim() : '';
+    const fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const toAddress = typeof wire.to === 'string' ? wire.to.trim() : '';
+    const targetSessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    const amount = Number(wire.amt);
+    if (
+      !actionId ||
+      actionType !== 'qort_received' ||
+      !fromAddress ||
+      !toAddress ||
+      !targetSessionId ||
+      !Number.isFinite(amount) ||
+      amount <= 0
+    ) {
+      return;
+    }
+    this.emit('landAction', {
+      groupId,
+      actionId,
+      actionType,
+      fromAddress,
+      toAddress,
+      targetSessionId,
+      amount,
+      roomId: typeof wire.u === 'string' ? wire.u : '',
       timestamp: Number.isFinite(Number(wire.ts)) ? Number(wire.ts) : this.now(),
     });
   }

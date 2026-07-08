@@ -625,6 +625,10 @@ declare global {
       sendLandChat: (
         message: unknown
       ) => Promise<{ success: boolean; error?: string }>;
+      sendLandAction: (
+        groupId: number,
+        action: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
       requestResource: (
         groupId: number,
         manifest: unknown,
@@ -772,6 +776,19 @@ declare global {
           sequence: number;
           timestamp: number;
           text: string;
+        }) => void
+      ) => () => void;
+      onLandAction: (
+        cb: (payload: {
+          groupId: number;
+          actionId: string;
+          actionType: string;
+          fromAddress: string;
+          toAddress: string;
+          targetSessionId: string;
+          amount: number;
+          roomId?: string;
+          timestamp?: number;
         }) => void
       ) => () => void;
       onResource: (

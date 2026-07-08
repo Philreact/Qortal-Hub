@@ -3235,6 +3235,7 @@ const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandStateSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandChatSubscribers = new Set<Electron.WebContents>();
+const reticulumChatLandActionSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
@@ -3294,6 +3295,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumChatLandChatSubscribers,
       'reticulumChat:landChat',
+      payload
+    )
+  );
+
+  manager.on('landAction', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatLandActionSubscribers,
+      'reticulumChat:landAction',
       payload
     )
   );
@@ -3675,6 +3684,45 @@ ipcMain.handle(
       return {
         success: false,
         error: err instanceof Error ? err.message : 'QortalLand chat send failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:sendLandAction',
+  async (
+    _event,
+    groupId: number,
+    action: {
+      actionId?: unknown;
+      actionType?: unknown;
+      fromAddress?: unknown;
+      toAddress?: unknown;
+      targetSessionId?: unknown;
+      amount?: unknown;
+      roomId?: unknown;
+    }
+  ) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      const result = await manager.sendLandAction(groupId, action);
+      if (!result.ok) {
+        const failed = result as Exclude<typeof result, { ok: true }>;
+        return { success: false, error: failed.error ?? failed.reason };
+      }
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'QortalLand action send failed',
       };
     }
   }
@@ -4332,6 +4380,12 @@ ipcMain.on('reticulumChat:landChat:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:landChat:unsubscribe', (event) => {
   reticulumChatLandChatSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:landAction:subscribe', (event) => {
+  reticulumChatLandActionSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:landAction:unsubscribe', (event) => {
+  reticulumChatLandActionSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
   reticulumChatSummarySubscribers.add(event.sender);

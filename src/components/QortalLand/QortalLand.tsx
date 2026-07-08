@@ -607,16 +607,26 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       }
 
       const actionId = createLandChatMessageId();
-      await publishLandEventPayload({
-        qortalLandType: 'action',
-        actionType: 'qort_received',
-        actionId,
-        fromAddress: myAddress,
-        toAddress: sendQortTarget.authorAddress,
-        targetSessionId: sendQortTarget.sessionId,
-        amount,
-        roomId: sendQortTarget.roomId,
-      });
+      let actionResult: { success: boolean; error?: string } | null = null;
+      try {
+        actionResult = await window.reticulumChat?.sendLandAction?.(
+          groupId,
+          {
+            actionId,
+            actionType: 'qort_received',
+            fromAddress: myAddress,
+            toAddress: sendQortTarget.authorAddress,
+            targetSessionId: sendQortTarget.sessionId,
+            amount,
+            roomId: sendQortTarget.roomId,
+          }
+        ) ?? null;
+      } catch (error) {
+        console.warn('Failed to send QortalLand QORT action:', error);
+      }
+      if (actionResult && actionResult.success !== true) {
+        console.warn('Failed to send QortalLand QORT action:', actionResult.error);
+      }
       addQortReceivedAnimation(
         actionId,
         myAddress,
@@ -634,9 +644,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     }
   }, [
     addQortReceivedAnimation,
+    groupId,
     isSendingQort,
     myAddress,
-    publishLandEventPayload,
     qortBalance,
     sendQortAmount,
     sendQortTarget,
@@ -737,19 +747,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         return;
       }
       if (decoded.qortalLand !== true) return;
-      if (decoded.qortalLandType === 'action' && decoded.actionType === 'qort_received') {
-        const actionId = typeof decoded.actionId === 'string' ? decoded.actionId : payload.eventId;
-        const fromAddress = typeof decoded.fromAddress === 'string' ? decoded.fromAddress : payload.authorAddress;
-        const toAddress = typeof decoded.toAddress === 'string' ? decoded.toAddress : '';
-        const targetSessionId = typeof decoded.targetSessionId === 'string' ? decoded.targetSessionId : '';
-        const amount = finiteNumber(decoded.amount);
-        if (!toAddress || !targetSessionId || amount === null || amount <= 0) return;
-        const roomId = normalizeLandRoomId(decoded.roomId);
-        queuePrimaryNameLookups([fromAddress, toAddress]);
-        if (landActionAnimationsRef.current.has(actionId)) return;
-        addQortReceivedAnimation(actionId, fromAddress, toAddress, targetSessionId, amount, roomId);
-        return;
-      }
       const text = String(decoded.messageText || decoded.message || '').trim();
       if (!text) return;
       const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : sessionId;
@@ -769,8 +766,34 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     return () => {
       unsubscribe?.();
     };
-  }, [addQortReceivedAnimation, groupId, myAddress, queuePrimaryNameLookups, sessionId]);
+  }, [groupId, myAddress, queuePrimaryNameLookups, sessionId]);
 
+  useEffect(() => {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
+    const unsubscribe = window.reticulumChat?.onLandAction?.((payload) => {
+      if (payload.groupId !== groupId) return;
+      if (payload.actionType !== 'qort_received') return;
+      const actionId = typeof payload.actionId === 'string' ? payload.actionId : '';
+      const fromAddress = typeof payload.fromAddress === 'string' ? payload.fromAddress : '';
+      const toAddress = typeof payload.toAddress === 'string' ? payload.toAddress : '';
+      const targetSessionId = typeof payload.targetSessionId === 'string' ? payload.targetSessionId : '';
+      const amount = finiteNumber(payload.amount);
+      if (!actionId || !fromAddress || !toAddress || !targetSessionId || amount === null || amount <= 0) return;
+      if (landActionAnimationsRef.current.has(actionId)) return;
+      queuePrimaryNameLookups([fromAddress, toAddress]);
+      addQortReceivedAnimation(
+        actionId,
+        fromAddress,
+        toAddress,
+        targetSessionId,
+        amount,
+        normalizeLandRoomId(payload.roomId)
+      );
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [addQortReceivedAnimation, groupId, myAddress, queuePrimaryNameLookups]);
 
   useEffect(() => {
     if (reticulumReady !== true || !Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
