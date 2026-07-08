@@ -1,6 +1,25 @@
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import PaidRoundedIcon from '@mui/icons-material/PaidRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
-import { Box, IconButton, TextField, Typography, useTheme } from '@mui/material';
+import {
+  Box,
+  Button,
+  ClickAwayListener,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  InputAdornment,
+  Stack,
+  TextField,
+  Typography,
+  alpha,
+  useTheme,
+} from '@mui/material';
+import { useAtomValue } from 'jotai';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { balanceAtom } from '../../atoms/global';
 import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.png';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 
@@ -43,6 +62,27 @@ type LandChatBubble = {
   expiresAt: number;
 };
 
+type LandActionTarget = {
+  key: string;
+  authorAddress: string;
+  sessionId: string;
+  roomId: LandRoomId;
+  menuX: number;
+  menuY: number;
+};
+
+type LandActionAnimation = {
+  actionId: string;
+  type: 'qort_received';
+  fromAddress: string;
+  toAddress: string;
+  targetSessionId: string;
+  amount: number;
+  roomId: LandRoomId;
+  createdAt: number;
+  expiresAt: number;
+};
+
 type QortalLandProps = {
   groupId: number;
   groupName: string;
@@ -65,6 +105,7 @@ const LAND_REMOTE_MAX_EXTRAPOLATE_DISTANCE = 180;
 const LAND_CHAT_BUBBLE_TTL_MS = 15000;
 const LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const LAND_CHAT_MAX_INPUT_CHARS = 420;
+const LAND_ACTION_ANIMATION_TTL_MS = 3200;
 const QORTAL_LAND_CHANNEL_ID = 'qortal-land';
 const LAND_CHARACTER_SPRITESHEET_KEY = 'qortalland-default-character';
 const LAND_CHARACTER_IDLE_SIDE_ANIM_KEY = 'qortalland-default-character-idle-side';
@@ -160,6 +201,26 @@ const clampNumber = (value: number, min: number, max: number): number => {
 const finiteNumber = (value: unknown): number | null => {
   const next = Number(value);
   return Number.isFinite(next) ? next : null;
+};
+
+const normalizeQortBalance = (value: unknown): number => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return normalizeQortBalance(record.balance ?? record.confirmed ?? record.qort ?? record.QORT);
+  }
+  return 0;
+};
+
+const formatQortAmount = (value: number): string => {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 8,
+    minimumFractionDigits: 0,
+  }).format(value);
 };
 
 const estimateRemoteInterpolationMs = (distance: number, stateGapMs: number): number => {
@@ -271,11 +332,13 @@ const clampLandPosition = (
 
 export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const theme = useTheme();
+  const balance = useAtomValue(balanceAtom);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
   const movementKeysRef = useRef<Set<string>>(new Set());
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
   const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
+  const landActionAnimationsRef = useRef<Map<string, LandActionAnimation>>(new Map());
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
   const primaryNameLookupTimerRef = useRef<number | null>(null);
@@ -296,7 +359,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [actionTarget, setActionTarget] = useState<LandActionTarget | null>(null);
+  const [sendQortTarget, setSendQortTarget] = useState<LandActionTarget | null>(null);
+  const [sendQortAmount, setSendQortAmount] = useState('1');
+  const [sendQortError, setSendQortError] = useState('');
+  const [isSendingQort, setIsSendingQort] = useState(false);
   const sessionId = useMemo(() => createSessionId(), []);
+  const qortBalance = useMemo(() => normalizeQortBalance(balance), [balance]);
 
   const queuePrimaryNameLookups = useCallback((addresses: string[]) => {
     const missingAddresses = addresses
@@ -342,6 +411,73 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!actionTarget) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setActionTarget(null);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [actionTarget]);
+
+  const publishLandEventPayload = useCallback(async (payload: Record<string, unknown>) => {
+    const timestamp = Date.now();
+    const eventId = createLandChatMessageId();
+    const syncState = await window.reticulumChat?.getSyncState?.(groupId);
+    const latestAuthorSeq = Math.max(
+      chatAuthorSeqRef.current,
+      Number(syncState?.[myAddress] ?? 0) || 0
+    );
+    const authorSeq = latestAuthorSeq + 1;
+    const encryptedPayload = JSON.stringify({
+      ...payload,
+      qortalLand: true,
+      sessionId,
+      version: 1,
+    });
+    const payloadHash = await sha256Hex(encryptedPayload);
+    const baseFields = {
+      eventId,
+      groupId,
+      channelId: QORTAL_LAND_CHANNEL_ID,
+      authorSeq,
+      timestamp,
+      eventType: 'message',
+      targetEventId: null,
+      replyToEventId: null,
+      encryptedPayload,
+      payloadHash,
+      mentionAddressHashes: [],
+    };
+    const signed = await window.sendMessage?.('signReticulumChatEvent', baseFields, 10000) as
+      | {
+          authorAddress?: string;
+          authorPublicKey?: string;
+          signature?: string;
+          error?: string;
+        }
+      | undefined;
+    if (!signed || signed.error) {
+      throw new Error(signed?.error || 'Unable to sign QortalLand event');
+    }
+    if (signed.authorAddress !== myAddress) {
+      throw new Error('Signed QortalLand author mismatch');
+    }
+    const result = await window.reticulumChat?.publishEvent?.({
+      ...baseFields,
+      authorAddress: signed.authorAddress,
+      authorPublicKey: signed.authorPublicKey,
+      signature: signed.signature,
+    });
+    if (!result?.success) {
+      throw new Error(result?.error || 'QortalLand event send failed');
+    }
+    chatAuthorSeqRef.current = authorSeq;
+    return { eventId, timestamp };
+  }, [groupId, myAddress, sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -393,61 +529,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     setIsSendingChat(true);
     setChatError('');
     try {
-      const timestamp = Date.now();
-      const eventId = createLandChatMessageId();
-      const syncState = await window.reticulumChat?.getSyncState?.(groupId);
-      const latestAuthorSeq = Math.max(
-        chatAuthorSeqRef.current,
-        Number(syncState?.[myAddress] ?? 0) || 0
-      );
-      const authorSeq = latestAuthorSeq + 1;
       const landSequence = landChatSequenceRef.current + 1;
       landChatSequenceRef.current = landSequence;
-      const encryptedPayload = JSON.stringify({
+      await publishLandEventPayload({
+        qortalLandType: 'chat',
         messageText: text,
-        qortalLand: true,
-        sessionId,
         landSequence,
-        version: 1,
       });
-      const payloadHash = await sha256Hex(encryptedPayload);
-      const baseFields = {
-        eventId,
-        groupId,
-        channelId: QORTAL_LAND_CHANNEL_ID,
-        authorSeq,
-        timestamp,
-        eventType: 'message',
-        targetEventId: null,
-        replyToEventId: null,
-        encryptedPayload,
-        payloadHash,
-        mentionAddressHashes: [],
-      };
-      const signed = await window.sendMessage?.('signReticulumChatEvent', baseFields, 10000) as
-        | {
-            authorAddress?: string;
-            authorPublicKey?: string;
-            signature?: string;
-            error?: string;
-          }
-        | undefined;
-      if (!signed || signed.error) {
-        throw new Error(signed?.error || 'Unable to sign QortalLand chat');
-      }
-      if (signed.authorAddress !== myAddress) {
-        throw new Error('Signed QortalLand chat author mismatch');
-      }
-      const result = await window.reticulumChat?.publishEvent?.({
-        ...baseFields,
-        authorAddress: signed.authorAddress,
-        authorPublicKey: signed.authorPublicKey,
-        signature: signed.signature,
-      });
-      if (!result?.success) {
-        throw new Error(result?.error || 'QortalLand chat send failed');
-      }
-      chatAuthorSeqRef.current = authorSeq;
       setChatText('');
       if (isEditableTarget(document.activeElement)) {
         (document.activeElement as HTMLElement).blur();
@@ -457,7 +545,102 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     } finally {
       setIsSendingChat(false);
     }
-  }, [chatText, groupId, isSendingChat, myAddress, reticulumReady, sessionId]);
+  }, [chatText, isSendingChat, publishLandEventPayload, reticulumReady]);
+
+  const addQortReceivedAnimation = useCallback((
+    actionId: string,
+    fromAddress: string,
+    toAddress: string,
+    targetSessionId: string,
+    amount: number,
+    roomId: LandRoomId
+  ) => {
+    const now = Date.now();
+    landActionAnimationsRef.current.set(actionId, {
+      actionId,
+      type: 'qort_received',
+      fromAddress,
+      toAddress,
+      targetSessionId,
+      amount,
+      roomId,
+      createdAt: now,
+      expiresAt: now + LAND_ACTION_ANIMATION_TTL_MS,
+    });
+  }, []);
+
+  const openSendQortDialog = useCallback((target: LandActionTarget) => {
+    setActionTarget(null);
+    setSendQortTarget(target);
+    setSendQortAmount('1');
+    setSendQortError('');
+  }, []);
+
+  const closeSendQortDialog = useCallback(() => {
+    if (isSendingQort) return;
+    setSendQortTarget(null);
+    setSendQortError('');
+  }, [isSendingQort]);
+
+  const handleSendQort = useCallback(async () => {
+    if (!sendQortTarget || isSendingQort) return;
+    const amount = Number(sendQortAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setSendQortError('Enter a valid QORT amount');
+      return;
+    }
+    if (amount > qortBalance) {
+      setSendQortError('Insufficient QORT balance');
+      return;
+    }
+    setIsSendingQort(true);
+    setSendQortError('');
+    try {
+      const paymentResult = await window.sendMessage?.('sendCoin', {
+        amount,
+        receiver: sendQortTarget.authorAddress,
+        password: null,
+        skipConfirmPassword: true,
+      }, 120000) as { payload?: unknown; error?: string } | undefined;
+      if (!paymentResult || paymentResult.error) {
+        throw new Error(paymentResult?.error || 'QORT payment failed');
+      }
+
+      const actionId = createLandChatMessageId();
+      await publishLandEventPayload({
+        qortalLandType: 'action',
+        actionType: 'qort_received',
+        actionId,
+        fromAddress: myAddress,
+        toAddress: sendQortTarget.authorAddress,
+        targetSessionId: sendQortTarget.sessionId,
+        amount,
+        roomId: sendQortTarget.roomId,
+      });
+      addQortReceivedAnimation(
+        actionId,
+        myAddress,
+        sendQortTarget.authorAddress,
+        sendQortTarget.sessionId,
+        amount,
+        sendQortTarget.roomId
+      );
+      setSendQortTarget(null);
+      setSendQortAmount('1');
+    } catch (error) {
+      setSendQortError(error instanceof Error ? error.message : 'QORT payment failed');
+    } finally {
+      setIsSendingQort(false);
+    }
+  }, [
+    addQortReceivedAnimation,
+    isSendingQort,
+    myAddress,
+    publishLandEventPayload,
+    qortBalance,
+    sendQortAmount,
+    sendQortTarget,
+  ]);
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -554,6 +737,19 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         return;
       }
       if (decoded.qortalLand !== true) return;
+      if (decoded.qortalLandType === 'action' && decoded.actionType === 'qort_received') {
+        const actionId = typeof decoded.actionId === 'string' ? decoded.actionId : payload.eventId;
+        const fromAddress = typeof decoded.fromAddress === 'string' ? decoded.fromAddress : payload.authorAddress;
+        const toAddress = typeof decoded.toAddress === 'string' ? decoded.toAddress : '';
+        const targetSessionId = typeof decoded.targetSessionId === 'string' ? decoded.targetSessionId : '';
+        const amount = finiteNumber(decoded.amount);
+        if (!toAddress || !targetSessionId || amount === null || amount <= 0) return;
+        const roomId = normalizeLandRoomId(decoded.roomId);
+        queuePrimaryNameLookups([fromAddress, toAddress]);
+        if (landActionAnimationsRef.current.has(actionId)) return;
+        addQortReceivedAnimation(actionId, fromAddress, toAddress, targetSessionId, amount, roomId);
+        return;
+      }
       const text = String(decoded.messageText || decoded.message || '').trim();
       if (!text) return;
       const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : sessionId;
@@ -573,7 +769,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     return () => {
       unsubscribe?.();
     };
-  }, [groupId, myAddress, queuePrimaryNameLookups, sessionId]);
+  }, [addQortReceivedAnimation, groupId, myAddress, queuePrimaryNameLookups, sessionId]);
 
 
   useEffect(() => {
@@ -617,6 +813,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         private remotes = new Map<string, any>();
         private remoteLabels = new Map<string, any>();
         private chatBubbles = new Map<string, { container: any; background: any; text: any }>();
+        private actionAnimations = new Map<string, { container: any; coins: any[]; text: any }>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
@@ -674,6 +871,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             landChatBubblesRef.current.clear();
             for (const [messageId, bubbleObjects] of this.chatBubbles.entries()) {
               this.removeChatBubble(messageId, bubbleObjects);
+            }
+          }
+          try {
+            this.updateActionAnimations();
+          } catch (error) {
+            console.warn('[QortalLand] Action animation update failed', error);
+            landActionAnimationsRef.current.clear();
+            for (const [actionId, animationObjects] of this.actionAnimations.entries()) {
+              this.removeActionAnimation(actionId, animationObjects);
             }
           }
         }
@@ -1750,6 +1956,99 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
         }
 
+        private createQortActionAnimation(animation: LandActionAnimation) {
+          const container = this.add.container(0, 0);
+          const glow = this.add.graphics();
+          glow.fillStyle(0xffd65c, 0.2);
+          glow.fillCircle(0, 0, 34);
+          glow.lineStyle(2, 0xffd65c, 0.5);
+          glow.strokeCircle(0, 0, 24);
+          const text = this.add.text(0, -4, `+${formatQortAmount(animation.amount)} QORT`, {
+            align: 'center',
+            color: '#fff4c7',
+            fontFamily: 'Inter, Arial, sans-serif',
+            fontSize: '16px',
+            fontWeight: '700',
+            stroke: '#2a1600',
+            strokeThickness: 5,
+          }).setOrigin(0.5);
+          const coins = Array.from({ length: 7 }, (_, index) => {
+            const coin = this.add.graphics();
+            coin.fillStyle(0xffc84a, 1);
+            coin.fillCircle(0, 0, 5 + (index % 2));
+            coin.lineStyle(1, 0xfff2a8, 0.86);
+            coin.strokeCircle(0, 0, 5 + (index % 2));
+            container.add(coin);
+            return coin;
+          });
+          container.add([glow, text]);
+          container.setDepth(12000);
+          return { container, coins, text };
+        }
+
+        private removeActionAnimation(
+          actionId: string,
+          animationObjects = this.actionAnimations.get(actionId)
+        ) {
+          if (!animationObjects) return;
+          this.actionAnimations.delete(actionId);
+          try {
+            if (typeof animationObjects.container?.removeAll === 'function') {
+              animationObjects.container.removeAll(true);
+            }
+            if (animationObjects.container?.scene) {
+              animationObjects.container.destroy();
+            }
+          } catch (error) {
+            console.warn('[QortalLand] Failed to remove action animation', error);
+          }
+        }
+
+        private updateActionAnimations() {
+          const now = Date.now();
+          for (const [actionId, animation] of landActionAnimationsRef.current.entries()) {
+            if (animation.expiresAt > now) continue;
+            landActionAnimationsRef.current.delete(actionId);
+          }
+          for (const [actionId, animationObjects] of this.actionAnimations.entries()) {
+            if (landActionAnimationsRef.current.has(actionId)) continue;
+            this.removeActionAnimation(actionId, animationObjects);
+          }
+          for (const [actionId, animation] of landActionAnimationsRef.current.entries()) {
+            let avatar: any | undefined;
+            if (animation.toAddress === myAddress && animation.targetSessionId === sessionId) {
+              avatar = this.localAvatar;
+            } else {
+              avatar = this.remotes.get(`${animation.toAddress}:${animation.targetSessionId}`);
+            }
+            let animationObjects = this.actionAnimations.get(actionId);
+            if (!animationObjects) {
+              animationObjects = this.createQortActionAnimation(animation);
+              this.actionAnimations.set(actionId, animationObjects);
+            }
+            if (!avatar || animation.roomId !== currentRoomRef.current) {
+              animationObjects.container.setVisible(false);
+              continue;
+            }
+            const ageMs = now - animation.createdAt;
+            const progress = Phaser.Math.Clamp(ageMs / LAND_ACTION_ANIMATION_TTL_MS, 0, 1);
+            const fadeAlpha = progress > 0.72 ? Phaser.Math.Clamp((1 - progress) / 0.28, 0, 1) : 1;
+            const scale = Math.abs(avatar.scaleY || 1);
+            const rise = 12 + progress * 46;
+            animationObjects.container.setVisible(true);
+            animationObjects.container.setAlpha(fadeAlpha);
+            animationObjects.container.setPosition(avatar.x, avatar.y - LAND_CHARACTER_CHAT_BUBBLE_OFFSET * scale - rise);
+            animationObjects.container.setDepth(avatar.depth + 180);
+            animationObjects.text.setScale(1 + Math.sin(progress * Math.PI) * 0.08);
+            animationObjects.coins.forEach((coin, index) => {
+              const angle = progress * Math.PI * 2.5 + index * 0.9;
+              const radius = 14 + progress * (28 + index * 2);
+              coin.setPosition(Math.cos(angle) * radius, 10 + Math.sin(angle) * radius * 0.55);
+              coin.setAlpha(fadeAlpha * (0.95 - progress * 0.25));
+            });
+          }
+        }
+
         private updateLocalPlayer(delta: number) {
           if (!this.localAvatar) return;
           const step = (190 * delta) / 1000;
@@ -1895,6 +2194,35 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                 0.56
               ).color;
               avatar = this.createAvatar(player.x, player.y, color, false);
+              avatar.setInteractive({
+                alphaTolerance: 8,
+                pixelPerfect: true,
+                useHandCursor: true,
+              });
+              avatar.on('pointerdown', (pointer: any, _localX: number, _localY: number, event: any) => {
+                event?.stopPropagation?.();
+                const bounds = containerRef.current?.getBoundingClientRect();
+                if (!bounds) return;
+                const pointerEvent = pointer?.event as PointerEvent | undefined;
+                const menuX = clampNumber(
+                  (pointerEvent?.clientX ?? bounds.left + bounds.width / 2) - bounds.left,
+                  12,
+                  Math.max(12, bounds.width - 236)
+                );
+                const menuY = clampNumber(
+                  (pointerEvent?.clientY ?? bounds.top + bounds.height / 2) - bounds.top,
+                  54,
+                  Math.max(54, bounds.height - 148)
+                );
+                setActionTarget({
+                  key,
+                  authorAddress: player.authorAddress,
+                  sessionId: player.sessionId,
+                  roomId: player.roomId,
+                  menuX,
+                  menuY,
+                });
+              });
               this.remotes.set(key, avatar);
               const label = this.add
                 .text(
@@ -2002,8 +2330,24 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       gameRef.current = null;
       remotePlayersRef.current.clear();
       landChatBubblesRef.current.clear();
+      landActionAnimationsRef.current.clear();
     };
   }, [myAddress]);
+
+  const actionTargetName = actionTarget
+    ? displayNameForAddress(actionTarget.authorAddress, primaryNameCacheRef.current)
+    : '';
+  const sendQortTargetName = sendQortTarget
+    ? displayNameForAddress(sendQortTarget.authorAddress, primaryNameCacheRef.current)
+    : '';
+  const sendQortAmountNumber = Number(sendQortAmount);
+  const canSendQort =
+    Boolean(sendQortTarget) &&
+    Number.isFinite(sendQortAmountNumber) &&
+    sendQortAmountNumber > 0 &&
+    sendQortAmountNumber <= qortBalance &&
+    reticulumReady === true &&
+    !isSendingQort;
 
   return (
     <Box
@@ -2134,6 +2478,251 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           </IconButton>
         </Box>
       )}
+      {actionTarget && !sendQortTarget && (
+        <ClickAwayListener
+          mouseEvent="onMouseDown"
+          touchEvent="onTouchStart"
+          onClickAway={() => setActionTarget(null)}
+        >
+          <Box
+            onMouseDown={(event) => event.stopPropagation()}
+            sx={{
+              background: `linear-gradient(180deg, ${alpha('#10182a', 0.98)}, ${alpha('#070914', 0.96)})`,
+              border: `1px solid ${alpha('#2cf8ff', 0.34)}`,
+              borderRadius: '10px',
+              boxShadow: `0 18px 38px ${alpha('#000', 0.44)}, 0 0 24px ${alpha('#2cf8ff', 0.1)}`,
+              left: actionTarget.menuX,
+              minWidth: 220,
+              overflow: 'hidden',
+              padding: '10px',
+              position: 'absolute',
+              top: actionTarget.menuY,
+              zIndex: 5,
+            }}
+          >
+            <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: 1, justifyContent: 'space-between' }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography
+                  sx={{
+                    color: theme.palette.text.primary,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    lineHeight: 1.2,
+                    marginBottom: 0.5,
+                  }}
+                >
+                  {actionTargetName}
+                </Typography>
+                <Typography
+                  sx={{
+                    color: alpha(theme.palette.text.secondary, 0.9),
+                    fontSize: 11,
+                    marginBottom: 1,
+                  }}
+                >
+                  {shortAddress(actionTarget.authorAddress)}
+                </Typography>
+              </Box>
+              <IconButton
+                aria-label="Close player actions"
+                onClick={() => setActionTarget(null)}
+                size="small"
+                sx={{
+                  color: alpha(theme.palette.text.secondary, 0.85),
+                  height: 24,
+                  marginRight: -0.5,
+                  marginTop: -0.5,
+                  width: 24,
+                  '&:hover': {
+                    backgroundColor: alpha('#fff', 0.08),
+                    color: theme.palette.text.primary,
+                  },
+                }}
+              >
+                <CloseRoundedIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Box>
+            <Button
+              fullWidth
+              startIcon={<PaidRoundedIcon fontSize="small" />}
+              onClick={() => openSendQortDialog(actionTarget)}
+              sx={{
+                backgroundColor: alpha('#ffcf5a', 0.15),
+                border: `1px solid ${alpha('#ffcf5a', 0.34)}`,
+                borderRadius: '8px',
+                color: '#ffe59b',
+                fontSize: 12,
+                fontWeight: 800,
+                justifyContent: 'flex-start',
+                textTransform: 'none',
+                '&:hover': {
+                  backgroundColor: alpha('#ffcf5a', 0.23),
+                },
+              }}
+            >
+              Send QORT
+            </Button>
+          </Box>
+        </ClickAwayListener>
+      )}
+      <Dialog
+        open={Boolean(sendQortTarget)}
+        onClose={closeSendQortDialog}
+        PaperProps={{
+          sx: {
+            background: `linear-gradient(180deg, ${alpha('#11182a', 0.98)}, ${alpha('#070914', 0.98)})`,
+            border: `1px solid ${alpha('#ffcf5a', 0.24)}`,
+            borderRadius: '12px',
+            boxShadow: `0 24px 70px ${alpha('#000', 0.55)}, 0 0 34px ${alpha('#ffcf5a', 0.08)}`,
+            color: theme.palette.text.primary,
+            width: 'min(420px, calc(100vw - 36px))',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: 1,
+            padding: '18px 20px 8px',
+          }}
+        >
+          <PaidRoundedIcon sx={{ color: '#ffcf5a' }} />
+          <Box>
+            <Typography sx={{ fontSize: 17, fontWeight: 800 }}>Send QORT</Typography>
+            <Typography sx={{ color: theme.palette.text.secondary, fontSize: 12 }}>
+              To {sendQortTargetName || 'player'}
+            </Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ padding: '10px 20px 4px' }}>
+          <Box
+            sx={{
+              backgroundColor: alpha('#000', 0.18),
+              border: `1px solid ${alpha('#fff', 0.08)}`,
+              borderRadius: '9px',
+              marginBottom: 1.5,
+              padding: '10px 12px',
+            }}
+          >
+            <Typography sx={{ color: theme.palette.text.secondary, fontSize: 11 }}>
+              Recipient
+            </Typography>
+            <Typography sx={{ fontSize: 14, fontWeight: 800 }}>
+              {sendQortTargetName || '-'}
+            </Typography>
+            <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.85), fontSize: 11 }}>
+              {sendQortTarget?.authorAddress || ''}
+            </Typography>
+          </Box>
+          <Typography sx={{ color: theme.palette.text.secondary, fontSize: 12, marginBottom: 1 }}>
+            Balance: <Box component="span" sx={{ color: '#ffe59b', fontWeight: 800 }}>
+              {formatQortAmount(qortBalance)} QORT
+            </Box>
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ marginBottom: 1.5 }}>
+            {['1', '5', '10'].map((amount) => (
+              <Button
+                key={amount}
+                onClick={() => {
+                  setSendQortAmount(amount);
+                  if (sendQortError) setSendQortError('');
+                }}
+                sx={{
+                  backgroundColor: sendQortAmount === amount ? alpha('#ffcf5a', 0.24) : alpha('#fff', 0.06),
+                  border: `1px solid ${sendQortAmount === amount ? alpha('#ffcf5a', 0.52) : alpha('#fff', 0.1)}`,
+                  borderRadius: '8px',
+                  color: sendQortAmount === amount ? '#ffe59b' : theme.palette.text.primary,
+                  flex: 1,
+                  fontWeight: 800,
+                  minWidth: 0,
+                  textTransform: 'none',
+                  '&:hover': {
+                    backgroundColor: alpha('#ffcf5a', 0.18),
+                  },
+                }}
+              >
+                {amount}
+              </Button>
+            ))}
+            <Button
+              onClick={() => {
+                setSendQortAmount('');
+                if (sendQortError) setSendQortError('');
+              }}
+              sx={{
+                backgroundColor: !['1', '5', '10'].includes(sendQortAmount) ? alpha('#2cf8ff', 0.12) : alpha('#fff', 0.06),
+                border: `1px solid ${!['1', '5', '10'].includes(sendQortAmount) ? alpha('#2cf8ff', 0.34) : alpha('#fff', 0.1)}`,
+                borderRadius: '8px',
+                color: theme.palette.text.primary,
+                flex: 1,
+                fontWeight: 800,
+                minWidth: 0,
+                textTransform: 'none',
+              }}
+            >
+              Other
+            </Button>
+          </Stack>
+          <TextField
+            autoFocus
+            error={Boolean(sendQortError)}
+            fullWidth
+            label="Amount"
+            placeholder="0.00000000"
+            size="small"
+            type="number"
+            value={sendQortAmount}
+            InputProps={{
+              endAdornment: <InputAdornment position="end">QORT</InputAdornment>,
+            }}
+            onChange={(event) => {
+              setSendQortAmount(event.target.value);
+              if (sendQortError) setSendQortError('');
+            }}
+            sx={{ marginBottom: 1.2 }}
+          />
+          <Typography
+            sx={{
+              color: sendQortError ? theme.palette.error.light : theme.palette.text.secondary,
+              fontSize: 12,
+              lineHeight: 1.45,
+            }}
+          >
+            {sendQortError || 'Click Send QORT to submit the payment. The room animation is sent after it succeeds.'}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ padding: '12px 20px 18px' }}>
+          <Button
+            disabled={isSendingQort}
+            onClick={closeSendQortDialog}
+            sx={{ color: theme.palette.text.secondary, textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={!canSendQort}
+            onClick={() => void handleSendQort()}
+            sx={{
+              backgroundColor: alpha('#ffcf5a', 0.18),
+              border: `1px solid ${alpha('#ffcf5a', 0.38)}`,
+              borderRadius: '8px',
+              color: '#ffe59b',
+              fontWeight: 800,
+              minWidth: 118,
+              textTransform: 'none',
+              '&:hover': {
+                backgroundColor: alpha('#ffcf5a', 0.26),
+              },
+              '&.Mui-disabled': {
+                color: alpha('#fff', 0.32),
+              },
+            }}
+          >
+            {isSendingQort ? 'Sending...' : 'Send QORT'}
+          </Button>
+        </DialogActions>
+      </Dialog>
       {reticulumReady === false && (
         <Box
           sx={{

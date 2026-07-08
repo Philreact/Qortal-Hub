@@ -80,7 +80,9 @@ import { getWalletErrorMessage } from '../utils/walletErrorMessages.ts';
 const QORTAL_PUBLIC_VALIDATION_NODE = 'https://ext-node.qortal.link';
 
 function isPublicValidationNode(apiUrl: string): boolean {
-  return String(apiUrl || '').toLowerCase().includes('ext-node.qortal.link');
+  return String(apiUrl || '')
+    .toLowerCase()
+    .includes('ext-node.qortal.link');
 }
 
 async function fetchGroupMemberValidationRows(
@@ -236,7 +238,11 @@ export async function validateGroupMembersCase(request, event) {
     const validApi = await getBaseApi();
     let result: unknown;
     try {
-      result = await fetchGroupMemberValidationRows(validApi, groupId, addresses);
+      result = await fetchGroupMemberValidationRows(
+        validApi,
+        groupId,
+        addresses
+      );
     } catch (error) {
       if (isPublicValidationNode(validApi)) {
         throw error;
@@ -455,8 +461,16 @@ export async function ltcBalanceCase(request, event) {
 
 export async function sendCoinCase(request, event) {
   try {
-    const { receiver, password, amount } = request.payload;
-    const { res } = await sendCoin({ receiver, password, amount });
+    const {
+      receiver,
+      password,
+      amount,
+      skipConfirmPassword = false,
+    } = request.payload;
+    const { res } = await sendCoin(
+      { receiver, password, amount },
+      skipConfirmPassword === true
+    );
     if (!res?.success) {
       event.source.postMessage(
         {
