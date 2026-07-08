@@ -25,6 +25,7 @@ import {
   RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
   RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+  RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
   normalizeReticulumChatExpiryDurationMs,
@@ -8731,6 +8732,12 @@ export class ReticulumChatManager extends EventEmitter {
       }
       const event = this.db.getEvent(eventId);
       if (!event || event.groupId !== groupId) return false;
+      if (
+        normalizeReticulumChatChannelId(event.channelId) ===
+        RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+      ) {
+        return true;
+      }
       this.observedDbEventIds.add(event.eventId);
       this.emitSummaryChanged(event.groupId, event);
       this.emit('event', { event });
@@ -8741,6 +8748,12 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private writeLocalEventNotification(event: ReticulumChatEvent): void {
+    if (
+      normalizeReticulumChatChannelId(event.channelId) ===
+      RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+    ) {
+      return;
+    }
     try {
       fs.mkdirSync(this.localNotifyDir, { recursive: true });
       const fileName = `${event.groupId}-${event.timestamp}-${nodeCrypto.randomBytes(6).toString('hex')}.json`;

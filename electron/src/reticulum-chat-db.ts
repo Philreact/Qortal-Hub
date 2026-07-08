@@ -4789,15 +4789,18 @@ export class ReticulumChatDatabase {
       const channelSummaries = channelIds
         .map((channelId) => this.getChannelSummary(groupId, channelId, myAddress, onlineSince))
         .filter((summary): summary is ReticulumChatSummary => !!summary);
-      if (channelSummaries.length === 0) continue;
-      const lastChannel = channelSummaries.reduce((latest, current) =>
+      const chatNotificationSummaries = channelSummaries.filter(
+        (summary) => summary.channelId !== RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+      );
+      if (chatNotificationSummaries.length === 0) continue;
+      const lastChannel = chatNotificationSummaries.reduce((latest, current) =>
         current.updatedAt > latest.updatedAt ? current : latest
       );
-      const unreadCount = channelSummaries.reduce(
+      const unreadCount = chatNotificationSummaries.reduce(
         (total, summary) => total + summary.unreadCount,
         0
       );
-      const mentionCount = channelSummaries.reduce(
+      const mentionCount = chatNotificationSummaries.reduce(
         (total, summary) => total + summary.mentionCount,
         0
       );
@@ -4872,15 +4875,17 @@ export class ReticulumChatDatabase {
         ? memoryLast
         : sqliteLast;
     if (!lastEvent) return null;
+    const suppressUnreadState =
+      normalizedChannelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID;
 
     const watermark = this.getReadWatermark(groupId, normalizedChannelId, myAddress);
-    const unreadCount = myAddress
+    const unreadCount = myAddress && !suppressUnreadState
       ? events.filter(
           (event) =>
             event.timestamp > watermark && event.authorAddress !== myAddress
         ).length
       : 0;
-    const mentionRow = myAddress
+    const mentionRow = myAddress && !suppressUnreadState
       ? (this.stmtCountUnreadMentions.get(
           groupId,
           normalizedChannelId,
@@ -4948,14 +4953,16 @@ export class ReticulumChatDatabase {
       }
       eventMentionHashCount += 1;
     };
-    for (const event of effectiveMentionEvents.values()) {
-      if (event.mentionAddressHashes?.includes(myMentionHash)) {
-        countEventMentionHash(event);
-      } else {
-        countEventMentionTarget(event);
+    if (!suppressUnreadState) {
+      for (const event of effectiveMentionEvents.values()) {
+        if (event.mentionAddressHashes?.includes(myMentionHash)) {
+          countEventMentionHash(event);
+        } else {
+          countEventMentionTarget(event);
+        }
       }
     }
-    if (myAddress) {
+    if (myAddress && !suppressUnreadState) {
       const mentionTargetRows = this.stmtGetUnreadMentionTargetEvents.all(
         groupId,
         normalizedChannelId,
@@ -5010,7 +5017,7 @@ export class ReticulumChatDatabase {
         }
       }
     }
-    if (myAddress) {
+    if (myAddress && !suppressUnreadState) {
       for (const mentions of this.memoryMentions.values()) {
         for (const mention of mentions) {
           if (
