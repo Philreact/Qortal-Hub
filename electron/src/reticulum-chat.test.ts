@@ -39,6 +39,7 @@ import {
   type ReticulumChatManagerOptions,
 } from './reticulum-chat';
 import {
+  base58Decode,
   base58Encode,
   canonicalizeForSigning,
   deriveAddressFromPublicKey,
@@ -60,6 +61,7 @@ import {
   ReticulumResourceStore,
   RETICULUM_RESOURCE_RANGE_SIZE,
 } from './reticulum-resource-store';
+import { verifyCallRequestDetached } from './ed25519-verify-common';
 import {
   RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE,
   RETICULUM_RESOURCE_TRANSFER_IN_FLIGHT_STALE_MS,
@@ -5936,6 +5938,116 @@ describe('reticulum chat manager', () => {
       )
     ).toBe(true);
     expect(fanout).toHaveLength(0);
+    manager.close();
+  });
+
+  it('accepts compact QortalLand call requests without sender address on the wire', async () => {
+    const caller = createDmIdentity();
+    const recipient = createDmIdentity();
+    const emitted: Array<Record<string, unknown>> = [];
+    const callId = 'abcdefghijklmnopqrst';
+    const timestamp = 100_000;
+    const chatId = `direct:${[caller.address, recipient.address].sort().join(':')}`;
+    const signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(
+          canonicalizeForSigning({
+            type: 'CALL_REQUEST',
+            callId,
+            chatId,
+            fromAddress: caller.address,
+            fromPublicKey: caller.publicKey,
+            timestamp,
+          })
+        ),
+        caller.secretKey
+      )
+    );
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'lc',
+      g: 73,
+      y: 'q',
+      c: callId,
+      b: recipient.address,
+      p: caller.publicKey,
+      z: signature,
+      s: timestamp,
+      o: 'bbbbbbbbbbbbbbbb',
+      h: 0,
+    };
+    expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    expect(
+      nacl.sign.detached.verify(
+        new Uint8Array(
+          canonicalizeForSigning({
+            type: 'CALL_REQUEST',
+            callId,
+            chatId,
+            fromAddress: caller.address,
+            fromPublicKey: caller.publicKey,
+            timestamp,
+          })
+        ),
+        base58Decode(signature),
+        base58Decode(caller.publicKey)
+      )
+    ).toBe(true);
+    expect(
+      verifyCallRequestDetached(
+        {
+          type: 'CALL_REQUEST',
+          callId,
+          chatId,
+          fromAddress: caller.address,
+          fromPublicKey: caller.publicKey,
+          timestamp,
+        },
+        signature,
+        caller.publicKey
+      )
+    ).toBe(true);
+
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => timestamp,
+      validateGroupMember: async (_groupId, address) =>
+        address === caller.address || address === recipient.address,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.on('landCall', (payload) => {
+      emitted.push(payload as Record<string, unknown>);
+    });
+    manager.handleWire(wire, 'bbbbbbbbbbbbbbbb');
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toEqual(
+      expect.objectContaining({
+        groupId: 73,
+        callType: 'request',
+        callId,
+        fromAddress: caller.address,
+        toAddress: recipient.address,
+        chatId,
+        fromPublicKey: caller.publicKey,
+        signature,
+        timestamp,
+      })
+    );
     manager.close();
   });
 

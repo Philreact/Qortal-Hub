@@ -99,9 +99,9 @@ export function verifyCallRequestDetached(
   fromPublicKey: string
 ): boolean {
   try {
-    const msgBytes = canonicalizeForSigning(fields);
-    const sigBytes = base58Decode(signature) as Uint8Array;
-    const keyBytes = base58Decode(fromPublicKey) as Uint8Array;
+    const msgBytes = new Uint8Array(canonicalizeForSigning(fields));
+    const sigBytes = new Uint8Array(base58Decode(signature));
+    const keyBytes = new Uint8Array(base58Decode(fromPublicKey));
     return nacl.sign.detached.verify(msgBytes, sigBytes, keyBytes);
   } catch {
     return false;

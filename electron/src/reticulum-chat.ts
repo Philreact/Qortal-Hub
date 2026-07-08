@@ -6399,11 +6399,6 @@ export class ReticulumChatManager extends EventEmitter {
         : 'b' in wire && typeof wire.b === 'string'
           ? wire.b.trim()
           : '';
-    const wireChatId = 'H' in wire && typeof wire.H === 'string' ? wire.H.trim() : '';
-    const chatId =
-      wireChatId
-        ? wireChatId
-        : buildLandDirectCallChatId(fromAddress, toAddress);
     const fromPublicKey = typeof wire.p === 'string' ? wire.p.trim() : '';
     const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
     const timestamp = Number('ts' in wire ? wire.ts : wire.s);
@@ -6414,6 +6409,11 @@ export class ReticulumChatManager extends EventEmitter {
         fromAddress = '';
       }
     }
+    const wireChatId = 'H' in wire && typeof wire.H === 'string' ? wire.H.trim() : '';
+    const chatId =
+      wireChatId
+        ? wireChatId
+        : buildLandDirectCallChatId(fromAddress, toAddress);
     if (
       !callId ||
       !fromAddress ||
