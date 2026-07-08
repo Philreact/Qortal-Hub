@@ -81,6 +81,7 @@ export interface DirectsSidebarProps {
   closeAvatarPreview: () => void;
   isRunningPublicNode: boolean;
   setIsOpenBlockedUserModal: (value: boolean) => void;
+  reticulumChatEnabled?: boolean;
 }
 
 export const DirectsSidebar = (props: DirectsSidebarProps) => {
@@ -108,6 +109,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
     closeAvatarPreview,
     isRunningPublicNode,
     setIsOpenBlockedUserModal,
+    reticulumChatEnabled = false,
   } = props;
 
   const theme = useTheme();
@@ -329,12 +331,15 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             );
             const isSelected = direct?.address === selectedDirect?.address;
             const hasUnread =
+              !reticulumChatEnabled &&
               direct?.sender !== myAddress &&
               direct?.timestamp &&
               ((!timestampEnterData[direct?.address] &&
                 Date.now() - direct?.timestamp <
                   timeDifferenceForNotificationChats) ||
                 timestampEnterData[direct?.address] < direct?.timestamp);
+            const hasReticulumUnread =
+              reticulumChatEnabled && Number(direct?.unreadCount || 0) > 0;
             const isDmFriend = Boolean(
               direct?.address && dmFriendsByAddress[direct.address]
             );
@@ -465,7 +470,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                     }
                     primaryTypographyProps={{
                       sx: {
-                        color: hasUnread
+                        color: hasUnread || hasReticulumUnread
                           ? theme.palette.primary.main
                           : theme.palette.text.primary,
                         fontFamily: 'Inter',
@@ -511,7 +516,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                       />
                     </Tooltip>
                   )}
-                  {hasUnread && (
+                  {(hasUnread || hasReticulumUnread) && (
                     <MarkChatUnreadIcon
                       sx={{
                         color: theme.palette.primary.main,

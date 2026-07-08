@@ -62,6 +62,7 @@ export const reticulumChatSummariesAtom = atomWithReset<
 export const reticulumDirectSummariesAtom = atomWithReset<Record<string, any>>(
   {}
 );
+export const reticulumChatEnabledAtom = atomWithReset(false);
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);
@@ -118,6 +119,7 @@ export const timestampEnterDataAtom = atomWithReset({});
 export const memberGroupsWithReticulumChatAtom = atom((get) => {
   const groups = get(memberGroupsAtom);
   const reticulumSummaries = get(reticulumChatSummariesAtom);
+  const reticulumChatEnabled = get(reticulumChatEnabledAtom);
   if (!Array.isArray(groups) || !reticulumSummaries) return groups;
   return groups.map((group: any) => {
     const numericGroupId = Number(group?.groupId);
@@ -133,6 +135,17 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
         : typeof lastEvent?.timestamp === 'number'
           ? lastEvent.timestamp
           : 0;
+    if (reticulumChatEnabled) {
+      return {
+        ...group,
+        data: reticulumTimestamp
+          ? lastEvent?.encryptedPayload || 'reticulum-chat'
+          : undefined,
+        reticulumChatSummary: summary,
+        sender: reticulumTimestamp ? lastEvent?.authorAddress : undefined,
+        timestamp: reticulumTimestamp || undefined,
+      };
+    }
     const coreTimestamp =
       typeof group?.timestamp === 'number' ? group.timestamp : 0;
     if (!reticulumTimestamp || reticulumTimestamp < coreTimestamp) {
@@ -784,6 +797,7 @@ export const groupChatHasUnreadAtom = atom((get) => {
   const myAddress = get(userInfoAtom)?.address;
   const groupChatTimestamps = get(groupChatTimestampsAtom);
   const timestampEnterData = get(timestampEnterDataAtom) || {};
+  const reticulumChatEnabled = get(reticulumChatEnabledAtom);
   if (!groups?.length || !myAddress) return false;
   return groups.some((group: any) => {
     if (group?.groupId === '0') return false;
@@ -794,6 +808,7 @@ export const groupChatHasUnreadAtom = atom((get) => {
       return true;
     }
     if ((group?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
+    if (reticulumChatEnabled) return false;
     return (
       group?.data &&
       group?.sender !== myAddress &&
@@ -831,6 +846,7 @@ export const isUnreadChatAtomFamily = atomFamily((selectedGroupId: string) =>
     const myAddress = get(userInfoAtom)?.address;
     const groupChatTimestamps = get(groupChatTimestampsAtom);
     const timestampEnterData = get(timestampEnterDataAtom) || {};
+    const reticulumChatEnabled = get(reticulumChatEnabledAtom);
     const findGroup = groups?.find((g: any) => g?.groupId === selectedGroupId);
     if (
       findGroup?.reticulumChatSummary?.hasUnreadMention === true ||
@@ -839,6 +855,7 @@ export const isUnreadChatAtomFamily = atomFamily((selectedGroupId: string) =>
       return true;
     }
     if ((findGroup?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
+    if (reticulumChatEnabled) return false;
     if (!findGroup?.data || !findGroup?.timestamp) return false;
     if (findGroup?.sender === myAddress) return false;
     return !!(

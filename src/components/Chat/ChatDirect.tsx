@@ -288,6 +288,7 @@ export const ChatDirect = ({
   getTimestampEnterChat,
   close,
   setMobileViewModeKeepOpen,
+  isActive = true,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
@@ -532,6 +533,7 @@ export const ChatDirect = ({
   );
   const outgoingQchatFileTransfersRef = useRef(new Map());
   const qchatAcceptedOfferMetaRef = useRef(new Map());
+  const qchatUserTransferIdsRef = useRef(new Set<string>());
   const qchatTerminalTransferIdsRef = useRef(new Set<string>());
   const setEditorRef = (editorInstance) => {
     editorRef.current = editorInstance;
@@ -657,7 +659,8 @@ export const ChatDirect = ({
   }, [selectedDirect?.address]);
 
   useEffect(() => {
-    if (!reticulumDirectEnabled || !selectedDirect?.address) return;
+    if (!reticulumDirectEnabled || !selectedDirect?.address || !isActive)
+      return;
     const latestTimestamp = reticulumDirectMessages.reduce(
       (max, message: any) => Math.max(max, Number(message?.timestamp || 0)),
       0
@@ -668,6 +671,7 @@ export const ChatDirect = ({
     markReticulumDirectRead,
     reticulumDirectEnabled,
     reticulumDirectMessages,
+    isActive,
     selectedDirect?.address,
   ]);
 
@@ -1366,6 +1370,7 @@ export const ChatDirect = ({
         )
       );
       const expiresAt = Date.now() + expiryHours * 60 * 60 * 1000;
+      qchatUserTransferIdsRef.current.add(transferId);
       outgoingQchatFileTransfersRef.current.set(transferId, {
         ...selectedFile,
         recipientAddress: selectedDirect.address,
@@ -1583,6 +1588,7 @@ export const ChatDirect = ({
           ),
           hasSha256: Boolean(data.sha256),
         });
+        qchatUserTransferIdsRef.current.add(data.transferId);
         const accepted = await api.qchatFileAccept({
           transferId: data.transferId,
           senderAddress,
@@ -1605,6 +1611,7 @@ export const ChatDirect = ({
             transferId: data.transferId,
             accepted,
           });
+          qchatUserTransferIdsRef.current.delete(data.transferId);
           throw new Error(accepted?.error || 'Unable to accept file transfer');
         }
         qchatAcceptedOfferMetaRef.current.set(data.transferId, {
@@ -1639,19 +1646,27 @@ export const ChatDirect = ({
       (payload) => {
         if (!payload?.status || !payload?.transferId) return;
         if (isReticulumChatInternalTransferEvent(payload)) return;
+        const transferId = String(payload.transferId || '');
+        const isKnownUserFileTransfer =
+          transferId.startsWith('qft-') ||
+          qchatUserTransferIdsRef.current.has(transferId) ||
+          outgoingQchatFileTransfersRef.current.has(transferId) ||
+          qchatAcceptedOfferMetaRef.current.has(transferId) ||
+          qchatTerminalTransferIdsRef.current.has(transferId);
+        if (!isKnownUserFileTransfer) return;
         const incomingFailure =
           payload.status === 'failed' || payload.status === 'rejected';
         if (
           incomingFailure &&
-          qchatTerminalTransferIdsRef.current.has(payload.transferId)
+          qchatTerminalTransferIdsRef.current.has(transferId)
         ) {
           return;
         }
         if (payload.status === 'sent' || payload.status === 'received') {
-          qchatTerminalTransferIdsRef.current.add(payload.transferId);
+          qchatTerminalTransferIdsRef.current.add(transferId);
         }
         setQchatFileTransferStates((prev) => {
-          const current = prev[payload.transferId] || {};
+          const current = prev[transferId] || {};
           const currentDone =
             current.status === 'sent' || current.status === 'received';
           if (currentDone && incomingFailure) {
@@ -1678,7 +1693,7 @@ export const ChatDirect = ({
               : payload;
           return {
             ...prev,
-            [payload.transferId]: {
+            [transferId]: {
               ...current,
               ...nextPayload,
               updatedAt: Date.now(),
@@ -1688,13 +1703,13 @@ export const ChatDirect = ({
         if (payload.status === 'sent' || payload.status === 'received') {
           if (payload.status === 'received') {
             const offerMeta = qchatAcceptedOfferMetaRef.current.get(
-              payload.transferId
+              transferId
             );
             setQchatCompletedTransfers((prev) => {
               const next = {
                 ...prev,
-                [payload.transferId]: {
-                  transferId: payload.transferId,
+                [transferId]: {
+                  transferId,
                   fileName: payload.fileName || '',
                   path: payload.path || '',
                   sha256: payload.sha256 || '',
@@ -1705,25 +1720,8 @@ export const ChatDirect = ({
               saveQchatCompletedTransfers(myAddress, next);
               return next;
             });
-            qchatAcceptedOfferMetaRef.current.delete(payload.transferId);
+            qchatAcceptedOfferMetaRef.current.delete(transferId);
           }
-          setInfoSnack({
-            type: 'success',
-            message:
-              payload.status === 'sent'
-                ? `Sent ${payload.fileName || 'file'}`
-                : `Received ${payload.fileName || 'file'}`,
-          });
-          setOpenSnack(true);
-        } else if (
-          payload.status === 'failed' ||
-          payload.status === 'rejected'
-        ) {
-          setInfoSnack({
-            type: 'error',
-            message: `File transfer failed: ${payload.reason || 'unknown error'}`,
-          });
-          setOpenSnack(true);
         }
       }
     );

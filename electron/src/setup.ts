@@ -3470,7 +3470,10 @@ ipcMain.handle(
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) return [];
     const manager = getReticulumChatManager();
-    return manager ? manager.getDirectSummaries(myAddress) : [];
+    if (!manager) return [];
+    const address = typeof myAddress === 'string' ? myAddress.trim() : '';
+    if (address) manager.setLocalDmAddresses([address]);
+    return manager.getDirectSummaries(address);
   }
 );
 

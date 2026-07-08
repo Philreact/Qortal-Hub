@@ -60,6 +60,7 @@ const GroupListInner = ({
   setOpenAddGroup,
   setIsOpenBlockedUserModal,
   myAddress,
+  reticulumChatEnabled,
 }) => {
   const theme = useTheme();
   const { t } = useTranslation([
@@ -292,6 +293,7 @@ const GroupListInner = ({
               selectedGroupId={selectedGroup?.groupId ?? null}
               getUserSettings={getUserSettings}
               myAddress={myAddress}
+              reticulumChatEnabled={reticulumChatEnabled}
             />
           ))}
         </List>
@@ -360,6 +362,7 @@ interface GroupItemProps {
   selectedGroupId: string | null;
   getUserSettings: () => Promise<any>;
   myAddress: string;
+  reticulumChatEnabled?: boolean;
 }
 
 const GroupItem = memo(
@@ -369,6 +372,7 @@ const GroupItem = memo(
     selectedGroupId,
     getUserSettings,
     myAddress,
+    reticulumChatEnabled = false,
   }: GroupItemProps) => {
     const theme = useTheme();
     const { t } = useTranslation(['core', 'group']);
@@ -591,7 +595,8 @@ const GroupItem = memo(
               }}
             >
               {(hasReticulumUnread ||
-                (group?.data &&
+                (!reticulumChatEnabled &&
+                  group?.data &&
                   groupChatTimestamp &&
                   group?.sender !== myAddress &&
                   group?.timestamp &&

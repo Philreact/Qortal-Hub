@@ -67,6 +67,7 @@ import {
   myGroupsWhereIAmAdminAtom,
   reticulumDirectSummariesAtom,
   reticulumChatSummariesAtom,
+  reticulumChatEnabledAtom,
   selectedGroupIdAtom,
   timestampEnterDataAtom,
   userInfoAtom,
@@ -515,10 +516,12 @@ export const Group = ({
     groupChatTimestampsAtom
   );
   const setReticulumChatSummaries = useSetAtom(reticulumChatSummariesAtom);
+  const [reticulumChatEnabled, setReticulumChatEnabled] = useAtom(
+    reticulumChatEnabledAtom
+  );
   const [reticulumDirectSummaries, setReticulumDirectSummaries] = useAtom(
     reticulumDirectSummariesAtom
   );
-  const [reticulumDirectEnabled, setReticulumDirectEnabled] = useState(false);
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
   const reticulumBackgroundProcessedEventIdsRef = useRef<Map<string, number>>(
     new Map()
@@ -527,6 +530,8 @@ export const Group = ({
     Map<number, Map<string, string>>
   >(new Map());
   const reticulumSummariesRefreshTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reticulumDirectSummariesRefreshTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousReticulumSummariesRef = useRef<Record<string, any> | null>(
     null
@@ -1117,6 +1122,7 @@ export const Group = ({
   const refreshReticulumChatSummaries = useCallback(async () => {
     try {
       const enabled = await window.reticulumChat?.isEnabled?.();
+      setReticulumChatEnabled(enabled === true);
       if (!enabled) {
         previousReticulumSummariesRef.current = null;
         reticulumMentionBadgeSummariesRef.current = null;
@@ -1155,6 +1161,7 @@ export const Group = ({
   }, [
     maybeFireReticulumChatNotification,
     myAddress,
+    setReticulumChatEnabled,
     setReticulumChatSummaries,
   ]);
 
@@ -1275,12 +1282,13 @@ export const Group = ({
     };
   }, [refreshReticulumChatSummaries, scheduleReticulumChatSummariesRefresh]);
 
-  const refreshReticulumDirectSummaries = useCallback(async (enabled = reticulumDirectEnabled) => {
+  const refreshReticulumDirectSummaries = useCallback(async (enabled = reticulumChatEnabled) => {
     if (!myAddress || !enabled) {
       setReticulumDirectSummaries({});
       return;
     }
     try {
+      await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       const summaries = await window.reticulumChat?.getDirectSummaries?.(
         myAddress
       );
@@ -1298,14 +1306,28 @@ export const Group = ({
     } catch (error) {
       console.error('[ReticulumChat] Failed to refresh DM summaries:', error);
     }
-  }, [myAddress, reticulumDirectEnabled, setReticulumDirectSummaries]);
+  }, [myAddress, reticulumChatEnabled, setReticulumDirectSummaries]);
+
+  const scheduleReticulumDirectSummariesRefresh = useCallback(
+    (delayMs = 150) => {
+      if (reticulumDirectSummariesRefreshTimerRef.current) {
+        clearTimeout(reticulumDirectSummariesRefreshTimerRef.current);
+      }
+      reticulumDirectSummariesRefreshTimerRef.current = setTimeout(() => {
+        reticulumDirectSummariesRefreshTimerRef.current = null;
+        void refreshReticulumDirectSummaries();
+      }, delayMs);
+    },
+    [refreshReticulumDirectSummaries]
+  );
 
   useEffect(() => {
     let cancelled = false;
+    const retryTimers: ReturnType<typeof setTimeout>[] = [];
     void (async () => {
       const enabled = (await window.reticulumChat?.isEnabled?.()) === true;
       if (cancelled) return;
-      setReticulumDirectEnabled(enabled);
+      setReticulumChatEnabled(enabled);
       if (!enabled || !myAddress) {
         setReticulumDirectSummaries({});
         void window.reticulumChat?.setLocalDmAddresses?.([]);
@@ -1313,23 +1335,72 @@ export const Group = ({
       }
       await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       await refreshReticulumDirectSummaries(true);
+      for (const delayMs of [750, 2000, 5000]) {
+        retryTimers.push(
+          setTimeout(() => {
+            if (!cancelled) {
+              void refreshReticulumDirectSummaries(true);
+            }
+          }, delayMs)
+        );
+      }
     })();
     return () => {
       cancelled = true;
+      retryTimers.forEach((timer) => clearTimeout(timer));
+      if (reticulumDirectSummariesRefreshTimerRef.current) {
+        clearTimeout(reticulumDirectSummariesRefreshTimerRef.current);
+        reticulumDirectSummariesRefreshTimerRef.current = null;
+      }
     };
-  }, [myAddress, refreshReticulumDirectSummaries, setReticulumDirectSummaries]);
+  }, [
+    myAddress,
+    refreshReticulumDirectSummaries,
+    setReticulumChatEnabled,
+    setReticulumDirectSummaries,
+  ]);
 
   useEffect(() => {
-    if (!reticulumDirectEnabled || !myAddress) return;
+    if (!reticulumChatEnabled || !myAddress) return;
     const offSummaryChanged =
       window.reticulumChat?.onDirectSummaryChanged?.(() => {
-        void refreshReticulumDirectSummaries();
+        scheduleReticulumDirectSummariesRefresh();
       });
-    void refreshReticulumDirectSummaries();
+    scheduleReticulumDirectSummariesRefresh();
     return () => {
       offSummaryChanged?.();
+      if (reticulumDirectSummariesRefreshTimerRef.current) {
+        clearTimeout(reticulumDirectSummariesRefreshTimerRef.current);
+        reticulumDirectSummariesRefreshTimerRef.current = null;
+      }
     };
-  }, [myAddress, refreshReticulumDirectSummaries, reticulumDirectEnabled]);
+  }, [
+    myAddress,
+    reticulumChatEnabled,
+    scheduleReticulumDirectSummariesRefresh,
+  ]);
+
+  useEffect(() => {
+    if (desktopSideView !== 'directs' || !reticulumChatEnabled || !myAddress) {
+      return;
+    }
+    scheduleReticulumDirectSummariesRefresh();
+  }, [
+    desktopSideView,
+    myAddress,
+    reticulumChatEnabled,
+    scheduleReticulumDirectSummariesRefresh,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !myAddress) return;
+    const timer = setInterval(() => {
+      scheduleReticulumDirectSummariesRefresh();
+    }, 30_000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [myAddress, reticulumChatEnabled, scheduleReticulumDirectSummariesRefresh]);
 
   const refreshHomeDataFunc = useCallback(() => {
     setGroupSection('default');
@@ -1390,7 +1461,7 @@ export const Group = ({
   }, []);
 
   const reticulumDirectRows = useMemo(() => {
-    if (!reticulumDirectEnabled) return [];
+    if (!reticulumChatEnabled) return [];
     return Object.values(reticulumDirectSummaries || {})
       .map((summary: any) => {
         const peerAddress = String(summary?.peerAddress || '').trim();
@@ -1414,32 +1485,35 @@ export const Group = ({
   }, [
     dmFriendsByAddress,
     myAddress,
-    reticulumDirectEnabled,
+    reticulumChatEnabled,
     reticulumDirectSummaries,
     userInfo?.name,
   ]);
 
   const mergedDirectRows = useMemo(() => {
-    if (!reticulumDirectEnabled || reticulumDirectRows.length === 0) return directs;
+    if (!reticulumChatEnabled) return directs;
     const byAddress = new Map<string, any>();
     for (const direct of directs || []) {
-      if (direct?.address) byAddress.set(direct.address, direct);
+      if (!direct?.address) continue;
+      byAddress.set(direct.address, {
+        address: direct.address,
+        name: direct.name || direct.address,
+      });
     }
     for (const direct of reticulumDirectRows) {
       const existing = byAddress.get(direct.address);
-      if (!existing || Number(direct.timestamp || 0) >= Number(existing.timestamp || 0)) {
-        byAddress.set(direct.address, { ...(existing || {}), ...direct });
-      }
+      byAddress.set(direct.address, { ...(existing || {}), ...direct });
     }
     return [...byAddress.values()];
-  }, [directs, reticulumDirectEnabled, reticulumDirectRows]);
+  }, [directs, reticulumChatEnabled, reticulumDirectRows]);
 
   const directChatHasUnread = useMemo(() => {
     let hasUnread = false;
     mergedDirectRows.forEach((direct) => {
       if (
         Number(direct?.unreadCount || 0) > 0 ||
-        (direct?.sender !== myAddress &&
+        (!reticulumChatEnabled &&
+          direct?.sender !== myAddress &&
           direct?.timestamp &&
           ((!timestampEnterData[direct?.address] &&
             Date.now() - direct?.timestamp <
@@ -1450,18 +1524,31 @@ export const Group = ({
       }
     });
     return hasUnread;
-  }, [timestampEnterData, mergedDirectRows, myAddress]);
+  }, [timestampEnterData, mergedDirectRows, myAddress, reticulumChatEnabled]);
 
-  const displayDirects = useMemo(
-    () =>
-      mergeDirectsWithFriends(
-        mergedDirectRows,
-        dmFriendsByAddress,
-        myAddress,
-        userInfo?.name
-      ),
-    [mergedDirectRows, dmFriendsByAddress, myAddress, userInfo?.name]
-  );
+  const displayDirects = useMemo(() => {
+    const merged = mergeDirectsWithFriends(
+      mergedDirectRows,
+      dmFriendsByAddress,
+      myAddress,
+      userInfo?.name
+    );
+    if (!reticulumChatEnabled) return merged;
+    return [...merged].sort((a: any, b: any) => {
+      const timestampA = Number(a?.timestamp || 0);
+      const timestampB = Number(b?.timestamp || 0);
+      if (timestampA !== timestampB) return timestampB - timestampA;
+      return String(a?.name || a?.address || '').localeCompare(
+        String(b?.name || b?.address || '')
+      );
+    });
+  }, [
+    mergedDirectRows,
+    dmFriendsByAddress,
+    myAddress,
+    reticulumChatEnabled,
+    userInfo?.name,
+  ]);
 
   const getSecretKey = useCallback(
     async (loadingGroupParam?: boolean, secretKeyToPublish?: boolean) => {
@@ -2942,6 +3029,7 @@ export const Group = ({
             setOpenAddGroup={setOpenAddGroup}
             setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
             myAddress={myAddress}
+            reticulumChatEnabled={reticulumChatEnabled}
           />
         ) : (
           <DirectsSidebar
@@ -2968,6 +3056,7 @@ export const Group = ({
             closeAvatarPreview={closeAvatarPreview}
             isRunningPublicNode={isRunningPublicNode}
             setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
+            reticulumChatEnabled={reticulumChatEnabled}
           />
         )}
 
@@ -3325,6 +3414,7 @@ export const Group = ({
                   getTimestampEnterChat={getTimestampEnterChat}
                   close={closeChatDirect}
                   setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                  isActive={isVisible && desktopSideView === 'directs'}
                 />
               </InnerChatBox>
             </SelectedDirectOverlay>
