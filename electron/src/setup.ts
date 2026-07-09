@@ -146,6 +146,11 @@ import {
   refreshSystemCallReadinessSnapshot,
   startSystemCallReadinessMonitor,
 } from './system-call-readiness';
+import {
+  describeMainPressureState,
+  noteMainLoopStallForProfiling,
+  runMainPressureTask,
+} from './main-pressure';
 
 const GCALL_AUDIO_RENDERER_SEND_AT_MS = Symbol.for(
   'qortal.gcallAudioRendererSendAtMs'
@@ -191,8 +196,9 @@ function recordMainLoopStall(delayMs: number, nowMs = Date.now()): void {
       delayMs
     )} stall_count=${mainLoopStallCount} max_delay_ms=${Math.round(
       mainLoopStallMaxDelayMs
-    )}`
+    )} ${describeMainPressureState()}`
   );
+  noteMainLoopStallForProfiling(delayMs);
 }
 
 const mainLoopMonitorTimer = setInterval(() => {
@@ -5032,27 +5038,33 @@ ipcMain.handle(
     data: Buffer | Uint8Array,
     timing?: { rendererSendAtWallMs?: number }
   ) => {
-    const mgr = getGroupCallManager();
-    if (!mgr) return { success: false, error: 'GroupCall manager not running' };
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    attachGroupAudioIpcTiming(buf, timing, {
-      channel: 'sendAudio',
+    return runMainPressureTask('gcall.sendAudio', {
       roomId,
       targetCount: 1,
+      bytes: Buffer.isBuffer(data) ? data.length : data?.byteLength,
+    }, () => {
+      const mgr = getGroupCallManager();
+      if (!mgr) return { success: false, error: 'GroupCall manager not running' };
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      attachGroupAudioIpcTiming(buf, timing, {
+        channel: 'sendAudio',
+        roomId,
+        targetCount: 1,
+      });
+      const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
+      if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
+        return { success: false, error: 'payload-too-large' };
+      }
+      const result = mgr.sendAudio(roomId, toAddress, buf);
+      if (result.success) {
+        return { success: true, diagnostics: result.diagnostics };
+      }
+      return {
+        success: false,
+        error: ('error' in result ? result.error : undefined) ?? 'relay-rejected',
+        diagnostics: result.diagnostics,
+      };
     });
-    const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
-    if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
-      return { success: false, error: 'payload-too-large' };
-    }
-    const result = mgr.sendAudio(roomId, toAddress, buf);
-    if (result.success) {
-      return { success: true, diagnostics: result.diagnostics };
-    }
-    return {
-      success: false,
-      error: ('error' in result ? result.error : undefined) ?? 'relay-rejected',
-      diagnostics: result.diagnostics,
-    };
   }
 );
 
@@ -5065,30 +5077,36 @@ ipcMain.handle(
     data: Buffer | Uint8Array,
     timing?: { rendererSendAtWallMs?: number }
   ) => {
-    const mgr = getGroupCallManager();
-    if (!mgr) return { success: false, error: 'GroupCall manager not running' };
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    attachGroupAudioIpcTiming(buf, timing, {
-      channel: 'sendAudioBatch',
+    return runMainPressureTask('gcall.sendAudioBatch', {
       roomId,
       targetCount: Array.isArray(toAddresses) ? toAddresses.length : 0,
+      bytes: Buffer.isBuffer(data) ? data.length : data?.byteLength,
+    }, () => {
+      const mgr = getGroupCallManager();
+      if (!mgr) return { success: false, error: 'GroupCall manager not running' };
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      attachGroupAudioIpcTiming(buf, timing, {
+        channel: 'sendAudioBatch',
+        roomId,
+        targetCount: Array.isArray(toAddresses) ? toAddresses.length : 0,
+      });
+      const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
+      if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
+        return { success: false, error: 'payload-too-large' };
+      }
+      if (!Array.isArray(toAddresses) || toAddresses.length === 0) {
+        return { success: true, diagnostics: undefined };
+      }
+      const result = mgr.sendAudioBatch(roomId, toAddresses, buf);
+      if (result.success) {
+        return { success: true, diagnostics: result.diagnostics };
+      }
+      return {
+        success: false,
+        error: ('error' in result ? result.error : undefined) ?? 'relay-rejected',
+        diagnostics: result.diagnostics,
+      };
     });
-    const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
-    if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
-      return { success: false, error: 'payload-too-large' };
-    }
-    if (!Array.isArray(toAddresses) || toAddresses.length === 0) {
-      return { success: true, diagnostics: undefined };
-    }
-    const result = mgr.sendAudioBatch(roomId, toAddresses, buf);
-    if (result.success) {
-      return { success: true, diagnostics: result.diagnostics };
-    }
-    return {
-      success: false,
-      error: ('error' in result ? result.error : undefined) ?? 'relay-rejected',
-      diagnostics: result.diagnostics,
-    };
   }
 );
 
@@ -5519,14 +5537,18 @@ ipcMain.on('audio-surface:host-ready', (event) => {
 });
 
 ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
-  if (!isAudioSurfaceHostSender(event.sender)) {
-    loggerWarn('[AudioSurface] rejecting host-event from unexpected sender', {
-      senderId: event.sender.id,
-      type: payload?.type ?? 'unknown',
-    });
-    return;
-  }
-  emitAudioSurfaceEvent(payload);
+  runMainPressureTask('audio-surface.host-event', {
+    type: payload?.type ?? 'unknown',
+  }, () => {
+    if (!isAudioSurfaceHostSender(event.sender)) {
+      loggerWarn('[AudioSurface] rejecting host-event from unexpected sender', {
+        senderId: event.sender.id,
+        type: payload?.type ?? 'unknown',
+      });
+      return;
+    }
+    emitAudioSurfaceEvent(payload);
+  });
 });
 
 /**
@@ -5536,33 +5558,38 @@ ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
 ipcMain.handle(
   'audio-surface:command-result',
   (event, envelope: AudioSurfaceCommandResultEnvelope) => {
-    if (!isAudioSurfaceHostSender(event.sender)) {
-      loggerWarn('[AudioSurface] command-result: rejected sender', {
-        senderId: event.sender.id,
-        isolatedIds: [...isolatedAudioSurfaceContents],
-      });
-      return { ack: false as const, reason: 'bad-sender' };
-    }
-    const commandId = envelope?.commandId;
-    const response = envelope?.response;
-    if (typeof commandId !== 'string' || !commandId) {
-      loggerWarn('[AudioSurface] command-result: missing commandId', {
-        envelope,
-      });
-      return { ack: false as const, reason: 'missing-command-id' };
-    }
-    const pending = pendingAudioSurfaceCommands.get(commandId);
-    if (!pending) {
-      loggerWarn('[AudioSurface] command-result: no pending op', {
-        commandId,
-        pendingCount: pendingAudioSurfaceCommands.size,
-        sampleIds: [...pendingAudioSurfaceCommands.keys()].slice(0, 5),
-      });
-      return { ack: false as const, reason: 'unknown-command' };
-    }
-    pendingAudioSurfaceCommands.delete(commandId);
-    pending.resolve(response);
-    return { ack: true as const };
+    return runMainPressureTask('audio-surface.command-result', {
+      commandId: envelope?.commandId,
+      pendingCount: pendingAudioSurfaceCommands.size,
+    }, () => {
+      if (!isAudioSurfaceHostSender(event.sender)) {
+        loggerWarn('[AudioSurface] command-result: rejected sender', {
+          senderId: event.sender.id,
+          isolatedIds: [...isolatedAudioSurfaceContents],
+        });
+        return { ack: false as const, reason: 'bad-sender' };
+      }
+      const commandId = envelope?.commandId;
+      const response = envelope?.response;
+      if (typeof commandId !== 'string' || !commandId) {
+        loggerWarn('[AudioSurface] command-result: missing commandId', {
+          envelope,
+        });
+        return { ack: false as const, reason: 'missing-command-id' };
+      }
+      const pending = pendingAudioSurfaceCommands.get(commandId);
+      if (!pending) {
+        loggerWarn('[AudioSurface] command-result: no pending op', {
+          commandId,
+          pendingCount: pendingAudioSurfaceCommands.size,
+          sampleIds: [...pendingAudioSurfaceCommands.keys()].slice(0, 5),
+        });
+        return { ack: false as const, reason: 'unknown-command' };
+      }
+      pendingAudioSurfaceCommands.delete(commandId);
+      pending.resolve(response);
+      return { ack: true as const };
+    });
   }
 );
 

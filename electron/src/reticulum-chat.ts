@@ -158,6 +158,109 @@ export type ReticulumDmSummary = {
 };
 
 type ReticulumChatFeedPriority = 'metadata';
+type ReticulumChatQueuedControlKind = 'group_digest';
+
+interface ReticulumChatQueuedControlWire {
+  key: string;
+  kind: ReticulumChatQueuedControlKind;
+  wire: Record<string, unknown>;
+  peerHash: string;
+  enqueuedAt: number;
+  coalescedCount: number;
+  groupCount?: number;
+  groupId?: number;
+}
+
+interface ReticulumChatDigestSnapshot {
+  latest: ReticulumChatFeedCursor | null;
+  digestHash: string;
+}
+
+interface ReticulumChatQueuedDigestRepair {
+  key: string;
+  peerHash: string;
+  providerPeerHash: string;
+  groupId: number;
+  wire: Record<string, unknown>;
+  remoteGroupLatest: ReticulumChatFeedCursor | null;
+  remoteDigestHash: string;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
+
+interface ReticulumChatDigestRepairStats {
+  authorGapRequested: boolean;
+  metadataRepairRequested: boolean;
+  newestRepairRequested: boolean;
+  channelStatesUpdated: number;
+  channelRepairRequests: number;
+  channelRepairPushes: number;
+  windowRepairRequests: number;
+  peerBehindPushes: number;
+  digestPageRequests: number;
+}
+
+interface ReticulumChatQueuedGroupSubSync {
+  key: string;
+  peerHash: string;
+  originPeerHash: string;
+  inboundPeerHash: string;
+  groupId: number;
+  hops: number;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
+
+type ReticulumChatDigestSendMode = 'peer' | 'subscription';
+
+interface ReticulumChatQueuedDigestSend {
+  key: string;
+  mode: ReticulumChatDigestSendMode;
+  peerHash: string;
+  groupId: number;
+  reason: string;
+  offset: number;
+  limit: number;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
+
+interface ReticulumChatQueuedDigestSnapshotBuild {
+  key: string;
+  groupId: number;
+  reason: string;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
+
+interface ReticulumChatQueuedNewestHistoryPush {
+  peerHash: string;
+  groupId: number;
+  reason: string;
+}
+
+interface ReticulumChatQueuedLandState {
+  key: string;
+  wire: Extract<ReticulumChatWire, { k: 'land_state' }>;
+  peerHash: string;
+  groupId: number;
+  authorAddress: string;
+  sessionId: string;
+  sequence: number;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
+
+interface ReticulumChatQueuedLandAuth {
+  key: string;
+  wire: Extract<ReticulumChatWire, { k: 'land_auth' }>;
+  peerHash: string;
+  groupId: number;
+  authorAddress: string;
+  sessionId: string;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
 
 export interface ReticulumChatEventHint {
   eventId: string;
@@ -960,6 +1063,35 @@ const RETICULUM_CHAT_CONTROL_RETRY_MS = 3_000;
 const RETICULUM_CHAT_CONTROL_RETRY_TICK_MS = 250;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX_ATTEMPTS = 10;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX = 512;
+const RETICULUM_CHAT_INBOUND_CONTROL_QUEUE_MAX = 500;
+const RETICULUM_CHAT_INBOUND_CONTROL_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_INBOUND_CONTROL_SLOW_MS = 50;
+const RETICULUM_CHAT_INBOUND_CONTROL_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_MAX = 500;
+const RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS = 50;
+const RETICULUM_CHAT_DIGEST_REPAIR_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS = 2_000;
+const RETICULUM_CHAT_GROUP_SUB_SYNC_QUEUE_MAX = 500;
+const RETICULUM_CHAT_GROUP_SUB_SYNC_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_GROUP_SUB_SYNC_SLOW_MS = 50;
+const RETICULUM_CHAT_GROUP_SUB_SYNC_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_DIGEST_SEND_QUEUE_MAX = 500;
+const RETICULUM_CHAT_DIGEST_SEND_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_DIGEST_SEND_SLOW_MS = 50;
+const RETICULUM_CHAT_DIGEST_SEND_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_QUEUE_MAX = 500;
+const RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_LAND_STATE_QUEUE_MAX = 500;
+const RETICULUM_CHAT_LAND_STATE_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS = 50;
+const RETICULUM_CHAT_LAND_STATE_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_LAND_AUTH_QUEUE_MAX = 500;
+const RETICULUM_CHAT_LAND_AUTH_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_LAND_AUTH_PROCESS_SLOW_MS = 50;
+const RETICULUM_CHAT_LAND_AUTH_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_LAND_AUTH_MAX_CONCURRENT = 8;
 const RETICULUM_CHAT_RELAY_REPLICATION_TARGET = 3;
 const RETICULUM_CHAT_RELAY_QUERY_MAX_IDS = 16;
 const RETICULUM_CHAT_RELAY_QUERY_DEBOUNCE_MS = 30_000;
@@ -2980,6 +3112,7 @@ export class ReticulumChatManager extends EventEmitter {
   private subscribedGroups = new Set<number>();
   private peerSubscriptions = new Map<string, Map<number, number>>();
   private groupMemberValidationCache = new Map<string, { isMember: boolean; expiresAt: number }>();
+  private groupMemberValidationInflight = new Map<string, Promise<boolean | null>>();
   private groupAdminValidationCache = new Map<string, { isAdmin: boolean; expiresAt: number }>();
   private requestedEventPulls = new Map<string, number>();
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
@@ -2999,6 +3132,89 @@ export class ReticulumChatManager extends EventEmitter {
   private controlRetryQueue = new Map<string, ReticulumChatControlRetryItem>();
   private controlRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private controlRetryActive = false;
+  private inboundControlQueue: string[] = [];
+  private inboundControlItems = new Map<string, ReticulumChatQueuedControlWire>();
+  private inboundControlQueueScheduled = false;
+  private inboundControlQueueActive = false;
+  private inboundControlQueuePressureLogged = false;
+  private inboundControlQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
+  private digestRepairQueue: string[] = [];
+  private digestRepairItems = new Map<string, ReticulumChatQueuedDigestRepair>();
+  private digestRepairQueueScheduled = false;
+  private digestRepairQueueActive = false;
+  private digestRepairQueuePressureLogged = false;
+  private digestRepairQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
+  private digestSnapshotCache = new Map<
+    number,
+    { snapshot: ReticulumChatDigestSnapshot; expiresAt: number }
+  >();
+  private groupSubSyncQueue: string[] = [];
+  private groupSubSyncItems = new Map<string, ReticulumChatQueuedGroupSubSync>();
+  private groupSubSyncQueueScheduled = false;
+  private groupSubSyncQueueActive = false;
+  private groupSubSyncQueuePressureLogged = false;
+  private groupSubSyncQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
+  private digestSendQueue: string[] = [];
+  private digestSendItems = new Map<string, ReticulumChatQueuedDigestSend>();
+  private digestSendQueueScheduled = false;
+  private digestSendQueueActive = false;
+  private digestSendQueuePressureLogged = false;
+  private digestSendQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
+  private digestSnapshotBuildQueue: string[] = [];
+  private digestSnapshotBuildItems = new Map<string, ReticulumChatQueuedDigestSnapshotBuild>();
+  private digestSnapshotBuildPendingDigestSends = new Map<
+    number,
+    Map<string, ReticulumChatQueuedDigestSend>
+  >();
+  private digestSnapshotBuildPendingNewestPushes = new Map<
+    number,
+    Map<string, ReticulumChatQueuedNewestHistoryPush>
+  >();
+  private digestSnapshotBuildQueueScheduled = false;
+  private digestSnapshotBuildQueueActive = false;
+  private digestSnapshotBuildQueuePressureLogged = false;
+  private digestSnapshotBuildQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
+  private landStateQueue: string[] = [];
+  private landStateItems = new Map<string, ReticulumChatQueuedLandState>();
+  private landStateQueueScheduled = false;
+  private landStateQueueActive = false;
+  private landStateQueuePressureLogged = false;
+  private landStateQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
+  private landAuthQueue: string[] = [];
+  private landAuthItems = new Map<string, ReticulumChatQueuedLandAuth>();
+  private landAuthQueueScheduled = false;
+  private landAuthQueueActive = false;
+  private landAuthProcessingCount = 0;
+  private landAuthQueuePressureLogged = false;
+  private landAuthQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+  };
   private subscriptionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionFanoutQueue: ReticulumChatWire[] = [];
   private subscriptionFanoutQueuedKeys = new Set<string>();
@@ -3399,6 +3615,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.directResourceTransfer = this.createDirectResourceTransfer();
     }
     this.groupMemberValidationCache.clear();
+    this.groupMemberValidationInflight.clear();
     this.groupAdminValidationCache.clear();
     if (this.signLocalFields) this.retryPendingSignedResourceAuthOffers();
   }
@@ -3419,6 +3636,15 @@ export class ReticulumChatManager extends EventEmitter {
       this.controlRetryTimer = null;
     }
     this.controlRetryQueue.clear();
+    this.clearInboundControlQueue();
+    this.clearDigestRepairQueue();
+    this.clearGroupSubSyncQueue();
+    this.clearDigestSendQueue();
+    this.clearDigestSnapshotBuildQueue();
+    this.clearLandStateQueue();
+    this.clearLandAuthQueue();
+    this.digestSnapshotCache.clear();
+    this.groupMemberValidationInflight.clear();
     this.resourceFindRoutes.clear();
     this.localResourceFindRequests.clear();
     this.learnedResourceIdentityPublicKeys.clear();
@@ -3762,8 +3988,12 @@ export class ReticulumChatManager extends EventEmitter {
     this.enqueueSubscriptionFanouts([
       this.buildHelloWire(),
       { t: 'RCHAT', k: 'group_sub', groups: [groupId], mode: 'summary' },
-      this.buildGroupDigestWire(groupId),
     ]);
+    this.enqueueDigestSend({
+      mode: 'subscription',
+      groupId,
+      reason: 'announce-group-subscription',
+    });
   }
 
   private announceActiveGroupSubscription(groupId: number): void {
@@ -3771,8 +4001,13 @@ export class ReticulumChatManager extends EventEmitter {
     void this.ensureGroupKeyState(groupId);
     this.enqueueSubscriptionFanouts([
       { t: 'RCHAT', k: 'group_sub', groups: [groupId], mode: 'active' },
-      this.buildGroupDigestWire(groupId, 0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP),
     ]);
+    this.enqueueDigestSend({
+      mode: 'subscription',
+      groupId,
+      reason: 'announce-active-group-subscription',
+      limit: RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP,
+    });
   }
 
   unsubscribeGroup(groupId: number): void {
@@ -4739,6 +4974,7 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'range_req' &&
       kind !== 'event_batch' &&
       kind !== 'land_chat_hint' &&
+      kind !== 'land_auth' &&
       kind !== 'land_action' &&
       kind !== 'land_call' &&
       kind !== 'lc'
@@ -4767,6 +5003,1038 @@ export class ReticulumChatManager extends EventEmitter {
       RETICULUM_CHAT_DIGEST_DEDUPE_TTL_MS,
       RETICULUM_CHAT_CONTROL_DEDUP_MAX
     );
+  }
+
+  private enqueueInboundControlWire(
+    kind: ReticulumChatQueuedControlKind,
+    wire: Record<string, unknown>,
+    peerHash: string
+  ): void {
+    if (this.isClosed) return;
+    const queued = this.buildInboundControlQueueItem(kind, wire, peerHash);
+    if (!queued) return;
+    const existing = this.inboundControlItems.get(queued.key);
+    if (existing) {
+      existing.wire = queued.wire;
+      existing.enqueuedAt = queued.enqueuedAt;
+      existing.coalescedCount += 1;
+      this.inboundControlQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.inboundControlQueue.length >= RETICULUM_CHAT_INBOUND_CONTROL_QUEUE_MAX) {
+      const droppedKey = this.inboundControlQueue.shift();
+      if (!droppedKey) break;
+      if (this.inboundControlItems.delete(droppedKey)) {
+        this.inboundControlQueueStats.dropped += 1;
+      }
+    }
+    this.inboundControlQueue.push(queued.key);
+    this.inboundControlItems.set(queued.key, queued);
+    this.logInboundControlQueuePressureIfNeeded();
+    this.scheduleInboundControlQueue();
+  }
+
+  private buildInboundControlQueueItem(
+    kind: ReticulumChatQueuedControlKind,
+    wire: Record<string, unknown>,
+    peerHash: string
+  ): ReticulumChatQueuedControlWire | null {
+    const clonedWire = this.cloneControlWire(wire);
+    const groupId = Number(clonedWire.g);
+    if (!Number.isInteger(groupId) || groupId <= 0) return null;
+    const latestKey = this.hashControlPayload({ latest: clonedWire.latest });
+    const digestHash = typeof clonedWire.digestHash === 'string' ? clonedWire.digestHash : '';
+    return {
+      key: `${kind}:${peerHash}:${groupId}:${latestKey}:${digestHash}:${this.hashControlPayload(clonedWire)}`,
+      kind,
+      wire: clonedWire,
+      peerHash,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+      groupId,
+    };
+  }
+
+  private cloneControlWire(wire: Record<string, unknown>): Record<string, unknown> {
+    return {
+      ...wire,
+      ...(Array.isArray(wire.groups) ? { groups: [...wire.groups] } : {}),
+      ...(Array.isArray(wire.channels) ? { channels: [...wire.channels] } : {}),
+    };
+  }
+
+  private scheduleInboundControlQueue(): void {
+    if (this.inboundControlQueueScheduled || this.inboundControlQueueActive) return;
+    this.inboundControlQueueScheduled = true;
+    setImmediate(() => {
+      this.inboundControlQueueScheduled = false;
+      this.processInboundControlQueue();
+    });
+  }
+
+  private processInboundControlQueue(): void {
+    if (this.inboundControlQueueActive || this.isClosed) return;
+    this.inboundControlQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.inboundControlQueue.length > 0) {
+        const key = this.inboundControlQueue.shift();
+        if (!key) break;
+        const item = this.inboundControlItems.get(key);
+        if (!item) continue;
+        this.inboundControlItems.delete(key);
+        this.processInboundControlQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_INBOUND_CONTROL_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.inboundControlQueueActive = false;
+      this.logInboundControlQueuePressureIfNeeded();
+      if (this.inboundControlQueue.length > 0 && !this.isClosed) {
+        this.scheduleInboundControlQueue();
+      }
+    }
+  }
+
+  private processInboundControlQueueItem(item: ReticulumChatQueuedControlWire): void {
+    const startedAt = Date.now();
+    try {
+      const groupId = Number(item.wire.g);
+      if (Number.isInteger(groupId) && groupId > 0) {
+        this.handleGroupDigest(groupId, item.wire, item.peerHash);
+      }
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to process inbound control kind=${item.kind} peer=${item.peerHash.slice(0, 16)}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.inboundControlQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_INBOUND_CONTROL_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] inbound_control_slow kind=${item.kind} duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.inboundControlQueue.length} peer=${item.peerHash.slice(
+            0,
+            16
+          )} group=${item.groupId ?? 'n/a'} group_count=${item.groupCount ?? 'n/a'} coalesced=${item.coalescedCount} processed=${this.inboundControlQueueStats.processed} dropped=${this.inboundControlQueueStats.dropped}`
+        );
+      }
+    }
+  }
+
+  private logInboundControlQueuePressureIfNeeded(): void {
+    const size = this.inboundControlQueue.length;
+    if (size >= RETICULUM_CHAT_INBOUND_CONTROL_PRESSURE_WARN) {
+      if (this.inboundControlQueuePressureLogged) return;
+      this.inboundControlQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] inbound_control_queue_pressure queue_size=${size} items=${this.inboundControlItems.size} coalesced=${this.inboundControlQueueStats.coalesced} dropped=${this.inboundControlQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_INBOUND_CONTROL_PRESSURE_WARN / 2)) {
+      this.inboundControlQueuePressureLogged = false;
+    }
+  }
+
+  private clearInboundControlQueue(): void {
+    this.inboundControlQueue = [];
+    this.inboundControlItems.clear();
+    this.inboundControlQueueScheduled = false;
+    this.inboundControlQueueActive = false;
+    this.inboundControlQueuePressureLogged = false;
+  }
+
+  private enqueueDigestRepair(item: Omit<ReticulumChatQueuedDigestRepair, 'key' | 'enqueuedAt' | 'coalescedCount'>): void {
+    if (this.isClosed) return;
+    const peer = item.peerHash.trim().toLowerCase();
+    if (!peer || !Number.isInteger(item.groupId) || item.groupId <= 0) return;
+    const key = `${peer}:${item.groupId}`;
+    const existing = this.digestRepairItems.get(key);
+    if (existing) {
+      existing.wire = item.wire;
+      existing.providerPeerHash = item.providerPeerHash;
+      existing.remoteGroupLatest = item.remoteGroupLatest;
+      existing.remoteDigestHash = item.remoteDigestHash;
+      existing.enqueuedAt = this.now();
+      existing.coalescedCount += 1;
+      this.digestRepairQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.digestRepairQueue.length >= RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_MAX) {
+      const droppedKey = this.digestRepairQueue.shift();
+      if (!droppedKey) break;
+      if (this.digestRepairItems.delete(droppedKey)) {
+        this.digestRepairQueueStats.dropped += 1;
+      }
+    }
+    this.digestRepairQueue.push(key);
+    this.digestRepairItems.set(key, {
+      ...item,
+      key,
+      peerHash: peer,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+    this.logDigestRepairQueuePressureIfNeeded();
+    this.scheduleDigestRepairQueue();
+  }
+
+  private scheduleDigestRepairQueue(): void {
+    if (this.digestRepairQueueScheduled || this.digestRepairQueueActive) return;
+    this.digestRepairQueueScheduled = true;
+    setImmediate(() => {
+      this.digestRepairQueueScheduled = false;
+      this.processDigestRepairQueue();
+    });
+  }
+
+  private processDigestRepairQueue(): void {
+    if (this.digestRepairQueueActive || this.isClosed) return;
+    this.digestRepairQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.digestRepairQueue.length > 0) {
+        const key = this.digestRepairQueue.shift();
+        if (!key) break;
+        const item = this.digestRepairItems.get(key);
+        if (!item) continue;
+        this.digestRepairItems.delete(key);
+        this.processDigestRepairQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.digestRepairQueueActive = false;
+      this.logDigestRepairQueuePressureIfNeeded();
+      if (this.digestRepairQueue.length > 0 && !this.isClosed) {
+        this.scheduleDigestRepairQueue();
+      }
+    }
+  }
+
+  private processDigestRepairQueueItem(item: ReticulumChatQueuedDigestRepair): void {
+    const startedAt = Date.now();
+    let stats: ReticulumChatDigestRepairStats | null = null;
+    try {
+      stats = this.processGroupDigestRepair(item);
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to process digest repair group=${item.groupId} peer=${item.peerHash.slice(0, 16)}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.digestRepairQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] digest_repair_slow duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.digestRepairQueue.length} group=${item.groupId} peer=${item.peerHash.slice(
+            0,
+            16
+          )} coalesced=${item.coalescedCount} processed=${this.digestRepairQueueStats.processed} dropped=${this.digestRepairQueueStats.dropped} actions=${JSON.stringify(stats ?? {})}`
+        );
+      }
+    }
+  }
+
+  private logDigestRepairQueuePressureIfNeeded(): void {
+    const size = this.digestRepairQueue.length;
+    if (size >= RETICULUM_CHAT_DIGEST_REPAIR_PRESSURE_WARN) {
+      if (this.digestRepairQueuePressureLogged) return;
+      this.digestRepairQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] digest_repair_queue_pressure queue_size=${size} items=${this.digestRepairItems.size} coalesced=${this.digestRepairQueueStats.coalesced} dropped=${this.digestRepairQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_DIGEST_REPAIR_PRESSURE_WARN / 2)) {
+      this.digestRepairQueuePressureLogged = false;
+    }
+  }
+
+  private clearDigestRepairQueue(): void {
+    this.digestRepairQueue = [];
+    this.digestRepairItems.clear();
+    this.digestRepairQueueScheduled = false;
+    this.digestRepairQueueActive = false;
+    this.digestRepairQueuePressureLogged = false;
+  }
+
+  private enqueueGroupSubSync(item: Omit<ReticulumChatQueuedGroupSubSync, 'key' | 'enqueuedAt' | 'coalescedCount'>): void {
+    if (this.isClosed) return;
+    const peer = item.peerHash.trim().toLowerCase();
+    if (!peer || !Number.isInteger(item.groupId) || item.groupId <= 0) return;
+    const key = `${peer}:${item.groupId}`;
+    const existing = this.groupSubSyncItems.get(key);
+    if (existing) {
+      existing.originPeerHash = item.originPeerHash;
+      existing.inboundPeerHash = item.inboundPeerHash;
+      existing.hops = item.hops;
+      existing.enqueuedAt = this.now();
+      existing.coalescedCount += 1;
+      this.groupSubSyncQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.groupSubSyncQueue.length >= RETICULUM_CHAT_GROUP_SUB_SYNC_QUEUE_MAX) {
+      const droppedKey = this.groupSubSyncQueue.shift();
+      if (!droppedKey) break;
+      if (this.groupSubSyncItems.delete(droppedKey)) {
+        this.groupSubSyncQueueStats.dropped += 1;
+      }
+    }
+    this.groupSubSyncQueue.push(key);
+    this.groupSubSyncItems.set(key, {
+      ...item,
+      key,
+      peerHash: peer,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+    this.logGroupSubSyncQueuePressureIfNeeded();
+    this.scheduleGroupSubSyncQueue();
+  }
+
+  private scheduleGroupSubSyncQueue(): void {
+    if (this.groupSubSyncQueueScheduled || this.groupSubSyncQueueActive) return;
+    this.groupSubSyncQueueScheduled = true;
+    setImmediate(() => {
+      this.groupSubSyncQueueScheduled = false;
+      this.processGroupSubSyncQueue();
+    });
+  }
+
+  private processGroupSubSyncQueue(): void {
+    if (this.groupSubSyncQueueActive || this.isClosed) return;
+    this.groupSubSyncQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.groupSubSyncQueue.length > 0) {
+        const key = this.groupSubSyncQueue.shift();
+        if (!key) break;
+        const item = this.groupSubSyncItems.get(key);
+        if (!item) continue;
+        this.groupSubSyncItems.delete(key);
+        this.processGroupSubSyncQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_GROUP_SUB_SYNC_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.groupSubSyncQueueActive = false;
+      this.logGroupSubSyncQueuePressureIfNeeded();
+      if (this.groupSubSyncQueue.length > 0 && !this.isClosed) {
+        this.scheduleGroupSubSyncQueue();
+      }
+    }
+  }
+
+  private processGroupSubSyncQueueItem(item: ReticulumChatQueuedGroupSubSync): void {
+    const startedAt = Date.now();
+    const actions = {
+      authorGapRequested: false,
+      digestQueued: false,
+      metadataPushQueued: false,
+      newestPushQueued: false,
+      relayDigestQueued: false,
+      groupKeyDigestQueued: false,
+    };
+    try {
+      const localMemberSubscription =
+        this.subscribedGroups.has(item.groupId) && this.localGroupIds.has(item.groupId);
+      actions.authorGapRequested = this.requestKnownAuthorGaps(
+        item.groupId,
+        item.peerHash,
+        'group_sub'
+      );
+      if (localMemberSubscription || this.hasLocalGroupHistory(item.groupId)) {
+        this.enqueueDigestSend({
+          mode: 'peer',
+          peerHash: item.peerHash,
+          groupId: item.groupId,
+          reason: 'group_sub',
+        });
+        actions.digestQueued = true;
+      }
+      if (localMemberSubscription) {
+        if (item.hops === 0 && item.originPeerHash === item.inboundPeerHash) {
+          void this.pushMetadataHistoryPageToPeer(item.peerHash, item.groupId, 'group_sub');
+          actions.metadataPushQueued = true;
+        }
+        if (item.hops === 0 && item.originPeerHash === item.inboundPeerHash) {
+          void this.pushNewestHistoryPageToPeer(item.peerHash, item.groupId, 'group_sub');
+          actions.newestPushQueued = true;
+        }
+      }
+      void this.serveRelayDigestForGroup(item.peerHash, item.groupId);
+      void this.serveGroupKeyDigestForGroup(item.peerHash, item.groupId);
+      actions.relayDigestQueued = true;
+      actions.groupKeyDigestQueued = true;
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to process group_sub sync group=${item.groupId} peer=${item.peerHash.slice(0, 16)}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.groupSubSyncQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_GROUP_SUB_SYNC_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] group_sub_sync_slow duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.groupSubSyncQueue.length} group=${item.groupId} peer=${item.peerHash.slice(
+            0,
+            16
+          )} coalesced=${item.coalescedCount} processed=${this.groupSubSyncQueueStats.processed} dropped=${this.groupSubSyncQueueStats.dropped} actions=${JSON.stringify(actions)}`
+        );
+      }
+    }
+  }
+
+  private logGroupSubSyncQueuePressureIfNeeded(): void {
+    const size = this.groupSubSyncQueue.length;
+    if (size >= RETICULUM_CHAT_GROUP_SUB_SYNC_PRESSURE_WARN) {
+      if (this.groupSubSyncQueuePressureLogged) return;
+      this.groupSubSyncQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] group_sub_sync_queue_pressure queue_size=${size} items=${this.groupSubSyncItems.size} coalesced=${this.groupSubSyncQueueStats.coalesced} dropped=${this.groupSubSyncQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_GROUP_SUB_SYNC_PRESSURE_WARN / 2)) {
+      this.groupSubSyncQueuePressureLogged = false;
+    }
+  }
+
+  private clearGroupSubSyncQueue(): void {
+    this.groupSubSyncQueue = [];
+    this.groupSubSyncItems.clear();
+    this.groupSubSyncQueueScheduled = false;
+    this.groupSubSyncQueueActive = false;
+    this.groupSubSyncQueuePressureLogged = false;
+  }
+
+  private enqueueDigestSend(
+    item: {
+      mode: ReticulumChatDigestSendMode;
+      peerHash?: string;
+      groupId: number;
+      reason: string;
+      offset?: number;
+      limit?: number;
+    }
+  ): void {
+    if (this.isClosed) return;
+    const groupId = Number(item.groupId);
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    const offset = Number.isInteger(item.offset) && Number(item.offset) >= 0 ? Number(item.offset) : 0;
+    const limit = this.normalizeDigestLimit(item.limit);
+    const peerHash = item.mode === 'peer' ? (item.peerHash || '').trim().toLowerCase() : '';
+    if (item.mode === 'peer' && !peerHash) return;
+    const key = `${item.mode}:${peerHash || 'subscription'}:${groupId}:${offset}:${limit}`;
+    this.queueDigestSendItem({
+      key,
+      mode: item.mode,
+      peerHash,
+      groupId,
+      reason: item.reason,
+      offset,
+      limit,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+  }
+
+  private queueDigestSendItem(item: ReticulumChatQueuedDigestSend): void {
+    if (this.isClosed) return;
+    const existing = this.digestSendItems.get(item.key);
+    if (existing) {
+      existing.reason = item.reason;
+      existing.enqueuedAt = item.enqueuedAt;
+      existing.coalescedCount += 1;
+      this.digestSendQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.digestSendQueue.length >= RETICULUM_CHAT_DIGEST_SEND_QUEUE_MAX) {
+      const droppedKey = this.digestSendQueue.shift();
+      if (!droppedKey) break;
+      if (this.digestSendItems.delete(droppedKey)) {
+        this.digestSendQueueStats.dropped += 1;
+      }
+    }
+    this.digestSendQueue.push(item.key);
+    this.digestSendItems.set(item.key, item);
+    this.logDigestSendQueuePressureIfNeeded();
+    this.scheduleDigestSendQueue();
+  }
+
+  private scheduleDigestSendQueue(): void {
+    if (this.digestSendQueueScheduled || this.digestSendQueueActive) return;
+    this.digestSendQueueScheduled = true;
+    setImmediate(() => {
+      this.digestSendQueueScheduled = false;
+      this.processDigestSendQueue();
+    });
+  }
+
+  private processDigestSendQueue(): void {
+    if (this.digestSendQueueActive || this.isClosed) return;
+    this.digestSendQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.digestSendQueue.length > 0) {
+        const key = this.digestSendQueue.shift();
+        if (!key) break;
+        const item = this.digestSendItems.get(key);
+        if (!item) continue;
+        this.digestSendItems.delete(key);
+        this.processDigestSendQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_DIGEST_SEND_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.digestSendQueueActive = false;
+      this.logDigestSendQueuePressureIfNeeded();
+      if (this.digestSendQueue.length > 0 && !this.isClosed) {
+        this.scheduleDigestSendQueue();
+      }
+    }
+  }
+
+  private processDigestSendQueueItem(item: ReticulumChatQueuedDigestSend): void {
+    const startedAt = Date.now();
+    try {
+      const snapshot = this.getCachedGroupDigestSnapshot(item.groupId);
+      if (!snapshot) {
+        this.deferDigestSendUntilSnapshot(item);
+        this.enqueueDigestSnapshotBuild(item.groupId, `digest-send:${item.reason}`);
+        return;
+      }
+      const wire = this.buildGroupDigestWireFromSnapshot(
+        item.groupId,
+        snapshot,
+        item.offset,
+        item.limit
+      );
+      if (item.mode === 'peer') {
+        void this.sendToPeer(item.peerHash, wire);
+      } else {
+        this.enqueueSubscriptionFanouts([wire]);
+      }
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to send queued digest group=${item.groupId} mode=${item.mode} peer=${item.peerHash.slice(0, 16)} reason=${item.reason}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.digestSendQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_DIGEST_SEND_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] digest_send_slow duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.digestSendQueue.length} group=${item.groupId} mode=${item.mode} peer=${item.peerHash.slice(
+            0,
+            16
+          )} reason=${item.reason} coalesced=${item.coalescedCount} processed=${this.digestSendQueueStats.processed} dropped=${this.digestSendQueueStats.dropped}`
+        );
+      }
+    }
+  }
+
+  private deferDigestSendUntilSnapshot(item: ReticulumChatQueuedDigestSend): void {
+    let pending = this.digestSnapshotBuildPendingDigestSends.get(item.groupId);
+    if (!pending) {
+      pending = new Map<string, ReticulumChatQueuedDigestSend>();
+      this.digestSnapshotBuildPendingDigestSends.set(item.groupId, pending);
+    }
+    const existing = pending.get(item.key);
+    if (existing) {
+      existing.reason = item.reason;
+      existing.enqueuedAt = item.enqueuedAt;
+      existing.coalescedCount += item.coalescedCount + 1;
+      this.digestSendQueueStats.coalesced += 1;
+      return;
+    }
+    pending.set(item.key, item);
+  }
+
+  private releaseDigestSendsWaitingForSnapshot(groupId: number): void {
+    const pending = this.digestSnapshotBuildPendingDigestSends.get(groupId);
+    if (!pending) return;
+    this.digestSnapshotBuildPendingDigestSends.delete(groupId);
+    for (const item of pending.values()) {
+      this.queueDigestSendItem({
+        ...item,
+        enqueuedAt: this.now(),
+      });
+    }
+  }
+
+  private deferNewestHistoryPushUntilSnapshot(
+    peerHash: string,
+    groupId: number,
+    reason: string
+  ): void {
+    let pending = this.digestSnapshotBuildPendingNewestPushes.get(groupId);
+    if (!pending) {
+      pending = new Map<string, ReticulumChatQueuedNewestHistoryPush>();
+      this.digestSnapshotBuildPendingNewestPushes.set(groupId, pending);
+    }
+    pending.set(peerHash, { peerHash, groupId, reason });
+  }
+
+  private releaseNewestHistoryPushesWaitingForSnapshot(groupId: number): void {
+    const pending = this.digestSnapshotBuildPendingNewestPushes.get(groupId);
+    if (!pending) return;
+    this.digestSnapshotBuildPendingNewestPushes.delete(groupId);
+    for (const item of pending.values()) {
+      void this.pushNewestHistoryPageToPeer(item.peerHash, item.groupId, item.reason);
+    }
+  }
+
+  private enqueueDigestSnapshotBuild(groupId: number, reason: string): void {
+    if (this.isClosed || !Number.isInteger(groupId) || groupId <= 0) return;
+    const key = String(groupId);
+    const existing = this.digestSnapshotBuildItems.get(key);
+    if (existing) {
+      existing.reason = reason;
+      existing.enqueuedAt = this.now();
+      existing.coalescedCount += 1;
+      this.digestSnapshotBuildQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.digestSnapshotBuildQueue.length >= RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_QUEUE_MAX) {
+      const droppedKey = this.digestSnapshotBuildQueue.shift();
+      if (!droppedKey) break;
+      const dropped = this.digestSnapshotBuildItems.get(droppedKey);
+      if (dropped) {
+        this.digestSnapshotBuildItems.delete(droppedKey);
+        this.digestSnapshotBuildPendingDigestSends.delete(dropped.groupId);
+        this.digestSnapshotBuildPendingNewestPushes.delete(dropped.groupId);
+        this.digestSnapshotBuildQueueStats.dropped += 1;
+      }
+    }
+    this.digestSnapshotBuildQueue.push(key);
+    this.digestSnapshotBuildItems.set(key, {
+      key,
+      groupId,
+      reason,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+    this.logDigestSnapshotBuildQueuePressureIfNeeded();
+    this.scheduleDigestSnapshotBuildQueue();
+  }
+
+  private scheduleDigestSnapshotBuildQueue(): void {
+    if (this.digestSnapshotBuildQueueScheduled || this.digestSnapshotBuildQueueActive) return;
+    this.digestSnapshotBuildQueueScheduled = true;
+    setImmediate(() => {
+      this.digestSnapshotBuildQueueScheduled = false;
+      this.processDigestSnapshotBuildQueue();
+    });
+  }
+
+  private processDigestSnapshotBuildQueue(): void {
+    if (this.digestSnapshotBuildQueueActive || this.isClosed) return;
+    this.digestSnapshotBuildQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.digestSnapshotBuildQueue.length > 0) {
+        const key = this.digestSnapshotBuildQueue.shift();
+        if (!key) break;
+        const item = this.digestSnapshotBuildItems.get(key);
+        if (!item) continue;
+        this.digestSnapshotBuildItems.delete(key);
+        this.processDigestSnapshotBuildQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.digestSnapshotBuildQueueActive = false;
+      this.logDigestSnapshotBuildQueuePressureIfNeeded();
+      if (this.digestSnapshotBuildQueue.length > 0 && !this.isClosed) {
+        this.scheduleDigestSnapshotBuildQueue();
+      }
+    }
+  }
+
+  private processDigestSnapshotBuildQueueItem(item: ReticulumChatQueuedDigestSnapshotBuild): void {
+    try {
+      this.buildGroupDigestSnapshot(item.groupId);
+      this.digestSnapshotBuildQueueStats.processed += 1;
+      this.releaseDigestSendsWaitingForSnapshot(item.groupId);
+      this.releaseNewestHistoryPushesWaitingForSnapshot(item.groupId);
+    } catch (err) {
+      this.digestSnapshotBuildPendingDigestSends.delete(item.groupId);
+      this.digestSnapshotBuildPendingNewestPushes.delete(item.groupId);
+      loggerWarn(
+        `[ReticulumChat] Failed to build digest snapshot group=${item.groupId} reason=${item.reason}:`,
+        err
+      );
+    }
+  }
+
+  private logDigestSnapshotBuildQueuePressureIfNeeded(): void {
+    const size = this.digestSnapshotBuildQueue.length;
+    if (size >= RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_PRESSURE_WARN) {
+      if (this.digestSnapshotBuildQueuePressureLogged) return;
+      this.digestSnapshotBuildQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] digest_snapshot_build_queue_pressure queue_size=${size} items=${this.digestSnapshotBuildItems.size} pending_digest_groups=${this.digestSnapshotBuildPendingDigestSends.size} coalesced=${this.digestSnapshotBuildQueueStats.coalesced} dropped=${this.digestSnapshotBuildQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_PRESSURE_WARN / 2)) {
+      this.digestSnapshotBuildQueuePressureLogged = false;
+    }
+  }
+
+  private clearDigestSnapshotBuildQueue(): void {
+    this.digestSnapshotBuildQueue = [];
+    this.digestSnapshotBuildItems.clear();
+    this.digestSnapshotBuildPendingDigestSends.clear();
+    this.digestSnapshotBuildPendingNewestPushes.clear();
+    this.digestSnapshotBuildQueueScheduled = false;
+    this.digestSnapshotBuildQueueActive = false;
+    this.digestSnapshotBuildQueuePressureLogged = false;
+  }
+
+  private logDigestSendQueuePressureIfNeeded(): void {
+    const size = this.digestSendQueue.length;
+    if (size >= RETICULUM_CHAT_DIGEST_SEND_PRESSURE_WARN) {
+      if (this.digestSendQueuePressureLogged) return;
+      this.digestSendQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] digest_send_queue_pressure queue_size=${size} items=${this.digestSendItems.size} coalesced=${this.digestSendQueueStats.coalesced} dropped=${this.digestSendQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_DIGEST_SEND_PRESSURE_WARN / 2)) {
+      this.digestSendQueuePressureLogged = false;
+    }
+  }
+
+  private clearDigestSendQueue(): void {
+    this.digestSendQueue = [];
+    this.digestSendItems.clear();
+    this.digestSendQueueScheduled = false;
+    this.digestSendQueueActive = false;
+    this.digestSendQueuePressureLogged = false;
+  }
+
+  private enqueueLandStateWire(
+    wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
+    peerHash: string
+  ): void {
+    if (this.isClosed) return;
+    const groupId = Number(wire.g);
+    const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    const sequence = Math.max(0, Math.floor(Number(wire.q) || 0));
+    if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId) return;
+    const key = `${groupId}:${authorAddress}:${sessionId}`;
+    const existing = this.landStateItems.get(key);
+    if (existing) {
+      if (sequence < existing.sequence) {
+        this.landStateQueueStats.dropped += 1;
+        return;
+      }
+      existing.wire = { ...wire };
+      existing.peerHash = peerHash;
+      existing.sequence = sequence;
+      existing.enqueuedAt = this.now();
+      existing.coalescedCount += 1;
+      this.landStateQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.landStateQueue.length >= RETICULUM_CHAT_LAND_STATE_QUEUE_MAX) {
+      const droppedKey = this.landStateQueue.shift();
+      if (!droppedKey) break;
+      if (this.landStateItems.delete(droppedKey)) {
+        this.landStateQueueStats.dropped += 1;
+      }
+    }
+    this.landStateQueue.push(key);
+    this.landStateItems.set(key, {
+      key,
+      wire: { ...wire },
+      peerHash,
+      groupId,
+      authorAddress,
+      sessionId,
+      sequence,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+    this.logLandStateQueuePressureIfNeeded();
+    this.scheduleLandStateQueue();
+  }
+
+  private scheduleLandStateQueue(): void {
+    if (this.landStateQueueScheduled || this.landStateQueueActive) return;
+    this.landStateQueueScheduled = true;
+    setImmediate(() => {
+      this.landStateQueueScheduled = false;
+      this.processLandStateQueue();
+    });
+  }
+
+  private processLandStateQueue(): void {
+    if (this.landStateQueueActive || this.isClosed) return;
+    this.landStateQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.landStateQueue.length > 0) {
+        const key = this.landStateQueue.shift();
+        if (!key) break;
+        const item = this.landStateItems.get(key);
+        if (!item) continue;
+        this.landStateItems.delete(key);
+        this.processLandStateQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_LAND_STATE_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.landStateQueueActive = false;
+      this.logLandStateQueuePressureIfNeeded();
+      if (this.landStateQueue.length > 0 && !this.isClosed) {
+        this.scheduleLandStateQueue();
+      }
+    }
+  }
+
+  private processLandStateQueueItem(item: ReticulumChatQueuedLandState): void {
+    const startedAt = Date.now();
+    try {
+      this.handleLandStateWire(item.wire, item.peerHash);
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to process land_state group=${item.groupId} author=${item.authorAddress} session=${item.sessionId}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.landStateQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] land_state_process_slow duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.landStateQueue.length} group=${item.groupId} author=${item.authorAddress} session=${item.sessionId} seq=${item.sequence} coalesced=${item.coalescedCount} processed=${this.landStateQueueStats.processed} dropped=${this.landStateQueueStats.dropped}`
+        );
+      }
+    }
+  }
+
+  private logLandStateQueuePressureIfNeeded(): void {
+    const size = this.landStateQueue.length;
+    if (size >= RETICULUM_CHAT_LAND_STATE_PRESSURE_WARN) {
+      if (this.landStateQueuePressureLogged) return;
+      this.landStateQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] land_state_queue_pressure queue_size=${size} items=${this.landStateItems.size} coalesced=${this.landStateQueueStats.coalesced} dropped=${this.landStateQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_LAND_STATE_PRESSURE_WARN / 2)) {
+      this.landStateQueuePressureLogged = false;
+    }
+  }
+
+  private clearLandStateQueue(): void {
+    this.landStateQueue = [];
+    this.landStateItems.clear();
+    this.landStateQueueScheduled = false;
+    this.landStateQueueActive = false;
+    this.landStateQueuePressureLogged = false;
+  }
+
+  private enqueueLandAuthWire(
+    wire: Extract<ReticulumChatWire, { k: 'land_auth' }>,
+    peerHash: string
+  ): void {
+    if (this.isClosed) return;
+    const groupId = Number(wire.g);
+    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+    let authorAddress = '';
+    try {
+      authorAddress = deriveAddressFromPublicKey(wire.p);
+    } catch {
+      return;
+    }
+    if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId) return;
+    const key = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+    const existing = this.landAuthItems.get(key);
+    if (existing) {
+      existing.wire = { ...wire };
+      existing.peerHash = peerHash;
+      existing.enqueuedAt = this.now();
+      existing.coalescedCount += 1;
+      this.landAuthQueueStats.coalesced += 1;
+      return;
+    }
+    while (this.landAuthQueue.length >= RETICULUM_CHAT_LAND_AUTH_QUEUE_MAX) {
+      const droppedKey = this.landAuthQueue.shift();
+      if (!droppedKey) break;
+      if (this.landAuthItems.delete(droppedKey)) {
+        this.landAuthQueueStats.dropped += 1;
+      }
+    }
+    this.landAuthQueue.push(key);
+    this.landAuthItems.set(key, {
+      key,
+      wire: { ...wire },
+      peerHash,
+      groupId,
+      authorAddress,
+      sessionId,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+    this.logLandAuthQueuePressureIfNeeded();
+    this.scheduleLandAuthQueue();
+  }
+
+  private scheduleLandAuthQueue(): void {
+    if (this.landAuthQueueScheduled || this.landAuthQueueActive) return;
+    this.landAuthQueueScheduled = true;
+    setImmediate(() => {
+      this.landAuthQueueScheduled = false;
+      this.processLandAuthQueue();
+    });
+  }
+
+  private processLandAuthQueue(): void {
+    if (this.landAuthQueueActive || this.isClosed) return;
+    this.landAuthQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (
+        this.landAuthQueue.length > 0 &&
+        this.landAuthProcessingCount < RETICULUM_CHAT_LAND_AUTH_MAX_CONCURRENT
+      ) {
+        const key = this.landAuthQueue.shift();
+        if (!key) break;
+        const item = this.landAuthItems.get(key);
+        if (!item) continue;
+        this.landAuthItems.delete(key);
+        this.landAuthProcessingCount += 1;
+        void this.processLandAuthQueueItem(item).finally(() => {
+          this.landAuthProcessingCount = Math.max(0, this.landAuthProcessingCount - 1);
+          if (this.landAuthQueue.length > 0 && !this.isClosed) {
+            this.scheduleLandAuthQueue();
+          }
+        });
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_LAND_AUTH_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.landAuthQueueActive = false;
+      this.logLandAuthQueuePressureIfNeeded();
+      if (
+        this.landAuthQueue.length > 0 &&
+        this.landAuthProcessingCount < RETICULUM_CHAT_LAND_AUTH_MAX_CONCURRENT &&
+        !this.isClosed
+      ) {
+        this.scheduleLandAuthQueue();
+      }
+    }
+  }
+
+  private async processLandAuthQueueItem(item: ReticulumChatQueuedLandAuth): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await this.handleLandAuthWire(item.wire, item.peerHash);
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to process land_auth group=${item.groupId} author=${item.authorAddress} session=${item.sessionId}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.landAuthQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_LAND_AUTH_PROCESS_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] land_auth_process_slow duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.landAuthQueue.length} group=${item.groupId} author=${item.authorAddress} session=${item.sessionId} coalesced=${item.coalescedCount} processed=${this.landAuthQueueStats.processed} dropped=${this.landAuthQueueStats.dropped}`
+        );
+      }
+    }
+  }
+
+  private logLandAuthQueuePressureIfNeeded(): void {
+    const size = this.landAuthQueue.length;
+    if (size >= RETICULUM_CHAT_LAND_AUTH_PRESSURE_WARN) {
+      if (this.landAuthQueuePressureLogged) return;
+      this.landAuthQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] land_auth_queue_pressure queue_size=${size} items=${this.landAuthItems.size} coalesced=${this.landAuthQueueStats.coalesced} dropped=${this.landAuthQueueStats.dropped}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_LAND_AUTH_PRESSURE_WARN / 2)) {
+      this.landAuthQueuePressureLogged = false;
+    }
+  }
+
+  private clearLandAuthQueue(): void {
+    this.landAuthQueue = [];
+    this.landAuthItems.clear();
+    this.landAuthQueueScheduled = false;
+    this.landAuthQueueActive = false;
+    this.landAuthQueuePressureLogged = false;
   }
 
   handleWire(
@@ -4891,7 +6159,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'group_digest': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        this.handleGroupDigest(groupId, wire, peerHash);
+        this.enqueueInboundControlWire('group_digest', wire, peerHash);
         return;
       }
       case 'digest_req': {
@@ -4947,7 +6215,7 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       case 'land_auth':
       {
-        void this.handleLandAuthWire(
+        this.enqueueLandAuthWire(
           wire as Extract<ReticulumChatWire, { k: 'land_auth' }>,
           peerHash
         );
@@ -4963,7 +6231,7 @@ export class ReticulumChatManager extends EventEmitter {
       }
       case 'land_state':
       {
-        void this.handleLandStateWire(
+        this.enqueueLandStateWire(
           wire as Extract<ReticulumChatWire, { k: 'land_state' }>,
           peerHash
         );
@@ -6205,10 +7473,18 @@ export class ReticulumChatManager extends EventEmitter {
     loggerLog(
       `[ReticulumChat] land_auth_received group=${groupId} author=${authorAddress} session=${sessionId} peer=${peer.slice(0, 16)}`
     );
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
+    const validationKey = `${groupId}:${authorAddress}`;
+    const validationWasInflight = this.groupMemberValidationInflight.has(validationKey);
     loggerLog(
       `[ReticulumChat] land_auth_member_validation_start group=${groupId} author=${authorAddress} session=${sessionId}`
     );
     const isMember = await this.isValidatedGroupMember(groupId, authorAddress);
+    if (validationWasInflight) {
+      loggerLog(
+        `[ReticulumChat] land_auth_validation_coalesced group=${groupId} author=${authorAddress} session=${sessionId}`
+      );
+    }
     loggerLog(
       `[ReticulumChat] land_auth_member_validation_resolved group=${groupId} author=${authorAddress} session=${sessionId} status=${
         isMember === true ? 'member' : isMember === false ? 'not_member' : 'unavailable'
@@ -6224,7 +7500,6 @@ export class ReticulumChatManager extends EventEmitter {
     loggerLog(
       `[ReticulumChat] land_auth_cached group=${groupId} author=${authorAddress} session=${sessionId} ttlMs=${RETICULUM_LAND_AUTH_SESSION_TTL_MS}`
     );
-    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     await this.forwardLandAuthToInterestRoutes(groupId, wire, peerHash);
   }
 
@@ -6310,10 +7585,10 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
-  private async handleLandStateWire(
+  private handleLandStateWire(
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
     peerHash: string
-  ): Promise<void> {
+  ): void {
     const groupId = Number(wire.g);
     const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
     const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
@@ -6343,7 +7618,7 @@ export class ReticulumChatManager extends EventEmitter {
       );
     }
     if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
-    await this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
+    void this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
     this.applyLandState(groupId, wire);
   }
@@ -6916,25 +8191,16 @@ export class ReticulumChatManager extends EventEmitter {
     for (const groupId of groups) {
       this.notePeerSubscription(originPeerHash, groupId, true);
       this.noteGroupInterestRoute(groupId, originPeerHash, inboundPeerHash, hops);
-      this.requestKnownAuthorGaps(groupId, peerHash, 'group_sub');
       if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) {
         continue;
       }
-      const localMemberSubscription =
-        this.subscribedGroups.has(groupId) && this.localGroupIds.has(groupId);
-      if (localMemberSubscription || this.hasLocalGroupHistory(groupId)) {
-        void this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
-      }
-      if (localMemberSubscription) {
-        if (hops === 0 && originPeerHash === inboundPeerHash) {
-          void this.pushMetadataHistoryPageToPeer(peerHash, groupId, 'group_sub');
-        }
-        if (hops === 0 && originPeerHash === inboundPeerHash) {
-          void this.pushNewestHistoryPageToPeer(peerHash, groupId, 'group_sub');
-        }
-      }
-      void this.serveRelayDigestForGroup(peerHash, groupId);
-      void this.serveGroupKeyDigestForGroup(peerHash, groupId);
+      this.enqueueGroupSubSync({
+        peerHash,
+        originPeerHash,
+        inboundPeerHash,
+        groupId,
+        hops,
+      });
     }
     void this.forwardGroupSub(
       groups,
@@ -6966,15 +8232,47 @@ export class ReticulumChatManager extends EventEmitter {
       remoteDigestHash,
       this.now()
     );
-    this.requestKnownAuthorGaps(groupId, peerHash, 'group_digest');
+    this.enqueueDigestRepair({
+      peerHash,
+      providerPeerHash: providerPeerHash || peerHash,
+      groupId,
+      wire,
+      remoteGroupLatest,
+      remoteDigestHash,
+    });
+  }
+
+  private processGroupDigestRepair(
+    item: ReticulumChatQueuedDigestRepair
+  ): ReticulumChatDigestRepairStats {
+    const { groupId, wire, peerHash } = item;
+    const providerPeerHash = item.providerPeerHash || peerHash;
+    const remoteGroupLatest = item.remoteGroupLatest;
+    const remoteDigestHash = item.remoteDigestHash;
+    const stats: ReticulumChatDigestRepairStats = {
+      authorGapRequested: false,
+      metadataRepairRequested: false,
+      newestRepairRequested: false,
+      channelStatesUpdated: 0,
+      channelRepairRequests: 0,
+      channelRepairPushes: 0,
+      windowRepairRequests: 0,
+      peerBehindPushes: 0,
+      digestPageRequests: 0,
+    };
+    if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) {
+      return stats;
+    }
+    stats.authorGapRequested = this.requestKnownAuthorGaps(groupId, peerHash, 'group_digest');
     const channels = Array.isArray(wire.channels)
       ? wire.channels.slice(0, RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP)
       : [];
     let requestedFromChannelDigest = false;
     let pushedFromChannelDigest = false;
     let requestedWindowRepair = false;
-    const localGroupLatest = this.getGroupDigestLatestCursor(groupId);
-    const localDigestHash = this.buildGroupDigestHash(groupId);
+    const localDigestSnapshot = this.buildGroupDigestSnapshot(groupId);
+    const localGroupLatest = localDigestSnapshot.latest;
+    const localDigestHash = localDigestSnapshot.digestHash;
     const remoteDigestNeedsRepair =
       !!remoteDigestHash && remoteDigestHash !== localDigestHash;
     const remoteHasCursorDetail =
@@ -7022,6 +8320,7 @@ export class ReticulumChatManager extends EventEmitter {
       loggerLog(
         `[ReticulumChat] Requesting metadata-first repair group=${groupId} peer=${peerHash.slice(0, 16)} provider=${providerPeerHash.slice(0, 16) || 'unknown'} remoteLatest=${remoteGroupLatest.eventId}`
       );
+      stats.metadataRepairRequested = true;
     }
     let newestGroupRepairRequested = false;
     if (
@@ -7061,6 +8360,8 @@ export class ReticulumChatManager extends EventEmitter {
       requestedFromChannelDigest = true;
       requestedWindowRepair = true;
       newestGroupRepairRequested = true;
+      stats.newestRepairRequested = true;
+      stats.windowRepairRequests += 1;
     }
     for (const rawChannel of channels) {
       if (!rawChannel || typeof rawChannel !== 'object' || Array.isArray(rawChannel)) continue;
@@ -7079,6 +8380,7 @@ export class ReticulumChatManager extends EventEmitter {
         },
         this.now()
       );
+      stats.channelStatesUpdated += 1;
       if (newestGroupRepairRequested) continue;
       const localLatest = this.db.getLatestFeedCursor(groupId, channelId);
       const localWindowHash = this.db.computeWindowHash(
@@ -7087,17 +8389,21 @@ export class ReticulumChatManager extends EventEmitter {
       const remoteWindowHash = typeof channel.wh === 'string' ? channel.wh : '';
       const channelWindowMismatch = !!remoteWindowHash && remoteWindowHash !== localWindowHash;
       if (channelWindowMismatch && remoteLatest) {
-        requestedWindowRepair = this.requestVisibleWindowRepair(
+        const repaired = this.requestVisibleWindowRepair(
           peerHash,
           groupId,
           channelId,
           remoteLatest,
           localLatest,
           'channel-window-mismatch'
-        ) || requestedWindowRepair;
+        );
+        requestedWindowRepair = repaired || requestedWindowRepair;
         if (requestedWindowRepair) {
           requestedFromChannelDigest = true;
           pushedFromChannelDigest = true;
+        }
+        if (repaired) {
+          stats.windowRepairRequests += 1;
         }
         continue;
       }
@@ -7125,9 +8431,11 @@ export class ReticulumChatManager extends EventEmitter {
           }, 'cold-channel-latest');
         }
         requestedFromChannelDigest = true;
+        stats.channelRepairRequests += 1;
       } else if (this.compareCursors(localLatest, remoteLatest) > 0) {
         void this.sendFeedPageToPeer(peerHash, groupId, channelId, remoteLatest, 'after');
         pushedFromChannelDigest = true;
+        stats.channelRepairPushes += 1;
       }
     }
     if (
@@ -7148,6 +8456,7 @@ export class ReticulumChatManager extends EventEmitter {
         requestedFromChannelDigest = true;
         pushedFromChannelDigest = true;
         requestedWindowRepair = true;
+        stats.windowRepairRequests += 1;
       }
     }
     if (
@@ -7170,6 +8479,7 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] Sync push group=${groupId} peer=${peerHash.slice(0, 16)} newest=${localGroupLatest.eventId} reason=peer-behind`
       );
       pushedFromChannelDigest = true;
+      stats.peerBehindPushes += 1;
     }
     if (
       !requestedFromChannelDigest &&
@@ -7215,6 +8525,7 @@ export class ReticulumChatManager extends EventEmitter {
               inc: 1,
               limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
             }, 'cold-group-latest');
+            stats.channelRepairRequests += 1;
           } else {
             this.sendRepairFeedRequest(peerHash, {
               t: 'RCHAT',
@@ -7224,6 +8535,7 @@ export class ReticulumChatManager extends EventEmitter {
               ...(afterCursor ? { after: this.cursorToWire(afterCursor) } : {}),
               limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
             }, 'group-digest-repair');
+            stats.channelRepairRequests += 1;
           }
         }
       }
@@ -7243,14 +8555,16 @@ export class ReticulumChatManager extends EventEmitter {
           limit: RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP,
         }
       );
+      stats.digestPageRequests += 1;
     }
+    return stats;
   }
 
-  private async handleDigestReq(
+  private handleDigestReq(
     groupId: number,
     wire: Record<string, unknown>,
     peerHash: string
-  ): Promise<void> {
+  ): void {
     if (!this.canServeGroupHistory(groupId)) {
       this.relayGroupControlRequest(
         'digest_req',
@@ -7268,7 +8582,14 @@ export class ReticulumChatManager extends EventEmitter {
     const rawOffset = Number(wire.offset);
     const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
     const limit = this.normalizeDigestLimit(wire.limit);
-    await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId, offset, limit));
+    this.enqueueDigestSend({
+      mode: 'peer',
+      peerHash,
+      groupId,
+      reason: 'digest_req',
+      offset,
+      limit,
+    });
   }
 
   private relayResponseOptionsFromWire(
@@ -7813,15 +9134,15 @@ export class ReticulumChatManager extends EventEmitter {
     if (!peer || !this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) {
       return false;
     }
+    if (!force && !this.shouldRequestAuthorGapRepair(peer, groupId)) return false;
+    if (force) {
+      this.recentAuthorGapRepairRequests.set(`${peer}:${groupId}`, this.now());
+    }
     const gaps = this.db.getAuthorSequenceGaps(
       groupId,
       RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE
     );
     if (gaps.length === 0) return false;
-    if (!force && !this.shouldRequestAuthorGapRepair(peer, groupId)) return false;
-    if (force) {
-      this.recentAuthorGapRepairRequests.set(`${peer}:${groupId}`, this.now());
-    }
     const now = this.now();
     const ranges = gaps.flatMap((gap) => {
       const range = { a: gap.authorAddress, from: gap.fromSeq, to: gap.toSeq };
@@ -7938,7 +9259,12 @@ export class ReticulumChatManager extends EventEmitter {
       priority
     );
     if (pageResult.ok) {
-      await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
+      this.enqueueDigestSend({
+        mode: 'peer',
+        peerHash,
+        groupId,
+        reason: 'event-page-sent',
+      });
       return;
     }
     const failedPageResult = pageResult as Exclude<ReticulumSendResult, { ok: true }>;
@@ -7948,7 +9274,12 @@ export class ReticulumChatManager extends EventEmitter {
     loggerWarn(
       `[ReticulumChat] Event page resource offer failed group=${groupId} peer=${peerHash.slice(0, 16)} reason=${pageFailureDetail}; page will be retried by digest/range repair`
     );
-    await this.sendToPeer(peerHash, this.buildGroupDigestWire(groupId));
+    this.enqueueDigestSend({
+      mode: 'peer',
+      peerHash,
+      groupId,
+      reason: 'event-page-failed',
+    });
   }
 
   private async fanoutPublishedEvent(
@@ -8066,7 +9397,13 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     const peer = peerHash.trim().toLowerCase();
     if (!peer || !this.canServeGroupHistory(groupId)) return;
-    const latestCursor = this.getGroupDigestLatestCursor(groupId);
+    const snapshot = this.getCachedGroupDigestSnapshot(groupId);
+    if (!snapshot) {
+      this.deferNewestHistoryPushUntilSnapshot(peer, groupId, reason);
+      this.enqueueDigestSnapshotBuild(groupId, `newest-push:${reason}`);
+      return;
+    }
+    const latestCursor = snapshot.latest;
     if (!latestCursor) return;
     if (!this.shouldPushNewestHistoryPage(peer, groupId)) return;
     try {
@@ -8665,6 +10002,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.db.hasEvent(event.eventId)) return false;
     const inserted = this.db.insertEvent(event, ownEvent);
     if (inserted) {
+      this.invalidateGroupDigestSnapshot(event.groupId);
       this.queueChannelMetadataProjection(event);
       this.observedDbEventIds.add(event.eventId);
       this.writeLocalEventNotification(event);
@@ -8734,6 +10072,9 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return 'deferred';
       }
+      if (changed) {
+        this.invalidateGroupDigestSnapshot(event.groupId);
+      }
       this.emitSummaryChanged(event.groupId, event);
       loggerLog(
         `[ReticulumChat] channel_metadata_projection_applied event=${event.eventId} group=${event.groupId} type=${event.eventType} entity=category:${category.categoryId}`
@@ -8755,6 +10096,9 @@ export class ReticulumChatManager extends EventEmitter {
         channel
       );
       return 'deferred';
+    }
+    if (changed) {
+      this.invalidateGroupDigestSnapshot(event.groupId);
     }
     this.emitSummaryChanged(event.groupId, event);
     loggerLog(
@@ -9065,27 +10409,39 @@ export class ReticulumChatManager extends EventEmitter {
     const cached = this.groupMemberValidationCache.get(cacheKey);
     const now = this.now();
     if (cached && cached.expiresAt > now) return cached.isMember;
-    let isMember: boolean | null = null;
+    const existing = this.groupMemberValidationInflight.get(cacheKey);
+    if (existing) return existing;
+    const validation = (async (): Promise<boolean | null> => {
+      let isMember: boolean | null = null;
+      try {
+        isMember = await this.validateGroupMember?.(groupId, normalizedAddress) ?? null;
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}:`,
+          err
+        );
+        return null;
+      }
+      if (isMember == null) {
+        loggerWarn(
+          `[ReticulumChat] Group membership validation unavailable for group=${groupId} address=${normalizedAddress}`
+        );
+        return null;
+      }
+      this.groupMemberValidationCache.set(cacheKey, {
+        isMember,
+        expiresAt: this.now() + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
+      });
+      return isMember;
+    })();
+    this.groupMemberValidationInflight.set(cacheKey, validation);
     try {
-      isMember = await this.validateGroupMember(groupId, normalizedAddress);
-    } catch (err) {
-      loggerWarn(
-        `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}:`,
-        err
-      );
-      return null;
+      return await validation;
+    } finally {
+      if (this.groupMemberValidationInflight.get(cacheKey) === validation) {
+        this.groupMemberValidationInflight.delete(cacheKey);
+      }
     }
-    if (isMember == null) {
-      loggerWarn(
-        `[ReticulumChat] Group membership validation unavailable for group=${groupId} address=${normalizedAddress}`
-      );
-      return null;
-    }
-    this.groupMemberValidationCache.set(cacheKey, {
-      isMember,
-      expiresAt: now + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
-    });
-    return isMember;
   }
 
   private async isValidatedRequesterGroupMember(
@@ -9555,16 +10911,26 @@ export class ReticulumChatManager extends EventEmitter {
     offset = 0,
     limit = RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP
   ): ReticulumChatWire {
+    const snapshot = this.buildGroupDigestSnapshot(groupId);
+    return this.buildGroupDigestWireFromSnapshot(groupId, snapshot, offset, limit);
+  }
+
+  private buildGroupDigestWireFromSnapshot(
+    groupId: number,
+    snapshot: ReticulumChatDigestSnapshot,
+    offset = 0,
+    limit = RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP
+  ): ReticulumChatWire {
     void offset;
     void limit;
-    const latest = this.cursorToWire(this.getGroupDigestLatestCursor(groupId));
+    const latest = this.cursorToWire(snapshot.latest);
     const localPeerHash = this.localPeerHash();
     const wire: ReticulumChatWire = {
       t: 'RCHAT',
       k: 'group_digest',
       g: groupId,
       ...(latest ? { latest } : {}),
-      digestHash: this.buildGroupDigestHash(groupId),
+      digestHash: snapshot.digestHash,
       ...(localPeerHash ? { sd: this.compactRoutePeerHash(localPeerHash) } : {}),
     };
     if (wireFitsReticulum(wire)) return wire;
@@ -9573,11 +10939,48 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private buildGroupDigestHash(groupId: number): string {
-    return this.db.computeWindowHash(this.getGroupDigestEvents(groupId));
+    return this.buildGroupDigestSnapshot(groupId).digestHash;
   }
 
   private getGroupDigestLatestCursor(groupId: number): ReticulumChatFeedCursor | null {
+    return this.buildGroupDigestSnapshot(groupId).latest;
+  }
+
+  private getCachedGroupDigestSnapshot(groupId: number): ReticulumChatDigestSnapshot | null {
+    const cached = this.digestSnapshotCache.get(groupId);
+    return cached && cached.expiresAt > this.now() ? cached.snapshot : null;
+  }
+
+  private buildGroupDigestSnapshot(groupId: number): ReticulumChatDigestSnapshot {
+    const now = this.now();
+    const cached = this.getCachedGroupDigestSnapshot(groupId);
+    if (cached) return cached;
+    const startedAt = Date.now();
     const events = this.getGroupDigestEvents(groupId);
+    const snapshot = {
+      latest: this.buildGroupDigestLatestCursor(events),
+      digestHash: this.db.computeWindowHash(events),
+    };
+    this.digestSnapshotCache.set(groupId, {
+      snapshot,
+      expiresAt: now + RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS,
+    });
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS) {
+      loggerWarn(
+        `[ReticulumChat] digest_snapshot_build_slow group=${groupId} duration_ms=${durationMs} events=${events.length}`
+      );
+    }
+    return snapshot;
+  }
+
+  private invalidateGroupDigestSnapshot(groupId: number): void {
+    this.digestSnapshotCache.delete(groupId);
+  }
+
+  private buildGroupDigestLatestCursor(
+    events: ReticulumChatEvent[]
+  ): ReticulumChatFeedCursor | null {
     let latest: ReticulumChatFeedCursor | null = null;
     for (const event of events) {
       const cursor = this.eventCursor(event);
@@ -9589,11 +10992,17 @@ export class ReticulumChatManager extends EventEmitter {
   private getGroupDigestEvents(groupId: number): ReticulumChatEvent[] {
     const limit = RETICULUM_CHAT_GROUP_DIGEST_WINDOW_EVENTS;
     const candidates = new Map<string, ReticulumChatEvent>();
+    const channels = this.db.getChannels(groupId, true);
+    const adminPrivateChannels = new Set(
+      channels
+        .filter((channel) => channel.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS)
+        .map((channel) => normalizeReticulumChatChannelId(channel.channelId))
+    );
     const add = (event: ReticulumChatEvent): void => {
       if (event.groupId !== groupId) return;
       if (
         !CHANNEL_METADATA_EVENT_TYPES.has(event.eventType) &&
-        this.isChannelAdminPrivate(groupId, event.channelId)
+        adminPrivateChannels.has(normalizeReticulumChatChannelId(event.channelId))
       ) {
         return;
       }
@@ -9603,11 +11012,17 @@ export class ReticulumChatManager extends EventEmitter {
     for (const event of this.db.getRecentEvents(groupId, limit * 4, null)) add(event);
     for (const event of this.db.getChannelMetadataEvents(groupId, limit)) add(event);
 
-    const publicChannels = this.db
-      .getChannels(groupId, true)
-      .filter((channel) => channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS);
-    for (const channel of publicChannels) {
-      for (const event of this.db.getRecentEvents(groupId, limit, channel.channelId)) add(event);
+    // The group-wide recent query already contains the final digest window in
+    // normal groups. Per-channel scans are only needed if private-channel
+    // filtering or sparse history left the candidate window underfilled.
+    if (candidates.size < limit) {
+      const publicChannels = channels.filter(
+        (channel) => channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
+      );
+      for (const channel of publicChannels) {
+        for (const event of this.db.getRecentEvents(groupId, limit, channel.channelId)) add(event);
+        if (candidates.size >= limit) break;
+      }
     }
 
     return [...candidates.values()]
@@ -14647,10 +16062,14 @@ export class ReticulumChatManager extends EventEmitter {
       const page = groups.slice(offset, offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE);
       if (page.length) wires.push({ t: 'RCHAT', k: 'group_sub', groups: page, mode: 'summary' });
     }
-    for (const groupId of this.getDigestRefreshGroups(groups)) {
-      wires.push(this.buildGroupDigestWire(groupId));
-    }
     this.enqueueSubscriptionFanouts(wires);
+    for (const groupId of this.getDigestRefreshGroups(groups)) {
+      this.enqueueDigestSend({
+        mode: 'subscription',
+        groupId,
+        reason: 'subscription-refresh',
+      });
+    }
   }
 
   private getDigestRefreshGroups(groups: number[]): number[] {
@@ -14989,6 +16408,12 @@ export class ReticulumChatManager extends EventEmitter {
     this.bridge.off('reticulum-chat-message', this.onBridgeChatMessage);
     this.bridge.off('reticulum-chat-resource', this.onBridgeChatResource);
     this.bridge.off('reticulum-resource', this.onBridgeGenericResource);
+    this.clearInboundControlQueue();
+    this.clearDigestRepairQueue();
+    this.clearGroupSubSyncQueue();
+    this.clearDigestSendQueue();
+    this.clearDigestSnapshotBuildQueue();
+    this.clearLandStateQueue();
   }
 
   private onBridgeChatMessage = (

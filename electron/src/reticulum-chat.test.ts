@@ -895,6 +895,13 @@ async function flushAsyncWork(ticks = 8): Promise<void> {
   }
 }
 
+async function flushQueuedWork(ticks = 8): Promise<void> {
+  for (let i = 0; i < ticks; i += 1) {
+    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 describe('reticulum chat protocol', () => {
   it('validates event shape and signature', () => {
     const event = signedEvent();
@@ -3088,7 +3095,7 @@ describe('reticulum chat manager', () => {
       bridge: bridge as any,
     });
     source.setLocalDmAddresses([sender.address]);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushQueuedWork();
     sent.length = 0;
 
     const first = signedDmEvent({
@@ -3665,7 +3672,7 @@ describe('reticulum chat manager', () => {
     });
 
     await expect(manager.publishEvent(event)).resolves.toMatchObject({ ok: true });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flushQueuedWork();
 
     expect(resources).toHaveLength(0);
     expect(direct).not.toContainEqual(
@@ -4628,8 +4635,10 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([69]);
     manager.subscribeGroup(69);
+    await flushQueuedWork();
     direct.length = 0;
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' }, 'peer-a');
+    await flushQueuedWork();
 
     expect(direct).toContainEqual(
       expect.objectContaining({
@@ -4645,6 +4654,7 @@ describe('reticulum chat manager', () => {
     direct.length = 0;
     now += 2 * 60_000 + 1;
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' }, 'peer-a');
+    await flushQueuedWork();
     expect(direct.find((item) => item.peer === 'peer-a' && item.wire.k === 'group_digest')).toBeDefined();
     manager.close();
   });
@@ -4675,6 +4685,7 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([69]);
     manager.subscribeGroup(69);
+    await flushQueuedWork();
     const events = signedAuthorEvents(
       Array.from({ length: 105 }, (_, index) => ({
         eventId: `sub-history-${String(index + 1).padStart(3, '0')}`,
@@ -4686,10 +4697,13 @@ describe('reticulum chat manager', () => {
     for (const event of events) {
       expect((manager as any).db.insertEvent(event, true)).toBe(true);
     }
+    (manager as any).invalidateGroupDigestSnapshot(69);
     direct.length = 0;
 
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' }, 'peer-a');
+    await flushQueuedWork();
     await new Promise((resolve) => setTimeout(resolve, 20));
+    await flushQueuedWork();
 
     expect(direct).toContainEqual(
       expect.objectContaining({
@@ -5537,7 +5551,7 @@ describe('reticulum chat manager', () => {
       { t: 'RCHAT', k: 'group_digest', g: 73, latest: { id: 'event-latest-73', ts: 1000 }, channels: [] },
       'peer-c'
     );
-    await Promise.resolve();
+    await flushQueuedWork();
 
     expect(direct).toContainEqual(
       expect.objectContaining({
@@ -5803,8 +5817,7 @@ describe('reticulum chat manager', () => {
       },
       peerC
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushQueuedWork();
     expect(emitted).toHaveLength(0);
     expect(direct).toContainEqual(
       expect.objectContaining({
@@ -5821,8 +5834,7 @@ describe('reticulum chat manager', () => {
     direct.length = 0;
 
     manager.handleWire(signer.landAuthWire(73, 'session-1', 100_000), peerC);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushQueuedWork();
 
     manager.handleWire(
       signer.landStateWire({
@@ -5838,7 +5850,7 @@ describe('reticulum chat manager', () => {
       }),
       peerC
     );
-    await Promise.resolve();
+    await flushQueuedWork();
 
     expect(emitted).toContainEqual(
       expect.objectContaining({
@@ -5900,6 +5912,7 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([73]);
     manager.subscribeGroup(73);
     manager.handleWire({ t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' }, peerA);
+    await flushQueuedWork();
 
     await manager.sendLandState(73, signer.address, {
       sessionId: 'session-1',
@@ -5926,7 +5939,7 @@ describe('reticulum chat manager', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushQueuedWork();
     expect(
       direct.some(({ peer, wire }) =>
         peer === peerA &&
@@ -6091,8 +6104,7 @@ describe('reticulum chat manager', () => {
       },
       inboundPeer
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushQueuedWork();
 
     expect(direct).toEqual([
       {
@@ -6357,7 +6369,7 @@ describe('reticulum chat manager', () => {
       },
       'peer'
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushQueuedWork();
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
     expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
       t: 'RCHAT',
@@ -6419,7 +6431,7 @@ describe('reticulum chat manager', () => {
       'peer'
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushQueuedWork();
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
     expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
       t: 'RCHAT',
@@ -9748,7 +9760,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('subscribes with hello, group_sub, and bounded digest only', () => {
+  it('subscribes with hello, group_sub, and bounded digest only', async () => {
     const sent: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -9764,6 +9776,7 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([48]);
     manager.subscribeGroup(48);
+    await flushQueuedWork();
     expect(sent).toContainEqual(expect.objectContaining({ t: 'RCHAT', k: 'hello', v: 1 }));
     expect(sent).toContainEqual({ t: 'RCHAT', k: 'group_sub', groups: [48], mode: 'summary' });
     expect(sent).toContainEqual(expect.objectContaining({ t: 'RCHAT', k: 'group_digest', g: 48 }));
@@ -9793,6 +9806,7 @@ describe('reticulum chat manager', () => {
     sent.length = 0;
 
     manager.subscribeGroup(49);
+    await flushQueuedWork();
     expect(sent.find((wire) => wire.k === 'sync_req')).toBeUndefined();
     expect(sent.find((wire) => wire.k === 'group_digest')).toMatchObject({
       t: 'RCHAT',
@@ -9879,6 +9893,7 @@ describe('reticulum chat manager', () => {
     sent.length = 0;
 
     manager.subscribeChannel(56, 'general');
+    await flushQueuedWork();
 
     expect(sent.filter((wire) => wire.k === 'sync_req')).toEqual([]);
     expect(sent).toContainEqual(expect.objectContaining({ t: 'RCHAT', k: 'group_sub', groups: [56], mode: 'active' }));
@@ -9941,6 +9956,7 @@ describe('reticulum chat manager', () => {
     manager.subscribeGroup(56);
     manager.subscribeGroup(57);
     manager.subscribeGroup(58);
+    await flushQueuedWork();
     sent.length = 0;
 
     now += 31_000;
@@ -9980,6 +9996,7 @@ describe('reticulum chat manager', () => {
     manager.subscribeGroup(56);
     manager.subscribeGroup(57);
     manager.subscribeGroup(58);
+    await flushQueuedWork();
     sent.length = 0;
 
     manager.reannounceSubscriptions();
@@ -10022,6 +10039,7 @@ describe('reticulum chat manager', () => {
       now += 31_000;
 
       manager.subscribeChannel(716, 'general');
+      await flushQueuedWork();
 
       expect(sent).toContainEqual({
         t: 'RCHAT',
@@ -10149,7 +10167,7 @@ describe('reticulum chat manager', () => {
       },
       'peer-hash'
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushQueuedWork();
 
     expect(direct).toContainEqual({
       t: 'RCHAT',

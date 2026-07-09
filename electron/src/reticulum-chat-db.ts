@@ -4142,10 +4142,16 @@ export class ReticulumChatDatabase {
   }
 
   computeWindowHash(events: ReticulumChatEvent[]): string {
-    const ids = [...new Set(events.map((event) => event.eventId))]
+    const eventsById = new Map<string, ReticulumChatEvent>();
+    for (const event of events) {
+      if (!eventsById.has(event.eventId)) {
+        eventsById.set(event.eventId, event);
+      }
+    }
+    const ids = [...eventsById.keys()]
       .sort((a, b) => {
-        const eventA = events.find((event) => event.eventId === a);
-        const eventB = events.find((event) => event.eventId === b);
+        const eventA = eventsById.get(a);
+        const eventB = eventsById.get(b);
         if (!eventA || !eventB) return a.localeCompare(b);
         return (
           this.normalizeFeedTimestamp(eventA.timestamp) - this.normalizeFeedTimestamp(eventB.timestamp) ||
@@ -5535,6 +5541,21 @@ export class ReticulumChatDatabase {
         ON reticulum_chat_events (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS reticulum_chat_group_time_idx
         ON reticulum_chat_events (group_id, channel_id, timestamp, author_seq);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_group_recent
+        ON reticulum_chat_events (group_id, timestamp DESC, event_id DESC);
+      DROP INDEX IF EXISTS idx_reticulum_chat_events_group_type_recent;
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_metadata_recent
+        ON reticulum_chat_events (group_id, timestamp DESC, event_id DESC)
+        WHERE event_type IN (
+          'channel_create',
+          'channel_update',
+          'channel_archive',
+          'channel_restore',
+          'channel_reorder',
+          'category_create',
+          'category_update',
+          'category_delete'
+        );
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_feed
         ON reticulum_chat_events (group_id, channel_id, feed_timestamp, event_id);
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_author_seq
