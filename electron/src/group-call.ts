@@ -479,6 +479,39 @@ export function shouldRefreshParticipantFromVerifiedJoin(opts: {
   return opts.incomingJoinTimestamp >= opts.currentJoinedAt;
 }
 
+export function reticulumAudioResetReasonForVerifiedJoin(opts: {
+  existingReticulumDestinationHash: string;
+  incomingReticulumDestinationHash: string;
+  currentAudioPeerPresenceHash?: string | null;
+  refreshedExistingJoin: boolean;
+  rejoinsAfterLeave: boolean;
+}): string {
+  const existingHash = opts.existingReticulumDestinationHash
+    .trim()
+    .toLowerCase();
+  const incomingHash = opts.incomingReticulumDestinationHash
+    .trim()
+    .toLowerCase();
+  const audioPeerHash = (opts.currentAudioPeerPresenceHash ?? '')
+    .trim()
+    .toLowerCase();
+  const participantIdentityChanged =
+    Boolean(existingHash) && Boolean(incomingHash) && incomingHash !== existingHash;
+  const absentParticipantAudioConflict =
+    !existingHash &&
+    Boolean(audioPeerHash) &&
+    Boolean(incomingHash) &&
+    audioPeerHash !== incomingHash;
+
+  if (participantIdentityChanged || absentParticipantAudioConflict) {
+    return 'join-identity-changed';
+  }
+  if (opts.refreshedExistingJoin && opts.rejoinsAfterLeave) {
+    return 'fresh-verified-rejoin-after-leave';
+  }
+  return '';
+}
+
 export function shouldApplyVerifiedLeaveToParticipant(opts: {
   participantJoinedAt: number | undefined;
   leaveTimestamp: number;
@@ -9178,19 +9211,16 @@ export class GroupCallManager extends EventEmitter {
         incomingReticulumDestinationHash !== existingReticulumDestinationHash;
       shouldEmitParticipantJoined =
         !existing || refreshedExistingJoin || reticulumIdentityChanged;
-      const staleAudioStateForAbsentParticipant =
-        !existing &&
-        this.reticulumAudioPeersByAddress
-          .get(env.fromAddress)
-          ?.rooms.has(env.roomId) === true;
-      let audioStateResetReason = '';
-      if (staleAudioStateForAbsentParticipant) {
-        audioStateResetReason = 'fresh-verified-join-absent-participant';
-      } else if (reticulumIdentityChanged) {
-        audioStateResetReason = 'join-identity-changed';
-      } else if (refreshedExistingJoin && rejoinsAfterLeave) {
-        audioStateResetReason = 'fresh-verified-rejoin-after-leave';
-      }
+      const currentAudioPeerPresenceHash = this.reticulumAudioPeersByAddress.get(
+        env.fromAddress
+      )?.peerPresenceHash;
+      const audioStateResetReason = reticulumAudioResetReasonForVerifiedJoin({
+        existingReticulumDestinationHash: existingReticulumDestinationHash,
+        incomingReticulumDestinationHash,
+        currentAudioPeerPresenceHash,
+        refreshedExistingJoin,
+        rejoinsAfterLeave,
+      });
       if (audioStateResetReason) {
         this.resetReticulumAudioPeerStateForRoomAddress(
           env.roomId,
