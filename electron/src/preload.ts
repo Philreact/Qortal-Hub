@@ -2684,7 +2684,8 @@ try {
       joinGeneration?: number,
       topologyEpochFloor?: number,
       reticulumIdentityPublicKeyBase64?: string,
-      joinRkSignature?: string
+      joinRkSignature?: string,
+      dmVoiceAudioLinkRole?: 'opener' | 'waiter'
     ) =>
       ipcRenderer.invoke(
         'gcall:join',
@@ -2698,7 +2699,8 @@ try {
         joinGeneration,
         topologyEpochFloor,
         reticulumIdentityPublicKeyBase64,
-        joinRkSignature
+        joinRkSignature,
+        dmVoiceAudioLinkRole
       ) as Promise<{
         success: boolean;
         error?: string;

@@ -1632,6 +1632,7 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
       publicKey: myPk,
       reticulumDestinationHash: retHash,
       reticulumIdentityPublicKeyBase64,
+      dmVoiceAudioLinkRole: isOutboundCallRef.current ? 'waiter' : 'opener',
     });
 
     if (!joinRes.success || !joinRes.callSessionId) {

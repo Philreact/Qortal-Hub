@@ -1,6 +1,6 @@
 export type P2pHealthLevel = 'bad' | 'low' | 'good';
 
-export const P2P_HEALTH_MIN_RECEIVING_PEERS = 3;
+export const P2P_HEALTH_MIN_RECEIVING_PEERS = 1;
 export const P2P_HEALTH_RECEIVING_STABLE_MS = 30_000;
 
 /** Receiving overlay peers - used for core popover P2P health and call gates. */

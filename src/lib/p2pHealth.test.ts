@@ -12,27 +12,27 @@ describe('computeP2pHealth', () => {
     ).toBe('bad');
   });
 
-  it('low when receiving peer count or stable time is below good thresholds', () => {
+  it('low when stable time is below good threshold', () => {
     expect(
       computeP2pHealth({
         onlineRemoteHubInterfaces: 0,
-        p2pReceivingOverlayPeers: 2,
-        p2pReceivingOverlayPeersStableMs: 60_000,
-      })
-    ).toBe('low');
-    expect(
-      computeP2pHealth({
-        onlineRemoteHubInterfaces: 2,
-        p2pReceivingOverlayPeers: 3,
+        p2pReceivingOverlayPeers: 1,
         p2pReceivingOverlayPeersStableMs: 29_999,
       })
     ).toBe('low');
   });
 
-  it('good when receiving from at least 3 peers for at least 30 seconds', () => {
+  it('good when receiving from at least 1 peer for at least 30 seconds', () => {
     expect(
       computeP2pHealth({
         onlineRemoteHubInterfaces: 0,
+        p2pReceivingOverlayPeers: 1,
+        p2pReceivingOverlayPeersStableMs: 60_000,
+      })
+    ).toBe('good');
+    expect(
+      computeP2pHealth({
+        onlineRemoteHubInterfaces: 2,
         p2pReceivingOverlayPeers: 3,
         p2pReceivingOverlayPeersStableMs: 30_000,
       })

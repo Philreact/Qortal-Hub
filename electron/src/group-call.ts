@@ -78,7 +78,10 @@ import type {
   GkFragmentMeta,
   GtFragmentMeta,
 } from './group-call-wire-reticulum';
-import { compactDmVoiceJoinWireChatId } from './dm-voice-wire';
+import {
+  compactDmVoiceJoinWireChatId,
+  DM_VOICE_ROOM_PREFIX,
+} from './dm-voice-wire';
 import {
   byteLengthUtf8JsonWithBridgeSender,
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
@@ -880,6 +883,11 @@ interface GroupRoom {
   callSessionId: string;
   /** Bumped only on explicit session-break IPC. */
   mediaSessionGeneration: number;
+  /**
+   * For 1:1 DM voice rooms, only the callee/acceptor opens the Reticulum audio
+   * link. The caller waits for that incoming bidirectional link.
+   */
+  dmVoiceAudioLinkRole?: 'opener' | 'waiter';
 }
 
 interface ReticulumAudioPendingFrame {
@@ -4270,7 +4278,8 @@ export class GroupCallManager extends EventEmitter {
     /** RNS.Identity public key (64 bytes standard base64); optional when wire budget tight. */
     reticulumIdentityPublicKeyBase64?: string,
     /** Signature for `GC_JOIN_RK` (second Reticulum frame) when `reticulumIdentityPublicKeyBase64` is set. */
-    joinRkSignature?: string
+    joinRkSignature?: string,
+    dmVoiceAudioLinkRole?: 'opener' | 'waiter'
   ): { callSessionId: string; mediaSessionGeneration: number } {
     this.clearReticulumOverlayLogicalDedupeForRoomLifecycle(roomId, 'join');
     if (this.shouldRejectLocalJoinAtParticipantCap(roomId, localAddress)) {
@@ -4308,6 +4317,11 @@ export class GroupCallManager extends EventEmitter {
       }
     }
     const destNorm = reticulumDestinationHash.trim().toLowerCase();
+    const normalizedDmVoiceAudioLinkRole =
+      roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+      (dmVoiceAudioLinkRole === 'opener' || dmVoiceAudioLinkRole === 'waiter')
+        ? dmVoiceAudioLinkRole
+        : undefined;
     let room = this.rooms.get(roomId);
     if (!room) {
       const recent = GCALL_DISABLE_ROOM_BOOTSTRAP_CACHE
@@ -4343,6 +4357,9 @@ export class GroupCallManager extends EventEmitter {
         joinTimestamp: timestamp,
         callSessionId: recent?.callSessionId || nodeCrypto.randomUUID(),
         mediaSessionGeneration: recent?.mediaSessionGeneration ?? 1,
+        ...(normalizedDmVoiceAudioLinkRole
+          ? { dmVoiceAudioLinkRole: normalizedDmVoiceAudioLinkRole }
+          : {}),
       };
       this.rooms.set(roomId, room);
     } else {
@@ -4350,6 +4367,9 @@ export class GroupCallManager extends EventEmitter {
         room.topologyEpoch,
         topologyEpochFloor
       );
+      if (normalizedDmVoiceAudioLinkRole) {
+        room.dmVoiceAudioLinkRole = normalizedDmVoiceAudioLinkRole;
+      }
     }
     const rk =
       reticulumIdentityPublicKeyBase64 &&
@@ -5182,7 +5202,7 @@ export class GroupCallManager extends EventEmitter {
     loggerWarn(
       `[GCall] Reticulum audio switching to link fallback address=${address} reason=${reason}`
     );
-    if (this.shouldMaintainReticulumAudioLink(state)) {
+    if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
       void this.openReticulumAudioLinkForAddress(address);
     }
     this.scheduleReticulumAudioFlush();
@@ -5230,7 +5250,7 @@ export class GroupCallManager extends EventEmitter {
       this.activateReticulumAudioLinkFallback(address, state, reason, opts);
       return;
     }
-    if (this.shouldMaintainReticulumAudioLink(state)) {
+    if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
       void this.openReticulumAudioLinkForAddress(address);
     }
   }
@@ -5310,7 +5330,7 @@ export class GroupCallManager extends EventEmitter {
   ): void {
     if (!this.shouldFallbackPacketTransport(state)) return;
     if (!state.established || !state.linkId) {
-      if (this.shouldMaintainReticulumAudioLink(state)) {
+      if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
         void this.openReticulumAudioLinkForAddress(address);
       }
       return;
@@ -5325,6 +5345,58 @@ export class GroupCallManager extends EventEmitter {
       (state?.transport ?? this.getReticulumAudioTransportKind()) === 'link' ||
       GC_RETICULUM_PACKET_MEDIA_KEEP_AUDIO_LINKS
     );
+  }
+
+  private shouldOpenReticulumAudioLinkLocally(
+    address: string,
+    state: Pick<ReticulumAudioPeerState, 'transport' | 'rooms'> | null | undefined
+  ): boolean {
+    if (!this.shouldMaintainReticulumAudioLink(state)) return false;
+    if (!state) return false;
+    let sawDmVoiceRoom = false;
+    let sawExplicitWaiter = false;
+    let sawMissingDmVoiceRoom = false;
+    for (const roomId of state.rooms) {
+      const room = this.rooms.get(roomId);
+      if (!roomId.startsWith(DM_VOICE_ROOM_PREFIX)) {
+        return true;
+      }
+      sawDmVoiceRoom = true;
+      if (!room) {
+        sawMissingDmVoiceRoom = true;
+        continue;
+      }
+      if (room?.dmVoiceAudioLinkRole === 'opener') {
+        return true;
+      }
+      if (room?.dmVoiceAudioLinkRole === 'waiter') {
+        sawExplicitWaiter = true;
+      }
+    }
+    if (!sawDmVoiceRoom) return true;
+    if (sawExplicitWaiter) return false;
+    if (sawMissingDmVoiceRoom) return false;
+    const localAddress = this.getReticulumAudioLocalAddressForState(state);
+    return localAddress
+      ? this.isLocalAddressReticulumAudioLinkOwner(localAddress, address)
+      : false;
+  }
+
+  private hasExplicitDmVoiceAudioLinkRole(
+    state: Pick<ReticulumAudioPeerState, 'rooms'> | null | undefined
+  ): boolean {
+    if (!state) return false;
+    for (const roomId of state.rooms) {
+      const room = this.rooms.get(roomId);
+      if (
+        roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+        (room?.dmVoiceAudioLinkRole === 'opener' ||
+          room?.dmVoiceAudioLinkRole === 'waiter')
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private hasEstablishedReticulumAudioLink(
@@ -5481,6 +5553,7 @@ export class GroupCallManager extends EventEmitter {
     now = Date.now()
   ): boolean {
     if (state.established || state.linkId || state.opening) return false;
+    if (this.hasExplicitDmVoiceAudioLinkRole(state)) return false;
     const localAddress = this.getReticulumAudioLocalAddressForState(state);
     if (!localAddress) return false;
     if (this.isLocalAddressReticulumAudioLinkOwner(localAddress, address)) {
@@ -6013,7 +6086,7 @@ export class GroupCallManager extends EventEmitter {
   ): void {
     if (state.established && state.linkId) return;
     if (state.opening) return;
-    if (!this.shouldMaintainReticulumAudioLink(state)) return;
+    if (!this.shouldOpenReticulumAudioLinkLocally(address, state)) return;
     const pendingLinkAgeMs =
       state.linkId && state.linkEstablishLastAttemptAtMs >= 0
         ? now - state.linkEstablishLastAttemptAtMs
@@ -6193,7 +6266,7 @@ export class GroupCallManager extends EventEmitter {
   }
 
   private getReticulumAudioLocalAddressForState(
-    state: ReticulumAudioPeerState
+    state: Pick<ReticulumAudioPeerState, 'rooms'>
   ): string | null {
     for (const roomId of state.rooms) {
       const room = this.rooms.get(roomId);
@@ -6353,6 +6426,7 @@ export class GroupCallManager extends EventEmitter {
       return true;
     }
     if (
+      !this.shouldOpenReticulumAudioLinkLocally(address, state) ||
       this.isReticulumAudioOpenDeferred(address) ||
       this.shouldDeferReticulumAudioOpenForOwnerGrace(address, state, now)
     ) {
@@ -6708,7 +6782,7 @@ export class GroupCallManager extends EventEmitter {
         holdAudio: opts?.holdAudio ?? true,
         cooldownMs: opts?.cooldownMs,
       });
-      if (this.shouldMaintainReticulumAudioLink(state)) {
+      if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
         void this.openReticulumAudioLinkForAddress(address);
       }
       if (forceLinkFallback) {
@@ -6730,7 +6804,7 @@ export class GroupCallManager extends EventEmitter {
         holdAudio: opts?.holdAudio ?? false,
         cooldownMs: opts?.cooldownMs,
       });
-      if (this.shouldMaintainReticulumAudioLink(state)) {
+      if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
         void this.openReticulumAudioLinkForAddress(address);
       }
       if (forceLinkFallback) {
@@ -6753,7 +6827,9 @@ export class GroupCallManager extends EventEmitter {
         `audio-recovery:${reason}`
       );
     }
-    void this.openReticulumAudioLinkForAddress(address);
+    if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
+      void this.openReticulumAudioLinkForAddress(address);
+    }
   }
 
   private async openReticulumAudioLinkForAddress(
@@ -6799,7 +6875,7 @@ export class GroupCallManager extends EventEmitter {
       state.opening ||
       Boolean(state.linkId) ||
       state.established ||
-      !this.shouldMaintainReticulumAudioLink(state)
+      !this.shouldOpenReticulumAudioLinkLocally(address, state)
     ) {
       return;
     }
@@ -7067,7 +7143,7 @@ export class GroupCallManager extends EventEmitter {
     }
     state.rooms.add(roomId);
     this.promoteAwaitingRouteReticulumAudio(address, state);
-    if (this.shouldMaintainReticulumAudioLink(state)) {
+    if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
       void this.openReticulumAudioLinkForAddress(address);
     }
     if (state.transport === 'packet') {
@@ -7927,7 +8003,9 @@ export class GroupCallManager extends EventEmitter {
             state.linkId ?? undefined,
             `enqueue-failed:${result.reason}`
           );
-          void this.openReticulumAudioLinkForAddress(address);
+          if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
+            void this.openReticulumAudioLinkForAddress(address);
+          }
         }
       }
       return {
@@ -8061,7 +8139,9 @@ export class GroupCallManager extends EventEmitter {
           this.holdReticulumAudioRouteRecovery(address, state, reason);
         }
         if (!hasHealthyReplacementLink && !state.linkId && !state.opening) {
-          void this.openReticulumAudioLinkForAddress(address);
+          if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
+            void this.openReticulumAudioLinkForAddress(address);
+          }
         }
       }
     }
@@ -8161,7 +8241,7 @@ export class GroupCallManager extends EventEmitter {
             `audio-topology-grace:${address}`,
             `[GCall] Retaining Reticulum audio link during topology grace address=${address} link=${state.linkId ?? 'n/a'} rooms=${participantRooms.size} opening=${state.opening} established=${state.established} ageMs=${Math.max(0, now - state.createdAtMs)} reason=sync-topology-not-desired`
           );
-          if (this.shouldMaintainReticulumAudioLink(state)) {
+          if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
             void this.openReticulumAudioLinkForAddress(address);
           }
           continue;
@@ -8194,9 +8274,9 @@ export class GroupCallManager extends EventEmitter {
         state,
         this.getEffectiveReticulumAudioTransport(state)
       );
-      if (this.shouldMaintainReticulumAudioLink(state)) {
+      if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
         void this.openReticulumAudioLinkForAddress(address);
-      } else if (state.linkId) {
+      } else if (!this.shouldMaintainReticulumAudioLink(state) && state.linkId) {
         const linkId = state.linkId;
         this.markReticulumAudioLinkUnready(
           address,
@@ -8308,7 +8388,7 @@ export class GroupCallManager extends EventEmitter {
           this.getEffectiveReticulumAudioTransport(state)
         );
       }
-      if (this.shouldMaintainReticulumAudioLink(state)) {
+      if (this.shouldOpenReticulumAudioLinkLocally(address, state)) {
         void this.openReticulumAudioLinkForAddress(address);
       }
       if (state.transport === 'packet') {
@@ -8389,7 +8469,11 @@ export class GroupCallManager extends EventEmitter {
     }
     const now = Date.now();
     if (!this.canQueueLiveReticulumAudio(state, now)) {
-      if (state.transport === 'link' && !state.opening) {
+      if (
+        state.transport === 'link' &&
+        !state.opening &&
+        this.shouldOpenReticulumAudioLinkLocally(toAddress, state)
+      ) {
         void this.openReticulumAudioLinkForAddress(toAddress);
       }
       const recoveryReason =
@@ -8475,7 +8559,11 @@ export class GroupCallManager extends EventEmitter {
           state.recoveryHoldUntilMs > now
             ? state.recoveryReason || 'route-recovering'
             : 'link-not-established';
-        if (state.transport === 'link' && !state.opening) {
+        if (
+          state.transport === 'link' &&
+          !state.opening &&
+          this.shouldOpenReticulumAudioLinkLocally(address, state)
+        ) {
           void this.openReticulumAudioLinkForAddress(address);
         }
         const recovering = state.recoveryHoldUntilMs > now;
@@ -8609,7 +8697,11 @@ export class GroupCallManager extends EventEmitter {
       }
       const now = Date.now();
       if (!this.canQueueLiveReticulumAudio(state, now)) {
-        if (state.transport === 'link' && !state.opening) {
+        if (
+          state.transport === 'link' &&
+          !state.opening &&
+          this.shouldOpenReticulumAudioLinkLocally(toAddress, state)
+        ) {
           void this.openReticulumAudioLinkForAddress(toAddress);
         }
         const recoveryReason =
@@ -10335,7 +10427,7 @@ export class GroupCallManager extends EventEmitter {
     if (
       state &&
       state.rooms.size > 0 &&
-      this.shouldMaintainReticulumAudioLink(state)
+      this.shouldOpenReticulumAudioLinkLocally(address, state)
     ) {
       const roomId = this.getReticulumAudioHeartbeatRoomId(state);
       if (roomId) {

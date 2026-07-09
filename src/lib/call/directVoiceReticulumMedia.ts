@@ -227,6 +227,7 @@ export async function joinDirectVoiceReticulumRoom(opts: {
   publicKey: string;
   reticulumDestinationHash: string;
   reticulumIdentityPublicKeyBase64?: string | null;
+  dmVoiceAudioLinkRole?: 'opener' | 'waiter';
 }): Promise<{
   success: boolean;
   callSessionId?: string;
@@ -262,7 +263,8 @@ export async function joinDirectVoiceReticulumRoom(opts: {
     undefined,
     0,
     opts.reticulumIdentityPublicKeyBase64 ?? undefined,
-    signatures.joinRkSig
+    signatures.joinRkSig,
+    opts.dmVoiceAudioLinkRole
   );
   return res;
 }

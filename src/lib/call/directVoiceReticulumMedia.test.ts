@@ -37,6 +37,7 @@ describe('directVoiceReticulumMedia', () => {
       publicKey: 'qortal-pub',
       reticulumDestinationHash: 'a'.repeat(32),
       reticulumIdentityPublicKeyBase64: 'cmV0aWN1bHVtLWlkZW50aXR5',
+      dmVoiceAudioLinkRole: 'waiter',
     });
 
     expect(result).toMatchObject({
@@ -76,7 +77,8 @@ describe('directVoiceReticulumMedia', () => {
       undefined,
       0,
       'cmV0aWN1bHVtLWlkZW50aXR5',
-      'join-rk-sig'
+      'join-rk-sig',
+      'waiter'
     );
   });
 

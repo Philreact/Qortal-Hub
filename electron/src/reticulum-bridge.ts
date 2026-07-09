@@ -123,7 +123,7 @@ const OVERLAY_LINK_PER_PACKET_REASONS = new Set([
 const BRIDGE_GRACEFUL_STOP_TIMEOUT_MS = 5_000;
 const BRIDGE_FORCE_STOP_TIMEOUT_MS = 3_000;
 const P2P_HEALTH_RECEIVE_WINDOW_MS = 30_000;
-const P2P_HEALTH_MIN_RECEIVING_PEERS = 3;
+const P2P_HEALTH_MIN_RECEIVING_PEERS = 1;
 
 function shouldLogOverlayLinkStateEvent(reason: string): boolean {
   if (OVERLAY_LINK_PER_PACKET_REASONS.has(reason)) return false;

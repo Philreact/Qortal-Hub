@@ -4903,7 +4903,8 @@ ipcMain.handle(
     joinGeneration?: number,
     topologyEpochFloor?: number,
     reticulumIdentityPublicKeyBase64?: string,
-    joinRkSignature?: string
+    joinRkSignature?: string,
+    dmVoiceAudioLinkRole?: 'opener' | 'waiter'
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
@@ -4919,7 +4920,8 @@ ipcMain.handle(
         joinGeneration,
         topologyEpochFloor,
         reticulumIdentityPublicKeyBase64,
-        joinRkSignature
+        joinRkSignature,
+        dmVoiceAudioLinkRole
       );
       return {
         success: true,
