@@ -1666,6 +1666,8 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
       const roomKey = new Uint8Array(32);
       crypto.getRandomValues(roomKey);
       roomKeyRef.current = roomKey;
+      void sendCurrentDmRoomKey('dm-call-start').catch(() => {});
+      scheduleDmRoomKeyReplays('dm-call-start');
       const ready = await waitForDmPeerMediaReadiness(
         roomId,
         peer,
@@ -1690,14 +1692,6 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
         endCall(true);
         return;
       }
-
-      const ok = await sendCurrentDmRoomKey('dm-call-start');
-      if (!ok) {
-        pushDirectVoiceUiLog('warn', 'sendDirectVoiceRoomKey failed');
-        endCall(true);
-        return;
-      }
-      scheduleDmRoomKeyReplays('dm-call-start');
       await startReticulumCapture();
     } else {
       /* Callee: request the room key until caller/link timing delivers it. */
