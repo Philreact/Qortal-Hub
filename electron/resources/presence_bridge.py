@@ -3914,7 +3914,6 @@ def _process_audio_batch(frames: list) -> None:
                 wire_bytes,
                 f"target=gcall-audio-data-plane packet_audio_send peer={peer_hash}",
                 timeout_seconds=_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
-                local_flow_key="audio",
             )
             if result is None:
                 _audio_packet_send_failures += 1
@@ -13122,7 +13121,6 @@ def _send_packet_on_audio_link_bounded(
             generation = int(state.get("generation") or 0)
             should_trace = _audio_link_trace_should_log(state, "last_media_send_trace_at", seq)
     packet = RNS.Packet(link, wire_bytes, create_receipt=False)
-    _set_packet_local_flow_key(packet, "audio")
     packet_hash = getattr(packet, "packet_hash", None)
     packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
     if should_trace:
@@ -13604,7 +13602,6 @@ def _open_group_audio_link_for_peer(
                 outbound,
                 established_callback=on_outgoing_audio_link_established,
                 closed_callback=on_audio_link_closed,
-                local_flow_key="audio",
             )
         except TypeError:
             link = RNS.Link(
@@ -13612,7 +13609,6 @@ def _open_group_audio_link_for_peer(
                 established_callback=on_outgoing_audio_link_established,
                 closed_callback=on_audio_link_closed,
             )
-            _set_packet_local_flow_key(link, "audio")
         audio_state = {
             "link": link,
             "peerPresenceHash": peer_key,
@@ -15677,7 +15673,6 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                     wire_bytes,
                     "reticulum_chat_fanout",
                     queue_if_pending=message_types[index] != "land_state",
-                    local_flow_key="movement" if message_types[index] == "land_state" else None,
                 ):
                     peer_delivered_all_frames = False
                 elif dedupe_key is not None:
@@ -15693,7 +15688,6 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                     peer_hash,
                     wire_bytes,
                     "reticulum_chat_reliable_fanout",
-                    local_flow_key="movement" if message_types[index] == "land_state" else None,
                 ):
                     peer_delivered_all_frames = False
                     message_type = (
