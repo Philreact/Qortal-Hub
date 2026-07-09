@@ -7625,7 +7625,6 @@ def _queue_overlay_packet(
     state: Dict[str, Any],
     traffic: str,
     wire_bytes: bytes,
-    local_flow_key: Optional[str] = None,
 ) -> None:
     pending = state.get("pending_packets")
     if pending is None:
@@ -7634,14 +7633,13 @@ def _queue_overlay_packet(
     if state.get("established") is not True:
         while len(pending) >= _OVERLAY_PENDING_UNESTABLISHED_LIMIT:
             pending.popleft()
-    pending.append((traffic, bytes(wire_bytes), local_flow_key))
+    pending.append((traffic, bytes(wire_bytes)))
 
 
 def _send_packet_on_link(
     link,
     wire_bytes: bytes,
     log_target: str,
-    local_flow_key: Optional[str] = None,
 ) -> bool:
     def note_overlay_send_failure(reason: str) -> None:
         link_id = get_overlay_link_id(link)
@@ -7661,7 +7659,6 @@ def _send_packet_on_link(
 
     try:
         packet = RNS.Packet(link, wire_bytes, create_receipt=False)
-        _set_packet_local_flow_key(packet, local_flow_key)
         completed, result, error = _run_with_timeout(
             f"link-packet-send-{str(id(link))[-8:]}",
             _LINK_PACKET_SEND_TIMEOUT_SECONDS,
@@ -8466,16 +8463,11 @@ def _flush_overlay_link_pending(link_id: str) -> None:
         if not _overlay_link_is_current(link_id, link):
             return
         queued = pending[0]
-        if isinstance(queued, tuple) and len(queued) >= 3:
-            traffic, wire_bytes, local_flow_key = queued[0], queued[1], queued[2]
-        else:
-            traffic, wire_bytes = queued
-            local_flow_key = None
+        traffic, wire_bytes = queued
         if not _send_packet_on_link(
             link,
             wire_bytes,
             f"target=presence-reticulum overlay_link_flush peer={state.get('peerPresenceHash') or 'unknown'} traffic={traffic}",
-            local_flow_key=local_flow_key,
         ):
             break
         if not _overlay_link_is_current(link_id, link):
@@ -12097,7 +12089,6 @@ def _send_wire_to_overlay_peer(
     wire_bytes: bytes,
     traffic: str,
     queue_if_pending: bool = True,
-    local_flow_key: Optional[str] = None,
 ) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
@@ -12119,14 +12110,13 @@ def _send_wire_to_overlay_peer(
             link,
             wire_bytes,
             f"target=presence-reticulum overlay_link_send peer={peer_key} traffic={traffic}",
-            local_flow_key=local_flow_key,
         )
         if ok:
             now = time.time()
             state["last_send_ok_at"] = now
         else:
             if queue_if_pending:
-                _queue_overlay_packet(state, traffic, wire_bytes, local_flow_key=local_flow_key)
+                _queue_overlay_packet(state, traffic, wire_bytes)
             emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
             return False
         emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
@@ -12150,7 +12140,6 @@ def _send_wire_to_established_overlay_peer(
     peer_hash: str,
     wire_bytes: bytes,
     traffic: str,
-    local_flow_key: Optional[str] = None,
 ) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
@@ -12176,7 +12165,6 @@ def _send_wire_to_established_overlay_peer(
         link,
         wire_bytes,
         f"target=presence-reticulum overlay_link_send peer={peer_key} traffic={traffic}",
-        local_flow_key=local_flow_key,
     )
     if ok and _overlay_link_is_current(link_id, link):
         now = time.time()
@@ -13027,15 +13015,6 @@ def _run_with_timeout(name: str, timeout_seconds: float, fn: Callable[[], Any]) 
     return True, result.get("value"), result.get("error")
 
 
-def _set_packet_local_flow_key(packet: Any, local_flow_key: Optional[str]) -> None:
-    if not local_flow_key:
-        return
-    try:
-        setattr(packet, "local_flow_key", str(local_flow_key))
-    except Exception:
-        pass
-
-
 def _teardown_reticulum_link_bounded(
     link: Any,
     log_target: str,
@@ -13065,10 +13044,8 @@ def _send_packet_to_destination_bounded(
     wire_bytes: bytes,
     log_target: str,
     timeout_seconds: float = _LINK_PACKET_SEND_TIMEOUT_SECONDS,
-    local_flow_key: Optional[str] = None,
 ) -> Tuple[Optional[bool], float]:
     packet = RNS.Packet(destination, wire_bytes, create_receipt=False)
-    _set_packet_local_flow_key(packet, local_flow_key)
     send_start = time.monotonic()
     completed, result, error = _run_with_timeout(
         f"destination-packet-send-{str(id(destination))[-8:]}",
