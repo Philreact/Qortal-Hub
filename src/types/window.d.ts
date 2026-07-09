@@ -1202,6 +1202,13 @@ declare global {
             token: string;
             version: 2;
             routeCount: number;
+            routes?: Array<{
+              address?: string;
+              transport?: 'link' | 'packet';
+              linkId?: string;
+              peerPresenceHash?: string;
+              peerDestinationHash?: string;
+            }>;
           }
         | { ok: false; reason?: string; error?: string }
       >;

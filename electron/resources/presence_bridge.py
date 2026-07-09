@@ -639,6 +639,15 @@ _audio_data_plane_endpoint = ""
 _audio_data_plane_token = ""
 _audio_data_plane_routes_by_address: Dict[str, Dict[str, Any]] = {}
 _audio_data_plane_clients: Dict[int, socket.socket] = {}
+_audio_data_plane_send_locks: Dict[int, threading.RLock] = {}
+_audio_data_plane_direct_inbound_enabled = os.environ.get(
+    "QORTAL_AUDIO_DIRECT_DATA_PLANE", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+_audio_data_plane_direct_group_inbound_enabled = os.environ.get(
+    "QORTAL_AUDIO_DIRECT_DATA_PLANE_GROUP_INBOUND", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+_audio_data_plane_direct_room_prefixes = ("dmv:",)
+_audio_data_plane_first_inbound_sent = False
 _call_media_path_state: Dict[str, Dict[str, Any]] = {}
 
 # Compact group-call control on call aspect (see electron/src/group-call-wire-reticulum.ts).
@@ -1896,11 +1905,71 @@ def _ws_send_json(conn: socket.socket, payload: Dict[str, Any]) -> bool:
         else:
             header.extend([127])
             header.extend(len(data).to_bytes(8, "big"))
-        conn.sendall(bytes(header) + data)
+        lock = _audio_data_plane_send_locks.get(id(conn))
+        if lock is not None:
+            with lock:
+                conn.sendall(bytes(header) + data)
+        else:
+            conn.sendall(bytes(header) + data)
         return True
     except Exception as exc:
         _log_audio_data_plane("ws-send-failed", f"err={str(exc)[:160]}")
         return False
+
+
+def _ws_send_binary(conn: socket.socket, data: bytes) -> bool:
+    try:
+        header = bytearray([0x82])
+        if len(data) < 126:
+            header.append(len(data))
+        elif len(data) < 65536:
+            header.extend([126, (len(data) >> 8) & 0xFF, len(data) & 0xFF])
+        else:
+            header.extend([127])
+            header.extend(len(data).to_bytes(8, "big"))
+        lock = _audio_data_plane_send_locks.get(id(conn))
+        if lock is not None:
+            with lock:
+                conn.sendall(bytes(header) + data)
+        else:
+            conn.sendall(bytes(header) + data)
+        return True
+    except Exception as exc:
+        _log_audio_data_plane("ws-binary-send-failed", f"err={str(exc)[:160]}")
+        return False
+
+
+def _audio_data_plane_broadcast_inbound_audio(chunk: bytes) -> bool:
+    global _audio_data_plane_first_inbound_sent
+    if not _audio_data_plane_direct_inbound_enabled:
+        return False
+    with _audio_data_plane_lock:
+        clients = list(_audio_data_plane_clients.values())
+    if not clients:
+        return False
+    sent = 0
+    failed = 0
+    for conn in clients:
+        if _ws_send_binary(conn, chunk):
+            sent += 1
+        else:
+            failed += 1
+    if sent > 0 and not _audio_data_plane_first_inbound_sent:
+        _audio_data_plane_first_inbound_sent = True
+        _log_audio_data_plane(
+            "first-inbound-binary-sent",
+            f"bytes={len(chunk)} clients={sent} failed={failed}",
+        )
+    return sent > 0
+
+
+def _audio_data_plane_should_take_inbound_media(room_id: str) -> bool:
+    if not _audio_data_plane_direct_inbound_enabled:
+        return False
+    normalized = str(room_id or "").strip().lower()
+    if normalized.startswith(_audio_data_plane_direct_room_prefixes):
+        return True
+    return _audio_data_plane_direct_group_inbound_enabled
 
 
 def _ws_read_frame(conn: socket.socket) -> Optional[Tuple[int, bytes]]:
@@ -2079,6 +2148,7 @@ def _audio_data_plane_client_loop(conn: socket.socket, addr: Any) -> None:
         conn.sendall(response.encode("ascii"))
         with _audio_data_plane_lock:
             _audio_data_plane_clients[client_id] = conn
+            _audio_data_plane_send_locks[client_id] = threading.RLock()
         _log_audio_data_plane("connection-open", f"addr={addr}")
         conn.settimeout(None)
         _ws_send_json(conn, {"type": "ready", "atMs": _now_wall_ms()})
@@ -2116,6 +2186,7 @@ def _audio_data_plane_client_loop(conn: socket.socket, addr: Any) -> None:
     finally:
         with _audio_data_plane_lock:
             _audio_data_plane_clients.pop(client_id, None)
+            _audio_data_plane_send_locks.pop(client_id, None)
         try:
             conn.close()
         except Exception:
@@ -3843,6 +3914,7 @@ def _process_audio_batch(frames: list) -> None:
                 wire_bytes,
                 f"target=gcall-audio-data-plane packet_audio_send peer={peer_hash}",
                 timeout_seconds=_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
+                local_flow_key="audio",
             )
             if result is None:
                 _audio_packet_send_failures += 1
@@ -7550,7 +7622,12 @@ def _overlay_close_debug_line(link_id: str, state: Dict[str, Any], reason: str) 
     )
 
 
-def _queue_overlay_packet(state: Dict[str, Any], traffic: str, wire_bytes: bytes) -> None:
+def _queue_overlay_packet(
+    state: Dict[str, Any],
+    traffic: str,
+    wire_bytes: bytes,
+    local_flow_key: Optional[str] = None,
+) -> None:
     pending = state.get("pending_packets")
     if pending is None:
         pending = deque(maxlen=_OVERLAY_PENDING_PACKET_LIMIT)
@@ -7558,10 +7635,15 @@ def _queue_overlay_packet(state: Dict[str, Any], traffic: str, wire_bytes: bytes
     if state.get("established") is not True:
         while len(pending) >= _OVERLAY_PENDING_UNESTABLISHED_LIMIT:
             pending.popleft()
-    pending.append((traffic, bytes(wire_bytes)))
+    pending.append((traffic, bytes(wire_bytes), local_flow_key))
 
 
-def _send_packet_on_link(link, wire_bytes: bytes, log_target: str) -> bool:
+def _send_packet_on_link(
+    link,
+    wire_bytes: bytes,
+    log_target: str,
+    local_flow_key: Optional[str] = None,
+) -> bool:
     def note_overlay_send_failure(reason: str) -> None:
         link_id = get_overlay_link_id(link)
         if not link_id:
@@ -7580,6 +7662,7 @@ def _send_packet_on_link(link, wire_bytes: bytes, log_target: str) -> bool:
 
     try:
         packet = RNS.Packet(link, wire_bytes, create_receipt=False)
+        _set_packet_local_flow_key(packet, local_flow_key)
         completed, result, error = _run_with_timeout(
             f"link-packet-send-{str(id(link))[-8:]}",
             _LINK_PACKET_SEND_TIMEOUT_SECONDS,
@@ -8383,11 +8466,17 @@ def _flush_overlay_link_pending(link_id: str) -> None:
     while pending:
         if not _overlay_link_is_current(link_id, link):
             return
-        traffic, wire_bytes = pending[0]
+        queued = pending[0]
+        if isinstance(queued, tuple) and len(queued) >= 3:
+            traffic, wire_bytes, local_flow_key = queued[0], queued[1], queued[2]
+        else:
+            traffic, wire_bytes = queued
+            local_flow_key = None
         if not _send_packet_on_link(
             link,
             wire_bytes,
             f"target=presence-reticulum overlay_link_flush peer={state.get('peerPresenceHash') or 'unknown'} traffic={traffic}",
+            local_flow_key=local_flow_key,
         ):
             break
         if not _overlay_link_is_current(link_id, link):
@@ -12005,7 +12094,11 @@ def on_outgoing_overlay_link_established(link) -> None:
 
 
 def _send_wire_to_overlay_peer(
-    peer_hash: str, wire_bytes: bytes, traffic: str, queue_if_pending: bool = True
+    peer_hash: str,
+    wire_bytes: bytes,
+    traffic: str,
+    queue_if_pending: bool = True,
+    local_flow_key: Optional[str] = None,
 ) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
@@ -12027,13 +12120,14 @@ def _send_wire_to_overlay_peer(
             link,
             wire_bytes,
             f"target=presence-reticulum overlay_link_send peer={peer_key} traffic={traffic}",
+            local_flow_key=local_flow_key,
         )
         if ok:
             now = time.time()
             state["last_send_ok_at"] = now
         else:
             if queue_if_pending:
-                _queue_overlay_packet(state, traffic, wire_bytes)
+                _queue_overlay_packet(state, traffic, wire_bytes, local_flow_key=local_flow_key)
             emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
             return False
         emit_overlay_link_state(get_overlay_link_id(link) or "", state, traffic)
@@ -12054,7 +12148,10 @@ def _send_wire_to_overlay_peer(
 
 
 def _send_wire_to_established_overlay_peer(
-    peer_hash: str, wire_bytes: bytes, traffic: str
+    peer_hash: str,
+    wire_bytes: bytes,
+    traffic: str,
+    local_flow_key: Optional[str] = None,
 ) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
@@ -12080,6 +12177,7 @@ def _send_wire_to_established_overlay_peer(
         link,
         wire_bytes,
         f"target=presence-reticulum overlay_link_send peer={peer_key} traffic={traffic}",
+        local_flow_key=local_flow_key,
     )
     if ok and _overlay_link_is_current(link_id, link):
         now = time.time()
@@ -12930,6 +13028,15 @@ def _run_with_timeout(name: str, timeout_seconds: float, fn: Callable[[], Any]) 
     return True, result.get("value"), result.get("error")
 
 
+def _set_packet_local_flow_key(packet: Any, local_flow_key: Optional[str]) -> None:
+    if not local_flow_key:
+        return
+    try:
+        setattr(packet, "local_flow_key", str(local_flow_key))
+    except Exception:
+        pass
+
+
 def _teardown_reticulum_link_bounded(
     link: Any,
     log_target: str,
@@ -12959,8 +13066,10 @@ def _send_packet_to_destination_bounded(
     wire_bytes: bytes,
     log_target: str,
     timeout_seconds: float = _LINK_PACKET_SEND_TIMEOUT_SECONDS,
+    local_flow_key: Optional[str] = None,
 ) -> Tuple[Optional[bool], float]:
     packet = RNS.Packet(destination, wire_bytes, create_receipt=False)
+    _set_packet_local_flow_key(packet, local_flow_key)
     send_start = time.monotonic()
     completed, result, error = _run_with_timeout(
         f"destination-packet-send-{str(id(destination))[-8:]}",
@@ -13013,6 +13122,7 @@ def _send_packet_on_audio_link_bounded(
             generation = int(state.get("generation") or 0)
             should_trace = _audio_link_trace_should_log(state, "last_media_send_trace_at", seq)
     packet = RNS.Packet(link, wire_bytes, create_receipt=False)
+    _set_packet_local_flow_key(packet, "audio")
     packet_hash = getattr(packet, "packet_hash", None)
     packet_hash_hex = bytes(packet_hash).hex() if isinstance(packet_hash, (bytes, bytearray)) else ""
     if should_trace:
@@ -13489,11 +13599,20 @@ def _open_group_audio_link_for_peer(
             }, "No confirmed Reticulum path for group audio link"
         desired["retry_delay"] = _AUDIO_LINK_RETRY_MIN_SECONDS
         link_id = str(uuid.uuid4())
-        link = RNS.Link(
-            outbound,
-            established_callback=on_outgoing_audio_link_established,
-            closed_callback=on_audio_link_closed,
-        )
+        try:
+            link = RNS.Link(
+                outbound,
+                established_callback=on_outgoing_audio_link_established,
+                closed_callback=on_audio_link_closed,
+                local_flow_key="audio",
+            )
+        except TypeError:
+            link = RNS.Link(
+                outbound,
+                established_callback=on_outgoing_audio_link_established,
+                closed_callback=on_audio_link_closed,
+            )
+            _set_packet_local_flow_key(link, "audio")
         audio_state = {
             "link": link,
             "peerPresenceHash": peer_key,
@@ -13795,7 +13914,11 @@ def _handle_audio_link_packet(message, packet) -> None:
                     )
                 ]
             )
-            fd4_ok = _emit_binary_audio(chunk)
+            frame_kind, _control_type = _inspect_gcall_audio_payload(raw_audio)
+            direct_ok = False
+            if frame_kind == "media" and _audio_data_plane_should_take_inbound_media(room_id):
+                direct_ok = _audio_data_plane_broadcast_inbound_audio(chunk)
+            fd4_ok = direct_ok or _emit_binary_audio(chunk)
             fd4_enqueued_at_wall_ms = _now_wall_ms()
             _note_audio_route_receive(
                 "link",
@@ -14172,7 +14295,11 @@ def _handle_hub_packet_received(data, packet) -> None:
                 ]
             )
             _note_call_media_inbound(peer_presence_hash, sender_dest)
-            fd4_ok = _emit_binary_audio(chunk)
+            frame_kind, _control_type = _inspect_gcall_audio_payload(raw_audio)
+            direct_ok = False
+            if frame_kind == "media" and _audio_data_plane_should_take_inbound_media(room_id):
+                direct_ok = _audio_data_plane_broadcast_inbound_audio(chunk)
+            fd4_ok = direct_ok or _emit_binary_audio(chunk)
             fd4_enqueued_at_wall_ms = _now_wall_ms()
             _note_audio_route_receive(
                 "packet",
@@ -15550,6 +15677,7 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                     wire_bytes,
                     "reticulum_chat_fanout",
                     queue_if_pending=message_types[index] != "land_state",
+                    local_flow_key="movement" if message_types[index] == "land_state" else None,
                 ):
                     peer_delivered_all_frames = False
                 elif dedupe_key is not None:
@@ -15565,6 +15693,7 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                     peer_hash,
                     wire_bytes,
                     "reticulum_chat_reliable_fanout",
+                    local_flow_key="movement" if message_types[index] == "land_state" else None,
                 ):
                     peer_delivered_all_frames = False
                     message_type = (

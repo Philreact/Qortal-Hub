@@ -383,6 +383,49 @@ describe('ReticulumBridge group audio support', () => {
     expect(decoded[0]?.receivedAtWallMs).toBe(queuedAtMs);
   });
 
+  it('preserves link-mode audio peer route hints', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    const writes: Buffer[] = [];
+    internal.child = {
+      exitCode: null,
+      stdio: [
+        null,
+        null,
+        null,
+        {
+          write: vi.fn((buf: Buffer) => {
+            writes.push(Buffer.from(buf));
+            return true;
+          }),
+          once: vi.fn(),
+        },
+      ],
+    };
+
+    expect(
+      bridge.enqueueGroupAudio(
+        'link-1',
+        'room-1',
+        Buffer.from([1, 2, 3]),
+        'PEER-HASH',
+        'DEST-HASH'
+      ).ok
+    ).toBe(true);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const decoded = writes.flatMap((buf) => decodeReticulumAudioMessage(buf));
+    expect(decoded).toHaveLength(1);
+    expect(decoded[0]).toMatchObject({
+      linkId: 'link-1',
+      roomId: 'room-1',
+      peerPresenceHash: 'peer-hash',
+      peerDestinationHash: 'dest-hash',
+    });
+  });
+
   it('writes packet-mode audio batches without a link id', async () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

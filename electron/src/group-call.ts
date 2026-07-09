@@ -5905,7 +5905,13 @@ export class GroupCallManager extends EventEmitter {
       }
       let enqueuedForLink = 0;
       for (const encoded of encodedFrames) {
-        const result = bridge.enqueueGroupAudio(state.linkId, roomId, encoded);
+        const result = bridge.enqueueGroupAudio(
+          state.linkId,
+          roomId,
+          encoded,
+          state.peerPresenceHash,
+          state.peerDestinationHash
+        );
         if (result.ok) {
           enqueuedForLink++;
         } else {
@@ -6020,7 +6026,9 @@ export class GroupCallManager extends EventEmitter {
       const result = bridge.enqueueGroupAudio(
         state.linkId,
         pending.roomId,
-        pending.data
+        pending.data,
+        state.peerPresenceHash,
+        state.peerDestinationHash
       );
       if (result.ok) {
         sent++;
@@ -6082,7 +6090,13 @@ export class GroupCallManager extends EventEmitter {
       if (!frame) continue;
       const encoded = encodeGcLinkControlWire(frame);
       if (!encoded) continue;
-      const result = bridge.enqueueGroupAudio(linkId, roomId, encoded);
+      const result = bridge.enqueueGroupAudio(
+        linkId,
+        roomId,
+        encoded,
+        state.peerPresenceHash,
+        state.peerDestinationHash
+      );
       if (result.ok) {
         state.linkAuthSentByRoom.set(roomId, linkId);
         state.linkAuthSentCount++;
@@ -7778,7 +7792,13 @@ export class GroupCallManager extends EventEmitter {
               bridgeData,
               state.peerDestinationHash
             )
-          : bridge.enqueueGroupAudio(state.linkId!, next.roomId, bridgeData);
+          : bridge.enqueueGroupAudio(
+              state.linkId!,
+              next.roomId,
+              bridgeData,
+              state.peerPresenceHash,
+              state.peerDestinationHash
+            );
       state.managerFlushToBridgeEnqueueMsMax = Math.max(
         state.managerFlushToBridgeEnqueueMsMax,
         Math.max(0, Date.now() - flushAtMs)
@@ -7806,7 +7826,9 @@ export class GroupCallManager extends EventEmitter {
                 ? bridge.enqueueGroupAudio(
                     state.linkId,
                     next.roomId,
-                    bridgeData
+                    bridgeData,
+                    state.peerPresenceHash,
+                    state.peerDestinationHash
                   )
                 : null
               : bridge.enqueuePacketGroupAudio(

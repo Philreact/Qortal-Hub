@@ -465,6 +465,7 @@ export type ReticulumAudioDataPlaneSessionResult =
       token: string;
       version: 2;
       routeCount: number;
+      routes: ReticulumAudioDataPlaneRoute[];
     }
   | {
       ok: false;
@@ -1884,7 +1885,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       loggerLog(
         `[ReticulumBridge] target=gcall-audio-data-plane stage=session-ready routes=${routeCount}`
       );
-      return { ok: true, endpoint, token, version: 2, routeCount };
+      return { ok: true, endpoint, token, version: 2, routeCount, routes };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -1953,15 +1954,17 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   enqueueGroupAudio(
     linkId: string,
     roomId: string,
-    data: Buffer
+    data: Buffer,
+    peerPresenceHash = '',
+    peerDestinationHash = ''
   ): ReticulumEnqueueGroupAudioResult {
     return this.enqueueAudioFrame({
       routeKey: linkId,
       transport: 'link',
       linkId,
       roomId,
-      peerPresenceHash: '',
-      peerDestinationHash: '',
+      peerPresenceHash: peerPresenceHash.trim().toLowerCase(),
+      peerDestinationHash: peerDestinationHash.trim().toLowerCase(),
       data,
     });
   }
