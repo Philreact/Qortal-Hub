@@ -5961,7 +5961,8 @@ export class GroupCallManager extends EventEmitter {
     frames: Record<string, unknown>[],
     excludeAddresses: Set<string>,
     reason: string,
-    targetAddresses?: Set<string>
+    targetAddresses?: Set<string>,
+    queuePending = true
   ): { sentLinks: number; skippedLinks: number } {
     const bridge = this.reticulumBridge;
     if (!bridge || bridge.getState() !== 'ready' || frames.length === 0) {
@@ -5989,13 +5990,15 @@ export class GroupCallManager extends EventEmitter {
         continue;
       }
       if (!state.established || !state.linkId) {
-        this.queuePendingReticulumLinkControl(
-          address,
-          state,
-          roomId,
-          encodedFrames,
-          reason
-        );
+        if (queuePending) {
+          this.queuePendingReticulumLinkControl(
+            address,
+            state,
+            roomId,
+            encodedFrames,
+            reason
+          );
+        }
         skippedLinks++;
         continue;
       }
@@ -6235,14 +6238,29 @@ export class GroupCallManager extends EventEmitter {
       targets.add(address);
     }
     if (targets.size === 0) return { sentLinks: 0, skippedLinks: 0 };
+    const immediate = this.sendReticulumLinkControlToEstablishedRoomLinks(
+      roomId,
+      frames,
+      excludeAddresses,
+      reason,
+      targets,
+      false
+    );
+    if (immediate.sentLinks > 0) {
+      return immediate;
+    }
     this.syncReticulumAudioLinks();
-    return this.sendReticulumLinkControlToEstablishedRoomLinks(
+    const synced = this.sendReticulumLinkControlToEstablishedRoomLinks(
       roomId,
       frames,
       excludeAddresses,
       reason,
       targets
     );
+    return {
+      sentLinks: synced.sentLinks,
+      skippedLinks: immediate.skippedLinks + synced.skippedLinks,
+    };
   }
 
   private isReticulumAudioLinkVerifiedForAddress(
