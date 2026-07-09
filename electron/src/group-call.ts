@@ -6263,6 +6263,110 @@ export class GroupCallManager extends EventEmitter {
     };
   }
 
+  private sendReticulumDmLinkControlToAddress(
+    roomId: string,
+    frames: Record<string, unknown>[],
+    rawTargetAddress: string,
+    excludeAddresses: Set<string>,
+    reason: string
+  ): { sentLinks: number; skippedLinks: number } {
+    const bridge = this.reticulumBridge;
+    const address = rawTargetAddress.trim();
+    if (
+      !roomId.startsWith(DM_VOICE_ROOM_PREFIX) ||
+      !address ||
+      this.localAddresses.has(address) ||
+      excludeAddresses.has(address) ||
+      !bridge ||
+      bridge.getState() !== 'ready' ||
+      frames.length === 0
+    ) {
+      return { sentLinks: 0, skippedLinks: 0 };
+    }
+
+    const encodedFrames: Buffer[] = [];
+    let skippedLinks = 0;
+    for (const frame of frames) {
+      const encoded = encodeGcLinkControlWire(frame);
+      if (!encoded) {
+        skippedLinks++;
+        continue;
+      }
+      encodedFrames.push(encoded);
+    }
+    if (encodedFrames.length === 0) {
+      return { sentLinks: 0, skippedLinks };
+    }
+
+    const state =
+      this.reticulumAudioPeersByAddress.get(address) ??
+      this.ensureReticulumAudioPeerState(roomId, address);
+    if (!state) {
+      loggerLog(
+        `[GCall] Queued ${reason} over DM Reticulum link room=${roomId} to=${address} links=0 skipped=${skippedLinks + 1} reason=no-peer-state`
+      );
+      return { sentLinks: 0, skippedLinks: skippedLinks + 1 };
+    }
+    state.rooms.add(roomId);
+
+    if (!state.established || !state.linkId) {
+      this.queuePendingReticulumLinkControl(
+        address,
+        state,
+        roomId,
+        encodedFrames,
+        reason
+      );
+      loggerLog(
+        `[GCall] Queued ${reason} pending DM Reticulum link room=${roomId} to=${address} pending=${state.pendingControl.length}`
+      );
+      return { sentLinks: 0, skippedLinks: skippedLinks + 1 };
+    }
+
+    if (
+      !this.isReticulumAudioLinkVerifiedForAddress(
+        address,
+        state.peerPresenceHash,
+        state.peerDestinationHash
+      )
+    ) {
+      loggerLog(
+        `[GCall] Skipped ${reason} over DM Reticulum link room=${roomId} to=${address} link=${state.linkId} reason=link-not-verified`
+      );
+      return { sentLinks: 0, skippedLinks: skippedLinks + 1 };
+    }
+
+    this.sendReticulumAudioLinkAuth(address, state, `before-dm-${reason}`);
+    let sentFrames = 0;
+    for (const encoded of encodedFrames) {
+      const result = bridge.enqueueGroupAudio(
+        state.linkId,
+        roomId,
+        encoded,
+        state.peerPresenceHash,
+        state.peerDestinationHash
+      );
+      if (result.ok) {
+        sentFrames++;
+      } else {
+        skippedLinks++;
+      }
+    }
+
+    if (sentFrames > 0) {
+      this.scheduleReticulumAudioFlush();
+      loggerLog(
+        `[GCall] Queued ${reason} over DM Reticulum link room=${roomId} to=${address} link=${state.linkId} frames=${sentFrames} skipped=${skippedLinks}`
+      );
+      return { sentLinks: 1, skippedLinks };
+    }
+
+    loggerLog(
+      `[GCall] Queued ${reason} over DM Reticulum link room=${roomId} to=${address} link=${state.linkId} frames=0 skipped=${skippedLinks}`
+    );
+    return { sentLinks: 0, skippedLinks };
+  }
+
   private isReticulumAudioLinkVerifiedForAddress(
     address: string,
     peerPresenceHash: string,
@@ -8858,8 +8962,15 @@ export class GroupCallManager extends EventEmitter {
       );
       return { success: false, error: 'reticulum-wire-encode-failed' };
     }
-    const { sentLinks, skippedLinks } =
-      this.sendReticulumLinkControlToAddresses(
+    const { sentLinks, skippedLinks } = roomId.startsWith(DM_VOICE_ROOM_PREFIX)
+      ? this.sendReticulumDmLinkControlToAddress(
+        roomId,
+        keyFrames,
+        toAddress,
+        new Set([fromAddress]),
+        'GC_KEY'
+      )
+      : this.sendReticulumLinkControlToAddresses(
         roomId,
         keyFrames,
         [toAddress],
@@ -8910,8 +9021,15 @@ export class GroupCallManager extends EventEmitter {
       );
       return;
     }
-    const { sentLinks, skippedLinks } =
-      this.sendReticulumLinkControlToAddresses(
+    const { sentLinks, skippedLinks } = roomId.startsWith(DM_VOICE_ROOM_PREFIX)
+      ? this.sendReticulumDmLinkControlToAddress(
+        roomId,
+        gqFrames,
+        toAddress,
+        new Set([fromAddress]),
+        'GC_KEY_REQUEST'
+      )
+      : this.sendReticulumLinkControlToAddresses(
         roomId,
         gqFrames,
         [toAddress],
