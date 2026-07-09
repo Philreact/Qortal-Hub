@@ -5936,6 +5936,7 @@ export class GroupCallManager extends EventEmitter {
         skippedLinks++;
         continue;
       }
+      this.sendReticulumAudioLinkAuth(address, state, `before-${reason}`);
       let enqueuedForLink = 0;
       for (const encoded of encodedFrames) {
         const result = bridge.enqueueGroupAudio(
@@ -6043,6 +6044,7 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return;
     }
+    this.sendReticulumAudioLinkAuth(address, state, 'before-pending-control');
     const now = Date.now();
     let sent = 0;
     let dropped = 0;
@@ -6315,8 +6317,8 @@ export class GroupCallManager extends EventEmitter {
       this.setReticulumAudioRouteKey(address, state, linkId);
     }
     this.resetReticulumAudioLinkHeartbeat(state);
-    this.flushPendingReticulumLinkControl(address, state);
     this.sendReticulumAudioLinkAuth(address, state, reason);
+    this.flushPendingReticulumLinkControl(address, state);
     return true;
   }
 
