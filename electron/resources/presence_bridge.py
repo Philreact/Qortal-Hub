@@ -96,7 +96,7 @@ _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS = 2.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
-_OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 60.0
+_OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 15.0
 _OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
@@ -450,6 +450,7 @@ _AUDIO_LINK_RETRY_MAX_SECONDS = 20.0
 _AUDIO_LINK_RECOVERY_REARM_DEBOUNCE_SECONDS = 2.0
 _AUDIO_LINK_ACTIVE_CALL_REARM_SECONDS = 10.0
 _PACKET_PATH_WARMING_TIMEOUTS_BEFORE_FAILING = 2
+_AUDIO_LINK_FORCE_PATH_REFRESH_TIMEOUTS = 2
 _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
 _SCHEDULER_AUDIO_SHARDS = 4
@@ -6024,7 +6025,12 @@ def _recover_zero_overlay_fanout(reason: str) -> int:
     peers and let normal RX-based verification decide whether they stay good.
     """
     global _last_overlay_zero_fanout_recovery_at
-    if _overlay_links_by_id:
+    with _state_lock:
+        has_usable_overlay_link = any(
+            _overlay_link_is_fanout_usable(state)
+            for state in _overlay_links_by_id.values()
+        )
+    if has_usable_overlay_link:
         return 0
     now = time.time()
     if (
@@ -6058,14 +6064,22 @@ def _recover_zero_overlay_fanout(reason: str) -> int:
     selected = candidates[:_OVERLAY_PENDING_UNESTABLISHED_LIMIT]
     _last_overlay_zero_fanout_recovery_at = now
     cleared = 0
+    queued = 0
     for peer_key in selected:
         if _clear_overlay_peer_failure_for_recovery(peer_key, f"zero_fanout:{reason}"):
             cleared += 1
         _mark_candidate_peer(peer_key, f"zero_fanout:{reason}")
+        if _overlay_enqueue_peer_recovery(
+            peer_key,
+            f"zero_fanout:{reason}",
+            force_refresh=True,
+        ):
+            queued += 1
     log(
         "[presence_bridge] target=presence-reticulum overlay_zero_fanout_recover "
         f"reason={reason} selected={len(selected)} cleared_suppression={cleared} "
-        f"known_peers={len(_known_peers)} fanout_hashes={','.join(selected)}"
+        f"queued_recovery={queued} known_peers={len(_known_peers)} "
+        f"fanout_hashes={','.join(selected)}"
     )
     return len(selected)
 
@@ -7156,6 +7170,91 @@ def _overlay_enqueue_open(
     if not queued:
         with _state_lock:
             _overlay_open_pending_by_peer_hash.discard(peer_key)
+    return bool(queued)
+
+
+def _overlay_recovery_job(peer_key: str, reason: str, force_refresh: bool) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return
+    try:
+        if peer_key not in _known_peers:
+            ensure_known_peer_from_recall(peer_key, "ts_seed")
+        if peer_key not in _known_peers:
+            log(
+                "[presence_bridge] target=presence-reticulum zero_fanout_path_missing "
+                f"peer={peer_key} reason={reason} cause=unknown_identity"
+            )
+            return
+        if _overlay_peer_inbound_full(peer_key):
+            log(
+                "[presence_bridge] target=presence-reticulum zero_fanout_recovery_skip "
+                f"peer={peer_key} reason={reason} cause=peer_inbound_full"
+            )
+            return
+        with _state_lock:
+            existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+            existing = _overlay_links_by_id.get(existing_link_id) if existing_link_id else None
+        if existing is not None and _overlay_link_is_fanout_usable(existing):
+            log(
+                "[presence_bridge] target=presence-reticulum zero_fanout_recovered "
+                f"peer={peer_key} reason={reason} link={existing_link_id}"
+            )
+            return
+        if force_refresh:
+            _force_overlay_peer_path_refresh(
+                peer_key,
+                target="presence-reticulum",
+                reason=reason,
+                cooldown_seconds=_OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS,
+            )
+        log(
+            "[presence_bridge] target=presence-reticulum zero_fanout_peer_open "
+            f"peer={peer_key} reason={reason} force_refresh={str(force_refresh).lower()}"
+        )
+        _overlay_open_job(peer_key, reason, True)
+    finally:
+        with _state_lock:
+            _overlay_open_pending_by_peer_hash.discard(peer_key)
+
+
+def _overlay_enqueue_peer_recovery(
+    peer_hash: str,
+    reason: str,
+    *,
+    force_refresh: bool = True,
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key or not _valid_presence_destination_hash_hex(peer_key):
+        return False
+    local_hex = _local_presence_hash_hex()
+    if local_hex and peer_key == local_hex:
+        return False
+    with _state_lock:
+        existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        existing = _overlay_links_by_id.get(existing_link_id) if existing_link_id else None
+        if existing is not None and _overlay_link_is_fanout_usable(existing):
+            return False
+        if peer_key in _overlay_open_pending_by_peer_hash:
+            return False
+        _overlay_open_pending_by_peer_hash.add(peer_key)
+    queued = _enqueue_scheduler_task(
+        _overlay_io_lane_for_peer(peer_key),
+        f"overlay-recovery:{reason}:{peer_key[:8]}",
+        _overlay_recovery_job,
+        peer_key,
+        reason,
+        force_refresh,
+        drop_oldest=False,
+    )
+    if not queued:
+        with _state_lock:
+            _overlay_open_pending_by_peer_hash.discard(peer_key)
+    else:
+        log(
+            "[presence_bridge] target=presence-reticulum zero_fanout_recovery_queued "
+            f"peer={peer_key} reason={reason} force_refresh={str(force_refresh).lower()}"
+        )
     return bool(queued)
 
 
@@ -8260,6 +8359,17 @@ def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
         )
     if peer_hash and _overlay_teardown_should_demote(reason):
         _demote_overlay_fanout_peer(peer_hash, f"link_teardown:{reason}")
+    if peer_hash and reason in {"rx_idle_timeout", "unestablished_timeout"}:
+        _clear_overlay_peer_failure_for_recovery(peer_hash, f"link_teardown:{reason}")
+        if _overlay_enqueue_peer_recovery(
+            peer_hash,
+            f"link_teardown:{reason}",
+            force_refresh=True,
+        ):
+            log(
+                "[presence_bridge] target=presence-reticulum overlay_timeout_recovery_queued "
+                f"peer={peer_hash} link={link_id} reason={reason}"
+            )
 
 
 def _overlay_open_job(peer_key: str, reason: str, await_path: bool = False) -> None:
@@ -13305,6 +13415,24 @@ def _rearm_audio_link_recovery(peer_key: str, reason: str) -> bool:
     return True
 
 
+def _audio_link_should_force_path_refresh(peer_key: str, retry_reason: str) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    if not peer_key:
+        return False
+    reason = str(retry_reason or "").strip().lower()
+    if reason in {
+        "establish_timeout",
+        "send_timeout_teardown",
+        "audio_link_send_timeout",
+    }:
+        return True
+    state = _get_call_media_state(peer_key)
+    path_state = str(state.get("path_state") or "").strip().lower()
+    if path_state in {"failing", "recovering"}:
+        return True
+    return int(state.get("consecutive_timeouts") or 0) >= _AUDIO_LINK_FORCE_PATH_REFRESH_TIMEOUTS
+
+
 def _emit_audio_link_attempts_exhausted(peer_key: str, reason: str, desired: Dict[str, Any]) -> None:
     attempts = int(desired.get("attempts") or 0)
     with _state_lock:
@@ -13547,6 +13675,15 @@ def _open_group_audio_link_for_peer(
             }, "Reticulum public key does not match destination hash"
         desired["attempts"] = int(desired.get("attempts") or 0) + 1
         desired["last_open_attempt_at"] = time.time()
+        force_path_refresh = _audio_link_should_force_path_refresh(peer_key, retry_reason)
+        if force_path_refresh:
+            media_state = _get_call_media_state(peer_key)
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_link_force_path_refresh "
+                f"peer={peer_key} reason={retry_reason} "
+                f"path_state={media_state.get('path_state') or 'unknown'} "
+                f"consecutive_timeouts={int(media_state.get('consecutive_timeouts') or 0)}"
+            )
         path_state, path_ready = _ensure_call_media_path(
             peer_key,
             outbound.hash,
@@ -13554,8 +13691,8 @@ def _open_group_audio_link_for_peer(
             allow_wait=True,
             reason=f"open_link:{retry_reason}",
             await_seconds_override=_AUDIO_LINK_OPEN_PATH_AWAIT_SECONDS,
-            force_refresh_cached_path=False,
-            nudge_cached_path=True,
+            force_refresh_cached_path=force_path_refresh,
+            nudge_cached_path=not force_path_refresh,
         )
         if not path_ready:
             desired["retry_delay"] = min(
