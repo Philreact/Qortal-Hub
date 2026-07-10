@@ -1802,6 +1802,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         timestamp: timestamp ?? Date.now(),
       });
       landCallPeersRef.current.delete(callId);
+      if (lastAnnouncedLandCallRef.current?.callId === callId) {
+        lastAnnouncedLandCallRef.current = null;
+      }
       if (activeLandCallIdRef.current === callId) {
         activeLandCallIdRef.current = null;
         setActiveLandCallPeerAddress(null);
@@ -1828,6 +1831,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         timestamp,
       });
       landCallPeersRef.current.delete(callId);
+      if (lastAnnouncedLandCallRef.current?.callId === callId) {
+        lastAnnouncedLandCallRef.current = null;
+      }
       if (activeLandCallIdRef.current === callId) {
         activeLandCallIdRef.current = null;
         setActiveLandCallPeerAddress(null);
@@ -2746,6 +2752,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           emitLandCallEvent('call:rejected', { callId, reason: payload.reason || 'rejected' });
         }
         landCallPeersRef.current.delete(callId);
+        if (lastAnnouncedLandCallRef.current?.callId === callId) {
+          lastAnnouncedLandCallRef.current = null;
+        }
         if (activeLandCallIdRef.current === callId) {
           activeLandCallIdRef.current = null;
           setActiveLandCallPeerAddress(null);
@@ -2755,6 +2764,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
       if (callType === 'hangup' || callType === 'ended') {
         clearLandCallPresence([fromAddress, toAddress]);
+        if (lastAnnouncedLandCallRef.current?.callId === callId) {
+          lastAnnouncedLandCallRef.current = null;
+        }
         if (callType === 'ended') {
           return;
         }
@@ -2854,6 +2866,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       };
       return;
     }
+    if (landVoiceCall.callState !== 'idle') return;
     const previous = lastAnnouncedLandCallRef.current;
     if (!previous || !myAddress || reticulumReady !== true) return;
     lastAnnouncedLandCallRef.current = null;
