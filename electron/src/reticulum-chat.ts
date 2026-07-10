@@ -1,5 +1,6 @@
 import * as nodeCrypto from 'crypto';
 import { EventEmitter } from 'events';
+import { performance } from 'perf_hooks';
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -66,6 +67,14 @@ import {
   type ReticulumResourceTransferProgress,
   type ReticulumResourceTransferRequest,
 } from './reticulum-resource-transfer';
+import {
+  ReticulumChatWorkerPool,
+} from './reticulum-chat-worker-pool';
+import type {
+  ReticulumChatWorkerPreparedResourceResult,
+  ReticulumChatWorkerResult,
+  ReticulumChatWorkerTask,
+} from './reticulum-chat.worker';
 
 const RETICULUM_CHAT_TRACE = process.env.QORTAL_RNS_LOCAL_TRACE === '1';
 
@@ -258,6 +267,16 @@ interface ReticulumChatQueuedLandAuth {
   groupId: number;
   authorAddress: string;
   sessionId: string;
+  enqueuedAt: number;
+  coalescedCount: number;
+}
+
+interface ReticulumChatQueuedResourceEvent {
+  key: string;
+  payload: ReticulumChatResourcePayload;
+  status: string;
+  transferId: string;
+  resourceType: string;
   enqueuedAt: number;
   coalescedCount: number;
 }
@@ -559,6 +578,7 @@ type ReticulumDmResourceFindRoute = {
 type ReticulumLandAuthSession = {
   expiresAt: number;
   ephemeralPublicKey: string;
+  ephemeralPublicKeyBytes: Uint8Array;
 };
 
 type ReticulumLocalLandAuthSession = {
@@ -1029,10 +1049,12 @@ const RETICULUM_LAND_CHAT_HINT_DEDUPE_MAX = 4096;
 const RETICULUM_LAND_CHAT_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]+$/;
 const RETICULUM_LAND_AUTH_REFRESH_MS = 60_000;
 const RETICULUM_LAND_AUTH_SESSION_TTL_MS = 2 * 60_000;
+const RETICULUM_LAND_AUTH_SESSION_PRUNE_MS = 5_000;
 const RETICULUM_LAND_AUTH_SESSION_MAX = 4096;
 const RETICULUM_LAND_AUTH_REQ_DEDUPE_MS = 5_000;
 const RETICULUM_LAND_AUTH_REQ_RESPONSE_MS = 3_000;
 const RETICULUM_LAND_AUTH_REQ_MAX = 4096;
+const RETICULUM_LAND_STATE_SEQUENCE_MAX = 4096;
 const RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS = 30_000;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 60_000;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
@@ -1092,6 +1114,11 @@ const RETICULUM_CHAT_LAND_AUTH_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_LAND_AUTH_PROCESS_SLOW_MS = 50;
 const RETICULUM_CHAT_LAND_AUTH_PRESSURE_WARN = 100;
 const RETICULUM_CHAT_LAND_AUTH_MAX_CONCURRENT = 8;
+const RETICULUM_CHAT_RESOURCE_QUEUE_MAX = 500;
+const RETICULUM_CHAT_RESOURCE_QUEUE_BUDGET_MS = 8;
+const RETICULUM_CHAT_RESOURCE_PROCESS_SLOW_MS = 50;
+const RETICULUM_CHAT_RESOURCE_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_RESOURCE_PROTECTED_STATUSES = new Set(['auth', 'received', 'failed', 'sent']);
 const RETICULUM_CHAT_RELAY_REPLICATION_TARGET = 3;
 const RETICULUM_CHAT_RELAY_QUERY_MAX_IDS = 16;
 const RETICULUM_CHAT_RELAY_QUERY_DEBOUNCE_MS = 30_000;
@@ -3215,6 +3242,18 @@ export class ReticulumChatManager extends EventEmitter {
     coalesced: 0,
     dropped: 0,
   };
+  private chatResourceQueue: string[] = [];
+  private chatResourceItems = new Map<string, ReticulumChatQueuedResourceEvent>();
+  private chatResourceQueueSequence = 0;
+  private chatResourceQueueScheduled = false;
+  private chatResourceQueueActive = false;
+  private chatResourceQueuePressureLogged = false;
+  private chatResourceQueueStats = {
+    processed: 0,
+    coalesced: 0,
+    dropped: 0,
+    protectedOverflow: 0,
+  };
   private subscriptionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptionFanoutQueue: ReticulumChatWire[] = [];
   private subscriptionFanoutQueuedKeys = new Set<string>();
@@ -3244,6 +3283,8 @@ export class ReticulumChatManager extends EventEmitter {
   private localLandAuthSentAt = new Map<string, number>();
   private localLandAuthSessions = new Map<string, ReticulumLocalLandAuthSession>();
   private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
+  private latestVerifiedLandStateSequences = new Map<string, number>();
+  private lastLandAuthSessionPruneAt = 0;
   private recentLandAuthRequests = new Map<string, number>();
   private recentLandAuthRequestResponses = new Map<string, number>();
   private recentLandStateVerifiedLogs = new Map<string, number>();
@@ -3253,6 +3294,7 @@ export class ReticulumChatManager extends EventEmitter {
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private directTypingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private observedDbEventIds = new Set<string>();
+  private chatWorkerPool = new ReticulumChatWorkerPool('reticulum-chat', 1, 128);
   private channelMetadataProjectionQueue: string[] = [];
   private channelMetadataProjectionQueuedIds = new Set<string>();
   private channelMetadataProjectionAttemptedIds = new Set<string>();
@@ -3602,6 +3644,8 @@ export class ReticulumChatManager extends EventEmitter {
       | 'resourceStore'
     >
   ): void {
+    const validateGroupMemberChanged = this.validateGroupMember !== options.validateGroupMember;
+    const validateGroupAdminChanged = this.validateGroupAdmin !== options.validateGroupAdmin;
     this.signLocalFields = options.signLocalFields;
     this.validateGroupMember = options.validateGroupMember;
     this.validateGroupAdmin = options.validateGroupAdmin;
@@ -3614,9 +3658,13 @@ export class ReticulumChatManager extends EventEmitter {
       this.resourceTransfer = this.createResourceTransfer();
       this.directResourceTransfer = this.createDirectResourceTransfer();
     }
-    this.groupMemberValidationCache.clear();
-    this.groupMemberValidationInflight.clear();
-    this.groupAdminValidationCache.clear();
+    if (validateGroupMemberChanged) {
+      this.groupMemberValidationCache.clear();
+      this.groupMemberValidationInflight.clear();
+    }
+    if (validateGroupAdminChanged) {
+      this.groupAdminValidationCache.clear();
+    }
     if (this.signLocalFields) this.retryPendingSignedResourceAuthOffers();
   }
 
@@ -3643,6 +3691,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearDigestSnapshotBuildQueue();
     this.clearLandStateQueue();
     this.clearLandAuthQueue();
+    this.clearChatResourceQueue();
+    this.chatWorkerPool.stop();
     this.digestSnapshotCache.clear();
     this.groupMemberValidationInflight.clear();
     this.resourceFindRoutes.clear();
@@ -3666,6 +3716,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.localLandAuthSentAt.clear();
     this.localLandAuthSessions.clear();
     this.landAuthSessions.clear();
+    this.latestVerifiedLandStateSequences.clear();
+    this.lastLandAuthSessionPruneAt = 0;
     this.recentLandAuthRequests.clear();
     this.recentLandAuthRequestResponses.clear();
     this.recentLandStateVerifiedLogs.clear();
@@ -4138,17 +4190,38 @@ export class ReticulumChatManager extends EventEmitter {
     return this.landAuthSessionKey(groupId, authorAddress, sessionId);
   }
 
-  private pruneLandAuthSessions(): void {
+  private pruneLandAuthSessions(force = false): void {
     const now = this.now();
+    if (
+      !force &&
+      now - this.lastLandAuthSessionPruneAt < RETICULUM_LAND_AUTH_SESSION_PRUNE_MS &&
+      this.landAuthSessions.size < RETICULUM_LAND_AUTH_SESSION_MAX
+    ) {
+      return;
+    }
+    this.lastLandAuthSessionPruneAt = now;
     for (const [key, session] of this.landAuthSessions) {
-      if (session.expiresAt <= now) this.landAuthSessions.delete(key);
+      if (session.expiresAt <= now) {
+        this.landAuthSessions.delete(key);
+        this.latestVerifiedLandStateSequences.delete(key);
+      }
     }
     if (this.landAuthSessions.size > RETICULUM_LAND_AUTH_SESSION_MAX) {
       const excess = this.landAuthSessions.size - RETICULUM_LAND_AUTH_SESSION_MAX;
       const oldest = [...this.landAuthSessions.entries()]
         .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
         .slice(0, excess);
-      for (const [key] of oldest) this.landAuthSessions.delete(key);
+      for (const [key] of oldest) {
+        this.landAuthSessions.delete(key);
+        this.latestVerifiedLandStateSequences.delete(key);
+      }
+    }
+    if (this.latestVerifiedLandStateSequences.size > RETICULUM_LAND_STATE_SEQUENCE_MAX) {
+      for (const key of this.latestVerifiedLandStateSequences.keys()) {
+        if (this.landAuthSessions.has(key)) continue;
+        this.latestVerifiedLandStateSequences.delete(key);
+        if (this.latestVerifiedLandStateSequences.size <= RETICULUM_LAND_STATE_SEQUENCE_MAX) break;
+      }
     }
   }
 
@@ -4167,15 +4240,29 @@ export class ReticulumChatManager extends EventEmitter {
     authorAddress: string,
     sessionId: string,
     ephemeralPublicKey: string
-  ): void {
+  ): boolean {
+    let ephemeralPublicKeyBytes: Uint8Array;
+    try {
+      ephemeralPublicKeyBytes = new Uint8Array(base58Decode(ephemeralPublicKey));
+    } catch {
+      return false;
+    }
+    if (ephemeralPublicKeyBytes.length !== 32) return false;
     this.pruneLandAuthSessions();
+    const sessionKey = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+    const existing = this.landAuthSessions.get(sessionKey);
+    if (existing && existing.ephemeralPublicKey !== ephemeralPublicKey) {
+      this.latestVerifiedLandStateSequences.delete(sessionKey);
+    }
     this.landAuthSessions.set(
-      this.landAuthSessionKey(groupId, authorAddress, sessionId),
+      sessionKey,
       {
         ephemeralPublicKey,
+        ephemeralPublicKeyBytes,
         expiresAt: this.now() + RETICULUM_LAND_AUTH_SESSION_TTL_MS,
       }
     );
+    return true;
   }
 
   private async ensureLocalLandAuth(
@@ -5758,6 +5845,186 @@ export class ReticulumChatManager extends EventEmitter {
     this.digestSendQueueScheduled = false;
     this.digestSendQueueActive = false;
     this.digestSendQueuePressureLogged = false;
+  }
+
+  private enqueueChatResourceEvent(payload: ReticulumChatResourcePayload): void {
+    if (this.isClosed || !payload || typeof payload !== 'object') return;
+    const status = typeof payload.status === 'string' ? payload.status.trim() : '';
+    const transferId = typeof payload.transferId === 'string' ? payload.transferId.trim() : '';
+    const resourceType = String(
+      payload.resourceType ??
+        payload.metadata?.resourceType ??
+        payload.metadata?.logicalResourceType ??
+        payload.fileName ??
+        ''
+    );
+    const isProtected = RETICULUM_CHAT_RESOURCE_PROTECTED_STATUSES.has(status);
+    const key = `${transferId || 'no-transfer'}:${status || 'unknown'}:${++this.chatResourceQueueSequence}`;
+
+    if (this.chatResourceQueue.length >= RETICULUM_CHAT_RESOURCE_QUEUE_MAX) {
+      const droppedKey = this.findDroppableChatResourceQueueKey();
+      if (droppedKey) {
+        this.chatResourceQueue = this.chatResourceQueue.filter((queuedKey) => queuedKey !== droppedKey);
+        if (this.chatResourceItems.delete(droppedKey)) {
+          this.chatResourceQueueStats.dropped += 1;
+        }
+      } else if (!isProtected) {
+        this.chatResourceQueueStats.dropped += 1;
+        this.logChatResourceQueuePressureIfNeeded();
+        return;
+      } else {
+        this.chatResourceQueueStats.protectedOverflow += 1;
+      }
+    }
+
+    this.chatResourceQueue.push(key);
+    this.chatResourceItems.set(key, {
+      key,
+      payload: { ...payload },
+      status,
+      transferId,
+      resourceType,
+      enqueuedAt: this.now(),
+      coalescedCount: 0,
+    });
+    this.logChatResourceQueuePressureIfNeeded();
+    this.scheduleChatResourceQueue();
+  }
+
+  private findDroppableChatResourceQueueKey(): string | null {
+    const latestDroppableByTransfer = new Map<string, string>();
+    for (const key of this.chatResourceQueue) {
+      const item = this.chatResourceItems.get(key);
+      if (!item || RETICULUM_CHAT_RESOURCE_PROTECTED_STATUSES.has(item.status)) continue;
+      if (!item.transferId) return key;
+      const previous = latestDroppableByTransfer.get(item.transferId);
+      if (previous) return previous;
+      latestDroppableByTransfer.set(item.transferId, key);
+    }
+    for (const key of this.chatResourceQueue) {
+      const item = this.chatResourceItems.get(key);
+      if (item && !RETICULUM_CHAT_RESOURCE_PROTECTED_STATUSES.has(item.status)) return key;
+    }
+    return null;
+  }
+
+  private scheduleChatResourceQueue(): void {
+    if (this.chatResourceQueueScheduled || this.chatResourceQueueActive) return;
+    this.chatResourceQueueScheduled = true;
+    setImmediate(() => {
+      this.chatResourceQueueScheduled = false;
+      this.processChatResourceQueue();
+    });
+  }
+
+  private processChatResourceQueue(): void {
+    if (this.chatResourceQueueActive || this.isClosed) return;
+    this.chatResourceQueueActive = true;
+    const startedAt = Date.now();
+    let processedThisPump = 0;
+    try {
+      while (this.chatResourceQueue.length > 0) {
+        const key = this.chatResourceQueue.shift();
+        if (!key) break;
+        const item = this.chatResourceItems.get(key);
+        if (!item) continue;
+        this.chatResourceItems.delete(key);
+        this.processChatResourceQueueItem(item);
+        processedThisPump += 1;
+        if (
+          processedThisPump > 0 &&
+          Date.now() - startedAt >= RETICULUM_CHAT_RESOURCE_QUEUE_BUDGET_MS
+        ) {
+          break;
+        }
+      }
+    } finally {
+      this.chatResourceQueueActive = false;
+      this.logChatResourceQueuePressureIfNeeded();
+      if (this.chatResourceQueue.length > 0 && !this.isClosed) {
+        this.scheduleChatResourceQueue();
+      }
+    }
+  }
+
+  private processChatResourceQueueItem(item: ReticulumChatQueuedResourceEvent): void {
+    const startedAt = Date.now();
+    try {
+      this.handleResourceEvent(item.payload, { useWorkerPrep: true });
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] Failed to process chat resource transfer=${item.transferId || 'unknown'} status=${item.status || 'unknown'}:`,
+        err
+      );
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      this.chatResourceQueueStats.processed += 1;
+      if (durationMs >= RETICULUM_CHAT_RESOURCE_PROCESS_SLOW_MS) {
+        loggerWarn(
+        `[ReticulumChat] chat_resource_process_slow duration_ms=${durationMs} queued_ms=${Math.max(
+            0,
+            startedAt - item.enqueuedAt
+          )} queue_size=${this.chatResourceQueue.length} status=${item.status || 'unknown'} transfer=${item.transferId.slice(
+            0,
+            16
+          ) || 'unknown'} resource=${item.resourceType || 'unknown'} coalesced=${item.coalescedCount} processed=${this.chatResourceQueueStats.processed} dropped=${this.chatResourceQueueStats.dropped} protected_overflow=${this.chatResourceQueueStats.protectedOverflow}`
+        );
+      }
+    }
+  }
+
+  private logChatResourceQueuePressureIfNeeded(): void {
+    const size = this.chatResourceQueue.length;
+    if (size >= RETICULUM_CHAT_RESOURCE_PRESSURE_WARN) {
+      if (this.chatResourceQueuePressureLogged) return;
+      this.chatResourceQueuePressureLogged = true;
+      loggerWarn(
+        `[ReticulumChat] chat_resource_queue_pressure queue_size=${size} items=${this.chatResourceItems.size} coalesced=${this.chatResourceQueueStats.coalesced} dropped=${this.chatResourceQueueStats.dropped} protected_overflow=${this.chatResourceQueueStats.protectedOverflow}`
+      );
+      return;
+    }
+    if (size < Math.floor(RETICULUM_CHAT_RESOURCE_PRESSURE_WARN / 2)) {
+      this.chatResourceQueuePressureLogged = false;
+    }
+  }
+
+  private clearChatResourceQueue(): void {
+    this.chatResourceQueue = [];
+    this.chatResourceItems.clear();
+    this.chatResourceQueueScheduled = false;
+    this.chatResourceQueueActive = false;
+    this.chatResourceQueuePressureLogged = false;
+  }
+
+  private async prepareChatResourceWithWorker(
+    kind: Extract<ReticulumChatWorkerTask['kind'], `prepare_${string}`>,
+    resourcePath: string
+  ): Promise<ReticulumChatWorkerPreparedResourceResult | null> {
+    const result = await this.chatWorkerPool.run({ kind, path: resourcePath });
+    if (!result) return null;
+    if (result.ok !== true) {
+      throw new Error(result.error);
+    }
+    if (result.kind !== kind) return null;
+    return result as ReticulumChatWorkerPreparedResourceResult;
+  }
+
+  private logChatResourceApplySlow(
+    kind: string,
+    payload: ReticulumChatResourcePayload,
+    startedAt: number,
+    extra = ''
+  ): void {
+    const durationMs = Date.now() - startedAt;
+    if (durationMs < RETICULUM_CHAT_RESOURCE_PROCESS_SLOW_MS) return;
+    const transferId =
+      typeof payload.transferId === 'string' && payload.transferId
+        ? payload.transferId.slice(0, 16)
+        : 'unknown';
+    const suffix = extra ? ` ${extra}` : '';
+    loggerWarn(
+      `[ReticulumChat] chat_resource_apply_slow kind=${kind} duration_ms=${durationMs} transfer=${transferId}${suffix}`
+    );
   }
 
   private enqueueLandStateWire(
@@ -7496,7 +7763,12 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
-    this.rememberLandAuthSession(groupId, authorAddress, sessionId, ephemeralPublicKey);
+    if (!this.rememberLandAuthSession(groupId, authorAddress, sessionId, ephemeralPublicKey)) {
+      loggerWarn(
+        `[ReticulumChat] land_auth_rejected group=${groupId} author=${authorAddress} reason=bad_ephemeral_key`
+      );
+      return;
+    }
     loggerLog(
       `[ReticulumChat] land_auth_cached group=${groupId} author=${authorAddress} session=${sessionId} ttlMs=${RETICULUM_LAND_AUTH_SESSION_TTL_MS}`
     );
@@ -7589,38 +7861,93 @@ export class ReticulumChatManager extends EventEmitter {
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
     peerHash: string
   ): void {
-    const groupId = Number(wire.g);
-    const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
-    const sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
-    if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId) return;
-    const session = this.getValidLandAuthSession(groupId, authorAddress, sessionId);
-    if (!session) {
-      this.requestLandAuthForState(groupId, authorAddress, sessionId, peerHash);
-      return;
+    const traceStartedAt = performance.now();
+    let traceLastAt = traceStartedAt;
+    const tracePhases: string[] = [];
+    let traceOutcome = 'unknown';
+    let groupId = 0;
+    let authorAddress = '';
+    let sessionId = '';
+    let sequence = 0;
+    const markTracePhase = (phase: string): void => {
+      const now = performance.now();
+      tracePhases.push(`${phase}=${Math.round(now - traceLastAt)}`);
+      traceLastAt = now;
+    };
+    try {
+      groupId = Number(wire.g);
+      authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+      sessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
+      sequence = Math.max(0, Math.floor(Number(wire.q) || 0));
+      markTracePhase('parse');
+      if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId) {
+        traceOutcome = 'invalid';
+        return;
+      }
+      const session = this.getValidLandAuthSession(groupId, authorAddress, sessionId);
+      markTracePhase('auth_lookup');
+      if (!session) {
+        this.requestLandAuthForState(groupId, authorAddress, sessionId, peerHash);
+        markTracePhase('auth_request');
+        traceOutcome = 'missing_auth';
+        return;
+      }
+      const sequenceKey = this.landAuthSessionKey(groupId, authorAddress, sessionId);
+      const latestVerifiedSequence = this.latestVerifiedLandStateSequences.get(sequenceKey);
+      markTracePhase('sequence_check');
+      if (typeof latestVerifiedSequence === 'number' && sequence <= latestVerifiedSequence) {
+        traceOutcome = 'stale_sequence';
+        return;
+      }
+      if (!this.verifyLandStateWire(wire, session.ephemeralPublicKeyBytes)) {
+        markTracePhase('verify');
+        loggerWarn(
+          `[ReticulumChat] land_state_rejected group=${groupId} author=${authorAddress} session=${sessionId} reason=bad_signature`
+        );
+        traceOutcome = 'bad_signature';
+        return;
+      }
+      markTracePhase('verify');
+      this.latestVerifiedLandStateSequences.set(sequenceKey, sequence);
+      const diagnosticKey = sequenceKey;
+      if (
+        !this.markRecentOrDuplicate(
+          this.recentLandStateVerifiedLogs,
+          diagnosticKey,
+          RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS,
+          RETICULUM_LAND_AUTH_REQ_MAX
+        )
+      ) {
+        loggerLog(
+          `[ReticulumChat] land_state_verified group=${groupId} author=${authorAddress} session=${sessionId} seq=${sequence} peer=${(this.routePeerHash(peerHash) || peerHash.trim().toLowerCase()).slice(0, 16)}`
+        );
+      }
+      markTracePhase('diagnostic');
+      if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) {
+        markTracePhase('dedupe');
+        traceOutcome = 'duplicate';
+        return;
+      }
+      markTracePhase('dedupe');
+      void this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
+      markTracePhase('forward_sync');
+      if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) {
+        markTracePhase('local_membership');
+        traceOutcome = 'forwarded_only';
+        return;
+      }
+      markTracePhase('local_membership');
+      this.applyLandState(groupId, wire);
+      markTracePhase('apply');
+      traceOutcome = 'applied';
+    } finally {
+      const totalMs = Math.round(performance.now() - traceStartedAt);
+      if (totalMs >= RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS) {
+        loggerWarn(
+          `[ReticulumChat] land_state_phase_slow total_ms=${totalMs} outcome=${traceOutcome} group=${groupId} author=${authorAddress} session=${sessionId} seq=${sequence} phases=${tracePhases.join(',')}`
+        );
+      }
     }
-    if (!this.verifyLandStateWire(wire, session.ephemeralPublicKey)) {
-      loggerWarn(
-        `[ReticulumChat] land_state_rejected group=${groupId} author=${authorAddress} session=${sessionId} reason=bad_signature`
-      );
-      return;
-    }
-    const diagnosticKey = this.landAuthSessionKey(groupId, authorAddress, sessionId);
-    if (
-      !this.markRecentOrDuplicate(
-        this.recentLandStateVerifiedLogs,
-        diagnosticKey,
-        RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS,
-        RETICULUM_LAND_AUTH_REQ_MAX
-      )
-    ) {
-      loggerLog(
-        `[ReticulumChat] land_state_verified group=${groupId} author=${authorAddress} session=${sessionId} seq=${Math.floor(Number(wire.q) || 0)} peer=${(this.routePeerHash(peerHash) || peerHash.trim().toLowerCase()).slice(0, 16)}`
-      );
-    }
-    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
-    void this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
-    if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) return;
-    this.applyLandState(groupId, wire);
   }
 
   private async handleLandActionWire(
@@ -7754,7 +8081,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   private verifyLandStateWire(
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
-    ephemeralPublicKey: string
+    ephemeralPublicKeyBytes: Uint8Array
   ): boolean {
     try {
       const groupId = Number(wire.g);
@@ -7770,7 +8097,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (!Number.isFinite(timestamp)) return false;
       if (timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
       if (timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
-      if (!ephemeralPublicKey || !signature) return false;
+      if (ephemeralPublicKeyBytes.length !== 32 || !signature) return false;
       return nacl.sign.detached.verify(
         new Uint8Array(
           canonicalizeForSigning(
@@ -7789,7 +8116,7 @@ export class ReticulumChatManager extends EventEmitter {
           )
         ),
         new Uint8Array(base58Decode(signature)),
-        new Uint8Array(base58Decode(ephemeralPublicKey))
+        ephemeralPublicKeyBytes
       );
     } catch {
       return false;
@@ -10948,11 +11275,10 @@ export class ReticulumChatManager extends EventEmitter {
 
   private getCachedGroupDigestSnapshot(groupId: number): ReticulumChatDigestSnapshot | null {
     const cached = this.digestSnapshotCache.get(groupId);
-    return cached && cached.expiresAt > this.now() ? cached.snapshot : null;
+    return cached && cached.expiresAt > Date.now() ? cached.snapshot : null;
   }
 
   private buildGroupDigestSnapshot(groupId: number): ReticulumChatDigestSnapshot {
-    const now = this.now();
     const cached = this.getCachedGroupDigestSnapshot(groupId);
     if (cached) return cached;
     const startedAt = Date.now();
@@ -10963,7 +11289,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     this.digestSnapshotCache.set(groupId, {
       snapshot,
-      expiresAt: now + RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS,
+      expiresAt: Date.now() + RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS,
     });
     const durationMs = Date.now() - startedAt;
     if (durationMs >= RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS) {
@@ -14261,7 +14587,10 @@ export class ReticulumChatManager extends EventEmitter {
     return this.bridge.registerPeerIdentityFromGroupJoin(peer, publicKey);
   }
 
-  handleResourceEvent(payload: ReticulumChatResourcePayload): void {
+  handleResourceEvent(
+    payload: ReticulumChatResourcePayload,
+    options: { useWorkerPrep?: boolean } = {}
+  ): void {
     if (payload?.status === 'auth' && payload.linkId && payload.transferId) {
       void this.authorizeResource(payload);
       return;
@@ -14288,14 +14617,15 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (payload?.status !== 'received' || !payload.path || !payload.transferId) return;
+    const useWorkerPrep = options.useWorkerPrep === true;
     if (this.inboundLandChatRequests.has(payload.transferId)) {
-      void this.importReceivedLandChatResource(payload);
+      void this.importReceivedLandChatResource(payload, useWorkerPrep);
     } else if (this.directDmPageRequests.has(payload.transferId)) {
-      void this.importReceivedDirectDmPageResource(payload);
+      void this.importReceivedDirectDmPageResource(payload, useWorkerPrep);
     } else if (this.eventPageOffers.has(payload.transferId) || this.directHistoryPageRequests.has(payload.transferId)) {
-      void this.importReceivedEventPageResource(payload);
+      void this.importReceivedEventPageResource(payload, useWorkerPrep);
     } else {
-      void this.importReceivedEventResource(payload);
+      void this.importReceivedEventResource(payload, useWorkerPrep);
     }
   }
 
@@ -14518,20 +14848,29 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
-  private async importReceivedLandChatResource(payload: ReticulumChatResourcePayload): Promise<void> {
+  private async importReceivedLandChatResource(
+    payload: ReticulumChatResourcePayload,
+    useWorkerPrep = false
+  ): Promise<void> {
     if (!payload.path || !payload.transferId) return;
     const request = this.inboundLandChatRequests.get(payload.transferId);
     if (!request) return;
+    let applyStartedAt = 0;
     try {
-      const blob = fs.readFileSync(payload.path, 'utf8');
-      const actualHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+      const prepared = useWorkerPrep
+        ? await this.prepareChatResourceWithWorker('prepare_land_chat_resource', payload.path)
+        : null;
+      if (this.isClosed) return;
+      const blob = prepared?.blob ?? fs.readFileSync(payload.path, 'utf8');
+      const actualHash =
+        prepared?.hash ?? nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
       if (actualHash !== request.fileHash.toLowerCase()) {
         loggerWarn(
           `[ReticulumChat] qortalland_chat_hash_mismatch group=${request.groupId} message=${request.messageId} transfer=${payload.transferId}`
         );
         return;
       }
-      const parsed = JSON.parse(blob) as { v?: unknown; message?: unknown };
+      const parsed = (prepared?.parsed ?? JSON.parse(blob)) as { v?: unknown; message?: unknown };
       if (!parsed || parsed.v !== 1 || !validateReticulumLandChatMessageShape(parsed.message, this.now())) {
         loggerWarn(
           `[ReticulumChat] qortalland_chat_invalid_blob group=${request.groupId} message=${request.messageId} transfer=${payload.transferId}`
@@ -14549,6 +14888,7 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
+      applyStartedAt = Date.now();
       const authorIsMember = await this.isValidatedGroupMember(message.groupId, message.authorAddress);
       if (!authorIsMember) {
         loggerWarn(
@@ -14573,18 +14913,29 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] qortalland_chat_import_failed transfer=${payload.transferId} reason=${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
+      if (useWorkerPrep && applyStartedAt > 0) {
+        this.logChatResourceApplySlow('land_chat', payload, applyStartedAt, `group=${request.groupId}`);
+      }
       this.inboundLandChatRequests.delete(payload.transferId);
       this.safeUnlink(payload.path);
     }
   }
 
-  private async importReceivedDirectDmPageResource(payload: ReticulumChatResourcePayload): Promise<void> {
+  private async importReceivedDirectDmPageResource(
+    payload: ReticulumChatResourcePayload,
+    useWorkerPrep = false
+  ): Promise<void> {
     if (!payload.path || !payload.transferId) return;
     const request = this.directDmPageRequests.get(payload.transferId);
     if (!request) return;
+    let applyStartedAt = 0;
     try {
-      const blob = fs.readFileSync(payload.path, 'utf8');
-      const actualHash = hashReticulumDmPageResource(blob);
+      const prepared = useWorkerPrep
+        ? await this.prepareChatResourceWithWorker('prepare_dm_page_resource', payload.path)
+        : null;
+      if (this.isClosed) return;
+      const blob = prepared?.blob ?? fs.readFileSync(payload.path, 'utf8');
+      const actualHash = prepared?.hash ?? hashReticulumDmPageResource(blob);
       const expectedHash = String(request.pageHash || '').trim().toLowerCase();
       if (expectedHash && actualHash !== expectedHash) {
         this.directDmPageRequests.delete(payload.transferId);
@@ -14593,7 +14944,7 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
-      const parsed = JSON.parse(blob) as Partial<ReticulumDmPageResource>;
+      const parsed = (prepared?.parsed ?? JSON.parse(blob)) as Partial<ReticulumDmPageResource>;
       if (
         !parsed ||
         typeof parsed !== 'object' ||
@@ -14607,6 +14958,7 @@ export class ReticulumChatManager extends EventEmitter {
         loggerWarn(`[ReticulumChat] invalid_dm_page transfer=${payload.transferId}`);
         return;
       }
+      applyStartedAt = Date.now();
       let accepted = false;
       let lastEvent: ReticulumDmEvent | null = null;
       for (const wireEvent of parsed.events) {
@@ -14643,10 +14995,22 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] dm_page_import_failed transfer=${payload.transferId} reason=${err instanceof Error ? err.message : String(err)}`
       );
+    } finally {
+      if (useWorkerPrep && applyStartedAt > 0) {
+        this.logChatResourceApplySlow(
+          'dm_page',
+          payload,
+          applyStartedAt,
+          `conversation=${request.conversationId.slice(0, 16)}`
+        );
+      }
     }
   }
 
-  private async importReceivedEventPageResource(payload: ReticulumChatResourcePayload): Promise<void> {
+  private async importReceivedEventPageResource(
+    payload: ReticulumChatResourcePayload,
+    useWorkerPrep = false
+  ): Promise<void> {
     if (!payload.path || !payload.transferId) return;
     const isDirectHistoryPageRequest = this.directHistoryPageRequests.has(payload.transferId);
     const offer =
@@ -14654,14 +15018,19 @@ export class ReticulumChatManager extends EventEmitter {
       this.directHistoryPageRequests.get(payload.transferId);
     if (!offer) return;
     const expectedPageHash = offer.pageHash.trim().toLowerCase();
+    let applyStartedAt = 0;
     try {
-      const blob = fs.readFileSync(payload.path, 'utf8');
-      const pageHash = hashReticulumChatEventPage(blob);
+      const prepared = useWorkerPrep
+        ? await this.prepareChatResourceWithWorker('prepare_event_page_resource', payload.path)
+        : null;
+      if (this.isClosed) return;
+      const blob = prepared?.blob ?? fs.readFileSync(payload.path, 'utf8');
+      const pageHash = prepared?.hash ?? hashReticulumChatEventPage(blob);
       if (expectedPageHash && pageHash !== expectedPageHash) {
         this.handleEventPageResourceFailure(offer.transferId, 'page_hash_mismatch');
         return;
       }
-      const parsed = JSON.parse(blob) as unknown;
+      const parsed = prepared?.parsed ?? JSON.parse(blob);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         this.handleEventPageResourceFailure(offer.transferId, 'invalid_event_page');
         return;
@@ -14681,6 +15050,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.handleEventPageResourceFailure(offer.transferId, 'invalid_event_page');
         return;
       }
+      applyStartedAt = Date.now();
       const sourcePeerHash = offer.sourcePeerHash || payload.peerPresenceHash || '';
       const repairRange = offer.direction === 'range'
         ? normalizeReticulumChatAuthorRange(offer.repairRange)
@@ -14893,23 +15263,41 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn('[ReticulumChat] Failed to import event page resource:', err);
       this.handleEventPageResourceFailure(offer.transferId, 'page_import_failed');
     } finally {
+      if (useWorkerPrep && applyStartedAt > 0) {
+        this.logChatResourceApplySlow(
+          'event_page',
+          payload,
+          applyStartedAt,
+          `group=${offer.groupId} channel=${offer.channelId}`
+        );
+      }
       this.eventPageOffers.delete(payload.transferId);
       this.removeDirectHistoryPageRequest(payload.transferId);
     }
   }
 
-  private async importReceivedEventResource(payload: ReticulumChatResourcePayload): Promise<void> {
+  private async importReceivedEventResource(
+    payload: ReticulumChatResourcePayload,
+    useWorkerPrep = false
+  ): Promise<void> {
     if (!payload.path || !payload.transferId) return;
     const offer = this.resourceOffers.get(payload.transferId);
     if (!offer) return;
+    let applyStartedAt = 0;
     try {
-      const blob = fs.readFileSync(payload.path, 'utf8');
-      const wireHash = nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
+      const prepared = useWorkerPrep
+        ? await this.prepareChatResourceWithWorker('prepare_event_resource', payload.path)
+        : null;
+      if (this.isClosed) return;
+      const blob = prepared?.blob ?? fs.readFileSync(payload.path, 'utf8');
+      const wireHash =
+        prepared?.hash ?? nodeCrypto.createHash('sha256').update(blob, 'utf8').digest('hex');
       if (wireHash !== offer.wireHash.toLowerCase()) {
         this.retryEventPullAfterResourceFailure(offer, 'wire_hash_mismatch');
         return;
       }
-      const parsed = JSON.parse(blob) as unknown;
+      const parsed = prepared?.parsed ?? JSON.parse(blob);
+      applyStartedAt = Date.now();
       if (offer.relayStore === true) {
         if (isDisabledRelayCache) {
           this.sendRelayAck(offer.sourcePeerHash || payload.peerPresenceHash || '', offer.groupId, offer.eventId, false, 'relay-cache-disabled');
@@ -14987,6 +15375,14 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn('[ReticulumChat] Failed to import event resource:', err);
       this.retryEventPullAfterResourceFailure(offer, 'resource_import_failed');
     } finally {
+      if (useWorkerPrep && applyStartedAt > 0) {
+        this.logChatResourceApplySlow(
+          'event',
+          payload,
+          applyStartedAt,
+          `group=${offer.groupId} event=${offer.eventId}`
+        );
+      }
       this.resourceOffers.delete(payload.transferId);
     }
   }
@@ -16414,6 +16810,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearDigestSendQueue();
     this.clearDigestSnapshotBuildQueue();
     this.clearLandStateQueue();
+    this.clearLandAuthQueue();
+    this.clearChatResourceQueue();
   }
 
   private onBridgeChatMessage = (
@@ -16430,9 +16828,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private onBridgeChatResource = (payload: ReticulumChatResourcePayload): void => {
     try {
-      this.handleResourceEvent(payload);
+      this.enqueueChatResourceEvent(payload);
     } catch (err) {
-      loggerWarn('[ReticulumChat] Failed to handle resource event:', err);
+      loggerWarn('[ReticulumChat] Failed to enqueue resource event:', err);
     }
   };
 

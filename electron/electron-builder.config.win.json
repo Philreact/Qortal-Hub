@@ -33,7 +33,7 @@
     }
   ],
   "files": ["assets/**/*", "build/**/*", "capacitor.config.*", "app/**/*"],
-  "asarUnpack": ["build/src/ed25519-verify.worker.js"],
+  "asarUnpack": ["build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js"],
   "win": {
     "legalTrademarks": "QORTAL.ORG",
     "icon": "assets/appIcon.ico",

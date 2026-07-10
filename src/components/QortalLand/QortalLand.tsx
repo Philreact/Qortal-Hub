@@ -1809,7 +1809,12 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       return result;
     },
     hangup: async (callId, signature, publicKey, timestamp) => {
-      const peer = landCallPeersRef.current.get(callId);
+      const announced = lastAnnouncedLandCallRef.current;
+      const peer = landCallPeersRef.current.get(callId) || (
+        announced?.callId === callId
+          ? { peerAddress: announced.peerAddress, chatId: announced.chatId }
+          : null
+      );
       if (!peer) return { success: true };
       const result = await sendLandCallSignal({
         callType: 'hangup',
@@ -2873,6 +2878,24 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     myAddress,
     reticulumReady,
     sendLandCallSignal,
+  ]);
+
+  useEffect(() => {
+    if (landVoiceCall.callState !== 'idle') return;
+    const callId = activeLandCallIdRef.current;
+    if (!callId && landCallPeersRef.current.size === 0 && !activeLandCallPeerAddress) return;
+    const peer = callId ? landCallPeersRef.current.get(callId) : null;
+    if (peer && myAddress) {
+      clearLandCallPresence([myAddress, peer.peerAddress]);
+    }
+    activeLandCallIdRef.current = null;
+    landCallPeersRef.current.clear();
+    setActiveLandCallPeerAddress(null);
+  }, [
+    activeLandCallPeerAddress,
+    clearLandCallPresence,
+    landVoiceCall.callState,
+    myAddress,
   ]);
 
   useEffect(() => {

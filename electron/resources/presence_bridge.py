@@ -139,12 +139,11 @@ _RNS_INTERNAL_TIMING_PROBES_ENABLED = (
     os.environ.get("QORTAL_RNS_SHARED_TIMING_LOGS", "").strip().lower()
     in ("1", "true", "yes", "on")
 )
-# Presence heartbeats are expected every 25s and TS expires sessions after 95s.
-# Keep overlay links a little longer than that, but do not trust a link forever
-# when no inbound Qortal overlay traffic arrives after the remote app exits.
-_OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS = 95.0
-_OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS = 25.0
-_OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 25.0
+# Overlay ping/pong is the app-level liveness signal. Keep it faster than
+# Reticulum's lower-level route purge so the app decides dead peers first.
+_OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS = 25.0
+_OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS = 5.0
+_OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 5.0
 _OVERLAY_HELLO_WIRE_TYPE = "OVERLAY_HELLO"
 _OVERLAY_PING_WIRE_TYPE = "OVERLAY_PING"
 _OVERLAY_PONG_WIRE_TYPE = "OVERLAY_PONG"

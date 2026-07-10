@@ -35,7 +35,7 @@
   ],
 
   "files": ["assets/**/*", "build/**/*", "capacitor.config.*", "app/**/*"],
-  "asarUnpack": ["build/src/ed25519-verify.worker.js"],
+  "asarUnpack": ["build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js"],
   "nsis": {
     "allowElevation": true,
     "oneClick": false,
