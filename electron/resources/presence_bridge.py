@@ -6204,6 +6204,7 @@ def _force_overlay_peer_path_refresh(
     target: str,
     reason: str,
     cooldown_seconds: float = _OVERLAY_LINK_HARD_REFRESH_COOLDOWN_SECONDS,
+    await_seconds: Optional[float] = None,
 ) -> bool:
     peer = str(peer_hash or "").strip().lower()
     if not _valid_presence_destination_hash_hex(peer):
@@ -6241,14 +6242,23 @@ def _force_overlay_peer_path_refresh(
     resolved = False
     try:
         RNS.Transport.request_path(destination_hash)
-        resolved = _await_destination_path(
-            destination_hash,
-            _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS,
+        wait_seconds = (
+            _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS
+            if await_seconds is None
+            else max(0.0, float(await_seconds or 0.0))
         )
+        if wait_seconds > 0:
+            resolved = _await_destination_path(destination_hash, wait_seconds)
+        else:
+            try:
+                resolved = bool(RNS.Transport.has_path(destination_hash))
+            except Exception:
+                resolved = False
         after = _reticulum_path_snapshot(destination_hash)
         log(
             f"[presence_bridge] target={target} overlay_hard_path_refresh_request "
             f"peer={peer} resolved={str(resolved).lower()} "
+            f"await={wait_seconds:.3f} "
             f"after={_format_reticulum_path_snapshot(after)}"
         )
     except Exception as exc:
@@ -7155,7 +7165,10 @@ def _overlay_enqueue_open(
         existing = _overlay_links_by_id.get(existing_id) if existing_id else None
         if existing is not None:
             _ensure_managed_link_fields(existing, kind="overlay")
-            return False
+            if _overlay_link_is_fanout_usable(existing):
+                return False
+            if not _overlay_open_reason_replaces_unusable_active(reason):
+                return False
         if peer_key in _overlay_open_pending_by_peer_hash:
             return False
         _overlay_open_pending_by_peer_hash.add(peer_key)
@@ -7172,6 +7185,27 @@ def _overlay_enqueue_open(
         with _state_lock:
             _overlay_open_pending_by_peer_hash.discard(peer_key)
     return bool(queued)
+
+
+def _overlay_enqueue_open_after_delay(
+    peer_hash: str,
+    reason: str,
+    *,
+    delay_seconds: float,
+    await_path: bool = False,
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key or not _valid_presence_destination_hash_hex(peer_key):
+        return False
+    delay = max(0.0, float(delay_seconds or 0.0))
+
+    def run() -> None:
+        _overlay_enqueue_open(peer_key, reason, await_path=await_path)
+
+    timer = threading.Timer(delay, run)
+    timer.daemon = True
+    timer.start()
+    return True
 
 
 def _overlay_recovery_job(peer_key: str, reason: str, force_refresh: bool) -> None:
@@ -7208,12 +7242,30 @@ def _overlay_recovery_job(peer_key: str, reason: str, force_refresh: bool) -> No
                 target="presence-reticulum",
                 reason=reason,
                 cooldown_seconds=_OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS,
+                await_seconds=0.0,
             )
         log(
             "[presence_bridge] target=presence-reticulum zero_fanout_peer_open "
             f"peer={peer_key} reason={reason} force_refresh={str(force_refresh).lower()}"
         )
-        _overlay_open_job(peer_key, reason, True)
+        _overlay_enqueue_open_after_delay(
+            peer_key,
+            reason,
+            delay_seconds=0.25,
+            await_path=False,
+        )
+        _overlay_enqueue_open_after_delay(
+            peer_key,
+            reason,
+            delay_seconds=1.0,
+            await_path=False,
+        )
+        _overlay_enqueue_open_after_delay(
+            peer_key,
+            reason,
+            delay_seconds=2.5,
+            await_path=False,
+        )
     finally:
         with _state_lock:
             _overlay_open_pending_by_peer_hash.discard(peer_key)
