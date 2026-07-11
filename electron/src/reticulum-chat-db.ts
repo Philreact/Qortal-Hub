@@ -221,6 +221,16 @@ type ReticulumChatMissingRangeRow = {
   next_attempt_at?: number;
 };
 
+export type ReticulumChatMissingRangeState = {
+  groupId: number;
+  authorAddress: string;
+  fromSeq: number;
+  toSeq: number;
+  preferredPeer: string;
+  attempts: number;
+  nextAttemptAt: number;
+};
+
 type EventRow = {
   event_id: string;
   group_id: number;
@@ -854,6 +864,7 @@ export class ReticulumChatDatabase {
   private memorySearchText = new Map<string, string>();
   private memoryScrubbedEvents = new Set<string>();
   private memoryScrubbedEventOverrides = new Map<string, ReticulumChatEvent>();
+  private memoryMissingRanges = new Map<string, ReticulumChatMissingRangeState>();
   private memoryChannels = new Map<string, ReticulumGroupChannel>();
   private memoryCategories = new Map<string, ReticulumGroupCategory>();
   private memoryMentions = new Map<
@@ -947,6 +958,10 @@ export class ReticulumChatDatabase {
   private stmtUpsertPeerChannelState: Statement;
   private stmtUpsertVerifiedWindow: Statement;
   private stmtUpsertMissingRange: Statement;
+  private stmtEnsureMissingRange: Statement;
+  private stmtGetMissingRangeExact: Statement;
+  private stmtUpdateMissingRangeAttempt: Statement;
+  private stmtUpdateMissingRangeBackoff: Statement;
   private stmtGetMissingRangesForSeq: Statement;
   private stmtGetAllMissingRanges: Statement;
   private stmtGetPresentSeqsInRange: Statement;
@@ -1605,6 +1620,40 @@ export class ReticulumChatDatabase {
       ON CONFLICT(group_id, author_address, from_seq, to_seq) DO UPDATE SET
         preferred_peer = excluded.preferred_peer,
         next_attempt_at = MIN(rchat_missing_ranges.next_attempt_at, excluded.next_attempt_at)
+    `);
+    this.stmtEnsureMissingRange = this.db.prepare(`
+      INSERT OR IGNORE INTO rchat_missing_ranges
+        (group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
+      VALUES
+        (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
+    `);
+    this.stmtGetMissingRangeExact = this.db.prepare(`
+      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_ranges
+      WHERE group_id = ?
+        AND author_address = ?
+        AND from_seq = ?
+        AND to_seq = ?
+    `);
+    this.stmtUpdateMissingRangeAttempt = this.db.prepare(`
+      UPDATE rchat_missing_ranges
+      SET preferred_peer = COALESCE(@preferred_peer, preferred_peer),
+          attempts = @attempts,
+          next_attempt_at = @next_attempt_at
+      WHERE group_id = @group_id
+        AND author_address = @author_address
+        AND from_seq = @from_seq
+        AND to_seq = @to_seq
+    `);
+    this.stmtUpdateMissingRangeBackoff = this.db.prepare(`
+      UPDATE rchat_missing_ranges
+      SET preferred_peer = COALESCE(@preferred_peer, preferred_peer),
+          attempts = MAX(attempts, @attempts),
+          next_attempt_at = MAX(next_attempt_at, @next_attempt_at)
+      WHERE group_id = @group_id
+        AND author_address = @author_address
+        AND from_seq = @from_seq
+        AND to_seq = @to_seq
     `);
     this.stmtGetMissingRangesForSeq = this.db.prepare(`
       SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
@@ -4232,7 +4281,7 @@ export class ReticulumChatDatabase {
     fromSeq: number,
     toSeq: number,
     preferredPeer = '',
-    nextAttemptAt = Date.now()
+    nextAttemptAt = 0
   ): void {
     const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
     const peer = typeof preferredPeer === 'string' ? preferredPeer.trim().toLowerCase() : '';
@@ -4247,21 +4296,192 @@ export class ReticulumChatDatabase {
       preferred_peer: peer || null,
       next_attempt_at: nextAttemptAt,
     });
+    const key = this.missingRangeKey(groupId, author, from, to);
+    const existing = this.memoryMissingRanges.get(key);
+    this.memoryMissingRanges.set(key, {
+      groupId,
+      authorAddress: author,
+      fromSeq: from,
+      toSeq: to,
+      preferredPeer: peer || existing?.preferredPeer || '',
+      attempts: existing?.attempts ?? 0,
+      nextAttemptAt: existing
+        ? Math.min(existing.nextAttemptAt, Math.max(0, Math.floor(nextAttemptAt)))
+        : Math.max(0, Math.floor(nextAttemptAt)),
+    });
+  }
+
+  ensureMissingRange(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number,
+    preferredPeer = ''
+  ): void {
+    const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const peer = typeof preferredPeer === 'string' ? preferredPeer.trim().toLowerCase() : '';
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
+    this.stmtEnsureMissingRange.run({
+      group_id: groupId,
+      author_address: author,
+      from_seq: from,
+      to_seq: to,
+      preferred_peer: peer || null,
+      next_attempt_at: 0,
+    });
+    const key = this.missingRangeKey(groupId, author, from, to);
+    if (!this.memoryMissingRanges.has(key)) {
+      this.memoryMissingRanges.set(key, {
+        groupId,
+        authorAddress: author,
+        fromSeq: from,
+        toSeq: to,
+        preferredPeer: peer,
+        attempts: 0,
+        nextAttemptAt: 0,
+      });
+    }
+  }
+
+  getMissingRange(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number
+  ): ReticulumChatMissingRangeState | null {
+    const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return null;
+    const row = this.stmtGetMissingRangeExact.get(groupId, author, from, to) as
+      | ReticulumChatMissingRangeRow
+      | undefined;
+    return row
+      ? this.missingRangeRowToState(row)
+      : this.memoryMissingRanges.get(this.missingRangeKey(groupId, author, from, to)) ?? null;
+  }
+
+  claimMissingRangeAttempt(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number,
+    preferredPeer: string,
+    now: number,
+    nextAttemptAt: number
+  ): ReticulumChatMissingRangeState | null {
+    this.ensureMissingRange(groupId, authorAddress, fromSeq, toSeq, preferredPeer);
+    const current = this.getMissingRange(groupId, authorAddress, fromSeq, toSeq);
+    if (!current || current.nextAttemptAt > now) return null;
+    const attempts = Math.max(0, Math.floor(current.attempts || 0)) + 1;
+    this.stmtUpdateMissingRangeAttempt.run({
+      group_id: current.groupId,
+      author_address: current.authorAddress,
+      from_seq: current.fromSeq,
+      to_seq: current.toSeq,
+      preferred_peer: preferredPeer.trim().toLowerCase() || null,
+      attempts,
+      next_attempt_at: Math.max(now, Math.floor(nextAttemptAt)),
+    });
+    const updated = {
+      ...current,
+      preferredPeer: preferredPeer.trim().toLowerCase() || current.preferredPeer,
+      attempts,
+      nextAttemptAt: Math.max(now, Math.floor(nextAttemptAt)),
+    };
+    this.memoryMissingRanges.set(
+      this.missingRangeKey(current.groupId, current.authorAddress, current.fromSeq, current.toSeq),
+      updated
+    );
+    return updated;
+  }
+
+  deferMissingRange(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number,
+    preferredPeer: string,
+    nextAttemptAt: number,
+    attempts = 1
+  ): ReticulumChatMissingRangeState | null {
+    this.ensureMissingRange(groupId, authorAddress, fromSeq, toSeq, preferredPeer);
+    const current = this.getMissingRange(groupId, authorAddress, fromSeq, toSeq);
+    if (!current) return null;
+    const nextAttempts = Math.max(
+      Math.max(0, Math.floor(current.attempts || 0)),
+      Math.max(1, Math.floor(attempts || 1))
+    );
+    this.stmtUpdateMissingRangeBackoff.run({
+      group_id: current.groupId,
+      author_address: current.authorAddress,
+      from_seq: current.fromSeq,
+      to_seq: current.toSeq,
+      preferred_peer: preferredPeer.trim().toLowerCase() || null,
+      attempts: nextAttempts,
+      next_attempt_at: Math.max(Math.floor(nextAttemptAt), current.nextAttemptAt),
+    });
+    const updated = {
+      ...current,
+      preferredPeer: preferredPeer.trim().toLowerCase() || current.preferredPeer,
+      attempts: nextAttempts,
+      nextAttemptAt: Math.max(Math.floor(nextAttemptAt), current.nextAttemptAt),
+    };
+    this.memoryMissingRanges.set(
+      this.missingRangeKey(current.groupId, current.authorAddress, current.fromSeq, current.toSeq),
+      updated
+    );
+    return updated;
+  }
+
+  private missingRangeKey(
+    groupId: number,
+    authorAddress: string,
+    fromSeq: number,
+    toSeq: number
+  ): string {
+    return `${groupId}:${authorAddress}:${fromSeq}:${toSeq}`;
+  }
+
+  private missingRangeRowToState(row: ReticulumChatMissingRangeRow): ReticulumChatMissingRangeState {
+    return {
+      groupId: Number(row.group_id),
+      authorAddress: String(row.author_address || ''),
+      fromSeq: Math.max(1, Math.floor(Number(row.from_seq || 1))),
+      toSeq: Math.max(1, Math.floor(Number(row.to_seq || row.from_seq || 1))),
+      preferredPeer: typeof row.preferred_peer === 'string' ? row.preferred_peer : '',
+      attempts: Math.max(0, Math.floor(Number(row.attempts || 0))),
+      nextAttemptAt: Math.max(0, Math.floor(Number(row.next_attempt_at || 0))),
+    };
   }
 
   private clearMissingRangesForEvent(event: ReticulumChatEvent): void {
-    const rows = this.stmtGetMissingRangesForSeq.all(
+    const rows = this.dedupeMissingRangeRows([
+      ...(this.stmtGetMissingRangesForSeq.all(
       event.groupId,
       event.authorAddress,
       event.authorSeq,
       event.authorSeq
-    ) as ReticulumChatMissingRangeRow[];
+      ) as ReticulumChatMissingRangeRow[]),
+      ...this.getMemoryMissingRangeRowsForSeq(
+        event.groupId,
+        event.authorAddress,
+        event.authorSeq
+      ),
+    ]);
     if (rows.length === 0) return;
     this.rewriteMissingRanges(rows, (row) => new Set([event.authorSeq]));
   }
 
   private pruneSatisfiedMissingRanges(): void {
-    const rows = this.stmtGetAllMissingRanges.all() as ReticulumChatMissingRangeRow[];
+    const rows = this.dedupeMissingRangeRows([
+      ...(this.stmtGetAllMissingRanges.all() as ReticulumChatMissingRangeRow[]),
+      ...[...this.memoryMissingRanges.values()].map((range) =>
+        this.missingRangeStateToRow(range)
+      ),
+    ]);
     if (rows.length === 0) return;
     this.rewriteMissingRanges(rows, (row) => {
       const presentRows = this.stmtGetPresentSeqsInRange.all(
@@ -4292,6 +4512,7 @@ export class ReticulumChatDatabase {
         const presentSeqs = presentSeqsForRow(row);
         if (presentSeqs.size === 0) continue;
         this.stmtDeleteMissingRange.run(groupId, authorAddress, fromSeq, toSeq);
+        this.memoryMissingRanges.delete(this.missingRangeKey(groupId, authorAddress, fromSeq, toSeq));
         let segmentStart = fromSeq;
         const sortedPresentSeqs = [...presentSeqs]
           .filter((seq) => Number.isInteger(seq) && seq >= fromSeq && seq <= toSeq)
@@ -4325,6 +4546,62 @@ export class ReticulumChatDatabase {
       attempts: Number.isInteger(row.attempts) ? row.attempts : 0,
       next_attempt_at: Number.isInteger(row.next_attempt_at) ? row.next_attempt_at : 0,
     });
+    this.memoryMissingRanges.set(
+      this.missingRangeKey(row.group_id, row.author_address, fromSeq, toSeq),
+      {
+        groupId: row.group_id,
+        authorAddress: row.author_address,
+        fromSeq,
+        toSeq,
+        preferredPeer: row.preferred_peer ?? '',
+        attempts: Number.isInteger(row.attempts) ? row.attempts : 0,
+        nextAttemptAt: Number.isInteger(row.next_attempt_at) ? row.next_attempt_at : 0,
+      }
+    );
+  }
+
+  private getMemoryMissingRangeRowsForSeq(
+    groupId: number,
+    authorAddress: string,
+    seq: number
+  ): ReticulumChatMissingRangeRow[] {
+    return [...this.memoryMissingRanges.values()]
+      .filter(
+        (range) =>
+          range.groupId === groupId &&
+          range.authorAddress === authorAddress &&
+          range.fromSeq <= seq &&
+          range.toSeq >= seq
+      )
+      .map((range) => this.missingRangeStateToRow(range));
+  }
+
+  private missingRangeStateToRow(
+    range: ReticulumChatMissingRangeState
+  ): ReticulumChatMissingRangeRow {
+    return {
+      group_id: range.groupId,
+      author_address: range.authorAddress,
+      from_seq: range.fromSeq,
+      to_seq: range.toSeq,
+      preferred_peer: range.preferredPeer || null,
+      attempts: range.attempts,
+      next_attempt_at: range.nextAttemptAt,
+    };
+  }
+
+  private dedupeMissingRangeRows(
+    rows: ReticulumChatMissingRangeRow[]
+  ): ReticulumChatMissingRangeRow[] {
+    const byKey = new Map<string, ReticulumChatMissingRangeRow>();
+    for (const row of rows) {
+      const groupId = Number(row.group_id);
+      const author = String(row.author_address || '');
+      const from = Math.max(1, Math.floor(Number(row.from_seq || 1)));
+      const to = Math.max(from, Math.floor(Number(row.to_seq || row.from_seq || 1)));
+      byKey.set(this.missingRangeKey(groupId, author, from, to), row);
+    }
+    return [...byKey.values()];
   }
 
   getAuthorMaxSeq(groupId: number, authorAddress: string): number {
