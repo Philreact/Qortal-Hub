@@ -97,6 +97,7 @@ _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
 _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 15.0
+_OVERLAY_REPLACE_UNUSABLE_ACTIVE_MIN_AGE_SECONDS = 2.0
 _OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
@@ -7263,6 +7264,9 @@ def _overlay_enqueue_close(link_id: str, reason: str) -> bool:
     if not link_key:
         return False
     peer_key = ""
+    was_active = False
+    promoted_link_id = ""
+    already_pending = False
     with _state_lock:
         state = _overlay_links_by_id.get(link_key)
         if state is None:
@@ -7272,9 +7276,26 @@ def _overlay_enqueue_close(link_id: str, reason: str) -> bool:
         state["manager_state"] = _LINK_STATE_CLOSING
         state["last_failure_reason"] = reason
         peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+        if peer_key and _active_overlay_link_id_by_peer_hash.get(peer_key) == link_key:
+            was_active = True
+            _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+            promoted_link_id = _promote_overlay_fallback_locked(peer_key, link_key)
+            if promoted_link_id:
+                state["_promoted_overlay_link_id"] = promoted_link_id
         if link_key in _overlay_close_pending_link_ids:
-            return False
-        _overlay_close_pending_link_ids.add(link_key)
+            already_pending = True
+        else:
+            _overlay_close_pending_link_ids.add(link_key)
+    if was_active:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_link_active_detached "
+            f"peer={peer_key} link={link_key} reason={reason} "
+            f"promoted={promoted_link_id or 'none'}"
+        )
+        if not promoted_link_id and _overlay_teardown_should_demote(reason):
+            _demote_overlay_fanout_peer(peer_key, f"link_close_queued:{reason}")
+    if already_pending:
+        return False
     queued = _enqueue_scheduler_task(
         _overlay_io_lane_for_peer(peer_key or link_key),
         f"overlay-close:{reason}:{link_key[:8]}",
@@ -7414,6 +7435,35 @@ def _overlay_enqueue_dedup(peer_hash: str, reason: str = "dedup_same_peer") -> b
     return bool(queued)
 
 
+def _promote_overlay_fallback_locked(peer_key: str, exclude_link_id: str = "") -> str:
+    peer_key = str(peer_key or "").strip().lower()
+    exclude_link_id = str(exclude_link_id or "").strip()
+    if not peer_key:
+        return ""
+    fallback_candidates = [
+        (candidate_id, candidate_state)
+        for candidate_id, candidate_state in _overlay_links_by_id.items()
+        if candidate_id != exclude_link_id
+        and str(candidate_state.get("peerPresenceHash") or "").strip().lower() == peer_key
+    ]
+    if not fallback_candidates:
+        return ""
+    keep_id, keep_state = fallback_candidates[0]
+    for candidate_id, candidate_state in fallback_candidates[1:]:
+        keep_id, _lose_id = _dedup_pick_keep_link(
+            peer_key,
+            keep_id,
+            keep_state,
+            candidate_id,
+            candidate_state,
+        )
+        keep_state = _overlay_links_by_id.get(keep_id, keep_state)
+    if keep_state is not None and _overlay_link_is_fanout_usable(keep_state):
+        _active_overlay_link_id_by_peer_hash[peer_key] = keep_id
+        return keep_id
+    return ""
+
+
 def _overlay_link_is_current(link_id: str, link: Any = None) -> bool:
     if not link_id:
         return False
@@ -7449,25 +7499,9 @@ def remove_overlay_link(link_id: str) -> Optional[Dict[str, Any]]:
             state["_was_active_overlay"] = existing == link_id
             if existing == link_id:
                 _active_overlay_link_id_by_peer_hash.pop(peer_hash, None)
-                fallback_candidates = [
-                    (candidate_id, candidate_state)
-                    for candidate_id, candidate_state in _overlay_links_by_id.items()
-                    if str(candidate_state.get("peerPresenceHash") or "").strip().lower() == peer_hash
-                ]
-                if fallback_candidates:
-                    keep_id, keep_state = fallback_candidates[0]
-                    for candidate_id, candidate_state in fallback_candidates[1:]:
-                        keep_id, _lose_id = _dedup_pick_keep_link(
-                            peer_hash,
-                            keep_id,
-                            keep_state,
-                            candidate_id,
-                            candidate_state,
-                        )
-                        keep_state = _overlay_links_by_id.get(keep_id, keep_state)
-                    if keep_state is not None and _overlay_link_is_fanout_usable(keep_state):
-                        _active_overlay_link_id_by_peer_hash[peer_hash] = keep_id
-                        state["_promoted_overlay_link_id"] = keep_id
+                promoted_id = _promote_overlay_fallback_locked(peer_hash)
+                if promoted_id:
+                    state["_promoted_overlay_link_id"] = promoted_id
         return state
 
 
@@ -8601,14 +8635,11 @@ def _ensure_overlay_link(
             f"peer={peer_key}"
         )
         return None
-    with _state_lock:
-        existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key)
-        if existing_link_id:
-            existing = _overlay_links_by_id.get(existing_link_id)
-            if existing is not None:
-                _ensure_managed_link_fields(existing, kind="overlay")
-                return existing
-            _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+    existing, replaced_link_id = _overlay_get_reusable_or_replace_active(peer_key, open_reason)
+    if replaced_link_id:
+        _overlay_enqueue_close(replaced_link_id, f"replace_unusable_active:{open_reason}")
+    if existing is not None:
+        return existing
     if _overlay_peer_inbound_full(peer_key):
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_link_skipped "
@@ -8663,21 +8694,21 @@ def _ensure_overlay_link(
                         f"peer={peer_key} await={_OVERLAY_LINK_PATH_AWAIT_SECONDS}"
                     )
                 return None
-        with _state_lock:
-            existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key)
-            if existing_link_id:
-                existing = _overlay_links_by_id.get(existing_link_id)
-                if existing is not None:
-                    _ensure_managed_link_fields(existing, kind="overlay")
-                    log(
-                        "[presence_bridge] target=presence-reticulum "
-                        f"overlay_link_reuse_{'incoming' if existing.get('incoming') is True else 'outgoing'} "
-                        f"peer={peer_key} link={existing_link_id}"
-                    )
-                    return existing
-                _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
-            if outbound is None:
-                return None
+        existing, replaced_link_id = _overlay_get_reusable_or_replace_active(
+            peer_key,
+            open_reason,
+        )
+        if replaced_link_id:
+            _overlay_enqueue_close(replaced_link_id, f"replace_unusable_active:{open_reason}")
+        if existing is not None:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                f"overlay_link_reuse_{'incoming' if existing.get('incoming') is True else 'outgoing'} "
+                f"peer={peer_key} link={existing.get('linkId') or ''}"
+            )
+            return existing
+        if outbound is None:
+            return None
         with _state_lock:
             if len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS:
                 log(
@@ -8694,20 +8725,21 @@ def _ensure_overlay_link(
         )
         teardown_new_link = False
         existing_to_return: Optional[Dict[str, Any]] = None
+        existing, replaced_link_id = _overlay_get_reusable_or_replace_active(
+            peer_key,
+            open_reason,
+        )
+        if replaced_link_id:
+            _overlay_enqueue_close(replaced_link_id, f"replace_unusable_active:{open_reason}")
+        if existing is not None:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                f"overlay_link_reuse_{'incoming' if existing.get('incoming') is True else 'outgoing'} "
+                f"peer={peer_key} link={existing.get('linkId') or ''}"
+            )
+            teardown_new_link = True
+            existing_to_return = existing
         with _state_lock:
-            existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key)
-            if existing_link_id:
-                existing = _overlay_links_by_id.get(existing_link_id)
-                if existing is not None:
-                    log(
-                        "[presence_bridge] target=presence-reticulum "
-                        f"overlay_link_reuse_{'incoming' if existing.get('incoming') is True else 'outgoing'} "
-                        f"peer={peer_key} link={existing_link_id}"
-                    )
-                    teardown_new_link = True
-                    existing_to_return = existing
-                else:
-                    _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
             if existing_to_return is None and len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS:
                 log(
                     "[presence_bridge] target=presence-reticulum overlay_link_rejected_pressure "
@@ -8768,6 +8800,57 @@ def _ensure_overlay_link(
         f"[presence_bridge] target=presence-reticulum overlay_link_open_on_demand peer={peer_key}"
     )
     return state
+
+
+def _overlay_open_reason_replaces_unusable_active(open_reason: str) -> bool:
+    reason = str(open_reason or "").strip().lower()
+    return (
+        reason.startswith("zero_fanout")
+        or reason.startswith("link_teardown:")
+        or reason in {
+            "announce_retry_stale",
+            "unestablished_timeout",
+            "rx_idle_timeout",
+        }
+    )
+
+
+def _overlay_get_reusable_or_replace_active(
+    peer_key: str,
+    open_reason: str,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    existing_link_id = ""
+    replace_link_id = ""
+    replace_age_ms = 0
+    replaces_unusable = _overlay_open_reason_replaces_unusable_active(open_reason)
+    now = time.time()
+    with _state_lock:
+        existing_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        if not existing_link_id:
+            return None, ""
+        existing = _overlay_links_by_id.get(existing_link_id)
+        if existing is None:
+            _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+            return None, ""
+        _ensure_managed_link_fields(existing, kind="overlay")
+        if _overlay_link_is_fanout_usable(existing):
+            return existing, ""
+        if not replaces_unusable:
+            return existing, ""
+        created_at = existing.get("created_at")
+        age = now - float(created_at) if isinstance(created_at, (int, float)) else 0.0
+        if age < _OVERLAY_REPLACE_UNUSABLE_ACTIVE_MIN_AGE_SECONDS:
+            return existing, ""
+        replace_link_id = existing_link_id
+        replace_age_ms = int(max(0.0, age) * 1000.0)
+        existing["manager_state"] = _LINK_STATE_CLOSING
+        existing["last_failure_reason"] = f"replace_unusable_active:{open_reason}"
+        _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_link_replace_unusable_active "
+        f"peer={peer_key} link={replace_link_id} reason={open_reason} age_ms={replace_age_ms}"
+    )
+    return None, replace_link_id
 
 
 def _retry_pending_overlay_connect_on_announce(peer_hash: str) -> None:
@@ -12763,6 +12846,57 @@ def _audio_link_pick_keep(
     return (link_id_a, link_id_b) if link_id_a < link_id_b else (link_id_b, link_id_a)
 
 
+def _audio_link_state_is_viable(state: Optional[Dict[str, Any]], now: Optional[float] = None) -> bool:
+    if state is None:
+        return False
+    if state.get("closing") is True or state.get("link") is None:
+        return False
+    if state.get("established") is True:
+        return True
+    created_at = state.get("created_at")
+    if now is None:
+        now = time.time()
+    return isinstance(created_at, (int, float)) and (
+        now - float(created_at)
+    ) < _AUDIO_LINK_ESTABLISH_TIMEOUT_SECONDS
+
+
+def _promote_audio_fallback_locked(peer_key: str, exclude_link_id: str = "") -> str:
+    peer_key = str(peer_key or "").strip().lower()
+    exclude_link_id = str(exclude_link_id or "").strip()
+    if not peer_key:
+        return ""
+    best_link_id = ""
+    best_state: Optional[Dict[str, Any]] = None
+    for candidate_link_id, state in list(_audio_links_by_id.items()):
+        if candidate_link_id == exclude_link_id:
+            continue
+        if str(state.get("peerPresenceHash") or "").strip().lower() != peer_key:
+            continue
+        if state.get("closing") is True or state.get("link") is None:
+            continue
+        if state.get("established") is not True:
+            continue
+        if not best_link_id or best_state is None:
+            best_link_id = candidate_link_id
+            best_state = state
+            continue
+        keep_id, _lose_id = _audio_link_pick_keep(
+            peer_key,
+            best_link_id,
+            best_state,
+            candidate_link_id,
+            state,
+        )
+        if keep_id == candidate_link_id:
+            best_link_id = candidate_link_id
+            best_state = state
+    if best_link_id:
+        _active_audio_link_id_by_peer_hash[peer_key] = best_link_id
+        _outgoing_audio_link_id_by_peer_hash[peer_key] = best_link_id
+    return best_link_id
+
+
 def _teardown_audio_link_id(link_id: str, reason: str) -> None:
     state = get_audio_link_state(link_id)
     link = state.get("link") if state is not None else None
@@ -12799,16 +12933,39 @@ def _enqueue_audio_link_teardown(link_id: str, reason: str) -> bool:
     link_key = str(link_id or "").strip()
     if not link_key:
         return False
+    peer_key = ""
+    detached = False
+    promoted_link_id = ""
+    already_closing = False
     with _state_lock:
         state = _audio_links_by_id.get(link_key)
         if state is None:
             return False
         _ensure_audio_link_lifecycle_fields(state)
+        peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+        if peer_key:
+            if _active_audio_link_id_by_peer_hash.get(peer_key) == link_key:
+                _active_audio_link_id_by_peer_hash.pop(peer_key, None)
+                detached = True
+            if _outgoing_audio_link_id_by_peer_hash.get(peer_key) == link_key:
+                _outgoing_audio_link_id_by_peer_hash.pop(peer_key, None)
+                detached = True
+            if detached:
+                promoted_link_id = _promote_audio_fallback_locked(peer_key, link_key)
         if state.get("closing") is True:
-            return True
-        state["closing"] = True
-        state["manager_state"] = _LINK_STATE_CLOSING
-        state["last_failure_reason"] = reason
+            already_closing = True
+        else:
+            state["closing"] = True
+            state["manager_state"] = _LINK_STATE_CLOSING
+            state["last_failure_reason"] = reason
+    if detached:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_active_detached "
+            f"peer={peer_key} link={link_key} reason={reason} "
+            f"promoted={promoted_link_id or 'none'}"
+        )
+    if already_closing:
+        return True
     queued = bool(
         _enqueue_scheduler_task(
             "audio-control",
@@ -13633,14 +13790,29 @@ def _open_group_audio_link_for_peer(
         )
     if existing_link_id:
         existing = get_audio_link_state(existing_link_id)
-        if existing is not None:
+        if _audio_link_state_is_viable(existing):
             return True, {
                 "linkId": existing_link_id,
                 "established": existing.get("established") is True,
             }, ""
+        should_close_existing = False
         with _state_lock:
-            _outgoing_audio_link_id_by_peer_hash.pop(peer_key, None)
-            _active_audio_link_id_by_peer_hash.pop(peer_key, None)
+            if _outgoing_audio_link_id_by_peer_hash.get(peer_key) == existing_link_id:
+                _outgoing_audio_link_id_by_peer_hash.pop(peer_key, None)
+            if _active_audio_link_id_by_peer_hash.get(peer_key) == existing_link_id:
+                _active_audio_link_id_by_peer_hash.pop(peer_key, None)
+            existing = _audio_links_by_id.get(existing_link_id)
+            if existing is not None:
+                _ensure_audio_link_lifecycle_fields(existing)
+                should_close_existing = existing.get("closing") is not True
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_link_reuse_rejected "
+            f"peer={peer_key} link={existing_link_id} reason={retry_reason} "
+            f"closing={str(existing.get('closing') is True if existing is not None else False).lower()} "
+            f"established={str(existing.get('established') is True if existing is not None else False).lower()}"
+        )
+        if should_close_existing:
+            _enqueue_audio_link_teardown(existing_link_id, f"replace_nonviable:{retry_reason}")
     viable_link_id = _best_viable_audio_link_id_for_peer(peer_key)
     if viable_link_id:
         existing = get_audio_link_state(viable_link_id)
