@@ -285,6 +285,10 @@ function createDmSigner(identity: ReturnType<typeof createDmIdentity>): NonNulla
         peerAddress: fullFields.peerAddress,
         sourcePeerHash: fullFields.sourcePeerHash,
         requestId: fullFields.requestId,
+        latestCursor:
+          typeof fullFields.latestCursor === 'string'
+            ? fullFields.latestCursor
+            : undefined,
         probeRequestId:
           typeof fullFields.probeRequestId === 'string'
             ? fullFields.probeRequestId
@@ -523,6 +527,10 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
         peerAddress: fullFields.peerAddress,
         sourcePeerHash: fullFields.sourcePeerHash,
         requestId: fullFields.requestId,
+        latestCursor:
+          typeof fullFields.latestCursor === 'string'
+            ? fullFields.latestCursor
+            : undefined,
         probeRequestId:
           typeof fullFields.probeRequestId === 'string'
             ? fullFields.probeRequestId
@@ -3432,6 +3440,8 @@ describe('reticulum chat manager', () => {
       after: 0,
       limit: 50,
       requestId: 'e'.repeat(8),
+      remoteEventId: 'cursor:same-dm-state',
+      remoteTimestamp: Number.MAX_SAFE_INTEGER,
     });
 
     await (receiver as any).importReceivedDirectDmPageResource({
@@ -3446,7 +3456,7 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address,
       sourcePeerHash,
-      '',
+      'cursor:same-dm-state',
       Number.MAX_SAFE_INTEGER,
       undefined,
       { requestId: 'e'.repeat(8) }
@@ -3459,8 +3469,21 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address,
       sourcePeerHash,
-      '',
+      'cursor:same-dm-state',
       Number.MAX_SAFE_INTEGER,
+      undefined,
+      { requestId: 'f'.repeat(8) }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sent.find((item) => item.wire.k === 'dm_req')).toBeUndefined();
+    await (receiver as any).requestDirectMissingEvents(
+      conversationId,
+      sender.address,
+      recipient.address,
+      sourcePeerHash,
+      'new-remote-dm-event',
+      100_001,
       undefined,
       { requestId: 'f'.repeat(8) }
     );

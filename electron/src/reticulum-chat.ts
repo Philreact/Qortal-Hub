@@ -748,6 +748,7 @@ export type ReticulumDmNotifyWire = {
   b: string;
   sp: string;
   q: string;
+  lc?: string;
   r?: string;
   h?: number;
   m?: number;
@@ -1423,6 +1424,7 @@ export function buildReticulumDmNotifySignedFields(input: {
   peerAddress: string;
   sourcePeerHash: string;
   requestId: string;
+  latestCursor?: string;
   probeRequestId?: string;
   maxHops: number;
   authorAddress: string;
@@ -1432,6 +1434,7 @@ export function buildReticulumDmNotifySignedFields(input: {
   return {
     authorAddress: input.authorAddress,
     authorPublicKey: input.authorPublicKey,
+    latestCursor: input.latestCursor ?? '',
     maxHops: input.maxHops,
     peerAddress: input.peerAddress,
     probeRequestId: input.probeRequestId ?? null,
@@ -2396,6 +2399,7 @@ export function verifyReticulumDmNotify(
   const peerAddress = typeof wire?.b === 'string' ? wire.b.trim() : '';
   const requestId = normalizeReticulumControlRequestId(wire?.q);
   const sourcePeerHash = normalizePeerHashFromWire(wire?.sp) ?? '';
+  const latestCursor = typeof wire?.lc === 'string' ? wire.lc.trim() : '';
   const probeRequestId = normalizeReticulumControlRequestId(wire?.r) || undefined;
   const maxHops = wire.m == null ? RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS : Number(wire.m);
   const hop = wire.h == null ? 0 : Number(wire.h);
@@ -2404,6 +2408,7 @@ export function verifyReticulumDmNotify(
   if (!Number.isFinite(wire.n)) return false;
   if (wire.n > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
   if (wire.n < now - RETICULUM_CHAT_DM_NOTIFY_TTL_MS) return false;
+  if (latestCursor && !/^[A-Za-z0-9_-]{8,16}$/.test(latestCursor)) return false;
   if (!Number.isInteger(maxHops) || maxHops < 0 || maxHops > RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS) return false;
   if (!Number.isInteger(hop) || hop < 0 || hop > maxHops) return false;
   const authorAddress = deriveReticulumControlAuthor(wire.p);
@@ -2414,6 +2419,7 @@ export function verifyReticulumDmNotify(
       peerAddress,
       sourcePeerHash,
       requestId,
+      latestCursor,
       probeRequestId,
       maxHops,
       authorAddress,
@@ -7079,6 +7085,18 @@ export class ReticulumChatManager extends EventEmitter {
     ].join('|');
   }
 
+  private dmNotifyLatestCursor(event: ReticulumDmEvent): string {
+    return nodeCrypto
+      .createHash('sha256')
+      .update(`${event.eventId}:${Math.max(0, Math.floor(Number(event.timestamp || 0)))}`, 'utf8')
+      .digest()
+      .subarray(0, 7)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
   private compactDmPageNoProgressSuppressions(now = this.now()): void {
     for (const [key, expiresAt] of this.directDmPageNoProgressSuppressions) {
       if (expiresAt <= now) this.directDmPageNoProgressSuppressions.delete(key);
@@ -7118,14 +7136,15 @@ export class ReticulumChatManager extends EventEmitter {
     const source = String(sourcePeerHash || '').trim().toLowerCase();
     if (!conversation || !source) return;
     const now = this.now();
-    const expiresAt = now + RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_TTL_MS;
+    const ttlMs = RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_TTL_MS;
+    const expiresAt = now + ttlMs;
     this.directDmPageNoProgressSuppressions.set(
       this.dmPageNoProgressKey(conversation, source, after, requestIdentity),
       expiresAt
     );
     this.compactDmPageNoProgressSuppressions(now);
     loggerLog(
-      `[ReticulumChat] dm_page_no_progress_suppressed conversation=${conversation.slice(0, 16)} peer=${source.slice(0, 16)} after=${Math.max(0, Math.floor(Number(after || 0)))} request=${String(requestIdentity || '').slice(0, 16)} ttlMs=${RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_TTL_MS} reason=${reason}`
+      `[ReticulumChat] dm_page_no_progress_suppressed conversation=${conversation.slice(0, 16)} peer=${source.slice(0, 16)} after=${Math.max(0, Math.floor(Number(after || 0)))} request=${String(requestIdentity || '').slice(0, 16)} ttlMs=${ttlMs} reason=${reason}`
     );
   }
 
@@ -7145,13 +7164,17 @@ export class ReticulumChatManager extends EventEmitter {
     remoteEventId: string,
     remoteTimestamp: number
   ): string {
-    const normalizedRequestId = normalizeReticulumControlRequestId(requestId);
-    if (normalizedRequestId) return `req:${normalizedRequestId}`;
     const eventId = String(remoteEventId || '').trim();
-    if (eventId) return `event:${eventId}`;
     const timestamp = Number(remoteTimestamp);
-    if (Number.isFinite(timestamp)) return `ts:${Math.floor(timestamp)}`;
-    return '';
+    if (eventId && Number.isFinite(timestamp) && timestamp < Number.MAX_SAFE_INTEGER) {
+      return `latest:${eventId}:${Math.max(0, Math.floor(timestamp))}`;
+    }
+    if (eventId) return `event:${eventId}`;
+    if (Number.isFinite(timestamp) && timestamp > 0 && timestamp < Number.MAX_SAFE_INTEGER) {
+      return `ts:${Math.max(0, Math.floor(timestamp))}`;
+    }
+    const normalizedRequestId = normalizeReticulumControlRequestId(requestId);
+    return normalizedRequestId ? `req:${normalizedRequestId}` : '';
   }
 
   private async requestDirectMissingEvents(
@@ -7217,7 +7240,7 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       if (RETICULUM_CHAT_TRACE) {
         loggerLog(
-          `${tracePrefix} status=skip reason=dm_page_no_progress after=${requestAfter} request=${requestIdentity.slice(0, 16)}`
+          `${tracePrefix} status=skip reason=dm_page_no_progress after=${requestAfter} request=${requestIdentity.slice(0, 48)}`
         );
       }
       return;
@@ -7421,9 +7444,11 @@ export class ReticulumChatManager extends EventEmitter {
     );
 
     if (this.localDmAddressForConversation(authorAddress, peerAddress)) {
+      const latestCursor = typeof notify.lc === 'string' ? notify.lc.trim() : '';
+      const remoteCursorId = latestCursor ? `cursor:${latestCursor}` : '';
       if (RETICULUM_CHAT_TRACE) {
         loggerLog(
-          `[ReticulumChat] dm_notify_local conversation=${conversationId.slice(0, 16)} author=${authorAddress.slice(0, 8)} source=${sourcePeerHash.slice(0, 16)} reverse=${reversePeerHash.slice(0, 16)} rid=${requestId.slice(0, 12)}`
+          `[ReticulumChat] dm_notify_local conversation=${conversationId.slice(0, 16)} author=${authorAddress.slice(0, 8)} source=${sourcePeerHash.slice(0, 16)} reverse=${reversePeerHash.slice(0, 16)} rid=${requestId.slice(0, 12)} latest=${latestCursor || 'none'}`
         );
       }
       await this.requestDirectMissingEvents(
@@ -7431,7 +7456,7 @@ export class ReticulumChatManager extends EventEmitter {
         authorAddress,
         peerAddress,
         sourcePeerHash,
-        '',
+        remoteCursorId,
         Number.MAX_SAFE_INTEGER,
         reversePeerHash,
         { requestId }
@@ -11254,11 +11279,13 @@ export class ReticulumChatManager extends EventEmitter {
     const requestId = nodeCrypto.randomBytes(4).toString('hex');
     const maxHops = RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS;
     const normalizedProbeRequestId = normalizeReticulumControlRequestId(probeRequestId);
+    const latestCursor = this.dmNotifyLatestCursor(latest);
     const signed = await this.signLocalFields({
       type: 'RCHAT_DM_NOTIFY',
       peerAddress,
       sourcePeerHash,
       requestId,
+      latestCursor,
       probeRequestId: normalizedProbeRequestId || null,
       maxHops,
       timestamp,
@@ -11277,6 +11304,7 @@ export class ReticulumChatManager extends EventEmitter {
         b: peerAddress,
         sp: this.compactResourcePeerHash(sourcePeerHash),
         q: requestId,
+        lc: latestCursor,
         ...(normalizedProbeRequestId ? { r: normalizedProbeRequestId } : {}),
         p: signed.authorPublicKey,
         n: timestamp,
