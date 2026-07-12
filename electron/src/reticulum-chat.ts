@@ -10661,8 +10661,14 @@ export class ReticulumChatManager extends EventEmitter {
 
     const channel = this.channelFromMetadataPayload(event, payload);
     if (!channel) {
+      if (this.isChannelMetadataMissingBase(event, payload)) {
+        loggerLog(
+          `[ReticulumChat] channel_metadata_projection_deferred event=${event.eventId} group=${event.groupId} type=${event.eventType} reason=missing_base_channel`
+        );
+        return 'deferred';
+      }
       loggerWarn(
-        `[ReticulumChat] Ignoring channel metadata event ${event.eventId}: invalid metadata payload`
+        `[ReticulumChat] Ignoring channel metadata event ${event.eventId}: invalid metadata payload type=${event.eventType}`
       );
       return 'skipped';
     }
@@ -10913,6 +10919,29 @@ export class ReticulumChatManager extends EventEmitter {
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };
+  }
+
+  private isChannelMetadataMissingBase(
+    event: ReticulumChatEvent,
+    payload: unknown
+  ): boolean {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+    if (
+      event.eventType !== 'channel_reorder' &&
+      event.eventType !== 'channel_archive' &&
+      event.eventType !== 'channel_restore'
+    ) {
+      return false;
+    }
+    const data = payload as Record<string, unknown>;
+    const channelId = normalizeReticulumChatChannelId(
+      typeof data.channelId === 'string' ? data.channelId : event.channelId
+    );
+    if (!channelId) return false;
+    if (event.eventType === 'channel_archive' && channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
+      return false;
+    }
+    return !this.db.getChannel(event.groupId, channelId);
   }
 
   private categoryFromMetadataPayload(
@@ -15666,7 +15695,17 @@ export class ReticulumChatManager extends EventEmitter {
         rejectedInvalidCount === 0 &&
         rejectedOutOfBoundsCount === 0 &&
         rejectedNonMemberCount === 0;
-      if (noProgressKnownPage && sourcePeerHash && offer.direction !== 'range') {
+      const shouldContinueMetadataKnownPage =
+        noProgressKnownPage &&
+        page.more === true &&
+        offer.priority === 'metadata' &&
+        offer.direction !== 'range';
+      if (
+        noProgressKnownPage &&
+        !shouldContinueMetadataKnownPage &&
+        sourcePeerHash &&
+        offer.direction !== 'range'
+      ) {
         this.markHistoryPageNoProgress(
           sourcePeerHash,
           offer,
@@ -15702,9 +15741,33 @@ export class ReticulumChatManager extends EventEmitter {
             );
           }
         } else if (noProgressKnownPage) {
-          loggerLog(
-            `[ReticulumChat] history_page_more_stopped_no_progress group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} direction=${offer.direction}`
-          );
+          if (shouldContinueMetadataKnownPage) {
+            const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
+            if (cursor && sourcePeerHash && this.didDirectHistoryPageCursorAdvance(offer, cursor)) {
+              loggerLog(
+                `[ReticulumChat] metadata_history_page_continue_known_overlap group=${offer.groupId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} direction=${offer.direction} cursor=${cursor.eventId}`
+              );
+              void this.requestLinkedHistoryPage(
+                sourcePeerHash,
+                offer.groupId,
+                offer.channelId,
+                cursor,
+                offer.direction,
+                false,
+                'metadata-page-more-known-overlap',
+                sourcePeerHash,
+                offer.priority
+              );
+            } else {
+              loggerWarn(
+                `[ReticulumChat] metadata_history_page_more_stalled group=${offer.groupId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} direction=${offer.direction} cursor=${cursor?.eventId ?? 'none'}`
+              );
+            }
+          } else {
+            loggerLog(
+              `[ReticulumChat] history_page_more_stopped_no_progress group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} direction=${offer.direction}`
+            );
+          }
         } else {
           const cursor = this.cursorFromWire(offer.direction === 'before' ? page.start : page.end);
           if (cursor && sourcePeerHash) {
