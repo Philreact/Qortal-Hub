@@ -13619,6 +13619,64 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('authorizes compact live event resource auth from the outbound transfer map when metadata is absent', async () => {
+    const authorized: unknown[] = [];
+    const rejected: unknown[] = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
+        authorized.push(payload);
+        return { ok: true as const };
+      },
+      rejectReticulumChatResourceDetailed: async (payload: unknown) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    const event = signedEvent({
+      eventId: 'event-live-normal-compact-member-no-metadata',
+      groupId: 74,
+      channelId: 'general',
+      timestamp: 100_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    (manager as any).outboundEventResources.set('live-normal-transfer-compact-no-metadata', {
+      groupId: 74,
+      eventId: event.eventId,
+      expiresAt: 110_000,
+    });
+    const authMessage = await (manager as any).buildSignedResourceAuthWire(
+      74,
+      'live-normal-transfer-compact-no-metadata',
+      'RCR'
+    );
+
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-normal-link-compact-no-metadata',
+      transferId: 'live-normal-transfer-compact-no-metadata',
+      auth: authMessage,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(rejected).toEqual([]);
+    expect(authorized).toContainEqual(
+      expect.objectContaining({
+        transferId: 'live-normal-transfer-compact-no-metadata',
+      })
+    );
+    expect((manager as any).outboundEventResources.has('live-normal-transfer-compact-no-metadata')).toBe(false);
+    manager.close();
+  });
+
   it('rejects unsigned live event resource auth for admin-private channels', async () => {
     const authorized: unknown[] = [];
     const rejected: unknown[] = [];

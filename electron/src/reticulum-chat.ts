@@ -3170,6 +3170,10 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     { groupId: number; eventId: string; expiresAt: number }
   >();
+  private outboundEventResources = new Map<
+    string,
+    { groupId: number; eventId: string; expiresAt: number }
+  >();
   private outboundEventPageResources = new Map<
     string,
     { groupId: number; channelId: string; pageHash: string; eventIds: Set<string>; expiresAt: number }
@@ -3751,6 +3755,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.recentDmRequests.clear();
     this.directDmPageNoProgressSuppressions.clear();
     this.authorGapPagedRangeOrigins.clear();
+    this.outboundEventResources.clear();
     this.recentDmDiscoveryKeys.clear();
     this.dmProbeRoutes.clear();
     this.dmNotifyRoutes.clear();
@@ -14393,6 +14398,7 @@ export class ReticulumChatManager extends EventEmitter {
         : {}),
     };
     const recipientPeerKey = (options.recipientPeerHash ?? peerKey).trim().toLowerCase();
+    const expiresAt = this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS;
     const registered = await this.bridge.sendReticulumChatResourceDetailed({
       allowedRecipientAddress: recipientPeerKey,
       transferId,
@@ -14411,23 +14417,39 @@ export class ReticulumChatManager extends EventEmitter {
         relayCached: options.relayCached === true,
         relayBlobId: options.relayBlobId ?? '',
       },
-      expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
+      expiresAt,
     });
-    if (!registered.ok) return registered;
+    if (!registered.ok) {
+      this.safeUnlink(filePath);
+      return registered;
+    }
     if (options.relayStore === true) {
       this.outboundRelayStoreEventResources.set(transferId, {
         groupId,
         eventId: event.eventId,
-        expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
+        expiresAt,
+      });
+    } else if (options.relayCached !== true) {
+      this.outboundEventResources.set(transferId, {
+        groupId,
+        eventId: event.eventId,
+        expiresAt,
       });
     }
     const wire = buildEventOfferControlWire(groupId, offer);
     if (!wireFitsReticulum(wire)) {
       this.outboundRelayStoreEventResources.delete(transferId);
+      this.outboundEventResources.delete(transferId);
       this.safeUnlink(filePath);
       return { ok: false, reason: 'send-command-failed', error: 'Event offer too large' };
     }
-    return this.sendToPeer(peerKey, wire);
+    const sent = await this.sendToPeer(peerKey, wire);
+    if (!sent.ok) {
+      this.outboundRelayStoreEventResources.delete(transferId);
+      this.outboundEventResources.delete(transferId);
+      this.safeUnlink(filePath);
+    }
+    return sent;
   }
 
   private handleEventOffer(candidate: unknown, peerHash: string): void {
@@ -15864,8 +15886,29 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
-    const eventId = String(auth.eventId || auth.id || payload.eventId || metadata.eventId || '');
-    const groupId = Number(auth.groupId || auth.g || payload.groupId || metadata.groupId || 0);
+    const now = this.now();
+    for (const [transferId, offered] of this.outboundEventResources) {
+      if (offered.expiresAt <= now) this.outboundEventResources.delete(transferId);
+    }
+    const offeredEvent = payload.transferId
+      ? this.outboundEventResources.get(payload.transferId)
+      : undefined;
+    const eventId = String(
+      auth.eventId ||
+      auth.id ||
+      payload.eventId ||
+      metadata.eventId ||
+      offeredEvent?.eventId ||
+      ''
+    );
+    const groupId = Number(
+      auth.groupId ||
+      auth.g ||
+      payload.groupId ||
+      metadata.groupId ||
+      offeredEvent?.groupId ||
+      0
+    );
     if (!Number.isInteger(groupId) || groupId <= 0) {
       await this.bridge.rejectReticulumChatResourceDetailed?.({
         linkId: payload.linkId,
@@ -15874,7 +15917,6 @@ export class ReticulumChatManager extends EventEmitter {
       });
       return;
     }
-    const now = this.now();
     if (!isDisabledRelayCache) {
       for (const [transferId, relay] of this.outboundRelayStoreEventResources) {
         if (relay.expiresAt <= now) this.outboundRelayStoreEventResources.delete(transferId);
@@ -16172,6 +16214,7 @@ export class ReticulumChatManager extends EventEmitter {
       linkId: payload.linkId,
       transferId: payload.transferId,
     });
+    this.outboundEventResources.delete(payload.transferId);
   }
 
   private buildDirectDmPageResourceBlob(
