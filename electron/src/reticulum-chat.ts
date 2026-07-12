@@ -3174,6 +3174,19 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     { groupId: number; eventId: string; expiresAt: number }
   >();
+  private liveEventResourceDiagnostics = new Map<
+    string,
+    {
+      groupId: number;
+      eventId: string;
+      peerHash: string;
+      sizeBytes: number;
+      createdAt: number;
+      registeredAt?: number;
+      offerSentAt?: number;
+      authAt?: number;
+    }
+  >();
   private outboundEventPageResources = new Map<
     string,
     { groupId: number; channelId: string; pageHash: string; eventIds: Set<string>; expiresAt: number }
@@ -14359,6 +14372,7 @@ export class ReticulumChatManager extends EventEmitter {
     eventId: string,
     options: ReticulumChatEventOfferOptions = {}
   ): Promise<ReticulumSendResult> {
+    const traceStartedAt = this.now();
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return { ok: false, reason: 'unknown-peer-presence-hash' };
     if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
@@ -14423,6 +14437,27 @@ export class ReticulumChatManager extends EventEmitter {
       this.safeUnlink(filePath);
       return registered;
     }
+    const registeredAt = this.now();
+    const isLiveEventResource = options.relayStore !== true && options.relayCached !== true;
+    if (isLiveEventResource) {
+      this.liveEventResourceDiagnostics.set(transferId, {
+        groupId,
+        eventId: event.eventId,
+        peerHash: peerKey,
+        sizeBytes: offer.sizeBytes,
+        createdAt: traceStartedAt,
+        registeredAt,
+      });
+      loggerLog(
+        `[ReticulumChat] live_event_resource_registered group=${groupId} event=${event.eventId} peer=${peerKey.slice(
+          0,
+          16
+        )} transfer=${transferId} size=${offer.sizeBytes} register_ms=${Math.max(
+          0,
+          registeredAt - traceStartedAt
+        )}`
+      );
+    }
     if (options.relayStore === true) {
       this.outboundRelayStoreEventResources.set(transferId, {
         groupId,
@@ -14440,13 +14475,42 @@ export class ReticulumChatManager extends EventEmitter {
     if (!wireFitsReticulum(wire)) {
       this.outboundRelayStoreEventResources.delete(transferId);
       this.outboundEventResources.delete(transferId);
+      this.liveEventResourceDiagnostics.delete(transferId);
       this.safeUnlink(filePath);
       return { ok: false, reason: 'send-command-failed', error: 'Event offer too large' };
     }
     const sent = await this.sendToPeer(peerKey, wire);
+    const sentAt = this.now();
+    const diagnostics = this.liveEventResourceDiagnostics.get(transferId);
+    if (diagnostics) {
+      if (sent.ok) {
+        diagnostics.offerSentAt = sentAt;
+        loggerLog(
+          `[ReticulumChat] live_event_offer_sent group=${groupId} event=${event.eventId} peer=${peerKey.slice(
+            0,
+            16
+          )} transfer=${transferId} total_ms=${Math.max(
+            0,
+            sentAt - traceStartedAt
+          )} after_register_ms=${Math.max(0, sentAt - (diagnostics.registeredAt ?? traceStartedAt))}`
+        );
+      } else {
+        const failedSent = sent as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] live_event_offer_failed group=${groupId} event=${event.eventId} peer=${peerKey.slice(
+            0,
+            16
+          )} transfer=${transferId} total_ms=${Math.max(
+            0,
+            sentAt - traceStartedAt
+          )} reason=${failedSent.error ?? failedSent.reason}`
+        );
+      }
+    }
     if (!sent.ok) {
       this.outboundRelayStoreEventResources.delete(transferId);
       this.outboundEventResources.delete(transferId);
+      this.liveEventResourceDiagnostics.delete(transferId);
       this.safeUnlink(filePath);
     }
     return sent;
@@ -14958,6 +15022,13 @@ export class ReticulumChatManager extends EventEmitter {
     payload: ReticulumChatResourcePayload,
     options: { useWorkerPrep?: boolean } = {}
   ): void {
+    if (
+      (payload?.status === 'sent' || payload?.status === 'failed') &&
+      payload.transferId
+    ) {
+      this.logLiveEventResourceTerminal(payload);
+      if (payload.status === 'sent') return;
+    }
     if (payload?.status === 'auth' && payload.linkId && payload.transferId) {
       void this.authorizeResource(payload);
       return;
@@ -14994,6 +15065,26 @@ export class ReticulumChatManager extends EventEmitter {
     } else {
       void this.importReceivedEventResource(payload, useWorkerPrep);
     }
+  }
+
+  private logLiveEventResourceTerminal(payload: ReticulumChatResourcePayload): void {
+    const transferId = typeof payload.transferId === 'string' ? payload.transferId : '';
+    if (!transferId) return;
+    const diagnostics = this.liveEventResourceDiagnostics.get(transferId);
+    if (!diagnostics) return;
+    const now = this.now();
+    const status = String(payload.status || 'unknown');
+    const reason = typeof payload.reason === 'string' && payload.reason ? payload.reason : '';
+    loggerLog(
+      `[ReticulumChat] live_event_resource_${status} group=${diagnostics.groupId} event=${diagnostics.eventId} peer=${diagnostics.peerHash.slice(
+        0,
+        16
+      )} transfer=${transferId} size=${diagnostics.sizeBytes} total_ms=${Math.max(
+        0,
+        now - diagnostics.createdAt
+      )} after_auth_ms=${diagnostics.authAt ? Math.max(0, now - diagnostics.authAt) : 'n/a'} reason=${reason || 'none'}`
+    );
+    this.liveEventResourceDiagnostics.delete(transferId);
   }
 
   handleGenericResourceEvent(payload: ReticulumChatResourcePayload): void {
@@ -15890,6 +15981,12 @@ export class ReticulumChatManager extends EventEmitter {
     for (const [transferId, offered] of this.outboundEventResources) {
       if (offered.expiresAt <= now) this.outboundEventResources.delete(transferId);
     }
+    for (const [transferId, diagnostics] of this.liveEventResourceDiagnostics) {
+      const offered = this.outboundEventResources.get(transferId);
+      if (offered && offered.expiresAt > now) continue;
+      if (diagnostics.createdAt + RETICULUM_CHAT_RESOURCE_TTL_MS > now) continue;
+      this.liveEventResourceDiagnostics.delete(transferId);
+    }
     const offeredEvent = payload.transferId
       ? this.outboundEventResources.get(payload.transferId)
       : undefined;
@@ -16209,6 +16306,19 @@ export class ReticulumChatManager extends EventEmitter {
         reason: 'channel_read_forbidden',
       });
       return;
+    }
+    const diagnostics = this.liveEventResourceDiagnostics.get(payload.transferId);
+    if (diagnostics) {
+      diagnostics.authAt = this.now();
+      loggerLog(
+        `[ReticulumChat] live_event_resource_authorized group=${groupId} event=${eventId} requester=${requesterAddress} peer=${diagnostics.peerHash.slice(
+          0,
+          16
+        )} transfer=${payload.transferId} link=${payload.linkId} total_ms=${Math.max(
+          0,
+          diagnostics.authAt - diagnostics.createdAt
+        )} after_offer_ms=${diagnostics.offerSentAt ? Math.max(0, diagnostics.authAt - diagnostics.offerSentAt) : 'n/a'}`
+      );
     }
     await this.bridge.authorizeReticulumChatResourceDetailed?.({
       linkId: payload.linkId,
@@ -17222,6 +17332,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearLandAuthQueue();
     this.clearChatResourceQueue();
     this.clearLatestEventPullFallbackTimers();
+    this.liveEventResourceDiagnostics.clear();
   }
 
   private onBridgeChatMessage = (

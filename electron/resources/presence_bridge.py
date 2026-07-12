@@ -9038,6 +9038,8 @@ def _overlay_get_reusable_or_replace_active(
             return existing, ""
         created_at = existing.get("created_at")
         age = now - float(created_at) if isinstance(created_at, (int, float)) else 0.0
+        if existing.get("established") is not True and age < _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS:
+            return existing, ""
         if age < _OVERLAY_REPLACE_UNUSABLE_ACTIVE_MIN_AGE_SECONDS:
             return existing, ""
         replace_link_id = existing_link_id
