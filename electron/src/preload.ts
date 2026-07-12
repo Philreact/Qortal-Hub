@@ -1543,19 +1543,21 @@ try {
           'reticulumChat:cancelResource',
           fileHash
         ) as Promise<{ success: boolean; canceled?: boolean; error?: string }>,
-      getHistory: async (groupId: number, channelId?: string, limit?: number) =>
+      getHistory: async (groupId: number, channelId?: string, limit?: number, options?: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
           groupId,
           channelId,
-          limit
+          limit,
+          options
         ) as Promise<unknown[]>,
-      getMessageHistory: async (groupId: number, channelId?: string, limit?: number) =>
+      getMessageHistory: async (groupId: number, channelId?: string, limit?: number, options?: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:getMessageHistory',
           groupId,
           channelId,
-          limit
+          limit,
+          options
         ) as Promise<unknown[]>,
       getChannelMetadataHistory: async (groupId: number, limit?: number) =>
         ipcRenderer.invoke(
@@ -2139,19 +2141,21 @@ try {
           'reticulumChat:cancelResource',
           fileHash
         ) as Promise<{ success: boolean; canceled?: boolean; error?: string }>,
-      getHistory: async (groupId: number, channelId?: string, limit?: number) =>
+      getHistory: async (groupId: number, channelId?: string, limit?: number, options?: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:getHistory',
           groupId,
           channelId,
-          limit
+          limit,
+          options
         ) as Promise<unknown[]>,
-      getMessageHistory: async (groupId: number, channelId?: string, limit?: number) =>
+      getMessageHistory: async (groupId: number, channelId?: string, limit?: number, options?: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:getMessageHistory',
           groupId,
           channelId,
-          limit
+          limit,
+          options
         ) as Promise<unknown[]>,
       getChannelMetadataHistory: async (groupId: number, limit?: number) =>
         ipcRenderer.invoke(

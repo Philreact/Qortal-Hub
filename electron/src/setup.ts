@@ -102,6 +102,7 @@ import {
   replaceReticulumChatMentionsInDb,
   deleteReticulumChatMentionsInDb,
   type ReticulumChatEvent,
+  type ReticulumChatHistoryReadOptions,
 } from './reticulum-chat';
 import { startCallManager, stopCallManager, getCallManager } from './call';
 import {
@@ -4162,7 +4163,8 @@ ipcMain.handle(
     _event,
     groupId: number,
     channelIdOrLimit?: string | number,
-    limitMaybe?: number
+    limitMaybe?: number,
+    optionsMaybe?: unknown
   ) => {
     const manager = getReticulumChatManager();
     const channelId =
@@ -4172,8 +4174,8 @@ ipcMain.handle(
     const limit =
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return manager
-      ? manager.getHistory(groupId, channelId, limit)
-      : readReticulumChatHistoryFromDb(groupId, channelId, limit);
+      ? manager.getHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+      : [];
   }
 );
 
@@ -4183,7 +4185,8 @@ ipcMain.handle(
     _event,
     groupId: number,
     channelIdOrLimit?: string | number,
-    limitMaybe?: number
+    limitMaybe?: number,
+    optionsMaybe?: unknown
   ) => {
     const manager = getReticulumChatManager();
     const channelId =
@@ -4193,8 +4196,8 @@ ipcMain.handle(
     const limit =
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return manager
-      ? manager.getMessageHistory(groupId, channelId, limit)
-      : readReticulumChatMessageHistoryFromDb(groupId, channelId, limit);
+      ? manager.getMessageHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+      : [];
   }
 );
 
@@ -4202,9 +4205,7 @@ ipcMain.handle(
   'reticulumChat:getChannelMetadataHistory',
   async (_event, groupId: number, limit?: number) => {
     const manager = getReticulumChatManager();
-    return manager
-      ? manager.getChannelMetadataHistory(groupId, limit)
-      : readReticulumChatChannelMetadataHistoryFromDb(groupId, limit);
+    return manager ? manager.getChannelMetadataHistory(groupId, limit) : [];
   }
 );
 
@@ -4212,17 +4213,13 @@ ipcMain.handle(
   'reticulumChat:getChannels',
   async (_event, groupId: number, includeArchived?: boolean) => {
     const manager = getReticulumChatManager();
-    return manager
-      ? manager.getChannels(groupId, includeArchived === true)
-      : readReticulumChatChannelsFromDb(groupId, includeArchived === true);
+    return manager ? manager.getChannels(groupId, includeArchived === true) : [];
   }
 );
 
 ipcMain.handle('reticulumChat:getCategories', async (_event, groupId: number) => {
   const manager = getReticulumChatManager();
-  return manager
-    ? manager.getCategories(groupId)
-    : readReticulumChatCategoriesFromDb(groupId);
+  return manager ? manager.getCategories(groupId) : [];
 });
 
 ipcMain.handle(
@@ -4239,9 +4236,7 @@ ipcMain.handle(
 
 ipcMain.handle('reticulumChat:getSyncState', async (_event, groupId: number) => {
   const manager = getReticulumChatManager();
-  return manager
-    ? manager.getSyncState(groupId)
-    : readReticulumChatSyncStateFromDb(groupId);
+  return manager ? manager.getSyncState(groupId) : {};
 });
 
 ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) => {
@@ -4249,7 +4244,7 @@ ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) 
   const address = typeof myAddress === 'string' ? myAddress : '';
   return manager
     ? manager.getChatSummaries(address, RETICULUM_CHAT_ONLINE_SINCE_MS)
-    : readReticulumChatSummariesFromDb(address, RETICULUM_CHAT_ONLINE_SINCE_MS);
+    : [];
 });
 
 ipcMain.handle(
@@ -4278,9 +4273,7 @@ ipcMain.handle(
     const safeQuery = typeof query === 'string' ? query : '';
     const safeOptions = options && typeof options === 'object' ? options : {};
     const manager = getReticulumChatManager();
-    return manager
-      ? manager.searchEvents(safeQuery, safeOptions)
-      : searchReticulumChatFromDb(safeQuery, safeOptions);
+    return manager ? manager.searchEvents(safeQuery, safeOptions) : [];
   }
 );
 
@@ -4300,13 +4293,7 @@ ipcMain.handle(
     const manager = getReticulumChatManager();
     return manager
       ? manager.getMessageWindowAroundEvent(groupId, channelId, eventId, safeOptions)
-      : readReticulumChatMessageWindowAroundEventFromDb(
-          groupId,
-          channelId,
-          eventId,
-          safeOptions.beforeLimit,
-          safeOptions.afterLimit
-        );
+      : [];
   }
 );
 

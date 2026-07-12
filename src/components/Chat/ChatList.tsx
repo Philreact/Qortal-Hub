@@ -42,6 +42,12 @@ type ChatListProps = {
   secretKeyObject?: any;
   compactScrollButton?: boolean;
   chatId?: any;
+  hasOlderMessages?: boolean;
+  isLoadingOlderMessages?: boolean;
+  onLoadOlder?: () =>
+    | void
+    | { added?: number }
+    | Promise<void | { added?: number }>;
   scrollToMessageId?: string;
   scrollToMessageNonce?: number;
 };
@@ -70,6 +76,9 @@ export const ChatList = ({
   secretKeyObject,
   compactScrollButton = false,
   chatId,
+  hasOlderMessages,
+  isLoadingOlderMessages = false,
+  onLoadOlder,
   scrollToMessageId,
   scrollToMessageNonce,
 }: ChatListProps) => {
@@ -91,6 +100,8 @@ export const ChatList = ({
   const scrollRetrySequenceRef = useRef(0);
   const lastHandledScrollTargetRef = useRef('');
   const lastSeenUnreadMessageTimestamp = useRef(null);
+  const loadingOlderFromScrollRef = useRef(false);
+  const lastAutoFillMessageCountRef = useRef(-1);
 
   const chatIdentity = useMemo(() => {
     if (chatId != null) {
@@ -228,6 +239,51 @@ export const ChatList = ({
 
     return false;
   }, [rowVirtualizer?.isScrolling]);
+
+  const loadOlderFromTop = useCallback(async () => {
+    if (!onLoadOlder) return;
+    if (hasOlderMessages === false) return;
+    if (isLoadingOlderMessages || loadingOlderFromScrollRef.current) return;
+
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement) return;
+
+    const previousScrollHeight = scrollElement.scrollHeight;
+    const previousScrollTop = scrollElement.scrollTop;
+    loadingOlderFromScrollRef.current = true;
+    try {
+      await onLoadOlder();
+      window.requestAnimationFrame(() => {
+        const nextScrollElement = parentRef.current as HTMLDivElement | null;
+        if (!nextScrollElement) return;
+        const heightDelta =
+          nextScrollElement.scrollHeight - previousScrollHeight;
+        if (heightDelta > 0) {
+          nextScrollElement.scrollTop = previousScrollTop + heightDelta;
+        }
+      });
+    } finally {
+      loadingOlderFromScrollRef.current = false;
+    }
+  }, [hasOlderMessages, isLoadingOlderMessages, onLoadOlder]);
+
+  const handleScroll = useCallback(() => {
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement) return;
+    if (scrollElement.scrollTop <= 160) {
+      void loadOlderFromTop();
+    }
+  }, [loadOlderFromTop]);
+
+  useEffect(() => {
+    if (!onLoadOlder || hasOlderMessages === false) return;
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement) return;
+    if (lastAutoFillMessageCountRef.current === messages.length) return;
+    if (scrollElement.scrollHeight > scrollElement.clientHeight + 32) return;
+    lastAutoFillMessageCountRef.current = messages.length;
+    void loadOlderFromTop();
+  }, [hasOlderMessages, loadOlderFromTop, messages.length, onLoadOlder]);
 
   useEffect(() => {
     if (!parentRef.current || rowVirtualizer?.isScrolling === undefined) return;
@@ -551,6 +607,7 @@ export const ChatList = ({
       >
         <Box
           ref={parentRef}
+          onScroll={handleScroll}
           style={{
             display: 'flex',
             flexGrow: 1,

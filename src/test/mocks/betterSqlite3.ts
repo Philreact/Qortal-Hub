@@ -6,6 +6,7 @@ type MockStore = {
   reticulumChatEvents: ReticulumChatRow[];
   reticulumChatMessages: ReticulumChatRow[];
   reticulumChatExpiredEventMarkers: ReticulumChatRow[];
+  reticulumChatMetadataSnapshots: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
   schema: Map<string, Set<string>>;
@@ -26,6 +27,17 @@ class Statement {
       return [...(this.store.schema.get(tableName) ?? new Set<string>())].map(
         (name, cid) => ({ cid, name })
       );
+    }
+    if (this.sql.includes('FROM rchat_metadata_snapshots')) {
+      const [groupId, scope] = args;
+      return this.store.reticulumChatMetadataSnapshots
+        .filter((row) => row.group_id === groupId && (scope == null || row.scope === scope))
+        .sort(
+          (a, b) =>
+            b.version - a.version ||
+            b.created_at - a.created_at ||
+            String(b.snapshot_hash).localeCompare(String(a.snapshot_hash))
+        );
     }
     if (this.sql.includes('FROM rchat_message_projection')) {
       if (this.sql.includes('WHERE group_id = ? AND channel_id = ?')) {
@@ -248,6 +260,22 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_metadata_snapshots')) {
+      const [groupId, value] = args;
+      return this.store.reticulumChatMetadataSnapshots
+        .filter((row) => {
+          if (row.group_id !== groupId) return false;
+          if (this.sql.includes('snapshot_hash = ?')) return row.snapshot_hash === value;
+          if (this.sql.includes('scope = ?')) return row.scope === value;
+          return true;
+        })
+        .sort(
+          (a, b) =>
+            b.version - a.version ||
+            b.created_at - a.created_at ||
+            String(b.snapshot_hash).localeCompare(String(a.snapshot_hash))
+        )[0];
+    }
     if (this.sql.includes('FROM rchat_message_projection')) {
       if (this.sql.includes('COUNT(*) AS cnt')) {
         return { cnt: this.store.reticulumChatMessages.length };
@@ -334,6 +362,29 @@ class Statement {
   }
 
   run(params?: any, second?: any) {
+    if (this.sql.includes('INSERT OR REPLACE INTO rchat_metadata_snapshots')) {
+      const values = Array.from(arguments);
+      const row = params && typeof params === 'object' && !Array.isArray(params)
+        ? { ...params }
+        : {
+            group_id: values[0], snapshot_id: values[1], scope: values[2],
+            parent_snapshot_hash: values[3], version: values[4], created_at: values[5],
+            latest_event_id: values[6], latest_feed_timestamp: values[7],
+            snapshot_hash: values[8], admin_address: values[9], admin_public_key: values[10],
+            signature: values[11], channels_json: values[12], categories_json: values[13],
+          };
+      const index = this.store.reticulumChatMetadataSnapshots.findIndex(
+        (existing) =>
+          (existing.group_id === row.group_id && existing.snapshot_id === row.snapshot_id) ||
+          (existing.group_id === row.group_id && existing.snapshot_hash === row.snapshot_hash)
+      );
+      if (index >= 0) this.store.reticulumChatMetadataSnapshots[index] = row;
+      else this.store.reticulumChatMetadataSnapshots.push(row);
+      return {
+        changes: 1,
+        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumChatMetadataSnapshots.length,
+      };
+    }
     if (this.sql.includes('INSERT INTO reticulum_resources')) {
       const index = this.store.reticulumResources.findIndex(
         (row) => row.file_hash === params.file_hash
@@ -493,6 +544,7 @@ class MockDatabase {
       reticulumChatEvents: [],
       reticulumChatMessages: [],
       reticulumChatExpiredEventMarkers: [],
+      reticulumChatMetadataSnapshots: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
       schema: new Map<string, Set<string>>(),

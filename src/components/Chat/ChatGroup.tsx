@@ -898,6 +898,9 @@ export const ChatGroup = ({
   const {
     enabled: reticulumChatEnabled,
     events: reticulumChatEvents,
+    hasOlder: reticulumHasOlderMessages,
+    loadingOlder: reticulumLoadingOlderMessages,
+    loadOlder: loadOlderReticulumMessages,
     publishEvent: publishReticulumChatEvent,
     sendTyping: sendReticulumTypingSignal,
     typing: reticulumTyping,
@@ -4887,6 +4890,15 @@ export const ChatGroup = ({
             members={members}
             myAddress={myAddress}
             myName={myName}
+            hasOlderMessages={
+              reticulumChatEnabled ? reticulumHasOlderMessages : undefined
+            }
+            isLoadingOlderMessages={
+              reticulumChatEnabled ? reticulumLoadingOlderMessages : undefined
+            }
+            onLoadOlder={
+              reticulumChatEnabled ? loadOlderReticulumMessages : undefined
+            }
             onDelete={onDelete}
             onEdit={onEdit}
             onReply={onReply}
