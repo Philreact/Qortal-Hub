@@ -3740,17 +3740,28 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([9]);
     const result = await manager.publishEvent(event);
     expect(result.ok).toBe(true);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
+    expect(sent).toContainEqual(expect.objectContaining({
       t: 'RCHAT',
-      k: 'group_digest',
+      k: 'event_notice',
       g: 9,
-      latest: {
+      n: expect.objectContaining({
         id: event.eventId,
+      }),
+    }));
+    const stateDigest = sent.find((wire) => wire.k === 'group_state_digest');
+    expect(stateDigest).toMatchObject({
+      t: 'RCHAT',
+      v: 2,
+      k: 'group_state_digest',
+      g: 9,
+      d: {
+        latest: {
+          id: event.eventId,
+        },
       },
     });
-    expect(JSON.stringify(sent[0])).not.toContain('encryptedPayload');
-    expect(byteLengthUtf8JsonWithBridgeSender(sent[0])).toBeLessThanOrEqual(
+    expect(JSON.stringify(stateDigest)).not.toContain('encryptedPayload');
+    expect(byteLengthUtf8JsonWithBridgeSender(stateDigest!)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     manager.close();
@@ -3951,15 +3962,17 @@ describe('reticulum chat manager', () => {
         peer: 'peer-a',
         wire: expect.objectContaining({
           t: 'RCHAT',
-          k: 'group_digest',
+          k: 'group_state_digest',
           g: 9,
-          latest: expect.objectContaining({
-            id: event.eventId,
+          d: expect.objectContaining({
+            latest: expect.objectContaining({
+              id: event.eventId,
+            }),
           }),
         }),
       })
     );
-    expect(fanout.find((wire) => wire.k === 'group_digest')).toBeUndefined();
+    expect(fanout.find((wire) => wire.k === 'group_state_digest')).toBeUndefined();
     expect(direct.some(({ wire }) => JSON.stringify(wire).includes('encryptedPayload'))).toBe(false);
     manager.close();
   });
@@ -4727,17 +4740,20 @@ describe('reticulum chat manager', () => {
       eventId: event.eventId,
       mentionAddressHashes: [mentionHash],
     });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
+    const stateDigest = sent.find((wire) => wire.k === 'group_state_digest');
+    expect(stateDigest).toMatchObject({
       t: 'RCHAT',
-      k: 'group_digest',
+      v: 2,
+      k: 'group_state_digest',
       g: 91,
-      latest: expect.objectContaining({
-        id: event.eventId,
+      d: expect.objectContaining({
+        latest: expect.objectContaining({
+          id: event.eventId,
+        }),
       }),
     });
-    expect(JSON.stringify(sent[0])).not.toContain(mentionHash);
-    expect(byteLengthUtf8JsonWithBridgeSender(sent[0])).toBeLessThanOrEqual(
+    expect(JSON.stringify(stateDigest)).not.toContain(mentionHash);
+    expect(byteLengthUtf8JsonWithBridgeSender(stateDigest!)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     manager.close();
@@ -5718,12 +5734,12 @@ describe('reticulum chat manager', () => {
         peer: 'peer-a',
         wire: expect.objectContaining({
           t: 'RCHAT',
-          k: 'group_digest',
+          k: 'group_state_digest',
           g: 73,
         }),
       })
     );
-    expect(fanout.some((wire) => wire.k === 'group_digest' && wire.g === 73)).toBe(false);
+    expect(fanout.some((wire) => wire.k === 'group_state_digest' && wire.g === 73)).toBe(false);
     manager.close();
   });
 
@@ -5760,7 +5776,7 @@ describe('reticulum chat manager', () => {
     expect(result).toEqual({ ok: true });
     expect(fanout).toContainEqual(expect.objectContaining({
       t: 'RCHAT',
-      k: 'group_digest',
+      k: 'group_state_digest',
       g: 73,
     }));
     expect((manager as any).getGroupInterestNextHops(73)).toEqual([]);
@@ -6434,7 +6450,7 @@ describe('reticulum chat manager', () => {
     expect(direct.filter(({ wire }) => wire.k === 'event_offer')).toHaveLength(2);
     expect(fanout).toContainEqual(expect.objectContaining({
       t: 'RCHAT',
-      k: 'group_digest',
+      k: 'group_state_digest',
       g: 71,
     }));
     manager.close();
@@ -6584,8 +6600,12 @@ describe('reticulum chat manager', () => {
       'b'.repeat(32)
     );
 
-    await flushQueuedWork();
-    expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
+    let eventReq = direct.find((wire) => wire.k === 'event_req');
+    for (let attempt = 0; !eventReq && attempt < 20; attempt += 1) {
+      await flushQueuedWork();
+      eventReq = direct.find((wire) => wire.k === 'event_req');
+    }
+    expect(eventReq).toMatchObject({
       k: 'event_req',
       g: 9,
       q: expect.objectContaining({ id: event.eventId }),
@@ -10183,7 +10203,7 @@ describe('reticulum chat manager', () => {
       await new Promise((resolve) => setTimeout(resolve, 700));
 
       const digestGroupIds = sent
-        .filter((wire) => wire.k === 'group_digest')
+        .filter((wire) => wire.k === 'group_state_digest' || wire.k === 'group_digest')
         .map((wire) => Number(wire.g));
       expect(digestGroupIds).toContain(21);
       expect(digestGroupIds).toContain(25);
@@ -11967,7 +11987,7 @@ describe('reticulum chat manager', () => {
     expect(sent).toContainEqual(
       expect.objectContaining({
         t: 'RCHAT',
-        k: 'group_digest',
+        k: 'group_state_digest',
         g: 77,
       })
     );
@@ -12720,7 +12740,7 @@ describe('reticulum chat manager', () => {
     expect(sent).toContainEqual(
       expect.objectContaining({
         t: 'RCHAT',
-        k: 'group_digest',
+        k: 'group_state_digest',
         g: groupId,
       })
     );

@@ -231,6 +231,21 @@ export type ReticulumChatMissingRangeState = {
   nextAttemptAt: number;
 };
 
+export type ReticulumChatMetadataSnapshotRecord = {
+  groupId: number;
+  snapshotId: string;
+  version: number;
+  createdAt: number;
+  latestEventId: string;
+  latestFeedTimestamp: number;
+  snapshotHash: string;
+  adminAddress: string;
+  adminPublicKey: string;
+  signature: string;
+  channels: ReticulumGroupChannel[];
+  categories: ReticulumGroupCategory[];
+};
+
 type EventRow = {
   event_id: string;
   group_id: number;
@@ -354,6 +369,21 @@ type GroupKeyRequestRow = {
   status: string;
 };
 
+type MetadataSnapshotRow = {
+  group_id: number;
+  snapshot_id: string;
+  version: number;
+  created_at: number;
+  latest_event_id: string;
+  latest_feed_timestamp: number;
+  snapshot_hash: string;
+  admin_address: string;
+  admin_public_key: string;
+  signature: string;
+  channels_json: string;
+  categories_json: string;
+};
+
 function relayRowToEntry(row: RelayCacheRow): ReticulumChatRelayCacheEntry {
   return {
     blobId: row.blob_id,
@@ -371,6 +401,39 @@ function relayRowToEntry(row: RelayCacheRow): ReticulumChatRelayCacheEntry {
     sourcePeerHash: row.source_peer_hash,
     servedCount: row.served_count,
     lastServedAt: row.last_served_at,
+  };
+}
+
+function metadataSnapshotRowToRecord(
+  row: MetadataSnapshotRow
+): ReticulumChatMetadataSnapshotRecord {
+  let channels: ReticulumGroupChannel[] = [];
+  let categories: ReticulumGroupCategory[] = [];
+  try {
+    const parsedChannels = JSON.parse(row.channels_json);
+    if (Array.isArray(parsedChannels)) channels = parsedChannels as ReticulumGroupChannel[];
+  } catch {
+    channels = [];
+  }
+  try {
+    const parsedCategories = JSON.parse(row.categories_json);
+    if (Array.isArray(parsedCategories)) categories = parsedCategories as ReticulumGroupCategory[];
+  } catch {
+    categories = [];
+  }
+  return {
+    groupId: row.group_id,
+    snapshotId: row.snapshot_id,
+    version: row.version,
+    createdAt: row.created_at,
+    latestEventId: row.latest_event_id,
+    latestFeedTimestamp: row.latest_feed_timestamp,
+    snapshotHash: row.snapshot_hash,
+    adminAddress: row.admin_address,
+    adminPublicKey: row.admin_public_key,
+    signature: row.signature,
+    channels,
+    categories,
   };
 }
 
@@ -886,6 +949,8 @@ export class ReticulumChatDatabase {
     { ownEvent: boolean; lastServedAt: number; storedAt: number; wireBytes: number }
   >();
   private stmtInsertEvent: Statement;
+  private stmtInsertEventHeaderV2: Statement;
+  private stmtInsertEventPayloadV2: Statement;
   private stmtGetEvent: Statement;
   private stmtHasEvent: Statement;
   private stmtIsEventScrubbed: Statement;
@@ -946,6 +1011,7 @@ export class ReticulumChatDatabase {
   private stmtGetCategories: Statement;
   private stmtGetCategory: Statement;
   private stmtDeleteCategory: Statement;
+  private stmtDeleteChannel: Statement;
   private stmtClearChannelCategory: Statement;
   private stmtGetLatestCursor: Statement;
   private stmtGetOldestCursor: Statement;
@@ -985,6 +1051,9 @@ export class ReticulumChatDatabase {
   private stmtUpsertGroupKeyRequest: Statement;
   private stmtGetPendingGroupKeyRequests: Statement;
   private stmtMarkGroupKeyRequestStatus: Statement;
+  private stmtUpsertMetadataSnapshot: Statement;
+  private stmtGetLatestMetadataSnapshot: Statement;
+  private stmtGetMetadataSnapshotByHash: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -1013,6 +1082,26 @@ export class ReticulumChatDatabase {
          @timestamp, @feed_timestamp, @event_type, @target_event_id, @reply_to_event_id,
          @encrypted_payload, @payload_hash, @mention_address_hashes, @mention_targets, @signature, @own_event,
          @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id, @expires_at)
+    `);
+    this.stmtInsertEventHeaderV2 = this.db.prepare(`
+      INSERT OR IGNORE INTO rchat_event_headers
+        (event_id, group_id, channel_id, author_address, author_public_key,
+         author_seq, timestamp, feed_timestamp, event_type, target_event_id,
+         reply_to_event_id, payload_hash, mention_address_hashes, mention_targets,
+         signature, own_event, last_served_at, stored_at, accepted_at, wire_bytes,
+         retention_state, scrubbed_at, expires_at)
+      VALUES
+        (@event_id, @group_id, @channel_id, @author_address, @author_public_key,
+         @author_seq, @timestamp, @feed_timestamp, @event_type, @target_event_id,
+         @reply_to_event_id, @payload_hash, @mention_address_hashes, @mention_targets,
+         @signature, @own_event, @last_served_at, @stored_at, @accepted_at, @wire_bytes,
+         @retention_state, @scrubbed_at, @expires_at)
+    `);
+    this.stmtInsertEventPayloadV2 = this.db.prepare(`
+      INSERT OR IGNORE INTO rchat_event_payloads
+        (event_id, encrypted_payload, payload_hash, retained_until, stored_at)
+      VALUES
+        (@event_id, @encrypted_payload, @payload_hash, @retained_until, @stored_at)
     `);
     this.stmtGetEvent = this.db.prepare(
       `SELECT * FROM reticulum_chat_events WHERE event_id = ? AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL} LIMIT 1`
@@ -1495,8 +1584,32 @@ export class ReticulumChatDatabase {
       WHERE group_id = ? AND category_id = ?
       LIMIT 1
     `);
+    this.stmtUpsertMetadataSnapshot = this.db.prepare(`
+      INSERT OR REPLACE INTO rchat_metadata_snapshots
+        (group_id, snapshot_id, version, created_at, latest_event_id,
+         latest_feed_timestamp, snapshot_hash, admin_address, admin_public_key,
+         signature, channels_json, categories_json)
+      VALUES
+        (@group_id, @snapshot_id, @version, @created_at, @latest_event_id,
+         @latest_feed_timestamp, @snapshot_hash, @admin_address, @admin_public_key,
+         @signature, @channels_json, @categories_json)
+    `);
+    this.stmtGetLatestMetadataSnapshot = this.db.prepare(`
+      SELECT * FROM rchat_metadata_snapshots
+      WHERE group_id = ?
+      ORDER BY version DESC, created_at DESC, snapshot_id DESC
+      LIMIT 1
+    `);
+    this.stmtGetMetadataSnapshotByHash = this.db.prepare(`
+      SELECT * FROM rchat_metadata_snapshots
+      WHERE group_id = ? AND snapshot_hash = ?
+      LIMIT 1
+    `);
     this.stmtDeleteCategory = this.db.prepare(
       'DELETE FROM reticulum_chat_categories WHERE group_id = ? AND category_id = ?'
+    );
+    this.stmtDeleteChannel = this.db.prepare(
+      'DELETE FROM reticulum_chat_channels WHERE group_id = ? AND channel_id = ?'
     );
     this.stmtClearChannelCategory = this.db.prepare(
       'UPDATE reticulum_chat_channels SET category_id = NULL WHERE group_id = ? AND category_id = ?'
@@ -2237,6 +2350,7 @@ export class ReticulumChatDatabase {
     });
     const inserted = result.changes > 0;
     if (inserted) {
+      this.insertEventV2Mirror(event, ownEvent, feedTimestamp, now, expiresAt);
       this.clearMissingRangesForEvent(event);
       this.memoryEvents.set(event.eventId, event);
       this.memoryMeta.set(event.eventId, {
@@ -2260,6 +2374,49 @@ export class ReticulumChatDatabase {
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return inserted;
+  }
+
+  private insertEventV2Mirror(
+    event: ReticulumChatEvent,
+    ownEvent: boolean,
+    feedTimestamp: number,
+    now: number,
+    expiresAt: number | null
+  ): void {
+    const payloadRetainedUntil = expiresAt ?? null;
+    const wireBytes = eventWireBytes(event);
+    this.stmtInsertEventHeaderV2.run({
+      event_id: event.eventId,
+      group_id: event.groupId,
+      channel_id: normalizeReticulumChatChannelId(event.channelId),
+      author_address: event.authorAddress,
+      author_public_key: event.authorPublicKey,
+      author_seq: event.authorSeq,
+      timestamp: event.timestamp,
+      feed_timestamp: feedTimestamp,
+      event_type: event.eventType,
+      target_event_id: event.targetEventId ?? null,
+      reply_to_event_id: event.replyToEventId ?? null,
+      payload_hash: event.payloadHash,
+      mention_address_hashes: serializeMentionAddressHashes(event.mentionAddressHashes),
+      mention_targets: serializeMentionTargets(event.mentionTargets),
+      signature: event.signature,
+      own_event: ownEvent ? 1 : 0,
+      last_served_at: now,
+      stored_at: now,
+      accepted_at: now,
+      wire_bytes: wireBytes,
+      retention_state: 'full',
+      scrubbed_at: null,
+      expires_at: expiresAt,
+    });
+    this.stmtInsertEventPayloadV2.run({
+      event_id: event.eventId,
+      encrypted_payload: event.encryptedPayload,
+      payload_hash: event.payloadHash,
+      retained_until: payloadRetainedUntil,
+      stored_at: now,
+    });
   }
 
   private applyDeleteScrubForEvent(event: ReticulumChatEvent): void {
@@ -5049,6 +5206,90 @@ export class ReticulumChatDatabase {
     return result.changes > 0;
   }
 
+  upsertMetadataSnapshot(snapshot: ReticulumChatMetadataSnapshotRecord): boolean {
+    if (!Number.isInteger(snapshot.groupId) || snapshot.groupId <= 0) return false;
+    if (!snapshot.snapshotId || !snapshot.snapshotHash) return false;
+    const result = this.stmtUpsertMetadataSnapshot.run({
+      group_id: snapshot.groupId,
+      snapshot_id: snapshot.snapshotId,
+      version: Math.max(1, Math.floor(snapshot.version)),
+      created_at: Math.max(0, Math.floor(snapshot.createdAt)),
+      latest_event_id: snapshot.latestEventId || '',
+      latest_feed_timestamp: Math.max(0, Math.floor(snapshot.latestFeedTimestamp || 0)),
+      snapshot_hash: snapshot.snapshotHash,
+      admin_address: snapshot.adminAddress,
+      admin_public_key: snapshot.adminPublicKey,
+      signature: snapshot.signature,
+      channels_json: JSON.stringify(snapshot.channels),
+      categories_json: JSON.stringify(snapshot.categories),
+    });
+    return result.changes > 0;
+  }
+
+  applyMetadataSnapshot(snapshot: ReticulumChatMetadataSnapshotRecord): boolean {
+    if (
+      !this.upsertMetadataSnapshot(snapshot) &&
+      !this.getMetadataSnapshotByHash(snapshot.groupId, snapshot.snapshotHash)
+    ) {
+      return false;
+    }
+    return this.applyMetadataSnapshotProjection(snapshot);
+  }
+
+  applyStoredMetadataSnapshotProjection(snapshot: ReticulumChatMetadataSnapshotRecord): boolean {
+    return this.applyMetadataSnapshotProjection(snapshot);
+  }
+
+  private applyMetadataSnapshotProjection(snapshot: ReticulumChatMetadataSnapshotRecord): boolean {
+    const keepChannels = new Set(
+      snapshot.channels.map((channel) => normalizeReticulumChatChannelId(channel.channelId))
+    );
+    const keepCategories = new Set(
+      snapshot.categories
+        .map((category) => normalizeReticulumChatCategoryId(category.categoryId))
+        .filter(Boolean)
+    );
+    for (const category of snapshot.categories) {
+      this.upsertCategory(category);
+    }
+    for (const channel of snapshot.channels) {
+      this.upsertChannel(channel);
+    }
+    for (const existing of this.getChannels(snapshot.groupId, true)) {
+      if (
+        existing.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+        existing.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+      ) {
+        continue;
+      }
+      if (keepChannels.has(existing.channelId)) continue;
+      this.memoryChannels.delete(`${snapshot.groupId}:${existing.channelId}`);
+      this.stmtDeleteChannel.run(snapshot.groupId, existing.channelId);
+    }
+    for (const existing of this.getCategories(snapshot.groupId)) {
+      if (keepCategories.has(existing.categoryId)) continue;
+      this.deleteCategory(snapshot.groupId, existing.categoryId);
+    }
+    return true;
+  }
+
+  getLatestMetadataSnapshot(groupId: number): ReticulumChatMetadataSnapshotRecord | null {
+    const row = this.stmtGetLatestMetadataSnapshot.get(groupId) as MetadataSnapshotRow | undefined;
+    return row ? metadataSnapshotRowToRecord(row) : null;
+  }
+
+  getMetadataSnapshotByHash(
+    groupId: number,
+    snapshotHash: string
+  ): ReticulumChatMetadataSnapshotRecord | null {
+    const normalizedHash = String(snapshotHash || '').trim().toLowerCase();
+    if (!normalizedHash) return null;
+    const row = this.stmtGetMetadataSnapshotByHash.get(groupId, normalizedHash) as
+      | MetadataSnapshotRow
+      | undefined;
+    return row ? metadataSnapshotRowToRecord(row) : null;
+  }
+
   deleteCategory(groupId: number, categoryId: string): boolean {
     const normalizedCategoryId = normalizeReticulumChatCategoryId(categoryId);
     if (!normalizedCategoryId) return false;
@@ -5841,6 +6082,76 @@ export class ReticulumChatDatabase {
         ON reticulum_chat_events (target_event_id, timestamp, event_id);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
         ON reticulum_chat_events (own_event, last_served_at, timestamp);
+      CREATE TABLE IF NOT EXISTS rchat_event_headers (
+        event_id TEXT PRIMARY KEY,
+        group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL DEFAULT 'general',
+        author_address TEXT NOT NULL,
+        author_public_key TEXT NOT NULL,
+        author_seq INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        feed_timestamp INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        target_event_id TEXT,
+        reply_to_event_id TEXT,
+        payload_hash TEXT NOT NULL,
+        mention_address_hashes TEXT NOT NULL DEFAULT '[]',
+        mention_targets TEXT NOT NULL DEFAULT '[]',
+        signature TEXT NOT NULL,
+        own_event INTEGER NOT NULL DEFAULT 0,
+        last_served_at INTEGER NOT NULL,
+        stored_at INTEGER NOT NULL,
+        accepted_at INTEGER NOT NULL,
+        wire_bytes INTEGER NOT NULL,
+        retention_state TEXT NOT NULL DEFAULT 'full',
+        scrubbed_at INTEGER,
+        expires_at INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rchat_event_headers_author_seq
+        ON rchat_event_headers (group_id, author_address, author_seq);
+      CREATE INDEX IF NOT EXISTS idx_rchat_event_headers_group_recent
+        ON rchat_event_headers (group_id, timestamp DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_rchat_event_headers_feed
+        ON rchat_event_headers (group_id, channel_id, feed_timestamp, event_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_event_headers_payload
+        ON rchat_event_headers (payload_hash);
+      CREATE TABLE IF NOT EXISTS rchat_event_payloads (
+        event_id TEXT PRIMARY KEY,
+        encrypted_payload TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        retained_until INTEGER,
+        stored_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_event_payloads_retention
+        ON rchat_event_payloads (retained_until, stored_at);
+      CREATE TABLE IF NOT EXISTS rchat_metadata_snapshots (
+        group_id INTEGER NOT NULL,
+        snapshot_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        latest_event_id TEXT NOT NULL DEFAULT '',
+        latest_feed_timestamp INTEGER NOT NULL DEFAULT 0,
+        snapshot_hash TEXT NOT NULL,
+        admin_address TEXT NOT NULL,
+        admin_public_key TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        channels_json TEXT NOT NULL,
+        categories_json TEXT NOT NULL,
+        PRIMARY KEY (group_id, snapshot_id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rchat_metadata_snapshots_hash
+        ON rchat_metadata_snapshots (group_id, snapshot_hash);
+      CREATE INDEX IF NOT EXISTS idx_rchat_metadata_snapshots_latest
+        ON rchat_metadata_snapshots (group_id, version DESC, created_at DESC);
+      CREATE TABLE IF NOT EXISTS rchat_sync_state (
+        scope TEXT NOT NULL,
+        group_id INTEGER NOT NULL,
+        peer_hash TEXT NOT NULL DEFAULT '',
+        state_key TEXT NOT NULL,
+        state_value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (scope, group_id, peer_hash, state_key)
+      );
       CREATE TABLE IF NOT EXISTS rchat_message_projection (
         root_event_id TEXT PRIMARY KEY,
         group_id INTEGER NOT NULL,
@@ -6279,6 +6590,18 @@ export class ReticulumChatDatabase {
       {
         table: 'rchat_message_projection',
         columns: ['expires_at', 'has_attachment'],
+      },
+      {
+        table: 'rchat_event_headers',
+        columns: ['event_id', 'payload_hash', 'retention_state'],
+      },
+      {
+        table: 'rchat_event_payloads',
+        columns: ['event_id', 'encrypted_payload', 'retained_until'],
+      },
+      {
+        table: 'rchat_metadata_snapshots',
+        columns: ['group_id', 'snapshot_hash', 'channels_json', 'categories_json'],
       },
       {
         table: 'reticulum_chat_channels',
