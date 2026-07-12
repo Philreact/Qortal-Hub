@@ -1041,6 +1041,7 @@ const RETICULUM_CHAT_PULL_RETRY_MS = 5_000;
 const RETICULUM_CHAT_PULL_MAX_ATTEMPTS = 8;
 const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
+const RETICULUM_CHAT_LATEST_PULL_FALLBACK_MS = 2_000;
 const RETICULUM_CHAT_EVENT_OFFER_CONCURRENCY = 4;
 const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 const RETICULUM_LAND_CHAT_RESOURCE_TTL_MS = 2 * 60 * 1000;
@@ -3160,6 +3161,7 @@ export class ReticulumChatManager extends EventEmitter {
   private groupAdminValidationCache = new Map<string, { isAdmin: boolean; expiresAt: number }>();
   private requestedEventPulls = new Map<string, number>();
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
+  private latestEventPullFallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private outboundRelayCachedEventResources = new Map<
     string,
     { groupId: number; eventId: string; event: ReticulumChatEvent; expiresAt: number }
@@ -3698,6 +3700,7 @@ export class ReticulumChatManager extends EventEmitter {
       clearTimeout(this.eventPullQueueTimer);
       this.eventPullQueueTimer = null;
     }
+    this.clearLatestEventPullFallbackTimers();
     if (this.controlRetryTimer) {
       clearTimeout(this.controlRetryTimer);
       this.controlRetryTimer = null;
@@ -8778,6 +8781,25 @@ export class ReticulumChatManager extends EventEmitter {
         remoteDigestNeedsRepair
       );
     if (
+      needsNewestGroupRepair &&
+      remoteGroupLatest &&
+      this.enqueueDigestLatestEventPull(
+        providerPeerHash || peerHash,
+        groupId,
+        remoteGroupLatest,
+        remoteDigestNeedsRepair ? 'group_digest_mismatch' : 'remote_newer_latest'
+      )
+    ) {
+      this.scheduleLatestEventPullFallback({
+        groupId,
+        peerHash,
+        providerPeerHash: providerPeerHash || peerHash,
+        latest: remoteGroupLatest,
+        reason: remoteDigestNeedsRepair ? 'group_digest_mismatch' : 'remote_newer_latest',
+      });
+      return stats;
+    }
+    if (
       remoteDigestNeedsRepair &&
       remoteGroupLatest &&
       this.shouldRequestMetadataRepair(providerPeerHash || peerHash, groupId)
@@ -11626,6 +11648,109 @@ export class ReticulumChatManager extends EventEmitter {
     this.scheduleEventPullQueue();
   }
 
+  private enqueueDigestLatestEventPull(
+    peerHash: string,
+    groupId: number,
+    latest: ReticulumChatFeedCursor,
+    reason: string
+  ): boolean {
+    const peerKey = peerHash.trim().toLowerCase();
+    const eventId = String(latest.eventId || '').trim();
+    if (!peerKey || !eventId || !this.signLocalFields) return false;
+    if (this.db.hasEvent(eventId)) return false;
+    const queueKey = this.eventPullKey(groupId, eventId);
+    const existing = this.pendingEventPulls.get(queueKey);
+    if (existing && existing.attempts >= RETICULUM_CHAT_PULL_MAX_ATTEMPTS) {
+      return false;
+    }
+    this.enqueueEventPull(peerKey, {
+      eventId,
+      groupId,
+      channelId: RETICULUM_CHAT_ALL_CHANNELS_ID,
+      authorAddress: '',
+      authorSeq: 0,
+      timestamp: latest.feedTimestamp,
+      eventType: 'message',
+      payloadHash: '',
+      mentionAddressHashes: [],
+    });
+    loggerLog(
+      `[ReticulumChat] latest_event_pull_queued group=${groupId} peer=${peerKey.slice(0, 16)} event=${eventId} reason=${reason}`
+    );
+    return true;
+  }
+
+  private latestEventPullFallbackKey(
+    groupId: number,
+    eventId: string,
+    providerPeerHash: string
+  ): string {
+    return `${groupId}:${eventId}:${providerPeerHash.trim().toLowerCase()}`;
+  }
+
+  private clearLatestEventPullFallbackTimers(): void {
+    for (const timer of this.latestEventPullFallbackTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.latestEventPullFallbackTimers.clear();
+  }
+
+  private scheduleLatestEventPullFallback(input: {
+    groupId: number;
+    peerHash: string;
+    providerPeerHash: string;
+    latest: ReticulumChatFeedCursor;
+    reason: string;
+  }): void {
+    const providerPeerHash = input.providerPeerHash.trim().toLowerCase();
+    const eventId = input.latest.eventId.trim();
+    if (!providerPeerHash || !eventId) return;
+    const key = this.latestEventPullFallbackKey(input.groupId, eventId, providerPeerHash);
+    if (this.latestEventPullFallbackTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.latestEventPullFallbackTimers.delete(key);
+      if (this.isClosed || this.db.hasEvent(eventId)) return;
+      const pullItem = this.pendingEventPulls.get(this.eventPullKey(input.groupId, eventId));
+      if (pullItem && pullItem.attempts === 0) return;
+      loggerWarn(
+        `[ReticulumChat] latest_event_pull_fallback group=${input.groupId} peer=${providerPeerHash.slice(0, 16)} event=${eventId} attempts=${pullItem?.attempts ?? 0} reason=${input.reason}`
+      );
+      if (this.shouldRequestMetadataRepair(providerPeerHash, input.groupId)) {
+        void this.requestLinkedHistoryPage(
+          providerPeerHash,
+          input.groupId,
+          RETICULUM_CHAT_ALL_CHANNELS_ID,
+          input.latest,
+          'before',
+          true,
+          'latest-event-pull-fallback',
+          input.peerHash,
+          'metadata'
+        );
+      }
+      if (
+        this.shouldRequestGroupRepair(
+          input.peerHash,
+          input.groupId,
+          RETICULUM_CHAT_ALL_CHANNELS_ID
+        )
+      ) {
+        void this.requestLinkedHistoryPage(
+          providerPeerHash,
+          input.groupId,
+          RETICULUM_CHAT_ALL_CHANNELS_ID,
+          input.latest,
+          'before',
+          true,
+          'latest-event-pull-fallback',
+          input.peerHash
+        );
+      }
+    }, RETICULUM_CHAT_LATEST_PULL_FALLBACK_MS);
+    timer.unref?.();
+    this.latestEventPullFallbackTimers.set(key, timer);
+  }
+
   private enqueueRelayQuery(
     groupId: number,
     eventIds: string[],
@@ -11745,6 +11870,13 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (!result.ok) {
       const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      if (failed.reason === 'wire-too-large') {
+        loggerWarn(
+          `[ReticulumChat] Event pull request too large for ${hint.eventId}; falling back to page repair`
+        );
+        this.pendingEventPulls.delete(this.eventPullKey(hint.groupId, hint.eventId));
+        return;
+      }
       loggerWarn(
         `[ReticulumChat] Event pull request failed for ${hint.eventId}:`,
         failed.error ?? failed.reason
@@ -17046,6 +17178,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearLandStateQueue();
     this.clearLandAuthQueue();
     this.clearChatResourceQueue();
+    this.clearLatestEventPullFallbackTimers();
   }
 
   private onBridgeChatMessage = (

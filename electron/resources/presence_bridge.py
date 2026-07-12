@@ -6135,6 +6135,9 @@ def _reticulum_path_snapshot(destination_hash: bytes) -> Dict[str, Any]:
         "hops": None,
         "next_hop": "",
         "interface": "",
+        "timestamp": None,
+        "expires": None,
+        "packet": "",
     }
     try:
         info["has_path"] = bool(RNS.Transport.has_path(destination_hash))
@@ -6160,6 +6163,22 @@ def _reticulum_path_snapshot(destination_hash: bytes) -> Dict[str, Any]:
             info["interface"] = str(iface)
     except Exception:
         pass
+    try:
+        path_table = getattr(RNS.Transport, "path_table", None)
+        entry = path_table.get(destination_hash) if isinstance(path_table, dict) else None
+        if isinstance(entry, (list, tuple)):
+            if len(entry) > 0 and isinstance(entry[0], (int, float)):
+                info["timestamp"] = float(entry[0])
+            if len(entry) > 3 and isinstance(entry[3], (int, float)):
+                info["expires"] = float(entry[3])
+            if len(entry) > 6:
+                packet_hash = entry[6]
+                if isinstance(packet_hash, (bytes, bytearray)):
+                    info["packet"] = bytes(packet_hash).hex()
+                elif packet_hash is not None:
+                    info["packet"] = str(packet_hash)
+    except Exception:
+        pass
     return info
 
 
@@ -6168,9 +6187,23 @@ def _format_reticulum_path_snapshot(info: Dict[str, Any]) -> str:
     hops_label = str(hops) if isinstance(hops, int) else "na"
     next_hop = str(info.get("next_hop") or "na")
     interface = str(info.get("interface") or "na").replace(" ", "_")
+    timestamp = info.get("timestamp")
+    expires = info.get("expires")
+    age_ms = (
+        str(max(0, int((time.time() - float(timestamp)) * 1000.0)))
+        if isinstance(timestamp, (int, float)) and float(timestamp) > 0
+        else "na"
+    )
+    expires_in_ms = (
+        str(int((float(expires) - time.time()) * 1000.0))
+        if isinstance(expires, (int, float))
+        else "na"
+    )
+    packet = str(info.get("packet") or "na")
     return (
         f"has_path={str(info.get('has_path') is True).lower()} "
-        f"hops={hops_label} next_hop={next_hop} interface={interface}"
+        f"hops={hops_label} next_hop={next_hop} interface={interface} "
+        f"age_ms={age_ms} expires_in_ms={expires_in_ms} packet={packet}"
     )
 
 
@@ -6192,10 +6225,55 @@ def _drop_reticulum_path(destination_hash: bytes) -> bool:
             f"peer={destination_hash_hex(destination_hash)} via=transport err={exc}"
         )
     try:
-        RNS.Transport.mark_path_unknown_state(destination_hash)
+        RNS.Transport.mark_path_unresponsive(destination_hash)
     except Exception:
         pass
     return dropped
+
+
+def _path_snapshot_is_fresh(
+    before: Dict[str, Any],
+    after: Dict[str, Any],
+    refresh_started_at: float,
+) -> bool:
+    if after.get("has_path") is not True:
+        return False
+    after_timestamp = after.get("timestamp")
+    if isinstance(after_timestamp, (int, float)) and float(after_timestamp) >= refresh_started_at:
+        return True
+    before_packet = str(before.get("packet") or "")
+    after_packet = str(after.get("packet") or "")
+    if after_packet and before_packet and after_packet != before_packet:
+        return True
+    before_had_path = before.get("has_path") is True
+    if (
+        not before_had_path
+        and isinstance(after_timestamp, (int, float))
+        and float(after_timestamp) > 0
+    ):
+        return True
+    return False
+
+
+def _await_fresh_destination_path(
+    destination_hash: bytes,
+    timeout_seconds: float,
+    before: Dict[str, Any],
+    refresh_started_at: float,
+) -> tuple[bool, Dict[str, Any]]:
+    if timeout_seconds <= 0:
+        after = _reticulum_path_snapshot(destination_hash)
+        return _path_snapshot_is_fresh(before, after, refresh_started_at), after
+    deadline = time.time() + timeout_seconds
+    after = _reticulum_path_snapshot(destination_hash)
+    while True:
+        after = _reticulum_path_snapshot(destination_hash)
+        if _path_snapshot_is_fresh(before, after, refresh_started_at):
+            return True, after
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False, after
+        time.sleep(min(_PACKET_PATH_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _force_overlay_peer_path_refresh(
@@ -6229,6 +6307,7 @@ def _force_overlay_peer_path_refresh(
         return False
 
     before = _reticulum_path_snapshot(destination_hash)
+    refresh_started_at = time.time()
     dropped = _drop_reticulum_path(destination_hash)
     if st is not None:
         st["last_overlay_link_hard_refresh_at"] = now
@@ -6247,14 +6326,12 @@ def _force_overlay_peer_path_refresh(
             if await_seconds is None
             else max(0.0, float(await_seconds or 0.0))
         )
-        if wait_seconds > 0:
-            resolved = _await_destination_path(destination_hash, wait_seconds)
-        else:
-            try:
-                resolved = bool(RNS.Transport.has_path(destination_hash))
-            except Exception:
-                resolved = False
-        after = _reticulum_path_snapshot(destination_hash)
+        resolved, after = _await_fresh_destination_path(
+            destination_hash,
+            wait_seconds,
+            before,
+            refresh_started_at,
+        )
         log(
             f"[presence_bridge] target={target} overlay_hard_path_refresh_request "
             f"peer={peer} resolved={str(resolved).lower()} "
@@ -6303,6 +6380,7 @@ def _request_fresh_link_path(
 ) -> bool:
     peer = str(peer_key or "").strip().lower()
     had_path = _reticulum_has_path(destination_hash)
+    before = _reticulum_path_snapshot(destination_hash)
     now = time.time()
     if had_path and not force_refresh:
         log(
@@ -6311,10 +6389,12 @@ def _request_fresh_link_path(
         )
         return True
     if had_path and force_refresh:
+        _drop_reticulum_path(destination_hash)
         log(
-            f"[presence_bridge] target={target} cached_path_refresh_preserved "
+            f"[presence_bridge] target={target} cached_path_force_refresh "
             f"peer={peer or destination_hash_hex(destination_hash)} reason={reason}"
         )
+    refresh_started_at = time.time()
     try:
         RNS.Transport.request_path(destination_hash)
         st = _peer_lifecycle.setdefault(
@@ -6342,11 +6422,21 @@ def _request_fresh_link_path(
         return False
     if await_seconds <= 0:
         return False
-    resolved = _await_destination_path(destination_hash, await_seconds)
+    if force_refresh:
+        resolved, after = _await_fresh_destination_path(
+            destination_hash,
+            await_seconds,
+            before,
+            refresh_started_at,
+        )
+    else:
+        resolved = _await_destination_path(destination_hash, await_seconds)
+        after = _reticulum_path_snapshot(destination_hash)
     log(
         f"[presence_bridge] target={target} path_await "
         f"peer={peer or destination_hash_hex(destination_hash)} "
-        f"resolved={str(resolved).lower()} await={await_seconds} reason={reason}"
+        f"resolved={str(resolved).lower()} await={await_seconds} reason={reason} "
+        f"after={_format_reticulum_path_snapshot(after)}"
     )
     return resolved
 
@@ -6363,6 +6453,24 @@ def _lifecycle_state_for_peer(peer_key: str) -> Optional[Dict[str, Any]]:
             "last_request_path_at": None,
             "ts_seed_until": None,
         },
+    )
+
+
+def _peer_has_recent_unestablished_link_failure(
+    peer_key: str,
+    *,
+    within_seconds: float = _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS,
+) -> bool:
+    peer = str(peer_key or "").strip().lower()
+    if not peer:
+        return False
+    st = _peer_lifecycle.get(peer) or {}
+    failures = int(st.get("unestablished_link_failures") or 0)
+    failed_at = st.get("last_unestablished_link_failure_at")
+    return (
+        failures > 0
+        and isinstance(failed_at, (int, float))
+        and time.time() - float(failed_at) <= within_seconds
     )
 
 
@@ -6709,6 +6817,8 @@ def _request_and_await_destination_path(
     peer_key: str = "",
     target: str = "presence-reticulum",
 ) -> tuple[bool, bool]:
+    before: Optional[Dict[str, Any]] = None
+    refresh_started_at = 0.0
     if _reticulum_has_path(destination_hash):
         if not force_refresh_cached_path:
             if nudge_cached_path:
@@ -6720,8 +6830,11 @@ def _request_and_await_destination_path(
                     cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
                 )
             return True, False
+        before = _reticulum_path_snapshot(destination_hash)
+        _drop_reticulum_path(destination_hash)
+        refresh_started_at = time.time()
         log(
-            f"[presence_bridge] target={target} cached_path_refresh_preserved "
+            f"[presence_bridge] target={target} cached_path_force_refresh "
             f"peer={peer_key or destination_hash_hex(destination_hash)} "
             f"reason={log_context}:refresh_cached_path"
         )
@@ -6736,6 +6849,21 @@ def _request_and_await_destination_path(
             f"{log_context} err={exc}"
         )
         return False, requested
+
+    if force_refresh_cached_path and before is not None:
+        resolved, after = _await_fresh_destination_path(
+            destination_hash,
+            timeout_seconds,
+            before,
+            refresh_started_at,
+        )
+        log(
+            f"[presence_bridge] target={target} path_force_refresh_await "
+            f"peer={peer_key or destination_hash_hex(destination_hash)} "
+            f"resolved={str(resolved).lower()} await={timeout_seconds} "
+            f"after={_format_reticulum_path_snapshot(after)}"
+        )
+        return resolved, requested
 
     return _await_destination_path(destination_hash, timeout_seconds), requested
 
@@ -7236,14 +7364,31 @@ def _overlay_recovery_job(peer_key: str, reason: str, force_refresh: bool) -> No
                 f"peer={peer_key} reason={reason} link={existing_link_id}"
             )
             return
+        refresh_resolved = True
         if force_refresh:
-            _force_overlay_peer_path_refresh(
+            refresh_resolved = _force_overlay_peer_path_refresh(
                 peer_key,
                 target="presence-reticulum",
                 reason=reason,
                 cooldown_seconds=_OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS,
-                await_seconds=0.0,
+                await_seconds=_UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS,
             )
+        if force_refresh and not refresh_resolved:
+            log(
+                "[presence_bridge] target=presence-reticulum zero_fanout_peer_open_deferred "
+                f"peer={peer_key} reason={reason} cause=fresh_path_missing"
+            )
+            timer = threading.Timer(
+                _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS,
+                lambda: _overlay_enqueue_peer_recovery(
+                    peer_key,
+                    reason,
+                    force_refresh=True,
+                ),
+            )
+            timer.daemon = True
+            timer.start()
+            return
         log(
             "[presence_bridge] target=presence-reticulum zero_fanout_peer_open "
             f"peer={peer_key} reason={reason} force_refresh={str(force_refresh).lower()}"
@@ -7691,6 +7836,7 @@ def _maybe_request_path_after_unestablished_link_close(
             )
         else:
             before = _reticulum_path_snapshot(destination_hash)
+            refresh_started_at = time.time()
             dropped = _drop_reticulum_path(destination_hash)
             if st is not None:
                 st["last_unestablished_link_hard_refresh_at"] = now
@@ -7710,11 +7856,12 @@ def _maybe_request_path_after_unestablished_link_close(
             )
             try:
                 RNS.Transport.request_path(destination_hash)
-                resolved = _await_destination_path(
+                resolved, after = _await_fresh_destination_path(
                     destination_hash,
                     _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS,
+                    before,
+                    refresh_started_at,
                 )
-                after = _reticulum_path_snapshot(destination_hash)
                 log(
                     f"[presence_bridge] target={target} hard_path_refresh_request "
                     f"peer={peer_hash} resolved={str(resolved).lower()} "
@@ -10089,6 +10236,15 @@ def _parse_qchat_file_peer_identity(peer_hash: str, pk_b64: Any):
 
 def _request_qchat_file_path(destination_hash: bytes, peer_hash: str) -> bool:
     if _reticulum_has_path(destination_hash):
+        if _peer_has_recent_unestablished_link_failure(peer_hash):
+            return _request_fresh_link_path(
+                destination_hash,
+                peer_hash,
+                target="qchat-file-reticulum",
+                reason="qchat_file_link_open_after_unestablished_failure",
+                await_seconds=_QCHAT_FILE_LINK_OPEN_PATH_AWAIT_SECONDS,
+                force_refresh=True,
+            )
         _nudge_cached_reticulum_path(
             destination_hash,
             peer_hash,

@@ -4947,7 +4947,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('opens a linked history page resource when a group digest shows missing recent history', async () => {
+  it('requests the exact latest event when a group digest shows missing recent history', async () => {
     const providerHash = 'c'.repeat(32);
     const accepts: Array<Record<string, unknown>> = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
@@ -4987,44 +4987,16 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(accepts).toHaveLength(2);
-    expect(accepts[0]).toEqual(
-      expect.objectContaining({
-        peerPresenceHash: providerHash,
-        transferId: expect.any(String),
-        size: 1024 * 1024,
-        metadata: expect.objectContaining({
-          logicalResourceType: 'reticulum_chat_history_page',
-          groupId: 69,
-          channelId: '*',
-          direction: 'before',
-          p: 'm',
-          variableSize: true,
-        }),
-        authMessage: expect.objectContaining({
-          type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
-          groupId: 69,
-          c: '*',
-          d: 'before',
-          p: 'm',
-          before: { id: 'remote-latest-event', ts: 99_000 },
-          inc: 1,
-          limit: 100,
-        }),
-      })
-    );
-    expect(accepts[1]).toEqual(
-      expect.objectContaining({
-        peerPresenceHash: providerHash,
-        metadata: expect.objectContaining({
-          logicalResourceType: 'reticulum_chat_history_page',
-          groupId: 69,
-          channelId: '*',
-          direction: 'before',
-        }),
-        authMessage: expect.not.objectContaining({ p: 'm' }),
-      })
-    );
+    expect(accepts).toHaveLength(0);
+    expect(direct.find((item) => item.wire.k === 'event_req')).toMatchObject({
+      peer: providerHash,
+      wire: expect.objectContaining({
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 69,
+        q: expect.objectContaining({ id: 'remote-latest-event' }),
+      }),
+    });
     expect(direct.some((item) => item.wire.k === 'feed_req')).toBe(false);
     manager.close();
   });
@@ -5157,9 +5129,10 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('requests channel metadata first when a digest differs', async () => {
+  it('requests exact latest before channel metadata when a newer digest differs', async () => {
     const providerHash = 'e'.repeat(32);
     const accepts: Array<Record<string, any>> = [];
+    const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
       off: () => undefined,
@@ -5168,7 +5141,10 @@ describe('reticulum chat manager', () => {
         accepts.push(payload);
         return { ok: true as const };
       },
-      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async (_peer: string, wire: Record<string, unknown>) => {
+        direct.push(wire);
+        return { ok: true as const };
+      },
     };
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -5193,35 +5169,13 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(accepts).toHaveLength(2);
-    expect(accepts[0]).toEqual(
-      expect.objectContaining({
-        peerPresenceHash: providerHash,
-        metadata: expect.objectContaining({
-          logicalResourceType: 'reticulum_chat_history_page',
-          groupId: 69,
-          channelId: '*',
-          direction: 'before',
-          p: 'm',
-        }),
-        authMessage: expect.objectContaining({
-          type: 'RETICULUM_CHAT_HISTORY_PAGE_REQUEST',
-          groupId: 69,
-          c: '*',
-          d: 'before',
-          p: 'm',
-          before: { id: 'remote-latest-event', ts: 99_000 },
-          inc: 1,
-          limit: 100,
-        }),
-      })
-    );
-    expect(accepts[1]).toEqual(
-      expect.objectContaining({
-        peerPresenceHash: providerHash,
-        authMessage: expect.not.objectContaining({ p: 'm' }),
-      })
-    );
+    expect(accepts).toHaveLength(0);
+    expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'event_req',
+      g: 69,
+      q: expect.objectContaining({ id: 'remote-latest-event' }),
+    });
     manager.close();
   });
 
@@ -6542,7 +6496,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('requests a group-wide newest page when a newer group digest has no channel rows', async () => {
+  it('requests the exact latest event when a newer group digest has no channel rows', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -6575,23 +6529,18 @@ describe('reticulum chat manager', () => {
         },
         channels: [],
       },
-      'peer'
+      'b'.repeat(32)
     );
 
-    await flushQueuedWork();
-    expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
-    expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(direct.filter((wire) => wire.k === 'event_req')).toHaveLength(1);
+    expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
       t: 'RCHAT',
-      k: 'feed_req',
+      k: 'event_req',
       g: 9,
-      c: '*',
-      before: {
-        id: event.eventId,
-        ts: event.timestamp,
-      },
-      inc: 1,
-      limit: 100,
+      q: expect.objectContaining({ id: event.eventId }),
     });
+    expect(direct.find((wire) => wire.k === 'feed_req')).toBeUndefined();
     manager.close();
   });
 
@@ -6632,17 +6581,16 @@ describe('reticulum chat manager', () => {
         },
         channels: [],
       },
-      'peer'
+      'b'.repeat(32)
     );
 
     await flushQueuedWork();
-    expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
-      k: 'feed_req',
+    expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
+      k: 'event_req',
       g: 9,
-      c: '*',
-      before: { id: event.eventId, ts: event.timestamp },
-      inc: 1,
+      q: expect.objectContaining({ id: event.eventId }),
     });
+    expect(direct.find((wire) => wire.k === 'feed_req')).toBeUndefined();
     expect(fanout.find((wire) => wire.k === 'feed_req')).toBeUndefined();
     manager.close();
   });
@@ -6677,7 +6625,7 @@ describe('reticulum chat manager', () => {
       'peer'
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushQueuedWork();
     expect(direct.filter((wire) => wire.k === 'feed_req')).toHaveLength(1);
     expect(direct.find((wire) => wire.k === 'feed_req')).toMatchObject({
       t: 'RCHAT',
@@ -10276,7 +10224,7 @@ describe('reticulum chat manager', () => {
 
     now += 31_000;
     manager.handleWire(groupSub, 'peer-hash');
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushQueuedWork();
 
     expect(direct.filter((wire) => wire.k === 'group_digest')).toHaveLength(2);
     manager.close();
@@ -11070,7 +11018,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('starts cold digest catch-up from the newest group-wide page before channel pages', async () => {
+  it('starts cold digest catch-up from the exact newest event before channel pages', async () => {
     const direct: Record<string, unknown>[] = [];
     const bridge = {
       on: () => undefined,
@@ -11109,25 +11057,15 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const feedRequests = direct.filter((wire) => wire.k === 'feed_req');
-    expect(feedRequests).toHaveLength(2);
-    expect(feedRequests[0]).toMatchObject({
+    const eventRequests = direct.filter((wire) => wire.k === 'event_req');
+    expect(eventRequests).toHaveLength(1);
+    expect(eventRequests[0]).toMatchObject({
       t: 'RCHAT',
-      k: 'feed_req',
+      k: 'event_req',
       g: 56,
-      c: '*',
-      p: 'm',
-      before: { id: 'event-newest-group', ts: 90_000 },
-      inc: 1,
+      q: expect.objectContaining({ id: 'event-newest-group' }),
     });
-    expect(feedRequests[1]).toMatchObject({
-      t: 'RCHAT',
-      k: 'feed_req',
-      g: 56,
-      c: '*',
-      before: { id: 'event-newest-group', ts: 90_000 },
-      inc: 1,
-    });
+    expect(direct.find((wire) => wire.k === 'feed_req')).toBeUndefined();
     manager.close();
   });
 
@@ -11703,7 +11641,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('opens linked history directly for missing group latest without event_req', async () => {
+  it('requests exact missing group latest before linked history repair', async () => {
     const direct: Record<string, unknown>[] = [];
     const acceptedHistoryLinks: Record<string, unknown>[] = [];
     const peerHash = 'b'.repeat(32);
@@ -11755,9 +11693,60 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(direct.find((wire) => wire.k === 'event_req')).toBeUndefined();
+    expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
+      t: 'RCHAT',
+      k: 'event_req',
+      g: 716,
+      q: expect.objectContaining({ id: remoteLatest.id }),
+    });
     expect(direct.find((wire) => wire.k === 'feed_req')).toBeUndefined();
-    expect(acceptedHistoryLinks).toHaveLength(2);
+    expect(acceptedHistoryLinks).toHaveLength(0);
+    manager.close();
+  });
+
+  it('falls back to linked history repair when exact latest request is too large', async () => {
+    const acceptedHistoryLinks: Record<string, unknown>[] = [];
+    const peerHash = 'b'.repeat(32);
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async () => ({
+        ok: false as const,
+        reason: 'wire-too-large' as const,
+      }),
+      acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+        acceptedHistoryLinks.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 200_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([716]);
+    manager.subscribeGroup(716);
+    const remoteLatest = { id: 'event-remote-latest-too-large-request', ts: 120_000 };
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_digest',
+        g: 716,
+        latest: remoteLatest,
+        channels: [],
+        digestHash: 'different-remote-digest-hash',
+      },
+      peerHash
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2_200));
+
+    expect(acceptedHistoryLinks.length).toBeGreaterThan(0);
     expect(acceptedHistoryLinks).toContainEqual(expect.objectContaining({
       peerPresenceHash: peerHash,
       metadata: expect.objectContaining({
