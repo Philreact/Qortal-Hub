@@ -72,6 +72,7 @@ import {
 
 const relayCacheIt = isDisabledRelayCache ? it.skip : it;
 const relayCacheDisabledIt = isDisabledRelayCache ? it : it.skip;
+const TEST_AUTHOR_STREAM_ID = 'f'.repeat(32);
 
 function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChatEvent {
   const kp = nacl.sign.keyPair();
@@ -83,6 +84,7 @@ function signedEvent(overrides: Partial<ReticulumChatEvent> = {}): ReticulumChat
     channelId: overrides.channelId ?? 'general',
     authorAddress: overrides.authorAddress ?? deriveAddressFromPublicKey(publicKey),
     authorPublicKey: overrides.authorPublicKey ?? publicKey,
+    authorStreamId: overrides.authorStreamId ?? TEST_AUTHOR_STREAM_ID,
     authorSeq: overrides.authorSeq ?? 1,
     timestamp: overrides.timestamp ?? Date.now(),
     eventType: overrides.eventType ?? 'message',
@@ -120,6 +122,7 @@ function signedAuthorEvents(
       channelId: overrides.channelId ?? 'general',
       authorAddress,
       authorPublicKey: publicKey,
+      authorStreamId: overrides.authorStreamId ?? TEST_AUTHOR_STREAM_ID,
       authorSeq: overrides.authorSeq ?? 1,
       timestamp: overrides.timestamp ?? Date.now(),
       eventType: overrides.eventType ?? 'message',
@@ -951,6 +954,23 @@ describe('reticulum chat protocol', () => {
     expect(verifyReticulumChatEvent(event)).toBe(false);
   });
 
+  it('signs and validates the author stream identity', () => {
+    const event = signedEvent({ authorStreamId: 'a'.repeat(32) });
+    expect(validateReticulumChatEventShape(event)).toBe(true);
+    expect(verifyReticulumChatEvent(event)).toBe(true);
+    event.authorStreamId = 'b'.repeat(32);
+    expect(verifyReticulumChatEvent(event)).toBe(false);
+    event.authorStreamId = 'not-a-valid-stream';
+    expect(validateReticulumChatEventShape(event)).toBe(false);
+    event.authorStreamId = 'legacy';
+    expect(validateReticulumChatEventShape(event)).toBe(false);
+    (event as unknown as { authorStreamId: unknown }).authorStreamId = 123;
+    expect(() => validateReticulumChatEventShape(event)).not.toThrow();
+    expect(validateReticulumChatEventShape(event)).toBe(false);
+    delete (event as unknown as { authorStreamId?: unknown }).authorStreamId;
+    expect(validateReticulumChatEventShape(event)).toBe(false);
+  });
+
   it('validates compact signed DM discovery controls', () => {
     const now = Date.now();
     const notify = signedDmNotifyWire({
@@ -1243,7 +1263,9 @@ describe('reticulum chat database', () => {
     expect(db.insertEvent(event, false)).toBe(true);
     expect(db.insertEvent(event, false)).toBe(false);
     expect(db.hasEvent(event.eventId)).toBe(true);
-    expect(db.getSyncState(11)).toEqual({ [event.authorAddress]: 3 });
+    expect(db.getSyncState(11)).toEqual({
+      [`${event.authorAddress}:${TEST_AUTHOR_STREAM_ID}`]: 3,
+    });
   });
 
   it('persists missing author range retry backoff', () => {
@@ -1251,8 +1273,8 @@ describe('reticulum chat database', () => {
     dbs.push(db);
     const author = 'QauthorBackoff';
 
-    db.ensureMissingRange(11, author, 2, 5, 'peer-a');
-    const first = db.claimMissingRangeAttempt(11, author, 2, 5, 'peer-a', 1_000, 31_000);
+    db.ensureMissingRange(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-a');
+    const first = db.claimMissingRangeAttempt(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-a', 1_000, 31_000);
 
     expect(first).toMatchObject({
       groupId: 11,
@@ -1263,29 +1285,29 @@ describe('reticulum chat database', () => {
       attempts: 1,
       nextAttemptAt: 31_000,
     });
-    expect(db.claimMissingRangeAttempt(11, author, 2, 5, 'peer-a', 2_000, 122_000)).toBeNull();
+    expect(db.claimMissingRangeAttempt(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-a', 2_000, 122_000)).toBeNull();
 
-    const second = db.claimMissingRangeAttempt(11, author, 2, 5, 'peer-b', 31_000, 151_000);
+    const second = db.claimMissingRangeAttempt(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-b', 31_000, 151_000);
     expect(second).toMatchObject({
       preferredPeer: 'peer-b',
       attempts: 2,
       nextAttemptAt: 151_000,
     });
 
-    const deferred = db.deferMissingRange(11, author, 2, 5, 'peer-c', 600_000, 3);
+    const deferred = db.deferMissingRange(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-c', 600_000, 3);
     expect(deferred).toMatchObject({
       preferredPeer: 'peer-c',
       attempts: 3,
       nextAttemptAt: 600_000,
     });
-    db.ensureMissingRange(11, author, 2, 5, 'peer-d');
-    expect(db.getMissingRange(11, author, 2, 5)).toMatchObject({
+    db.ensureMissingRange(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-d');
+    expect(db.getMissingRange(11, author, TEST_AUTHOR_STREAM_ID, 2, 5)).toMatchObject({
       preferredPeer: 'peer-c',
       attempts: 3,
       nextAttemptAt: 600_000,
     });
 
-    const scheduled = db.scheduleMissingRange(11, author, 2, 5, 'peer-e', 200_000);
+    const scheduled = db.scheduleMissingRange(11, author, TEST_AUTHOR_STREAM_ID, 2, 5, 'peer-e', 200_000);
     expect(scheduled).toMatchObject({
       preferredPeer: 'peer-e',
       attempts: 3,
@@ -1329,7 +1351,7 @@ describe('reticulum chat database', () => {
 
     expect(db.insertEvent(event, true)).toBe(false);
     expect(db.getRecentMessageEvents(12, 10, 'general')).toHaveLength(0);
-    expect(db.getSyncState(12)[event.authorAddress]).toBe(7);
+    expect(db.getSyncState(12)[`${event.authorAddress}:${TEST_AUTHOR_STREAM_ID}`]).toBe(7);
   });
 
   it('lets channel expiry override a longer message-level expiry', () => {
@@ -1363,7 +1385,7 @@ describe('reticulum chat database', () => {
 
     expect(db.insertEvent(event, true)).toBe(false);
     expect(db.getRecentMessageEvents(13, 10, 'short-lived')).toHaveLength(0);
-    expect(db.getSyncState(13)[event.authorAddress]).toBe(9);
+    expect(db.getSyncState(13)[`${event.authorAddress}:${TEST_AUTHOR_STREAM_ID}`]).toBe(9);
   });
 
   it('shares inserted events across open database connections', () => {
@@ -2512,14 +2534,15 @@ describe('reticulum chat database', () => {
     db.insertEvent(first, true);
     db.insertEvent(second, true);
 
-    expect(db.getAuthorMaxSeq(57, first.authorAddress)).toBe(2);
-    expect(db.getAuthorEventsAfter(57, first.authorAddress, 0, 10).map((event) => event.eventId)).toEqual([
+    expect(db.getAuthorMaxSeq(57, first.authorAddress, TEST_AUTHOR_STREAM_ID)).toBe(2);
+    expect(db.getAuthorEventsAfter(57, first.authorAddress, TEST_AUTHOR_STREAM_ID, 0, 10).map((event) => event.eventId)).toEqual([
       'event-author-1',
       'event-author-2',
     ]);
     expect(db.getAuthorHeads(57, 10)).toEqual([
       {
         authorAddress: first.authorAddress,
+        authorStreamId: TEST_AUTHOR_STREAM_ID,
         maxSeq: 2,
         eventId: 'event-author-2',
         timestamp: 2_000,
@@ -2545,6 +2568,37 @@ describe('reticulum chat database', () => {
     expect(db.getAuthorHeads(61, 1, 1).map((head) => head.eventId)).toEqual([
       'event-head-page-1',
     ]);
+  });
+
+  it('keeps sequence heads and gaps independent for two device streams on one account', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const streamA = 'a'.repeat(32);
+    const streamB = 'b'.repeat(32);
+    const events = signedAuthorEvents([
+      { eventId: 'stream-a-1', groupId: 62, authorStreamId: streamA, authorSeq: 1, timestamp: 1_000 },
+      { eventId: 'stream-a-3', groupId: 62, authorStreamId: streamA, authorSeq: 3, timestamp: 3_000 },
+      { eventId: 'stream-b-1', groupId: 62, authorStreamId: streamB, authorSeq: 1, timestamp: 2_000 },
+      { eventId: 'stream-b-2', groupId: 62, authorStreamId: streamB, authorSeq: 2, timestamp: 4_000 },
+    ]);
+    for (const event of events) expect(db.insertEvent(event, true)).toBe(true);
+
+    expect(db.getAuthorHeads(62, 10)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ authorStreamId: streamA, maxSeq: 3 }),
+      expect.objectContaining({ authorStreamId: streamB, maxSeq: 2 }),
+    ]));
+    expect(db.getAuthorSequenceGaps(62, 10)).toEqual([
+      {
+        authorAddress: events[0].authorAddress,
+        authorStreamId: streamA,
+        fromSeq: 2,
+        toSeq: 2,
+      },
+    ]);
+    expect(db.getSyncState(62)).toMatchObject({
+      [`${events[0].authorAddress}:${streamA}`]: 3,
+      [`${events[0].authorAddress}:${streamB}`]: 2,
+    });
   });
 
   it('returns known group ids from persisted and memory events', () => {
@@ -7907,16 +7961,15 @@ describe('reticulum chat manager', () => {
 
     now += 60_000;
     (manager as any).processBackgroundAuthorGapRepair();
-    await flushQueuedWork();
-
-    expect(direct).toContainEqual(
-      expect.objectContaining({
-        peer: 'peer-a',
-        wire: expect.objectContaining({
-          k: 'range_req',
-          ranges: [expect.objectContaining({ a: first.authorAddress, from: 2, to: 2 })],
-        }),
-      })
+    await vi.waitUntil(
+      () => direct.some((item) =>
+        item.peer === 'peer-a' &&
+        item.wire.k === 'range_req' &&
+        item.wire.ranges.some((range) =>
+          range.a === first.authorAddress && range.from === 2 && range.to === 2
+        )
+      ),
+      { timeout: 1_000 }
     );
     manager.close();
   });
@@ -10474,6 +10527,7 @@ describe('reticulum chat manager', () => {
     const missing = (manager as any).db.getMissingRange(
       56,
       first.authorAddress,
+      TEST_AUTHOR_STREAM_ID,
       2,
       9
     );
@@ -10490,7 +10544,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'range_req',
       g: 56,
-      ranges: [{ a: first.authorAddress, from: 2, to: 9 }],
+      ranges: [{ a: first.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 2, to: 9 }],
     });
     manager.close();
   });
@@ -10525,7 +10579,7 @@ describe('reticulum chat manager', () => {
         g: 56,
         p: {
           type: 'authors',
-          heads: [{ a: 'QremoteAuthor', q: 250, id: 'remote-head', ts: 180_000 }],
+          heads: [{ a: 'QremoteAuthor', s: TEST_AUTHOR_STREAM_ID, q: 250, id: 'remote-head', ts: 180_000 }],
           more: false,
         },
       },
@@ -10534,7 +10588,7 @@ describe('reticulum chat manager', () => {
     await flushQueuedWork();
 
     expect(direct.filter((item) => item.wire.k === 'range_req')).toHaveLength(0);
-    expect((manager as any).db.getMissingRange(56, 'QremoteAuthor', 1, 250)).toMatchObject({
+    expect((manager as any).db.getMissingRange(56, 'QremoteAuthor', TEST_AUTHOR_STREAM_ID, 1, 250)).toMatchObject({
       preferredPeer: 'peer-heads',
     });
 
@@ -10547,7 +10601,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'range_req',
       g: 56,
-      ranges: [{ a: 'QremoteAuthor', from: 151, to: 250 }],
+      ranges: [{ a: 'QremoteAuthor', s: TEST_AUTHOR_STREAM_ID, from: 151, to: 250 }],
     });
     manager.close();
   });
@@ -10576,13 +10630,14 @@ describe('reticulum chat manager', () => {
       db.scheduleMissingRange(
         1,
         `QinactiveAuthor${index}`,
+        TEST_AUTHOR_STREAM_ID,
         1,
         5,
         'peer-inactive',
         300_000
       );
     }
-    db.scheduleMissingRange(56, 'QactiveAuthor', 1, 5, 'peer-active', 300_000);
+    db.scheduleMissingRange(56, 'QactiveAuthor', TEST_AUTHOR_STREAM_ID, 1, 5, 'peer-active', 300_000);
     direct.length = 0;
 
     (manager as any).processBackgroundAuthorGapRepair();
@@ -10594,7 +10649,7 @@ describe('reticulum chat manager', () => {
         wire: expect.objectContaining({
           k: 'range_req',
           g: 56,
-          ranges: [{ a: 'QactiveAuthor', from: 1, to: 5 }],
+          ranges: [{ a: 'QactiveAuthor', s: TEST_AUTHOR_STREAM_ID, from: 1, to: 5 }],
         }),
       })
     );
@@ -10888,7 +10943,7 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'range_req',
         g: 60,
-        ranges: [{ a: first.authorAddress, from: 1, to: 2 }],
+        ranges: [{ a: first.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 1, to: 2 }],
         limit: 10,
       },
       'peer'
@@ -10897,7 +10952,12 @@ describe('reticulum chat manager', () => {
 
     expect(direct.some((wire) => wire.k === 'event_page_offer')).toBe(true);
     const offer = direct.find((wire) => wire.k === 'event_page_offer') as any;
-    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 2, r: [first.authorAddress, 1, 2] });
+    expect(offer?.p).toMatchObject({
+      c: '*',
+      d: 'r',
+      n: 2,
+      r: [first.authorAddress, TEST_AUTHOR_STREAM_ID, 1, 2],
+    });
     expect(resources).toHaveLength(1);
     expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true);
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
@@ -10923,6 +10983,7 @@ describe('reticulum chat manager', () => {
       now: () => 100_000,
     });
     manager.setLocalGroupMemberships([60]);
+    const authorStreamId = 'c'.repeat(32);
     const events = signedAuthorEvents(
       Array.from({ length: 105 }, (_unused, index) => {
         const seq = index + 1;
@@ -10930,6 +10991,7 @@ describe('reticulum chat manager', () => {
           eventId: `event-gap-response-large-${seq}`,
           groupId: 60,
           channelId: seq % 2 === 0 ? 'general' : 'dev',
+          authorStreamId,
           authorSeq: seq,
           timestamp: 40_000 + seq,
         };
@@ -10945,7 +11007,7 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'range_req',
         g: 60,
-        ranges: [{ a: events[0].authorAddress, from: 1, to: 105 }],
+        ranges: [{ a: events[0].authorAddress, s: authorStreamId, from: 1, to: 105 }],
         limit: 100,
       },
       'peer'
@@ -10953,7 +11015,13 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const offer = direct.find((wire) => wire.k === 'event_page_offer') as any;
-    expect(offer?.p).toMatchObject({ c: '*', d: 'r', n: 100, more: 1, r: [events[0].authorAddress, 1, 105] });
+    expect(offer?.p).toMatchObject({
+      c: '*',
+      d: 'r',
+      n: 100,
+      more: 1,
+      r: [events[0].authorAddress, authorStreamId, 1, 105],
+    });
     manager.close();
   });
 
@@ -10982,7 +11050,7 @@ describe('reticulum chat manager', () => {
 
     expect(
       (manager as any).db
-        .getAuthorEventsRange(60, events[0].authorAddress, 1, 3, 2)
+        .getAuthorEventsRange(60, events[0].authorAddress, TEST_AUTHOR_STREAM_ID, 1, 3, 2)
         .map((event: ReticulumChatEvent) => event.authorSeq)
     ).toEqual([3, 2]);
     manager.close();
@@ -11508,7 +11576,7 @@ describe('reticulum chat manager', () => {
       eventCount: pageEvents.length,
       sourcePeerHash: 'peer-range',
       hasMore: true,
-      repairRange: { a: localFirst.authorAddress, from: 2, to: 102 },
+      repairRange: { a: localFirst.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 2, to: 102 },
     });
     direct.length = 0;
 
@@ -11523,7 +11591,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'range_req',
       g: 57,
-      ranges: [{ a: localFirst.authorAddress, from: 2, to: 3 }],
+      ranges: [{ a: localFirst.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 2, to: 3 }],
     }));
     manager.close();
   });
@@ -11584,7 +11652,7 @@ describe('reticulum chat manager', () => {
       eventCount: 1,
       sourcePeerHash: 'peer-range',
       hasMore: true,
-      repairRange: { a: localFirst.authorAddress, from: 3, to: 102 },
+      repairRange: { a: localFirst.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 3, to: 102 },
     });
     direct.length = 0;
 
@@ -11607,7 +11675,7 @@ describe('reticulum chat manager', () => {
         t: 'RCHAT',
         k: 'range_req',
         g: 57,
-        ranges: [{ a: localFirst.authorAddress, from: 3, to: 102 }],
+        ranges: [{ a: localFirst.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 3, to: 102 }],
       }),
     }));
     manager.close();
@@ -11651,7 +11719,7 @@ describe('reticulum chat manager', () => {
       t: 'RCHAT',
       k: 'range_req',
       g: 58,
-      ranges: [{ a: localFirst.authorAddress, from: 2, to: 9 }],
+      ranges: [{ a: localFirst.authorAddress, s: TEST_AUTHOR_STREAM_ID, from: 2, to: 9 }],
     });
 
     expect((manager as any).requestKnownAuthorGaps(58, 'peer-backoff', 'test', true)).toBe(false);
@@ -12062,8 +12130,10 @@ describe('reticulum chat manager', () => {
       },
       peerHash
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
+    await vi.waitUntil(
+      () => direct.some((wire) => wire.k === 'event_req'),
+      { timeout: 1_000 }
+    );
     expect(direct.find((wire) => wire.k === 'event_req')).toMatchObject({
       t: 'RCHAT',
       k: 'event_req',
@@ -14226,19 +14296,41 @@ describe('reticulum chat manager', () => {
     expect(snapshotWire.z).toBeTruthy();
     expect(resources).toHaveLength(1);
 
+    const acceptedSnapshotResources: Array<Record<string, unknown>> = [];
     const receiver = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
         on: () => undefined,
         off: () => undefined,
+        acceptReticulumChatResourceDetailed: async (payload: Record<string, unknown>) => {
+          acceptedSnapshotResources.push(payload);
+          return { ok: true as const };
+        },
       } as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => true,
     });
     receiver.setLocalGroupMemberships([74]);
     receiver.subscribeGroup(74);
     expect((receiver as any).db.getLatestMetadataSnapshot(74)).toBeNull();
+    const resourceOffer = sent.find(
+      ({ wire }) => wire.k === 'metadata_snapshot_offer_v3' && 'w' in wire
+    )?.wire as Extract<ReticulumChatWire, { k: 'metadata_snapshot_offer_v3' }> | undefined;
+    expect(resourceOffer).toBeTruthy();
+    expect(resourceOffer).not.toHaveProperty('r');
+    await (receiver as any).handleMetadataSnapshotOffer(
+      74,
+      { ...resourceOffer, r: 'b0f911489514f8f4255e9207755e9157' },
+      'peer-public-snapshot'
+    );
+    await vi.waitUntil(
+      () => acceptedSnapshotResources.some(
+        (payload) => payload.transferId === resourceOffer?.w?.x
+      ),
+      { timeout: 1_000 }
+    );
     await (receiver as any).handleMetadataSnapshotOffer(74, snapshotWire, 'peer-public-snapshot');
 
     expect(receiver.getChannels(74, true).map((channel) => channel.channelId)).toContain('testing');
@@ -14469,7 +14561,7 @@ describe('reticulum chat manager', () => {
       expect(retry).toHaveBeenCalledWith(
         749,
         expect.objectContaining({
-          fh: fullHash,
+          fh: Buffer.from(fullHash, 'hex').toString('base64url'),
           s: expect.objectContaining({ h: hash }),
         }),
         'peer-retry'
@@ -15476,5 +15568,43 @@ describe('reticulum chat manager', () => {
     expect(manager.getChatSummaries()).toEqual([]);
 
     manager.close();
+  });
+
+  it('reserves group author sequences atomically across shared database instances', () => {
+    const dbPath = tempDbPath();
+    const first = new ReticulumChatDatabase(dbPath);
+    const second = new ReticulumChatDatabase(dbPath);
+    const existing = signedEvent({
+      eventId: 'existing-author-sequence-399',
+      groupId: 992,
+      authorSeq: 399,
+    });
+    expect(first.insertEvent(existing, true)).toBe(true);
+
+    const firstReserved = first.reserveAuthorSequence(992, existing.authorAddress);
+    const secondReserved = second.reserveAuthorSequence(992, existing.authorAddress);
+    expect(firstReserved.authorStreamId).toMatch(/^[0-9a-f]{32}$/);
+    expect(secondReserved.authorStreamId).toBe(firstReserved.authorStreamId);
+    expect(firstReserved.authorSeq).toBe(1);
+    expect(secondReserved.authorSeq).toBe(2);
+
+    first.close();
+    second.close();
+  });
+
+  it('allocates independent author streams for the same account on different installations', () => {
+    const first = new ReticulumChatDatabase(tempDbPath());
+    const second = new ReticulumChatDatabase(tempDbPath());
+    const authorAddress = 'QmultiDeviceAuthor';
+
+    const firstReserved = first.reserveAuthorSequence(993, authorAddress);
+    const secondReserved = second.reserveAuthorSequence(993, authorAddress);
+
+    expect(firstReserved.authorSeq).toBe(1);
+    expect(secondReserved.authorSeq).toBe(1);
+    expect(firstReserved.authorStreamId).not.toBe(secondReserved.authorStreamId);
+
+    first.close();
+    second.close();
   });
 });

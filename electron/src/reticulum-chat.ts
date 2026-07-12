@@ -30,6 +30,7 @@ import {
   RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
+  normalizeReticulumChatAuthorStreamId,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
   normalizeReticulumChatExpiryDurationMs,
@@ -110,6 +111,7 @@ export interface ReticulumChatEvent {
   channelId: string;
   authorAddress: string;
   authorPublicKey: string;
+  authorStreamId: string;
   authorSeq: number;
   timestamp: number;
   eventType: ReticulumChatEventType;
@@ -297,6 +299,7 @@ export interface ReticulumChatEventHint {
   groupId: number;
   channelId: string;
   authorAddress: string;
+  authorStreamId?: string;
   authorSeq: number;
   timestamp: number;
   eventType: ReticulumChatEventType;
@@ -416,9 +419,18 @@ type ReticulumLandChatRequest = {
 
 type ReticulumChatAuthorRange = {
   a: string;
+  s?: string;
   from: number;
   to: number;
 };
+
+function authorStreamIdFromWire(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[0-9a-f]{32}$/.test(normalized) && value === normalized
+    ? normalized
+    : null;
+}
 
 type ReticulumChatResourceServeCheck =
   | { ok: true }
@@ -460,7 +472,7 @@ export interface ReticulumChatEventPageOfferWire {
   sp?: string;
   sd?: string;
   rk?: string;
-  r?: [string, number, number];
+  r?: [string, string, number, number];
 }
 
 export interface ReticulumChatMetadataSnapshotResourceOfferWire {
@@ -543,6 +555,7 @@ export type ReticulumChatRelayDigestEntryWire = {
   ts: number;
   c: string;
   a?: string;
+  s?: string;
   seq?: number;
   ph?: string;
   bid?: string;
@@ -661,6 +674,7 @@ export type ReticulumChatProtocolFeature =
   | 'metadata_snapshot_v3'
   | 'state_heads_v3'
   | 'delta_req_v3'
+  | 'author_streams'
   | 'relay_cache'
   | 'group_keys'
   | 'dm';
@@ -927,7 +941,7 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; v: 2; k: 'metadata_snapshot_req'; g: number; h?: string }
   | { t: 'RCHAT'; v: 3; k: 'event_notice_v3'; g: number; n: ReticulumChatEventNoticeWire }
   | { t: 'RCHAT'; v: 3; k: 'group_state_digest_v3'; g: number; d: ReticulumChatGroupStateDigestWire }
-  | { t: 'RCHAT'; v: 3; k: 'metadata_snapshot_offer_v3'; g: number; s?: ReticulumChatMetadataSnapshotWire; r?: ReticulumChatMetadataSnapshotResourceOfferWire; fh?: string }
+  | { t: 'RCHAT'; v: 3; k: 'metadata_snapshot_offer_v3'; g: number; s?: ReticulumChatMetadataSnapshotWire; w?: ReticulumChatMetadataSnapshotResourceOfferWire; fh?: string }
   | { t: 'RCHAT'; v: 3; k: 'metadata_snapshot_req_v3'; g: number; h?: string }
   | { t: 'RCHAT'; v: 3; k: 'state_heads_req_v3'; g: number; q: ReticulumChatStateHeadsReqWire }
   | { t: 'RCHAT'; v: 3; k: 'state_heads_page_v3'; g: number; p: ReticulumChatStateHeadsPageWire }
@@ -939,7 +953,7 @@ export type ReticulumChatWire =
       c?: string;
       after?: ReticulumChatFeedCursorWire;
       before?: ReticulumChatFeedCursorWire;
-      ranges?: Array<{ a: string; from: number; to: number }>;
+      ranges?: ReticulumChatAuthorRange[];
       ids?: string[];
       limit?: number;
       o?: string;
@@ -1015,7 +1029,7 @@ export type ReticulumChatWire =
       t: 'RCHAT';
       k: 'range_req';
       g: number;
-      ranges: Array<{ a: string; from: number; to: number }>;
+      ranges: ReticulumChatAuthorRange[];
       limit?: number;
       o?: string;
       rid?: string;
@@ -1033,7 +1047,7 @@ export type ReticulumChatWire =
     }
   | { t: 'RCHAT'; k: 'gkd'; g: number; d: ReticulumChatGroupKeyDigestWire }
   | { t: 'RCHAT'; k: 'gkq'; g: number; q: ReticulumChatGroupKeyRequestWire }
-  | { t: 'RCHAT'; k: 'gks'; g: number; r: ReticulumChatGroupKeyResponseWire }
+  | { t: 'RCHAT'; k: 'gks'; g: number; w: ReticulumChatGroupKeyResponseWire }
   | {
       t: 'RCHAT';
       k: 'event_batch';
@@ -1089,7 +1103,6 @@ export type ReticulumChatWire =
       q: number;
       x: number;
       y: number;
-      r?: string;
       u?: string;
       d?: string;
       m?: string;
@@ -1136,7 +1149,6 @@ export type ReticulumChatWire =
       H?: string;
       p?: string;
       z?: string;
-      r?: string;
       u?: string;
       ts: number;
       o?: string;
@@ -1201,6 +1213,7 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'metadata_snapshot_v3',
   'state_heads_v3',
   'delta_req_v3',
+  'author_streams',
   'dm',
   ...(!isDisabledRelayCache ? ['relay_cache' as const] : []),
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
@@ -1506,6 +1519,7 @@ export function buildReticulumChatSignedFields(
   return {
     authorAddress: event.authorAddress,
     authorPublicKey: event.authorPublicKey,
+    authorStreamId: normalizeReticulumChatAuthorStreamId(event.authorStreamId),
     authorSeq: event.authorSeq,
     channelId: normalizeReticulumChatChannelId(event.channelId),
     encryptedPayload: event.encryptedPayload,
@@ -1904,6 +1918,31 @@ function compactPeerHashForWire(peerHash: string): string {
     .replace(/=+$/g, '');
 }
 
+function compactSha256ForWire(hash: string): string {
+  const normalized = String(hash || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalized)) return normalized;
+  return Buffer.from(normalized, 'hex')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function sha256FromWire(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (/^[0-9a-f]{64}$/i.test(text)) return text.toLowerCase();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(text)) return '';
+  try {
+    const decoded = Buffer.from(
+      `${text.replace(/-/g, '+').replace(/_/g, '/')}${'='.repeat((4 - (text.length % 4)) % 4)}`,
+      'base64'
+    );
+    return decoded.length === 32 ? decoded.toString('hex') : '';
+  } catch {
+    return '';
+  }
+}
+
 function normalizeRoutePeerHash(value: unknown): string | undefined {
   const normalized = normalizePeerHashFromWire(value);
   if (normalized) return normalized;
@@ -1945,6 +1984,7 @@ export function buildReticulumChatEventHint(
     groupId: event.groupId,
     channelId: normalizeReticulumChatChannelId(event.channelId),
     authorAddress: event.authorAddress,
+    authorStreamId: normalizeReticulumChatAuthorStreamId(event.authorStreamId),
     authorSeq: event.authorSeq,
     timestamp: event.timestamp,
     eventType: event.eventType,
@@ -2027,12 +2067,14 @@ function eventOfferFromWire(groupId: number, wire: unknown): ReticulumChatEventO
 
 function normalizeReticulumChatAuthorRange(range: unknown): ReticulumChatAuthorRange | null {
   if (!range || typeof range !== 'object' || Array.isArray(range)) return null;
-  const candidate = range as { a?: unknown; from?: unknown; to?: unknown };
+  const candidate = range as { a?: unknown; s?: unknown; from?: unknown; to?: unknown };
   const authorAddress = typeof candidate.a === 'string' ? candidate.a.trim() : '';
+  const authorStreamId = authorStreamIdFromWire(candidate.s);
   const fromSeq = Number(candidate.from);
   const toSeq = Number(candidate.to);
   if (
     !authorAddress ||
+    !authorStreamId ||
     !Number.isInteger(fromSeq) ||
     !Number.isInteger(toSeq) ||
     fromSeq <= 0 ||
@@ -2040,21 +2082,35 @@ function normalizeReticulumChatAuthorRange(range: unknown): ReticulumChatAuthorR
   ) {
     return null;
   }
-  return { a: authorAddress, from: fromSeq, to: toSeq };
+  return { a: authorAddress, s: authorStreamId, from: fromSeq, to: toSeq };
 }
 
-function authorRangeToWireTuple(range: ReticulumChatAuthorRange | undefined): [string, number, number] | undefined {
+function authorRangeToWire(range: ReticulumChatAuthorRange): ReticulumChatAuthorRange {
+  const normalized = normalizeReticulumChatAuthorRange(range);
+  if (!normalized) return range;
+  return {
+    a: normalized.a,
+    s: normalized.s,
+    from: normalized.from,
+    to: normalized.to,
+  };
+}
+
+function authorRangeToWireTuple(
+  range: ReticulumChatAuthorRange | undefined
+): [string, string, number, number] | undefined {
   const normalized = normalizeReticulumChatAuthorRange(range);
   if (!normalized) return undefined;
-  return [normalized.a, normalized.from, normalized.to];
+  return [normalized.a, normalized.s as string, normalized.from, normalized.to];
 }
 
 function authorRangeFromWireTuple(tuple: unknown): ReticulumChatAuthorRange | null {
-  if (!Array.isArray(tuple) || tuple.length !== 3) return null;
+  if (!Array.isArray(tuple) || tuple.length !== 4) return null;
   return normalizeReticulumChatAuthorRange({
     a: tuple[0],
-    from: tuple[1],
-    to: tuple[2],
+    s: tuple[1],
+    from: tuple[2],
+    to: tuple[3],
   });
 }
 
@@ -2139,10 +2195,10 @@ function metadataSnapshotResourceOfferToWire(
     normalizeRoutePeerHash(offer.sourcePeerHash);
   return {
     x: offer.transferId,
-    sh: offer.snapshotHash,
+    sh: compactSha256ForWire(offer.snapshotHash),
     sv: offer.snapshotVersion,
     s: offer.sizeBytes,
-    fh: offer.fileHash,
+    fh: compactSha256ForWire(offer.fileHash),
     ...(providerDestinationHash ? { sd: compactPeerHashForWire(providerDestinationHash) } : {}),
     ...(offer.senderReticulumIdentityPublicKeyBase64 ? { rk: offer.senderReticulumIdentityPublicKeyBase64 } : {}),
   };
@@ -2155,8 +2211,8 @@ function metadataSnapshotResourceOfferFromWire(
   if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return null;
   const r = wire as Partial<ReticulumChatMetadataSnapshotResourceOfferWire>;
   const transferId = String(r.x || '');
-  const snapshotHash = String(r.sh || '').trim().toLowerCase();
-  const fileHash = String(r.fh || '').trim().toLowerCase();
+  const snapshotHash = sha256FromWire(r.sh);
+  const fileHash = sha256FromWire(r.fh);
   const snapshotVersion = Math.floor(Number(r.sv || 0));
   const sizeBytes = Math.floor(Number(r.s || 0));
   if (!transferId) return null;
@@ -2199,6 +2255,9 @@ export function validateReticulumChatEventShape(
   }
   if (typeof e.authorAddress !== 'string' || !e.authorAddress) return false;
   if (typeof e.authorPublicKey !== 'string' || !e.authorPublicKey) return false;
+  if (
+    authorStreamIdFromWire(e.authorStreamId) == null
+  ) return false;
   if (!Number.isInteger(e.authorSeq) || (e.authorSeq as number) <= 0) return false;
   if (!Number.isFinite(e.timestamp)) return false;
   if ((e.timestamp as number) > now + RETICULUM_CHAT_MAX_FUTURE_SKEW_MS) return false;
@@ -2745,12 +2804,13 @@ export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
   try {
     const derived = deriveAddressFromPublicKey(event.authorPublicKey);
     if (derived !== event.authorAddress) return false;
+    const signature = new Uint8Array(base58Decode(event.signature));
+    const publicKey = new Uint8Array(base58Decode(event.authorPublicKey));
+    const signedFields = buildReticulumChatSignedFields(event);
     return nacl.sign.detached.verify(
-      new Uint8Array(
-        canonicalizeForSigning(buildReticulumChatSignedFields(event))
-      ),
-      new Uint8Array(base58Decode(event.signature)),
-      new Uint8Array(base58Decode(event.authorPublicKey))
+      new Uint8Array(canonicalizeForSigning(signedFields)),
+      signature,
+      publicKey
     );
   } catch {
     return false;
@@ -4721,6 +4781,19 @@ export class ReticulumChatManager extends EventEmitter {
     }
     void this.replicateEventToRelayCache(event);
     return { ok: true };
+  }
+
+  reserveAuthorSequence(
+    groupId: number,
+    authorAddress: string
+  ): { authorStreamId: string; authorSeq: number } {
+    this.assertLocalGroupMember(groupId);
+    const address = String(authorAddress || '').trim();
+    const expectedAddress = this.localGroupAddresses.get(groupId);
+    if (!address || (expectedAddress && expectedAddress !== address)) {
+      throw new Error('Cannot reserve sequence for an unknown local group address');
+    }
+    return this.db.reserveAuthorSequence(groupId, address);
   }
 
   sendTyping(
@@ -7223,7 +7296,7 @@ export class ReticulumChatManager extends EventEmitter {
       {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        void this.handleGroupKeyResponse(groupId, wire.r, peerHash);
+        void this.handleGroupKeyResponse(groupId, wire.w, peerHash);
         return;
       }
       case 'identity_req':
@@ -10136,9 +10209,16 @@ export class ReticulumChatManager extends EventEmitter {
     for (const rawRange of wire.ranges.slice(0, RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE)) {
       const normalizedRange = normalizeReticulumChatAuthorRange(rawRange);
       if (!normalizedRange) continue;
-      const { a: author, from, to } = normalizedRange;
+      const { a: author, s: authorStreamId, from, to } = normalizedRange;
       if (budget <= 0) break;
-      const eventsWithProbe = this.db.getAuthorEventsRange(groupId, author, from, to, budget + 1);
+      const eventsWithProbe = this.db.getAuthorEventsRange(
+        groupId,
+        author,
+        authorStreamId,
+        from,
+        to,
+        budget + 1
+      );
       const events = eventsWithProbe.slice(0, budget);
       if (events.length === 0) continue;
       const hasMore = eventsWithProbe.length > events.length;
@@ -10247,13 +10327,19 @@ export class ReticulumChatManager extends EventEmitter {
     event: ReticulumChatEvent,
     peerHash: string
   ): void {
-    const localMaxSeq = this.db.getAuthorMaxSeq(event.groupId, event.authorAddress);
+    const authorStreamId = normalizeReticulumChatAuthorStreamId(event.authorStreamId);
+    const localMaxSeq = this.db.getAuthorMaxSeq(
+      event.groupId,
+      event.authorAddress,
+      authorStreamId
+    );
     if (event.authorSeq <= localMaxSeq + 1) return;
     const fromSeq = localMaxSeq + 1;
     const toSeq = event.authorSeq - 1;
     this.db.upsertMissingRange(
       event.groupId,
       event.authorAddress,
+      authorStreamId,
       fromSeq,
       toSeq,
       peerHash,
@@ -10262,7 +10348,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.sendAuthorRangeRepairRequests(
       event.groupId,
       peerHash,
-      [{ a: event.authorAddress, from: fromSeq, to: toSeq }],
+      [{ a: event.authorAddress, s: authorStreamId, from: fromSeq, to: toSeq }],
       'incoming_event_gap'
     );
   }
@@ -10292,6 +10378,7 @@ export class ReticulumChatManager extends EventEmitter {
       peerHash.trim().toLowerCase(),
       groupId,
       range.a.trim(),
+      normalizeReticulumChatAuthorStreamId(range.s),
       Math.max(1, Math.floor(range.from)),
       Math.max(1, Math.floor(range.to)),
     ].join('|');
@@ -10377,6 +10464,7 @@ export class ReticulumChatManager extends EventEmitter {
       const state = this.db.deferMissingRange(
         groupId,
         rangeToDefer.a,
+        rangeToDefer.s,
         rangeToDefer.from,
         rangeToDefer.to,
         peer,
@@ -10526,6 +10614,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (gaps.length === 0) return false;
     const ranges = gaps.map((gap) => ({
       a: gap.authorAddress,
+      s: gap.authorStreamId,
       from: gap.fromSeq,
       to: gap.toSeq,
     }));
@@ -10540,6 +10629,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.db.ensureMissingRange(
         groupId,
         range.a,
+        range.s,
         range.from,
         range.to,
         peer
@@ -10570,7 +10660,7 @@ export class ReticulumChatManager extends EventEmitter {
   private recordAuthorGapRanges(
     groupId: number,
     peerHash: string,
-    ranges: Array<{ a: string; from: number; to: number }>,
+    ranges: ReticulumChatAuthorRange[],
     reason: string
   ): number {
     const peer = peerHash.trim().toLowerCase();
@@ -10585,6 +10675,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.db.scheduleMissingRange(
         groupId,
         normalized.a,
+        normalized.s,
         normalized.from,
         normalized.to,
         peer,
@@ -10624,6 +10715,7 @@ export class ReticulumChatManager extends EventEmitter {
           this.db.scheduleMissingRange(
             range.groupId,
             range.authorAddress,
+            range.authorStreamId,
             range.fromSeq,
             range.toSeq,
             range.preferredPeer,
@@ -10637,6 +10729,7 @@ export class ReticulumChatManager extends EventEmitter {
           this.db.scheduleMissingRange(
             range.groupId,
             range.authorAddress,
+            range.authorStreamId,
             range.fromSeq,
             range.toSeq,
             range.preferredPeer,
@@ -10648,7 +10741,7 @@ export class ReticulumChatManager extends EventEmitter {
         sent += this.sendAuthorRangeRepairRequests(
           range.groupId,
           peer,
-          [{ a: range.authorAddress, from: range.fromSeq, to: range.toSeq }],
+          [{ a: range.authorAddress, s: range.authorStreamId, from: range.fromSeq, to: range.toSeq }],
           'background_author_gap'
         );
         if (sent >= RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT) break;
@@ -10665,7 +10758,7 @@ export class ReticulumChatManager extends EventEmitter {
   private sendAuthorRangeRepairRequests(
     groupId: number,
     peerHash: string,
-    ranges: Array<{ a: string; from: number; to: number }>,
+    ranges: ReticulumChatAuthorRange[],
     reason: string
   ): number {
     const peer = peerHash.trim().toLowerCase();
@@ -10687,6 +10780,7 @@ export class ReticulumChatManager extends EventEmitter {
       const existing = this.db.getMissingRange(
         groupId,
         normalizedRange.a,
+        normalizedRange.s,
         normalizedRange.from,
         normalizedRange.to
       );
@@ -10701,7 +10795,7 @@ export class ReticulumChatManager extends EventEmitter {
         t: 'RCHAT',
         k: 'range_req',
         g: groupId,
-        ranges: [pagedRange],
+        ranges: [authorRangeToWire(pagedRange)],
         limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
       };
       if (!wireFitsReticulum(wire)) {
@@ -10721,6 +10815,7 @@ export class ReticulumChatManager extends EventEmitter {
       const claimed = this.db.claimMissingRangeAttempt(
         groupId,
         normalizedRange.a,
+        normalizedRange.s,
         normalizedRange.from,
         normalizedRange.to,
         peer,
@@ -10731,6 +10826,7 @@ export class ReticulumChatManager extends EventEmitter {
         const afterClaim = this.db.getMissingRange(
           groupId,
           normalizedRange.a,
+          normalizedRange.s,
           normalizedRange.from,
           normalizedRange.to
         );
@@ -10754,18 +10850,14 @@ export class ReticulumChatManager extends EventEmitter {
     return sent;
   }
 
-  private newestAuthorRangePage(range: { a: string; from: number; to: number }): {
-    a: string;
-    from: number;
-    to: number;
-  } {
+  private newestAuthorRangePage(range: ReticulumChatAuthorRange): ReticulumChatAuthorRange {
     const safeFrom = Math.max(1, Math.floor(range.from));
     const safeTo = Math.max(safeFrom, Math.floor(range.to));
     const pageFrom = Math.max(
       safeFrom,
       safeTo - RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS + 1
     );
-    return { a: range.a, from: pageFrom, to: safeTo };
+    return { a: range.a, s: range.s, from: pageFrom, to: safeTo };
   }
 
   private async sendEventBatchOrResourceDigest(
@@ -12584,16 +12676,21 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const authorHeads = cached.authorHeads.filter(
-      (head) => head.authorAddress !== event.authorAddress
+      (head) =>
+        head.authorAddress !== event.authorAddress ||
+        head.authorStreamId !== normalizeReticulumChatAuthorStreamId(event.authorStreamId)
     );
     const previousAuthor = cached.authorHeads.find(
-      (head) => head.authorAddress === event.authorAddress
+      (head) =>
+        head.authorAddress === event.authorAddress &&
+        head.authorStreamId === normalizeReticulumChatAuthorStreamId(event.authorStreamId)
     );
     authorHeads.push(
       previousAuthor && previousAuthor.maxSeq > event.authorSeq
         ? previousAuthor
         : {
             authorAddress: event.authorAddress,
+            authorStreamId: normalizeReticulumChatAuthorStreamId(event.authorStreamId),
             maxSeq: event.authorSeq,
             eventId: event.eventId,
             timestamp: event.timestamp,
@@ -12857,7 +12954,7 @@ export class ReticulumChatManager extends EventEmitter {
       k: 'metadata_snapshot_offer_v3',
       g: groupId,
       s: metadataSnapshotToWire(snapshot),
-      ...(fullSnapshot ? { fh: fullSnapshot.snapshotHash } : {}),
+      ...(fullSnapshot ? { fh: compactSha256ForWire(fullSnapshot.snapshotHash) } : {}),
     };
     if (this.metadataSnapshotHasAdminPrivateChannels(snapshot) || !wireFitsReticulum(wire)) {
       loggerWarn(
@@ -12939,14 +13036,14 @@ export class ReticulumChatManager extends EventEmitter {
     const resourceOffer = metadataSnapshotResourceOfferFromWire(
       groupId,
       candidate && typeof candidate === 'object' && !Array.isArray(candidate)
-        ? (candidate as { r?: unknown }).r
+        ? (candidate as { w?: unknown }).w
         : null
     );
     if (resourceOffer) {
       const fullSnapshotHash =
         candidate && typeof candidate === 'object' && !Array.isArray(candidate) &&
         typeof (candidate as { fh?: unknown }).fh === 'string'
-          ? String((candidate as { fh: string }).fh).trim().toLowerCase()
+          ? sha256FromWire((candidate as { fh: string }).fh)
           : '';
       const sourcePeerHash =
         this.routePeerHash(resourceOffer.sourcePeerHash) ??
@@ -12977,7 +13074,7 @@ export class ReticulumChatManager extends EventEmitter {
     const advertisedFullSnapshotHash =
       candidate && typeof candidate === 'object' && !Array.isArray(candidate) &&
       typeof (candidate as { fh?: unknown }).fh === 'string'
-        ? String((candidate as { fh: string }).fh).trim().toLowerCase()
+        ? sha256FromWire((candidate as { fh: string }).fh)
         : '';
     const expectedScope = await this.expectedMetadataSnapshotScope(groupId);
     if (!expectedScope) {
@@ -13197,8 +13294,10 @@ export class ReticulumChatManager extends EventEmitter {
       v: 3,
       k: 'metadata_snapshot_offer_v3',
       g: groupId,
-      r: metadataSnapshotResourceOfferToWire(offer),
-      ...(advertisedFullSnapshotHash ? { fh: advertisedFullSnapshotHash } : {}),
+      w: metadataSnapshotResourceOfferToWire(offer),
+      ...(advertisedFullSnapshotHash
+        ? { fh: compactSha256ForWire(advertisedFullSnapshotHash) }
+        : {}),
     };
     if (!wireFitsReticulum(wire)) {
       this.outboundMetadataSnapshotResources.delete(transferId);
@@ -13329,6 +13428,7 @@ export class ReticulumChatManager extends EventEmitter {
         g: groupId,
         heads: authorHeads.map((head) => [
           head.authorAddress,
+          head.authorStreamId,
           head.maxSeq,
           head.eventId,
           head.timestamp,
@@ -13544,7 +13644,9 @@ export class ReticulumChatManager extends EventEmitter {
         deferred.snapshot.groupId,
         {
           s: metadataSnapshotToWire(deferred.snapshot),
-          ...(deferred.fullSnapshotHash ? { fh: deferred.fullSnapshotHash } : {}),
+          ...(deferred.fullSnapshotHash
+            ? { fh: compactSha256ForWire(deferred.fullSnapshotHash) }
+            : {}),
         },
         deferred.peerHash
       );
@@ -13624,6 +13726,7 @@ export class ReticulumChatManager extends EventEmitter {
     const allHeads = type === 'authors'
       ? this.buildAuthorHeads(groupId, limit, offset).map((head) => ({
           a: head.authorAddress,
+          s: head.authorStreamId,
           q: head.maxSeq,
           id: head.eventId,
           ts: head.timestamp,
@@ -13674,11 +13777,12 @@ export class ReticulumChatManager extends EventEmitter {
     if (type === 'authors') {
       const ranges = page.heads.flatMap((head) => {
         const authorAddress = typeof head.a === 'string' ? head.a : '';
+        const authorStreamId = authorStreamIdFromWire(head.s);
         const remoteSeq = Math.max(0, Math.floor(Number(head.q || 0)));
-        if (!authorAddress || remoteSeq <= 0) return [];
-        const localSeq = this.db.getAuthorMaxSeq(groupId, authorAddress);
+        if (!authorAddress || !authorStreamId || remoteSeq <= 0) return [];
+        const localSeq = this.db.getAuthorMaxSeq(groupId, authorAddress, authorStreamId);
         if (remoteSeq <= localSeq) return [];
-        return [{ a: authorAddress, from: localSeq + 1, to: remoteSeq }];
+        return [{ a: authorAddress, s: authorStreamId, from: localSeq + 1, to: remoteSeq }];
       });
       if (ranges.length > 0) {
         const recorded = this.recordAuthorGapRanges(
@@ -14529,7 +14633,7 @@ export class ReticulumChatManager extends EventEmitter {
       t: 'RCHAT',
       k: 'gks',
       g: groupId,
-      r: {
+      w: {
         e: key.epoch,
         id: key.keyId.toLowerCase(),
         r: request.r.toLowerCase(),
@@ -14539,7 +14643,7 @@ export class ReticulumChatManager extends EventEmitter {
         s: signed.signature,
       },
     };
-    if (!verifyReticulumChatGroupKeyResponse(groupId, wire.r, now)) return null;
+    if (!verifyReticulumChatGroupKeyResponse(groupId, wire.w, now)) return null;
     if (!wireFitsReticulum(wire)) {
       loggerWarn(
         `[ReticulumChat] group_key_response skipped group=${groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
@@ -16171,6 +16275,7 @@ export class ReticulumChatManager extends EventEmitter {
       ts: entry.timestamp,
       c: normalizeReticulumChatChannelId(entry.channelId),
       a: entry.authorAddress,
+      s: entry.authorStreamId,
       seq: entry.authorSeq,
       ph: entry.payloadHash,
       bid: entry.blobId,
@@ -16194,6 +16299,7 @@ export class ReticulumChatManager extends EventEmitter {
             c: event.c,
           };
           if (compactLevel <= 3 && event.seq != null) compacted.seq = event.seq;
+          if (compactLevel <= 3 && event.s) compacted.s = event.s;
           if (compactLevel <= 2 && event.a) compacted.a = event.a;
           if (compactLevel <= 1 && event.ph) compacted.ph = event.ph;
           if (compactLevel === 0 && event.bid) compacted.bid = event.bid;
@@ -16301,6 +16407,7 @@ export class ReticulumChatManager extends EventEmitter {
         typeof entry.ts !== 'number' ||
         typeof entry.c !== 'string' ||
         (entry.a != null && typeof entry.a !== 'string') ||
+        authorStreamIdFromWire(entry.s) == null ||
         (entry.seq != null && !Number.isInteger(entry.seq)) ||
         (entry.ph != null && typeof entry.ph !== 'string') ||
         (entry.bid != null && typeof entry.bid !== 'string')

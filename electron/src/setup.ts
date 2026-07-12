@@ -3604,6 +3604,15 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'reticulumChat:reserveAuthorSequence',
+  async (_event, groupId: number, authorAddress: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.reserveAuthorSequence(groupId, authorAddress);
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:sendTyping',
   async (
     _event,
@@ -4157,6 +4166,23 @@ ipcMain.handle(
   }
 );
 
+async function readReticulumGroupState<T>(
+  fallback: T,
+  read: () => T | Promise<T>
+): Promise<T> {
+  try {
+    return await read();
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      err.message.includes('Local user is not a member of this group')
+    ) {
+      return fallback;
+    }
+    throw err;
+  }
+}
+
 ipcMain.handle(
   'reticulumChat:getHistory',
   async (
@@ -4174,7 +4200,9 @@ ipcMain.handle(
     const limit =
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return manager
-      ? manager.getHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+      ? readReticulumGroupState([], () =>
+          manager.getHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+        )
       : [];
   }
 );
@@ -4196,7 +4224,9 @@ ipcMain.handle(
     const limit =
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return manager
-      ? manager.getMessageHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+      ? readReticulumGroupState([], () =>
+          manager.getMessageHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+        )
       : [];
   }
 );
@@ -4205,7 +4235,9 @@ ipcMain.handle(
   'reticulumChat:getChannelMetadataHistory',
   async (_event, groupId: number, limit?: number) => {
     const manager = getReticulumChatManager();
-    return manager ? manager.getChannelMetadataHistory(groupId, limit) : [];
+    return manager
+      ? readReticulumGroupState([], () => manager.getChannelMetadataHistory(groupId, limit))
+      : [];
   }
 );
 
@@ -4213,13 +4245,17 @@ ipcMain.handle(
   'reticulumChat:getChannels',
   async (_event, groupId: number, includeArchived?: boolean) => {
     const manager = getReticulumChatManager();
-    return manager ? manager.getChannels(groupId, includeArchived === true) : [];
+    return manager
+      ? readReticulumGroupState([], () => manager.getChannels(groupId, includeArchived === true))
+      : [];
   }
 );
 
 ipcMain.handle('reticulumChat:getCategories', async (_event, groupId: number) => {
   const manager = getReticulumChatManager();
-  return manager ? manager.getCategories(groupId) : [];
+  return manager
+    ? readReticulumGroupState([], () => manager.getCategories(groupId))
+    : [];
 });
 
 ipcMain.handle(
@@ -4236,7 +4272,9 @@ ipcMain.handle(
 
 ipcMain.handle('reticulumChat:getSyncState', async (_event, groupId: number) => {
   const manager = getReticulumChatManager();
-  return manager ? manager.getSyncState(groupId) : {};
+  return manager
+    ? readReticulumGroupState({}, () => manager.getSyncState(groupId))
+    : {};
 });
 
 ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) => {
@@ -4292,7 +4330,9 @@ ipcMain.handle(
     const safeOptions = options && typeof options === 'object' ? options : {};
     const manager = getReticulumChatManager();
     return manager
-      ? manager.getMessageWindowAroundEvent(groupId, channelId, eventId, safeOptions)
+      ? readReticulumGroupState([], () =>
+          manager.getMessageWindowAroundEvent(groupId, channelId, eventId, safeOptions)
+        )
       : [];
   }
 );

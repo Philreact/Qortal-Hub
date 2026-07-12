@@ -120,4 +120,17 @@ describe('useReticulumGroupChat', () => {
     ]);
     expect(result.current.hasOlder).toBe(true);
   });
+
+  it('treats a transient membership history rejection as empty state', async () => {
+    getMessageHistory.mockRejectedValueOnce(
+      new Error('Local user is not a member of this group')
+    );
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+
+    await waitFor(() => {
+      expect(getMessageHistory).toHaveBeenCalledTimes(1);
+      expect(result.current.events).toEqual([]);
+      expect(result.current.hasOlder).toBe(false);
+    });
+  });
 });

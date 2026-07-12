@@ -7,6 +7,8 @@ type MockStore = {
   reticulumChatMessages: ReticulumChatRow[];
   reticulumChatExpiredEventMarkers: ReticulumChatRow[];
   reticulumChatMetadataSnapshots: ReticulumChatRow[];
+  reticulumChatAuthorStreams: Map<string, string>;
+  reticulumChatAuthorSequences: Map<string, number>;
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
   schema: Map<string, Set<string>>;
@@ -84,15 +86,17 @@ class Statement {
         const byAuthor = new Map<string, number>();
         for (const row of this.store.reticulumChatExpiredEventMarkers) {
           if (row.group_id !== groupId) continue;
-          byAuthor.set(
-            row.author_address,
-            Math.max(byAuthor.get(row.author_address) ?? 0, row.author_seq)
-          );
+          const key = `${row.author_address}:${row.author_stream_id || ''}`;
+          byAuthor.set(key, Math.max(byAuthor.get(key) ?? 0, row.author_seq));
         }
-        return [...byAuthor.entries()].map(([author_address, seq]) => ({
-          author_address,
-          seq,
-        }));
+        return [...byAuthor.entries()].map(([key, seq]) => {
+          const separator = key.lastIndexOf(':');
+          return {
+            author_address: key.slice(0, separator),
+            author_stream_id: key.slice(separator + 1),
+            seq,
+          };
+        });
       }
       return this.store.reticulumChatExpiredEventMarkers;
     }
@@ -116,13 +120,14 @@ class Statement {
               String(a.event_id).localeCompare(String(b.event_id))
           );
       }
-      if (this.sql.includes('WHERE group_id = ? AND author_address = ? AND author_seq > ?')) {
-        const [groupId, authorAddress, seq, limit] = args;
+      if (this.sql.includes('WHERE group_id = ? AND author_address = ? AND author_stream_id = ? AND author_seq > ?')) {
+        const [groupId, authorAddress, authorStreamId, seq, limit] = args;
         return this.store.reticulumChatEvents
           .filter(
             (row) =>
               row.group_id === groupId &&
               row.author_address === authorAddress &&
+              String(row.author_stream_id || '') === authorStreamId &&
               row.author_seq > seq
           )
           .sort((a, b) => a.author_seq - b.author_seq)
@@ -136,9 +141,10 @@ class Statement {
           ...this.store.reticulumChatExpiredEventMarkers,
         ]) {
           if (row.group_id !== groupId) continue;
-          const existing = byAuthor.get(row.author_address);
+          const key = `${row.author_address}:${row.author_stream_id || ''}`;
+          const existing = byAuthor.get(key);
           if (existing && existing.author_seq >= row.author_seq) continue;
-          byAuthor.set(row.author_address, row);
+          byAuthor.set(key, row);
         }
         return [...byAuthor.values()]
           .sort(
@@ -149,6 +155,7 @@ class Statement {
           .slice(0, limit)
           .map((row) => ({
             author_address: row.author_address,
+            author_stream_id: row.author_stream_id || '',
             max_seq: row.author_seq,
             event_id: row.event_id,
             timestamp: row.timestamp,
@@ -179,15 +186,17 @@ class Statement {
           ...this.store.reticulumChatExpiredEventMarkers,
         ]) {
           if (row.group_id !== groupId) continue;
-          byAuthor.set(
-            row.author_address,
-            Math.max(byAuthor.get(row.author_address) ?? 0, row.author_seq)
-          );
+          const key = `${row.author_address}:${row.author_stream_id || ''}`;
+          byAuthor.set(key, Math.max(byAuthor.get(key) ?? 0, row.author_seq));
         }
-        return [...byAuthor.entries()].map(([author_address, seq]) => ({
-          author_address,
-          seq,
-        }));
+        return [...byAuthor.entries()].map(([key, seq]) => {
+          const separator = key.lastIndexOf(':');
+          return {
+            author_address: key.slice(0, separator),
+            author_stream_id: key.slice(separator + 1),
+            seq,
+          };
+        });
       }
       if (this.sql.includes('timestamp > ? OR (timestamp = ? AND event_id > ?)')) {
         const [groupId, timestamp, _sameTimestamp, eventId, limit] = args;
@@ -260,6 +269,36 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('SELECT stream_id FROM rchat_author_streams')) {
+      const streamId = this.store.reticulumChatAuthorStreams.get(String(args[0] || ''));
+      return streamId ? { stream_id: streamId } : undefined;
+    }
+    if (this.sql.includes('INSERT INTO rchat_author_stream_sequences')) {
+      const params = args[0] ?? {};
+      const groupId = Number(params.group_id);
+      const authorAddress = String(params.author_address || '');
+      const authorStreamId = String(params.author_stream_id || '');
+      const key = `${groupId}:${authorAddress}:${authorStreamId}`;
+      let storedMax = 0;
+      for (const row of [
+        ...this.store.reticulumChatEvents,
+        ...this.store.reticulumChatExpiredEventMarkers,
+      ]) {
+        if (
+          row.group_id === groupId &&
+          row.author_address === authorAddress &&
+          String(row.author_stream_id || '') === authorStreamId
+        ) {
+          storedMax = Math.max(storedMax, Number(row.author_seq) || 0);
+        }
+      }
+      const lastSeq = Math.max(
+        this.store.reticulumChatAuthorSequences.get(key) ?? 0,
+        storedMax
+      ) + 1;
+      this.store.reticulumChatAuthorSequences.set(key, lastSeq);
+      return { last_seq: lastSeq };
+    }
     if (this.sql.includes('FROM rchat_metadata_snapshots')) {
       const [groupId, value] = args;
       return this.store.reticulumChatMetadataSnapshots
@@ -301,10 +340,14 @@ class Statement {
     }
     if (this.sql.includes('FROM rchat_expired_event_markers')) {
       if (this.sql.includes('MAX(author_seq) AS seq')) {
-        const [groupId, authorAddress] = args;
+        const [groupId, authorAddress, authorStreamId] = args;
         let seq = 0;
         for (const row of this.store.reticulumChatExpiredEventMarkers) {
-          if (row.group_id === groupId && row.author_address === authorAddress) {
+          if (
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            String(row.author_stream_id || '') === String(authorStreamId || '')
+          ) {
             seq = Math.max(seq, Number(row.author_seq) || 0);
           }
         }
@@ -321,18 +364,23 @@ class Statement {
         return this.sql.includes('SELECT 1') ? { 1: 1 } : row;
       }
       if (this.sql.includes('MAX(author_seq) AS seq')) {
-        const [groupId, authorAddress, markerGroupId, markerAuthorAddress] = args;
+        const [groupId, authorAddress, authorStreamId, markerGroupId, markerAuthorAddress, markerStreamId] = args;
         let seq = 0;
         for (const row of [
           ...this.store.reticulumChatEvents,
           ...this.store.reticulumChatExpiredEventMarkers,
         ]) {
-          if (row.group_id === groupId && row.author_address === authorAddress) {
+          if (
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            String(row.author_stream_id || '') === authorStreamId
+          ) {
             seq = Math.max(seq, Number(row.author_seq) || 0);
           }
           if (
             row.group_id === markerGroupId &&
-            row.author_address === markerAuthorAddress
+            row.author_address === markerAuthorAddress &&
+            String(row.author_stream_id || '') === markerStreamId
           ) {
             seq = Math.max(seq, Number(row.author_seq) || 0);
           }
@@ -362,6 +410,13 @@ class Statement {
   }
 
   run(params?: any, second?: any) {
+    if (this.sql.includes('INSERT OR IGNORE INTO rchat_author_streams')) {
+      if (!this.store.reticulumChatAuthorStreams.has(params.author_address)) {
+        this.store.reticulumChatAuthorStreams.set(params.author_address, params.stream_id);
+        return { changes: 1, lastInsertRowid: 1 };
+      }
+      return { changes: 0, lastInsertRowid: 0 };
+    }
     if (this.sql.includes('INSERT OR REPLACE INTO rchat_metadata_snapshots')) {
       const values = Array.from(arguments);
       const row = params && typeof params === 'object' && !Array.isArray(params)
@@ -453,6 +508,8 @@ class Statement {
             row.event_id === params.event_id ||
             (row.group_id === params.group_id &&
               row.author_address === params.author_address &&
+              String(row.author_stream_id || '') ===
+                String(params.author_stream_id || '') &&
               row.author_seq === params.author_seq)
         )
       ) {
@@ -463,7 +520,7 @@ class Statement {
     }
     if (this.sql.includes('INSERT OR IGNORE INTO rchat_expired_event_markers')) {
       const values = Array.from(arguments);
-      const [eventId, groupId, channelId, authorAddress, authorSeq, timestamp, expiredAt] =
+      const [eventId, groupId, channelId, authorAddress, authorStreamId, authorSeq, timestamp, expiredAt] =
         values;
       if (
         this.store.reticulumChatExpiredEventMarkers.some(
@@ -477,6 +534,7 @@ class Statement {
         group_id: groupId,
         channel_id: channelId,
         author_address: authorAddress,
+        author_stream_id: authorStreamId,
         author_seq: authorSeq,
         timestamp,
         expired_at: expiredAt,
@@ -545,6 +603,8 @@ class MockDatabase {
       reticulumChatMessages: [],
       reticulumChatExpiredEventMarkers: [],
       reticulumChatMetadataSnapshots: [],
+      reticulumChatAuthorStreams: new Map(),
+      reticulumChatAuthorSequences: new Map(),
       reticulumResources: [],
       reticulumResourceChunks: [],
       schema: new Map<string, Set<string>>(),

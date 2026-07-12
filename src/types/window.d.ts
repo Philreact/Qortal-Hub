@@ -584,6 +584,10 @@ declare global {
       publishEvent: (
         event: unknown
       ) => Promise<{ success: boolean; error?: string }>;
+      reserveAuthorSequence: (
+        groupId: number,
+        authorAddress: string
+      ) => Promise<{ authorStreamId: string; authorSeq: number }>;
       publishDirectEvent: (
         event: unknown
       ) => Promise<{ success: boolean; error?: string }>;

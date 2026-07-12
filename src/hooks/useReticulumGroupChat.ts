@@ -225,17 +225,21 @@ export function useReticulumGroupChat(
         normalizedChannelId,
         RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
       );
-    void historyPromise?.then(async (history) => {
-      if (cancelled || !Array.isArray(history)) return;
-      const enriched = await addPrimaryNamesToEvents(
-        history as ReticulumChatHookEvent[],
-        primaryNameCacheRef.current
-      );
-      if (!cancelled) {
-        setHasOlder(enriched.length > 0);
-        mergeEvents(enriched, expectedChatKey);
-      }
-    });
+    void historyPromise
+      ?.then(async (history) => {
+        if (cancelled || !Array.isArray(history)) return;
+        const enriched = await addPrimaryNamesToEvents(
+          history as ReticulumChatHookEvent[],
+          primaryNameCacheRef.current
+        );
+        if (!cancelled) {
+          setHasOlder(enriched.length > 0);
+          mergeEvents(enriched, expectedChatKey);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setHasOlder(false);
+      });
 
     const offEvent = window.reticulumChat?.onEvent?.((payload) => {
       const event = payload?.event as ReticulumChatHookEvent;

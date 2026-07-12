@@ -669,14 +669,6 @@ function ReticulumCategoryDropZone({
   );
 }
 
-const nextReticulumAuthorSeq = (groupId: string | number, address: string) => {
-  const key = `reticulum-chat-author-seq:${groupId}:${address}`;
-  const current = Number(window.localStorage.getItem(key) || '0');
-  const next = Number.isFinite(current) ? current + 1 : 1;
-  window.localStorage.setItem(key, String(next));
-  return next;
-};
-
 const normalizeChatHtmlContent = (raw: unknown): string => {
   if (raw == null) return '<p></p>';
   if (typeof raw === 'string') {
@@ -2353,11 +2345,24 @@ export const ChatGroup = ({
               : target
           )
         : [];
+      const authorSequence = await window.reticulumChat?.reserveAuthorSequence?.(
+        groupId,
+        myAddress
+      );
+      if (
+        !authorSequence ||
+        !/^[0-9a-f]{32}$/.test(authorSequence.authorStreamId) ||
+        !Number.isInteger(authorSequence.authorSeq) ||
+        authorSequence.authorSeq <= 0
+      ) {
+        throw new Error('Unable to reserve Reticulum chat event sequence');
+      }
       const baseFields = {
         eventId,
         groupId,
         channelId: eventChannelId,
-        authorSeq: nextReticulumAuthorSeq(groupId, myAddress),
+        authorStreamId: authorSequence.authorStreamId,
+        authorSeq: authorSequence.authorSeq,
         timestamp,
         eventType,
         targetEventId: targetEventId ?? null,

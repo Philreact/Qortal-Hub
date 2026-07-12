@@ -1422,6 +1422,12 @@ try {
           success: boolean;
           error?: string;
         }>,
+      reserveAuthorSequence: async (groupId: number, authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:reserveAuthorSequence',
+          groupId,
+          authorAddress
+        ) as Promise<{ authorStreamId: string; authorSeq: number }>,
       publishDirectEvent: async (event: unknown) =>
         ipcRenderer.invoke('reticulumChat:publishDirectEvent', event) as Promise<{
           success: boolean;

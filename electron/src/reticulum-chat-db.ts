@@ -20,6 +20,10 @@ export const RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS = 'members';
 export const RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS = 'admins';
 export const RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS = 'members';
 export const RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS = 'admins';
+export function normalizeReticulumChatAuthorStreamId(value: unknown): string {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[0-9a-f]{32}$/.test(normalized) ? normalized : '';
+}
 
 const RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS = 60 * 1000;
 const RETICULUM_CHAT_VISIBLE_EVENT_SQL =
@@ -70,6 +74,7 @@ export type ReticulumGroupCategory = {
 
 export type ReticulumChatAuthorHead = {
   authorAddress: string;
+  authorStreamId: string;
   maxSeq: number;
   eventId: string;
   timestamp: number;
@@ -77,6 +82,7 @@ export type ReticulumChatAuthorHead = {
 
 export type ReticulumChatAuthorSequenceGap = {
   authorAddress: string;
+  authorStreamId: string;
   fromSeq: number;
   toSeq: number;
 };
@@ -171,6 +177,7 @@ export type ReticulumChatRelayDigestEntry = {
   groupId: number;
   channelId: string;
   authorAddress: string;
+  authorStreamId: string;
   authorSeq: number;
   timestamp: number;
   payloadHash: string;
@@ -214,6 +221,7 @@ export type ReticulumChatGroupKeyRequest = {
 type ReticulumChatMissingRangeRow = {
   group_id: number;
   author_address: string;
+  author_stream_id: string;
   from_seq: number;
   to_seq: number;
   preferred_peer?: string | null;
@@ -224,6 +232,7 @@ type ReticulumChatMissingRangeRow = {
 export type ReticulumChatMissingRangeState = {
   groupId: number;
   authorAddress: string;
+  authorStreamId: string;
   fromSeq: number;
   toSeq: number;
   preferredPeer: string;
@@ -254,6 +263,7 @@ type EventRow = {
   channel_id: string;
   author_address: string;
   author_public_key: string;
+  author_stream_id?: string;
   author_seq: number;
   timestamp: number;
   feed_timestamp: number;
@@ -302,6 +312,7 @@ type MessageProjectionRow = {
   channel_id: string;
   author_address: string;
   author_public_key: string;
+  author_stream_id?: string;
   author_seq: number;
   created_at: number;
   root_event_type: string;
@@ -484,12 +495,14 @@ export function reticulumChatRelayGroupHash(groupId: number): string {
 
 function rowToEvent(row: EventRow): ReticulumChatEvent {
   const mentionTargets = parseMentionTargets(row.mention_targets);
+  const authorStreamId = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
   return {
     eventId: row.event_id,
     groupId: row.group_id,
     channelId: normalizeReticulumChatChannelId(row.channel_id),
     authorAddress: row.author_address,
     authorPublicKey: row.author_public_key,
+    authorStreamId,
     authorSeq: row.author_seq,
     timestamp: row.timestamp,
     eventType: row.event_type as ReticulumChatEvent['eventType'],
@@ -532,12 +545,14 @@ function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
 
 function messageProjectionRowToEvent(row: MessageProjectionRow): ReticulumChatEvent {
   const mentionTargets = parseMentionTargets(row.mention_targets);
+  const authorStreamId = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
   return {
     eventId: row.root_event_id,
     groupId: row.group_id,
     channelId: normalizeReticulumChatChannelId(row.channel_id),
     authorAddress: row.author_address,
     authorPublicKey: row.author_public_key,
+    authorStreamId,
     authorSeq: row.author_seq,
     timestamp: row.created_at,
     eventType: row.root_event_type as ReticulumChatEvent['eventType'],
@@ -1080,12 +1095,12 @@ export class ReticulumChatDatabase {
 
     this.stmtInsertEvent = this.db.prepare(`
       INSERT OR IGNORE INTO reticulum_chat_events
-        (event_id, group_id, author_address, author_public_key, author_seq,
+        (event_id, group_id, author_address, author_public_key, author_stream_id, author_seq,
          timestamp, feed_timestamp, event_type, target_event_id, reply_to_event_id,
          encrypted_payload, payload_hash, mention_address_hashes, mention_targets, signature, own_event,
          last_served_at, stored_at, accepted_at, wire_bytes, channel_id, expires_at)
       VALUES
-        (@event_id, @group_id, @author_address, @author_public_key, @author_seq,
+        (@event_id, @group_id, @author_address, @author_public_key, @author_stream_id, @author_seq,
          @timestamp, @feed_timestamp, @event_type, @target_event_id, @reply_to_event_id,
          @encrypted_payload, @payload_hash, @mention_address_hashes, @mention_targets, @signature, @own_event,
          @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id, @expires_at)
@@ -1093,13 +1108,13 @@ export class ReticulumChatDatabase {
     this.stmtInsertEventHeaderV2 = this.db.prepare(`
       INSERT OR IGNORE INTO rchat_event_headers
         (event_id, group_id, channel_id, author_address, author_public_key,
-         author_seq, timestamp, feed_timestamp, event_type, target_event_id,
+         author_stream_id, author_seq, timestamp, feed_timestamp, event_type, target_event_id,
          reply_to_event_id, payload_hash, mention_address_hashes, mention_targets,
          signature, own_event, last_served_at, stored_at, accepted_at, wire_bytes,
          retention_state, scrubbed_at, expires_at)
       VALUES
         (@event_id, @group_id, @channel_id, @author_address, @author_public_key,
-         @author_seq, @timestamp, @feed_timestamp, @event_type, @target_event_id,
+         @author_stream_id, @author_seq, @timestamp, @feed_timestamp, @event_type, @target_event_id,
          @reply_to_event_id, @payload_hash, @mention_address_hashes, @mention_targets,
          @signature, @own_event, @last_served_at, @stored_at, @accepted_at, @wire_bytes,
          @retention_state, @scrubbed_at, @expires_at)
@@ -1152,13 +1167,13 @@ export class ReticulumChatDatabase {
     this.stmtUpsertMessageProjection = this.db.prepare(`
       INSERT INTO rchat_message_projection
         (root_event_id, group_id, channel_id, author_address, author_public_key,
-         author_seq, created_at, root_event_type, current_event_id, updated_at,
+         author_stream_id, author_seq, created_at, root_event_type, current_event_id, updated_at,
          reply_to_event_id, encrypted_payload, payload_hash,
          mention_address_hashes, mention_targets, signature, deleted_at,
          deleted_event_id, expires_at, has_attachment)
       VALUES
         (@root_event_id, @group_id, @channel_id, @author_address, @author_public_key,
-         @author_seq, @created_at, @root_event_type, @current_event_id, @updated_at,
+         @author_stream_id, @author_seq, @created_at, @root_event_type, @current_event_id, @updated_at,
          @reply_to_event_id, @encrypted_payload, @payload_hash,
          @mention_address_hashes, @mention_targets, @signature, @deleted_at,
          @deleted_event_id, @expires_at, @has_attachment)
@@ -1167,6 +1182,7 @@ export class ReticulumChatDatabase {
         channel_id = excluded.channel_id,
         author_address = excluded.author_address,
         author_public_key = excluded.author_public_key,
+        author_stream_id = excluded.author_stream_id,
         author_seq = excluded.author_seq,
         created_at = excluded.created_at,
         root_event_type = excluded.root_event_type,
@@ -1340,36 +1356,38 @@ export class ReticulumChatDatabase {
       FROM (
         SELECT author_seq
         FROM reticulum_chat_events
-        WHERE group_id = ? AND author_address = ?
+        WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
         UNION ALL
         SELECT author_seq
         FROM rchat_expired_event_markers
-        WHERE group_id = ? AND author_address = ?
+        WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
       )
     `);
     this.stmtGetAuthorEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND author_address = ? AND author_seq > ?
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ? AND author_seq > ?
       ORDER BY author_seq ASC, timestamp ASC, event_id ASC
       LIMIT ?
     `);
     this.stmtGetAuthorHeads = this.db.prepare(`
       WITH known_events AS (
-        SELECT event_id, author_address, author_seq, timestamp
+        SELECT event_id, author_address, author_stream_id, author_seq, timestamp
         FROM reticulum_chat_events
         WHERE group_id = ?
         UNION ALL
-        SELECT event_id, author_address, author_seq, timestamp
+        SELECT event_id, author_address, author_stream_id, author_seq, timestamp
         FROM rchat_expired_event_markers
         WHERE group_id = ?
       )
-      SELECT e.author_address, e.author_seq AS max_seq, e.event_id, e.timestamp
+      SELECT e.author_address, e.author_stream_id, e.author_seq AS max_seq, e.event_id, e.timestamp
       FROM known_events e
       JOIN (
-        SELECT author_address, MAX(author_seq) AS max_seq
+        SELECT author_address, author_stream_id, MAX(author_seq) AS max_seq
         FROM known_events
-        GROUP BY author_address
-      ) h ON h.author_address = e.author_address AND h.max_seq = e.author_seq
+        GROUP BY author_address, author_stream_id
+      ) h ON h.author_address = e.author_address
+        AND h.author_stream_id = e.author_stream_id
+        AND h.max_seq = e.author_seq
       ORDER BY e.timestamp DESC, e.event_id DESC
       LIMIT ?
       OFFSET ?
@@ -1377,22 +1395,24 @@ export class ReticulumChatDatabase {
     this.stmtGetAuthorSequenceGaps = this.db.prepare(`
       WITH ordered AS (
         SELECT author_address,
+               author_stream_id,
                author_seq,
                LAG(author_seq) OVER (
-                 PARTITION BY author_address
+                 PARTITION BY author_address, author_stream_id
                  ORDER BY author_seq ASC
                ) AS previous_seq
         FROM (
-          SELECT author_address, author_seq
+          SELECT author_address, author_stream_id, author_seq
           FROM reticulum_chat_events
           WHERE group_id = ?
           UNION ALL
-          SELECT author_address, author_seq
+          SELECT author_address, author_stream_id, author_seq
           FROM rchat_expired_event_markers
           WHERE group_id = ?
         )
       )
       SELECT author_address,
+             author_stream_id,
              previous_seq + 1 AS from_seq,
              author_seq - 1 AS to_seq
       FROM ordered
@@ -1403,22 +1423,22 @@ export class ReticulumChatDatabase {
     `);
     this.stmtGetMissingByAuthor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
-      WHERE group_id = ? AND author_address = ? AND author_seq > ?
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ? AND author_seq > ?
       ORDER BY author_seq ASC
       LIMIT ?
     `);
     this.stmtGetGroupSeqs = this.db.prepare(`
-      SELECT author_address, MAX(author_seq) AS seq
+      SELECT author_address, author_stream_id, MAX(author_seq) AS seq
       FROM (
-        SELECT author_address, author_seq
+        SELECT author_address, author_stream_id, author_seq
         FROM reticulum_chat_events
         WHERE group_id = ?
         UNION ALL
-        SELECT author_address, author_seq
+        SELECT author_address, author_stream_id, author_seq
         FROM rchat_expired_event_markers
         WHERE group_id = ?
       )
-      GROUP BY author_address
+      GROUP BY author_address, author_stream_id
     `);
     this.stmtGetKnownGroups = this.db.prepare(`
       SELECT DISTINCT group_id FROM reticulum_chat_events
@@ -1687,6 +1707,7 @@ export class ReticulumChatDatabase {
       SELECT * FROM reticulum_chat_events
       WHERE group_id = ?
         AND author_address = ?
+        AND author_stream_id = ?
         AND author_seq >= ?
         AND author_seq <= ?
         AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
@@ -1733,65 +1754,69 @@ export class ReticulumChatDatabase {
         verified_at = excluded.verified_at
     `);
     this.stmtUpsertMissingRange = this.db.prepare(`
-      INSERT INTO rchat_missing_ranges
-        (group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
+      INSERT INTO rchat_missing_stream_ranges
+        (group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
       VALUES
-        (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
-      ON CONFLICT(group_id, author_address, from_seq, to_seq) DO UPDATE SET
+        (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
+      ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq) DO UPDATE SET
         preferred_peer = excluded.preferred_peer,
-        next_attempt_at = MIN(rchat_missing_ranges.next_attempt_at, excluded.next_attempt_at)
+        next_attempt_at = MIN(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
     `);
     this.stmtEnsureMissingRange = this.db.prepare(`
-      INSERT OR IGNORE INTO rchat_missing_ranges
-        (group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
+      INSERT OR IGNORE INTO rchat_missing_stream_ranges
+        (group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
       VALUES
-        (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
+        (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
     `);
     this.stmtGetMissingRangeExact = this.db.prepare(`
-      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
-      FROM rchat_missing_ranges
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_stream_ranges
       WHERE group_id = ?
         AND author_address = ?
+        AND author_stream_id = ?
         AND from_seq = ?
         AND to_seq = ?
     `);
     this.stmtUpdateMissingRangeAttempt = this.db.prepare(`
-      UPDATE rchat_missing_ranges
+      UPDATE rchat_missing_stream_ranges
       SET preferred_peer = COALESCE(@preferred_peer, preferred_peer),
           attempts = @attempts,
           next_attempt_at = @next_attempt_at
       WHERE group_id = @group_id
         AND author_address = @author_address
+        AND author_stream_id = @author_stream_id
         AND from_seq = @from_seq
         AND to_seq = @to_seq
     `);
     this.stmtUpdateMissingRangeBackoff = this.db.prepare(`
-      UPDATE rchat_missing_ranges
+      UPDATE rchat_missing_stream_ranges
       SET preferred_peer = COALESCE(@preferred_peer, preferred_peer),
           attempts = MAX(attempts, @attempts),
           next_attempt_at = MAX(next_attempt_at, @next_attempt_at)
       WHERE group_id = @group_id
         AND author_address = @author_address
+        AND author_stream_id = @author_stream_id
         AND from_seq = @from_seq
         AND to_seq = @to_seq
     `);
     this.stmtGetMissingRangesForSeq = this.db.prepare(`
-      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
-      FROM rchat_missing_ranges
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_stream_ranges
       WHERE group_id = ?
         AND author_address = ?
+        AND author_stream_id = ?
         AND from_seq <= ?
         AND to_seq >= ?
       ORDER BY from_seq ASC, to_seq ASC
     `);
     this.stmtGetAllMissingRanges = this.db.prepare(`
-      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
-      FROM rchat_missing_ranges
-      ORDER BY group_id ASC, author_address ASC, from_seq ASC
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_stream_ranges
+      ORDER BY group_id ASC, author_address ASC, author_stream_id ASC, from_seq ASC
     `);
     this.stmtGetReadyMissingRanges = this.db.prepare(`
-      SELECT group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
-      FROM rchat_missing_ranges
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at
+      FROM rchat_missing_stream_ranges
       WHERE next_attempt_at <= ?
       ORDER BY next_attempt_at ASC, group_id ASC, author_address ASC, from_seq ASC
       LIMIT ?
@@ -1801,22 +1826,24 @@ export class ReticulumChatDatabase {
       FROM reticulum_chat_events
       WHERE group_id = ?
         AND author_address = ?
+        AND author_stream_id = ?
         AND author_seq >= ?
         AND author_seq <= ?
       ORDER BY author_seq ASC
     `);
     this.stmtDeleteMissingRange = this.db.prepare(`
-      DELETE FROM rchat_missing_ranges
+      DELETE FROM rchat_missing_stream_ranges
       WHERE group_id = ?
         AND author_address = ?
+        AND author_stream_id = ?
         AND from_seq = ?
         AND to_seq = ?
     `);
     this.stmtInsertMissingRangeRaw = this.db.prepare(`
-      INSERT OR IGNORE INTO rchat_missing_ranges
-        (group_id, author_address, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
+      INSERT OR IGNORE INTO rchat_missing_stream_ranges
+        (group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
       VALUES
-        (@group_id, @author_address, @from_seq, @to_seq, @preferred_peer, @attempts, @next_attempt_at)
+        (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq, @preferred_peer, @attempts, @next_attempt_at)
     `);
     this.stmtInsertRelayBlob = this.db.prepare(`
       INSERT INTO rchat_relay_cache
@@ -1885,12 +1912,12 @@ export class ReticulumChatDatabase {
     `);
     this.stmtInsertScrubbedEvent = this.db.prepare(`
       INSERT OR REPLACE INTO reticulum_chat_events
-        (event_id, group_id, author_address, author_public_key, author_seq,
+        (event_id, group_id, author_address, author_public_key, author_stream_id, author_seq,
          timestamp, feed_timestamp, event_type, target_event_id, reply_to_event_id,
          encrypted_payload, payload_hash, mention_address_hashes, mention_targets, signature, own_event,
          last_served_at, stored_at, accepted_at, wire_bytes, channel_id, scrubbed_at, expires_at)
       VALUES
-        (@event_id, @group_id, @author_address, @author_public_key, @author_seq,
+        (@event_id, @group_id, @author_address, @author_public_key, @author_stream_id, @author_seq,
          @timestamp, @feed_timestamp, @event_type, @target_event_id, @reply_to_event_id,
          @encrypted_payload, @payload_hash, '[]', '[]', @signature, @own_event,
          @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id, @scrubbed_at, @expires_at)
@@ -2195,15 +2222,15 @@ export class ReticulumChatDatabase {
       .map((row) => (typeof row.root_event_id === 'string' ? row.root_event_id : ''))
       .filter(Boolean);
     const getThreadEvents = this.db.prepare(`
-      SELECT event_id, group_id, channel_id, author_address, author_seq, timestamp
+      SELECT event_id, group_id, channel_id, author_address, author_stream_id, author_seq, timestamp
       FROM reticulum_chat_events
       WHERE event_id = ? OR target_event_id = ?
     `);
     const insertExpiredMarker = this.db.prepare(`
       INSERT OR IGNORE INTO rchat_expired_event_markers
-        (event_id, group_id, channel_id, author_address, author_seq, timestamp, expired_at)
+        (event_id, group_id, channel_id, author_address, author_stream_id, author_seq, timestamp, expired_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = this.db.transaction((ids: string[]) => {
       for (const rootEventId of ids) {
@@ -2212,6 +2239,7 @@ export class ReticulumChatDatabase {
           group_id?: number;
           channel_id?: string;
           author_address?: string;
+          author_stream_id?: string;
           author_seq?: number;
           timestamp?: number;
         }>;
@@ -2233,6 +2261,7 @@ export class ReticulumChatDatabase {
             row.group_id,
             normalizeReticulumChatChannelId(row.channel_id),
             row.author_address,
+            normalizeReticulumChatAuthorStreamId(row.author_stream_id),
             row.author_seq,
             Math.floor(Number(row.timestamp)),
             now
@@ -2311,9 +2340,9 @@ export class ReticulumChatDatabase {
       .prepare(
         `
           INSERT OR IGNORE INTO rchat_expired_event_markers
-            (event_id, group_id, channel_id, author_address, author_seq, timestamp, expired_at)
+            (event_id, group_id, channel_id, author_address, author_stream_id, author_seq, timestamp, expired_at)
           VALUES
-            (?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?)
         `
       )
       .run(
@@ -2321,6 +2350,7 @@ export class ReticulumChatDatabase {
         event.groupId,
         normalizeReticulumChatChannelId(event.channelId),
         event.authorAddress,
+        normalizeReticulumChatAuthorStreamId(event.authorStreamId),
         event.authorSeq,
         event.timestamp,
         expiredAt
@@ -2328,6 +2358,8 @@ export class ReticulumChatDatabase {
   }
 
   insertEvent(event: ReticulumChatEvent, ownEvent: boolean): boolean {
+    const authorStreamId = normalizeReticulumChatAuthorStreamId(event.authorStreamId);
+    if (!authorStreamId) return false;
     const now = Date.now();
     this.pruneExpiredMessagesThrottled(now);
     const feedTimestamp = this.normalizeFeedTimestamp(event.timestamp, now);
@@ -2342,6 +2374,7 @@ export class ReticulumChatDatabase {
       channel_id: normalizeReticulumChatChannelId(event.channelId),
       author_address: event.authorAddress,
       author_public_key: event.authorPublicKey,
+      author_stream_id: authorStreamId,
       author_seq: event.authorSeq,
       timestamp: event.timestamp,
       feed_timestamp: feedTimestamp,
@@ -2390,6 +2423,88 @@ export class ReticulumChatDatabase {
     return inserted;
   }
 
+  reserveAuthorSequence(
+    groupId: number,
+    authorAddress: string
+  ): { authorStreamId: string; authorSeq: number } {
+    const address = String(authorAddress || '').trim();
+    if (!Number.isInteger(groupId) || groupId <= 0 || !address) {
+      throw new Error('Invalid group author sequence request');
+    }
+    this.db.prepare(`
+      INSERT OR IGNORE INTO rchat_author_streams (author_address, stream_id, created_at)
+      VALUES (@author_address, @stream_id, @created_at)
+    `).run({
+      author_address: address,
+      stream_id: nodeCrypto.randomBytes(16).toString('hex'),
+      created_at: Date.now(),
+    });
+    const streamRow = this.db.prepare(`
+      SELECT stream_id FROM rchat_author_streams WHERE author_address = ?
+    `).get(address) as { stream_id?: string } | undefined;
+    const authorStreamId = normalizeReticulumChatAuthorStreamId(
+      streamRow?.stream_id
+    );
+    if (!authorStreamId) {
+      throw new Error('Failed to resolve group author stream');
+    }
+    const row = this.db.prepare(`
+      INSERT INTO rchat_author_stream_sequences
+        (group_id, author_address, author_stream_id, last_seq)
+      VALUES (
+        @group_id,
+        @author_address,
+        @author_stream_id,
+        (
+          SELECT COALESCE(MAX(author_seq), 0) + 1
+          FROM (
+            SELECT author_seq FROM reticulum_chat_events
+              WHERE group_id = @group_id AND author_address = @author_address
+                AND author_stream_id = @author_stream_id
+            UNION ALL
+            SELECT author_seq FROM rchat_event_headers
+              WHERE group_id = @group_id AND author_address = @author_address
+                AND author_stream_id = @author_stream_id
+            UNION ALL
+            SELECT author_seq FROM rchat_expired_event_markers
+              WHERE group_id = @group_id AND author_address = @author_address
+                AND author_stream_id = @author_stream_id
+          )
+        )
+      )
+      ON CONFLICT (group_id, author_address, author_stream_id) DO UPDATE SET
+        last_seq = MAX(
+          rchat_author_stream_sequences.last_seq,
+          (
+            SELECT COALESCE(MAX(author_seq), 0)
+            FROM (
+              SELECT author_seq FROM reticulum_chat_events
+                WHERE group_id = @group_id AND author_address = @author_address
+                  AND author_stream_id = @author_stream_id
+              UNION ALL
+              SELECT author_seq FROM rchat_event_headers
+                WHERE group_id = @group_id AND author_address = @author_address
+                  AND author_stream_id = @author_stream_id
+              UNION ALL
+              SELECT author_seq FROM rchat_expired_event_markers
+                WHERE group_id = @group_id AND author_address = @author_address
+                  AND author_stream_id = @author_stream_id
+            )
+          )
+        ) + 1
+      RETURNING last_seq
+    `).get({
+      group_id: groupId,
+      author_address: address,
+      author_stream_id: authorStreamId,
+    }) as { last_seq?: number } | undefined;
+    const sequence = Number(row?.last_seq);
+    if (!Number.isInteger(sequence) || sequence <= 0) {
+      throw new Error('Failed to reserve group author sequence');
+    }
+    return { authorStreamId, authorSeq: sequence };
+  }
+
   private insertEventV2Mirror(
     event: ReticulumChatEvent,
     ownEvent: boolean,
@@ -2405,6 +2520,7 @@ export class ReticulumChatDatabase {
       channel_id: normalizeReticulumChatChannelId(event.channelId),
       author_address: event.authorAddress,
       author_public_key: event.authorPublicKey,
+      author_stream_id: normalizeReticulumChatAuthorStreamId(event.authorStreamId),
       author_seq: event.authorSeq,
       timestamp: event.timestamp,
       feed_timestamp: feedTimestamp,
@@ -2571,6 +2687,7 @@ export class ReticulumChatDatabase {
           group_id: event.groupId,
           author_address: event.authorAddress,
           author_public_key: event.authorPublicKey,
+          author_stream_id: normalizeReticulumChatAuthorStreamId(event.authorStreamId),
           author_seq: event.authorSeq,
           timestamp: event.timestamp,
           feed_timestamp:
@@ -2779,6 +2896,7 @@ export class ReticulumChatDatabase {
       channel_id: normalizeReticulumChatChannelId(root.channelId),
       author_address: root.authorAddress,
       author_public_key: root.authorPublicKey,
+      author_stream_id: normalizeReticulumChatAuthorStreamId(root.authorStreamId),
       author_seq: root.authorSeq,
       created_at: root.timestamp,
       root_event_type: root.eventType,
@@ -2855,6 +2973,7 @@ export class ReticulumChatDatabase {
         groupId: entry.groupId,
         channelId: event.channelId,
         authorAddress: event.authorAddress,
+        authorStreamId: normalizeReticulumChatAuthorStreamId(event.authorStreamId),
         authorSeq: event.authorSeq,
         timestamp: event.timestamp,
         payloadHash: event.payloadHash,
@@ -3272,6 +3391,7 @@ export class ReticulumChatDatabase {
       channel_id: normalizeReticulumChatChannelId(root.channelId),
       author_address: root.authorAddress,
       author_public_key: root.authorPublicKey,
+      author_stream_id: normalizeReticulumChatAuthorStreamId(root.authorStreamId),
       author_seq: root.authorSeq,
       created_at: root.timestamp,
       root_event_type: root.eventType,
@@ -4411,6 +4531,7 @@ export class ReticulumChatDatabase {
   getAuthorEventsRange(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number,
     limit: number
@@ -4421,6 +4542,7 @@ export class ReticulumChatDatabase {
     const rows = this.stmtGetAuthorEventsRange.all(
       groupId,
       authorAddress,
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
       safeFrom,
       safeTo,
       safeLimit
@@ -4433,6 +4555,8 @@ export class ReticulumChatDatabase {
       (event) =>
         event.groupId === groupId &&
         event.authorAddress === authorAddress &&
+        normalizeReticulumChatAuthorStreamId(event.authorStreamId) ===
+          normalizeReticulumChatAuthorStreamId(authorStreamId) &&
         event.authorSeq >= safeFrom &&
         event.authorSeq <= safeTo
     );
@@ -4537,12 +4661,14 @@ export class ReticulumChatDatabase {
   upsertMissingRange(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number,
     preferredPeer = '',
     nextAttemptAt = 0
   ): void {
     const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
     const peer = typeof preferredPeer === 'string' ? preferredPeer.trim().toLowerCase() : '';
     const from = Math.max(1, Math.floor(fromSeq));
     const to = Math.max(from, Math.floor(toSeq));
@@ -4550,16 +4676,18 @@ export class ReticulumChatDatabase {
     this.stmtUpsertMissingRange.run({
       group_id: groupId,
       author_address: author,
+      author_stream_id: stream,
       from_seq: from,
       to_seq: to,
       preferred_peer: peer || null,
       next_attempt_at: nextAttemptAt,
     });
-    const key = this.missingRangeKey(groupId, author, from, to);
+    const key = this.missingRangeKey(groupId, author, stream, from, to);
     const existing = this.memoryMissingRanges.get(key);
     this.memoryMissingRanges.set(key, {
       groupId,
       authorAddress: author,
+      authorStreamId: stream,
       fromSeq: from,
       toSeq: to,
       preferredPeer: peer || existing?.preferredPeer || '',
@@ -4573,11 +4701,13 @@ export class ReticulumChatDatabase {
   ensureMissingRange(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number,
     preferredPeer = ''
   ): void {
     const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
     const peer = typeof preferredPeer === 'string' ? preferredPeer.trim().toLowerCase() : '';
     const from = Math.max(1, Math.floor(fromSeq));
     const to = Math.max(from, Math.floor(toSeq));
@@ -4585,16 +4715,18 @@ export class ReticulumChatDatabase {
     this.stmtEnsureMissingRange.run({
       group_id: groupId,
       author_address: author,
+      author_stream_id: stream,
       from_seq: from,
       to_seq: to,
       preferred_peer: peer || null,
       next_attempt_at: 0,
     });
-    const key = this.missingRangeKey(groupId, author, from, to);
+    const key = this.missingRangeKey(groupId, author, stream, from, to);
     if (!this.memoryMissingRanges.has(key)) {
       this.memoryMissingRanges.set(key, {
         groupId,
         authorAddress: author,
+        authorStreamId: stream,
         fromSeq: from,
         toSeq: to,
         preferredPeer: peer,
@@ -4607,19 +4739,21 @@ export class ReticulumChatDatabase {
   scheduleMissingRange(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number,
     preferredPeer: string,
     nextAttemptAt: number
   ): ReticulumChatMissingRangeState | null {
-    this.ensureMissingRange(groupId, authorAddress, fromSeq, toSeq, preferredPeer);
-    const current = this.getMissingRange(groupId, authorAddress, fromSeq, toSeq);
+    this.ensureMissingRange(groupId, authorAddress, authorStreamId, fromSeq, toSeq, preferredPeer);
+    const current = this.getMissingRange(groupId, authorAddress, authorStreamId, fromSeq, toSeq);
     if (!current) return null;
     const peer = preferredPeer.trim().toLowerCase() || current.preferredPeer;
     const next = Math.max(current.nextAttemptAt, Math.floor(nextAttemptAt));
     this.stmtUpdateMissingRangeBackoff.run({
       group_id: current.groupId,
       author_address: current.authorAddress,
+      author_stream_id: current.authorStreamId,
       from_seq: current.fromSeq,
       to_seq: current.toSeq,
       preferred_peer: peer || null,
@@ -4632,7 +4766,7 @@ export class ReticulumChatDatabase {
       nextAttemptAt: next,
     };
     this.memoryMissingRanges.set(
-      this.missingRangeKey(current.groupId, current.authorAddress, current.fromSeq, current.toSeq),
+      this.missingRangeKey(current.groupId, current.authorAddress, current.authorStreamId, current.fromSeq, current.toSeq),
       updated
     );
     return updated;
@@ -4641,37 +4775,41 @@ export class ReticulumChatDatabase {
   getMissingRange(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number
   ): ReticulumChatMissingRangeState | null {
     const author = typeof authorAddress === 'string' ? authorAddress.trim() : '';
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
     const from = Math.max(1, Math.floor(fromSeq));
     const to = Math.max(from, Math.floor(toSeq));
     if (!Number.isInteger(groupId) || groupId <= 0 || !author) return null;
-    const row = this.stmtGetMissingRangeExact.get(groupId, author, from, to) as
+    const row = this.stmtGetMissingRangeExact.get(groupId, author, stream, from, to) as
       | ReticulumChatMissingRangeRow
       | undefined;
     return row
       ? this.missingRangeRowToState(row)
-      : this.memoryMissingRanges.get(this.missingRangeKey(groupId, author, from, to)) ?? null;
+      : this.memoryMissingRanges.get(this.missingRangeKey(groupId, author, stream, from, to)) ?? null;
   }
 
   claimMissingRangeAttempt(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number,
     preferredPeer: string,
     now: number,
     nextAttemptAt: number
   ): ReticulumChatMissingRangeState | null {
-    this.ensureMissingRange(groupId, authorAddress, fromSeq, toSeq, preferredPeer);
-    const current = this.getMissingRange(groupId, authorAddress, fromSeq, toSeq);
+    this.ensureMissingRange(groupId, authorAddress, authorStreamId, fromSeq, toSeq, preferredPeer);
+    const current = this.getMissingRange(groupId, authorAddress, authorStreamId, fromSeq, toSeq);
     if (!current || current.nextAttemptAt > now) return null;
     const attempts = Math.max(0, Math.floor(current.attempts || 0)) + 1;
     this.stmtUpdateMissingRangeAttempt.run({
       group_id: current.groupId,
       author_address: current.authorAddress,
+      author_stream_id: current.authorStreamId,
       from_seq: current.fromSeq,
       to_seq: current.toSeq,
       preferred_peer: preferredPeer.trim().toLowerCase() || null,
@@ -4685,7 +4823,7 @@ export class ReticulumChatDatabase {
       nextAttemptAt: Math.max(now, Math.floor(nextAttemptAt)),
     };
     this.memoryMissingRanges.set(
-      this.missingRangeKey(current.groupId, current.authorAddress, current.fromSeq, current.toSeq),
+      this.missingRangeKey(current.groupId, current.authorAddress, current.authorStreamId, current.fromSeq, current.toSeq),
       updated
     );
     return updated;
@@ -4694,14 +4832,15 @@ export class ReticulumChatDatabase {
   deferMissingRange(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number,
     preferredPeer: string,
     nextAttemptAt: number,
     attempts = 1
   ): ReticulumChatMissingRangeState | null {
-    this.ensureMissingRange(groupId, authorAddress, fromSeq, toSeq, preferredPeer);
-    const current = this.getMissingRange(groupId, authorAddress, fromSeq, toSeq);
+    this.ensureMissingRange(groupId, authorAddress, authorStreamId, fromSeq, toSeq, preferredPeer);
+    const current = this.getMissingRange(groupId, authorAddress, authorStreamId, fromSeq, toSeq);
     if (!current) return null;
     const nextAttempts = Math.max(
       Math.max(0, Math.floor(current.attempts || 0)),
@@ -4710,6 +4849,7 @@ export class ReticulumChatDatabase {
     this.stmtUpdateMissingRangeBackoff.run({
       group_id: current.groupId,
       author_address: current.authorAddress,
+      author_stream_id: current.authorStreamId,
       from_seq: current.fromSeq,
       to_seq: current.toSeq,
       preferred_peer: preferredPeer.trim().toLowerCase() || null,
@@ -4723,7 +4863,7 @@ export class ReticulumChatDatabase {
       nextAttemptAt: Math.max(Math.floor(nextAttemptAt), current.nextAttemptAt),
     };
     this.memoryMissingRanges.set(
-      this.missingRangeKey(current.groupId, current.authorAddress, current.fromSeq, current.toSeq),
+      this.missingRangeKey(current.groupId, current.authorAddress, current.authorStreamId, current.fromSeq, current.toSeq),
       updated
     );
     return updated;
@@ -4732,16 +4872,18 @@ export class ReticulumChatDatabase {
   private missingRangeKey(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     fromSeq: number,
     toSeq: number
   ): string {
-    return `${groupId}:${authorAddress}:${fromSeq}:${toSeq}`;
+    return `${groupId}:${authorAddress}:${normalizeReticulumChatAuthorStreamId(authorStreamId)}:${fromSeq}:${toSeq}`;
   }
 
   private missingRangeRowToState(row: ReticulumChatMissingRangeRow): ReticulumChatMissingRangeState {
     return {
       groupId: Number(row.group_id),
       authorAddress: String(row.author_address || ''),
+      authorStreamId: normalizeReticulumChatAuthorStreamId(row.author_stream_id),
       fromSeq: Math.max(1, Math.floor(Number(row.from_seq || 1))),
       toSeq: Math.max(1, Math.floor(Number(row.to_seq || row.from_seq || 1))),
       preferredPeer: typeof row.preferred_peer === 'string' ? row.preferred_peer : '',
@@ -4755,12 +4897,14 @@ export class ReticulumChatDatabase {
       ...(this.stmtGetMissingRangesForSeq.all(
       event.groupId,
       event.authorAddress,
+      normalizeReticulumChatAuthorStreamId(event.authorStreamId),
       event.authorSeq,
       event.authorSeq
       ) as ReticulumChatMissingRangeRow[]),
       ...this.getMemoryMissingRangeRowsForSeq(
         event.groupId,
         event.authorAddress,
+        normalizeReticulumChatAuthorStreamId(event.authorStreamId),
         event.authorSeq
       ),
     ]);
@@ -4780,6 +4924,7 @@ export class ReticulumChatDatabase {
       const presentRows = this.stmtGetPresentSeqsInRange.all(
         row.group_id,
         row.author_address,
+        row.author_stream_id,
         row.from_seq,
         row.to_seq
       ) as Array<{ author_seq?: number }>;
@@ -4799,13 +4944,14 @@ export class ReticulumChatDatabase {
       for (const row of rangeRows) {
         const groupId = Number(row.group_id);
         const authorAddress = typeof row.author_address === 'string' ? row.author_address : '';
+        const authorStreamId = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
         const fromSeq = Math.max(1, Math.floor(Number(row.from_seq)));
         const toSeq = Math.max(fromSeq, Math.floor(Number(row.to_seq)));
         if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress) continue;
         const presentSeqs = presentSeqsForRow(row);
         if (presentSeqs.size === 0) continue;
-        this.stmtDeleteMissingRange.run(groupId, authorAddress, fromSeq, toSeq);
-        this.memoryMissingRanges.delete(this.missingRangeKey(groupId, authorAddress, fromSeq, toSeq));
+        this.stmtDeleteMissingRange.run(groupId, authorAddress, authorStreamId, fromSeq, toSeq);
+        this.memoryMissingRanges.delete(this.missingRangeKey(groupId, authorAddress, authorStreamId, fromSeq, toSeq));
         let segmentStart = fromSeq;
         const sortedPresentSeqs = [...presentSeqs]
           .filter((seq) => Number.isInteger(seq) && seq >= fromSeq && seq <= toSeq)
@@ -4833,6 +4979,7 @@ export class ReticulumChatDatabase {
     this.stmtInsertMissingRangeRaw.run({
       group_id: row.group_id,
       author_address: row.author_address,
+      author_stream_id: normalizeReticulumChatAuthorStreamId(row.author_stream_id),
       from_seq: fromSeq,
       to_seq: toSeq,
       preferred_peer: row.preferred_peer ?? null,
@@ -4840,10 +4987,11 @@ export class ReticulumChatDatabase {
       next_attempt_at: Number.isInteger(row.next_attempt_at) ? row.next_attempt_at : 0,
     });
     this.memoryMissingRanges.set(
-      this.missingRangeKey(row.group_id, row.author_address, fromSeq, toSeq),
+      this.missingRangeKey(row.group_id, row.author_address, row.author_stream_id, fromSeq, toSeq),
       {
         groupId: row.group_id,
         authorAddress: row.author_address,
+        authorStreamId: normalizeReticulumChatAuthorStreamId(row.author_stream_id),
         fromSeq,
         toSeq,
         preferredPeer: row.preferred_peer ?? '',
@@ -4856,6 +5004,7 @@ export class ReticulumChatDatabase {
   private getMemoryMissingRangeRowsForSeq(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string,
     seq: number
   ): ReticulumChatMissingRangeRow[] {
     return [...this.memoryMissingRanges.values()]
@@ -4863,6 +5012,7 @@ export class ReticulumChatDatabase {
         (range) =>
           range.groupId === groupId &&
           range.authorAddress === authorAddress &&
+          range.authorStreamId === normalizeReticulumChatAuthorStreamId(authorStreamId) &&
           range.fromSeq <= seq &&
           range.toSeq >= seq
       )
@@ -4875,6 +5025,7 @@ export class ReticulumChatDatabase {
     return {
       group_id: range.groupId,
       author_address: range.authorAddress,
+      author_stream_id: range.authorStreamId,
       from_seq: range.fromSeq,
       to_seq: range.toSeq,
       preferred_peer: range.preferredPeer || null,
@@ -4890,9 +5041,10 @@ export class ReticulumChatDatabase {
     for (const row of rows) {
       const groupId = Number(row.group_id);
       const author = String(row.author_address || '');
+      const stream = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
       const from = Math.max(1, Math.floor(Number(row.from_seq || 1)));
       const to = Math.max(from, Math.floor(Number(row.to_seq || row.from_seq || 1)));
-      byKey.set(this.missingRangeKey(groupId, author, from, to), row);
+      byKey.set(this.missingRangeKey(groupId, author, stream, from, to), row);
     }
     return [...byKey.values()];
   }
@@ -4913,12 +5065,15 @@ export class ReticulumChatDatabase {
       .map((row) => this.missingRangeRowToState(row));
   }
 
-  getAuthorMaxSeq(groupId: number, authorAddress: string): number {
+  getAuthorMaxSeq(groupId: number, authorAddress: string, authorStreamId: string | undefined): number {
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
     const row = this.stmtGetAuthorMaxSeq.get(
       groupId,
       authorAddress,
+      stream,
       groupId,
-      authorAddress
+      authorAddress,
+      stream
     ) as
       | { seq?: number }
       | undefined;
@@ -4928,15 +5083,19 @@ export class ReticulumChatDatabase {
         `
           SELECT MAX(author_seq) AS seq
           FROM rchat_expired_event_markers
-          WHERE group_id = ? AND author_address = ?
+          WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
         `
       )
-      .get(groupId, authorAddress) as { seq?: number } | undefined;
+      .get(groupId, authorAddress, stream) as { seq?: number } | undefined;
     if (typeof markerRow?.seq === 'number' && Number.isFinite(markerRow.seq)) {
       maxSeq = Math.max(maxSeq, markerRow.seq);
     }
     for (const event of this.memoryEvents.values()) {
-      if (event.groupId !== groupId || event.authorAddress !== authorAddress) continue;
+      if (
+        event.groupId !== groupId ||
+        event.authorAddress !== authorAddress ||
+        normalizeReticulumChatAuthorStreamId(event.authorStreamId) !== stream
+      ) continue;
       maxSeq = Math.max(maxSeq, event.authorSeq);
     }
     return maxSeq;
@@ -4945,6 +5104,7 @@ export class ReticulumChatDatabase {
   getAuthorEventsAfter(
     groupId: number,
     authorAddress: string,
+    authorStreamId: string | undefined,
     afterSeq: number,
     limit: number
   ): ReticulumChatEvent[] {
@@ -4953,6 +5113,7 @@ export class ReticulumChatDatabase {
       (this.stmtGetAuthorEventsAfter.all(
         groupId,
         authorAddress,
+        normalizeReticulumChatAuthorStreamId(authorStreamId),
         Math.max(0, afterSeq),
         maxLimit
       ) as EventRow[]).map(rowToEvent),
@@ -4961,6 +5122,8 @@ export class ReticulumChatDatabase {
           (event) =>
             event.groupId === groupId &&
             event.authorAddress === authorAddress &&
+            normalizeReticulumChatAuthorStreamId(event.authorStreamId) ===
+              normalizeReticulumChatAuthorStreamId(authorStreamId) &&
             event.authorSeq > afterSeq
         )
         .sort((a, b) => a.authorSeq - b.authorSeq || a.timestamp - b.timestamp)
@@ -4980,13 +5143,16 @@ export class ReticulumChatDatabase {
       0
     ) as Array<{
       author_address: string;
+      author_stream_id: string;
       max_seq: number;
       event_id: string;
       timestamp: number;
     }>;
     for (const row of rows) {
-      heads.set(row.author_address, {
+      const key = `${row.author_address}:${normalizeReticulumChatAuthorStreamId(row.author_stream_id)}`;
+      heads.set(key, {
         authorAddress: row.author_address,
+        authorStreamId: normalizeReticulumChatAuthorStreamId(row.author_stream_id),
         maxSeq: row.max_seq,
         eventId: row.event_id,
         timestamp: row.timestamp,
@@ -4994,10 +5160,13 @@ export class ReticulumChatDatabase {
     }
     for (const event of this.memoryEvents.values()) {
       if (event.groupId !== groupId) continue;
-      const existing = heads.get(event.authorAddress);
+      const authorStreamId = normalizeReticulumChatAuthorStreamId(event.authorStreamId);
+      const key = `${event.authorAddress}:${authorStreamId}`;
+      const existing = heads.get(key);
       if (existing && existing.maxSeq >= event.authorSeq) continue;
-      heads.set(event.authorAddress, {
+      heads.set(key, {
         authorAddress: event.authorAddress,
+        authorStreamId,
         maxSeq: event.authorSeq,
         eventId: event.eventId,
         timestamp: event.timestamp,
@@ -5019,10 +5188,12 @@ export class ReticulumChatDatabase {
 
     for (const row of this.stmtGetAuthorSequenceGaps.all(groupId, groupId, maxLimit) as Array<{
       author_address?: string;
+      author_stream_id?: string;
       from_seq?: number;
       to_seq?: number;
     }>) {
       const authorAddress = typeof row.author_address === 'string' ? row.author_address : '';
+      const authorStreamId = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
       const fromSeq = Number(row.from_seq);
       const toSeq = Number(row.to_seq);
       if (
@@ -5033,17 +5204,26 @@ export class ReticulumChatDatabase {
       ) {
         continue;
       }
-      gaps.set(`${authorAddress}:${fromSeq}:${toSeq}`, { authorAddress, fromSeq, toSeq });
+      gaps.set(`${authorAddress}:${authorStreamId}:${fromSeq}:${toSeq}`, {
+        authorAddress,
+        authorStreamId,
+        fromSeq,
+        toSeq,
+      });
     }
 
     const memorySeqsByAuthor = new Map<string, number[]>();
     for (const event of this.memoryEvents.values()) {
       if (event.groupId !== groupId) continue;
-      const seqs = memorySeqsByAuthor.get(event.authorAddress) ?? [];
+      const key = `${event.authorAddress}:${normalizeReticulumChatAuthorStreamId(event.authorStreamId)}`;
+      const seqs = memorySeqsByAuthor.get(key) ?? [];
       seqs.push(event.authorSeq);
-      memorySeqsByAuthor.set(event.authorAddress, seqs);
+      memorySeqsByAuthor.set(key, seqs);
     }
-    for (const [authorAddress, seqs] of memorySeqsByAuthor) {
+    for (const [authorKey, seqs] of memorySeqsByAuthor) {
+      const separator = authorKey.lastIndexOf(':');
+      const authorAddress = authorKey.slice(0, separator);
+      const authorStreamId = authorKey.slice(separator + 1);
       seqs.sort((a, b) => a - b);
       for (let index = 1; index < seqs.length; index += 1) {
         const previousSeq = seqs[index - 1];
@@ -5051,14 +5231,19 @@ export class ReticulumChatDatabase {
         if (currentSeq <= previousSeq + 1) continue;
         const fromSeq = previousSeq + 1;
         const toSeq = currentSeq - 1;
-        gaps.set(`${authorAddress}:${fromSeq}:${toSeq}`, { authorAddress, fromSeq, toSeq });
+        gaps.set(`${authorAddress}:${authorStreamId}:${fromSeq}:${toSeq}`, {
+          authorAddress,
+          authorStreamId,
+          fromSeq,
+          toSeq,
+        });
         if (gaps.size >= maxLimit) break;
       }
       if (gaps.size >= maxLimit) break;
     }
 
     return [...gaps.values()]
-      .sort((a, b) => b.toSeq - a.toSeq || a.authorAddress.localeCompare(b.authorAddress) || b.fromSeq - a.fromSeq)
+      .sort((a, b) => b.toSeq - a.toSeq || a.authorAddress.localeCompare(b.authorAddress) || a.authorStreamId.localeCompare(b.authorStreamId) || b.fromSeq - a.fromSeq)
       .slice(0, maxLimit);
   }
 
@@ -5092,30 +5277,42 @@ export class ReticulumChatDatabase {
   getSyncState(groupId: number): Record<string, number> {
     const rows = this.stmtGetGroupSeqs.all(groupId, groupId) as Array<{
       author_address: string;
+      author_stream_id?: string;
       seq: number;
     }>;
     const out: Record<string, number> = {};
-    for (const row of rows) out[row.author_address] = row.seq;
+    for (const row of rows) {
+      const stream = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
+      if (!stream) continue;
+      const key = `${row.author_address}:${stream}`;
+      out[key] = row.seq;
+    }
     const markerRows = this.db
       .prepare(
         `
-          SELECT author_address, MAX(author_seq) AS seq
+          SELECT author_address, author_stream_id, MAX(author_seq) AS seq
           FROM rchat_expired_event_markers
           WHERE group_id = ?
-          GROUP BY author_address
+          GROUP BY author_address, author_stream_id
         `
       )
-      .all(groupId) as Array<{ author_address?: string; seq?: number }>;
+      .all(groupId) as Array<{ author_address?: string; author_stream_id?: string; seq?: number }>;
     for (const row of markerRows) {
       if (typeof row.author_address !== 'string') continue;
       const seq = Number(row.seq);
       if (!Number.isFinite(seq)) continue;
-      out[row.author_address] = Math.max(out[row.author_address] ?? 0, seq);
+      const stream = normalizeReticulumChatAuthorStreamId(row.author_stream_id);
+      if (!stream) continue;
+      const key = `${row.author_address}:${stream}`;
+      out[key] = Math.max(out[key] ?? 0, seq);
     }
     for (const event of this.memoryEvents.values()) {
       if (event.groupId !== groupId) continue;
-      out[event.authorAddress] = Math.max(
-        out[event.authorAddress] ?? 0,
+      const stream = normalizeReticulumChatAuthorStreamId(event.authorStreamId);
+      if (!stream) continue;
+      const key = `${event.authorAddress}:${stream}`;
+      out[key] = Math.max(
+        out[key] ?? 0,
         event.authorSeq
       );
     }
@@ -6224,6 +6421,7 @@ export class ReticulumChatDatabase {
         channel_id TEXT NOT NULL DEFAULT 'general',
         author_address TEXT NOT NULL,
         author_public_key TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
         author_seq INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
         feed_timestamp INTEGER NOT NULL,
@@ -6243,8 +6441,25 @@ export class ReticulumChatDatabase {
         scrubbed_at INTEGER,
         expires_at INTEGER
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS reticulum_chat_author_seq_idx
-        ON reticulum_chat_events (group_id, author_address, author_seq);
+      DROP INDEX IF EXISTS reticulum_chat_author_seq_idx;
+      CREATE TABLE IF NOT EXISTS rchat_author_sequence_counters (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        last_seq INTEGER NOT NULL,
+        PRIMARY KEY (group_id, author_address)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_author_streams (
+        author_address TEXT PRIMARY KEY,
+        stream_id TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS rchat_author_stream_sequences (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        last_seq INTEGER NOT NULL,
+        PRIMARY KEY (group_id, author_address, author_stream_id)
+      );
       CREATE INDEX IF NOT EXISTS reticulum_chat_group_time_idx
         ON reticulum_chat_events (group_id, channel_id, timestamp, author_seq);
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_group_recent
@@ -6264,8 +6479,6 @@ export class ReticulumChatDatabase {
         );
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_feed
         ON reticulum_chat_events (group_id, channel_id, feed_timestamp, event_id);
-      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_author_seq
-        ON reticulum_chat_events (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_target
         ON reticulum_chat_events (target_event_id, timestamp, event_id);
       CREATE INDEX IF NOT EXISTS reticulum_chat_cache_idx
@@ -6276,6 +6489,7 @@ export class ReticulumChatDatabase {
         channel_id TEXT NOT NULL DEFAULT 'general',
         author_address TEXT NOT NULL,
         author_public_key TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
         author_seq INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
         feed_timestamp INTEGER NOT NULL,
@@ -6295,8 +6509,7 @@ export class ReticulumChatDatabase {
         scrubbed_at INTEGER,
         expires_at INTEGER
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_rchat_event_headers_author_seq
-        ON rchat_event_headers (group_id, author_address, author_seq);
+      DROP INDEX IF EXISTS idx_rchat_event_headers_author_seq;
       CREATE INDEX IF NOT EXISTS idx_rchat_event_headers_group_recent
         ON rchat_event_headers (group_id, timestamp DESC, event_id DESC);
       CREATE INDEX IF NOT EXISTS idx_rchat_event_headers_feed
@@ -6348,6 +6561,7 @@ export class ReticulumChatDatabase {
         channel_id TEXT NOT NULL DEFAULT 'general',
         author_address TEXT NOT NULL,
         author_public_key TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
         author_seq INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         root_event_type TEXT NOT NULL,
@@ -6412,6 +6626,17 @@ export class ReticulumChatDatabase {
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (group_id, author_address, from_seq, to_seq)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_missing_stream_ranges (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        preferred_peer TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
       );
       CREATE TABLE IF NOT EXISTS rchat_sync_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6744,9 +6969,47 @@ export class ReticulumChatDatabase {
     `);
   }
 
+  private ensureAuthorStreamSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_author_streams (
+        author_address TEXT PRIMARY KEY,
+        stream_id TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS rchat_author_stream_sequences (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        last_seq INTEGER NOT NULL,
+        PRIMARY KEY (group_id, author_address, author_stream_id)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_missing_stream_ranges (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        preferred_peer TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
+      );
+      DROP INDEX IF EXISTS reticulum_chat_author_seq_idx;
+      DROP INDEX IF EXISTS idx_rchat_event_headers_author_seq;
+      DROP INDEX IF EXISTS idx_reticulum_chat_events_author_seq;
+      CREATE UNIQUE INDEX IF NOT EXISTS reticulum_chat_author_stream_seq_idx
+        ON reticulum_chat_events (group_id, author_address, author_stream_id, author_seq);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rchat_event_headers_author_stream_seq
+        ON rchat_event_headers (group_id, author_address, author_stream_id, author_seq);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_author_stream_seq
+        ON reticulum_chat_events (group_id, author_address, author_stream_id, author_seq);
+    `);
+  }
+
   private runSchemaMigrations(): void {
     const migrations: Array<{ name: string; run: () => void }> = [
       { name: 'channel-write-mode', run: () => this.migrateChannelWriteModeSchema() },
+      { name: 'author-streams', run: () => this.ensureAuthorStreamSchema() },
       { name: 'channel-read-mode', run: () => this.migrateChannelReadModeSchema() },
       {
         name: 'channel-write-mode-updated-at',
@@ -6794,15 +7057,15 @@ export class ReticulumChatDatabase {
     const requiredTables: Array<{ table: string; columns: string[] }> = [
       {
         table: 'reticulum_chat_events',
-        columns: ['channel_id', 'mention_targets', 'scrubbed_at', 'expires_at'],
+        columns: ['channel_id', 'author_stream_id', 'mention_targets', 'scrubbed_at', 'expires_at'],
       },
       {
         table: 'rchat_message_projection',
-        columns: ['expires_at', 'has_attachment'],
+        columns: ['author_stream_id', 'expires_at', 'has_attachment'],
       },
       {
         table: 'rchat_event_headers',
-        columns: ['event_id', 'payload_hash', 'retention_state'],
+        columns: ['event_id', 'author_stream_id', 'payload_hash', 'retention_state'],
       },
       {
         table: 'rchat_event_payloads',
@@ -6898,16 +7161,20 @@ export class ReticulumChatDatabase {
         group_id INTEGER NOT NULL,
         channel_id TEXT NOT NULL DEFAULT 'general',
         author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
         author_seq INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
         expired_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_rchat_expired_event_markers_author_seq
-        ON rchat_expired_event_markers (group_id, author_address, author_seq);
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_expires
         ON reticulum_chat_events (expires_at);
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_expires
         ON rchat_message_projection (expires_at);
+    `);
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_rchat_expired_event_markers_author_seq;
+      CREATE INDEX idx_rchat_expired_event_markers_author_seq
+        ON rchat_expired_event_markers (group_id, author_address, author_stream_id, author_seq);
     `);
   }
 
