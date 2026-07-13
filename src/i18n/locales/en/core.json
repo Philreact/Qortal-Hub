@@ -352,6 +352,7 @@
       "rating": "rating for {{ service }} {{ name }}",
       "register_name": "you need a registered Qortal name to save your pinned apps to QDN.",
       "replied_to": "replied to {{ person }}",
+      "replied_to_deleted_message": "replied to deleted message",
       "replied_to_you": "↩ replied to you",
       "revert_default": "revert to default",
       "revert_qdn": "revert to QDN",

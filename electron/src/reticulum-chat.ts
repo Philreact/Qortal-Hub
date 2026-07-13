@@ -29,7 +29,6 @@ import {
   RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
   RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
-  RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   normalizeReticulumChatAuthorStreamId,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
@@ -92,6 +91,7 @@ import type {
   ReticulumChatWorkerPreparedResourceResult,
   ReticulumChatWorkerResult,
   ReticulumChatWorkerTask,
+  SerializedReticulumChatDigestState,
 } from './reticulum-chat.worker';
 
 const RETICULUM_CHAT_TRACE = process.env.QORTAL_RNS_LOCAL_TRACE === '1';
@@ -1302,7 +1302,9 @@ const RETICULUM_CHAT_DIGEST_SNAPSHOT_BUILD_PRESSURE_WARN = 100;
 const RETICULUM_CHAT_LAND_STATE_QUEUE_MAX = 500;
 const RETICULUM_CHAT_LAND_STATE_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS = 50;
+const RETICULUM_CHAT_LAND_STATE_PIPELINE_SLOW_MS = 250;
 const RETICULUM_CHAT_LAND_STATE_PRESSURE_WARN = 100;
+const RETICULUM_CHAT_LAND_STATE_VERIFY_CONCURRENCY = 2;
 const RETICULUM_CHAT_LAND_AUTH_QUEUE_MAX = 500;
 const RETICULUM_CHAT_LAND_AUTH_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_LAND_AUTH_PROCESS_SLOW_MS = 50;
@@ -3718,6 +3720,8 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: number;
     }
   >();
+  private digestStateBuildInflight = new Map<number, Promise<boolean>>();
+  private digestStateGeneration = new Map<number, number>();
   private authorTreeCache = new Map<number, ReticulumChatAuthorTreeSnapshot>();
   private authorTreeBuildInflight = new Map<
     number,
@@ -3788,6 +3792,7 @@ export class ReticulumChatManager extends EventEmitter {
   private landStateQueueScheduled = false;
   private landStateQueueActive = false;
   private landStateQueuePressureLogged = false;
+  private landStateVerificationInFlight = new Set<string>();
   private landStateQueueStats = {
     processed: 0,
     coalesced: 0,
@@ -3870,6 +3875,7 @@ export class ReticulumChatManager extends EventEmitter {
   private recentLandAuthRequestResponses = new Map<string, number>();
   private recentLandStateVerifiedLogs = new Map<string, number>();
   private recentLandStateAppliedLogs = new Map<string, number>();
+  private lastLandStateWorkerFallbackLogAt = 0;
   private eventSourcePeers = new Map<string, ReticulumChatEventSourcePeerRecord>();
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3880,6 +3886,12 @@ export class ReticulumChatManager extends EventEmitter {
     'reticulum-chat-author-tree',
     1,
     64
+  );
+  private landStateWorkerPool = new ReticulumChatWorkerPool(
+    'reticulum-land-state',
+    RETICULUM_CHAT_LAND_STATE_VERIFY_CONCURRENCY,
+    64,
+    100
   );
   private channelMetadataProjectionQueue: string[] = [];
   private channelMetadataProjectionQueuedIds = new Set<string>();
@@ -4284,8 +4296,11 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearChatResourceQueue();
     this.chatWorkerPool.stop();
     this.authorTreeWorkerPool.stop();
+    this.landStateWorkerPool.stop();
     this.digestSnapshotCache.clear();
     this.stateHeadsCache.clear();
+    this.digestStateBuildInflight.clear();
+    this.digestStateGeneration.clear();
     this.authorTreeCache.clear();
     this.authorTreeBuildInflight.clear();
     this.authorTreeGeneration.clear();
@@ -5427,7 +5442,8 @@ export class ReticulumChatManager extends EventEmitter {
     const limit = typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     const safeLimit = Math.max(1, Math.min(500, limit));
     const options = this.normalizeHistoryReadOptions(optionsMaybe);
-    const events = this.readHistoryEvents(groupId, channelId, safeLimit, options);
+    const events = this.readHistoryEvents(groupId, channelId, safeLimit, options)
+      .map((event) => this.eventForRenderer(event));
     this.requestNetworkHistoryForRead(groupId, channelId, events, options, 'history-read');
     return events;
   }
@@ -5446,9 +5462,22 @@ export class ReticulumChatManager extends EventEmitter {
     const limit = typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     const safeLimit = Math.max(1, Math.min(500, limit));
     const options = this.normalizeHistoryReadOptions(optionsMaybe);
-    const events = this.readMessageHistoryEvents(groupId, channelId, safeLimit, options);
+    const events = this.readMessageHistoryEvents(groupId, channelId, safeLimit, options)
+      .map((event) => this.eventForRenderer(event));
     this.requestNetworkHistoryForRead(groupId, channelId, events, options, 'message-history-read');
     return events;
+  }
+
+  private eventForRenderer(
+    event: ReticulumChatEvent
+  ): ReticulumChatEvent & { replyTargetDeleted?: true } {
+    if (
+      !event.replyToEventId ||
+      !this.db.isEventPayloadScrubbed(event.replyToEventId)
+    ) {
+      return event;
+    }
+    return { ...event, replyTargetDeleted: true };
   }
 
   private normalizeHistoryReadOptions(
@@ -5677,7 +5706,12 @@ export class ReticulumChatManager extends EventEmitter {
           localAddress
         );
         const readableIds = new Set(readableEvents.map((event) => event.eventId));
-        return groupResults.filter((result) => readableIds.has(result.event.eventId));
+        return groupResults
+          .filter((result) => readableIds.has(result.event.eventId))
+          .map((result) => ({
+            ...result,
+            event: this.eventForRenderer(result.event),
+          }));
       })
     );
     return groups.flat();
@@ -5743,7 +5777,8 @@ export class ReticulumChatManager extends EventEmitter {
       ...options,
       includeAdminPrivate: canIncludeAdminPrivate,
     });
-    return this.filterEventsForRequesterReadAccess(groupId, events, localAddress);
+    return (await this.filterEventsForRequesterReadAccess(groupId, events, localAddress))
+      .map((event) => this.eventForRenderer(event));
   }
 
   indexSearchText(eventId: string, text: string): boolean {
@@ -6360,7 +6395,8 @@ export class ReticulumChatManager extends EventEmitter {
     const startedAt = Date.now();
     try {
       const snapshot = this.getCachedGroupDigestSnapshot(item.groupId);
-      if (!snapshot) {
+      const stateHeads = this.getCachedStateHeads(item.groupId);
+      if (!snapshot || !stateHeads) {
         this.deferDigestSendUntilSnapshot(item);
         this.enqueueDigestSnapshotBuild(item.groupId, `digest-send:${item.reason}`);
         return;
@@ -6486,11 +6522,11 @@ export class ReticulumChatManager extends EventEmitter {
     this.digestSnapshotBuildQueueScheduled = true;
     setImmediate(() => {
       this.digestSnapshotBuildQueueScheduled = false;
-      this.processDigestSnapshotBuildQueue();
+      void this.processDigestSnapshotBuildQueue();
     });
   }
 
-  private processDigestSnapshotBuildQueue(): void {
+  private async processDigestSnapshotBuildQueue(): Promise<void> {
     if (this.digestSnapshotBuildQueueActive || this.isClosed) return;
     this.digestSnapshotBuildQueueActive = true;
     const startedAt = Date.now();
@@ -6502,7 +6538,7 @@ export class ReticulumChatManager extends EventEmitter {
         const item = this.digestSnapshotBuildItems.get(key);
         if (!item) continue;
         this.digestSnapshotBuildItems.delete(key);
-        this.processDigestSnapshotBuildQueueItem(item);
+        await this.processDigestSnapshotBuildQueueItem(item);
         processedThisPump += 1;
         if (
           processedThisPump > 0 &&
@@ -6520,9 +6556,15 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
-  private processDigestSnapshotBuildQueueItem(item: ReticulumChatQueuedDigestSnapshotBuild): void {
+  private async processDigestSnapshotBuildQueueItem(
+    item: ReticulumChatQueuedDigestSnapshotBuild
+  ): Promise<void> {
     try {
-      this.buildGroupDigestSnapshot(item.groupId);
+      const ready = await this.ensureGroupDigestState(item.groupId, item.reason);
+      if (!ready) {
+        this.enqueueDigestSnapshotBuild(item.groupId, `${item.reason}:retry`);
+        return;
+      }
       this.digestSnapshotBuildQueueStats.processed += 1;
       this.releaseDigestSendsWaitingForSnapshot(item.groupId);
       this.releaseNewestHistoryPushesWaitingForSnapshot(item.groupId);
@@ -6557,7 +6599,6 @@ export class ReticulumChatManager extends EventEmitter {
     this.digestSnapshotBuildPendingDigestSends.clear();
     this.digestSnapshotBuildPendingNewestPushes.clear();
     this.digestSnapshotBuildQueueScheduled = false;
-    this.digestSnapshotBuildQueueActive = false;
     this.digestSnapshotBuildQueuePressureLogged = false;
   }
 
@@ -6805,7 +6846,7 @@ export class ReticulumChatManager extends EventEmitter {
       authorAddress,
       sessionId,
       sequence,
-      enqueuedAt: this.now(),
+      enqueuedAt: Date.now(),
       coalescedCount: 0,
     });
     this.logLandStateQueuePressureIfNeeded();
@@ -6821,22 +6862,42 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
+  private hasDispatchableLandStateItem(): boolean {
+    return this.landStateQueue.some(
+      (key) => !this.landStateVerificationInFlight.has(key)
+    );
+  }
+
   private processLandStateQueue(): void {
     if (this.landStateQueueActive || this.isClosed) return;
     this.landStateQueueActive = true;
     const startedAt = Date.now();
-    let processedThisPump = 0;
+    let scannedThisPump = 0;
+    const initialQueueSize = this.landStateQueue.length;
     try {
-      while (this.landStateQueue.length > 0) {
+      while (
+        this.landStateQueue.length > 0 &&
+        this.landStateVerificationInFlight.size < RETICULUM_CHAT_LAND_STATE_VERIFY_CONCURRENCY &&
+        scannedThisPump < initialQueueSize
+      ) {
         const key = this.landStateQueue.shift();
         if (!key) break;
+        scannedThisPump += 1;
+        if (this.landStateVerificationInFlight.has(key)) {
+          this.landStateQueue.push(key);
+          continue;
+        }
         const item = this.landStateItems.get(key);
         if (!item) continue;
         this.landStateItems.delete(key);
-        this.processLandStateQueueItem(item);
-        processedThisPump += 1;
+        this.landStateVerificationInFlight.add(key);
+        void this.processLandStateQueueItem(item).finally(() => {
+          this.landStateVerificationInFlight.delete(key);
+          if (!this.isClosed && this.landStateQueue.length > 0) {
+            this.scheduleLandStateQueue();
+          }
+        });
         if (
-          processedThisPump > 0 &&
           Date.now() - startedAt >= RETICULUM_CHAT_LAND_STATE_QUEUE_BUDGET_MS
         ) {
           break;
@@ -6845,16 +6906,21 @@ export class ReticulumChatManager extends EventEmitter {
     } finally {
       this.landStateQueueActive = false;
       this.logLandStateQueuePressureIfNeeded();
-      if (this.landStateQueue.length > 0 && !this.isClosed) {
+      if (
+        this.landStateQueue.length > 0 &&
+        !this.isClosed &&
+        this.landStateVerificationInFlight.size < RETICULUM_CHAT_LAND_STATE_VERIFY_CONCURRENCY &&
+        this.hasDispatchableLandStateItem()
+      ) {
         this.scheduleLandStateQueue();
       }
     }
   }
 
-  private processLandStateQueueItem(item: ReticulumChatQueuedLandState): void {
+  private async processLandStateQueueItem(item: ReticulumChatQueuedLandState): Promise<void> {
     const startedAt = Date.now();
     try {
-      this.handleLandStateWire(item.wire, item.peerHash);
+      await this.handleLandStateWire(item.wire, item.peerHash);
     } catch (err) {
       loggerWarn(
         `[ReticulumChat] Failed to process land_state group=${item.groupId} author=${item.authorAddress} session=${item.sessionId}:`,
@@ -6863,7 +6929,7 @@ export class ReticulumChatManager extends EventEmitter {
     } finally {
       const durationMs = Date.now() - startedAt;
       this.landStateQueueStats.processed += 1;
-      if (durationMs >= RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS) {
+      if (durationMs >= RETICULUM_CHAT_LAND_STATE_PIPELINE_SLOW_MS) {
         loggerWarn(
           `[ReticulumChat] land_state_process_slow duration_ms=${durationMs} queued_ms=${Math.max(
             0,
@@ -6892,6 +6958,7 @@ export class ReticulumChatManager extends EventEmitter {
   private clearLandStateQueue(): void {
     this.landStateQueue = [];
     this.landStateItems.clear();
+    this.landStateVerificationInFlight.clear();
     this.landStateQueueScheduled = false;
     this.landStateQueueActive = false;
     this.landStateQueuePressureLogged = false;
@@ -8785,10 +8852,10 @@ export class ReticulumChatManager extends EventEmitter {
     });
   }
 
-  private handleLandStateWire(
+  private async handleLandStateWire(
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
     peerHash: string
-  ): void {
+  ): Promise<void> {
     const traceStartedAt = performance.now();
     let traceLastAt = traceStartedAt;
     const tracePhases: string[] = [];
@@ -8797,6 +8864,7 @@ export class ReticulumChatManager extends EventEmitter {
     let authorAddress = '';
     let sessionId = '';
     let sequence = 0;
+    let verifyWorkerMs = 0;
     const markTracePhase = (phase: string): void => {
       const now = performance.now();
       tracePhases.push(`${phase}=${Math.round(now - traceLastAt)}`);
@@ -8827,15 +8895,44 @@ export class ReticulumChatManager extends EventEmitter {
         traceOutcome = 'stale_sequence';
         return;
       }
-      if (!this.verifyLandStateWire(wire, session.ephemeralPublicKeyBytes)) {
-        markTracePhase('verify');
+      const verifyStartedAt = performance.now();
+      const verified = await this.verifyLandStateWireOffMain(
+        wire,
+        session.ephemeralPublicKeyBytes
+      );
+      verifyWorkerMs = Math.round(performance.now() - verifyStartedAt);
+      markTracePhase('verify_worker');
+      if (this.isClosed) {
+        traceOutcome = 'closed';
+        return;
+      }
+      const currentSession = this.getValidLandAuthSession(
+        groupId,
+        authorAddress,
+        sessionId
+      );
+      if (
+        !currentSession ||
+        currentSession.ephemeralPublicKey !== session.ephemeralPublicKey
+      ) {
+        traceOutcome = 'auth_changed';
+        return;
+      }
+      const latestAfterVerification = this.latestVerifiedLandStateSequences.get(sequenceKey);
+      if (
+        typeof latestAfterVerification === 'number' &&
+        sequence <= latestAfterVerification
+      ) {
+        traceOutcome = 'stale_after_verify';
+        return;
+      }
+      if (!verified) {
         loggerWarn(
           `[ReticulumChat] land_state_rejected group=${groupId} author=${authorAddress} session=${sessionId} reason=bad_signature`
         );
         traceOutcome = 'bad_signature';
         return;
       }
-      markTracePhase('verify');
       this.latestVerifiedLandStateSequences.set(sequenceKey, sequence);
       const diagnosticKey = sequenceKey;
       if (
@@ -8870,9 +8967,13 @@ export class ReticulumChatManager extends EventEmitter {
       traceOutcome = 'applied';
     } finally {
       const totalMs = Math.round(performance.now() - traceStartedAt);
-      if (totalMs >= RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS) {
+      const mainMs = Math.max(0, totalMs - verifyWorkerMs);
+      if (
+        mainMs >= RETICULUM_CHAT_LAND_STATE_PROCESS_SLOW_MS ||
+        totalMs >= RETICULUM_CHAT_LAND_STATE_PIPELINE_SLOW_MS
+      ) {
         loggerWarn(
-          `[ReticulumChat] land_state_phase_slow total_ms=${totalMs} outcome=${traceOutcome} group=${groupId} author=${authorAddress} session=${sessionId} seq=${sequence} phases=${tracePhases.join(',')}`
+          `[ReticulumChat] land_state_phase_slow total_ms=${totalMs} main_ms=${mainMs} verify_worker_ms=${verifyWorkerMs} outcome=${traceOutcome} group=${groupId} author=${authorAddress} session=${sessionId} seq=${sequence} phases=${tracePhases.join(',')}`
         );
       }
     }
@@ -9007,10 +9108,42 @@ export class ReticulumChatManager extends EventEmitter {
     this.applyLandCall(groupId, wire);
   }
 
-  private verifyLandStateWire(
+  private async verifyLandStateWireOffMain(
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
     ephemeralPublicKeyBytes: Uint8Array
-  ): boolean {
+  ): Promise<boolean> {
+    const input = this.buildLandStateVerificationInput(wire, ephemeralPublicKeyBytes);
+    if (!input) return false;
+    const result = await this.landStateWorkerPool.run({
+      kind: 'verify_land_state_signature',
+      ...input,
+    });
+    if (
+      result?.ok === true &&
+      result.kind === 'verify_land_state_signature'
+    ) {
+      return result.valid;
+    }
+    if (this.isClosed) return false;
+    const now = this.now();
+    if (now - this.lastLandStateWorkerFallbackLogAt >= RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS) {
+      this.lastLandStateWorkerFallbackLogAt = now;
+      const stats = this.landStateWorkerPool.stats();
+      loggerWarn(
+        `[ReticulumChat] land_state_verify_fallback pending=${stats.pending} workers=${stats.workers} fallback=${stats.fallbackCount} crashes=${stats.crashCount}`
+      );
+    }
+    return nacl.sign.detached.verify(
+      input.signedBytes,
+      input.signature,
+      input.publicKey
+    );
+  }
+
+  private buildLandStateVerificationInput(
+    wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
+    ephemeralPublicKeyBytes: Uint8Array
+  ): { signedBytes: Uint8Array; signature: Uint8Array; publicKey: Uint8Array } | null {
     try {
       const groupId = Number(wire.g);
       const authorAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
@@ -9020,14 +9153,17 @@ export class ReticulumChatManager extends EventEmitter {
       const y = Math.max(0, Math.min(2047, Math.round(Number(wire.y) || 0)));
       const timestamp = Number(wire.ts);
       const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
-      if (!Number.isInteger(groupId) || groupId <= 0) return false;
-      if (!authorAddress || !sessionId || sessionId.length > 24) return false;
-      if (!Number.isFinite(timestamp)) return false;
-      if (timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
-      if (timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
-      if (ephemeralPublicKeyBytes.length !== 32 || !signature) return false;
-      return nacl.sign.detached.verify(
-        new Uint8Array(
+      const now = this.now();
+      if (!Number.isInteger(groupId) || groupId <= 0) return null;
+      if (!authorAddress || !sessionId || sessionId.length > 24) return null;
+      if (!Number.isFinite(timestamp)) return null;
+      if (timestamp > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return null;
+      if (timestamp < now - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return null;
+      if (ephemeralPublicKeyBytes.length !== 32 || !signature) return null;
+      const signatureBytes = new Uint8Array(base58Decode(signature));
+      if (signatureBytes.length !== nacl.sign.signatureLength) return null;
+      return {
+        signedBytes: new Uint8Array(
           canonicalizeForSigning(
             buildReticulumLandStateSignedFields({
               groupId,
@@ -9043,11 +9179,11 @@ export class ReticulumChatManager extends EventEmitter {
             })
           )
         ),
-        new Uint8Array(base58Decode(signature)),
-        ephemeralPublicKeyBytes
-      );
+        signature: signatureBytes,
+        publicKey: new Uint8Array(ephemeralPublicKeyBytes),
+      };
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -10096,7 +10232,7 @@ export class ReticulumChatManager extends EventEmitter {
       const inserted = this.acceptEvent(event, false);
       if (inserted) {
         this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
-        this.emit('event', { event });
+        this.emit('event', { event: this.eventForRenderer(event) });
       }
     }
     const start = this.cursorFromWire(batch.start);
@@ -12091,12 +12227,6 @@ export class ReticulumChatManager extends EventEmitter {
       }
       const event = this.db.getEvent(eventId);
       if (!event || event.groupId !== groupId) return false;
-      if (
-        normalizeReticulumChatChannelId(event.channelId) ===
-        RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
-      ) {
-        return true;
-      }
       this.observedDbEventIds.add(event.eventId);
       this.invalidateGroupDigestSnapshot(event.groupId);
       if (CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
@@ -12105,7 +12235,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.updateStateHeadsCacheForEvent(event);
       }
       this.emitSummaryChanged(event.groupId, event);
-      this.emit('event', { event });
+      this.emit('event', { event: this.eventForRenderer(event) });
       return true;
     } catch {
       return false;
@@ -12113,12 +12243,6 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private writeLocalEventNotification(event: ReticulumChatEvent): void {
-    if (
-      normalizeReticulumChatChannelId(event.channelId) ===
-      RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
-    ) {
-      return;
-    }
     try {
       fs.mkdirSync(this.localNotifyDir, { recursive: true });
       const fileName = `${event.groupId}-${event.timestamp}-${nodeCrypto.randomBytes(6).toString('hex')}.json`;
@@ -12415,6 +12539,150 @@ export class ReticulumChatManager extends EventEmitter {
     return cached && cached.expiresAt > Date.now() ? cached.snapshot : null;
   }
 
+  private getCachedStateHeads(groupId: number): {
+    channelHash: string;
+    channelHeads: Array<{
+      channelId: string;
+      latest: ReticulumChatFeedCursor | null;
+      hash: string;
+    }>;
+    expiresAt: number;
+  } | null {
+    const cached = this.stateHeadsCache.get(groupId);
+    return cached && cached.expiresAt > this.now() ? cached : null;
+  }
+
+  private async ensureGroupDigestState(groupId: number, reason: string): Promise<boolean> {
+    if (this.isClosed) return false;
+    if (this.getCachedGroupDigestSnapshot(groupId) && this.getCachedStateHeads(groupId)) {
+      return true;
+    }
+    const existing = this.digestStateBuildInflight.get(groupId);
+    if (existing) return existing;
+    const build = (async (): Promise<boolean> => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const generation = this.digestStateGeneration.get(groupId) ?? 0;
+        const createdAt = this.now();
+        let state: SerializedReticulumChatDigestState | null = null;
+        if (!process.env.VITEST) {
+          const result = await this.authorTreeWorkerPool.run({
+            kind: 'build_group_digest_state',
+            dbPath: this.dbPath,
+            groupId,
+            createdAt,
+          });
+          if (this.isClosed) return false;
+          if (result?.ok && result.kind === 'build_group_digest_state') {
+            state = result.state;
+          } else {
+            const detail = result?.ok === false ? ` error=${result.error}` : '';
+            loggerWarn(
+              `[ReticulumChat] digest_state_worker_fallback group=${groupId} reason=${reason} attempt=${attempt + 1}${detail}`
+            );
+          }
+        }
+        if (!state) {
+          if (this.isClosed) return false;
+          this.buildGroupDigestSnapshot(groupId);
+          this.getStateHeadsCache(groupId);
+          return true;
+        }
+        if ((this.digestStateGeneration.get(groupId) ?? 0) !== generation) continue;
+        if (this.isClosed) return false;
+        const applyResult = this.applyWorkerDigestState(groupId, state, createdAt);
+        if (applyResult === 'expired') continue;
+        if (applyResult === 'invalid') {
+          if (this.isClosed) return false;
+          loggerWarn(
+            `[ReticulumChat] digest_state_worker_invalid group=${groupId} reason=${reason}`
+          );
+          this.buildGroupDigestSnapshot(groupId);
+          this.getStateHeadsCache(groupId);
+          return true;
+        }
+        return true;
+      }
+      loggerWarn(
+        `[ReticulumChat] digest_state_worker_raced group=${groupId} reason=${reason}`
+      );
+      return false;
+    })();
+    this.digestStateBuildInflight.set(groupId, build);
+    try {
+      return await build;
+    } finally {
+      if (this.digestStateBuildInflight.get(groupId) === build) {
+        this.digestStateBuildInflight.delete(groupId);
+      }
+    }
+  }
+
+  private applyWorkerDigestState(
+    groupId: number,
+    state: SerializedReticulumChatDigestState,
+    createdAt: number
+  ): 'applied' | 'expired' | 'invalid' {
+    if (
+      !state ||
+      !state.snapshot ||
+      !/^[0-9a-f]{64}$/.test(state.snapshot.digestHash) ||
+      !/^[0-9a-f]{64}$/.test(state.channelHash) ||
+      !Array.isArray(state.channelHeads)
+    ) {
+      return 'invalid';
+    }
+    const latest = state.snapshot.latest;
+    if (
+      latest &&
+      (!latest.eventId || !Number.isFinite(latest.feedTimestamp) || latest.feedTimestamp < 0)
+    ) {
+      return 'invalid';
+    }
+    const channelHeads = state.channelHeads.map((head) => ({
+      channelId: normalizeReticulumChatChannelId(head.channelId),
+      latest: head.latest
+        ? {
+            eventId: head.latest.eventId,
+            feedTimestamp: head.latest.feedTimestamp,
+          }
+        : null,
+      hash: head.hash,
+    }));
+    if (channelHeads.some((head) =>
+      !head.channelId ||
+      !/^[0-9a-f]{64}$/.test(head.hash) ||
+      (head.latest != null &&
+        (!head.latest.eventId ||
+          !Number.isFinite(head.latest.feedTimestamp) ||
+          head.latest.feedTimestamp < 0))
+    )) {
+      return 'invalid';
+    }
+    const validUntil = Math.max(
+      createdAt + 1,
+      Math.min(
+        Number(state.validUntil) || createdAt + 1,
+        createdAt + RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS
+      )
+    );
+    if (validUntil <= this.now()) return 'expired';
+    this.digestSnapshotCache.set(groupId, {
+      snapshot: {
+        latest: latest
+          ? { eventId: latest.eventId, feedTimestamp: latest.feedTimestamp }
+          : null,
+        digestHash: state.snapshot.digestHash,
+      },
+      expiresAt: validUntil,
+    });
+    this.stateHeadsCache.set(groupId, {
+      channelHash: state.channelHash,
+      channelHeads,
+      expiresAt: validUntil,
+    });
+    return 'applied';
+  }
+
   private buildGroupDigestSnapshot(groupId: number): ReticulumChatDigestSnapshot {
     const cached = this.getCachedGroupDigestSnapshot(groupId);
     if (cached) return cached;
@@ -12439,31 +12707,22 @@ export class ReticulumChatManager extends EventEmitter {
 
   private invalidateGroupDigestSnapshot(groupId: number): void {
     this.digestSnapshotCache.delete(groupId);
+    this.digestStateGeneration.set(
+      groupId,
+      (this.digestStateGeneration.get(groupId) ?? 0) + 1
+    );
   }
 
   private invalidateStateHeadsCache(groupId: number): void {
     this.stateHeadsCache.delete(groupId);
+    this.digestStateGeneration.set(
+      groupId,
+      (this.digestStateGeneration.get(groupId) ?? 0) + 1
+    );
   }
 
   private updateStateHeadsCacheForEvent(event: ReticulumChatEvent): void {
-    const cached = this.stateHeadsCache.get(event.groupId);
-    if (!cached || cached.expiresAt <= this.now()) {
-      this.stateHeadsCache.delete(event.groupId);
-      return;
-    }
-    const channelId = normalizeReticulumChatChannelId(event.channelId);
-    const channelHeads = cached.channelHeads.filter((head) => head.channelId !== channelId);
-    const recent = this.db.getRecentEvents(event.groupId, 25, channelId);
-    channelHeads.push({
-      channelId,
-      latest: this.db.getLatestFeedCursor(event.groupId, channelId),
-      hash: this.db.computeWindowHash(recent),
-    });
-    channelHeads.sort((a, b) => a.channelId.localeCompare(b.channelId));
-    this.stateHeadsCache.set(event.groupId, this.createStateHeadsCacheValue(
-      event.groupId,
-      channelHeads
-    ));
+    this.invalidateStateHeadsCache(event.groupId);
   }
 
   private async ensureLocalMetadataSnapshot(
@@ -13332,7 +13591,10 @@ export class ReticulumChatManager extends EventEmitter {
     const selectedSnapshot = await this.getPublicMetadataSnapshotForSend(groupId);
     const snapshot = selectedSnapshot?.snapshot ?? this.db.getLatestMetadataSnapshot(groupId);
     const fullSnapshot = selectedSnapshot?.fullSnapshot;
-    const digest = this.buildGroupDigestSnapshot(groupId);
+    if (!(await this.ensureGroupDigestState(groupId, 'build-state-digest-wire'))) return null;
+    const digest = this.getCachedGroupDigestSnapshot(groupId);
+    const stateHeads = this.getCachedStateHeads(groupId);
+    if (!digest || !stateHeads) return null;
     const authorTree = await this.ensureAuthorTreeSnapshot(groupId);
     if (!authorTree) return null;
     this.retainAuthorTreeSnapshot(authorTree);
@@ -13360,7 +13622,7 @@ export class ReticulumChatManager extends EventEmitter {
           : {}),
         authorTreeRoot: compactSha256ForWire(authorTree.root),
         authorTreeCount: authorTree.count,
-        channelHeadsHash: this.buildChannelHeadsHash(groupId),
+        channelHeadsHash: stateHeads.channelHash,
       },
     };
     if (wireFitsReticulum(wire)) return wire;
@@ -13381,7 +13643,7 @@ export class ReticulumChatManager extends EventEmitter {
           : {}),
         authorTreeRoot: compactSha256ForWire(authorTree.root),
         authorTreeCount: authorTree.count,
-        channelHeadsHash: this.buildChannelHeadsHash(groupId),
+        channelHeadsHash: stateHeads.channelHash,
     };
     let compactWire: ReticulumChatWire = {
       ...wire,
@@ -18333,7 +18595,7 @@ export class ReticulumChatManager extends EventEmitter {
             insertedRepairRangeCount += 1;
           }
           this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
-          this.emit('event', { event });
+          this.emit('event', { event: this.eventForRenderer(event) });
         }
         processedSinceYield += 1;
         if (processedSinceYield >= RETICULUM_CHAT_EVENT_PAGE_IMPORT_YIELD_EVERY) {
@@ -18588,7 +18850,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (this.acceptEvent(parsed, false)) {
         this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.pendingEventPulls.delete(this.eventPullKey(event.groupId, event.eventId));
-        this.emit('event', { event });
+        this.emit('event', { event: this.eventForRenderer(event) });
         this.requestFeedContinuationFromOffer(offer, event, sourcePeerHash);
         const exclude = payload.peerPresenceHash ? [payload.peerPresenceHash] : [];
         void this.sendEventHintToInterestedPeers(event, exclude);

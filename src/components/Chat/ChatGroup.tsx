@@ -2544,10 +2544,12 @@ export const ChatGroup = ({
             : prev
         );
         setChatReferences((prev) => {
-          if (!prev?.[targetReference]) return prev;
-          const organized = { ...prev };
-          delete organized[targetReference];
-          return organized;
+          return {
+            ...prev,
+            [targetReference]: {
+              deleted: true,
+            },
+          };
         });
         return;
       }
@@ -2655,6 +2657,7 @@ export const ChatGroup = ({
         chatReference: event.targetEventId || undefined,
         eventType: event.eventType,
         repliedTo: event.replyToEventId || undefined,
+        replyTargetDeleted: event.replyTargetDeleted === true,
         reticulumChat: true,
       };
       let decryptedData = null;

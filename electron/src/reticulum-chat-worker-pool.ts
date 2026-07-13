@@ -48,7 +48,8 @@ export class ReticulumChatWorkerPool {
   constructor(
     private readonly label = 'chat',
     private readonly workerCount = DEFAULT_WORKER_COUNT,
-    private readonly maxPending = DEFAULT_MAX_PENDING
+    private readonly maxPending = DEFAULT_MAX_PENDING,
+    private readonly slowTaskMs = SLOW_TASK_MS
   ) {}
 
   start(): void {
@@ -158,7 +159,7 @@ export class ReticulumChatWorkerPool {
     if (!entry) return;
     this.restartAttempts = 0;
     this.pending.delete(message.id);
-    if (message.prepMs >= SLOW_TASK_MS) {
+    if (message.prepMs >= this.slowTaskMs) {
       loggerWarn(
         `[ReticulumChatWorker:${this.label}] task_slow kind=${message.kind} prep_ms=${message.prepMs} pending=${this.pending.size}`
       );

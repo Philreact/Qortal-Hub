@@ -1626,7 +1626,11 @@ export const MessageItemComponent = ({
                           : {}),
                       }}
                     >
-                      {replyExpiredMeta?.senderName || replyExpiredMeta?.sender
+                      {replyExpiredMeta?.deleted === true
+                        ? t('core:message.generic.replied_to_deleted_message', {
+                            defaultValue: 'Replied to deleted message',
+                          })
+                        : replyExpiredMeta?.senderName || replyExpiredMeta?.sender
                         ? t('core:message.generic.replied_to', {
                             person:
                               replyExpiredMeta?.senderName ||

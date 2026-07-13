@@ -2900,6 +2900,52 @@ describe('reticulum chat manager', () => {
     }
   }
 
+  it('marks replies whose parent message was deleted in renderer history', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([149]);
+    const [root, reply, deletion] = signedAuthorEvents([
+      {
+        eventId: 'deleted-reply-root',
+        groupId: 149,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: 1_000,
+        eventType: 'message',
+      },
+      {
+        eventId: 'reply-to-deleted-root',
+        groupId: 149,
+        channelId: 'general',
+        authorSeq: 2,
+        timestamp: 1_001,
+        eventType: 'message',
+        replyToEventId: 'deleted-reply-root',
+      },
+      {
+        eventId: 'delete-reply-root',
+        groupId: 149,
+        channelId: 'general',
+        authorSeq: 3,
+        timestamp: 1_002,
+        eventType: 'delete',
+        targetEventId: 'deleted-reply-root',
+      },
+    ]);
+    const db = (manager as unknown as { db: ReticulumChatDatabase }).db;
+    expect(db.insertEvent(root, false)).toBe(true);
+    expect(db.insertEvent(reply, false)).toBe(true);
+    expect(db.insertEvent(deletion, false)).toBe(true);
+
+    expect(manager.getMessageHistory(149, 'general', 10)).toMatchObject([
+      {
+        eventId: reply.eventId,
+        replyToEventId: root.eventId,
+        replyTargetDeleted: true,
+      },
+    ]);
+    manager.close();
+  });
+
   it('does not cache unavailable group membership validation as not-member', async () => {
     let calls = 0;
     const manager = new ReticulumChatManager({
@@ -6362,7 +6408,10 @@ describe('reticulum chat manager', () => {
       }),
       peerC
     );
-    await flushQueuedWork();
+    await vi.waitFor(
+      () => expect(emitted).toHaveLength(1),
+      { timeout: 2_000, interval: 10 }
+    );
 
     expect(emitted).toContainEqual(
       expect.objectContaining({
@@ -6392,6 +6441,117 @@ describe('reticulum chat manager', () => {
           h: 1,
         }),
       })
+    );
+    manager.close();
+  });
+
+  it('verifies different QortalLand sessions concurrently while serializing and coalescing each session', async () => {
+    const emitted: Array<Record<string, unknown>> = [];
+    const signer = createLandAuthSigner();
+    const pending: Array<{
+      task: Record<string, unknown>;
+      resolve: (result: Record<string, unknown>) => void;
+    }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
+    });
+    (manager as any).landStateWorkerPool = {
+      run: vi.fn((task: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+        pending.push({ task, resolve });
+      })),
+      stats: () => ({ pending: pending.length, workers: 2, fallbackCount: 0, crashCount: 0 }),
+      stop: vi.fn(),
+    };
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.on('landState', (payload) => emitted.push(payload as Record<string, unknown>));
+    manager.handleWire(signer.landAuthWire(73, 'session-1', 100_000), 'peer-a');
+    manager.handleWire(signer.landAuthWire(73, 'session-2', 100_000), 'peer-a');
+    await flushQueuedWork();
+
+    manager.handleWire(signer.landStateWire({
+      groupId: 73,
+      sessionId: 'session-1',
+      sequence: 1,
+      x: 100,
+      y: 100,
+      timestamp: 100_000,
+    }), 'peer-a');
+    manager.handleWire(signer.landStateWire({
+      groupId: 73,
+      sessionId: 'session-2',
+      sequence: 1,
+      x: 200,
+      y: 200,
+      timestamp: 100_000,
+    }), 'peer-a');
+    await flushQueuedWork(2);
+    expect(pending).toHaveLength(2);
+
+    manager.handleWire(signer.landStateWire({
+      groupId: 73,
+      sessionId: 'session-1',
+      sequence: 2,
+      x: 101,
+      y: 101,
+      timestamp: 100_000,
+    }), 'peer-a');
+    manager.handleWire(signer.landStateWire({
+      groupId: 73,
+      sessionId: 'session-1',
+      sequence: 3,
+      x: 102,
+      y: 102,
+      timestamp: 100_000,
+    }), 'peer-a');
+    await flushQueuedWork(2);
+    expect(pending).toHaveLength(2);
+
+    pending[1].resolve({
+      id: 2,
+      ok: true,
+      kind: 'verify_land_state_signature',
+      valid: true,
+      prepMs: 1,
+    });
+    await flushQueuedWork(2);
+    expect(pending).toHaveLength(2);
+
+    pending[0].resolve({
+      id: 1,
+      ok: true,
+      kind: 'verify_land_state_signature',
+      valid: true,
+      prepMs: 1,
+    });
+    await flushQueuedWork(2);
+    expect(pending).toHaveLength(3);
+    pending[2].resolve({
+      id: 3,
+      ok: true,
+      kind: 'verify_land_state_signature',
+      valid: true,
+      prepMs: 1,
+    });
+    await flushQueuedWork(2);
+
+    expect(emitted).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: 'session-1', sequence: 1 }),
+      expect.objectContaining({ sessionId: 'session-1', sequence: 3 }),
+      expect.objectContaining({ sessionId: 'session-2', sequence: 1 }),
+    ]));
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({ sessionId: 'session-1', sequence: 2 })
     );
     manager.close();
   });
@@ -15896,6 +16056,21 @@ describe('reticulum chat manager', () => {
     await expect(eventPromise).resolves.toMatchObject({
       eventId: event.eventId,
       groupId: 33,
+    });
+
+    const landEventPromise = waitForEvent(reader);
+    const landEvent = signedEvent({
+      eventId: 'shared-qortal-land-event',
+      groupId: 33,
+      channelId: 'qortal-land',
+      authorSeq: 2,
+    });
+    const landResult = await writer.publishEvent(landEvent);
+    expect(landResult.ok).toBe(true);
+    await expect(landEventPromise).resolves.toMatchObject({
+      eventId: landEvent.eventId,
+      groupId: 33,
+      channelId: 'qortal-land',
     });
 
     writer.close();

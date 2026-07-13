@@ -110,6 +110,7 @@ const LAND_REMOTE_STOP_WALKING_AFTER_MS = 1450;
 const LAND_REMOTE_MAX_VELOCITY_PX_PER_MS = 0.32;
 const LAND_REMOTE_MAX_EXTRAPOLATE_DISTANCE = 180;
 const LAND_CHAT_BUBBLE_TTL_MS = 15000;
+const LAND_CHAT_RECONCILE_LIMIT = 25;
 const LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const LAND_CHAT_MAX_INPUT_CHARS = 420;
 const LAND_ACTION_ANIMATION_TTL_MS = 3200;
@@ -2636,7 +2637,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
-    const unsubscribe = window.reticulumChat?.onEvent?.(({ event }) => {
+    let cancelled = false;
+    const applyLandChatEvent = (event: unknown, fromHistory = false) => {
       const payload = event as ReticulumChatEventForLand;
       if (Number(payload.groupId) !== groupId) return;
       if (payload.channelId !== QORTAL_LAND_CHANNEL_ID) return;
@@ -2648,6 +2650,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       ) {
         return;
       }
+      if (fromHistory && landChatBubblesRef.current.has(payload.eventId)) return;
       let decoded: Record<string, unknown>;
       try {
         decoded = JSON.parse(payload.encryptedPayload) as Record<string, unknown>;
@@ -2657,24 +2660,54 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       if (decoded.qortalLand !== true) return;
       const text = String(decoded.messageText || decoded.message || '').trim();
       if (!text) return;
-      const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : sessionId;
+      const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : '';
       const sequence = Number(decoded.landSequence);
-      queuePrimaryNameLookups([payload.authorAddress]);
       const now = Date.now();
+      const eventTimestamp = finiteNumber(payload.timestamp);
+      if (
+        fromHistory &&
+        (eventTimestamp === null ||
+          eventTimestamp > now + 5000 ||
+          now - eventTimestamp >= LAND_CHAT_BUBBLE_TTL_MS)
+      ) {
+        return;
+      }
+      queuePrimaryNameLookups([payload.authorAddress]);
       landChatBubblesRef.current.set(payload.eventId, {
         messageId: payload.eventId,
         authorAddress: payload.authorAddress,
         sessionId: session,
         sequence: Number.isFinite(sequence) ? sequence : 0,
         text,
-        createdAt: now,
-        expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
+        createdAt: fromHistory && eventTimestamp !== null ? eventTimestamp : now,
+        expiresAt:
+          fromHistory && eventTimestamp !== null
+            ? eventTimestamp + LAND_CHAT_BUBBLE_TTL_MS
+            : now + LAND_CHAT_BUBBLE_TTL_MS,
       });
+    };
+    const unsubscribe = window.reticulumChat?.onEvent?.(({ event }) => {
+      applyLandChatEvent(event);
+    });
+    const historyPromise = window.reticulumChat?.getMessageHistory?.(
+      groupId,
+      QORTAL_LAND_CHANNEL_ID,
+      LAND_CHAT_RECONCILE_LIMIT,
+      { repairNetwork: false }
+    );
+    void historyPromise?.then((history) => {
+      if (cancelled || !Array.isArray(history)) return;
+      history.forEach((event) => applyLandChatEvent(event, true));
+    }).catch((error) => {
+      if (!cancelled) {
+        console.warn('[QortalLand] Failed to reconcile recent chat bubbles', error);
+      }
     });
     return () => {
+      cancelled = true;
       unsubscribe?.();
     };
-  }, [groupId, myAddress, queuePrimaryNameLookups, sessionId]);
+  }, [groupId, myAddress, queuePrimaryNameLookups]);
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -4917,6 +4950,14 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               avatar = this.localAvatar;
             } else {
               avatar = this.remotes.get(`${bubble.authorAddress}:${bubble.sessionId}`);
+              if (!avatar) {
+                const authorAvatars = Array.from(this.remotes.entries())
+                  .filter(([key]) => key.startsWith(`${bubble.authorAddress}:`))
+                  .map(([, remoteAvatar]) => remoteAvatar);
+                if (authorAvatars.length === 1) {
+                  avatar = authorAvatars[0];
+                }
+              }
             }
             let bubbleObjects = this.chatBubbles.get(messageId);
             if (!bubbleObjects) {

@@ -508,7 +508,12 @@ export const ChatList = ({
             }
           } else if (message?.repliedTo && replyIndex === -1) {
             const editMeta = chatReferences?.[message?.repliedTo]?.edit;
-            if (editMeta) {
+            const replyWasDeleted =
+              message?.replyTargetDeleted === true ||
+              chatReferences?.[message?.repliedTo]?.deleted === true;
+            if (replyWasDeleted) {
+              replyExpiredMeta = { deleted: true };
+            } else if (editMeta) {
               replyExpiredMeta = {
                 senderName: editMeta?.senderName,
                 sender: editMeta?.sender,
