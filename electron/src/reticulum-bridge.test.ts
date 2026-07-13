@@ -67,6 +67,64 @@ describe('ReticulumBridge presence subscriptions', () => {
 });
 
 describe('ReticulumBridge group audio support', () => {
+  it('atomically configures group audio forwarding through the bridge', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'forward-plan-1',
+      ok: true,
+      payload: { roomCount: 1, ruleCount: 1 },
+    }));
+    const plans = [
+      {
+        roomId: 'room-1',
+        topologyEpoch: 4,
+        rules: [
+          {
+            sourceAddress: 'Q-source',
+            ingress: {
+              address: 'Q-source',
+              transport: 'link' as const,
+              linkId: 'source-link',
+            },
+            targets: [
+              {
+                address: 'Q-target',
+                transport: 'link' as const,
+                linkId: 'target-link',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    await expect(bridge.configureGroupAudioForwarding(plans)).resolves.toEqual({
+      ok: true,
+    });
+    expect(internal.sendCommand).toHaveBeenCalledWith(
+      'configure_group_audio_forwarding',
+      { plans }
+    );
+  });
+
+  it('does not start a stopped bridge when clearing forwarding plans', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'stopped';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn();
+
+    await expect(
+      bridge.configureGroupAudioForwarding([], { startIfNeeded: false })
+    ).resolves.toEqual({ ok: false, reason: 'bridge-not-ready' });
+    expect(internal.start).not.toHaveBeenCalled();
+    expect(internal.sendCommand).not.toHaveBeenCalled();
+  });
+
   it('opens group audio links through the bridge command channel', async () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;
@@ -690,6 +748,39 @@ describe('ReticulumBridge group audio support', () => {
         code: 'packet_send_false',
         error: 'e',
         pathState: '',
+      },
+    ]);
+  });
+
+  it('emits throttled group audio fast-path activity from JSON events', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    const seen: unknown[] = [];
+    bridge.on('group-audio-fast-path-activity', (payload) =>
+      seen.push(payload)
+    );
+    internal.handleFrame({
+      type: 'event',
+      event: 'group_audio_fast_path_activity',
+      payload: {
+        roomId: 'room-1',
+        sourceAddress: 'Q-source',
+        linkId: 'source-link',
+        peerPresenceHash: 'peer-hash',
+        peerDestinationHash: 'call-hash',
+        forwardedTargets: 3,
+        receivedAtWallMs: 1234,
+      },
+    });
+    expect(seen).toEqual([
+      {
+        roomId: 'room-1',
+        sourceAddress: 'Q-source',
+        linkId: 'source-link',
+        peerPresenceHash: 'peer-hash',
+        peerDestinationHash: 'call-hash',
+        forwardedTargets: 3,
+        receivedAtWallMs: 1234,
       },
     ]);
   });

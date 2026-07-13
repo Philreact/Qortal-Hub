@@ -2,6 +2,7 @@ import importlib.util
 import queue
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import RNS
@@ -82,6 +83,160 @@ class FakeRnsPacket:
 class FakeDestination:
     def __init__(self):
         self.hash = bytes.fromhex("44" * 16)
+
+
+class PresenceBridgeAudioForwardFastPathTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.room_id = "gcall-qortal-716"
+        self.source_hash = "11" * 16
+        self.target_hash = "22" * 16
+
+    def plan(self, ingress_link="source-link", target_link="target-link"):
+        return {
+            "roomId": self.room_id,
+            "topologyEpoch": 7,
+            "rules": [
+                {
+                    "sourceAddress": "Q-source",
+                    "ingress": {
+                        "address": "Q-source",
+                        "transport": "link",
+                        "linkId": ingress_link,
+                        "peerPresenceHash": self.source_hash,
+                        "peerDestinationHash": self.source_hash,
+                    },
+                    "targets": [
+                        {
+                            "address": "Q-target",
+                            "transport": "link",
+                            "linkId": target_link,
+                            "peerPresenceHash": self.target_hash,
+                            "peerDestinationHash": self.target_hash,
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_exact_verified_ingress_forwards_unchanged_media(self):
+        rooms, rules = self.bridge._configure_audio_forwarding_plans([self.plan()])
+        self.assertEqual((rooms, rules), (1, 1))
+        captured = []
+        with mock.patch.object(
+            self.bridge,
+            "_audio_data_plane_broadcast_inbound_audio",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_put_audio_decoded_batch_keep_newest",
+            side_effect=lambda frames: captured.extend(frames) or True,
+        ):
+            handled = self.bridge._try_group_audio_forward_fast_path(
+                self.room_id,
+                "source-link",
+                self.source_hash,
+                self.source_hash,
+                1234,
+                b"encrypted-media",
+                b"inbound-batch",
+            )
+        self.assertTrue(handled)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][0], "target-link")
+        self.assertEqual(captured[0][1], self.room_id)
+        self.assertEqual(captured[0][5], b"encrypted-media")
+
+    def test_link_media_does_not_fall_back_to_hash_matching(self):
+        self.bridge._configure_audio_forwarding_plans([self.plan()])
+        with mock.patch.object(
+            self.bridge,
+            "_audio_data_plane_broadcast_inbound_audio",
+        ) as broadcast:
+            handled = self.bridge._try_group_audio_forward_fast_path(
+                self.room_id,
+                "unverified-link",
+                self.source_hash,
+                self.source_hash,
+                1234,
+                b"encrypted-media",
+                b"inbound-batch",
+            )
+        self.assertFalse(handled)
+        broadcast.assert_not_called()
+
+    def test_packet_media_matches_only_the_configured_peer_hash(self):
+        plan = self.plan()
+        ingress = plan["rules"][0]["ingress"]
+        ingress["transport"] = "packet"
+        ingress["linkId"] = ""
+        self.bridge._configure_audio_forwarding_plans([plan])
+        captured = []
+        with mock.patch.object(
+            self.bridge,
+            "_audio_data_plane_broadcast_inbound_audio",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_put_audio_decoded_batch_keep_newest",
+            side_effect=lambda frames: captured.extend(frames) or True,
+        ):
+            handled = self.bridge._try_group_audio_forward_fast_path(
+                self.room_id,
+                "",
+                self.source_hash,
+                "",
+                1234,
+                b"encrypted-media",
+                b"inbound-batch",
+            )
+            rejected = self.bridge._try_group_audio_forward_fast_path(
+                self.room_id,
+                "",
+                "33" * 16,
+                "",
+                1235,
+                b"other-media",
+                b"other-batch",
+            )
+        self.assertTrue(handled)
+        self.assertFalse(rejected)
+        self.assertEqual(len(captured), 1)
+
+    def test_forward_queue_rejection_does_not_duplicate_local_delivery(self):
+        self.bridge._configure_audio_forwarding_plans([self.plan()])
+        with mock.patch.object(
+            self.bridge,
+            "_audio_data_plane_broadcast_inbound_audio",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_put_audio_decoded_batch_keep_newest",
+            return_value=False,
+        ):
+            handled = self.bridge._try_group_audio_forward_fast_path(
+                self.room_id,
+                "source-link",
+                self.source_hash,
+                self.source_hash,
+                1234,
+                b"encrypted-media",
+                b"inbound-batch",
+            )
+        self.assertTrue(handled)
+
+    def test_plan_replacement_removes_stale_room_and_loop_target(self):
+        loop_plan = self.plan(target_link="source-link")
+        rooms, rules = self.bridge._configure_audio_forwarding_plans([loop_plan])
+        self.assertEqual((rooms, rules), (1, 1))
+        stored_rule = self.bridge._audio_forwarding_plans_by_room[self.room_id][
+            "rules"
+        ][0]
+        self.assertEqual(stored_rule["targets"], [])
+
+        rooms, rules = self.bridge._configure_audio_forwarding_plans([])
+        self.assertEqual((rooms, rules), (0, 0))
+        self.assertNotIn(self.room_id, self.bridge._audio_forwarding_plans_by_room)
 
 
 class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):

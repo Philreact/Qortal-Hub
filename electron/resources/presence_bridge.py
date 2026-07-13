@@ -427,6 +427,7 @@ _AUDIO_BATCH_STALE_SECONDS = 0.75
 _AUDIO_OUTBOUND_DEADLINE_SECONDS = 0.32
 _AUDIO_DATA_PLANE_STALE_MS = 160
 _AUDIO_DATA_PLANE_MAX_ROUTES = 128
+_AUDIO_DATA_PLANE_INBOUND_QUEUE_MAX = 64
 _AUDIO_MIN_BATCHES_PER_EXECUTOR_PASS = 2
 _AUDIO_MAX_BATCHES_PER_EXECUTOR_PASS = 16
 _AUDIO_BACKLOG_BATCH_STEP = 2
@@ -492,6 +493,9 @@ _cmd_queue_bounded: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
 )
 _audio_decoded_queue: "queue.Queue[Optional[list]]" = queue.Queue(
     maxsize=_AUDIO_DECODED_QUEUE_MAX
+)
+_audio_data_plane_inbound_queue: "queue.Queue[Optional[Tuple[float, bytes]]]" = queue.Queue(
+    maxsize=_AUDIO_DATA_PLANE_INBOUND_QUEUE_MAX
 )
 _scheduler_queues: Dict[str, "queue.Queue[Optional[Tuple[float, str, Callable[..., Any], tuple, dict]]]"] = {}
 _scheduler_threads: list[threading.Thread] = []
@@ -635,10 +639,14 @@ _audio_ipc_rns_first_send_ok_logged = False
 _audio_ipc_fd4_first_chunk_logged = False
 _audio_data_plane_lock = threading.RLock()
 _audio_data_plane_server_thread: Optional[threading.Thread] = None
+_audio_data_plane_inbound_sender_thread: Optional[threading.Thread] = None
 _audio_data_plane_socket: Optional[socket.socket] = None
 _audio_data_plane_endpoint = ""
 _audio_data_plane_token = ""
 _audio_data_plane_routes_by_address: Dict[str, Dict[str, Any]] = {}
+_audio_forwarding_plans_by_room: Dict[str, Dict[str, Any]] = {}
+_audio_forwarding_activity_last_emit_ms: Dict[str, int] = {}
+_audio_forwarding_stats_by_room: Dict[str, Dict[str, int]] = {}
 _audio_data_plane_clients: Dict[int, socket.socket] = {}
 _audio_data_plane_send_locks: Dict[int, threading.RLock] = {}
 _audio_data_plane_direct_inbound_enabled = os.environ.get(
@@ -648,7 +656,11 @@ _audio_data_plane_direct_group_inbound_enabled = os.environ.get(
     "QORTAL_AUDIO_DIRECT_DATA_PLANE_GROUP_INBOUND", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
 _audio_data_plane_direct_room_prefixes = ("dmv:",)
+_audio_group_forward_fast_path_enabled = os.environ.get(
+    "QORTAL_AUDIO_GROUP_FORWARD_FAST_PATH", "1"
+).strip().lower() not in ("0", "false", "no", "off")
 _audio_data_plane_first_inbound_sent = False
+_audio_data_plane_inbound_queue_drops = 0
 _call_media_path_state: Dict[str, Dict[str, Any]] = {}
 
 # Compact group-call control on call aspect (see electron/src/group-call-wire-reticulum.ts).
@@ -1940,10 +1952,8 @@ def _ws_send_binary(conn: socket.socket, data: bytes) -> bool:
         return False
 
 
-def _audio_data_plane_broadcast_inbound_audio(chunk: bytes) -> bool:
+def _audio_data_plane_send_inbound_audio_now(chunk: bytes) -> bool:
     global _audio_data_plane_first_inbound_sent
-    if not _audio_data_plane_direct_inbound_enabled:
-        return False
     with _audio_data_plane_lock:
         clients = list(_audio_data_plane_clients.values())
     if not clients:
@@ -1962,6 +1972,52 @@ def _audio_data_plane_broadcast_inbound_audio(chunk: bytes) -> bool:
             f"bytes={len(chunk)} clients={sent} failed={failed}",
         )
     return sent > 0
+
+
+def _audio_data_plane_inbound_sender_loop() -> None:
+    while not _shutdown.is_set():
+        try:
+            queued = _audio_data_plane_inbound_queue.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        if queued is None:
+            return
+        queued_at, chunk = queued
+        age_ms = max(0.0, (time.monotonic() - queued_at) * 1000.0)
+        if age_ms > _AUDIO_DATA_PLANE_STALE_MS:
+            continue
+        _audio_data_plane_send_inbound_audio_now(chunk)
+
+
+def _audio_data_plane_broadcast_inbound_audio(chunk: bytes) -> bool:
+    global _audio_data_plane_inbound_queue_drops
+    if not _audio_data_plane_direct_inbound_enabled:
+        return False
+    with _audio_data_plane_lock:
+        if not _audio_data_plane_clients:
+            return False
+    item = (time.monotonic(), bytes(chunk))
+    try:
+        _audio_data_plane_inbound_queue.put_nowait(item)
+        return True
+    except queue.Full:
+        pass
+    try:
+        _audio_data_plane_inbound_queue.get_nowait()
+        _audio_data_plane_inbound_queue_drops += 1
+    except queue.Empty:
+        pass
+    try:
+        _audio_data_plane_inbound_queue.put_nowait(item)
+        if _audio_data_plane_inbound_queue_drops % 100 == 1:
+            _log_audio_data_plane(
+                "inbound-queue-pressure",
+                f"drops={_audio_data_plane_inbound_queue_drops} max={_AUDIO_DATA_PLANE_INBOUND_QUEUE_MAX}",
+            )
+        return True
+    except queue.Full:
+        _audio_data_plane_inbound_queue_drops += 1
+        return False
 
 
 def _audio_data_plane_should_take_inbound_media(room_id: str) -> bool:
@@ -2214,6 +2270,7 @@ def _audio_data_plane_accept_loop(sock: socket.socket) -> None:
 
 def _ensure_audio_data_plane_server() -> Tuple[bool, Dict[str, Any], str]:
     global _audio_data_plane_server_thread, _audio_data_plane_socket
+    global _audio_data_plane_inbound_sender_thread
     global _audio_data_plane_endpoint, _audio_data_plane_token
     with _audio_data_plane_lock:
         if _audio_data_plane_endpoint and _audio_data_plane_token:
@@ -2238,6 +2295,16 @@ def _ensure_audio_data_plane_server() -> Tuple[bool, Dict[str, Any], str]:
                 daemon=True,
             )
             _audio_data_plane_server_thread.start()
+            if (
+                _audio_data_plane_inbound_sender_thread is None
+                or not _audio_data_plane_inbound_sender_thread.is_alive()
+            ):
+                _audio_data_plane_inbound_sender_thread = threading.Thread(
+                    target=_audio_data_plane_inbound_sender_loop,
+                    name="gcall-audio-data-plane-inbound",
+                    daemon=True,
+                )
+                _audio_data_plane_inbound_sender_thread.start()
             _log_audio_data_plane("listen-ok", f"endpoint={_audio_data_plane_endpoint}")
             return True, {
                 "endpoint": _audio_data_plane_endpoint,
@@ -2271,6 +2338,278 @@ def _configure_audio_data_plane_routes(routes: Any) -> int:
         _audio_data_plane_routes_by_address.update(next_routes)
     _log_audio_data_plane("routes-configured", f"routes={len(next_routes)}")
     return len(next_routes)
+
+
+def _normalize_audio_forward_route(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    address = str(raw.get("address") or "").strip()
+    if not address:
+        return None
+    transport = "packet" if raw.get("transport") == "packet" else "link"
+    link_id = str(raw.get("linkId") or "").strip()
+    peer_presence_hash = str(raw.get("peerPresenceHash") or "").strip().lower()
+    peer_destination_hash = str(raw.get("peerDestinationHash") or "").strip().lower()
+    if transport == "link" and not link_id:
+        return None
+    if transport == "packet" and not peer_presence_hash and not peer_destination_hash:
+        return None
+    return {
+        "address": address,
+        "transport": transport,
+        "linkId": link_id,
+        "peerPresenceHash": peer_presence_hash,
+        "peerDestinationHash": peer_destination_hash,
+    }
+
+
+def _configure_audio_forwarding_plans(plans: Any) -> Tuple[int, int]:
+    next_plans: Dict[str, Dict[str, Any]] = {}
+    rule_count = 0
+    if isinstance(plans, list):
+        for raw_plan in plans[:64]:
+            if not isinstance(raw_plan, dict):
+                continue
+            room_id = str(raw_plan.get("roomId") or "").strip()
+            if not room_id or room_id.lower().startswith(_audio_data_plane_direct_room_prefixes):
+                continue
+            try:
+                topology_epoch = max(0, int(raw_plan.get("topologyEpoch") or 0))
+            except Exception:
+                topology_epoch = 0
+            rules = []
+            raw_rules = raw_plan.get("rules")
+            if isinstance(raw_rules, list):
+                for raw_rule in raw_rules[:256]:
+                    if not isinstance(raw_rule, dict):
+                        continue
+                    source_address = str(raw_rule.get("sourceAddress") or "").strip()
+                    ingress = _normalize_audio_forward_route(raw_rule.get("ingress"))
+                    if not source_address or ingress is None or ingress.get("address") != source_address:
+                        continue
+                    targets = []
+                    seen_targets = set()
+                    raw_targets = raw_rule.get("targets")
+                    if isinstance(raw_targets, list):
+                        for raw_target in raw_targets[:_AUDIO_DATA_PLANE_MAX_ROUTES]:
+                            target = _normalize_audio_forward_route(raw_target)
+                            if target is None:
+                                continue
+                            target_address = str(target.get("address") or "")
+                            target_link_id = str(target.get("linkId") or "")
+                            if (
+                                not target_address
+                                or target_address == source_address
+                                or target_address in seen_targets
+                                or (target_link_id and target_link_id == str(ingress.get("linkId") or ""))
+                            ):
+                                continue
+                            seen_targets.add(target_address)
+                            targets.append(target)
+                    rules.append(
+                        {
+                            "sourceAddress": source_address,
+                            "ingress": ingress,
+                            "targets": targets,
+                        }
+                    )
+            if rules:
+                next_plans[room_id] = {
+                    "roomId": room_id,
+                    "topologyEpoch": topology_epoch,
+                    "rules": rules,
+                }
+                rule_count += len(rules)
+    with _audio_data_plane_lock:
+        _audio_forwarding_plans_by_room.clear()
+        _audio_forwarding_plans_by_room.update(next_plans)
+        active_rooms = set(next_plans.keys())
+        for key in list(_audio_forwarding_activity_last_emit_ms.keys()):
+            if key.split("|", 1)[0] not in active_rooms:
+                _audio_forwarding_activity_last_emit_ms.pop(key, None)
+        for room_id in list(_audio_forwarding_stats_by_room.keys()):
+            if room_id not in active_rooms:
+                _audio_forwarding_stats_by_room.pop(room_id, None)
+    _log_audio_data_plane(
+        "forward-plans-configured",
+        f"rooms={len(next_plans)} rules={rule_count}",
+    )
+    return len(next_plans), rule_count
+
+
+def _audio_forwarding_rule_for_inbound(
+    room_id: str,
+    link_id: str,
+    peer_presence_hash: str,
+    peer_destination_hash: str,
+) -> Optional[Dict[str, Any]]:
+    if not _audio_group_forward_fast_path_enabled:
+        return None
+    normalized_room = str(room_id or "").strip()
+    normalized_link = str(link_id or "").strip()
+    inbound_hashes = {
+        value
+        for value in (
+            str(peer_presence_hash or "").strip().lower(),
+            str(peer_destination_hash or "").strip().lower(),
+        )
+        if value
+    }
+    with _audio_data_plane_lock:
+        plan = _audio_forwarding_plans_by_room.get(normalized_room)
+        rules = list(plan.get("rules") or []) if isinstance(plan, dict) else []
+    for rule in rules:
+        ingress = rule.get("ingress") if isinstance(rule, dict) else None
+        if not isinstance(ingress, dict):
+            continue
+        ingress_link = str(ingress.get("linkId") or "").strip()
+        if normalized_link:
+            # Link media is admitted only by exact verified link ownership.
+            if ingress.get("transport") == "link" and ingress_link == normalized_link:
+                return rule
+            continue
+        if ingress.get("transport") != "packet" or not inbound_hashes:
+            continue
+        ingress_hashes = {
+            value
+            for value in (
+                str(ingress.get("peerPresenceHash") or "").strip().lower(),
+                str(ingress.get("peerDestinationHash") or "").strip().lower(),
+            )
+            if value
+        }
+        if inbound_hashes.intersection(ingress_hashes):
+            return rule
+    return None
+
+
+def _emit_audio_forwarding_activity(
+    room_id: str,
+    rule: Dict[str, Any],
+    link_id: str,
+    peer_presence_hash: str,
+    peer_destination_hash: str,
+    forwarded_targets: int,
+) -> None:
+    source_address = str(rule.get("sourceAddress") or "")
+    key = f"{room_id}|{source_address}"
+    now_ms = _now_wall_ms()
+    with _audio_data_plane_lock:
+        last_ms = int(_audio_forwarding_activity_last_emit_ms.get(key) or 0)
+        if now_ms - last_ms < 5_000:
+            return
+        _audio_forwarding_activity_last_emit_ms[key] = now_ms
+    emit_event(
+        "group_audio_fast_path_activity",
+        {
+            "roomId": room_id,
+            "sourceAddress": source_address,
+            "linkId": link_id,
+            "peerPresenceHash": peer_presence_hash,
+            "peerDestinationHash": peer_destination_hash,
+            "forwardedTargets": forwarded_targets,
+            "receivedAtWallMs": now_ms,
+        },
+    )
+
+
+def _note_audio_forward_fast_path(room_id: str, forwarded_targets: int) -> None:
+    now_ms = _now_wall_ms()
+    snapshot = None
+    with _audio_data_plane_lock:
+        stats = _audio_forwarding_stats_by_room.setdefault(
+            room_id,
+            {"frames": 0, "targets": 0, "lastLogAtMs": now_ms},
+        )
+        stats["frames"] = int(stats.get("frames") or 0) + 1
+        stats["targets"] = int(stats.get("targets") or 0) + max(
+            0, int(forwarded_targets)
+        )
+        last_log_at_ms = int(stats.get("lastLogAtMs") or now_ms)
+        if now_ms - last_log_at_ms >= 10_000:
+            snapshot = {
+                "frames": int(stats.get("frames") or 0),
+                "targets": int(stats.get("targets") or 0),
+                "windowMs": max(1, now_ms - last_log_at_ms),
+            }
+            stats["frames"] = 0
+            stats["targets"] = 0
+            stats["lastLogAtMs"] = now_ms
+    if snapshot is not None:
+        _log_audio_data_plane(
+            "forward-fast-path-active",
+            f"room={room_id[:80]} window_ms={snapshot['windowMs']} "
+            f"frames={snapshot['frames']} forwarded_targets={snapshot['targets']}",
+        )
+
+
+def _try_group_audio_forward_fast_path(
+    room_id: str,
+    link_id: str,
+    peer_presence_hash: str,
+    peer_destination_hash: str,
+    received_at_wall_ms: int,
+    raw_audio: bytes,
+    encoded_inbound_chunk: bytes,
+) -> bool:
+    rule = _audio_forwarding_rule_for_inbound(
+        room_id,
+        link_id,
+        peer_presence_hash,
+        peer_destination_hash,
+    )
+    if rule is None:
+        return False
+
+    # Do not forward unless local playback has accepted the same frame. This
+    # keeps the existing Electron path as an all-or-nothing fallback.
+    if not _audio_data_plane_broadcast_inbound_audio(encoded_inbound_chunk):
+        return False
+
+    frames = []
+    for target in list(rule.get("targets") or []):
+        if not isinstance(target, dict):
+            continue
+        transport = "packet" if target.get("transport") == "packet" else "link"
+        target_link_id = str(target.get("linkId") or "") if transport == "link" else ""
+        target_presence_hash = str(target.get("peerPresenceHash") or "").strip().lower()
+        target_destination_hash = str(target.get("peerDestinationHash") or "").strip().lower()
+        if transport == "link" and (not target_link_id or target_link_id == link_id):
+            continue
+        if transport == "packet" and not target_presence_hash:
+            continue
+        frames.append(
+            (
+                target_link_id,
+                room_id,
+                target_presence_hash,
+                target_destination_hash,
+                received_at_wall_ms,
+                raw_audio,
+            )
+        )
+
+    if frames and not _put_audio_decoded_batch_keep_newest(frames):
+        _log_audio_data_plane(
+            "forward-fast-path-drop",
+            f"room={room_id[:80]} source={str(rule.get('sourceAddress') or '')[:16]} "
+            f"reason=decoded_queue_full targets={len(frames)}",
+        )
+        # Local playback already owns this realtime frame. Returning False
+        # would also route it through fd4, duplicating local playback while the
+        # same pressured outbound queue is unlikely to accept the retry.
+        return True
+
+    _emit_audio_forwarding_activity(
+        room_id,
+        rule,
+        link_id,
+        peer_presence_hash,
+        peer_destination_hash,
+        len(frames),
+    )
+    _note_audio_forward_fast_path(room_id, len(frames))
+    return True
 
 
 def _increment_raw_gap_buckets(gap_ms: float) -> None:
@@ -14407,8 +14746,18 @@ def _handle_audio_link_packet(message, packet) -> None:
             )
             frame_kind, _control_type = _inspect_gcall_audio_payload(raw_audio)
             direct_ok = False
-            if frame_kind == "media" and _audio_data_plane_should_take_inbound_media(room_id):
-                direct_ok = _audio_data_plane_broadcast_inbound_audio(chunk)
+            if frame_kind == "media":
+                direct_ok = _try_group_audio_forward_fast_path(
+                    room_id,
+                    link_id,
+                    str(state.get("peerPresenceHash") or ""),
+                    str(state.get("peerDestinationHash") or sender_call_hash or ""),
+                    received_at_wall_ms,
+                    raw_audio,
+                    chunk,
+                )
+                if not direct_ok and _audio_data_plane_should_take_inbound_media(room_id):
+                    direct_ok = _audio_data_plane_broadcast_inbound_audio(chunk)
             fd4_ok = direct_ok or _emit_binary_audio(chunk)
             fd4_enqueued_at_wall_ms = _now_wall_ms()
             _note_audio_route_receive(
@@ -14788,8 +15137,18 @@ def _handle_hub_packet_received(data, packet) -> None:
             _note_call_media_inbound(peer_presence_hash, sender_dest)
             frame_kind, _control_type = _inspect_gcall_audio_payload(raw_audio)
             direct_ok = False
-            if frame_kind == "media" and _audio_data_plane_should_take_inbound_media(room_id):
-                direct_ok = _audio_data_plane_broadcast_inbound_audio(chunk)
+            if frame_kind == "media":
+                direct_ok = _try_group_audio_forward_fast_path(
+                    room_id,
+                    "",
+                    peer_presence_hash,
+                    sender_dest,
+                    received_at_wall_ms,
+                    raw_audio,
+                    chunk,
+                )
+                if not direct_ok and _audio_data_plane_should_take_inbound_media(room_id):
+                    direct_ok = _audio_data_plane_broadcast_inbound_audio(chunk)
             fd4_ok = direct_ok or _emit_binary_audio(chunk)
             fd4_enqueued_at_wall_ms = _now_wall_ms()
             _note_audio_route_receive(
@@ -16710,6 +17069,13 @@ def handle_command(message: Dict[str, Any]) -> None:
     elif action == "configure_group_audio_data_plane_routes":
         route_count = _configure_audio_data_plane_routes(payload.get("routes"))
         emit_resp(req_id, True, payload={"routeCount": route_count})
+    elif action == "configure_group_audio_forwarding":
+        room_count, rule_count = _configure_audio_forwarding_plans(payload.get("plans"))
+        emit_resp(
+            req_id,
+            True,
+            payload={"roomCount": room_count, "ruleCount": rule_count},
+        )
     elif action == "get_local_identity_public_key":
         handle_get_local_identity_public_key(req_id, payload)
     elif action == "ensure_peer_identity":
@@ -16803,6 +17169,10 @@ def main() -> None:
     stdout_thread.join(timeout=10.0)
     try:
         _audio_binary_out_queue.put_nowait(None)
+    except queue.Full:
+        pass
+    try:
+        _audio_data_plane_inbound_queue.put_nowait(None)
     except queue.Full:
         pass
     audio_out_thread.join(timeout=5.0)

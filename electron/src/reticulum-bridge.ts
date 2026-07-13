@@ -222,6 +222,7 @@ type BridgeCmdFrame = {
     | 'clear_group_audio_diagnostics'
     | 'get_group_audio_data_plane_session'
     | 'configure_group_audio_data_plane_routes'
+    | 'configure_group_audio_forwarding'
     | 'get_local_identity_public_key'
     | 'ensure_peer_identity'
     | 'register_peer_identity';
@@ -459,6 +460,18 @@ export type ReticulumAudioDataPlaneRoute = {
   peerDestinationHash?: string;
 };
 
+export type ReticulumAudioForwardingRule = {
+  sourceAddress: string;
+  ingress: ReticulumAudioDataPlaneRoute;
+  targets: ReticulumAudioDataPlaneRoute[];
+};
+
+export type ReticulumAudioForwardingPlan = {
+  roomId: string;
+  topologyEpoch: number;
+  rules: ReticulumAudioForwardingRule[];
+};
+
 export type ReticulumAudioDataPlaneSessionResult =
   | {
       ok: true;
@@ -634,6 +647,19 @@ type BridgeEventFrame =
         code?: string;
         error?: string;
         pathState?: string;
+      };
+    }
+  | {
+      type: 'event';
+      event: 'group_audio_fast_path_activity';
+      payload?: {
+        roomId?: string;
+        sourceAddress?: string;
+        linkId?: string;
+        peerPresenceHash?: string;
+        peerDestinationHash?: string;
+        forwardedTargets?: number;
+        receivedAtWallMs?: number;
       };
     }
   | {
@@ -864,14 +890,7 @@ function getFrozenBridgePath(): string {
     if (archSpecific && fs.existsSync(archSpecific)) return archSpecific;
     return path.join(base, exeName);
   }
-  return path.join(
-    __dirname,
-    '..',
-    '..',
-    'resources',
-    'reticulum',
-    exeName
-  );
+  return path.join(__dirname, '..', '..', 'resources', 'reticulum', exeName);
 }
 
 function getBridgeScriptPath(): string {
@@ -1923,6 +1942,51 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         `[ReticulumBridge] target=gcall-audio-data-plane stage=session-ready routes=${routeCount}`
       );
       return { ok: true, endpoint, token, version: 2, routeCount, routes };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: message.includes('timed out')
+          ? 'bridge-timeout'
+          : 'bridge-exception',
+        error: message,
+      };
+    }
+  }
+
+  async configureGroupAudioForwarding(
+    plans: ReticulumAudioForwardingPlan[],
+    opts?: { startIfNeeded?: boolean }
+  ): Promise<ReticulumSendResult> {
+    if (this.state !== 'ready') {
+      if (opts?.startIfNeeded === false) {
+        return { ok: false, reason: 'bridge-not-ready' };
+      }
+      try {
+        await this.start();
+      } catch (err) {
+        return {
+          ok: false,
+          reason: 'bridge-exception',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    try {
+      const resp = await this.sendCommand('configure_group_audio_forwarding', {
+        plans,
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          reason: this.mapSendFailureReason(resp),
+          ...(resp.error ? { error: resp.error } : {}),
+        };
+      }
+      return { ok: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -2995,7 +3059,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           if (this.child !== child) return;
           runMainPressureTask(
             'reticulum.fd4.audio',
-            { bytes: Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk as string, 'binary') },
+            {
+              bytes: Buffer.isBuffer(chunk)
+                ? chunk.length
+                : Buffer.byteLength(chunk as string, 'binary'),
+            },
             () => {
               const buf = Buffer.isBuffer(chunk)
                 ? chunk
@@ -3150,7 +3218,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   private isBridgeCommandBacklogResponse(frame: BridgeRespFrame): boolean {
     const code = frame.payload?.code;
-    return code === 'bridge_command_queue_full' || code === 'scheduler_queue_full';
+    return (
+      code === 'bridge_command_queue_full' || code === 'scheduler_queue_full'
+    );
   }
 
   private countPendingRequestsByPriority(priority: BridgeCmdPriority): number {
@@ -3460,7 +3530,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
-  private noteFd4AudioPathPressure(frame: ReticulumAudioFrame, routeKey: string): void {
+  private noteFd4AudioPathPressure(
+    frame: ReticulumAudioFrame,
+    routeKey: string
+  ): void {
     const nowMs = Date.now();
     const key = `${frame.roomId || 'n/a'}:${routeKey}`;
     let stats = this.audioPathPressureByRoute.get(key);
@@ -3609,7 +3682,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   private getStdoutBacklogBytes(): number {
-    return this.stdoutQueuedBytes + Buffer.byteLength(this.stdoutBuffer, 'utf8');
+    return (
+      this.stdoutQueuedBytes + Buffer.byteLength(this.stdoutBuffer, 'utf8')
+    );
   }
 
   private hasStdoutWorkReady(): boolean {
@@ -3943,6 +4018,40 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             typeof frame.payload?.pathState === 'string'
               ? frame.payload.pathState
               : '',
+        });
+        return;
+      }
+      case 'group_audio_fast_path_activity': {
+        const roomId =
+          typeof frame.payload?.roomId === 'string' ? frame.payload.roomId : '';
+        const sourceAddress =
+          typeof frame.payload?.sourceAddress === 'string'
+            ? frame.payload.sourceAddress
+            : '';
+        if (!roomId || !sourceAddress) return;
+        this.emitBridgeFrameEvent('group-audio-fast-path-activity', {
+          roomId,
+          sourceAddress,
+          linkId:
+            typeof frame.payload?.linkId === 'string'
+              ? frame.payload.linkId
+              : '',
+          peerPresenceHash:
+            typeof frame.payload?.peerPresenceHash === 'string'
+              ? frame.payload.peerPresenceHash
+              : '',
+          peerDestinationHash:
+            typeof frame.payload?.peerDestinationHash === 'string'
+              ? frame.payload.peerDestinationHash
+              : '',
+          forwardedTargets:
+            typeof frame.payload?.forwardedTargets === 'number'
+              ? frame.payload.forwardedTargets
+              : 0,
+          receivedAtWallMs:
+            typeof frame.payload?.receivedAtWallMs === 'number'
+              ? frame.payload.receivedAtWallMs
+              : Date.now(),
         });
         return;
       }
@@ -4319,7 +4428,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
               peerPresenceHash || existing?.peerPresenceHash || '',
             incoming: frame.payload?.incoming === true,
             overlayTransportAdmitted:
-              overlayTransportAdmitted || existing?.overlayTransportAdmitted === true,
+              overlayTransportAdmitted ||
+              existing?.overlayTransportAdmitted === true,
             connectedAt: existing?.connectedAt ?? Date.now(),
             lastRxAt,
             lastActivityAt,
@@ -4369,14 +4479,20 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           return;
         }
         if (resourceType.startsWith('reticulum_chat')) {
-          this.emitBridgeFrameEvent('reticulum-chat-resource', frame.payload ?? {});
+          this.emitBridgeFrameEvent(
+            'reticulum-chat-resource',
+            frame.payload ?? {}
+          );
           return;
         }
         this.emitBridgeFrameEvent('qchat-file-transfer', frame.payload ?? {});
         return;
       }
       case 'reticulum_chat_resource': {
-        this.emitBridgeFrameEvent('reticulum-chat-resource', frame.payload ?? {});
+        this.emitBridgeFrameEvent(
+          'reticulum-chat-resource',
+          frame.payload ?? {}
+        );
         return;
       }
       case 'reticulum_resource': {
@@ -4457,7 +4573,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
-  private describeStdoutFrame(frame: BridgeRespFrame | BridgeEventFrame): string {
+  private describeStdoutFrame(
+    frame: BridgeRespFrame | BridgeEventFrame
+  ): string {
     if (frame.type === 'resp') {
       const pending = this.pending.get(frame.id);
       return `resp:${pending?.action ?? 'unknown'}`;
@@ -4469,7 +4587,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         : undefined;
     const wireKey =
       wire && typeof wire === 'object' && !Array.isArray(wire)
-        ? String((wire as { k?: unknown; t?: unknown }).k ?? (wire as { t?: unknown }).t ?? '')
+        ? String(
+            (wire as { k?: unknown; t?: unknown }).k ??
+              (wire as { t?: unknown }).t ??
+              ''
+          )
         : '';
     return wireKey ? `event:${frame.event}:${wireKey}` : `event:${frame.event}`;
   }
@@ -4666,7 +4788,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       return 'unknown-peer-presence-hash';
     if (code === 'wire_too_large') return 'wire-too-large';
     if (code === 'packet_send_false') return 'packet-send-false';
-    if (code === 'no_route' || code === 'no_established_route') return 'no-route';
+    if (code === 'no_route' || code === 'no_established_route')
+      return 'no-route';
     if (code === 'unknown_link_id') return 'unknown-link-id';
     if (code === 'audio_link_not_ready') return 'audio-link-not-ready';
     if (code === 'audio_payload_too_large') return 'audio-payload-too-large';

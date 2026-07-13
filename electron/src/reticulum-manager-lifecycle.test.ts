@@ -19,8 +19,10 @@ class CallBridgeStub extends EventEmitter {
   }
 
   fanoutCallDetailed = vi.fn(
-    async (_messages: Record<string, unknown>[], _excludePeerHashes?: string[]) =>
-      ({ ok: true as const })
+    async (
+      _messages: Record<string, unknown>[],
+      _excludePeerHashes?: string[]
+    ) => ({ ok: true as const })
   );
   sendCall = vi.fn(
     async (_peerHash: string, _message: Record<string, unknown>) => true
@@ -33,16 +35,20 @@ class GroupBridgeStub extends EventEmitter {
   }
 
   fanoutGroupCallDetailed = vi.fn(
-    async (_messages: Record<string, unknown>[], _excludePeerHashes?: string[]) =>
-      ({ ok: true as const })
+    async (
+      _messages: Record<string, unknown>[],
+      _excludePeerHashes?: string[]
+    ) => ({ ok: true as const })
   );
   sendGroupCall = vi.fn(
     async (_peerHash: string, _message: Record<string, unknown>) => true
   );
   sendGroupCallDetailed = vi.fn(
-    async (_peerHash: string, _message: Record<string, unknown>) =>
-      ({ ok: true as const })
+    async (_peerHash: string, _message: Record<string, unknown>) => ({
+      ok: true as const,
+    })
   );
+  configureGroupAudioForwarding = vi.fn(async () => ({ ok: true as const }));
 }
 
 class PresenceTransportStub {
@@ -157,10 +163,7 @@ describe('Reticulum manager late bridge binding', () => {
   });
 
   it('attaches and detaches the CallManager bridge listener after start', () => {
-    const manager = new CallManager(
-      presenceStub() as any,
-      null
-    );
+    const manager = new CallManager(presenceStub() as any, null);
     const firstBridge = new CallBridgeStub();
     const secondBridge = new CallBridgeStub();
 
@@ -408,7 +411,10 @@ describe('Reticulum manager late bridge binding', () => {
     second.setLocalAddresses([]);
     stopCallManager();
 
-    const third = startCallManager(presence as any, new CallBridgeStub() as any);
+    const third = startCallManager(
+      presence as any,
+      new CallBridgeStub() as any
+    );
     expect((third as any).localAddresses.size).toBe(0);
   });
 
@@ -445,7 +451,9 @@ describe('Reticulum manager late bridge binding', () => {
     expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(1);
     const firstFanout = vi.mocked(bridge.fanoutCallDetailed).mock.calls[0];
     expect(firstFanout).toBeDefined();
-    const sentWire = (firstFanout![0] as Record<string, unknown>[])[0] as Record<string, unknown>;
+    const sentWire = (
+      firstFanout![0] as Record<string, unknown>[]
+    )[0] as Record<string, unknown>;
     expect(sentWire).toMatchObject({
       t: 'CR',
       c: callId,
@@ -489,10 +497,7 @@ describe('Reticulum manager late bridge binding', () => {
   });
 
   it('attaches and detaches GroupCallManager bridge listeners after start', () => {
-    const manager = new GroupCallManager(
-      presenceStub() as any,
-      null
-    );
+    const manager = new GroupCallManager(presenceStub() as any, null);
     const firstBridge = new GroupBridgeStub();
     const secondBridge = new GroupBridgeStub();
 
@@ -517,11 +522,18 @@ describe('Reticulum manager late bridge binding', () => {
     expect(secondBridge.listenerCount('group-audio-packet')).toBe(1);
     expect(secondBridge.listenerCount('group-audio-link-established')).toBe(1);
     expect(secondBridge.listenerCount('group-audio-link-closed')).toBe(1);
+    expect(firstBridge.configureGroupAudioForwarding).toHaveBeenCalledWith([], {
+      startIfNeeded: false,
+    });
 
     manager.stop();
     expect(secondBridge.listenerCount('group-call-message')).toBe(0);
     expect(secondBridge.listenerCount('group-audio-packet')).toBe(0);
     expect(secondBridge.listenerCount('group-audio-link-established')).toBe(0);
     expect(secondBridge.listenerCount('group-audio-link-closed')).toBe(0);
+    expect(secondBridge.configureGroupAudioForwarding).toHaveBeenCalledWith(
+      [],
+      { startIfNeeded: false }
+    );
   });
 });

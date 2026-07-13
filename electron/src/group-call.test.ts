@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { reticulumAudioResetReasonForVerifiedJoin } from './group-call';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  GroupCallManager,
+  reticulumAudioResetReasonForVerifiedJoin,
+} from './group-call';
 
 describe('group-call verified join audio reset decision', () => {
   it('keeps matching audio state when a fresh join arrives before roster catches up', () => {
@@ -48,5 +51,270 @@ describe('group-call verified join audio reset decision', () => {
         rejoinsAfterLeave: true,
       })
     ).toBe('fresh-verified-rejoin-after-leave');
+  });
+});
+
+describe('group-call Reticulum forwarding recipients', () => {
+  const room = {
+    participants: new Map(
+      ['Q-root', 'Q-a', 'Q-forwarder', 'Q-b', 'Q-c'].map((address) => [
+        address,
+        {},
+      ])
+    ),
+    lastTopology: {
+      topologyEpoch: 3,
+      rootForwarder: 'Q-root',
+      standbyForwarder: 'Q-forwarder',
+      clusters: [
+        { forwarder: 'Q-root', members: ['Q-root', 'Q-a'] },
+        {
+          forwarder: 'Q-forwarder',
+          members: ['Q-forwarder', 'Q-b', 'Q-c'],
+        },
+      ],
+      lastSeen: {},
+    },
+  };
+
+  function managerFor(localAddress: string): any {
+    const manager = Object.create(GroupCallManager.prototype) as any;
+    manager.localAddresses = new Set([localAddress]);
+    return manager;
+  }
+
+  it('keeps root forwarding identical for member and cluster ingress', () => {
+    const manager = managerFor('Q-root');
+    expect(
+      [...manager.computeReticulumAudioForwardRecipients(room, 'Q-a')].sort()
+    ).toEqual(['Q-forwarder']);
+    expect(
+      [
+        ...manager.computeReticulumAudioForwardRecipients(room, 'Q-forwarder'),
+      ].sort()
+    ).toEqual(['Q-a']);
+  });
+
+  it('keeps cluster forwarding identical for root and member ingress', () => {
+    const manager = managerFor('Q-forwarder');
+    expect(
+      [...manager.computeReticulumAudioForwardRecipients(room, 'Q-root')].sort()
+    ).toEqual(['Q-b', 'Q-c']);
+    expect(
+      [...manager.computeReticulumAudioForwardRecipients(room, 'Q-b')].sort()
+    ).toEqual(['Q-c', 'Q-root']);
+  });
+
+  it('invalidates forwarding plans when a peer transport route changes', () => {
+    const manager = managerFor('Q-root');
+    manager.reticulumAudioAddressByLinkId = new Map([
+      ['packet:peer-hash', 'Q-peer'],
+    ]);
+    manager.scheduleReticulumAudioForwardingPlanSync = vi.fn();
+    const state = {
+      transport: 'packet',
+      routeKey: 'packet:peer-hash',
+      peerPresenceHash: 'peer-hash',
+      linkId: 'link-1',
+    };
+
+    manager.setReticulumAudioTransport('Q-peer', state, 'link', 'fallback');
+
+    expect(state.transport).toBe('link');
+    expect(state.routeKey).toBe('link-1');
+    expect(
+      manager.scheduleReticulumAudioForwardingPlanSync
+    ).toHaveBeenCalledOnce();
+  });
+
+  it('removes forwarding during recovery and refreshes it after the hold', () => {
+    vi.useFakeTimers();
+    try {
+      const manager = managerFor('Q-root');
+      manager.reticulumAudioForwardingPlanRecoveryTimersByAddress = new Map();
+      manager.reticulumAudioPeersByAddress = new Map();
+      manager.scheduleReticulumAudioForwardingPlanSync = vi.fn();
+      manager.logReticulumFailureThrottled = vi.fn();
+      manager.scheduleReticulumAudioFlush = vi.fn();
+      const state = {
+        recoveryHoldUntilMs: 0,
+        recoveryReason: '',
+        pending: [{}],
+      };
+      manager.reticulumAudioPeersByAddress.set('Q-peer', state);
+
+      manager.holdReticulumAudioRouteRecovery(
+        'Q-peer',
+        state,
+        'packet-failed',
+        100
+      );
+
+      expect(state.pending).toEqual([]);
+      expect(
+        manager.scheduleReticulumAudioForwardingPlanSync
+      ).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(101);
+      expect(
+        manager.scheduleReticulumAudioForwardingPlanSync
+      ).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets an urgent forwarding update preempt a delayed retry', () => {
+    vi.useFakeTimers();
+    try {
+      const manager = managerFor('Q-root');
+      manager.started = true;
+      manager.reticulumBridge = {};
+      manager.reticulumAudioForwardingPlanRevision = 0;
+      manager.reticulumAudioForwardingPlanTimer = null;
+      manager.reticulumAudioForwardingPlanTimerDueAtMs = 0;
+      manager.applyReticulumAudioForwardingPlans = vi.fn();
+
+      manager.scheduleReticulumAudioForwardingPlanSync(1_000);
+      vi.advanceTimersByTime(100);
+      manager.scheduleReticulumAudioForwardingPlanSync(25);
+      vi.advanceTimersByTime(24);
+      expect(manager.applyReticulumAudioForwardingPlans).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(manager.applyReticulumAudioForwardingPlans).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears a forwarding plan that finishes after the manager stops', async () => {
+    let resolveConfigure: ((value: { ok: true }) => void) | undefined;
+    const configureResult = new Promise<{ ok: true }>((resolve) => {
+      resolveConfigure = resolve;
+    });
+    const bridge = {
+      getState: vi.fn(() => 'ready'),
+      configureGroupAudioForwarding: vi
+        .fn()
+        .mockReturnValueOnce(configureResult)
+        .mockResolvedValue({ ok: true }),
+    };
+    const manager = managerFor('Q-root');
+    manager.started = true;
+    manager.reticulumBridge = bridge;
+    manager.reticulumAudioForwardingPlanSyncInFlight = false;
+    manager.reticulumAudioForwardingPlanRevision = 1;
+    manager.reticulumAudioForwardingPlanGeneration = 0;
+    manager.reticulumAudioForwardingPlanAppliedKey = '';
+    manager.buildReticulumAudioForwardingPlans = vi.fn(() => []);
+
+    const applying = manager.applyReticulumAudioForwardingPlans();
+    manager.started = false;
+    manager.reticulumAudioForwardingPlanGeneration++;
+    resolveConfigure?.({ ok: true });
+    await applying;
+    await Promise.resolve();
+
+    expect(bridge.configureGroupAudioForwarding).toHaveBeenNthCalledWith(1, []);
+    expect(bridge.configureGroupAudioForwarding).toHaveBeenNthCalledWith(
+      2,
+      [],
+      { startIfNeeded: false }
+    );
+    expect(manager.reticulumAudioForwardingPlanAppliedKey).toBe('');
+  });
+
+  it('releases and retries forwarding sync after plan preparation throws', async () => {
+    const manager = managerFor('Q-root');
+    manager.started = true;
+    manager.reticulumBridge = {};
+    manager.reticulumAudioForwardingPlanSyncInFlight = false;
+    manager.reticulumAudioForwardingPlanRevision = 1;
+    manager.reticulumAudioForwardingPlanGeneration = 0;
+    manager.buildReticulumAudioForwardingPlans = vi.fn(() => {
+      throw new Error('bad-plan');
+    });
+    manager.logReticulumFailureThrottled = vi.fn();
+    manager.scheduleReticulumAudioForwardingPlanSync = vi.fn();
+
+    await manager.applyReticulumAudioForwardingPlans();
+
+    expect(manager.reticulumAudioForwardingPlanSyncInFlight).toBe(false);
+    expect(manager.logReticulumFailureThrottled).toHaveBeenCalledWith(
+      'audio-forward-plan:prepare-exception',
+      expect.stringContaining('bad-plan')
+    );
+    expect(
+      manager.scheduleReticulumAudioForwardingPlanSync
+    ).toHaveBeenCalledWith(1_000);
+  });
+
+  it('ignores stale fast-path activity and preserves newer recovery state', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-13T12:00:30.000Z'));
+    try {
+      const manager = managerFor('Q-root');
+      const roomId = 'gcall-qortal-716';
+      const address = 'Q-source';
+      const state = {
+        transport: 'packet',
+        lastInboundAtMs: 0,
+        lastInboundPacketAtMs: 0,
+        lastRecoveryActionAtMs: Date.now() - 1_000,
+        recoveryHoldUntilMs: Date.now() + 5_000,
+        recoveryReason: 'packet-failed',
+      };
+      manager.rooms = new Map([
+        [roomId, { participants: new Map([[address, {}]]) }],
+      ]);
+      manager.reticulumAudioPeersByAddress = new Map([[address, state]]);
+      manager.shouldRejectQortalGroupCallAddress = vi.fn(() => false);
+      manager.isReticulumAudioLinkVerifiedForAddress = vi.fn(() => true);
+      manager.noteRecentCallActivity = vi.fn();
+      manager.noteBootstrapParticipantActivity = vi.fn();
+      manager.clearReticulumAudioRecoveryHold = vi.fn();
+
+      manager.handleReticulumGroupAudioFastPathActivity({
+        roomId,
+        sourceAddress: address,
+        linkId: '',
+        peerPresenceHash: 'peer-hash',
+        peerDestinationHash: 'destination-hash',
+        forwardedTargets: 1,
+        receivedAtWallMs: Date.now() - 12_000,
+      });
+      expect(manager.noteRecentCallActivity).not.toHaveBeenCalled();
+
+      const beforeRecoveryAtMs = Date.now() - 2_000;
+      manager.handleReticulumGroupAudioFastPathActivity({
+        roomId,
+        sourceAddress: address,
+        linkId: '',
+        peerPresenceHash: 'peer-hash',
+        peerDestinationHash: 'destination-hash',
+        forwardedTargets: 1,
+        receivedAtWallMs: beforeRecoveryAtMs,
+      });
+      expect(state.lastInboundAtMs).toBe(beforeRecoveryAtMs);
+      expect(manager.clearReticulumAudioRecoveryHold).not.toHaveBeenCalled();
+
+      const afterRecoveryAtMs = Date.now() - 500;
+      manager.handleReticulumGroupAudioFastPathActivity({
+        roomId,
+        sourceAddress: address,
+        linkId: '',
+        peerPresenceHash: 'peer-hash',
+        peerDestinationHash: 'destination-hash',
+        forwardedTargets: 1,
+        receivedAtWallMs: afterRecoveryAtMs,
+      });
+      expect(state.lastInboundAtMs).toBe(afterRecoveryAtMs);
+      expect(state.lastInboundPacketAtMs).toBe(afterRecoveryAtMs);
+      expect(manager.clearReticulumAudioRecoveryHold).toHaveBeenCalledWith(
+        address,
+        state
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
