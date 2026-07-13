@@ -1680,7 +1680,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   });
   const sequenceRef = useRef(0);
   const landChatSequenceRef = useRef(0);
-  const chatAuthorSeqRef = useRef(0);
   const [reticulumReady, setReticulumReady] = useState<boolean | null>(null);
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
@@ -2265,57 +2264,87 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const publishLandEventPayload = useCallback(async (payload: Record<string, unknown>) => {
     const timestamp = Date.now();
     const eventId = createLandChatMessageId();
-    const syncState = await window.reticulumChat?.getSyncState?.(groupId);
-    const latestAuthorSeq = Math.max(
-      chatAuthorSeqRef.current,
-      Number(syncState?.[myAddress] ?? 0) || 0
-    );
-    const authorSeq = latestAuthorSeq + 1;
-    const encryptedPayload = JSON.stringify({
-      ...payload,
-      qortalLand: true,
-      sessionId,
-      version: 1,
-    });
-    const payloadHash = await sha256Hex(encryptedPayload);
-    const baseFields = {
-      eventId,
+    const authorSequence = await window.reticulumChat?.reserveAuthorSequence?.(
       groupId,
-      channelId: QORTAL_LAND_CHANNEL_ID,
-      authorSeq,
-      timestamp,
-      eventType: 'message',
-      targetEventId: null,
-      replyToEventId: null,
-      encryptedPayload,
-      payloadHash,
-      mentionAddressHashes: [],
-    };
-    const signed = await window.sendMessage?.('signReticulumChatEvent', baseFields, 10000) as
-      | {
-          authorAddress?: string;
-          authorPublicKey?: string;
-          signature?: string;
-          error?: string;
+      myAddress
+    );
+    if (
+      !authorSequence ||
+      !/^[0-9a-f]{32}$/.test(authorSequence.authorStreamId) ||
+      !Number.isInteger(authorSequence.authorSeq) ||
+      authorSequence.authorSeq <= 0
+    ) {
+      throw new Error('Unable to reserve QortalLand chat event sequence');
+    }
+    let sequenceCommitted = false;
+    try {
+      const encryptedPayload = JSON.stringify({
+        ...payload,
+        qortalLand: true,
+        sessionId,
+        version: 1,
+      });
+      const payloadHash = await sha256Hex(encryptedPayload);
+      const baseFields = {
+        eventId,
+        groupId,
+        channelId: QORTAL_LAND_CHANNEL_ID,
+        authorStreamId: authorSequence.authorStreamId,
+        authorSeq: authorSequence.authorSeq,
+        timestamp,
+        eventType: 'message',
+        targetEventId: null,
+        replyToEventId: null,
+        encryptedPayload,
+        payloadHash,
+        mentionAddressHashes: [],
+      };
+      const signed = await window.sendMessage?.(
+        'signReticulumChatEvent',
+        baseFields,
+        10000
+      ) as
+        | {
+            authorAddress?: string;
+            authorPublicKey?: string;
+            signature?: string;
+            error?: string;
+          }
+        | undefined;
+      if (!signed || signed.error) {
+        throw new Error(signed?.error || 'Unable to sign QortalLand event');
+      }
+      if (signed.authorAddress !== myAddress) {
+        throw new Error('Signed QortalLand author mismatch');
+      }
+      const result = await window.reticulumChat?.publishEvent?.({
+        ...baseFields,
+        authorAddress: signed.authorAddress,
+        authorPublicKey: signed.authorPublicKey,
+        signature: signed.signature,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'QortalLand event send failed');
+      }
+      sequenceCommitted = true;
+      return { eventId, timestamp };
+    } finally {
+      if (!sequenceCommitted) {
+        try {
+          await window.reticulumChat?.releaseAuthorSequence?.(
+            groupId,
+            myAddress,
+            authorSequence.authorStreamId,
+            authorSequence.authorSeq
+          );
+        } catch (releaseError) {
+          console.warn(
+            'Unable to release QortalLand chat event sequence',
+            releaseError
+          );
         }
-      | undefined;
-    if (!signed || signed.error) {
-      throw new Error(signed?.error || 'Unable to sign QortalLand event');
+      }
     }
-    if (signed.authorAddress !== myAddress) {
-      throw new Error('Signed QortalLand author mismatch');
-    }
-    const result = await window.reticulumChat?.publishEvent?.({
-      ...baseFields,
-      authorAddress: signed.authorAddress,
-      authorPublicKey: signed.authorPublicKey,
-      signature: signed.signature,
-    });
-    if (!result?.success) {
-      throw new Error(result?.error || 'QortalLand event send failed');
-    }
-    chatAuthorSeqRef.current = authorSeq;
-    return { eventId, timestamp };
   }, [groupId, myAddress, sessionId]);
 
   useEffect(() => {

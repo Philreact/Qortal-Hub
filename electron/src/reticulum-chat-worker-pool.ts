@@ -12,6 +12,7 @@ const WORKER_FILENAME = 'reticulum-chat.worker.js';
 const DEFAULT_WORKER_COUNT = 1;
 const DEFAULT_MAX_PENDING = 128;
 const SLOW_TASK_MS = 50;
+const MAX_RESTART_ATTEMPTS = 3;
 
 export function resolveReticulumChatWorkerPath(): string {
   const inAsar = __dirname.includes('app.asar');
@@ -20,7 +21,11 @@ export function resolveReticulumChatWorkerPath(): string {
     const unpackedPath = path.join(unpackedDir, WORKER_FILENAME);
     if (fs.existsSync(unpackedPath)) return unpackedPath;
   }
-  return path.join(__dirname, WORKER_FILENAME);
+  const adjacentPath = path.join(__dirname, WORKER_FILENAME);
+  if (fs.existsSync(adjacentPath)) return adjacentPath;
+  const developmentBuildPath = path.join(__dirname, '..', 'build', 'src', WORKER_FILENAME);
+  if (fs.existsSync(developmentBuildPath)) return developmentBuildPath;
+  return adjacentPath;
 }
 
 type PendingEntry = {
@@ -37,6 +42,8 @@ export class ReticulumChatWorkerPool {
   private stopping = false;
   private fallbackCount = 0;
   private crashCount = 0;
+  private restartAttempts = 0;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly label = 'chat',
@@ -48,27 +55,10 @@ export class ReticulumChatWorkerPool {
     if (this.started) return;
     this.started = true;
     this.stopping = false;
+    this.restartAttempts = 0;
     const workerPath = resolveReticulumChatWorkerPath();
     for (let i = 0; i < this.workerCount; i++) {
-      try {
-        const worker = new Worker(workerPath);
-        worker.on('message', (message: ReticulumChatWorkerResult) => {
-          this.onWorkerMessage(message);
-        });
-        worker.on('error', (err) => {
-          loggerError(`[ReticulumChatWorker:${this.label}] Worker error:`, err);
-        });
-        worker.on('exit', (code) => {
-          this.onWorkerExit(worker, code);
-        });
-        this.workers.push(worker);
-      } catch (err) {
-        this.fallbackCount += 1;
-        loggerError(
-          `[ReticulumChatWorker:${this.label}] Failed to spawn worker; falling back to main path:`,
-          err
-        );
-      }
+      this.spawnWorker(workerPath);
     }
     if (this.workers.length > 0) {
       loggerLog(`[ReticulumChatWorker:${this.label}] Started ${this.workers.length} worker(s).`);
@@ -78,6 +68,10 @@ export class ReticulumChatWorkerPool {
   stop(): void {
     if (!this.started) return;
     this.stopping = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     for (const [, entry] of this.pending) entry.resolve(null);
     this.pending.clear();
     for (const worker of this.workers) {
@@ -92,6 +86,7 @@ export class ReticulumChatWorkerPool {
     this.roundRobin = 0;
     this.stopping = false;
     this.started = false;
+    this.restartAttempts = 0;
   }
 
   run(task: ReticulumChatWorkerTaskInput): Promise<ReticulumChatWorkerResult | null> {
@@ -136,9 +131,32 @@ export class ReticulumChatWorkerPool {
     return this.workers[this.roundRobin++ % this.workers.length];
   }
 
+  private spawnWorker(workerPath = resolveReticulumChatWorkerPath()): void {
+    try {
+      const worker = new Worker(workerPath);
+      worker.on('message', (message: ReticulumChatWorkerResult) => {
+        this.onWorkerMessage(message);
+      });
+      worker.on('error', (err) => {
+        loggerError(`[ReticulumChatWorker:${this.label}] Worker error:`, err);
+      });
+      worker.on('exit', (code) => {
+        this.onWorkerExit(worker, code);
+      });
+      this.workers.push(worker);
+    } catch (err) {
+      this.fallbackCount += 1;
+      loggerError(
+        `[ReticulumChatWorker:${this.label}] Failed to spawn worker; falling back to main path:`,
+        err
+      );
+    }
+  }
+
   private onWorkerMessage(message: ReticulumChatWorkerResult): void {
     const entry = this.pending.get(message.id);
     if (!entry) return;
+    this.restartAttempts = 0;
     this.pending.delete(message.id);
     if (message.prepMs >= SLOW_TASK_MS) {
       loggerWarn(
@@ -161,6 +179,25 @@ export class ReticulumChatWorkerPool {
       this.pending.clear();
       this.fallbackCount += entries.length;
       for (const entry of entries) entry.resolve(null);
+    }
+    if (
+      !this.stopping &&
+      this.workers.length < this.workerCount &&
+      !this.restartTimer &&
+      this.restartAttempts < MAX_RESTART_ATTEMPTS
+    ) {
+      this.restartAttempts += 1;
+      const delayMs = this.restartAttempts * 1_000;
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        if (this.stopping || !this.started || this.workers.length >= this.workerCount) return;
+        this.spawnWorker();
+        if (this.workers.length > 0) {
+          loggerWarn(
+            `[ReticulumChatWorker:${this.label}] Worker replaced after exit attempt=${this.restartAttempts}`
+          );
+        }
+      }, delayMs);
     }
   }
 }

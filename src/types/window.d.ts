@@ -588,6 +588,12 @@ declare global {
         groupId: number,
         authorAddress: string
       ) => Promise<{ authorStreamId: string; authorSeq: number }>;
+      releaseAuthorSequence: (
+        groupId: number,
+        authorAddress: string,
+        authorStreamId: string,
+        authorSeq: number
+      ) => Promise<boolean>;
       publishDirectEvent: (
         event: unknown
       ) => Promise<{ success: boolean; error?: string }>;

@@ -349,6 +349,8 @@ type ReticulumGroupCategory = {
 };
 
 const DEFAULT_RETICULUM_CHANNEL_ID = 'general';
+const QORTAL_LAND_RETICULUM_CHANNEL_ID = 'qortal-land';
+const RETICULUM_CHANNEL_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000];
 const RETICULUM_CHANNEL_DRAG_PREFIX = 'reticulum-channel:';
 const RETICULUM_CATEGORY_DROP_PREFIX = 'reticulum-category:';
 
@@ -1115,7 +1117,7 @@ export const ChatGroup = ({
     setEditingReticulumChannel(null);
   }, [reticulumChatEnabled, selectedGroup]);
 
-  const refreshReticulumChannels = useCallback(async () => {
+  const refreshReticulumChannels = useCallback(async (): Promise<boolean> => {
     const groupId = Number(selectedGroup);
     const refreshSeq = ++reticulumChannelRefreshSeqRef.current;
     if (!Number.isInteger(groupId) || groupId <= 0) {
@@ -1123,7 +1125,7 @@ export const ChatGroup = ({
       setReticulumCategories([]);
       setReticulumChannelStateGroupId('');
       setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
-      return;
+      return false;
     }
     const channels = await window.reticulumChat?.getChannels?.(groupId);
     const categories = await window.reticulumChat?.getCategories?.(groupId);
@@ -1133,7 +1135,7 @@ export const ChatGroup = ({
     const parsedCategories = Array.isArray(categories)
       ? (categories as ReticulumGroupCategory[])
       : [];
-    if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return;
+    if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return false;
     setReticulumChannelStateGroupId(String(groupId));
     const availableChannels = parsedChannels.length
       ? parsedChannels.filter((channel) => !channel.archived)
@@ -1150,6 +1152,18 @@ export const ChatGroup = ({
             createdAt: 0,
             updatedAt: 0,
           },
+          {
+            channelId: QORTAL_LAND_RETICULUM_CHANNEL_ID,
+            groupId,
+            name: QORTAL_LAND_RETICULUM_CHANNEL_ID,
+            position: 1,
+            archived: false,
+            writeMode: RETICULUM_CHANNEL_WRITE_MODE_MEMBERS,
+            readMode: RETICULUM_CHANNEL_READ_MODE_MEMBERS,
+            createdBy: '',
+            createdAt: 0,
+            updatedAt: 0,
+          },
         ];
     setReticulumCategories(parsedCategories);
     setReticulumChannels(availableChannels);
@@ -1158,11 +1172,48 @@ export const ChatGroup = ({
         ? current
         : DEFAULT_RETICULUM_CHANNEL_ID
     );
+    const knownChannelIds = new Set(
+      parsedChannels.map((channel) => channel.channelId)
+    );
+    return (
+      knownChannelIds.has(DEFAULT_RETICULUM_CHANNEL_ID) &&
+      knownChannelIds.has(QORTAL_LAND_RETICULUM_CHANNEL_ID)
+    );
   }, [selectedGroup]);
 
   useEffect(() => {
     if (!reticulumChatEnabled || !selectedGroup) return;
-    void refreshReticulumChannels();
+    const groupId = Number(selectedGroup);
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    let cancelled = false;
+
+    void (async () => {
+      const retryDelays = [0, ...RETICULUM_CHANNEL_LOAD_RETRY_DELAYS_MS];
+      let lastError: unknown = null;
+      for (const delayMs of retryDelays) {
+        if (delayMs > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+        if (cancelled) return;
+
+        try {
+          // Subscription establishes the local group hint before membership-backed
+          // channel reads. Both calls are idempotent after initial setup.
+          await window.reticulumChat?.subscribeGroup?.(groupId);
+          if (cancelled) return;
+          if (await refreshReticulumChannels()) return;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!cancelled && lastError) {
+        console.warn('Unable to finish loading Reticulum chat channels', lastError);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [refreshReticulumChannels, reticulumChatEnabled, selectedGroup]);
 
   const reticulumChannelSummariesById = useMemo(() => {
@@ -2357,39 +2408,64 @@ export const ChatGroup = ({
       ) {
         throw new Error('Unable to reserve Reticulum chat event sequence');
       }
-      const baseFields = {
-        eventId,
-        groupId,
-        channelId: eventChannelId,
-        authorStreamId: authorSequence.authorStreamId,
-        authorSeq: authorSequence.authorSeq,
-        timestamp,
-        eventType,
-        targetEventId: targetEventId ?? null,
-        replyToEventId: replyToEventId ?? null,
-        encryptedPayload,
-        payloadHash,
-        mentionAddressHashes,
-        ...(normalizedMentionTargets.length > 0
-          ? { mentionTargets: normalizedMentionTargets }
-          : {}),
-      };
-      const signed = await window.sendMessage(
-        'signReticulumChatEvent',
-        baseFields
-      );
-      if (signed?.error) throw new Error(signed.error);
-      const event = {
-        ...baseFields,
-        authorAddress: signed.authorAddress,
-        authorPublicKey: signed.authorPublicKey,
-        signature: signed.signature,
-      };
-      const result = await publishReticulumChatEvent(event);
-      if (!result?.success) {
-        throw new Error(result?.error || 'Reticulum chat publish failed');
+      let sequenceCommitted = false;
+      try {
+        const baseFields = {
+          eventId,
+          groupId,
+          channelId: eventChannelId,
+          authorStreamId: authorSequence.authorStreamId,
+          authorSeq: authorSequence.authorSeq,
+          timestamp,
+          eventType,
+          targetEventId: targetEventId ?? null,
+          replyToEventId: replyToEventId ?? null,
+          encryptedPayload,
+          payloadHash,
+          mentionAddressHashes,
+          ...(normalizedMentionTargets.length > 0
+            ? { mentionTargets: normalizedMentionTargets }
+            : {}),
+        };
+        const signed = await window.sendMessage(
+          'signReticulumChatEvent',
+          baseFields
+        );
+        if (!signed || signed.error) {
+          throw new Error(signed?.error || 'Unable to sign Reticulum chat event');
+        }
+        if (signed.authorAddress !== myAddress) {
+          throw new Error('Signed Reticulum chat author mismatch');
+        }
+        const event = {
+          ...baseFields,
+          authorAddress: signed.authorAddress,
+          authorPublicKey: signed.authorPublicKey,
+          signature: signed.signature,
+        };
+        const result = await publishReticulumChatEvent(event);
+        if (!result?.success) {
+          throw new Error(result?.error || 'Reticulum chat publish failed');
+        }
+        sequenceCommitted = true;
+        return { ...result, event };
+      } finally {
+        if (!sequenceCommitted) {
+          try {
+            await window.reticulumChat?.releaseAuthorSequence?.(
+              groupId,
+              myAddress,
+              authorSequence.authorStreamId,
+              authorSequence.authorSeq
+            );
+          } catch (releaseError) {
+            console.warn(
+              'Unable to release Reticulum chat event sequence',
+              releaseError
+            );
+          }
+        }
       }
-      return { ...result, event };
     },
     [
       myAddress,

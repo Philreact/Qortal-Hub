@@ -4,11 +4,12 @@ type ReticulumResourceChunkRow = Record<string, any>;
 
 type MockStore = {
   reticulumChatEvents: ReticulumChatRow[];
+  reticulumChatEventHeaders: ReticulumChatRow[];
   reticulumChatMessages: ReticulumChatRow[];
   reticulumChatExpiredEventMarkers: ReticulumChatRow[];
   reticulumChatMetadataSnapshots: ReticulumChatRow[];
   reticulumChatAuthorStreams: Map<string, string>;
-  reticulumChatAuthorSequences: Map<string, number>;
+  reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
   schema: Map<string, Set<string>>;
@@ -29,6 +30,118 @@ class Statement {
       return [...(this.store.schema.get(tableName) ?? new Set<string>())].map(
         (name, cid) => ({ cid, name })
       );
+    }
+    if (this.sql.includes('FROM rchat_author_sequence_leases')) {
+      if (this.sql.includes('SELECT DISTINCT owner_id, owner_pid')) {
+        const owners = new Map<string, number>();
+        for (const row of this.store.reticulumChatAuthorSequenceLeases) {
+          owners.set(row.owner_id, row.owner_pid);
+        }
+        return [...owners].map(([owner_id, owner_pid]) => ({ owner_id, owner_pid }));
+      }
+      return [...this.store.reticulumChatAuthorSequenceLeases];
+    }
+    if (this.sql.includes('FROM rchat_event_headers')) {
+      const [groupId, _sameGroupId, limit, offset = 0] = args;
+      const knownRows = [
+        ...this.store.reticulumChatEventHeaders,
+        ...this.store.reticulumChatExpiredEventMarkers,
+      ].filter((row) => row.group_id === groupId);
+      if (this.sql.includes('previous_seq + 1 AS from_seq')) {
+        const rowsByAuthor = new Map<string, ReticulumChatRow[]>();
+        for (const row of knownRows) {
+          const key = `${row.author_address}:${row.author_stream_id || ''}`;
+          const rows = rowsByAuthor.get(key) ?? [];
+          rows.push(row);
+          rowsByAuthor.set(key, rows);
+        }
+        const gaps: ReticulumChatRow[] = [];
+        for (const rows of rowsByAuthor.values()) {
+          rows.sort((a, b) => Number(a.author_seq) - Number(b.author_seq));
+          for (let index = 1; index < rows.length; index += 1) {
+            const previousSeq = Number(rows[index - 1].author_seq);
+            const authorSeq = Number(rows[index].author_seq);
+            if (authorSeq <= previousSeq + 1) continue;
+            gaps.push({
+              author_address: rows[index].author_address,
+              author_stream_id: rows[index].author_stream_id || '',
+              from_seq: previousSeq + 1,
+              to_seq: authorSeq - 1,
+            });
+          }
+        }
+        return gaps
+          .sort(
+            (a, b) =>
+              Number(b.to_seq) - Number(a.to_seq) ||
+              String(a.author_address).localeCompare(String(b.author_address)) ||
+              Number(b.from_seq) - Number(a.from_seq)
+          )
+          .slice(0, Number(limit) || undefined);
+      }
+      if (this.sql.includes('author_seq >= ?') && this.sql.includes('author_seq <= ?')) {
+        const [rangeGroupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
+        return this.store.reticulumChatEventHeaders
+          .filter(
+            (row) =>
+              row.group_id === rangeGroupId &&
+              row.author_address === authorAddress &&
+              String(row.author_stream_id || '') === String(authorStreamId || '') &&
+              Number(row.author_seq) >= Number(fromSeq) &&
+              Number(row.author_seq) <= Number(toSeq)
+          )
+          .sort((a, b) => Number(a.author_seq) - Number(b.author_seq))
+          .map((row) => ({ author_seq: row.author_seq }));
+      }
+      const byAuthor = new Map<string, ReticulumChatRow>();
+      for (const row of knownRows) {
+        const key = `${row.author_address}:${row.author_stream_id || ''}`;
+        const existing = byAuthor.get(key);
+        if (
+          existing &&
+          (Number(existing.author_seq) > Number(row.author_seq) ||
+            (Number(existing.author_seq) === Number(row.author_seq) &&
+              (Number(existing.timestamp) > Number(row.timestamp) ||
+                (Number(existing.timestamp) === Number(row.timestamp) &&
+                  String(existing.event_id) >= String(row.event_id)))))
+        ) {
+          continue;
+        }
+        byAuthor.set(key, row);
+      }
+      if (this.sql.includes('e.author_seq AS max_seq')) {
+        return [...byAuthor.values()]
+          .sort(
+            (a, b) =>
+              Number(b.timestamp) - Number(a.timestamp) ||
+              String(b.event_id).localeCompare(String(a.event_id))
+          )
+          .slice(Number(offset) || 0, (Number(offset) || 0) + (Number(limit) || Infinity))
+          .map((row) => ({
+            author_address: row.author_address,
+            author_stream_id: row.author_stream_id || '',
+            max_seq: row.author_seq,
+            event_id: row.event_id,
+            timestamp: row.timestamp,
+          }));
+      }
+      if (this.sql.includes('GROUP BY author_address')) {
+        const sequenceField = this.sql.includes('AS seq') ? 'seq' : 'max_seq';
+        return [...byAuthor.values()]
+          .sort(
+            (a, b) =>
+              String(a.author_address).localeCompare(String(b.author_address)) ||
+              String(a.author_stream_id || '').localeCompare(
+                String(b.author_stream_id || '')
+              )
+          )
+          .map((row) => ({
+            author_address: row.author_address,
+            author_stream_id: row.author_stream_id || '',
+            [sequenceField]: row.author_seq,
+          }));
+      }
+      return [...this.store.reticulumChatEventHeaders];
     }
     if (this.sql.includes('FROM rchat_metadata_snapshots')) {
       const [groupId, scope] = args;
@@ -269,35 +382,55 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('SELECT author_seq FROM rchat_author_sequence_leases')) {
+      const [groupId, authorAddress, authorStreamId, ownerId] = args;
+      return this.store.reticulumChatAuthorSequenceLeases.find(
+        (row) =>
+          row.group_id === groupId &&
+          row.author_address === authorAddress &&
+          row.author_stream_id === authorStreamId &&
+          (!this.sql.includes('owner_id = ?') || row.owner_id === ownerId)
+      );
+    }
+    if (this.sql.includes('COALESCE(MAX(author_seq), 0) AS max_seq')) {
+      const [groupId, authorAddress, authorStreamId] = args;
+      const rows = this.sql.includes('FROM rchat_event_headers')
+        ? this.store.reticulumChatEventHeaders
+        : this.sql.includes('FROM rchat_author_sequence_leases')
+          ? this.store.reticulumChatAuthorSequenceLeases
+          : this.store.reticulumChatExpiredEventMarkers;
+      return {
+        max_seq: rows
+          .filter(
+            (row) =>
+              row.group_id === groupId &&
+              row.author_address === authorAddress &&
+              row.author_stream_id === authorStreamId
+          )
+          .reduce((max, row) => Math.max(max, Number(row.author_seq) || 0), 0),
+      };
+    }
+    if (
+      this.sql.includes('SELECT MAX(author_seq) AS seq') &&
+      this.sql.includes('FROM rchat_event_headers')
+    ) {
+      const [groupId, authorAddress, authorStreamId] = args;
+      const seq = [
+        ...this.store.reticulumChatEventHeaders,
+        ...this.store.reticulumChatExpiredEventMarkers,
+      ]
+        .filter(
+          (row) =>
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            String(row.author_stream_id || '') === String(authorStreamId || '')
+        )
+        .reduce((max, row) => Math.max(max, Number(row.author_seq) || 0), 0);
+      return { seq };
+    }
     if (this.sql.includes('SELECT stream_id FROM rchat_author_streams')) {
       const streamId = this.store.reticulumChatAuthorStreams.get(String(args[0] || ''));
       return streamId ? { stream_id: streamId } : undefined;
-    }
-    if (this.sql.includes('INSERT INTO rchat_author_stream_sequences')) {
-      const params = args[0] ?? {};
-      const groupId = Number(params.group_id);
-      const authorAddress = String(params.author_address || '');
-      const authorStreamId = String(params.author_stream_id || '');
-      const key = `${groupId}:${authorAddress}:${authorStreamId}`;
-      let storedMax = 0;
-      for (const row of [
-        ...this.store.reticulumChatEvents,
-        ...this.store.reticulumChatExpiredEventMarkers,
-      ]) {
-        if (
-          row.group_id === groupId &&
-          row.author_address === authorAddress &&
-          String(row.author_stream_id || '') === authorStreamId
-        ) {
-          storedMax = Math.max(storedMax, Number(row.author_seq) || 0);
-        }
-      }
-      const lastSeq = Math.max(
-        this.store.reticulumChatAuthorSequences.get(key) ?? 0,
-        storedMax
-      ) + 1;
-      this.store.reticulumChatAuthorSequences.set(key, lastSeq);
-      return { last_seq: lastSeq };
     }
     if (this.sql.includes('FROM rchat_metadata_snapshots')) {
       const [groupId, value] = args;
@@ -410,6 +543,75 @@ class Statement {
   }
 
   run(params?: any, second?: any) {
+    if (this.sql.includes('INSERT INTO rchat_author_sequence_leases')) {
+      const values = Array.from(arguments);
+      const row = {
+        group_id: values[0],
+        author_address: values[1],
+        author_stream_id: values[2],
+        author_seq: values[3],
+        owner_id: values[4],
+        owner_pid: values[5],
+        created_at: values[6],
+      };
+      if (
+        this.store.reticulumChatAuthorSequenceLeases.some(
+          (existing) =>
+            existing.group_id === row.group_id &&
+            existing.author_address === row.author_address &&
+            existing.author_stream_id === row.author_stream_id &&
+            existing.author_seq === row.author_seq
+        )
+      ) {
+        throw new Error('UNIQUE constraint failed: rchat_author_sequence_leases');
+      }
+      this.store.reticulumChatAuthorSequenceLeases.push(row);
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumChatAuthorSequenceLeases.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM rchat_author_sequence_leases')) {
+      const values = Array.from(arguments);
+      const before = this.store.reticulumChatAuthorSequenceLeases.length;
+      if (this.sql.includes('group_id = ?')) {
+        const [groupId, authorAddress, authorStreamId, authorSeq, ownerId] = values;
+        this.store.reticulumChatAuthorSequenceLeases =
+          this.store.reticulumChatAuthorSequenceLeases.filter(
+            (row) =>
+              !(
+                row.group_id === groupId &&
+                row.author_address === authorAddress &&
+                row.author_stream_id === authorStreamId &&
+                row.author_seq === authorSeq &&
+                row.owner_id === ownerId
+              )
+          );
+      } else {
+        this.store.reticulumChatAuthorSequenceLeases =
+          this.store.reticulumChatAuthorSequenceLeases.filter(
+            (row) => row.owner_id !== values[0]
+          );
+      }
+      return {
+        changes: before - this.store.reticulumChatAuthorSequenceLeases.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (this.sql.includes('INSERT OR IGNORE INTO rchat_event_headers')) {
+      if (
+        this.store.reticulumChatEventHeaders.some(
+          (row) => row.event_id === params.event_id
+        )
+      ) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      this.store.reticulumChatEventHeaders.push({ ...params });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumChatEventHeaders.length,
+      };
+    }
     if (this.sql.includes('INSERT OR IGNORE INTO rchat_author_streams')) {
       if (!this.store.reticulumChatAuthorStreams.has(params.author_address)) {
         this.store.reticulumChatAuthorStreams.set(params.author_address, params.stream_id);
@@ -600,11 +802,12 @@ class MockDatabase {
     const key = String(dbPath);
     const store = storesByPath.get(key) ?? {
       reticulumChatEvents: [],
+      reticulumChatEventHeaders: [],
       reticulumChatMessages: [],
       reticulumChatExpiredEventMarkers: [],
       reticulumChatMetadataSnapshots: [],
       reticulumChatAuthorStreams: new Map(),
-      reticulumChatAuthorSequences: new Map(),
+      reticulumChatAuthorSequenceLeases: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
       schema: new Map<string, Set<string>>(),

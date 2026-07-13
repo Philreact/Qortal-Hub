@@ -1428,6 +1428,18 @@ try {
           groupId,
           authorAddress
         ) as Promise<{ authorStreamId: string; authorSeq: number }>,
+      releaseAuthorSequence: async (
+        groupId: number,
+        authorAddress: string,
+        authorStreamId: string,
+        authorSeq: number
+      ) => ipcRenderer.invoke(
+        'reticulumChat:releaseAuthorSequence',
+        groupId,
+        authorAddress,
+        authorStreamId,
+        authorSeq
+      ) as Promise<boolean>,
       publishDirectEvent: async (event: unknown) =>
         ipcRenderer.invoke('reticulumChat:publishDirectEvent', event) as Promise<{
           success: boolean;
@@ -2026,6 +2038,24 @@ try {
           success: boolean;
           error?: string;
         }>,
+      reserveAuthorSequence: async (groupId: number, authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:reserveAuthorSequence',
+          groupId,
+          authorAddress
+        ) as Promise<{ authorStreamId: string; authorSeq: number }>,
+      releaseAuthorSequence: async (
+        groupId: number,
+        authorAddress: string,
+        authorStreamId: string,
+        authorSeq: number
+      ) => ipcRenderer.invoke(
+        'reticulumChat:releaseAuthorSequence',
+        groupId,
+        authorAddress,
+        authorStreamId,
+        authorSeq
+      ) as Promise<boolean>,
       publishDirectEvent: async (event: unknown) =>
         ipcRenderer.invoke('reticulumChat:publishDirectEvent', event) as Promise<{
           success: boolean;

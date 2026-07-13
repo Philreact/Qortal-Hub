@@ -5,7 +5,7 @@ import {
   setupCapacitorElectronPlugins,
 } from '@capacitor-community/electron';
 import chokidar from 'chokidar';
-import type { MenuItemConstructorOptions } from 'electron';
+import type { MenuItemConstructorOptions, WebContents } from 'electron';
 import {
   app,
   BrowserWindow,
@@ -3585,9 +3585,79 @@ ipcMain.handle(
   }
 );
 
+type ReticulumChatSequenceReservation = {
+  groupId: number;
+  authorAddress: string;
+  authorStreamId: string;
+  authorSeq: number;
+};
+
+const reticulumChatReservationsByWebContents = new Map<
+  number,
+  Map<string, ReticulumChatSequenceReservation>
+>();
+const reticulumChatReservationEpochs = new Map<number, number>();
+const reticulumChatReservationLifecycleWired = new Set<number>();
+
+function reticulumChatReservationKey(
+  reservation: ReticulumChatSequenceReservation
+): string {
+  return `${reservation.groupId}:${reservation.authorAddress}:${reservation.authorStreamId}:${reservation.authorSeq}`;
+}
+
+function releaseReticulumChatReservationsForWebContents(webContentsId: number): void {
+  reticulumChatReservationEpochs.set(
+    webContentsId,
+    (reticulumChatReservationEpochs.get(webContentsId) ?? 0) + 1
+  );
+  const reservations = reticulumChatReservationsByWebContents.get(webContentsId);
+  reticulumChatReservationsByWebContents.delete(webContentsId);
+  const manager = getReticulumChatManager();
+  if (!manager || !reservations) return;
+  for (const reservation of reservations.values()) {
+    manager.releaseAuthorSequence(
+      reservation.groupId,
+      reservation.authorAddress,
+      reservation.authorStreamId,
+      reservation.authorSeq
+    );
+  }
+}
+
+function ensureReticulumChatReservationLifecycle(
+  sender: WebContents
+): number {
+  const webContentsId = sender.id;
+  if (!reticulumChatReservationLifecycleWired.has(webContentsId)) {
+    reticulumChatReservationLifecycleWired.add(webContentsId);
+    reticulumChatReservationEpochs.set(webContentsId, 0);
+    sender.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+      if (isMainFrame) releaseReticulumChatReservationsForWebContents(webContentsId);
+    });
+    sender.once('destroyed', () => {
+      releaseReticulumChatReservationsForWebContents(webContentsId);
+      reticulumChatReservationLifecycleWired.delete(webContentsId);
+      reticulumChatReservationEpochs.delete(webContentsId);
+    });
+  }
+  return reticulumChatReservationEpochs.get(webContentsId) ?? 0;
+}
+
+function untrackReticulumChatReservation(
+  webContentsId: number,
+  reservation: ReticulumChatSequenceReservation
+): void {
+  const reservations = reticulumChatReservationsByWebContents.get(webContentsId);
+  if (!reservations) return;
+  reservations.delete(reticulumChatReservationKey(reservation));
+  if (reservations.size === 0) {
+    reticulumChatReservationsByWebContents.delete(webContentsId);
+  }
+}
+
 ipcMain.handle(
   'reticulumChat:publishEvent',
-  async (_event, event: ReticulumChatEvent) => {
+  async (ipcEvent, event: ReticulumChatEvent) => {
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) {
       return { success: false, error: 'Reticulum chat is disabled' };
@@ -3597,7 +3667,15 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     const result = await manager.publishEvent(event);
-    if (result.ok) return { success: true };
+    if (result.ok) {
+      untrackReticulumChatReservation(ipcEvent.sender.id, {
+        groupId: event.groupId,
+        authorAddress: event.authorAddress,
+        authorStreamId: event.authorStreamId,
+        authorSeq: event.authorSeq,
+      });
+      return { success: true };
+    }
     const failed = result as Exclude<typeof result, { ok: true }>;
     return { success: false, error: failed.error ?? failed.reason };
   }
@@ -3605,10 +3683,55 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:reserveAuthorSequence',
-  async (_event, groupId: number, authorAddress: string) => {
+  async (ipcEvent, groupId: number, authorAddress: string) => {
     const manager = getReticulumChatManager();
     if (!manager) throw new Error('Reticulum chat manager is not running');
-    return manager.reserveAuthorSequence(groupId, authorAddress);
+    const epoch = ensureReticulumChatReservationLifecycle(ipcEvent.sender);
+    const reserved = await manager.reserveAuthorSequence(groupId, authorAddress);
+    if (
+      ipcEvent.sender.isDestroyed() ||
+      (reticulumChatReservationEpochs.get(ipcEvent.sender.id) ?? 0) !== epoch
+    ) {
+      manager.releaseAuthorSequence(
+        groupId,
+        authorAddress,
+        reserved.authorStreamId,
+        reserved.authorSeq
+      );
+      throw new Error('Reticulum chat renderer changed while reserving sequence');
+    }
+    const reservation = { groupId, authorAddress, ...reserved };
+    const reservations =
+      reticulumChatReservationsByWebContents.get(ipcEvent.sender.id) ?? new Map();
+    reservations.set(reticulumChatReservationKey(reservation), reservation);
+    reticulumChatReservationsByWebContents.set(ipcEvent.sender.id, reservations);
+    return reserved;
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:releaseAuthorSequence',
+  async (
+    ipcEvent,
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string,
+    authorSeq: number
+  ) => {
+    untrackReticulumChatReservation(ipcEvent.sender.id, {
+      groupId,
+      authorAddress,
+      authorStreamId,
+      authorSeq,
+    });
+    const manager = getReticulumChatManager();
+    if (!manager) return false;
+    return manager.releaseAuthorSequence(
+      groupId,
+      authorAddress,
+      authorStreamId,
+      authorSeq
+    );
   }
 );
 

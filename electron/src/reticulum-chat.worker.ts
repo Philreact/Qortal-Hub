@@ -1,6 +1,30 @@
 import { parentPort } from 'worker_threads';
 import * as fs from 'fs';
 import * as nodeCrypto from 'crypto';
+import Database, { type Database as DB } from 'better-sqlite3';
+import type {
+  SerializedReticulumChatAuthorTreeSnapshot,
+} from './reticulum-chat-author-tree';
+
+const path = require('path') as typeof import('path');
+
+function loadAuthorTree(): typeof import('./reticulum-chat-author-tree') {
+  // The worker is unpacked so Electron can execute it directly, while its
+  // pure-JS helper remains in app.asar. Resolve that split explicitly.
+  if (__dirname.includes('app.asar.unpacked')) {
+    const packedDir = __dirname.replace('app.asar.unpacked', 'app.asar');
+    return require(path.join(
+      packedDir,
+      'reticulum-chat-author-tree.js'
+    )) as typeof import('./reticulum-chat-author-tree');
+  }
+  return require('./reticulum-chat-author-tree') as typeof import('./reticulum-chat-author-tree');
+}
+
+const {
+  buildReticulumChatAuthorTreeSnapshot,
+  serializeReticulumChatAuthorTreeSnapshot,
+} = loadAuthorTree();
 
 export type ReticulumChatWorkerTask =
   | {
@@ -16,6 +40,13 @@ export type ReticulumChatWorkerTask =
       id: number;
       kind: 'compute_digest_hash';
       events: Array<{ eventId?: unknown; timestamp?: unknown; feedTimestamp?: unknown }>;
+    }
+  | {
+      id: number;
+      kind: 'build_author_tree';
+      dbPath: string;
+      groupId: number;
+      createdAt: number;
     };
 
 export type ReticulumChatWorkerTaskInput =
@@ -26,9 +57,16 @@ export type ReticulumChatWorkerTaskInput =
   | Omit<
       Extract<ReticulumChatWorkerTask, { kind: 'compute_digest_hash' }>,
       'id'
+    >
+  | Omit<
+      Extract<ReticulumChatWorkerTask, { kind: 'build_author_tree' }>,
+      'id'
     >;
 
-export type ReticulumChatPreparedResourceKind = Exclude<ReticulumChatWorkerTask['kind'], 'compute_digest_hash'>;
+export type ReticulumChatPreparedResourceKind = Exclude<
+  ReticulumChatWorkerTask['kind'],
+  'compute_digest_hash' | 'build_author_tree'
+>;
 
 export type ReticulumChatWorkerPreparedResourceResult = {
   id: number;
@@ -51,6 +89,13 @@ export type ReticulumChatWorkerResult =
       hash: string;
       prepMs: number;
       eventCount: number;
+    }
+  | {
+      id: number;
+      ok: true;
+      kind: 'build_author_tree';
+      snapshot: SerializedReticulumChatAuthorTreeSnapshot;
+      prepMs: number;
     }
   | {
       id: number;
@@ -118,6 +163,61 @@ function prepareResource(task: Extract<ReticulumChatWorkerTask, { path: string }
   }
 }
 
+function buildAuthorTree(
+  task: Extract<ReticulumChatWorkerTask, { kind: 'build_author_tree' }>
+): ReticulumChatWorkerResult {
+  const startedAt = Date.now();
+  let db: DB | null = null;
+  try {
+    if (!Number.isInteger(task.groupId) || task.groupId <= 0) {
+      throw new Error('Invalid author tree group');
+    }
+    db = new Database(task.dbPath, { readonly: true, fileMustExist: true });
+    const heads = db.prepare(`
+      SELECT author_address AS authorAddress,
+             author_stream_id AS authorStreamId,
+             MAX(author_seq) AS maxSeq
+      FROM (
+        SELECT author_address, author_stream_id, author_seq
+        FROM rchat_event_headers
+        WHERE group_id = ?
+        UNION ALL
+        SELECT author_address, author_stream_id, author_seq
+        FROM rchat_expired_event_markers
+        WHERE group_id = ?
+      )
+      GROUP BY author_address, author_stream_id
+      ORDER BY author_address ASC, author_stream_id ASC
+    `).all(task.groupId, task.groupId) as Array<{
+      authorAddress: string;
+      authorStreamId: string;
+      maxSeq: number;
+    }>;
+    const snapshot = buildReticulumChatAuthorTreeSnapshot(
+      task.groupId,
+      heads,
+      task.createdAt
+    );
+    return {
+      id: task.id,
+      ok: true,
+      kind: task.kind,
+      snapshot: serializeReticulumChatAuthorTreeSnapshot(snapshot),
+      prepMs: Date.now() - startedAt,
+    };
+  } catch (err) {
+    return {
+      id: task.id,
+      ok: false,
+      kind: task.kind,
+      error: err instanceof Error ? err.message : String(err),
+      prepMs: Date.now() - startedAt,
+    };
+  } finally {
+    db?.close();
+  }
+}
+
 parentPort?.on('message', (task: ReticulumChatWorkerTask) => {
   if (!task || typeof task.id !== 'number') return;
   if (task.kind === 'compute_digest_hash') {
@@ -141,6 +241,10 @@ parentPort?.on('message', (task: ReticulumChatWorkerTask) => {
         prepMs: Date.now() - startedAt,
       } satisfies ReticulumChatWorkerResult);
     }
+    return;
+  }
+  if (task.kind === 'build_author_tree') {
+    parentPort?.postMessage(buildAuthorTree(task));
     return;
   }
   parentPort?.postMessage(prepareResource(task));
