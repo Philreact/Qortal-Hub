@@ -1,8 +1,9 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
+import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
+import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import PaidRoundedIcon from '@mui/icons-material/PaidRounded';
-import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import {
   Box,
   Button,
@@ -66,6 +67,30 @@ type LandChatBubble = {
   expiresAt: number;
 };
 
+type LandChatMode = 'say' | 'yell' | 'emote';
+type LandChatTab = 'local' | 'whispers';
+
+type LandChatTranscriptMessage = {
+  messageId: string;
+  authorAddress: string;
+  sessionId: string;
+  sequence: number;
+  text: string;
+  mode: LandChatMode;
+  timestamp: number;
+};
+
+type LandChatEmoji = {
+  key: string;
+  label: string;
+  fileName: string;
+  shortcuts: string[];
+};
+
+type LandChatTextPart =
+  | { type: 'text'; text: string }
+  | { type: 'emoji'; emoji: LandChatEmoji; shortcut: string };
+
 type LandActionTarget = {
   key: string;
   authorAddress: string;
@@ -100,6 +125,49 @@ type QortalLandProps = {
   myAddress: string;
 };
 
+type QortalLandCharacterCustomization = {
+  hair: string;
+  face: string;
+  clothes: string;
+};
+
+type QortalLandCharacterCustomizationField = keyof QortalLandCharacterCustomization;
+type QortalLandCharacterPreviewFacing = 'front' | 'right' | 'back' | 'left';
+
+const QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS: QortalLandCharacterCustomization = {
+  hair: 'default',
+  face: 'default',
+  clothes: 'default',
+};
+
+const QORTAL_LAND_CHARACTER_CUSTOMIZATION_OPTIONS = {
+  hair: [
+    { value: 'default', label: 'Original Hair' },
+    { value: 'dark_spiky', label: 'Dark Spiky' },
+    { value: 'silver', label: 'Silver' },
+    { value: 'neon_pink', label: 'Neon Pink' },
+  ],
+  face: [
+    { value: 'default', label: 'Original Face' },
+    { value: 'calm', label: 'Calm' },
+    { value: 'sharp', label: 'Sharp' },
+    { value: 'visor', label: 'Visor' },
+  ],
+  clothes: [
+    { value: 'default', label: 'Original Clothes' },
+    { value: 'club_jacket', label: 'Club Jacket' },
+    { value: 'street_black', label: 'Street Black' },
+    { value: 'neon_trim', label: 'Neon Trim' },
+  ],
+} as const;
+
+const QORTAL_LAND_CHARACTER_PREVIEW_FACINGS: QortalLandCharacterPreviewFacing[] = [
+  'front',
+  'right',
+  'back',
+  'left',
+];
+
 const LAND_SEND_INTERVAL_MS = 200;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
@@ -113,6 +181,8 @@ const LAND_CHAT_BUBBLE_TTL_MS = 15000;
 const LAND_CHAT_RECONCILE_LIMIT = 25;
 const LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const LAND_CHAT_MAX_INPUT_CHARS = 420;
+const LAND_CHAT_TRANSCRIPT_LIMIT = 80;
+const LAND_CHAT_VISIBLE_IDLE_MS = 5000;
 const LAND_ACTION_ANIMATION_TTL_MS = 3200;
 const LAND_CALL_STATUS_INTERVAL_MS = 10000;
 const LAND_CALL_STATUS_TTL_MS = 26000;
@@ -130,11 +200,13 @@ const LAND_CHARACTER_FEET_BASELINE = 292;
 const LAND_CHARACTER_RENDER_SCALE = 0.56;
 const LAND_CHARACTER_LABEL_OFFSET = 248;
 const LAND_CHARACTER_CHAT_BUBBLE_OFFSET = 292;
+const QORTAL_LAND_CHARACTER_CUSTOMIZATION_STORAGE_KEY = 'qortalland.characterCustomization';
 type LandRoomId = 'club' | 'skywalk' | 'mall' | 'park';
 const QORTAL_LAND_DEFAULT_ROOM_ID: LandRoomId = 'club';
 const QORTAL_LAND_SKYWALK_ROOM_ID: LandRoomId = 'skywalk';
 const QORTAL_LAND_MALL_ROOM_ID: LandRoomId = 'mall';
 const QORTAL_LAND_PARK_ROOM_ID: LandRoomId = 'park';
+const QORTAL_LAND_START_ROOM_ID: LandRoomId = QORTAL_LAND_PARK_ROOM_ID;
 
 type QortalLandRoomFloorLayout = {
   topY: number;
@@ -231,7 +303,7 @@ const QORTAL_LAND_ROOM_LAYOUTS: Record<LandRoomId, QortalLandRoomLayout> = {
     width: 1800,
     height: 820,
     floor: {
-      topY: 326,
+      topY: 282,
       bottomY: 704,
       back: { minX: 110, maxX: 1690 },
       front: { minX: 24, maxX: 1776 },
@@ -250,6 +322,16 @@ const QORTAL_LAND_DEV_PNG_PLACEMENT_STORAGE_PREFIX = 'qortalland.devPlacement.';
 const QORTAL_LAND_DEV_ASSETS_CHANGED_EVENT = 'qortalland:devAssetsChanged';
 const QORTAL_LAND_DEVELOPMENT_CLUB_FLOOR_ASSET_ID = 'architecture/club_floor';
 const QORTAL_LAND_DEVELOPMENT_CLUB_FLOOR_PLACEMENT_ID = 'club.floor_png';
+const QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_ASSET_ID = 'architecture/park_skyline';
+const QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_PLACEMENT_ID = 'park.skyline_png';
+const QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_ASSET_ID = 'architecture/park_floor';
+const QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_PLACEMENT_ID = 'park.floor_png';
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_CLOSED_ASSET_ID = 'architecture/park_portal_closed';
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_1_ASSET_ID = 'architecture/park_portal_open_1';
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_2_ASSET_ID = 'architecture/park_portal_open_2';
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_3_ASSET_ID = 'architecture/park_portal_open_3';
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_4_ASSET_ID = 'architecture/park_portal_open_4';
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_PLACEMENT_ID = 'park.portal_png';
 const QORTAL_LAND_DEVELOPMENT_BACK_WALL_ASSET_ID = 'architecture/back_wall_main';
 const QORTAL_LAND_DEVELOPMENT_BACK_WALL_PLACEMENT_ID = 'club.back_wall_main_png';
 const QORTAL_LAND_DEVELOPMENT_LEFT_WALL_ASSET_ID = 'architecture/club_wall_left';
@@ -275,6 +357,18 @@ const QORTAL_LAND_DEVELOPMENT_SPEAKER_RIGHT_ASSET_ID = 'technology/speaker_right
 const QORTAL_LAND_DEVELOPMENT_PLANTER_RECT_TROPICAL_ASSET_ID = 'decorations/planter_rect_tropical';
 const QORTAL_LAND_DEVELOPMENT_PLANTER_TALL_TROPICAL_ASSET_ID = 'decorations/planter_tall_tropical';
 const QORTAL_LAND_DEVELOPMENT_QORTAL_NEON_LIGHT_ASSET_ID = 'decorations/qortal_neon_light';
+const QORTAL_LAND_DEVELOPMENT_PARK_BENCH_PLANTER_LEFT_ASSET_ID = 'decorations/park_bench_planter_left';
+const QORTAL_LAND_DEVELOPMENT_PARK_TREE_ROUND_LARGE_ASSET_ID = 'decorations/park_tree_round_large';
+const QORTAL_LAND_DEVELOPMENT_PARK_TREE_ROUND_TALL_ASSET_ID = 'decorations/park_tree_round_tall';
+const QORTAL_LAND_DEVELOPMENT_PARK_TREE_PLANTER_LAMP_ASSET_ID = 'decorations/park_tree_planter_lamp';
+const QORTAL_LAND_DEVELOPMENT_PARK_FOUNTAIN_BLUE_ASSET_ID = 'decorations/park_fountain_blue';
+const QORTAL_LAND_DEVELOPMENT_PARK_FOUNTAIN_BLUE_PLACEMENT_ID = 'park.fountain_blue_png';
+const QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_ROW_TREES_ASSET_ID = 'decorations/park_planter_row_trees';
+const QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_ROW_TREES_PLACEMENT_ID =
+  'park.planter_row_trees_png';
+const QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_CORNER_TREES_ASSET_ID = 'decorations/park_planter_corner_trees';
+const QORTAL_LAND_DEVELOPMENT_PARK_BENCH_STRAIGHT_ASSET_ID = 'furniture/park_bench_straight';
+const QORTAL_LAND_DEVELOPMENT_PARK_BENCH_CURVED_ASSET_ID = 'furniture/park_bench_curved';
 const QORTAL_LAND_DEVELOPMENT_DANCE_FLOOR_ASSET_ID = 'lighting/dance_floor';
 const QORTAL_LAND_DEVELOPMENT_SOFA_MODERN_A_ASSET_IDS = [
   QORTAL_LAND_DEVELOPMENT_SOFA_MODERN_A_TEAL_ASSET_ID,
@@ -285,6 +379,13 @@ const QORTAL_LAND_DEVELOPMENT_CLUB_DOOR_ASSET_IDS = [
   QORTAL_LAND_DEVELOPMENT_CLUB_DOOR_SEMI_OPEN_ASSET_ID,
   QORTAL_LAND_DEVELOPMENT_CLUB_DOOR_OPEN_ASSET_ID,
 ];
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_ASSET_IDS = [
+  QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_CLOSED_ASSET_ID,
+  QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_1_ASSET_ID,
+  QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_2_ASSET_ID,
+  QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_3_ASSET_ID,
+  QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_OPEN_4_ASSET_ID,
+];
 const QORTAL_LAND_CLUB_SKYWALK_DOOR_PROXIMITY_RADIUS = 128;
 const QORTAL_LAND_CLUB_SKYWALK_DOOR_SOURCE_WIDTH = 70;
 const QORTAL_LAND_CLUB_SKYWALK_DOOR_SOURCE_HEIGHT = 365;
@@ -293,6 +394,12 @@ const QORTAL_LAND_CLUB_SKYWALK_DOOR_RETURN_OFFSET_Y = -34;
 const QORTAL_LAND_CLUB_SKYWALK_DOOR_OPEN_THRESHOLD = 0.78;
 const QORTAL_LAND_CLUB_SKYWALK_DOOR_OPEN_SPEED = 0.0044;
 const QORTAL_LAND_CLUB_SKYWALK_DOOR_CLOSE_SPEED = 0.0022;
+const QORTAL_LAND_PARK_PORTAL_PROXIMITY_RADIUS = 136;
+const QORTAL_LAND_PARK_PORTAL_SOURCE_WIDTH = 685;
+const QORTAL_LAND_PARK_PORTAL_SOURCE_HEIGHT = 1099;
+const QORTAL_LAND_PARK_PORTAL_OPEN_THRESHOLD = 0.72;
+const QORTAL_LAND_PARK_PORTAL_OPEN_SPEED = 0.0042;
+const QORTAL_LAND_PARK_PORTAL_CLOSE_SPEED = 0.0024;
 const QORTAL_LAND_PLAYER_COLLISION_RADIUS_X = 18;
 const QORTAL_LAND_PLAYER_COLLISION_RADIUS_Y = 10;
 const QORTAL_LAND_DJ_PEDESTAL_MAX_ELEVATION = 52;
@@ -318,6 +425,7 @@ type QortalLandDevelopmentPngPropPlacement = {
   scaleX?: number;
   scaleY?: number;
   alpha?: number;
+  angle?: number;
   flipX?: boolean;
   count?: number;
   spacing?: number;
@@ -332,15 +440,8 @@ type QortalLandDevelopmentPngPropPlacement = {
     blY?: number;
   };
   visible?: boolean;
-  collision?: {
-    shape: 'ellipse' | 'rect';
-    offsetX?: number;
-    offsetY?: number;
-    width: number;
-    height: number;
-    paddingX?: number;
-    paddingY?: number;
-  };
+  collision?: QortalLandDevelopmentPlacementCollision;
+  collisions?: QortalLandDevelopmentPlacementCollision[];
   contactShadow?: {
     offsetX?: number;
     offsetY?: number;
@@ -351,6 +452,16 @@ type QortalLandDevelopmentPngPropPlacement = {
     depth?: number;
     depthOffset?: number;
   };
+};
+
+type QortalLandDevelopmentPlacementCollision = {
+    shape: 'ellipse' | 'rect';
+    offsetX?: number;
+    offsetY?: number;
+    width: number;
+    height: number;
+    paddingX?: number;
+    paddingY?: number;
 };
 
 type QortalLandDevelopmentLookSettings = {
@@ -366,7 +477,7 @@ const QORTAL_LAND_DEVELOPMENT_LOOK_DEFAULTS: QortalLandDevelopmentLookSettings =
   brightness: 1.1,
   contrast: 1.05,
   saturation: 1,
-  shadow: 0.2,
+  shadow: 0.1,
 };
 
 const qortalLandDevelopmentPngModules = (import.meta as any).glob(
@@ -392,6 +503,159 @@ const warnedMissingDevelopmentPngAssets = new Set<string>();
 
 const qortalLandDevelopmentPngTextureKey = (assetId: string): string =>
   `${QORTAL_LAND_DEV_PNG_ASSET_KEY_PREFIX}:${assetId}`;
+
+const qortalLandChatEmojiModules = (import.meta as any).glob(
+  '../../assets/qortalland/chat-emojis/yahoo/*.gif',
+  { eager: true, import: 'default' }
+) as Record<string, string>;
+
+const qortalLandChatEmojiUrlByFileName = new Map(
+  Object.entries(qortalLandChatEmojiModules).map(([path, url]) => [
+    path.split(/[\\/]/).pop() || path,
+    url,
+  ])
+);
+
+const qortalLandChatEmojiTextureKey = (emojiKey: string): string =>
+  `qortalland-chat-emoji:${emojiKey}`;
+
+const QORTAL_LAND_CHAT_EMOJIS: LandChatEmoji[] = [
+  { key: 'smile', label: 'Smile', fileName: 'smile.gif', shortcuts: [':)', ':smile:'] },
+  { key: 'smiley', label: 'Smiley', fileName: 'smiley.gif', shortcuts: [':D', ':smiley:'] },
+  { key: 'lol', label: 'Laugh', fileName: 'lol.gif', shortcuts: [':))', ':lol:'] },
+  { key: 'rofl', label: 'ROFL', fileName: 'rofl.gif', shortcuts: ['=))', ':rofl:'] },
+  { key: 'wink', label: 'Wink', fileName: 'wink.gif', shortcuts: [';)', ':wink:'] },
+  { key: 'cry', label: 'Cry', fileName: 'cry.gif', shortcuts: [":'(", ':cry:'] },
+  { key: 'bawling', label: 'Bawling', fileName: 'bawling.gif', shortcuts: [":'((", ':bawling:'] },
+  { key: 'grin', label: 'Grin', fileName: 'grin.gif', shortcuts: [':>', ':grin:'] },
+  { key: 'triumph', label: 'Triumph', fileName: 'triumph.gif', shortcuts: ['\\:D/', ':triumph:'] },
+  { key: 'clown', label: 'Clown', fileName: 'joker.gif', shortcuts: [':0)', ':clown:', ':joker:'] },
+  { key: 'love', label: 'Love', fileName: 'kiss.gif', shortcuts: [':X', ':love:'] },
+  { key: 'heart', label: 'Heart', fileName: 'heart.gif', shortcuts: ['<3', ':heart:'] },
+  { key: 'hug', label: 'Hug', fileName: 'hug.gif', shortcuts: ['>:D<', ':hug:'] },
+  {
+    key: 'how_interesting',
+    label: 'How interesting',
+    fileName: 'how_interesting.gif',
+    shortcuts: ['8->', ':how interesting:', ':how_interesting:'],
+  },
+  { key: 'heartbreak', label: 'Heartbreak', fileName: 'heartbreak.gif', shortcuts: ['</3', ':heartbreak:'] },
+  { key: 'rage', label: 'Rage', fileName: 'rage.gif', shortcuts: ['>_<', ':rage:'] },
+  { key: 'pig', label: 'Pig', fileName: 'pig.gif', shortcuts: [':@)', ':pig:'] },
+  { key: 'kiss', label: 'Kiss', fileName: 'kiss.gif', shortcuts: [':*', ':kiss:'] },
+  { key: 'confused', label: 'Confused', fileName: 'confused.gif', shortcuts: [':/', ':confused:'] },
+  { key: 'confounded', label: 'Confounded', fileName: 'confounded.gif', shortcuts: [':s', ':confounded:'] },
+  {
+    key: 'get_outta_here',
+    label: 'Get outta here',
+    fileName: 'get_outta_here.gif',
+    shortcuts: [':-J', ':get_outta_here:'],
+  },
+  { key: 'loser', label: 'Loser', fileName: 'loser.gif', shortcuts: [':-L', ':loser:', ':looser:'] },
+  { key: 'whistle', label: 'Whistle', fileName: 'whistle.gif', shortcuts: [':-"', ':whistle:'] },
+  { key: 'neutral', label: 'Neutral', fileName: 'neutral.gif', shortcuts: [':|', ':neutral:'] },
+  { key: 'naughty', label: 'Naughty', fileName: 'naughty.gif', shortcuts: ['>:)', ':naughty:'] },
+  { key: 'relaxed', label: 'Relaxed', fileName: 'relaxed.gif', shortcuts: [';;)', ':relaxed:'] },
+  { key: 'i_dunno', label: 'I dunno', fileName: 'i_dunno.gif', shortcuts: [':-??', ':i_dunno:'] },
+  { key: 'pensive', label: 'Pensive', fileName: 'pensive.gif', shortcuts: [':-?', ':pensive:'] },
+  { key: 'money', label: 'Money', fileName: 'money.gif', shortcuts: [':-$', ':money:'] },
+  { key: 'peace', label: 'Peace', fileName: 'peace.gif', shortcuts: [':->-', ':peace:'] },
+  { key: 'tongue', label: 'Tongue', fileName: 'tongue.gif', shortcuts: [':p', ':tongue:'] },
+  { key: 'time_out', label: 'Time out', fileName: 'time_out.gif', shortcuts: [':-T', ':time_out:'] },
+  { key: 'dog', label: 'Dog', fileName: 'dog.gif', shortcuts: [':o3', ':dog:'] },
+  { key: 'angry', label: 'Angry', fileName: 'angry.gif', shortcuts: [':-W', ':angry:'] },
+  { key: 'blush', label: 'Blush', fileName: 'blush.gif', shortcuts: [':3', ':blush:'] },
+  { key: 'sad', label: 'Sad', fileName: 'frowning.gif', shortcuts: [':(', ':sad:'] },
+  { key: 'surprised', label: 'Surprised', fileName: 'open_mouth.gif', shortcuts: [':o', ':surprised:'] },
+  { key: 'cool', label: 'Cool', fileName: 'sunglasses.gif', shortcuts: ['B)', '8-)', ':cool:'] },
+];
+
+const QORTAL_LAND_AVAILABLE_CHAT_EMOJIS = QORTAL_LAND_CHAT_EMOJIS.filter((emoji) =>
+  qortalLandChatEmojiUrlByFileName.has(emoji.fileName)
+);
+
+const QORTAL_LAND_CHAT_EMOJI_SHORTCUTS = QORTAL_LAND_CHAT_EMOJIS.flatMap((emoji) =>
+  emoji.shortcuts.map((shortcut) => ({ emoji, shortcut }))
+).sort((a, b) => b.shortcut.length - a.shortcut.length);
+
+const splitLandChatEmojiText = (
+  text: string,
+  options: { requireTrailingWhitespace?: boolean } = {}
+): LandChatTextPart[] => {
+  const parts: LandChatTextPart[] = [];
+  const lowerText = text.toLowerCase();
+  let pendingText = '';
+  let index = 0;
+
+  while (index < text.length) {
+    const match = QORTAL_LAND_CHAT_EMOJI_SHORTCUTS.find(({ shortcut }) =>
+      lowerText.startsWith(shortcut.toLowerCase(), index) &&
+      (index === 0 || /\s/.test(text[index - 1])) &&
+      (options.requireTrailingWhitespace
+        ? /\s/.test(text[index + shortcut.length] || '')
+        : index + shortcut.length === text.length || /\s/.test(text[index + shortcut.length] || ''))
+    );
+
+    if (!match) {
+      pendingText += text[index];
+      index += 1;
+      continue;
+    }
+
+    if (pendingText) {
+      parts.push({ type: 'text', text: pendingText });
+      pendingText = '';
+    }
+    parts.push({ type: 'emoji', emoji: match.emoji, shortcut: text.slice(index, index + match.shortcut.length) });
+    index += match.shortcut.length;
+  }
+
+  if (pendingText) {
+    parts.push({ type: 'text', text: pendingText });
+  }
+
+  return parts;
+};
+
+const renderLandChatTextParts = (
+  text: string,
+  options: { requireTrailingWhitespace?: boolean } = {}
+) =>
+  splitLandChatEmojiText(text, options).map((part, index) => {
+    if (part.type === 'text') {
+      return (
+        <Box component="span" key={`text-${index}`}>
+          {part.text}
+        </Box>
+      );
+    }
+
+    const emojiUrl = qortalLandChatEmojiUrlByFileName.get(part.emoji.fileName);
+    if (!emojiUrl) {
+      return (
+        <Box component="span" key={`missing-emoji-${index}`}>
+          {part.shortcut}
+        </Box>
+      );
+    }
+
+    return (
+      <Box
+        alt={part.emoji.label}
+        component="img"
+        key={`emoji-${part.emoji.key}-${index}`}
+        src={emojiUrl}
+        sx={{
+          display: 'inline-block',
+          height: 18,
+          margin: '0 2px',
+          objectFit: 'contain',
+          verticalAlign: '-4px',
+          width: 'auto',
+        }}
+      />
+    );
+  });
 
 const clampQortalLandLookValue = (
   value: number,
@@ -449,6 +713,52 @@ const writeQortalLandDevelopmentLookSettings = (
 ): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(QORTAL_LAND_DEV_LOOK_STORAGE_KEY, JSON.stringify(settings));
+};
+
+const qortalLandCharacterCustomizationStorageKey = (address: string): string =>
+  `${QORTAL_LAND_CHARACTER_CUSTOMIZATION_STORAGE_KEY}.${address || 'local'}`;
+
+const readQortalLandCharacterCustomization = (
+  address: string
+): QortalLandCharacterCustomization => {
+  if (typeof window === 'undefined') return { ...QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS };
+  try {
+    const raw = window.localStorage.getItem(qortalLandCharacterCustomizationStorageKey(address));
+    if (!raw) return { ...QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS };
+    const parsed = JSON.parse(raw) as Partial<QortalLandCharacterCustomization>;
+    const hasOption = (
+      category: keyof QortalLandCharacterCustomization,
+      value: unknown
+    ): value is string =>
+      typeof value === 'string' &&
+      QORTAL_LAND_CHARACTER_CUSTOMIZATION_OPTIONS[category].some(
+        (option) => option.value === value
+      );
+    return {
+      hair: hasOption('hair', parsed.hair)
+        ? parsed.hair
+        : QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS.hair,
+      face: hasOption('face', parsed.face)
+        ? parsed.face
+        : QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS.face,
+      clothes: hasOption('clothes', parsed.clothes)
+        ? parsed.clothes
+        : QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS.clothes,
+    };
+  } catch {
+    return { ...QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS };
+  }
+};
+
+const writeQortalLandCharacterCustomization = (
+  address: string,
+  customization: QortalLandCharacterCustomization
+): void => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(
+    qortalLandCharacterCustomizationStorageKey(address),
+    JSON.stringify(customization)
+  );
 };
 
 const qortalLandDevelopmentLookSignature = (
@@ -565,6 +875,63 @@ const QORTAL_LAND_DEVELOPMENT_CLUB_FLOOR_DEFAULT_PLACEMENT: QortalLandDevelopmen
   originX: 0,
   originY: 0,
   scale: 1,
+};
+
+const QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_DEFAULT_PLACEMENT: QortalLandDevelopmentPngPropPlacement = {
+  id: QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_PLACEMENT_ID,
+  assetId: QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_ASSET_ID,
+  roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+  x: 900,
+  y: 282,
+  depthMode: 'fixed',
+  depth: -99,
+  originX: 0.5,
+  originY: 1,
+  scale: 0.98,
+  alpha: 1,
+};
+
+const QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_DEFAULT_PLACEMENT: QortalLandDevelopmentPngPropPlacement = {
+  id: QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_PLACEMENT_ID,
+  assetId: QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_ASSET_ID,
+  roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+  x: 900,
+  y: 704,
+  depthMode: 'fixed',
+  depth: -95,
+  originX: 0.5,
+  originY: 1,
+  scale: 0.946,
+};
+
+const QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_DEFAULT_PLACEMENT: QortalLandDevelopmentPngPropPlacement = {
+  id: QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_PLACEMENT_ID,
+  assetId: QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_CLOSED_ASSET_ID,
+  roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+  x: 551,
+  y: 330,
+  depthMode: 'fixed',
+  depth: 200,
+  originX: 0.5,
+  originY: 1,
+  scale: 0.24,
+  alpha: 1,
+  collisions: [
+    {
+      shape: 'rect',
+      offsetX: -250,
+      offsetY: -92,
+      width: 88,
+      height: 740,
+    },
+    {
+      shape: 'rect',
+      offsetX: 305,
+      offsetY: -92,
+      width: 88,
+      height: 740,
+    },
+  ],
 };
 
 const QORTAL_LAND_DEVELOPMENT_BACK_WALL_DEFAULT_PLACEMENT: QortalLandDevelopmentPngPropPlacement = {
@@ -951,6 +1318,288 @@ const QORTAL_LAND_DEVELOPMENT_DECORATION_DEFAULT_PLACEMENTS: QortalLandDevelopme
   },
 ];
 
+const QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS: QortalLandDevelopmentPngPropPlacement[] = [
+  {
+    id: 'park.bench_planter_left_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_BENCH_PLANTER_LEFT_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 310,
+    y: 321,
+    depthMode: 'y-sort',
+    depthOffset: 18,
+    originX: 0.5,
+    originY: 0.75,
+    scale: 0.22,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 330,
+      height: 38,
+      alpha: 0.18,
+    },
+    collision: {
+      shape: 'ellipse',
+      offsetY: 20,
+      width: 1260,
+      height: 190,
+    },
+  },
+  {
+    id: 'park.bench_straight_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_BENCH_STRAIGHT_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 1150,
+    y: 620,
+    depthMode: 'y-sort',
+    depthOffset: 12,
+    originX: 0.5,
+    originY: 0.9,
+    scale: 0.18,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 8,
+      width: 260,
+      height: 30,
+      alpha: 0.16,
+    },
+    collision: {
+      shape: 'rect',
+      offsetY: 16,
+      width: 1040,
+      height: 150,
+    },
+  },
+  {
+    id: 'park.bench_curved_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_BENCH_CURVED_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 1260,
+    y: 388,
+    depthMode: 'y-sort',
+    depthOffset: 12,
+    originX: 0.5,
+    originY: 0.75,
+    scale: 0.22,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 8,
+      width: 270,
+      height: 30,
+      alpha: 0.16,
+    },
+    collisions: [
+      {
+        shape: 'rect',
+        offsetY: 62,
+        width: 860,
+        height: 120,
+      },
+      {
+        shape: 'ellipse',
+        offsetX: -486,
+        offsetY: 48,
+        width: 260,
+        height: 210,
+      },
+      {
+        shape: 'ellipse',
+        offsetX: 486,
+        offsetY: 48,
+        width: 260,
+        height: 210,
+      },
+      {
+        shape: 'rect',
+        offsetY: -6,
+        width: 720,
+        height: 84,
+      },
+    ],
+  },
+  {
+    id: 'park.tree_round_large_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_TREE_ROUND_LARGE_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 1520,
+    y: 350,
+    depthMode: 'y-sort',
+    depthOffset: 22,
+    originX: 0.5,
+    originY: 0.85,
+    scale: 0.18,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 180,
+      height: 36,
+      alpha: 0.18,
+    },
+    collision: {
+      shape: 'ellipse',
+      offsetY: 18,
+      width: 820,
+      height: 260,
+    },
+  },
+  {
+    id: 'park.tree_round_tall_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_TREE_ROUND_TALL_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 1600,
+    y: 500,
+    depthMode: 'y-sort',
+    depthOffset: 22,
+    originX: 0.5,
+    originY: 0.85,
+    scale: 0.18,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 150,
+      height: 34,
+      alpha: 0.18,
+    },
+    collision: {
+      shape: 'ellipse',
+      offsetY: 18,
+      width: 600,
+      height: 240,
+    },
+  },
+  {
+    id: 'park.tree_planter_lamp_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_TREE_PLANTER_LAMP_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 1520,
+    y: 610,
+    depthMode: 'y-sort',
+    depthOffset: 22,
+    originX: 0.5,
+    originY: 0.85,
+    scale: 0.2,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 240,
+      height: 36,
+      alpha: 0.18,
+    },
+    collision: {
+      shape: 'ellipse',
+      offsetY: 18,
+      width: 1000,
+      height: 250,
+    },
+  },
+  {
+    id: QORTAL_LAND_DEVELOPMENT_PARK_FOUNTAIN_BLUE_PLACEMENT_ID,
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_FOUNTAIN_BLUE_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 1253,
+    y: 490,
+    depthMode: 'y-sort',
+    depthOffset: 18,
+    originX: 0.5,
+    originY: 0.86,
+    scale: 0.19,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 210,
+      height: 34,
+      alpha: 0.16,
+    },
+    collision: {
+      shape: 'ellipse',
+      offsetY: 20,
+      width: 900,
+      height: 270,
+    },
+  },
+  {
+    id: QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_ROW_TREES_PLACEMENT_ID,
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_ROW_TREES_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 820,
+    y: 310,
+    depthMode: 'fixed',
+    depth: 410,
+    originX: 0.5,
+    originY: 0.86,
+    scale: 0.2,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 280,
+      height: 34,
+      alpha: 0.16,
+    },
+    collision: {
+      shape: 'ellipse',
+      offsetY: 18,
+      width: 1120,
+      height: 230,
+    },
+  },
+  {
+    id: 'park.planter_corner_trees_png',
+    assetId: QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_CORNER_TREES_ASSET_ID,
+    roomIds: [QORTAL_LAND_PARK_ROOM_ID],
+    x: 189,
+    y: 597,
+    depthMode: 'y-sort',
+    depthOffset: 22,
+    originX: 0.5,
+    originY: 0.86,
+    scale: 0.38,
+    angle: 0,
+    alpha: 1,
+    contactShadow: {
+      offsetY: 10,
+      width: 280,
+      height: 34,
+      alpha: 0.16,
+    },
+    collisions: [
+      {
+        shape: 'ellipse',
+        offsetY: -55,
+        width: 780,
+        height: 250,
+      },
+      {
+        shape: 'ellipse',
+        offsetX: -115,
+        offsetY: -350,
+        width: 420,
+        height: 360,
+      },
+      {
+        shape: 'ellipse',
+        offsetX: 80,
+        offsetY: -300,
+        width: 360,
+        height: 250,
+      },
+      {
+        shape: 'ellipse',
+        offsetX: 145,
+        offsetY: -130,
+        width: 360,
+        height: 270,
+      },
+    ],
+  },
+];
+
 const QORTAL_LAND_DEVELOPMENT_DANCE_FLOOR_DEFAULT_PLACEMENT: QortalLandDevelopmentPngPropPlacement = {
   id: 'club.dance_floor_png',
   assetId: QORTAL_LAND_DEVELOPMENT_DANCE_FLOOR_ASSET_ID,
@@ -991,11 +1640,115 @@ const getQortalLandDevelopmentClubDoorPlacement = (): QortalLandDevelopmentPngPr
   ),
 });
 
+const getQortalLandDevelopmentParkPortalPlacement = (): QortalLandDevelopmentPngPropPlacement => ({
+  ...QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_DEFAULT_PLACEMENT,
+  ...readQortalLandDevelopmentPngPlacementOverride(
+    QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_PLACEMENT_ID
+  ),
+});
+
 const QORTAL_LAND_EDITABLE_DEVELOPMENT_PLACEMENTS = [
   {
     label: 'Club Floor',
     sourceLabel: 'source/architecture/club_floor.png',
     defaultPlacement: QORTAL_LAND_DEVELOPMENT_CLUB_FLOOR_DEFAULT_PLACEMENT,
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Floor',
+    sourceLabel: 'source/architecture/park_floor.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_DEFAULT_PLACEMENT,
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Skyline',
+    sourceLabel: 'source/architecture/park_skyline.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_DEFAULT_PLACEMENT,
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Portal',
+    sourceLabel:
+      'source/architecture/park_portal_closed.png + park_portal_open_1..4.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_DEFAULT_PLACEMENT,
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Bench Planter',
+    sourceLabel: 'source/decorations/park_bench_planter_left.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[0],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Bench Straight',
+    sourceLabel: 'source/furniture/park_bench_straight.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[1],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Bench Curved',
+    sourceLabel: 'source/furniture/park_bench_curved.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[2],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Tree Round Large',
+    sourceLabel: 'source/decorations/park_tree_round_large.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[3],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Tree Round Tall',
+    sourceLabel: 'source/decorations/park_tree_round_tall.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[4],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Tree Planter Lamp',
+    sourceLabel: 'source/decorations/park_tree_planter_lamp.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[5],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Fountain Blue',
+    sourceLabel: 'source/decorations/park_fountain_blue.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[6],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Planter Row Trees',
+    sourceLabel: 'source/decorations/park_planter_row_trees.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[7],
+    allowSeparateScale: false,
+    allowWarp: false,
+    allowGroupControls: false,
+  },
+  {
+    label: 'Park Planter Corner Trees',
+    sourceLabel: 'source/decorations/park_planter_corner_trees.png',
+    defaultPlacement: QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS[8],
     allowSeparateScale: false,
     allowWarp: false,
     allowGroupControls: false,
@@ -1149,6 +1902,28 @@ const QORTAL_LAND_EDITABLE_DEVELOPMENT_PLACEMENTS = [
 type QortalLandEditableDevelopmentPlacement =
   (typeof QORTAL_LAND_EDITABLE_DEVELOPMENT_PLACEMENTS)[number];
 
+const QORTAL_LAND_DEVELOPMENT_DEV_ROOM_OPTIONS: { id: LandRoomId; label: string }[] = [
+  { id: QORTAL_LAND_DEFAULT_ROOM_ID, label: 'Disco' },
+  { id: QORTAL_LAND_PARK_ROOM_ID, label: 'Park' },
+];
+
+const qortalLandEditableDevelopmentPlacementIsInRoom = (
+  placement: QortalLandEditableDevelopmentPlacement,
+  roomId: LandRoomId
+): boolean => {
+  const roomIds = placement.defaultPlacement.roomIds ?? [QORTAL_LAND_DEFAULT_ROOM_ID];
+  return roomIds.includes(roomId);
+};
+
+const getQortalLandEditableDevelopmentPlacementsForRoom = (
+  roomId: LandRoomId
+): readonly QortalLandEditableDevelopmentPlacement[] => {
+  const placements = QORTAL_LAND_EDITABLE_DEVELOPMENT_PLACEMENTS.filter((placement) =>
+    qortalLandEditableDevelopmentPlacementIsInRoom(placement, roomId)
+  );
+  return placements.length > 0 ? placements : QORTAL_LAND_EDITABLE_DEVELOPMENT_PLACEMENTS;
+};
+
 const getQortalLandEditableDevelopmentPlacement = (
   placementId: string
 ): QortalLandEditableDevelopmentPlacement =>
@@ -1233,6 +2008,59 @@ const qortalLandClubSkywalkDoorHotspot = (
   };
 };
 
+const qortalLandParkPortalHotspot = (
+  placement = getQortalLandDevelopmentParkPortalPlacement()
+): {
+  x: number;
+  y: number;
+  proximityRadius: number;
+  passMinX: number;
+  passMaxX: number;
+  passMinY: number;
+  passMaxY: number;
+  returnX: number;
+  returnY: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+} => {
+  const scaleX = qortalLandPlacementScaleForAxis(placement, 'x');
+  const scaleY = qortalLandPlacementScaleForAxis(placement, 'y');
+  const absScaleX = Math.abs(scaleX);
+  const absScaleY = Math.abs(scaleY);
+  const originX = placement.originX ?? 0.5;
+  const originY = placement.originY ?? 1;
+  const left = placement.x - originX * QORTAL_LAND_PARK_PORTAL_SOURCE_WIDTH * scaleX;
+  const right = placement.x + (1 - originX) * QORTAL_LAND_PARK_PORTAL_SOURCE_WIDTH * scaleX;
+  const top = placement.y - originY * QORTAL_LAND_PARK_PORTAL_SOURCE_HEIGHT * scaleY;
+  const bottom = placement.y + (1 - originY) * QORTAL_LAND_PARK_PORTAL_SOURCE_HEIGHT * scaleY;
+  const passMinX = left + 248 * absScaleX;
+  const passMaxX = left + 502 * absScaleX;
+  const passMinY = top + 708 * absScaleY;
+  const passMaxY = top + 1046 * absScaleY;
+  const returnTarget = clampLandPosition(
+    QORTAL_LAND_PARK_ROOM_ID,
+    left + 448 * absScaleX,
+    bottom + 10 * absScaleY
+  );
+  return {
+    x: left + 382 * absScaleX,
+    y: top + 916 * absScaleY,
+    proximityRadius: QORTAL_LAND_PARK_PORTAL_PROXIMITY_RADIUS,
+    passMinX,
+    passMaxX,
+    passMinY,
+    passMaxY,
+    returnX: returnTarget.x,
+    returnY: returnTarget.y,
+    left,
+    right,
+    top,
+    bottom,
+  };
+};
+
 const QORTAL_LAND_DEVELOPMENT_PNG_PROP_PLACEMENTS: QortalLandDevelopmentPngPropPlacement[] = [
   QORTAL_LAND_DEVELOPMENT_CLUB_BAR_DEFAULT_PLACEMENT,
   QORTAL_LAND_DEVELOPMENT_BACK_BAR_DEFAULT_PLACEMENT,
@@ -1242,6 +2070,7 @@ const QORTAL_LAND_DEVELOPMENT_PNG_PROP_PLACEMENTS: QortalLandDevelopmentPngPropP
   QORTAL_LAND_DEVELOPMENT_BAR_STOOL_GROUP_DEFAULT_PLACEMENT,
   ...QORTAL_LAND_DEVELOPMENT_SPEAKER_DEFAULT_PLACEMENTS,
   ...QORTAL_LAND_DEVELOPMENT_DECORATION_DEFAULT_PLACEMENTS,
+  ...QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS,
   QORTAL_LAND_DEVELOPMENT_DANCE_FLOOR_DEFAULT_PLACEMENT,
   // Add transparent PNGs under src/assets/qortalland/source/** and place them here.
   // Example:
@@ -1288,6 +2117,77 @@ const createLandChatMessageId = (): string => {
     return cryptoApi.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+};
+
+const parseLandChatCommand = (rawText: string): { text: string; mode: LandChatMode } => {
+  const normalized = rawText.trim().replace(/\s+/g, ' ');
+  const yellMatch = normalized.match(/^\/(?:y|yell)\s+(.+)$/i);
+  if (yellMatch?.[1]?.trim()) {
+    return { text: yellMatch[1].trim(), mode: 'yell' };
+  }
+  const emoteMatch = normalized.match(/^\/(cry|laugh|happy|sad)(?:\s+.*)?$/i);
+  const emote = emoteMatch?.[1]?.toLowerCase();
+  if (emote === 'cry') return { text: 'cries', mode: 'emote' };
+  if (emote === 'laugh') return { text: 'laughs', mode: 'emote' };
+  if (emote === 'happy') return { text: 'is happy', mode: 'emote' };
+  if (emote === 'sad') return { text: 'is sad', mode: 'emote' };
+  return { text: normalized, mode: 'say' };
+};
+
+const parseQortalLandChatEvent = (
+  event: ReticulumChatEventForLand,
+  fallbackSessionId: string
+): LandChatTranscriptMessage | null => {
+  if (
+    typeof event.eventId !== 'string' ||
+    typeof event.authorAddress !== 'string' ||
+    typeof event.encryptedPayload !== 'string'
+  ) {
+    return null;
+  }
+
+  let decoded: Record<string, unknown>;
+  try {
+    decoded = JSON.parse(event.encryptedPayload) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  if (decoded.qortalLand !== true) return null;
+  const qortalLandType = typeof decoded.qortalLandType === 'string' ? decoded.qortalLandType : 'chat';
+  if (qortalLandType !== 'chat') return null;
+
+  const text = String(decoded.messageText || decoded.message || '').trim();
+  if (!text) return null;
+
+  const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : fallbackSessionId;
+  const sequence = Number(decoded.landSequence);
+  const mode = decoded.chatMode === 'yell'
+    ? 'yell'
+    : decoded.chatMode === 'emote'
+      ? 'emote'
+      : 'say';
+  const timestamp = Number(event.timestamp);
+
+  return {
+    messageId: event.eventId,
+    authorAddress: event.authorAddress,
+    sessionId: session,
+    sequence: Number.isFinite(sequence) ? sequence : 0,
+    text,
+    mode,
+    timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+  };
+};
+
+const mergeLandChatTranscriptMessage = (
+  messages: LandChatTranscriptMessage[],
+  message: LandChatTranscriptMessage
+): LandChatTranscriptMessage[] => {
+  const withoutDuplicate = messages.filter((existing) => existing.messageId !== message.messageId);
+  return [...withoutDuplicate, message]
+    .sort((a, b) => a.timestamp - b.timestamp || a.sequence - b.sequence)
+    .slice(-LAND_CHAT_TRANSCRIPT_LIMIT);
 };
 
 const utf8ByteLength = (value: string): number => new TextEncoder().encode(value).length;
@@ -1385,9 +2285,9 @@ const normalizeLandRoomId = (value: unknown): LandRoomId => {
 const initialPositionForAddress = (address: string): { roomId: LandRoomId; x: number; y: number } => {
   const hue = addressHue(address);
   return {
-    roomId: QORTAL_LAND_DEFAULT_ROOM_ID,
-    x: 430 + (hue % 8) * 110,
-    y: 490 + (hue % 4) * 28,
+    roomId: QORTAL_LAND_START_ROOM_ID,
+    x: 610 + (hue % 8) * 90,
+    y: 520 + (hue % 4) * 28,
   };
 };
 
@@ -1471,36 +2371,43 @@ const qortalLandCollisionFootprintsForRoom = (
   if (!shouldShowQortalLandDevelopmentPngProps()) return [];
   const footprints: QortalLandCollisionFootprint[] = [];
   for (const basePlacement of QORTAL_LAND_DEVELOPMENT_PNG_PROP_PLACEMENTS) {
-    if (!basePlacement.collision) continue;
+    if (!basePlacement.collision && !basePlacement.collisions?.length) continue;
     const placement = {
       ...basePlacement,
       ...readQortalLandDevelopmentPngPlacementOverride(basePlacement.id),
     };
     if (placement.visible === false) continue;
     if (placement.roomIds && !placement.roomIds.includes(roomId)) continue;
-    if (!placement.collision) continue;
+    const collisions = placement.collisions?.length
+      ? placement.collisions
+      : placement.collision
+        ? [placement.collision]
+        : [];
+    if (!collisions.length) continue;
 
     const scaleX = qortalLandPlacementScaleForAxis(placement, 'x');
     const scaleY = qortalLandPlacementScaleForAxis(placement, 'y');
     const instanceCount = Math.max(1, Math.min(12, Math.round(placement.count ?? 1)));
     const spacing = placement.spacing ?? 0;
     const startOffsetX = -((instanceCount - 1) * spacing) / 2;
-    const offsetX = (placement.collision.offsetX ?? 0) * (placement.flipX ? -scaleX : scaleX);
-    const offsetY = (placement.collision.offsetY ?? 0) * scaleY;
-    const radiusX = Math.max(2, Math.abs(placement.collision.width * scaleX) / 2);
-    const radiusY = Math.max(2, Math.abs(placement.collision.height * scaleY) / 2);
-    const paddingX = placement.collision.paddingX ?? 0;
-    const paddingY = placement.collision.paddingY ?? 0;
 
     for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
-      footprints.push({
-        shape: placement.collision.shape,
-        x: placement.x + startOffsetX + instanceIndex * spacing + offsetX,
-        y: placement.y + offsetY,
-        radiusX,
-        radiusY,
-        paddingX,
-        paddingY,
+      collisions.forEach((collision) => {
+        const offsetX = (collision.offsetX ?? 0) * (placement.flipX ? -scaleX : scaleX);
+        const offsetY = (collision.offsetY ?? 0) * scaleY;
+        const radiusX = Math.max(2, Math.abs(collision.width * scaleX) / 2);
+        const radiusY = Math.max(2, Math.abs(collision.height * scaleY) / 2);
+        const paddingX = collision.paddingX ?? 0;
+        const paddingY = collision.paddingY ?? 0;
+        footprints.push({
+          shape: collision.shape,
+          x: placement.x + startOffsetX + instanceIndex * spacing + offsetX,
+          y: placement.y + offsetY,
+          radiusX,
+          radiusY,
+          paddingX,
+          paddingY,
+        });
       });
     }
   }
@@ -1580,7 +2487,6 @@ const resolveQortalLandPropCollisions = (
   nextX: number,
   nextY: number
 ): { x: number; y: number } => {
-  if (roomId !== QORTAL_LAND_DEFAULT_ROOM_ID) return { x: nextX, y: nextY };
   const footprints = qortalLandCollisionFootprintsForRoom(roomId);
   if (!footprints.length) return { x: nextX, y: nextY };
 
@@ -1655,6 +2561,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const movementKeysRef = useRef<Set<string>>(new Set());
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
   const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const chatMessagesViewportRef = useRef<HTMLDivElement | null>(null);
   const landActionAnimationsRef = useRef<Map<string, LandActionAnimation>>(new Map());
   const landCallPresenceRef = useRef<Map<string, LandCallPresence>>(new Map());
   const landCallPeerPublicKeysRef = useRef<Map<string, string>>(new Map());
@@ -1669,7 +2577,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
   const primaryNameLookupTimerRef = useRef<number | null>(null);
-  const currentRoomRef = useRef<LandRoomId>(QORTAL_LAND_DEFAULT_ROOM_ID);
+  const currentRoomRef = useRef<LandRoomId>(QORTAL_LAND_START_ROOM_ID);
   const localStateRef = useRef<LocalLandState>({
     ...initialPositionForAddress(myAddress || ''),
     direction: 'r',
@@ -1685,6 +2593,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [landChatMessages, setLandChatMessages] = useState<LandChatTranscriptMessage[]>([]);
+  const [isChatFocused, setIsChatFocused] = useState(false);
+  const [isChatDimmed, setIsChatDimmed] = useState(true);
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+  const [activeChatTab, setActiveChatTab] = useState<LandChatTab>('local');
+  const [lastChatActivityAt, setLastChatActivityAt] = useState(() => Date.now());
+  const [, setPrimaryNameLookupVersion] = useState(0);
   const [actionTarget, setActionTarget] = useState<LandActionTarget | null>(null);
   const [sendQortTarget, setSendQortTarget] = useState<LandActionTarget | null>(null);
   const [sendQortAmount, setSendQortAmount] = useState('1');
@@ -1693,6 +2608,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [activeLandCallPeerAddress, setActiveLandCallPeerAddress] = useState<string | null>(null);
   const [landCallPresenceVersion, setLandCallPresenceVersion] = useState(0);
   const [isAssetDevPanelOpen, setIsAssetDevPanelOpen] = useState(false);
+  const [selectedDevRoomId, setSelectedDevRoomId] = useState<LandRoomId>(
+    QORTAL_LAND_PARK_ROOM_ID
+  );
+  const [isCharacterPanelOpen, setIsCharacterPanelOpen] = useState(false);
+  const [characterCustomization, setCharacterCustomization] = useState(() =>
+    readQortalLandCharacterCustomization(myAddress)
+  );
+  const [characterPreviewFacing, setCharacterPreviewFacing] =
+    useState<QortalLandCharacterPreviewFacing>('front');
   const [devPngPropsEnabled, setDevPngPropsEnabled] = useState(() =>
     shouldShowQortalLandDevelopmentPngProps()
   );
@@ -1706,12 +2630,12 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     getQortalLandDevelopmentDjBoothPlacement()
   );
   const [selectedDevPlacementId, setSelectedDevPlacementId] = useState(
-    QORTAL_LAND_DEVELOPMENT_BACK_WALL_PLACEMENT_ID
+    QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_ROW_TREES_PLACEMENT_ID
   );
   const [selectedDevPlacement, setSelectedDevPlacement] = useState(() =>
     getQortalLandDevelopmentPlacement(
       getQortalLandEditableDevelopmentPlacement(
-        QORTAL_LAND_DEVELOPMENT_BACK_WALL_PLACEMENT_ID
+        QORTAL_LAND_DEVELOPMENT_PARK_PLANTER_ROW_TREES_PLACEMENT_ID
       ).defaultPlacement
     )
   );
@@ -1893,6 +2817,51 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     return Boolean(presence && presence.expiresAt > Date.now());
   }, []);
 
+  useEffect(() => {
+    setCharacterCustomization(readQortalLandCharacterCustomization(myAddress));
+  }, [myAddress]);
+
+  const updateCharacterCustomization = useCallback(
+    (field: QortalLandCharacterCustomizationField, value: string) => {
+      const next = {
+        ...characterCustomization,
+        [field]: value,
+      };
+      setCharacterCustomization(next);
+      writeQortalLandCharacterCustomization(myAddress, next);
+    },
+    [characterCustomization, myAddress]
+  );
+
+  const cycleCharacterCustomization = useCallback(
+    (field: QortalLandCharacterCustomizationField, step: -1 | 1) => {
+      const options = QORTAL_LAND_CHARACTER_CUSTOMIZATION_OPTIONS[field];
+      const currentIndex = options.findIndex(
+        (option) => option.value === characterCustomization[field]
+      );
+      const nextIndex =
+        (Math.max(0, currentIndex) + step + options.length) % options.length;
+      updateCharacterCustomization(field, options[nextIndex].value);
+    },
+    [characterCustomization, updateCharacterCustomization]
+  );
+
+  const rotateCharacterPreview = useCallback((step: -1 | 1) => {
+    setCharacterPreviewFacing((facing) => {
+      const currentIndex = QORTAL_LAND_CHARACTER_PREVIEW_FACINGS.indexOf(facing);
+      const nextIndex =
+        (Math.max(0, currentIndex) + step + QORTAL_LAND_CHARACTER_PREVIEW_FACINGS.length) %
+        QORTAL_LAND_CHARACTER_PREVIEW_FACINGS.length;
+      return QORTAL_LAND_CHARACTER_PREVIEW_FACINGS[nextIndex];
+    });
+  }, []);
+
+  const resetCharacterCustomization = useCallback(() => {
+    const defaults = { ...QORTAL_LAND_CHARACTER_CUSTOMIZATION_DEFAULTS };
+    setCharacterCustomization(defaults);
+    writeQortalLandCharacterCustomization(myAddress, defaults);
+  }, [myAddress]);
+
   const setDevelopmentPngPropsEnabled = useCallback((enabled: boolean) => {
     if (enabled) {
       window.localStorage.setItem(QORTAL_LAND_DEV_PNG_PROPS_STORAGE_KEY, '1');
@@ -1903,6 +2872,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     notifyQortalLandDevelopmentAssetsChanged();
   }, []);
 
+  const editableDevPlacementsForSelectedRoom = useMemo(
+    () => getQortalLandEditableDevelopmentPlacementsForRoom(selectedDevRoomId),
+    [selectedDevRoomId]
+  );
+
   const selectedDevPlacementMeta = getQortalLandEditableDevelopmentPlacement(selectedDevPlacementId);
 
   const selectDevelopmentPlacement = useCallback((placementId: string) => {
@@ -1910,6 +2884,23 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     setSelectedDevPlacementId(meta.defaultPlacement.id);
     setSelectedDevPlacement(getQortalLandDevelopmentPlacement(meta.defaultPlacement));
   }, []);
+
+  const selectDevelopmentRoom = useCallback(
+    (roomId: LandRoomId) => {
+      const nextRoomId = QORTAL_LAND_DEVELOPMENT_DEV_ROOM_OPTIONS.some(
+        (option) => option.id === roomId
+      )
+        ? roomId
+        : QORTAL_LAND_DEFAULT_ROOM_ID;
+      const nextPlacements = getQortalLandEditableDevelopmentPlacementsForRoom(nextRoomId);
+      setSelectedDevRoomId(nextRoomId);
+      const firstPlacement = nextPlacements[0];
+      if (firstPlacement) {
+        selectDevelopmentPlacement(firstPlacement.defaultPlacement.id);
+      }
+    },
+    [selectDevelopmentPlacement]
+  );
 
   const writeSelectedDevelopmentPlacement = useCallback(
     (placement: QortalLandDevelopmentPngPropPlacement) => {
@@ -1934,7 +2925,19 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
   const updateSelectedDevelopmentPlacement = useCallback(
     (
-      field: 'x' | 'y' | 'depth' | 'originX' | 'originY' | 'scale' | 'scaleX' | 'scaleY' | 'alpha' | 'count' | 'spacing',
+      field:
+        | 'x'
+        | 'y'
+        | 'depth'
+        | 'originX'
+        | 'originY'
+        | 'scale'
+        | 'scaleX'
+        | 'scaleY'
+        | 'alpha'
+        | 'angle'
+        | 'count'
+        | 'spacing',
       value: string
     ) => {
       const numericValue = Number(value);
@@ -1963,6 +2966,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       writeSelectedDevelopmentPlacement(next);
       if (
         next.id !== QORTAL_LAND_DEVELOPMENT_CLUB_FLOOR_PLACEMENT_ID &&
+        next.id !== QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_PLACEMENT_ID &&
+        next.id !== QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_PLACEMENT_ID &&
+        next.id !== QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_PLACEMENT_ID &&
         next.id !== QORTAL_LAND_DEVELOPMENT_BACK_WALL_PLACEMENT_ID &&
         next.id !== QORTAL_LAND_DEVELOPMENT_LEFT_WALL_PLACEMENT_ID &&
         next.id !== QORTAL_LAND_DEVELOPMENT_RIGHT_WALL_PLACEMENT_ID &&
@@ -2231,12 +3237,59 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           batch.forEach((address) => {
             primaryNameCacheRef.current.set(address, primaryNames[address]?.trim() || '');
           });
+          setPrimaryNameLookupVersion((version) => version + 1);
         })
         .catch((error) => {
           console.error('[QortalLand] Failed to resolve primary names:', error);
         });
     }, 120);
   }, []);
+
+  const wakeLandChatPanel = useCallback(() => {
+    setIsChatDimmed(false);
+    setLastChatActivityAt(Date.now());
+  }, []);
+
+  const appendLandChatMessage = useCallback((message: LandChatTranscriptMessage) => {
+    queuePrimaryNameLookups([message.authorAddress]);
+    setLandChatMessages((messages) => mergeLandChatTranscriptMessage(messages, message));
+    wakeLandChatPanel();
+  }, [queuePrimaryNameLookups, wakeLandChatPanel]);
+
+  const focusLandChatInput = useCallback(() => {
+    wakeLandChatPanel();
+    window.setTimeout(() => {
+      chatInputRef.current?.focus();
+    }, 0);
+  }, [wakeLandChatPanel]);
+
+  const cancelLandChatTyping = useCallback(() => {
+    setChatText('');
+    setChatError('');
+    setIsEmojiPickerOpen(false);
+    setIsChatFocused(false);
+    chatInputRef.current?.blur();
+  }, []);
+
+  const insertLandChatEmojiShortcut = useCallback((shortcut: string) => {
+    setChatText((current) => {
+      const input = chatInputRef.current;
+      const start = input?.selectionStart ?? current.length;
+      const end = input?.selectionEnd ?? start;
+      const before = current.slice(0, start);
+      const after = current.slice(end);
+      const insertedShortcut = `${shortcut} `;
+      const leadingSpace = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+      const trailingSpace = after.length > 0 && !/^\s/.test(after) ? ' ' : '';
+      return `${before}${leadingSpace}${insertedShortcut}${trailingSpace}${after}`.slice(
+        0,
+        LAND_CHAT_MAX_INPUT_CHARS
+      );
+    });
+    if (chatError) setChatError('');
+    setIsEmojiPickerOpen(false);
+    focusLandChatInput();
+  }, [chatError, focusLandChatInput]);
 
   useEffect(() => {
     queuePrimaryNameLookups([myAddress]);
@@ -2359,6 +3412,41 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   }, []);
 
   useEffect(() => {
+    if (isChatFocused) {
+      setIsChatDimmed(false);
+      return undefined;
+    }
+
+    const elapsed = Date.now() - lastChatActivityAt;
+    const delay = Math.max(0, LAND_CHAT_VISIBLE_IDLE_MS - elapsed);
+    const timeout = window.setTimeout(() => {
+      setIsChatDimmed(true);
+    }, delay);
+    return () => window.clearTimeout(timeout);
+  }, [isChatFocused, lastChatActivityAt]);
+
+  useEffect(() => {
+    const viewport = chatMessagesViewportRef.current;
+    if (!viewport) return;
+    const frame = window.requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [landChatMessages.length]);
+
+  useEffect(() => {
+    const handleStartChat = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter') return;
+      if (isEditableTarget(event.target)) return;
+      if (reticulumReady !== true) return;
+      event.preventDefault();
+      focusLandChatInput();
+    };
+    window.addEventListener('keydown', handleStartChat);
+    return () => window.removeEventListener('keydown', handleStartChat);
+  }, [focusLandChatInput, reticulumReady]);
+
+  useEffect(() => {
     const pressedKeys = movementKeysRef.current;
     const normalizeMovementKey = (key: string): string => key.trim().toLowerCase();
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -2393,7 +3481,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
   const sendLandChat = useCallback(async () => {
     if (isSendingChat || reticulumReady !== true) return;
-    const text = chatText.trim().replace(/\s+/g, ' ');
+    const { text, mode } = parseLandChatCommand(chatText);
     if (!text) return;
     if (utf8ByteLength(text) > LAND_CHAT_MAX_TEXT_BYTES) {
       setChatError('Message is too large');
@@ -2404,21 +3492,62 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     try {
       const landSequence = landChatSequenceRef.current + 1;
       landChatSequenceRef.current = landSequence;
-      await publishLandEventPayload({
+      const published = await publishLandEventPayload({
         qortalLandType: 'chat',
         messageText: text,
+        chatMode: mode,
         landSequence,
       });
+      const now = Date.now();
+      const message: LandChatTranscriptMessage = {
+        messageId: published.eventId,
+        authorAddress: myAddress,
+        sessionId,
+        sequence: landSequence,
+        text,
+        mode,
+        timestamp: published.timestamp,
+      };
+      appendLandChatMessage(message);
+      landChatBubblesRef.current.set(published.eventId, {
+        messageId: published.eventId,
+        authorAddress: myAddress,
+        sessionId,
+        sequence: landSequence,
+        text,
+        createdAt: now,
+        expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
+      });
       setChatText('');
-      if (isEditableTarget(document.activeElement)) {
-        (document.activeElement as HTMLElement).blur();
-      }
+      setIsEmojiPickerOpen(false);
+      setIsChatFocused(true);
+      window.setTimeout(() => {
+        chatInputRef.current?.focus();
+      }, 0);
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'QortalLand chat send failed');
     } finally {
       setIsSendingChat(false);
     }
-  }, [chatText, isSendingChat, publishLandEventPayload, reticulumReady]);
+  }, [
+    appendLandChatMessage,
+    chatText,
+    isSendingChat,
+    myAddress,
+    publishLandEventPayload,
+    reticulumReady,
+    sessionId,
+  ]);
+
+  const submitLandChatFromInput = useCallback(() => {
+    if (activeChatTab !== 'local') return;
+    const { text } = parseLandChatCommand(chatText);
+    if (!text) {
+      cancelLandChatTyping();
+      return;
+    }
+    void sendLandChat();
+  }, [activeChatTab, cancelLandChatTyping, chatText, sendLandChat]);
 
   const addQortReceivedAnimation = useCallback((
     actionId: string,
@@ -2638,7 +3767,61 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     let cancelled = false;
-    const applyLandChatEvent = (event: unknown, fromHistory = false) => {
+    const loadHistory = async () => {
+      const history = await window.reticulumChat?.getMessageHistory?.(
+        groupId,
+        QORTAL_LAND_CHANNEL_ID,
+        LAND_CHAT_TRANSCRIPT_LIMIT,
+        { repairNetwork: false }
+      );
+      if (cancelled || !Array.isArray(history)) return;
+      const messages = history
+        .map((event) => event as ReticulumChatEventForLand)
+        .filter((event) => Number(event.groupId) === groupId)
+        .filter((event) => event.channelId === QORTAL_LAND_CHANNEL_ID)
+        .filter((event) => event.eventType === 'message')
+        .map((event) => parseQortalLandChatEvent(event, ''))
+        .filter((message): message is LandChatTranscriptMessage => Boolean(message));
+      if (!messages.length) return;
+      queuePrimaryNameLookups(messages.map((message) => message.authorAddress));
+      setLandChatMessages((current) =>
+        messages.reduce(
+          (nextMessages, message) => mergeLandChatTranscriptMessage(nextMessages, message),
+          current
+        )
+      );
+
+      const now = Date.now();
+      for (const message of messages.slice(-LAND_CHAT_RECONCILE_LIMIT)) {
+        if (
+          message.timestamp > now + 5000 ||
+          now - message.timestamp >= LAND_CHAT_BUBBLE_TTL_MS ||
+          landChatBubblesRef.current.has(message.messageId)
+        ) {
+          continue;
+        }
+        landChatBubblesRef.current.set(message.messageId, {
+          messageId: message.messageId,
+          authorAddress: message.authorAddress,
+          sessionId: message.sessionId,
+          sequence: message.sequence,
+          text: message.text,
+          createdAt: message.timestamp,
+          expiresAt: message.timestamp + LAND_CHAT_BUBBLE_TTL_MS,
+        });
+      }
+    };
+    void loadHistory().catch((error) => {
+      console.warn('[QortalLand] Failed to load chat history', error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId, myAddress, queuePrimaryNameLookups]);
+
+  useEffect(() => {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
+    const unsubscribe = window.reticulumChat?.onEvent?.(({ event }) => {
       const payload = event as ReticulumChatEventForLand;
       if (Number(payload.groupId) !== groupId) return;
       if (payload.channelId !== QORTAL_LAND_CHANNEL_ID) return;
@@ -2650,64 +3833,25 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       ) {
         return;
       }
-      if (fromHistory && landChatBubblesRef.current.has(payload.eventId)) return;
-      let decoded: Record<string, unknown>;
-      try {
-        decoded = JSON.parse(payload.encryptedPayload) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-      if (decoded.qortalLand !== true) return;
-      const text = String(decoded.messageText || decoded.message || '').trim();
-      if (!text) return;
-      const session = typeof decoded.sessionId === 'string' ? decoded.sessionId : '';
-      const sequence = Number(decoded.landSequence);
-      const now = Date.now();
-      const eventTimestamp = finiteNumber(payload.timestamp);
-      if (
-        fromHistory &&
-        (eventTimestamp === null ||
-          eventTimestamp > now + 5000 ||
-          now - eventTimestamp >= LAND_CHAT_BUBBLE_TTL_MS)
-      ) {
-        return;
-      }
+      const message = parseQortalLandChatEvent(payload, '');
+      if (!message) return;
       queuePrimaryNameLookups([payload.authorAddress]);
+      const now = Date.now();
       landChatBubblesRef.current.set(payload.eventId, {
         messageId: payload.eventId,
         authorAddress: payload.authorAddress,
-        sessionId: session,
-        sequence: Number.isFinite(sequence) ? sequence : 0,
-        text,
-        createdAt: fromHistory && eventTimestamp !== null ? eventTimestamp : now,
-        expiresAt:
-          fromHistory && eventTimestamp !== null
-            ? eventTimestamp + LAND_CHAT_BUBBLE_TTL_MS
-            : now + LAND_CHAT_BUBBLE_TTL_MS,
+        sessionId: message.sessionId,
+        sequence: message.sequence,
+        text: message.text,
+        createdAt: now,
+        expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
       });
-    };
-    const unsubscribe = window.reticulumChat?.onEvent?.(({ event }) => {
-      applyLandChatEvent(event);
-    });
-    const historyPromise = window.reticulumChat?.getMessageHistory?.(
-      groupId,
-      QORTAL_LAND_CHANNEL_ID,
-      LAND_CHAT_RECONCILE_LIMIT,
-      { repairNetwork: false }
-    );
-    void historyPromise?.then((history) => {
-      if (cancelled || !Array.isArray(history)) return;
-      history.forEach((event) => applyLandChatEvent(event, true));
-    }).catch((error) => {
-      if (!cancelled) {
-        console.warn('[QortalLand] Failed to reconcile recent chat bubbles', error);
-      }
+      appendLandChatMessage(message);
     });
     return () => {
-      cancelled = true;
       unsubscribe?.();
     };
-  }, [groupId, myAddress, queuePrimaryNameLookups]);
+  }, [appendLandChatMessage, groupId, myAddress, queuePrimaryNameLookups]);
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -2991,12 +4135,25 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         private localLabel?: any;
         private remotes = new Map<string, any>();
         private remoteLabels = new Map<string, any>();
-        private chatBubbles = new Map<string, { container: any; background: any; text: any }>();
+        private chatBubbles = new Map<string, {
+          container: any;
+          background: any;
+          contentItems: any[];
+          signature: string;
+          width: number;
+          height: number;
+          lineCount: number;
+          popStarted: boolean;
+        }>();
         private actionAnimations = new Map<string, { container: any; coins: any[]; text: any }>();
         private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
+        private parkSearchlight?: any;
+        private parkFountainAmbient?: any;
+        private parkPortalAmbient?: any;
+        private parkFireflies?: any;
         private interactionPrompt?: { container: any; background: any; text: any };
         private propLayers: any[] = [];
         private developmentPngPropSprites: any[] = [];
@@ -3010,6 +4167,25 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           baseAlpha: number;
           baseScaleX: number;
           baseScaleY: number;
+          hotspotX: number;
+          hotspotY: number;
+          proximityRadius: number;
+          passMinX: number;
+          passMaxX: number;
+          passMinY: number;
+          passMaxY: number;
+          returnX: number;
+          returnY: number;
+          left: number;
+          right: number;
+          top: number;
+          bottom: number;
+        };
+        private parkPortalDoor?: {
+          frames: any[];
+          progress: number;
+          targetProgress: number;
+          baseAlpha: number;
           hotspotX: number;
           hotspotY: number;
           proximityRadius: number;
@@ -3086,6 +4262,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               this.load.image(textureKey, asset.url);
             }
           });
+          QORTAL_LAND_AVAILABLE_CHAT_EMOJIS.forEach((emoji) => {
+            const emojiUrl = qortalLandChatEmojiUrlByFileName.get(emoji.fileName);
+            const textureKey = qortalLandChatEmojiTextureKey(emoji.key);
+            if (emojiUrl && !this.textures.exists(textureKey)) {
+              this.load.image(textureKey, emojiUrl);
+            }
+          });
         }
 
         create() {
@@ -3131,12 +4314,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           };
           this.events.once('shutdown', removeDevelopmentAssetListener);
           this.events.once('destroy', removeDevelopmentAssetListener);
+          this.events.once('shutdown', this.destroyParkAmbientEffects, this);
+          this.events.once('destroy', this.destroyParkAmbientEffects, this);
         }
 
         update(time: number, delta: number) {
           this.animateRoom(time);
           this.updateLocalPlayer(delta);
           this.updateClubSkywalkDoor(delta);
+          this.updateParkPortalDoor(delta);
           this.updateCameraLayout();
           this.updateInteractionPrompt();
           this.updateRemotePlayers();
@@ -3169,6 +4355,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         }
 
         private drawWorld() {
+          this.destroyParkAmbientEffects();
           this.background?.destroy();
           this.lightSweep?.destroy();
           this.foreground?.destroy();
@@ -3183,6 +4370,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           this.developmentPngPropSprites = [];
           this.developmentLookTextureKeys.clear();
           this.clubSkywalkDoor = undefined;
+          this.parkPortalDoor = undefined;
           const g = this.add.graphics();
           const roomId = currentRoomRef.current;
           if (roomId === QORTAL_LAND_SKYWALK_ROOM_ID) {
@@ -3217,8 +4405,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             this.drawParkWorld(g);
             this.background = g;
             g.setDepth(-100);
+            this.drawParkSearchlight();
+            this.drawParkSkylinePng();
+            this.drawParkFloorPng();
+            this.drawParkPortalPng();
+            this.drawParkPortalAmbient();
             this.drawParkDepthProps();
             this.drawDevelopmentPngProps();
+            this.drawParkFountainAmbient();
+            this.drawParkFireflies();
             this.drawCollisionDebug();
             this.lightSweep = this.add.graphics();
             this.lightSweep.setDepth(-80);
@@ -3318,6 +4513,140 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           this.developmentPngPropSprites.push(sprite);
         }
 
+        private drawParkSkylinePng() {
+          const placement = getQortalLandDevelopmentPlacement(
+            QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_DEFAULT_PLACEMENT
+          );
+          const asset = qortalLandDevelopmentPngAssetById.get(
+            placement.assetId
+          );
+          if (!asset) return;
+          const textureKey = qortalLandDevelopmentPngTextureKey(asset.id);
+          if (!this.textures.exists(textureKey)) return;
+          const lookTextureKey = this.developmentLookTextureKeyForPlacement(placement, textureKey);
+          const sprite = this.add.image(placement.x, placement.y, lookTextureKey);
+          sprite.setName('park.skyline_png');
+          sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 1);
+          sprite.setScale(
+            placement.scaleX ?? placement.scale ?? 1,
+            placement.scaleY ?? placement.scale ?? 1
+          );
+          sprite.setAlpha(placement.alpha ?? 1);
+          sprite.setDepth(placement.depth ?? -99);
+          this.developmentPngPropSprites.push(sprite);
+        }
+
+        private drawParkFloorPng() {
+          const placement = getQortalLandDevelopmentPlacement(
+            QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_DEFAULT_PLACEMENT
+          );
+          const asset = qortalLandDevelopmentPngAssetById.get(
+            placement.assetId
+          );
+          if (!asset) return;
+          const textureKey = qortalLandDevelopmentPngTextureKey(asset.id);
+          if (!this.textures.exists(textureKey)) return;
+          const lookTextureKey = this.developmentLookTextureKeyForPlacement(placement, textureKey);
+          const sprite = this.add.image(placement.x, placement.y, lookTextureKey);
+          sprite.setName('park.floor_png');
+          sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 1);
+          sprite.setScale(
+            placement.scaleX ?? placement.scale ?? 1,
+            placement.scaleY ?? placement.scale ?? 1
+          );
+          sprite.setAlpha(placement.alpha ?? 1);
+          sprite.setDepth(placement.depth ?? -95);
+          this.developmentPngPropSprites.push(sprite);
+        }
+
+        private drawParkSearchlight() {
+          const skylinePlacement = getQortalLandDevelopmentPlacement(
+            QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_DEFAULT_PLACEMENT
+          );
+          const searchlight = this.add.graphics();
+          searchlight.setName('park.searchlight_ambient');
+          searchlight.setDepth((skylinePlacement.depth ?? -99) - 0.5);
+          this.parkSearchlight = searchlight;
+          this.animateParkSearchlight(this.time.now || 0);
+        }
+
+        private getParkFountainAmbientAnchor() {
+          if (!shouldShowQortalLandDevelopmentPngProps()) return null;
+          const basePlacement = QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS.find(
+            (placement) => placement.id === QORTAL_LAND_DEVELOPMENT_PARK_FOUNTAIN_BLUE_PLACEMENT_ID
+          );
+          if (!basePlacement) return null;
+          const placement = {
+            ...basePlacement,
+            ...readQortalLandDevelopmentPngPlacementOverride(basePlacement.id),
+          };
+          if (placement.visible === false) return null;
+          const asset = qortalLandDevelopmentPngAssetById.get(placement.assetId);
+          if (!asset) return null;
+          const textureKey = qortalLandDevelopmentPngTextureKey(asset.id);
+          if (!this.textures.exists(textureKey)) return null;
+          const frame = this.textures.getFrame(textureKey) as any;
+          const sourceWidth = Math.max(1, Number(frame?.width) || 1);
+          const sourceHeight = Math.max(1, Number(frame?.height) || 1);
+          const scaleX = placement.scaleX ?? placement.scale ?? 1;
+          const scaleY = placement.scaleY ?? placement.scale ?? 1;
+          const originX = placement.originX ?? 0.5;
+          const originY = placement.originY ?? 1;
+          const centerX = placement.x + (0.5 - originX) * sourceWidth * scaleX;
+          const centerY = placement.y + (0.5 - originY) * sourceHeight * scaleY;
+          const depth =
+            placement.depthMode === 'y-sort'
+              ? placement.y + (placement.depthOffset ?? 20) + 0.35
+              : (placement.depth ?? placement.y) + 0.35;
+          return {
+            centerX,
+            centerY: centerY + 4,
+            sourceWidth,
+            sourceHeight,
+            scaleX,
+            scaleY,
+            depth,
+          };
+        }
+
+        private drawParkFountainAmbient() {
+          const anchor = this.getParkFountainAmbientAnchor();
+          if (!anchor) return;
+          const fountainAmbient = this.add.graphics();
+          fountainAmbient.setName('park.fountain_ambient');
+          fountainAmbient.setDepth(anchor.depth);
+          this.parkFountainAmbient = fountainAmbient;
+          this.animateParkFountainAmbient(this.time.now || 0);
+        }
+
+        private drawParkPortalAmbient() {
+          if (!this.parkPortalDoor) return;
+          const portalAmbient = this.add.graphics();
+          portalAmbient.setName('park.portal_ambient');
+          portalAmbient.setDepth(201);
+          this.parkPortalAmbient = portalAmbient;
+          this.animateParkPortalAmbient(this.time.now || 0);
+        }
+
+        private drawParkFireflies() {
+          const fireflies = this.add.graphics();
+          fireflies.setName('park.firefly_ambient');
+          fireflies.setDepth(760);
+          this.parkFireflies = fireflies;
+          this.animateParkFireflies(this.time.now || 0);
+        }
+
+        private destroyParkAmbientEffects() {
+          this.parkSearchlight?.destroy();
+          this.parkFountainAmbient?.destroy();
+          this.parkPortalAmbient?.destroy();
+          this.parkFireflies?.destroy();
+          this.parkSearchlight = undefined;
+          this.parkFountainAmbient = undefined;
+          this.parkPortalAmbient = undefined;
+          this.parkFireflies = undefined;
+        }
+
         private drawClubBackWallPng() {
           const placement = getQortalLandDevelopmentPlacement(
             QORTAL_LAND_DEVELOPMENT_BACK_WALL_DEFAULT_PLACEMENT
@@ -3364,6 +4693,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
         private hasClubSkywalkDoorPng() {
           return QORTAL_LAND_DEVELOPMENT_CLUB_DOOR_ASSET_IDS.every((assetId) => {
+            const asset = qortalLandDevelopmentPngAssetById.get(assetId);
+            return asset && this.textures.exists(qortalLandDevelopmentPngTextureKey(asset.id));
+          });
+        }
+
+        private hasParkPortalPng() {
+          return QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_ASSET_IDS.every((assetId) => {
             const asset = qortalLandDevelopmentPngAssetById.get(assetId);
             return asset && this.textures.exists(qortalLandDevelopmentPngTextureKey(asset.id));
           });
@@ -3549,6 +4885,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           const originX = placement.originX ?? 0.5;
           const originY = placement.originY ?? 0.5;
           const warp = placement.warp ?? {};
+          const angle = placement.angle ?? 0;
 
           if (this.hasWarpOffset(warp)) {
             const warpedTexture = this.createWarpedDevelopmentPngTexture(
@@ -3563,6 +4900,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               sprite.setName(`${placement.id}:${index}`);
               sprite.setOrigin(warpedTexture.originX, warpedTexture.originY);
               sprite.setScale(baseScaleX, baseScaleY);
+              sprite.setAngle(angle);
               sprite.setAlpha(index === 0 ? baseAlpha : 0);
               sprite.setFlipX(Boolean(placement.flipX));
               sprite.setDepth(depth + index * 0.01);
@@ -3575,6 +4913,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           sprite.setName(`${placement.id}:${index}`);
           sprite.setOrigin(originX, originY);
           sprite.setScale(baseScaleX, baseScaleY);
+          sprite.setAngle(angle);
           sprite.setAlpha(index === 0 ? baseAlpha : 0);
           sprite.setFlipX(Boolean(placement.flipX));
           sprite.setDepth(depth + index * 0.01);
@@ -3604,6 +4943,38 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             baseAlpha,
             baseScaleX,
             baseScaleY,
+            hotspotX: hotspot.x,
+            hotspotY: hotspot.y,
+            proximityRadius: hotspot.proximityRadius,
+            passMinX: hotspot.passMinX,
+            passMaxX: hotspot.passMaxX,
+            passMinY: hotspot.passMinY,
+            passMaxY: hotspot.passMaxY,
+            returnX: hotspot.returnX,
+            returnY: hotspot.returnY,
+            left: hotspot.left,
+            right: hotspot.right,
+            top: hotspot.top,
+            bottom: hotspot.bottom,
+          };
+        }
+
+        private drawParkPortalPng() {
+          if (!this.hasParkPortalPng()) return;
+          const placement = getQortalLandDevelopmentParkPortalPlacement();
+          const textureKeys = QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_ASSET_IDS.map((assetId) =>
+            qortalLandDevelopmentPngTextureKey(assetId)
+          );
+          const baseAlpha = placement.alpha ?? 1;
+          const frames = textureKeys.map((textureKey, index) =>
+            this.createWarpableDevelopmentPng(placement, textureKey, index)
+          ).filter(Boolean);
+          const hotspot = qortalLandParkPortalHotspot(placement);
+          this.parkPortalDoor = {
+            frames,
+            progress: 0,
+            targetProgress: 0,
+            baseAlpha,
             hotspotX: hotspot.x,
             hotspotY: hotspot.y,
             proximityRadius: hotspot.proximityRadius,
@@ -3741,6 +5112,41 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             door.baseScaleY
           );
           door.open.setScale(door.baseScaleX * (0.985 + progress * 0.028), door.baseScaleY);
+        }
+
+        private updateParkPortalDoor(delta: number) {
+          const door = this.parkPortalDoor;
+          if (!door) return;
+          const avatar = this.localAvatar;
+          const isInPark = currentRoomRef.current === QORTAL_LAND_PARK_ROOM_ID;
+          const avatarLogicalX = Number(avatar?.getData?.('logicalX'));
+          const avatarLogicalY = Number(avatar?.getData?.('logicalY'));
+          const weightedDistance = avatar && isInPark
+            ? Math.hypot(
+                (Number.isFinite(avatarLogicalX) ? avatarLogicalX : avatar.x) - door.hotspotX,
+                ((Number.isFinite(avatarLogicalY) ? avatarLogicalY : avatar.y) - door.hotspotY) * 1.05
+              )
+            : Number.POSITIVE_INFINITY;
+          door.targetProgress = weightedDistance <= door.proximityRadius ? 1 : 0;
+          const speed = door.targetProgress > door.progress
+            ? QORTAL_LAND_PARK_PORTAL_OPEN_SPEED
+            : QORTAL_LAND_PARK_PORTAL_CLOSE_SPEED;
+          const step = Math.max(0.001, delta * speed);
+          if (door.targetProgress > door.progress) {
+            door.progress = Math.min(door.targetProgress, door.progress + step);
+          } else {
+            door.progress = Math.max(door.targetProgress, door.progress - step);
+          }
+
+          const frameCount = Math.max(1, door.frames.length);
+          const frameIndex = Phaser.Math.Clamp(
+            Math.round(Phaser.Math.Easing.Sine.InOut(door.progress) * (frameCount - 1)),
+            0,
+            frameCount - 1
+          );
+          door.frames.forEach((frame, index) => {
+            frame?.setAlpha?.(index === frameIndex ? door.baseAlpha : 0);
+          });
         }
 
         private createPropLayer(depth: number) {
@@ -4279,93 +5685,96 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         }
 
         private drawParkWorld(g: any) {
+          const layout = roomLayoutForRoom(QORTAL_LAND_PARK_ROOM_ID);
           const range = roomFloorRange(QORTAL_LAND_PARK_ROOM_ID);
           g.fillStyle(0x030711, 1);
-          g.fillRect(0, 0, LAND_WIDTH, LAND_HEIGHT);
+          g.fillRect(0, 0, layout.width, layout.height);
           g.fillStyle(0x071329, 1);
-          g.fillRect(0, 0, LAND_WIDTH, range.top + 18);
+          g.fillRect(0, 0, layout.width, range.top + 4);
+          g.fillStyle(0x050711, 0.72);
+          g.fillRect(0, range.top - 24, layout.width, layout.height - range.top + 24);
+          this.drawParkPlatformSupport(g);
+          g.fillStyle(0x2cf8ff, 0.035);
+          g.fillEllipse(420, 616, 720, 160);
+          g.fillStyle(0xff2bd6, 0.032);
+          g.fillEllipse(1360, 596, 760, 154);
+          g.fillStyle(0x78ff9a, 0.018);
+          g.fillEllipse(900, 380, 940, 120);
+        }
 
-          g.fillStyle(0x14224a, 0.62);
-          g.fillCircle(1390, 92, 58);
-          g.fillStyle(0x78ff9a, 0.08);
-          g.fillCircle(1390, 92, 86);
-          g.fillStyle(0xff2bd6, 0.08);
-          g.fillCircle(430, 154, 72);
+        private drawParkPlatformSupport(g: any) {
+          const layout = roomLayoutForRoom(QORTAL_LAND_PARK_ROOM_ID);
+          const { floor } = layout;
+          const width = layout.width;
+          const height = layout.height;
+          const supportTopY = floor.bottomY + 8;
+          const lowerLipY = height - 30;
+          const leftBackX = Phaser.Math.Clamp(floor.back.minX, 0, width);
+          const rightBackX = Phaser.Math.Clamp(floor.back.maxX, 0, width);
+          const leftFrontX = Phaser.Math.Clamp(floor.front.minX, 0, width);
+          const rightFrontX = Phaser.Math.Clamp(floor.front.maxX, 0, width);
 
-          for (let i = 0; i < 18; i += 1) {
-            const towerX = 70 + i * 96;
-            const towerW = 44 + (i % 4) * 14;
-            const towerH = 64 + (i % 6) * 22;
-            const baseY = range.top + 12;
-            g.fillStyle(i % 2 === 0 ? 0x070d1d : 0x091225, 0.92);
-            g.fillRect(towerX, baseY - towerH, towerW, towerH);
-            for (let row = 0; row < Math.floor(towerH / 22); row += 1) {
-              for (let col = 0; col < Math.max(1, Math.floor(towerW / 18)); col += 1) {
-                const lit = (i + row + col) % 4 !== 0;
-                g.fillStyle(lit ? 0x2cf8ff : 0x17213c, lit ? 0.38 : 0.22);
-                g.fillRoundedRect(towerX + 10 + col * 17, baseY - towerH + 14 + row * 20, 8, 7, 2);
-              }
-            }
-          }
+          g.fillStyle(0x020511, 0.86);
+          g.fillPoints(
+            [
+              new Phaser.Geom.Point(leftFrontX, supportTopY),
+              new Phaser.Geom.Point(rightFrontX, supportTopY),
+              new Phaser.Geom.Point(width, height),
+              new Phaser.Geom.Point(0, height),
+            ],
+            true
+          );
 
-          g.fillStyle(0x07180f, 1);
-          g.fillPoints([
-            new Phaser.Geom.Point(110, range.top),
-            new Phaser.Geom.Point(1690, range.top),
-            new Phaser.Geom.Point(1776, range.bottom),
-            new Phaser.Geom.Point(24, range.bottom),
-          ], true);
-          g.fillStyle(0x102a18, 0.95);
-          g.fillPoints([
-            new Phaser.Geom.Point(150, range.top + 38),
-            new Phaser.Geom.Point(1650, range.top + 38),
-            new Phaser.Geom.Point(1714, range.bottom - 10),
-            new Phaser.Geom.Point(86, range.bottom - 10),
-          ], true);
+          g.fillStyle(0x071024, 0.36);
+          g.fillPoints(
+            [
+              new Phaser.Geom.Point(0, floor.topY + 42),
+              new Phaser.Geom.Point(leftBackX, floor.topY + 14),
+              new Phaser.Geom.Point(leftFrontX, supportTopY),
+              new Phaser.Geom.Point(0, height),
+            ],
+            true
+          );
+          g.fillPoints(
+            [
+              new Phaser.Geom.Point(rightBackX, floor.topY + 14),
+              new Phaser.Geom.Point(width, floor.topY + 42),
+              new Phaser.Geom.Point(width, height),
+              new Phaser.Geom.Point(rightFrontX, supportTopY),
+            ],
+            true
+          );
 
-          g.fillStyle(0x06110d, 0.95);
-          g.fillPoints([
-            new Phaser.Geom.Point(520, range.top + 34),
-            new Phaser.Geom.Point(710, range.top + 34),
-            new Phaser.Geom.Point(1080, range.bottom - 14),
-            new Phaser.Geom.Point(830, range.bottom - 14),
-          ], true);
-          g.fillStyle(0x203723, 0.85);
-          g.fillPoints([
-            new Phaser.Geom.Point(552, range.top + 50),
-            new Phaser.Geom.Point(688, range.top + 50),
-            new Phaser.Geom.Point(1028, range.bottom - 26),
-            new Phaser.Geom.Point(868, range.bottom - 26),
-          ], true);
+          g.fillStyle(0x0b1428, 0.74);
+          g.fillPoints(
+            [
+              new Phaser.Geom.Point(0, lowerLipY),
+              new Phaser.Geom.Point(width, lowerLipY),
+              new Phaser.Geom.Point(width, height),
+              new Phaser.Geom.Point(0, height),
+            ],
+            true
+          );
 
-          g.lineStyle(4, 0x78ff9a, 0.18);
-          g.strokePoints([
-            new Phaser.Geom.Point(110, range.top),
-            new Phaser.Geom.Point(1690, range.top),
-            new Phaser.Geom.Point(1776, range.bottom),
-            new Phaser.Geom.Point(24, range.bottom),
-            new Phaser.Geom.Point(110, range.top),
-          ], false);
+          g.lineStyle(3, 0x22eaff, 0.22);
+          g.lineBetween(leftBackX, floor.topY + 14, leftFrontX, supportTopY);
+          g.lineBetween(rightBackX, floor.topY + 14, rightFrontX, supportTopY);
+          g.lineBetween(leftFrontX + 18, supportTopY, rightFrontX - 18, supportTopY);
 
-          g.fillStyle(0x2cf8ff, 0.12);
-          g.fillEllipse(1220, 560, 340, 110);
-          g.fillStyle(0x071922, 0.96);
-          g.fillEllipse(1220, 560, 290, 82);
-          g.lineStyle(3, 0x2cf8ff, 0.34);
-          g.strokeEllipse(1220, 560, 290, 82);
-          g.fillStyle(0xf8fbff, 0.24);
-          g.fillEllipse(1174, 540, 72, 12);
-          g.fillStyle(0x78ff9a, 0.16);
-          g.fillCircle(1220, 536, 34);
+          g.lineStyle(2, 0xff2bd6, 0.18);
+          g.lineBetween(0, lowerLipY, width, lowerLipY);
+          g.lineStyle(2, 0x22eaff, 0.16);
+          g.lineBetween(16, height - 10, width - 16, height - 10);
 
-          this.drawParkPortal(g, 126, 250);
-          this.drawParkTree(g, 310, 386, 0x78ff9a);
-          this.drawParkTree(g, 1510, 388, 0x2cf8ff);
-          this.drawParkTree(g, 420, 596, 0x78ff9a);
-          this.drawParkTree(g, 1470, 616, 0xff2bd6);
-          this.drawParkBench(g, 600, 482, 0x2cf8ff);
-          this.drawParkBench(g, 1330, 462, 0xffae00);
-          this.drawParkBench(g, 720, 642, 0x78ff9a);
+          g.fillStyle(0x111b35, 0.22);
+          g.fillRoundedRect(92, floor.bottomY + 42, width - 184, 18, 9);
+          g.fillStyle(0x030711, 0.44);
+          g.fillRoundedRect(150, lowerLipY - 42, width - 300, 36, 12);
+
+          g.fillStyle(0x2cf8ff, 0.22);
+          g.fillRoundedRect(224, floor.bottomY + 26, 84, 5, 3);
+          g.fillRoundedRect(width / 2 - 42, floor.bottomY + 20, 84, 5, 3);
+          g.fillRoundedRect(width - 308, floor.bottomY + 26, 84, 5, 3);
         }
 
         private drawParkTree(g: any, x: number, y: number, color: number) {
@@ -4782,24 +6191,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         }
 
         private drawParkDepthProps() {
-          const railLayer = this.createPropLayer(365);
-          railLayer.fillStyle(0x02040a, 0.44);
-          railLayer.fillRoundedRect(260, 342, 1280, 24, 12);
-          railLayer.lineStyle(3, 0x78ff9a, 0.2);
-          railLayer.lineBetween(292, 354, 1508, 354);
-          for (let x = 340; x <= 1460; x += 140) {
-            railLayer.fillStyle(0x78ff9a, 0.2);
-            railLayer.fillRoundedRect(x, 360, 9, 32, 5);
-          }
-
-          const midLayer = this.createPropLayer(520);
-          this.drawParkBench(midLayer, 245, 468, 0x2cf8ff);
-          this.drawParkTree(midLayer, 1580, 490, 0x78ff9a);
-
-          const frontLayer = this.createPropLayer(682);
-          this.drawParkTree(frontLayer, 250, 638, 0x2cf8ff);
-          this.drawParkTree(frontLayer, 1605, 650, 0x78ff9a);
-          this.drawParkBench(frontLayer, 1110, 652, 0xff2bd6);
+          // Park rebuild is PNG-driven; add depth props here once source assets exist.
         }
 
         private drawLightBeams(g: any) {
@@ -4849,6 +6241,10 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             return;
           }
           if (roomId === QORTAL_LAND_PARK_ROOM_ID) {
+            this.animateParkSearchlight(time);
+            this.animateParkFountainAmbient(time);
+            this.animateParkPortalAmbient(time);
+            this.animateParkFireflies(time);
             const pulse = 0.5 + Math.sin(time / 360) * 0.5;
             this.lightSweep.fillStyle(0x78ff9a, 0.025 + pulse * 0.018);
             this.lightSweep.fillEllipse(1220, 560, 420, 120);
@@ -4884,9 +6280,233 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
         }
 
-        private drawChatBubble(background: any, textObject: any) {
-          const width = Math.min(250, Math.max(78, Math.ceil(textObject.width) + 28));
-          const height = Math.max(34, Math.ceil(textObject.height) + 18);
+        private drawParkSearchlightBand(
+          g: any,
+          originX: number,
+          originY: number,
+          topX: number,
+          topY: number,
+          originWidth: number,
+          topWidth: number,
+          alpha: number
+        ) {
+          const dx = topX - originX;
+          const dy = topY - originY;
+          const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+          const normalX = -dy / length;
+          const normalY = dx / length;
+          const originHalfWidth = originWidth / 2;
+          const topHalfWidth = topWidth / 2;
+          g.fillStyle(0xbefbff, alpha);
+          g.fillPoints(
+            [
+              new Phaser.Geom.Point(
+                originX - normalX * originHalfWidth,
+                originY - normalY * originHalfWidth
+              ),
+              new Phaser.Geom.Point(
+                originX + normalX * originHalfWidth,
+                originY + normalY * originHalfWidth
+              ),
+              new Phaser.Geom.Point(topX + normalX * topHalfWidth, topY + normalY * topHalfWidth),
+              new Phaser.Geom.Point(topX - normalX * topHalfWidth, topY - normalY * topHalfWidth),
+            ],
+            true
+          );
+        }
+
+        private animateParkSearchlight(time: number) {
+          if (!this.parkSearchlight) return;
+          this.parkSearchlight.clear();
+          if (currentRoomRef.current !== QORTAL_LAND_PARK_ROOM_ID) return;
+          const cycleMs = 25000;
+          const activeMs = 11000;
+          const sweepMs = 4700;
+          const phase = time % cycleMs;
+          const range = roomFloorRange(QORTAL_LAND_PARK_ROOM_ID);
+          if (phase > activeMs) return;
+          const fadeIn = Phaser.Math.Clamp(phase / 900, 0, 1);
+          const fadeOut = Phaser.Math.Clamp((activeMs - phase) / 1300, 0, 1);
+          const visibility = Math.min(fadeIn, fadeOut);
+          const sweepProgress =
+            phase <= sweepMs
+              ? phase / sweepMs
+              : phase <= sweepMs * 2
+                ? 1 - (phase - sweepMs) / sweepMs
+                : 0;
+          const easedSweep = Phaser.Math.Easing.Sine.InOut(
+            Phaser.Math.Clamp(sweepProgress, 0, 1)
+          );
+          const originX = 930;
+          const originY = range.top + 72;
+          const topX = Phaser.Math.Linear(690, 1160, easedSweep);
+          const topY = -150;
+          this.drawParkSearchlightBand(
+            this.parkSearchlight,
+            originX,
+            originY,
+            topX,
+            topY,
+            10,
+            48,
+            0.012 * visibility
+          );
+          this.drawParkSearchlightBand(
+            this.parkSearchlight,
+            originX,
+            originY,
+            topX,
+            topY,
+            5,
+            22,
+            0.034 * visibility
+          );
+          this.drawParkSearchlightBand(
+            this.parkSearchlight,
+            originX,
+            originY,
+            topX,
+            topY,
+            1.5,
+            5,
+            0.105 * visibility
+          );
+        }
+
+        private animateParkFireflies(time: number) {
+          if (!this.parkFireflies) return;
+          this.parkFireflies.clear();
+          if (currentRoomRef.current !== QORTAL_LAND_PARK_ROOM_ID) return;
+
+          const fireflySpecs = [
+            { x: 182, y: 486, rx: 36, ry: 44, phase: 0, cycle: 7600, color: 0xffe28a },
+            { x: 235, y: 570, rx: 42, ry: 34, phase: 2100, cycle: 9200, color: 0x95f7ff },
+            { x: 352, y: 304, rx: 38, ry: 28, phase: 3900, cycle: 8800, color: 0xffd782 },
+            { x: 1468, y: 338, rx: 48, ry: 30, phase: 1100, cycle: 8400, color: 0x8ffaff },
+            { x: 1588, y: 472, rx: 38, ry: 42, phase: 5400, cycle: 9800, color: 0xffe6a0 },
+            { x: 1484, y: 592, rx: 44, ry: 28, phase: 2800, cycle: 7900, color: 0x93faff },
+            { x: 826, y: 304, rx: 54, ry: 24, phase: 6600, cycle: 11000, color: 0xffe08c },
+            { x: 1218, y: 374, rx: 58, ry: 22, phase: 4700, cycle: 10500, color: 0x8ef8ff },
+          ];
+
+          for (let index = 0; index < fireflySpecs.length; index += 1) {
+            const spec = fireflySpecs[index];
+            const local = ((time + spec.phase) % spec.cycle) / spec.cycle;
+            if (local > 0.54) continue;
+            const life = Math.sin((local / 0.54) * Math.PI);
+            const twinkle = 0.65 + Math.sin(time / 360 + index * 1.7) * 0.35;
+            const alpha = life * twinkle * 0.62;
+            if (alpha <= 0.03) continue;
+            const driftA = time / (1500 + index * 110) + index * 1.21;
+            const driftB = time / (2200 + index * 160) + index * 0.77;
+            const x = spec.x + Math.cos(driftA) * spec.rx + Math.sin(driftB) * spec.rx * 0.18;
+            const y = spec.y + Math.sin(driftB) * spec.ry + Math.cos(driftA * 0.7) * spec.ry * 0.16;
+            const radius = 1.2 + life * 0.9;
+
+            this.parkFireflies.fillStyle(spec.color, alpha * 0.14);
+            this.parkFireflies.fillCircle(x, y, radius * 5.2);
+            this.parkFireflies.fillStyle(spec.color, alpha * 0.32);
+            this.parkFireflies.fillCircle(x, y, radius * 2.3);
+            this.parkFireflies.fillStyle(0xf4ffff, alpha);
+            this.parkFireflies.fillCircle(x, y, radius);
+          }
+        }
+
+        private animateParkPortalAmbient(time: number) {
+          if (!this.parkPortalAmbient) return;
+          this.parkPortalAmbient.clear();
+          const door = this.parkPortalDoor;
+          if (!door || currentRoomRef.current !== QORTAL_LAND_PARK_ROOM_ID) return;
+          const openVisibility = Phaser.Math.Clamp((door.progress - 0.08) / 0.5, 0, 1);
+          if (openVisibility <= 0.001) return;
+          const scaleX = (door.right - door.left) / QORTAL_LAND_PARK_PORTAL_SOURCE_WIDTH;
+          const scaleY = (door.bottom - door.top) / QORTAL_LAND_PARK_PORTAL_SOURCE_HEIGHT;
+          const innerLeft = door.left + 248 * scaleX;
+          const innerRight = door.left + 506 * scaleX;
+          const innerTop = door.top + 236 * scaleY;
+          const innerBottom = door.top + 1004 * scaleY;
+          const innerWidth = innerRight - innerLeft;
+          const innerHeight = innerBottom - innerTop;
+
+          for (let index = 0; index < 7; index += 1) {
+            const sparkPhase = (time / (1700 + index * 190) + index * 0.21) % 1;
+            const sparkAlpha = Math.sin(sparkPhase * Math.PI) * 0.34 * openVisibility;
+            if (sparkAlpha <= 0.02) continue;
+            const x =
+              innerLeft +
+              innerWidth * (0.32 + Math.sin(time / 1180 + index * 1.9) * 0.22);
+            const y = Phaser.Math.Linear(
+              innerBottom - innerHeight * 0.12,
+              innerTop + innerHeight * 0.26,
+              sparkPhase
+            );
+            const radius = 0.7 + sparkPhase * 0.85;
+            this.parkPortalAmbient.fillStyle(0x8dfcff, sparkAlpha * 0.16);
+            this.parkPortalAmbient.fillCircle(x, y, radius * 3.8);
+            this.parkPortalAmbient.fillStyle(0xbefbff, sparkAlpha);
+            this.parkPortalAmbient.fillCircle(x, y, radius);
+          }
+        }
+
+        private animateParkFountainAmbient(time: number) {
+          if (!this.parkFountainAmbient) return;
+          this.parkFountainAmbient.clear();
+          if (currentRoomRef.current !== QORTAL_LAND_PARK_ROOM_ID) return;
+          const anchor = this.getParkFountainAmbientAnchor();
+          if (!anchor) return;
+          this.parkFountainAmbient.setDepth(anchor.depth);
+
+          const rippleCycleMs = 3300;
+          const visibleRippleWindow = 0.68;
+          const maxRippleWidth = Math.max(88, anchor.sourceWidth * anchor.scaleX * 0.5);
+          const maxRippleHeight = Math.max(18, anchor.sourceHeight * anchor.scaleY * 0.15);
+          for (let index = 0; index < 3; index += 1) {
+            const phase = ((time + index * (rippleCycleMs / 3)) % rippleCycleMs) / rippleCycleMs;
+            if (phase > visibleRippleWindow) continue;
+            const t = phase / visibleRippleWindow;
+            const eased = Phaser.Math.Easing.Sine.Out(t);
+            const alpha = 0.58 * (1 - eased);
+            const width = Phaser.Math.Linear(22, maxRippleWidth, eased);
+            const height = Phaser.Math.Linear(5, maxRippleHeight, eased);
+            this.parkFountainAmbient.lineStyle(1.45, 0x8dfcff, alpha);
+            this.parkFountainAmbient.strokeEllipse(anchor.centerX, anchor.centerY, width, height);
+          }
+
+          const pulse = 0.5 + Math.sin((time / 2100) * Math.PI * 2) * 0.5;
+          const columnOpacity = 0.88 + pulse * 0.18;
+          const columnHeight = Math.max(58, anchor.sourceHeight * anchor.scaleY * 0.52);
+          this.parkFountainAmbient.lineStyle(2.2, 0x9effff, 0.13 * columnOpacity);
+          this.parkFountainAmbient.lineBetween(
+            anchor.centerX,
+            anchor.centerY - columnHeight * 0.72,
+            anchor.centerX,
+            anchor.centerY + columnHeight * 0.08
+          );
+          this.parkFountainAmbient.lineStyle(1.15, 0xd9ffff, 0.16 * columnOpacity);
+          this.parkFountainAmbient.lineBetween(
+            anchor.centerX + 3,
+            anchor.centerY - columnHeight * 0.52,
+            anchor.centerX + 3,
+            anchor.centerY - columnHeight * 0.04
+          );
+
+          const dropletCycleMs = 2300;
+          const dropletTravel = Math.max(22, anchor.sourceHeight * anchor.scaleY * 0.16);
+          for (let index = 0; index < 3; index += 1) {
+            const phase = ((time + index * 760) % dropletCycleMs) / dropletCycleMs;
+            if (phase > 0.42) continue;
+            const t = phase / 0.42;
+            const x =
+              anchor.centerX +
+              Math.sin(index * 1.7 + time / 1300) * Math.max(5, maxRippleWidth * 0.07);
+            const y = anchor.centerY - 5 - dropletTravel * t;
+            const alpha = 0.48 * (1 - Phaser.Math.Easing.Sine.In(t));
+            this.parkFountainAmbient.fillStyle(0x8dfcff, alpha);
+            this.parkFountainAmbient.fillCircle(x, y, 1.65 - t * 0.35);
+          }
+        }
+
+        private drawChatBubble(background: any, width: number, height: number) {
           background.clear();
           background.fillStyle(0x070914, 0.88);
           background.fillRoundedRect(-width / 2, -height, width, height, 12);
@@ -4897,23 +6517,147 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           background.lineStyle(2, 0x2cf8ff, 0.42);
           background.lineBetween(-9, 0, 0, 10);
           background.lineBetween(9, 0, 0, 10);
-          textObject.setPosition(-width / 2 + 14, -height + 9);
+        }
+
+        private clearChatBubbleContent(bubbleObjects: {
+          contentItems: any[];
+        }) {
+          bubbleObjects.contentItems.forEach((item) => {
+            try {
+              item.destroy();
+            } catch {
+              // Phaser may already have destroyed this as part of container cleanup.
+            }
+          });
+          bubbleObjects.contentItems = [];
+        }
+
+        private rebuildChatBubbleContent(
+          bubbleObjects: {
+            container: any;
+            background: any;
+            contentItems: any[];
+            signature: string;
+            width: number;
+            height: number;
+            lineCount: number;
+            popStarted: boolean;
+          },
+          text: string
+        ) {
+          this.clearChatBubbleContent(bubbleObjects);
+
+          const maxContentWidth = 220;
+          const lineHeight = 21;
+          const spaceWidth = 4;
+          const emojiSize = 18;
+          const textStyle = {
+            color: '#f8fbff',
+            fontFamily: 'Inter, Arial, sans-serif',
+            fontSize: '13px',
+          };
+          const lines: Array<{ items: Array<{ item: any | null; width: number; yOffset: number }>; width: number }> = [
+            { items: [], width: 0 },
+          ];
+          let pendingSpace = false;
+
+          const currentLine = () => lines[lines.length - 1];
+
+          const startNewLine = () => {
+            lines.push({ items: [], width: 0 });
+            pendingSpace = false;
+          };
+
+          const addDisplayItem = (item: any, width: number, yOffset = 1) => {
+            let line = currentLine();
+            let gap = pendingSpace && line.width > 0 ? spaceWidth : 0;
+            if (line.width > 0 && line.width + gap + width > maxContentWidth) {
+              startNewLine();
+              line = currentLine();
+              gap = 0;
+            }
+            if (gap > 0) {
+              line.items.push({ item: null, width: gap, yOffset: 0 });
+              line.width += gap;
+            }
+            line.items.push({ item, width, yOffset });
+            bubbleObjects.contentItems.push(item);
+            bubbleObjects.container.add(item);
+            pendingSpace = false;
+            line.width += width;
+          };
+
+          splitLandChatEmojiText(text).forEach((part) => {
+            if (part.type === 'emoji') {
+              const textureKey = qortalLandChatEmojiTextureKey(part.emoji.key);
+              if (this.textures.exists(textureKey)) {
+                const emojiObject = this.add.image(0, 0, textureKey).setOrigin(0, 0);
+                const emojiFrame = this.textures.getFrame(textureKey);
+                const sourceWidth = Number(emojiFrame?.width) || emojiSize;
+                const sourceHeight = Number(emojiFrame?.height) || emojiSize;
+                const emojiWidth = Math.max(
+                  emojiSize,
+                  Math.round((emojiSize * sourceWidth) / Math.max(1, sourceHeight))
+                );
+                emojiObject.setDisplaySize(emojiWidth, emojiSize);
+                addDisplayItem(emojiObject, emojiWidth, 1);
+                return;
+              }
+              const fallbackText = this.add.text(0, 0, part.shortcut, textStyle).setOrigin(0, 0);
+              addDisplayItem(fallbackText, Math.ceil(fallbackText.width), 2);
+              return;
+            }
+
+            part.text.split(/(\s+)/).forEach((token) => {
+              if (!token) return;
+              if (/^\s+$/.test(token)) {
+                pendingSpace = currentLine().width > 0;
+                return;
+              }
+              const textObject = this.add.text(0, 0, token, textStyle).setOrigin(0, 0);
+              addDisplayItem(textObject, Math.ceil(textObject.width), 2);
+            });
+          });
+
+          const usedLines = lines.filter((line) => line.items.some((entry) => entry.item));
+          const lineCount = Math.max(1, usedLines.length);
+          const contentWidth = Math.max(1, ...usedLines.map((line) => line.width));
+          const contentHeight = lineCount * lineHeight;
+          const width = Math.min(250, Math.max(68, Math.ceil(contentWidth) + 28));
+          const height = Math.max(34, Math.ceil(contentHeight) + 18);
+          const offsetY = -height + 9;
+          usedLines.forEach((line, lineIndex) => {
+            let cursorX = -line.width / 2;
+            line.items.forEach((entry) => {
+              if (entry.item) {
+                entry.item.setPosition(cursorX, offsetY + lineIndex * lineHeight + entry.yOffset);
+              }
+              cursorX += entry.width;
+            });
+          });
+          bubbleObjects.signature = text;
+          bubbleObjects.width = width;
+          bubbleObjects.height = height;
+          bubbleObjects.lineCount = lineCount;
+          this.drawChatBubble(bubbleObjects.background, width, height);
         }
 
         private createChatBubble(bubble: LandChatBubble) {
           const background = this.add.graphics();
-          const textObject = this.add.text(0, 0, bubble.text, {
-            align: 'center',
-            color: '#f8fbff',
-            fontFamily: 'Inter, Arial, sans-serif',
-            fontSize: '13px',
-            lineSpacing: 3,
-            wordWrap: { width: 220, useAdvancedWrap: true },
-          });
-          const container = this.add.container(0, 0, [background, textObject]);
+          const container = this.add.container(0, 0, [background]);
           container.setDepth(9999);
-          this.drawChatBubble(background, textObject);
-          return { container, background, text: textObject };
+          const bubbleObjects = {
+            container,
+            background,
+            contentItems: [] as any[],
+            signature: '',
+            width: 78,
+            height: 34,
+            lineCount: 1,
+            popStarted: false,
+          };
+          this.rebuildChatBubbleContent(bubbleObjects, bubble.text);
+          return bubbleObjects;
         }
 
         private removeChatBubble(
@@ -4944,12 +6688,30 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             if (landChatBubblesRef.current.has(messageId)) continue;
             this.removeChatBubble(messageId, bubbleObjects);
           }
+
+          const bubbleGroups = new Map<string, Array<{
+            messageId: string;
+            bubble: LandChatBubble;
+            bubbleObjects: {
+              container: any;
+              background: any;
+              contentItems: any[];
+              signature: string;
+              width: number;
+              height: number;
+              lineCount: number;
+              popStarted: boolean;
+            };
+            avatar: any;
+          }>>();
+
           for (const [messageId, bubble] of landChatBubblesRef.current.entries()) {
             let avatar: any | undefined;
+            const avatarKey = `${bubble.authorAddress}:${bubble.sessionId}`;
             if (bubble.authorAddress === myAddress && bubble.sessionId === sessionId) {
               avatar = this.localAvatar;
             } else {
-              avatar = this.remotes.get(`${bubble.authorAddress}:${bubble.sessionId}`);
+              avatar = this.remotes.get(avatarKey);
               if (!avatar) {
                 const authorAvatars = Array.from(this.remotes.entries())
                   .filter(([key]) => key.startsWith(`${bubble.authorAddress}:`))
@@ -4968,19 +6730,76 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               bubbleObjects.container.setVisible(false);
               continue;
             }
-            if (bubbleObjects.text.text !== bubble.text) {
-              bubbleObjects.text.setText(bubble.text);
-              this.drawChatBubble(bubbleObjects.background, bubbleObjects.text);
+            if (bubbleObjects.signature !== bubble.text) {
+              this.rebuildChatBubbleContent(bubbleObjects, bubble.text);
             }
-            const remainingMs = bubble.expiresAt - now;
-            const fadeAlpha = Math.max(0, Math.min(1, remainingMs / 2000));
-            const ageMs = now - bubble.createdAt;
-            const rise = Math.min(12, ageMs / 700);
-            const scale = Math.abs(avatar.scaleY || 1);
-            bubbleObjects.container.setVisible(true);
-            bubbleObjects.container.setPosition(avatar.x, avatar.y - LAND_CHARACTER_CHAT_BUBBLE_OFFSET * scale - rise);
-            bubbleObjects.container.setAlpha(remainingMs < 2000 ? fadeAlpha : 1);
-            bubbleObjects.container.setDepth(avatar.depth + 120);
+            const key = bubble.authorAddress === myAddress && bubble.sessionId === sessionId
+              ? 'local'
+              : avatarKey;
+            const group = bubbleGroups.get(key) || [];
+            group.push({ messageId, bubble, bubbleObjects, avatar });
+            bubbleGroups.set(key, group);
+          }
+
+          const visibleMessageIds = new Set<string>();
+          const stackAlphas = [1, 0.7, 0.4, 0.2];
+          for (const group of bubbleGroups.values()) {
+            const newestFirst = group.sort((a, b) => b.bubble.createdAt - a.bubble.createdAt);
+            const visibleStack: typeof newestFirst = [];
+            let remainingLineBudget = 4;
+
+            for (const entry of newestFirst) {
+              const lineCost = Math.max(1, Math.min(4, entry.bubbleObjects.lineCount || 1));
+              if (visibleStack.length > 0 && lineCost > remainingLineBudget) continue;
+              visibleStack.push(entry);
+              remainingLineBudget -= lineCost;
+              if (visibleStack.length >= 4 || remainingLineBudget <= 0) break;
+            }
+
+            let tailY = 0;
+            visibleStack.forEach((entry, stackIndex) => {
+              const { avatar, bubble, bubbleObjects, messageId } = entry;
+              visibleMessageIds.add(messageId);
+              const remainingMs = bubble.expiresAt - now;
+              const fadeAlpha = Math.max(0, Math.min(1, remainingMs / 2000));
+              const ageMs = now - bubble.createdAt;
+              const scale = Math.abs(avatar.scaleY || 1);
+              if (stackIndex === 0) {
+                tailY = avatar.y - LAND_CHARACTER_CHAT_BUBBLE_OFFSET * scale;
+              } else {
+                tailY -= visibleStack[stackIndex - 1].bubbleObjects.height + 8;
+              }
+
+              if (!bubbleObjects.popStarted) {
+                bubbleObjects.popStarted = true;
+                bubbleObjects.container.setScale(0.84);
+                bubbleObjects.container.setPosition(avatar.x, tailY + 8);
+              }
+
+              const currentX = Number.isFinite(bubbleObjects.container.x)
+                ? bubbleObjects.container.x
+                : avatar.x;
+              const currentY = Number.isFinite(bubbleObjects.container.y)
+                ? bubbleObjects.container.y
+                : tailY;
+              bubbleObjects.container.setVisible(true);
+              bubbleObjects.container.setPosition(
+                Phaser.Math.Linear(currentX, avatar.x, 0.28),
+                Phaser.Math.Linear(currentY, tailY, 0.28)
+              );
+              const popProgress = Math.max(0, Math.min(1, ageMs / 180));
+              const targetScale = 0.84 + popProgress * 0.16;
+              bubbleObjects.container.setScale(
+                Phaser.Math.Linear(bubbleObjects.container.scaleX || 1, targetScale, 0.34)
+              );
+              bubbleObjects.container.setAlpha((stackAlphas[stackIndex] || 0.16) * fadeAlpha);
+              bubbleObjects.container.setDepth(avatar.depth + 120 + visibleStack.length - stackIndex);
+            });
+          }
+
+          for (const [messageId, bubbleObjects] of this.chatBubbles.entries()) {
+            if (visibleMessageIds.has(messageId)) continue;
+            bubbleObjects.container.setVisible(false);
           }
         }
 
@@ -5302,7 +7121,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             x >= 1548 &&
             y <= 466
           ) {
-            return { roomId: QORTAL_LAND_PARK_ROOM_ID, x: 304, y: 500, direction: 'r' };
+            return this.getParkPortalReturnTarget();
           }
           if (
             roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
@@ -5329,8 +7148,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
           if (
             roomId === QORTAL_LAND_PARK_ROOM_ID &&
-            x <= 232 &&
-            y <= 470
+            this.isAtParkPortalPassage(x, y)
           ) {
             return { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 1488, y: 492, direction: 'l' };
           }
@@ -5357,6 +7175,35 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             x: hotspot.returnX,
             y: hotspot.returnY,
             direction: 'l',
+          };
+        }
+
+        private isAtParkPortalPassage(x: number, y: number): boolean {
+          const doorProgress = this.parkPortalDoor?.progress ?? 0;
+          if (doorProgress < QORTAL_LAND_PARK_PORTAL_OPEN_THRESHOLD) return false;
+          const passage = this.parkPortalDoor
+            ? {
+                passMinX: this.parkPortalDoor.passMinX,
+                passMaxX: this.parkPortalDoor.passMaxX,
+                passMinY: this.parkPortalDoor.passMinY,
+                passMaxY: this.parkPortalDoor.passMaxY,
+              }
+            : qortalLandParkPortalHotspot();
+          return (
+            x >= passage.passMinX &&
+            x <= passage.passMaxX &&
+            y >= passage.passMinY &&
+            y <= passage.passMaxY
+          );
+        }
+
+        private getParkPortalReturnTarget(): QortalLandRoomTransitionTarget {
+          const hotspot = qortalLandParkPortalHotspot();
+          return {
+            roomId: QORTAL_LAND_PARK_ROOM_ID,
+            x: hotspot.returnX,
+            y: hotspot.returnY,
+            direction: 'd',
           };
         }
 
@@ -5591,6 +7438,16 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     }
     return '';
   })();
+  const characterPreviewRowPercent =
+    characterPreviewFacing === 'back'
+      ? '100%'
+      : characterPreviewFacing === 'front'
+        ? '50%'
+        : '0%';
+  const characterPreviewScaleX = characterPreviewFacing === 'left' ? -0.96 : 0.96;
+  const characterPreviewFacingLabel =
+    characterPreviewFacing.charAt(0).toUpperCase() + characterPreviewFacing.slice(1);
+  const landChatOpacity = isChatDimmed && !isChatFocused ? 0.5 : 0.9;
 
   return (
     <Box
@@ -5627,6 +7484,25 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           </Typography>
           <Button
             size="small"
+            variant={isCharacterPanelOpen ? 'contained' : 'outlined'}
+            onClick={() => setIsCharacterPanelOpen((open) => !open)}
+            sx={{
+              borderColor: 'rgba(255, 43, 214, 0.38)',
+              borderRadius: '6px',
+              color: isCharacterPanelOpen ? '#071018' : '#ff7ce8',
+              fontSize: 11,
+              fontWeight: 800,
+              lineHeight: 1.1,
+              minHeight: 28,
+              minWidth: 92,
+              padding: '5px 10px',
+              textTransform: 'none',
+            }}
+          >
+            Customize
+          </Button>
+          <Button
+            size="small"
             variant={isAssetDevPanelOpen ? 'contained' : 'outlined'}
             onClick={() => setIsAssetDevPanelOpen((open) => !open)}
             sx={{
@@ -5659,7 +7535,630 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             display: 'block',
           },
         }}
-      />
+      >
+        {reticulumReady === true && (
+          <ClickAwayListener
+            onClickAway={() => {
+              if (isChatFocused || chatText) cancelLandChatTyping();
+            }}
+          >
+            <Box
+              onClick={wakeLandChatPanel}
+              sx={{
+                background:
+                  'linear-gradient(180deg, rgba(7, 12, 20, 0.96), rgba(5, 8, 15, 0.9))',
+                border: '1px solid rgba(44, 248, 255, 0.52)',
+                borderRadius: '14px',
+                bottom: { xs: 12, md: 18 },
+                boxShadow:
+                  '0 18px 42px rgba(0, 0, 0, 0.52), inset 0 0 0 1px rgba(255, 43, 214, 0.28), inset 0 0 28px rgba(44, 248, 255, 0.04)',
+                color: '#f8fbff',
+                left: { xs: 12, md: 22 },
+                opacity: landChatOpacity,
+                padding: '14px 14px 16px',
+                pointerEvents: 'auto',
+                position: 'absolute',
+                transition: 'opacity 180ms ease, border-color 180ms ease, background 180ms ease',
+                width: 'min(468px, calc(100% - 24px))',
+                zIndex: 4,
+                '&:hover': {
+                  opacity: 0.9,
+                },
+              }}
+            >
+              <Box sx={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', gap: 0.75, paddingBottom: 0.75 }}>
+                {([
+                  ['local', 'World'],
+                  ['whispers', 'Whispers'],
+                ] as const).map(([tab, label]) => {
+                  const isActive = activeChatTab === tab;
+                  return (
+                  <Box
+                    component="button"
+                    key={tab}
+                    onClick={() => {
+                      setActiveChatTab(tab);
+                      setIsEmojiPickerOpen(false);
+                      wakeLandChatPanel();
+                      if (tab === 'whispers') {
+                        setChatText('');
+                        setChatError('');
+                        chatInputRef.current?.blur();
+                      }
+                    }}
+                    sx={{
+                      alignItems: 'center',
+                      backgroundColor: isActive
+                        ? 'rgba(7, 22, 28, 0.58)'
+                        : 'rgba(255, 255, 255, 0.02)',
+                      border: `1px solid ${isActive ? 'rgba(44, 248, 255, 0.34)' : 'rgba(255, 255, 255, 0.12)'}`,
+                      borderRadius: '5px',
+                      color: isActive ? '#2cf8ff' : 'rgba(220, 220, 226, 0.48)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      fontSize: 12,
+                      fontWeight: isActive ? 900 : 800,
+                      height: 31,
+                      justifyContent: 'center',
+                      minWidth: 96,
+                      padding: '0 14px',
+                      textShadow: isActive ? '0 0 8px rgba(44, 248, 255, 0.34)' : 'none',
+                      '&:hover': {
+                        borderColor: 'rgba(44, 248, 255, 0.28)',
+                        color: isActive ? '#2cf8ff' : 'rgba(220, 220, 226, 0.68)',
+                      },
+                    }}
+                  >
+                    {label}
+                  </Box>
+                  );
+                })}
+              </Box>
+              <Box sx={{ minHeight: 118 }}>
+                <Box
+                  ref={chatMessagesViewportRef}
+                  sx={{
+                    maxHeight: 116,
+                    minHeight: 108,
+                    overflowY: 'auto',
+                    padding: '12px 11px 5px 0',
+                    scrollbarColor: 'rgba(44, 248, 255, 0.7) transparent',
+                    scrollbarWidth: 'thin',
+                    '&::-webkit-scrollbar': {
+                      width: 8,
+                    },
+                    '&::-webkit-scrollbar-track': {
+                      background: 'transparent',
+                    },
+                    '&::-webkit-scrollbar-thumb': {
+                      background:
+                        'linear-gradient(180deg, rgba(44, 248, 255, 0.78), rgba(255, 43, 214, 0.62))',
+                      borderRadius: 999,
+                    },
+                  }}
+                >
+                  {activeChatTab === 'local' && landChatMessages.map((message) => {
+                    const authorName = displayNameForAddress(message.authorAddress, primaryNameCacheRef.current);
+                    const isYell = message.mode === 'yell';
+                    const isEmote = message.mode === 'emote';
+                    const authorColor = isYell
+                      ? '#ff4d4d'
+                      : message.authorAddress === myAddress
+                        ? '#2cf8ff'
+                        : '#ff4dde';
+                    const sentAt = new Date(message.timestamp);
+                    const sentTime = `${sentAt.getHours().toString().padStart(2, '0')}:${sentAt.getMinutes().toString().padStart(2, '0')}`;
+                    return (
+                      <Box
+                        key={message.messageId}
+                        sx={{
+                          display: 'grid',
+                          gap: 1.15,
+                          gridTemplateColumns: '50px minmax(0, 1fr)',
+                          marginBottom: 0.35,
+                        }}
+                      >
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: 'rgba(220, 220, 226, 0.68)',
+                            fontSize: 12,
+                            lineHeight: 1.2,
+                            textShadow: '0 1px 2px rgba(0, 0, 0, 0.85)',
+                          }}
+                        >
+                          {sentTime}
+                        </Typography>
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: isYell ? '#ff4d4d' : isEmote ? '#ffd64a' : '#f8fbff',
+                            fontSize: 12,
+                            fontWeight: isYell || isEmote ? 900 : 500,
+                            lineHeight: 1.2,
+                            minWidth: 0,
+                            textShadow: '0 1px 2px rgba(0, 0, 0, 0.85)',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {isYell ? (
+                            <>
+                              <Box component="span" sx={{ color: authorColor, fontWeight: 900 }}>
+                                {authorName} yelled:
+                              </Box>
+                              {' '}
+                              {renderLandChatTextParts(message.text)}
+                            </>
+                          ) : isEmote ? (
+                            `${authorName} ${message.text}`
+                          ) : (
+                            <>
+                              <Box component="span" sx={{ color: authorColor, fontWeight: 900 }}>
+                                {authorName}:
+                              </Box>
+                              {' '}
+                              {renderLandChatTextParts(message.text)}
+                            </>
+                          )}
+                        </Typography>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              </Box>
+              <Box
+                sx={{
+                  borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                  display: 'grid',
+                  gap: 0.35,
+                  paddingTop: 0.65,
+                }}
+              >
+                {activeChatTab === 'local' && isEmojiPickerOpen && (
+                  <Box
+                    sx={{
+                      background:
+                        'linear-gradient(180deg, rgba(7, 12, 20, 0.98), rgba(4, 8, 14, 0.94))',
+                      border: '1px solid rgba(44, 248, 255, 0.42)',
+                      borderRadius: '8px',
+                      bottom: 68,
+                      boxShadow:
+                        '0 14px 28px rgba(0, 0, 0, 0.44), inset 0 0 0 1px rgba(255, 43, 214, 0.16)',
+                      display: 'grid',
+                      gap: 0.35,
+                      gridTemplateColumns: 'repeat(7, 28px)',
+                      padding: '8px',
+                      position: 'absolute',
+                      right: 19,
+                      zIndex: 2,
+                    }}
+                  >
+                    {QORTAL_LAND_AVAILABLE_CHAT_EMOJIS.map((emoji) => {
+                      const emojiUrl = qortalLandChatEmojiUrlByFileName.get(emoji.fileName);
+                      if (!emojiUrl) return null;
+                      return (
+                        <IconButton
+                          aria-label={`Insert ${emoji.label}`}
+                          key={emoji.key}
+                          onClick={() => insertLandChatEmojiShortcut(emoji.shortcuts[0])}
+                          onMouseDown={(event) => event.preventDefault()}
+                          sx={{
+                            border: '1px solid rgba(220, 220, 226, 0.08)',
+                            borderRadius: '5px',
+                            height: 28,
+                            padding: 0,
+                            width: 28,
+                            '&:hover': {
+                              backgroundColor: 'rgba(44, 248, 255, 0.1)',
+                              borderColor: 'rgba(44, 248, 255, 0.35)',
+                            },
+                          }}
+                        >
+                          <Box
+                            alt={emoji.label}
+                            component="img"
+                            src={emojiUrl}
+                            sx={{ height: 20, objectFit: 'contain', width: 20 }}
+                          />
+                        </IconButton>
+                      );
+                    })}
+                  </Box>
+                )}
+                <TextField
+                  autoComplete="off"
+                  disabled={activeChatTab !== 'local'}
+                  error={Boolean(chatError)}
+                  inputRef={chatInputRef}
+                  placeholder={activeChatTab === 'local' ? 'Say something...' : ''}
+                  size="small"
+                  value={chatText}
+                  variant="filled"
+                  inputProps={{
+                    'aria-label': 'QortalLand chat message',
+                    maxLength: LAND_CHAT_MAX_INPUT_CHARS,
+                  }}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end" sx={{ gap: 0.25 }}>
+                        <IconButton
+                          aria-label="Open emoji picker"
+                          disabled={activeChatTab !== 'local'}
+                          onClick={() => {
+                            setIsEmojiPickerOpen((open) => !open);
+                            focusLandChatInput();
+                          }}
+                          onMouseDown={(event) => event.preventDefault()}
+                          sx={{
+                            color: isEmojiPickerOpen ? '#2cf8ff' : 'rgba(220, 220, 226, 0.6)',
+                            height: 28,
+                            padding: 0,
+                            width: 28,
+                            '&:hover': {
+                              backgroundColor: 'rgba(44, 248, 255, 0.1)',
+                              color: '#2cf8ff',
+                            },
+                          }}
+                        >
+                          <InsertEmoticonRoundedIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <IconButton
+                          aria-label="Send chat message"
+                          disabled={isSendingChat || activeChatTab !== 'local'}
+                          onClick={submitLandChatFromInput}
+                          onMouseDown={(event) => event.preventDefault()}
+                          sx={{
+                            color: 'rgba(220, 220, 226, 0.6)',
+                            height: 28,
+                            padding: 0,
+                            width: 28,
+                            '&:hover': {
+                              backgroundColor: 'rgba(255, 43, 214, 0.1)',
+                              color: '#ff4dde',
+                            },
+                          }}
+                        >
+                          <KeyboardReturnRoundedIcon sx={{ fontSize: 19 }} />
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
+                  onBlur={() => setIsChatFocused(false)}
+                  onChange={(event) => {
+                    const next = event.target.value.slice(0, LAND_CHAT_MAX_INPUT_CHARS);
+                    setChatText(next);
+                    if (chatError) setChatError('');
+                    wakeLandChatPanel();
+                  }}
+                  onFocus={() => {
+                    setIsChatFocused(true);
+                    wakeLandChatPanel();
+                  }}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      cancelLandChatTyping();
+                      return;
+                    }
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      submitLandChatFromInput();
+                    }
+                  }}
+                  sx={{
+                    '& .MuiFilledInput-root': {
+                      backgroundColor: 'rgba(4, 8, 14, 0.72)',
+                      border: `1px solid ${chatError ? alpha(theme.palette.error.light, 0.6) : 'rgba(220, 220, 226, 0.28)'}`,
+                      borderRadius: '7px',
+                      color: '#f8fbff',
+                      fontSize: 14,
+                      height: 48,
+                      minHeight: 48,
+                      overflow: 'hidden',
+                      '&:before, &:after': { display: 'none' },
+                    },
+                    '& .MuiFilledInput-input': {
+                      height: 16,
+                      padding: '15px 0 14px 12px',
+                      '&::placeholder': {
+                        color: 'rgba(220, 220, 226, 0.62)',
+                        opacity: 1,
+                      },
+                    },
+                    '& .MuiInputAdornment-root': {
+                      marginRight: 1,
+                    },
+                  }}
+                />
+              </Box>
+            </Box>
+          </ClickAwayListener>
+        )}
+      </Box>
+      {isCharacterPanelOpen && (
+        <Box
+          sx={{
+            background:
+              'linear-gradient(135deg, rgba(4, 6, 15, 0.98), rgba(16, 9, 31, 0.96) 52%, rgba(5, 18, 28, 0.96)), radial-gradient(circle at 72% 22%, rgba(255, 43, 214, 0.18), transparent 34%), radial-gradient(circle at 26% 76%, rgba(44, 248, 255, 0.12), transparent 32%)',
+            border: '1px solid rgba(255, 43, 214, 0.34)',
+            borderRadius: '8px',
+            boxShadow:
+              '0 28px 80px rgba(0, 0, 0, 0.62), inset 0 0 0 1px rgba(44, 248, 255, 0.09)',
+            color: '#f8fbff',
+            display: 'grid',
+            gap: { xs: 1.5, md: 2 },
+            gridTemplateColumns: { xs: '1fr', md: 'minmax(275px, 0.9fr) minmax(290px, 1fr)' },
+            left: '50%',
+            maxHeight: 'min(520px, calc(100% - 76px))',
+            overflowY: 'auto',
+            padding: { xs: '14px', md: '18px 20px' },
+            position: 'absolute',
+            top: { xs: 54, md: 'clamp(136px, 19vh, 218px)' },
+            transform: 'translateX(-50%)',
+            width: 'min(790px, calc(100% - 32px))',
+            zIndex: 5,
+            '&:before': {
+              background:
+                'linear-gradient(90deg, transparent, rgba(44, 248, 255, 0.76), rgba(255, 43, 214, 0.58), transparent)',
+              content: '""',
+              height: 2,
+              left: 34,
+              position: 'absolute',
+              right: 34,
+              top: 9,
+            },
+            '&:after': {
+              borderBottom: '1px solid rgba(44, 248, 255, 0.18)',
+              borderTop: '1px solid rgba(255, 43, 214, 0.16)',
+              content: '""',
+              inset: '28px 18px 18px',
+              pointerEvents: 'none',
+              position: 'absolute',
+            },
+          }}
+        >
+          <Box sx={{ display: 'grid', gap: 1.35, position: 'relative', zIndex: 1 }}>
+            <Box>
+              <Typography sx={{ color: '#f8fbff', fontSize: 16, fontWeight: 900 }}>
+                Character
+              </Typography>
+              <Typography sx={{ color: 'rgba(44, 248, 255, 0.64)', fontSize: 10, fontWeight: 800, letterSpacing: 0 }}>
+                Loadout Console
+              </Typography>
+            </Box>
+            {([
+              ['hair', 'Hair', QORTAL_LAND_CHARACTER_CUSTOMIZATION_OPTIONS.hair],
+              ['face', 'Face', QORTAL_LAND_CHARACTER_CUSTOMIZATION_OPTIONS.face],
+              ['clothes', 'Clothes', QORTAL_LAND_CHARACTER_CUSTOMIZATION_OPTIONS.clothes],
+            ] as const).map(([field, label, options]) => (
+              <Box
+                key={field}
+                sx={{
+                  background: 'rgba(4, 7, 17, 0.74)',
+                  border: '1px solid rgba(248, 251, 255, 0.1)',
+                  borderRadius: '8px',
+                  boxShadow: 'inset 0 0 18px rgba(44, 248, 255, 0.04)',
+                  display: 'grid',
+                  gap: 0.75,
+                  padding: '9px 10px 10px',
+                }}
+              >
+                <Typography sx={{ color: 'rgba(248, 251, 255, 0.58)', fontSize: 10, fontWeight: 800 }}>
+                  {label}
+                </Typography>
+                <Box sx={{ alignItems: 'center', display: 'grid', gap: 0.7, gridTemplateColumns: '34px 1fr 34px' }}>
+                  <IconButton
+                    aria-label={`Previous ${label}`}
+                    size="small"
+                    onClick={() => cycleCharacterCustomization(field, -1)}
+                    sx={{
+                      backgroundColor: 'rgba(255, 43, 214, 0.1)',
+                      border: '1px solid rgba(255, 43, 214, 0.28)',
+                      borderRadius: '6px',
+                      color: '#ff7ce8',
+                      height: 34,
+                      width: 34,
+                    }}
+                  >
+                    {'<'}
+                  </IconButton>
+                  <TextField
+                    select
+                    size="small"
+                    value={characterCustomization[field]}
+                    onChange={(event) =>
+                      updateCharacterCustomization(field, event.target.value)
+                    }
+                    sx={{
+                      '& .MuiInputBase-input': {
+                        color: '#f8fbff',
+                        fontSize: 12,
+                        fontWeight: 800,
+                        textAlign: 'center',
+                      },
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        borderColor: 'rgba(44, 248, 255, 0.22)',
+                      },
+                      '& .MuiOutlinedInput-root': {
+                        backgroundColor: 'rgba(7, 12, 28, 0.88)',
+                        borderRadius: '6px',
+                      },
+                      '& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: 'rgba(44, 248, 255, 0.56)',
+                      },
+                      '& .MuiSvgIcon-root': {
+                        color: 'rgba(248, 251, 255, 0.62)',
+                      },
+                    }}
+                  >
+                    {options.map((option) => (
+                      <MenuItem key={option.value} value={option.value}>
+                        {option.label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  <IconButton
+                    aria-label={`Next ${label}`}
+                    size="small"
+                    onClick={() => cycleCharacterCustomization(field, 1)}
+                    sx={{
+                      backgroundColor: 'rgba(44, 248, 255, 0.1)',
+                      border: '1px solid rgba(44, 248, 255, 0.3)',
+                      borderRadius: '6px',
+                      color: '#2cf8ff',
+                      height: 34,
+                      width: 34,
+                    }}
+                  >
+                    {'>'}
+                  </IconButton>
+                </Box>
+              </Box>
+            ))}
+            <Box sx={{ display: 'grid', gap: 1, gridTemplateColumns: '1fr 1fr', marginTop: 0.5 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={resetCharacterCustomization}
+                sx={{
+                  borderColor: 'rgba(248, 251, 255, 0.2)',
+                  borderRadius: '6px',
+                  color: 'rgba(248, 251, 255, 0.82)',
+                  fontSize: 11,
+                  minHeight: 42,
+                  textTransform: 'none',
+                }}
+              >
+                Reset
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                onClick={() => setIsCharacterPanelOpen(false)}
+                sx={{
+                  borderRadius: '6px',
+                  color: '#071018',
+                  fontSize: 11,
+                  fontWeight: 900,
+                  minHeight: 42,
+                  textTransform: 'none',
+                }}
+              >
+                Done
+              </Button>
+            </Box>
+          </Box>
+          <Box
+            sx={{
+              alignItems: 'center',
+              background:
+                'linear-gradient(180deg, rgba(4, 7, 17, 0.28), rgba(4, 7, 17, 0.74)), radial-gradient(circle at 50% 42%, rgba(44, 248, 255, 0.2), rgba(255, 43, 214, 0.1) 40%, rgba(5, 8, 17, 0) 72%)',
+              border: '1px solid rgba(44, 248, 255, 0.14)',
+              borderRadius: '8px',
+              display: 'grid',
+              justifyItems: 'center',
+              minHeight: { xs: 300, md: 382 },
+              overflow: 'hidden',
+              position: 'relative',
+              zIndex: 1,
+            }}
+          >
+            <Box
+              sx={{
+                background:
+                  'linear-gradient(90deg, transparent, rgba(44, 248, 255, 0.38), rgba(255, 43, 214, 0.28), transparent)',
+                height: 2,
+                left: 38,
+                position: 'absolute',
+                right: 38,
+                top: 26,
+              }}
+            />
+            <Box
+              sx={{
+                backgroundImage: `url(${defaultCharacterSpritesheetUrl})`,
+                backgroundPosition: `0% ${characterPreviewRowPercent}`,
+                backgroundRepeat: 'no-repeat',
+                backgroundSize: `${LAND_CHARACTER_FRAMES_PER_DIRECTION * 100}% 300%`,
+                filter: 'drop-shadow(0 22px 24px rgba(0, 0, 0, 0.54)) drop-shadow(0 0 16px rgba(44, 248, 255, 0.14))',
+                height: 320,
+                marginTop: { xs: 1, md: 2 },
+                transform: `scale(${characterPreviewScaleX}, 0.96)`,
+                transformOrigin: 'center bottom',
+                transition: 'transform 180ms ease, filter 180ms ease',
+                width: 320,
+                zIndex: 1,
+              }}
+            />
+            <Box
+              sx={{
+                background: 'rgba(0, 0, 0, 0.42)',
+                borderRadius: '50%',
+                bottom: { xs: 54, md: 64 },
+                filter: 'blur(3px)',
+                height: 28,
+                position: 'absolute',
+                width: 150,
+              }}
+            />
+            <Box
+              sx={{
+                alignItems: 'center',
+                bottom: 16,
+                display: 'grid',
+                gap: 1,
+                gridTemplateColumns: '36px minmax(100px, 1fr) 36px',
+                left: 24,
+                position: 'absolute',
+                right: 24,
+              }}
+            >
+              <IconButton
+                aria-label="Rotate character left"
+                size="small"
+                onClick={() => rotateCharacterPreview(-1)}
+                sx={{
+                  backgroundColor: 'rgba(255, 43, 214, 0.1)',
+                  border: '1px solid rgba(255, 43, 214, 0.28)',
+                  borderRadius: '6px',
+                  color: '#ff7ce8',
+                  height: 36,
+                  width: 36,
+                }}
+              >
+                {'<'}
+              </IconButton>
+              <Typography
+                sx={{
+                  color: 'rgba(248, 251, 255, 0.76)',
+                  fontSize: 11,
+                  fontWeight: 900,
+                  textAlign: 'center',
+                }}
+              >
+                {characterPreviewFacingLabel}
+              </Typography>
+              <IconButton
+                aria-label="Rotate character right"
+                size="small"
+                onClick={() => rotateCharacterPreview(1)}
+                sx={{
+                  backgroundColor: 'rgba(44, 248, 255, 0.1)',
+                  border: '1px solid rgba(44, 248, 255, 0.3)',
+                  borderRadius: '6px',
+                  color: '#2cf8ff',
+                  height: 36,
+                  width: 36,
+                }}
+              >
+                {'>'}
+              </IconButton>
+            </Box>
+          </Box>
+        </Box>
+      )}
       {isAssetDevPanelOpen && (
         <Box
           sx={{
@@ -5684,6 +8183,35 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             Asset Dev
           </Typography>
           <TextField
+            label="Room"
+            select
+            size="small"
+            value={selectedDevRoomId}
+            onChange={(event) => selectDevelopmentRoom(event.target.value as LandRoomId)}
+            sx={{
+              '& .MuiInputLabel-root': {
+                color: 'rgba(248, 251, 255, 0.58)',
+                fontSize: 11,
+              },
+              '& .MuiInputBase-input': {
+                color: '#f8fbff',
+                fontSize: 12,
+              },
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: 'rgba(248, 251, 255, 0.16)',
+              },
+              '& .MuiSvgIcon-root': {
+                color: 'rgba(248, 251, 255, 0.72)',
+              },
+            }}
+          >
+            {QORTAL_LAND_DEVELOPMENT_DEV_ROOM_OPTIONS.map((room) => (
+              <MenuItem key={room.id} value={room.id}>
+                {room.label}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField
             label="Asset"
             select
             size="small"
@@ -5706,7 +8234,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               },
             }}
           >
-            {QORTAL_LAND_EDITABLE_DEVELOPMENT_PLACEMENTS.map((placement) => (
+            {editableDevPlacementsForSelectedRoom.map((placement) => (
               <MenuItem key={placement.defaultPlacement.id} value={placement.defaultPlacement.id}>
                 {placement.label}
               </MenuItem>
@@ -5849,6 +8377,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               ['originX', 'Origin X', 0.001],
               ['originY', 'Origin Y', 0.001],
               ['alpha', 'Alpha', 0.01],
+              ['angle', 'Angle', 1],
             ] as const).map(([field, label, step]) => (
               <TextField
                 key={field}
@@ -5992,90 +8521,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               Reset {selectedDevPlacementMeta.label}
             </Button>
           </Box>
-        </Box>
-      )}
-      {reticulumReady === true && (
-        <Box
-          sx={{
-            alignItems: 'center',
-            backgroundColor: 'rgba(7, 9, 20, 0.82)',
-            border: '1px solid rgba(44, 248, 255, 0.24)',
-            borderRadius: '8px',
-            bottom: 16,
-            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.35)',
-            display: 'flex',
-            gap: 1,
-            left: '50%',
-            maxWidth: 620,
-            padding: '8px 10px',
-            position: 'absolute',
-            transform: 'translateX(-50%)',
-            width: 'min(620px, calc(100% - 32px))',
-            zIndex: 3,
-          }}
-        >
-          <TextField
-            autoComplete="off"
-            error={Boolean(chatError)}
-            helperText={chatError || `${utf8ByteLength(chatText.trim())}/${LAND_CHAT_MAX_TEXT_BYTES} bytes`}
-            placeholder="Say something"
-            size="small"
-            value={chatText}
-            variant="filled"
-            onChange={(event) => {
-              const next = event.target.value.slice(0, LAND_CHAT_MAX_INPUT_CHARS);
-              setChatText(next);
-              if (chatError) setChatError('');
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void sendLandChat();
-              }
-            }}
-            sx={{
-              flex: 1,
-              '& .MuiFilledInput-root': {
-                backgroundColor: 'rgba(11, 16, 32, 0.92)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: '6px',
-                color: theme.palette.text.primary,
-                fontSize: 13,
-                minHeight: 42,
-                overflow: 'hidden',
-                '&:before, &:after': { display: 'none' },
-              },
-              '& .MuiFormHelperText-root': {
-                color: chatError ? theme.palette.error.light : 'rgba(248, 251, 255, 0.52)',
-                fontSize: 10,
-                lineHeight: 1.2,
-                marginLeft: 0.5,
-                marginTop: 0.35,
-              },
-            }}
-          />
-          <IconButton
-            aria-label="Send QortalLand chat"
-            disabled={isSendingChat || !chatText.trim()}
-            onClick={() => void sendLandChat()}
-            sx={{
-              backgroundColor: 'rgba(44, 248, 255, 0.16)',
-              border: '1px solid rgba(44, 248, 255, 0.28)',
-              borderRadius: '6px',
-              color: '#2cf8ff',
-              height: 42,
-              width: 42,
-              '&:hover': {
-                backgroundColor: 'rgba(44, 248, 255, 0.24)',
-              },
-              '&.Mui-disabled': {
-                color: 'rgba(248, 251, 255, 0.3)',
-              },
-            }}
-          >
-            <SendRoundedIcon fontSize="small" />
-          </IconButton>
         </Box>
       )}
       {actionTarget && !sendQortTarget && (

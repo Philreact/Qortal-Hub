@@ -37,6 +37,8 @@ Source PNGs should live under `src/assets/qortalland/source/` using the category
 | FUR_003 | bar_stool_round.png | Review | Bar stool group source asset. Five-stool Disco room group added to Asset Dev. |
 | FUR_004 | sofa_modern_b.png | Planned | Three-seat sofa. |
 | FUR_005 | table_round_low.png | Review | Low round club table. Two Disco room placements added to Asset Dev. |
+| FUR_006 | park_bench_straight.png | Review | Straight futuristic Park bench. Added to Park room and Asset Dev. |
+| FUR_007 | park_bench_curved.png | Review | Curved futuristic Park bench. Added to Park room and Asset Dev. |
 
 ## Technology
 
@@ -79,6 +81,14 @@ Source PNGs should live under `src/assets/qortalland/source/` using the category
 | DEC_003 | planter_rect_tropical.png | Review | Wide tropical planter. Added to Disco room and Asset Dev as Planter Wide. |
 | DEC_004 | planter_tall_tropical.png | Review | Tall tropical planter. Added to Disco room and Asset Dev as Planter Tall. |
 | DEC_005 | qortal_neon_light.png | Review | Qortal neon wall sign. Cleaned to transparent PNG and added to Disco room / Asset Dev with warp controls. |
+| DEC_006 | park_planter_left.png | Inactive | Older bottom-left Park planter/greenery asset. Removed from active Park room / Asset Dev in favor of DEC_012. |
+| DEC_007 | park_bench_planter_left.png | Review | Combined curved bench and greenery planter for Park. Added to Park room and Asset Dev. |
+| DEC_008 | park_tree_round_large.png | Review | Large round tree planter for Park. Added to Park room and Asset Dev. |
+| DEC_009 | park_tree_round_tall.png | Review | Tall round tree planter for Park. Added to Park room and Asset Dev. |
+| DEC_010 | park_tree_planter_lamp.png | Review | Tree planter with side flowers and lamp for Park. Added to Park room and Asset Dev. |
+| DEC_011 | park_fountain_blue.png | Review | Blue holographic fountain for Park. Added to Park room and Asset Dev. |
+| DEC_012 | park_planter_row_trees.png | Review | Wide tree planter row for Park. Added to Park room and Asset Dev. |
+| DEC_013 | park_planter_corner_trees.png | Review | Corner tree planter for Park. Added to Park room and Asset Dev. |
 
 ## Animated
 
