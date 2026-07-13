@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 import { useReticulumGroupChat } from './useReticulumGroupChat';
 
 vi.mock('../components/Group/groupApi', () => ({
@@ -37,6 +38,7 @@ describe('useReticulumGroupChat', () => {
   beforeEach(() => {
     listeners = [];
     getMessageHistory = vi.fn();
+    vi.mocked(getPrimaryNamesForAddresses).mockResolvedValue({});
     Object.defineProperty(window, 'reticulumChat', {
       configurable: true,
       value: {
@@ -131,6 +133,40 @@ describe('useReticulumGroupChat', () => {
       expect(getMessageHistory).toHaveBeenCalledTimes(1);
       expect(result.current.events).toEqual([]);
       expect(result.current.hasOlder).toBe(false);
+    });
+  });
+
+  it('shows a live event without waiting for primary-name lookup', async () => {
+    getMessageHistory.mockResolvedValue([]);
+    const names = deferred<Record<string, string>>();
+    vi.mocked(getPrimaryNamesForAddresses).mockReturnValueOnce(names.promise);
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(listeners).toHaveLength(1));
+
+    act(() => {
+      listeners[0]({ event: event('live-reply', 'general', 400) });
+    });
+
+    await waitFor(
+      () => {
+        expect(result.current.events).toEqual([
+          expect.objectContaining({ eventId: 'live-reply' }),
+        ]);
+      },
+      { timeout: 1200 }
+    );
+
+    await act(async () => {
+      names.resolve({ Qauthor: 'Author' });
+      await names.promise;
+    });
+    await waitFor(() => {
+      expect(result.current.events).toEqual([
+        expect.objectContaining({
+          eventId: 'live-reply',
+          senderName: 'Author',
+        }),
+      ]);
     });
   });
 });

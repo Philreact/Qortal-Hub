@@ -141,6 +141,42 @@ export function useReticulumGroupChat(
     return added;
   }, []);
 
+  const enrichVisibleEvents = useCallback(
+    async (incoming: ReticulumChatHookEvent[], expectedChatKey: string) => {
+      const enriched = await addPrimaryNamesToEvents(
+        incoming,
+        primaryNameCacheRef.current
+      );
+      if (!expectedChatKey || activeChatKeyRef.current !== expectedChatKey) return;
+      const enrichedById = new Map(
+        enriched
+          .filter((event) => typeof event.eventId === 'string' && !!event.eventId)
+          .map((event) => [event.eventId as string, event])
+      );
+      if (enrichedById.size === 0) return;
+      let changed = false;
+      const next = eventsRef.current.map((item) => {
+        const eventId = (item as ReticulumChatHookEvent)?.eventId;
+        const replacement =
+          typeof eventId === 'string' ? enrichedById.get(eventId) : undefined;
+        if (!replacement) return item;
+        const current = item as ReticulumChatHookEvent;
+        if (
+          current.senderName === replacement.senderName &&
+          current.authorPrimaryName === replacement.authorPrimaryName
+        ) {
+          return item;
+        }
+        changed = true;
+        return replacement;
+      });
+      if (!changed || activeChatKeyRef.current !== expectedChatKey) return;
+      eventsRef.current = next;
+      setEvents(next);
+    },
+    []
+  );
+
   const getOldestCursor = useCallback(() => {
     let oldest: { eventId: string; timestamp: number } | null = null;
     for (const item of events) {
@@ -170,7 +206,7 @@ export function useReticulumGroupChat(
     };
   }, []);
 
-  const flushPendingEvents = useCallback(async () => {
+  const flushPendingEvents = useCallback(() => {
     const expectedChatKey = activeChatKeyRef.current;
     const pending = pendingEventsRef.current;
     pendingEventsRef.current = [];
@@ -179,16 +215,11 @@ export function useReticulumGroupChat(
       batchTimerRef.current = null;
     }
     if (pending.length === 0) return;
-
-    const enriched = await addPrimaryNamesToEvents(
-      pending,
-      primaryNameCacheRef.current
-    );
-    if (activeChatKeyRef.current !== expectedChatKey) return;
     retryOlderAfterRef.current = 0;
     setHasOlder(true);
-    mergeEvents(enriched, expectedChatKey);
-  }, [mergeEvents]);
+    mergeEvents(pending, expectedChatKey);
+    void enrichVisibleEvents(pending, expectedChatKey);
+  }, [enrichVisibleEvents, mergeEvents]);
 
   const enqueueIncomingEvent = useCallback(
     (event: ReticulumChatHookEvent) => {
@@ -226,16 +257,12 @@ export function useReticulumGroupChat(
         RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
       );
     void historyPromise
-      ?.then(async (history) => {
+      ?.then((history) => {
         if (cancelled || !Array.isArray(history)) return;
-        const enriched = await addPrimaryNamesToEvents(
-          history as ReticulumChatHookEvent[],
-          primaryNameCacheRef.current
-        );
-        if (!cancelled) {
-          setHasOlder(enriched.length > 0);
-          mergeEvents(enriched, expectedChatKey);
-        }
+        const historyEvents = history as ReticulumChatHookEvent[];
+        setHasOlder(historyEvents.length > 0);
+        mergeEvents(historyEvents, expectedChatKey);
+        void enrichVisibleEvents(historyEvents, expectedChatKey);
       })
       .catch(() => {
         if (!cancelled) setHasOlder(false);
@@ -290,7 +317,14 @@ export function useReticulumGroupChat(
       offTyping?.();
       void window.reticulumChat?.unsubscribeChannel?.(validGroupId, normalizedChannelId);
     };
-  }, [enabled, enqueueIncomingEvent, mergeEvents, normalizedChannelId, validGroupId]);
+  }, [
+    enabled,
+    enqueueIncomingEvent,
+    enrichVisibleEvents,
+    mergeEvents,
+    normalizedChannelId,
+    validGroupId,
+  ]);
 
   const publishEvent = useCallback(
     async (event: unknown) => {
@@ -312,18 +346,14 @@ export function useReticulumGroupChat(
             chatEvent.channelId === normalizedChannelId) ||
             chatEvent?.channelId == null)
         ) {
-          const enriched = await addPrimaryNamesToEvents(
-            [chatEvent],
-            primaryNameCacheRef.current
-          );
-          if (activeChatKeyRef.current !== expectedChatKey) return result;
           retryOlderAfterRef.current = 0;
-          mergeEvents(enriched, expectedChatKey);
+          mergeEvents([chatEvent], expectedChatKey);
+          void enrichVisibleEvents([chatEvent], expectedChatKey);
         }
       }
       return result;
     },
-    [enabled, mergeEvents, normalizedChannelId, validGroupId]
+    [enabled, enrichVisibleEvents, mergeEvents, normalizedChannelId, validGroupId]
   );
 
   const loadOlder = useCallback(async () => {
@@ -364,12 +394,10 @@ export function useReticulumGroupChat(
         return { added: 0 };
       }
 
-      const enriched = await addPrimaryNamesToEvents(
-        history as ReticulumChatHookEvent[],
-        primaryNameCacheRef.current
-      );
       if (activeChatKeyRef.current !== expectedChatKey) return { added: 0 };
-      const added = mergeEvents(enriched, expectedChatKey);
+      const historyEvents = history as ReticulumChatHookEvent[];
+      const added = mergeEvents(historyEvents, expectedChatKey);
+      void enrichVisibleEvents(historyEvents, expectedChatKey);
       retryOlderAfterRef.current =
         added > 0 ? 0 : Date.now() + RETICULUM_CHAT_EMPTY_OLDER_RETRY_MS;
       if (activeChatKeyRef.current === expectedChatKey) setHasOlder(added > 0);
@@ -387,7 +415,14 @@ export function useReticulumGroupChat(
         setLoadingOlder(false);
       }
     }
-  }, [enabled, getOldestCursor, mergeEvents, normalizedChannelId, validGroupId]);
+  }, [
+    enabled,
+    enrichVisibleEvents,
+    getOldestCursor,
+    mergeEvents,
+    normalizedChannelId,
+    validGroupId,
+  ]);
 
   const sendTyping = useCallback(
     async (authorAddress: string, active: boolean) => {
