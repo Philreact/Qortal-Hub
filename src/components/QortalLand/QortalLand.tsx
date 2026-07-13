@@ -1530,7 +1530,7 @@ const QORTAL_LAND_DEVELOPMENT_PARK_PROP_DEFAULT_PLACEMENTS: QortalLandDevelopmen
     x: 820,
     y: 310,
     depthMode: 'fixed',
-    depth: 410,
+    depth: 200,
     originX: 0.5,
     originY: 0.86,
     scale: 0.2,
