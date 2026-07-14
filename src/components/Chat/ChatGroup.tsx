@@ -1567,12 +1567,7 @@ export const ChatGroup = ({
   }, [selectedGroup]);
 
   useEffect(() => {
-    if (
-      !reticulumChatEnabled ||
-      !selectedGroup ||
-      !reticulumChannelAccessReady
-    )
-      return;
+    if (!reticulumChatEnabled || !selectedGroup) return;
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
     let cancelled = false;

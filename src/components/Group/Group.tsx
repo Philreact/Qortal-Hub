@@ -3687,6 +3687,13 @@ export const Group = ({
                 >
                   <ChatGroup
                     myAddress={myAddress}
+                    isReticulumChannelAdmin={reticulumAdminGroupIds.has(
+                      Number(selectedGroup?.groupId)
+                    )}
+                    reticulumChannelAccessReady={
+                      reticulumAdminGroupsLoadedAddress === myAddress &&
+                      reticulumMembershipsAppliedKey === reticulumMembershipsKey
+                    }
                     selectedGroup={selectedGroup?.groupId}
                     selectedGroupName={
                       selectedGroup?.groupName || selectedGroup?.name || ''
@@ -3764,13 +3771,6 @@ export const Group = ({
               {!reticulumChatEnabled && triedToFetchSecretKey && (
                 <ChatGroup
                   myAddress={myAddress}
-                  isReticulumChannelAdmin={reticulumAdminGroupIds.has(
-                    Number(selectedGroup?.groupId)
-                  )}
-                  reticulumChannelAccessReady={
-                    reticulumAdminGroupsLoadedAddress === myAddress &&
-                    reticulumMembershipsAppliedKey === reticulumMembershipsKey
-                  }
                   selectedGroup={selectedGroup?.groupId}
                   selectedGroupName={
                     selectedGroup?.groupName || selectedGroup?.name || ''
