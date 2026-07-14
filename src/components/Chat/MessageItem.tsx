@@ -229,6 +229,7 @@ type MessageItemProps = {
   reply: string | null;
   replyIndex: number;
   replyExpiredMeta?: any;
+  reticulumChatEnabled?: boolean;
   scrollToItem: (index: number) => void;
 };
 
@@ -256,6 +257,7 @@ export const MessageItemComponent = ({
   reply,
   replyIndex,
   replyExpiredMeta,
+  reticulumChatEnabled = false,
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
@@ -1174,33 +1176,51 @@ export const MessageItemComponent = ({
           sx={{
             display: 'flex',
             flexDirection: 'row',
-            gap: '12px',
+            gap: reticulumChatEnabled ? '10px' : '12px',
             opacity: isTemp || isUpdating ? 0.5 : 1,
-            padding: isShowingAsReply ? '2px 8px' : '8px 16px 10px',
-            marginBottom: isShowingAsReply ? 0 : '3px',
+            padding: isShowingAsReply
+              ? '2px 8px'
+              : reticulumChatEnabled
+                ? '5px 14px 6px'
+                : '8px 16px 10px',
+            marginBottom: isShowingAsReply ? 0 : reticulumChatEnabled ? 0 : '3px',
             position: 'relative',
             transition: 'background-color 0.1s ease',
             width: '100%',
             ...(isOwn &&
               !isScrollTarget && {
-                borderLeft: `2px solid ${alpha(theme.palette.primary.main, 0.5)}`,
                 backgroundColor: alpha(theme.palette.primary.main, 0.045),
-                paddingLeft: '14px',
+                ...(!reticulumChatEnabled
+                  ? {
+                      borderLeft: `2px solid ${alpha(theme.palette.primary.main, 0.5)}`,
+                      paddingLeft: '14px',
+                    }
+                  : {}),
               }),
             ...(!isOwn &&
+              !reticulumChatEnabled &&
               !isScrollTarget && {
                 borderLeft: `2px solid ${alpha(theme.palette.text.secondary, 0.35)}`,
                 paddingLeft: '14px',
               }),
             ...(isScrollTarget && {
-              borderLeft: `2px solid ${theme.palette.primary.main}`,
               backgroundColor: alpha(theme.palette.primary.main, 0.07),
-              paddingLeft: '14px',
+              ...(!reticulumChatEnabled
+                ? {
+                    borderLeft: `2px solid ${theme.palette.primary.main}`,
+                    paddingLeft: '14px',
+                  }
+                : {}),
             }),
             ...(!isShowingAsReply && {
               '& .message-item-toolbar': {
                 opacity: 0,
                 pointerEvents: 'none',
+              },
+              '&:hover': {
+                backgroundColor: reticulumChatEnabled
+                  ? alpha(theme.palette.text.primary, 0.035)
+                  : undefined,
               },
               '&:hover .message-item-toolbar': {
                 opacity: 1,
@@ -1318,6 +1338,12 @@ export const MessageItemComponent = ({
                       fontSize: '14px',
                       fontWeight: 600,
                       lineHeight: 1.3,
+                      maxWidth: reticulumChatEnabled
+                        ? { xs: 170, sm: 260, md: 360 }
+                        : undefined,
+                      overflow: reticulumChatEnabled ? 'hidden' : undefined,
+                      textOverflow: reticulumChatEnabled ? 'ellipsis' : undefined,
+                      whiteSpace: reticulumChatEnabled ? 'nowrap' : undefined,
                       ...(hasUnsafeSenderName
                         ? {
                             textDecorationLine: 'line-through',
@@ -1977,7 +2003,7 @@ export const MessageItemComponent = ({
                     marginTop: '4px',
                   }}
                 >
-                  {message?.isNotEncrypted && isPrivate && (
+                  {message?.isNotEncrypted && isPrivate && !reticulumChatEnabled && (
                     <Tooltip title="Unencrypted" disableFocusListener>
                       <KeyOffIcon
                         sx={{
@@ -2049,6 +2075,7 @@ export const MessageItemComponent = ({
             {/* KeyOff when no reactions to show it beside */}
             {message?.isNotEncrypted &&
               isPrivate &&
+              !reticulumChatEnabled &&
               !(
                 reactions &&
                 Object.keys(reactions).some(

@@ -14,7 +14,6 @@ import Dialog from '@mui/material/Dialog';
 import AppBar from '@mui/material/AppBar';
 import Toolbar from '@mui/material/Toolbar';
 import IconButton from '@mui/material/IconButton';
-import Typography from '@mui/material/Typography';
 import CloseIcon from '@mui/icons-material/Close';
 import Slide from '@mui/material/Slide';
 import { TransitionProps } from '@mui/material/transitions';
@@ -23,7 +22,17 @@ import { InviteMember } from './InviteMember';
 import { ListOfInvites } from './ListOfInvites';
 import { ListOfBans } from './ListOfBans';
 import { ListOfJoinRequests } from './ListOfJoinRequests';
-import { Box, ButtonBase, Card, Tab, Tabs, useTheme } from '@mui/material';
+import {
+  Box,
+  ButtonBase,
+  Card,
+  Divider,
+  Tab,
+  Tabs,
+  Tooltip,
+  Typography,
+  useTheme,
+} from '@mui/material';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
 import { getGroupMembers, getNames } from './Group';
@@ -37,6 +46,11 @@ import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
 import { useTranslation } from 'react-i18next';
 import { QORTAL_PROTOCOL } from '../../constants/constants.ts';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
+import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import FormatListBulletedRoundedIcon from '@mui/icons-material/FormatListBulletedRounded';
+import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 
 function a11yProps(index: number) {
   return {
@@ -55,11 +69,13 @@ const Transition = forwardRef(function Transition(
 });
 
 export const ManageMembers = ({
+  inline = false,
   open,
   setOpen,
   selectedGroup,
   isAdmin,
   isOwner,
+  reticulumSidebar = false,
 }) => {
   const [membersWithNames, setMembersWithNames] = useState([]);
   const [value, setValue] = useState(0);
@@ -188,46 +204,155 @@ export const ManageMembers = ({
     };
   }, []);
 
-  return (
-    <Fragment>
-      <Dialog
-        fullScreen
-        open={open}
-        onClose={handleClose}
-        slots={{
-          transition: Transition,
+  if (inline && reticulumSidebar) {
+    const iconTabs = [
+      {
+        icon: <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />,
+        label: t('core:list.members', { postProcess: 'capitalizeFirstChar' }),
+      },
+      {
+        icon: <AddRoundedIcon sx={{ fontSize: 20 }} />,
+        label: t('core:action.invite_member', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+      },
+      {
+        icon: <FormatListBulletedRoundedIcon sx={{ fontSize: 19 }} />,
+        label: t('core:list.invites', { postProcess: 'capitalizeFirstChar' }),
+      },
+      {
+        icon: <BlockRoundedIcon sx={{ fontSize: 19 }} />,
+        label: t('core:list.bans', { postProcess: 'capitalizeFirstChar' }),
+      },
+      {
+        icon: <CheckCircleRoundedIcon sx={{ fontSize: 19 }} />,
+        label: t('group:join_requests', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+      },
+    ];
+
+    const panelContentSx = {
+      display: 'flex',
+      flexDirection: 'column',
+      flex: 1,
+      minHeight: 0,
+      overflow: 'hidden',
+      p: value === 1 ? 1.25 : 0,
+    };
+
+    return (
+      <Box
+        sx={{
+          backgroundColor: theme.palette.background.surface,
+          color: theme.palette.text.primary,
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          minHeight: 0,
+          width: '100%',
         }}
       >
-        <AppBar
+        <Tabs
+          value={value}
+          onChange={handleChange}
+          variant="fullWidth"
           sx={{
-            position: 'relative',
-            bgcolor: theme.palette.background.default,
+            borderBottom: 1,
+            borderColor: 'divider',
+            minHeight: 42,
+            '& .MuiTab-root': {
+              color: 'text.secondary',
+              minHeight: 42,
+              minWidth: 0,
+              p: 0,
+            },
+            '& .Mui-selected': {
+              color: 'primary.main',
+            },
           }}
         >
-          <Toolbar>
-            <Typography sx={{ ml: 2, flex: 1 }} variant="h4" component="div">
-              {t('group:action.manage_members', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
+          {iconTabs.map((tab, index) => (
+            <Tab
+              key={tab.label}
+              icon={<Tooltip title={tab.label}>{tab.icon}</Tooltip>}
+              aria-label={tab.label}
+              {...a11yProps(index)}
+            />
+          ))}
+        </Tabs>
 
-            <IconButton
-              aria-label={t('core:action.close', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              color="inherit"
-              edge="start"
-              onClick={handleClose}
-              sx={{
-                bgcolor: theme.palette.background.default,
-                color: theme.palette.text.primary,
-              }}
-            >
-              <CloseIcon />
-            </IconButton>
-          </Toolbar>
-        </AppBar>
+        <Box sx={panelContentSx}>
+          {value === 0 && (
+            <ListOfMembers
+              compact
+              members={membersWithNames || []}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+              isAdmin={isAdmin}
+              isOwner={isOwner}
+              show={show}
+              ownerAddress={groupInfo?.owner}
+            />
+          )}
+          {value === 1 && (
+            <InviteMember
+              show={show}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+            />
+          )}
+          {value === 2 && (
+            <ListOfInvites
+              compact
+              show={show}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+            />
+          )}
+          {value === 3 && (
+            <ListOfBans
+              compact
+              show={show}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+            />
+          )}
+          {value === 4 && (
+            <ListOfJoinRequests
+              compact
+              show={show}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+              groupId={selectedGroup?.groupId}
+            />
+          )}
+        </Box>
 
+        <CustomizedSnackbars
+          open={openSnack}
+          setOpen={setOpenSnack}
+          info={infoSnack}
+          setInfo={setInfoSnack}
+        />
+        <LoadingSnackbar
+          open={isLoadingMembers}
+          info={{
+            message: t('group:message.generic.loading_members', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+          }}
+        />
+      </Box>
+    );
+  }
+
+  const content = (
+    <Fragment>
         <Box
           sx={{
             bgcolor: theme.palette.background.default,
@@ -483,6 +608,54 @@ export const ManageMembers = ({
             }),
           }}
         />
+    </Fragment>
+  );
+
+  if (inline) {
+    return content;
+  }
+
+  return (
+    <Fragment>
+      <Dialog
+        fullScreen
+        open={open}
+        onClose={handleClose}
+        slots={{
+          transition: Transition,
+        }}
+      >
+        <AppBar
+          sx={{
+            position: 'relative',
+            bgcolor: theme.palette.background.default,
+          }}
+        >
+          <Toolbar>
+            <Typography sx={{ ml: 2, flex: 1 }} variant="h4" component="div">
+              {t('group:action.manage_members', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+
+            <IconButton
+              aria-label={t('core:action.close', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              color="inherit"
+              edge="start"
+              onClick={handleClose}
+              sx={{
+                bgcolor: theme.palette.background.default,
+                color: theme.palette.text.primary,
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          </Toolbar>
+        </AppBar>
+
+        {content}
       </Dialog>
     </Fragment>
   );

@@ -25,6 +25,7 @@ import { Spacer } from '../../common/Spacer';
 import ShortUniqueId from 'short-unique-id';
 import { AnnouncementList } from './AnnouncementList';
 import CampaignIcon from '@mui/icons-material/Campaign';
+import SendIcon from '@mui/icons-material/Send';
 import { AnnouncementDiscussion } from './AnnouncementDiscussion';
 import {
   QORTAL_APP_CONTEXT,
@@ -40,6 +41,8 @@ import { useTranslation } from 'react-i18next';
 import { TIME_SECONDS_20_IN_MILLISECONDS } from '../../constants/constants.ts';
 
 const uid = new ShortUniqueId({ length: 8 });
+const RETICULUM_ACTIVE_BLUE = '#2563eb';
+const RETICULUM_ACTIVE_BLUE_HOVER = '#1e40af';
 
 export const requestQueueCommentCount = new RequestQueueWithPromise(3);
 
@@ -112,7 +115,7 @@ export const decryptPublishes = async (encryptedMessages: any[], secretKey) => {
 };
 
 export const handleUnencryptedPublishes = (publishes) => {
-  let publishesData = [];
+  const publishesData = [];
   publishes.forEach((pub) => {
     try {
       const decryptToUnit8Array = base64ToUint8Array(pub);
@@ -295,7 +298,7 @@ export const GroupAnnouncements = ({
     try {
       const getTempAnnouncements = await getTempPublish();
       if (getTempAnnouncements?.announcement) {
-        let tempData = [];
+        const tempData = [];
         Object.keys(getTempAnnouncements?.announcement || {})
           .filter((annKey) => annKey?.startsWith(`grp-${selectedGroup}-anc`))
           .map((key) => {
@@ -314,13 +317,17 @@ export const GroupAnnouncements = ({
       pauseAllQueues();
       const fee = await getFee('ARBITRARY');
 
-      await show({
-        message: t('core:message.question.perform_transaction', {
-          action: 'ARBITRARY',
-          postProcess: 'capitalizeFirstChar',
-        }),
-        publishFee: fee.fee + ' QORT',
-      });
+      try {
+        await show({
+          message: t('core:message.question.perform_transaction', {
+            action: 'ARBITRARY',
+            postProcess: 'capitalizeFirstChar',
+          }),
+          publishFee: fee.fee + ' QORT',
+        });
+      } catch {
+        return;
+      }
 
       if (isSending) return;
       if (editorRef.current) {
@@ -363,9 +370,16 @@ export const GroupAnnouncements = ({
       // send chat message
     } catch (error) {
       if (!error) return;
+      const message =
+        typeof error === 'string'
+          ? error
+          : error?.message ||
+            t('core:message.error.generic', {
+              postProcess: 'capitalizeFirstChar',
+            });
       setInfoSnack({
         type: 'error',
-        message: error,
+        message,
       });
       setOpenSnack(true);
     } finally {
@@ -684,14 +698,17 @@ export const GroupAnnouncements = ({
               display: 'flex',
               flexDirection: 'column',
               flexGrow: 1,
-              overflow: 'auto',
+              justifyContent: 'center',
+              minHeight: 46,
+              overflow: 'hidden',
             }}
           >
             <Tiptap
               setEditorRef={setEditorRef}
               onEnter={publishAnnouncement}
               disableEnter
-              composerStyle
+              compactChat
+              placeholder="Write an announcement..."
               maxHeightOffset={40}
               isFocusedParent={isFocusedParent}
               setIsFocusedParent={setIsFocusedParent}
@@ -722,19 +739,19 @@ export const GroupAnnouncements = ({
                 }}
                 sx={{
                   alignSelf: 'center',
-                  backgroundColor: theme.palette.background.paper,
-                  border: '1px solid',
-                  borderColor: theme.palette.divider,
+                  backgroundColor: 'transparent',
+                  border: 'none',
                   borderRadius: '8px',
-                  color: theme.palette.text.primary,
+                  color: theme.palette.text.secondary,
                   cursor: isSending ? 'default' : 'pointer',
                   flexShrink: 0,
                   fontFamily: 'Inter',
                   fontSize: '14px',
+                  fontWeight: 700,
                   padding: '10px 16px',
                   '&:hover': {
                     backgroundColor: theme.palette.action.hover,
-                    borderColor: theme.palette.divider,
+                    color: theme.palette.text.primary,
                   },
                 }}
               >
@@ -751,27 +768,33 @@ export const GroupAnnouncements = ({
                 alignItems: 'center',
                 backgroundColor: isSending
                   ? theme.palette.action.disabledBackground
-                  : theme.palette.background.paper,
+                  : RETICULUM_ACTIVE_BLUE,
                 border: '1px solid',
-                borderColor: theme.palette.divider,
+                borderColor: isSending
+                  ? theme.palette.action.disabledBackground
+                  : RETICULUM_ACTIVE_BLUE,
                 borderRadius: '8px',
                 color: isSending
                   ? theme.palette.text.disabled
-                  : theme.palette.text.primary,
+                  : theme.palette.common.white,
                 cursor: isSending ? 'default' : 'pointer',
                 display: 'inline-flex',
+                gap: '6px',
                 flexShrink: 0,
                 fontFamily: 'Inter',
                 fontSize: '14px',
-                fontWeight: 500,
-                minHeight: '44px',
-                minWidth: '88px',
-                padding: '10px 20px',
+                fontWeight: 700,
+                minHeight: '38px',
+                minWidth: '92px',
+                padding: '8px 14px',
                 transition:
                   'background-color 0.2s ease, border-color 0.2s ease',
                 '&:hover': !isSending && {
-                  backgroundColor: theme.palette.action.hover,
-                  borderColor: theme.palette.divider,
+                  backgroundColor: RETICULUM_ACTIVE_BLUE_HOVER,
+                  borderColor: RETICULUM_ACTIVE_BLUE_HOVER,
+                },
+                '& .MuiSvgIcon-root': {
+                  color: theme.palette.common.white,
                 },
               }}
             >
@@ -791,6 +814,7 @@ export const GroupAnnouncements = ({
               {t('group:action.publish_announcement', {
                 postProcess: 'capitalizeFirstChar',
               })}
+              {!isSending && <SendIcon sx={{ fontSize: 17 }} />}
             </CustomButton>
           </Box>
         </Box>

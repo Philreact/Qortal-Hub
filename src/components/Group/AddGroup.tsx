@@ -14,6 +14,9 @@ import Typography from '@mui/material/Typography';
 import CloseIcon from '@mui/icons-material/Close';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import {
   Box,
   Collapse,
@@ -35,7 +38,8 @@ import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
-import { TransitionUp } from '../../common/Transitions.tsx';
+
+const RETICULUM_ACTIVE_BLUE = '#2563eb';
 
 export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
@@ -111,7 +115,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           publishFee: fee.fee + ' QORT',
         });
       } catch (error) {
-        console.log(error);
+        return;
       }
 
       await new Promise((res, rej) => {
@@ -191,6 +195,27 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     setValue(1);
   };
 
+  const tabItems = [
+    {
+      icon: <AddRoundedIcon sx={{ fontSize: 22 }} />,
+      label: t('group:action.create_group', {
+        postProcess: 'capitalizeFirstChar',
+      }),
+    },
+    {
+      icon: <SearchRoundedIcon sx={{ fontSize: 21 }} />,
+      label: t('group:action.find_group', {
+        postProcess: 'capitalizeFirstChar',
+      }),
+    },
+    {
+      icon: <CheckRoundedIcon sx={{ fontSize: 21 }} />,
+      label: t('group:group.invites', {
+        postProcess: 'capitalizeFirstChar',
+      }),
+    },
+  ];
+
   useEffect(() => {
     if (open) {
       setValue(initialTab);
@@ -218,15 +243,19 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   return (
     <Fragment>
       <Dialog
-        fullScreen
         open={open}
         onClose={handleClose}
-        slots={{
-          transition: TransitionUp,
-        }}
+        fullWidth
+        maxWidth="md"
         PaperProps={{
           sx: {
             bgcolor: theme.palette.background.default,
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: '12px',
+            boxShadow: '0 24px 70px rgba(0,0,0,0.42)',
+            height: 'min(760px, calc(100vh - 80px))',
+            maxHeight: 'calc(100vh - 80px)',
+            overflow: 'hidden',
           },
         }}
       >
@@ -236,15 +265,16 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           sx={{
             bgcolor: theme.palette.background.paper,
             borderBottom: `1px solid ${theme.palette.divider}`,
+            color: theme.palette.text.primary,
           }}
         >
           <Toolbar sx={{ minHeight: { xs: 56, sm: 64 }, px: { xs: 1, sm: 2 } }}>
             <Typography
               sx={{
                 flex: 1,
-                fontSize: { xs: '1.15rem', sm: '1.35rem' },
-                fontWeight: 600,
-                letterSpacing: '-0.02em',
+                fontSize: { xs: '1rem', sm: '1.05rem' },
+                fontWeight: 800,
+                letterSpacing: 0,
               }}
               variant="h6"
               component="div"
@@ -285,48 +315,70 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           <Tabs
             value={value}
             onChange={handleChange}
-            variant="fullWidth"
-            scrollButtons="auto"
-            allowScrollButtonsMobile
+            centered
             sx={{
-              minHeight: 48,
               borderBottom: `1px solid ${theme.palette.divider}`,
+              minHeight: 58,
               '& .MuiTabs-flexContainer': {
-                gap: 0,
+                gap: 1,
+                justifyContent: 'center',
+                py: 1,
               },
               '& .MuiTab-root': {
-                textTransform: 'uppercase',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                letterSpacing: '0.08em',
-                minHeight: 48,
+                borderRadius: '8px',
+                color: theme.palette.text.secondary,
+                minHeight: 38,
+                minWidth: 46,
+                px: 1.5,
+                transition: 'background-color 140ms ease, color 140ms ease',
+                '&.Mui-selected': {
+                  backgroundColor: RETICULUM_ACTIVE_BLUE,
+                  color: theme.palette.common.white,
+                },
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  color: theme.palette.text.primary,
+                },
+                '&.Mui-selected:hover': {
+                  backgroundColor: RETICULUM_ACTIVE_BLUE,
+                  color: theme.palette.common.white,
+                },
               },
               '& .MuiTabs-indicator': {
-                height: 3,
-                borderRadius: '3px 3px 0 0',
-                backgroundColor: theme.palette.primary.main,
+                display: 'none',
               },
             }}
           >
-            <Tab
-              label={t('group:action.create_group', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              {...a11yProps(0)}
-            />
-            <Tab
-              label={t('group:action.find_group', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              {...a11yProps(1)}
-            />
-            <Tab
-              label={t('group:group.invites', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              {...a11yProps(2)}
-            />
+            {tabItems.map((item, index) => (
+              <Tab
+                aria-label={item.label}
+                icon={item.icon}
+                key={item.label}
+                title={item.label}
+                {...a11yProps(index)}
+              />
+            ))}
           </Tabs>
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              gap: 1.25,
+              justifyContent: 'center',
+              px: 3,
+              pt: 2.5,
+            }}
+          >
+            <Typography
+              sx={{
+                fontSize: 20,
+                fontWeight: 800,
+                textAlign: 'center',
+              }}
+            >
+              {tabItems[value]?.label}
+            </Typography>
+          </Box>
 
           {value === 0 && (
             <Box
@@ -710,10 +762,11 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
 
                 <Button
                   variant="contained"
-                  color="primary"
                   onClick={handleCreateGroup}
                   fullWidth
                   sx={{
+                    backgroundColor: RETICULUM_ACTIVE_BLUE,
+                    color: theme.palette.common.white,
                     py: 1.5,
                     mt: 0.5,
                     borderRadius: 2,
@@ -722,6 +775,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     letterSpacing: '0.08em',
                     boxShadow: theme.shadows[2],
                     '&:hover': {
+                      backgroundColor: '#1e40af',
                       boxShadow: theme.shadows[4],
                     },
                   }}

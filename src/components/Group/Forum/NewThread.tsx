@@ -432,13 +432,14 @@ export const NewThread = ({
           maxHeight: '90vh',
           maxWidth: '640px',
           width: '90%',
-          borderRadius: '16px',
-          backgroundColor: theme.palette.background.paper,
+          borderRadius: '12px',
+          backgroundColor: theme.palette.background.default,
           padding: 0,
           gap: 0,
-          boxShadow: theme.shadows[24],
+          boxShadow: '0 24px 70px rgba(0,0,0,0.45)',
           border: '1px solid',
           borderColor: theme.palette.divider,
+          overflow: 'hidden',
         }}
       >
         <Box
@@ -446,6 +447,7 @@ export const NewThread = ({
             alignItems: 'center',
             borderBottom: '1px solid',
             borderColor: theme.palette.divider,
+            backgroundColor: theme.palette.background.paper,
             display: 'flex',
             justifyContent: 'space-between',
             padding: '16px 24px',
@@ -470,7 +472,7 @@ export const NewThread = ({
 
         <InstanceListContainer
           sx={{
-            backgroundColor: theme.palette.background.paper,
+            backgroundColor: theme.palette.background.default,
             padding: '24px',
             flex: '1 1 auto',
             minHeight: 0,
@@ -492,9 +494,15 @@ export const NewThread = ({
                   autoComplete="off"
                   autoCorrect="off"
                   sx={{
+                    backgroundColor: theme.palette.background.paper,
+                    border: '1px solid',
+                    borderColor: theme.palette.divider,
+                    borderRadius: '8px',
+                    px: 1.5,
+                    py: 1,
                     width: '100%',
                     fontFamily: 'Inter',
-                    fontSize: '18px',
+                    fontSize: '16px',
                     '& .MuiInput-input::placeholder': {
                       opacity: 0.7,
                     },
@@ -544,6 +552,7 @@ export const NewThread = ({
             alignItems: 'center',
             borderTop: '1px solid',
             borderColor: theme.palette.divider,
+            backgroundColor: theme.palette.background.paper,
             display: 'flex',
             justifyContent: 'flex-end',
             padding: '16px 24px',

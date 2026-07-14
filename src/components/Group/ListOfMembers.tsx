@@ -9,7 +9,7 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { LoadingButton } from '@mui/lab';
 import { getFee } from '../../background/background.ts';
@@ -33,6 +33,7 @@ const ListOfMembers = ({
   isOwner,
   show,
   ownerAddress,
+  compact = false,
 }) => {
   const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
   const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
@@ -51,6 +52,23 @@ const ListOfMembers = ({
   const listRef = useRef(null);
   const onlineAddresses = useOnlineAddresses();
   const statusMap = useAtomValue(statusMapAtom);
+  const sortedMembers = useMemo(() => {
+    return [...(members || [])].sort((a, b) => {
+      const aIsOwner = a?.member === ownerAddress;
+      const bIsOwner = b?.member === ownerAddress;
+      if (aIsOwner !== bIsOwner) return aIsOwner ? -1 : 1;
+
+      const aIsAdmin = Boolean(a?.isAdmin);
+      const bIsAdmin = Boolean(b?.isAdmin);
+      if (aIsAdmin !== bIsAdmin) return aIsAdmin ? -1 : 1;
+
+      const aLabel = (a?.primaryName || a?.name || a?.member || '').toString();
+      const bLabel = (b?.primaryName || b?.name || b?.member || '').toString();
+      return aLabel.localeCompare(bLabel, undefined, {
+        sensitivity: 'base',
+      });
+    });
+  }, [members, ownerAddress]);
 
   const handlePopoverOpen = (event, index) => {
     setPopoverAnchor(event.currentTarget);
@@ -296,11 +314,15 @@ const ListOfMembers = ({
   };
 
   const rowRenderer = ({ index, key, style }) => {
-    const member = members[index];
-    const memberLabel = member?.primaryName || member?.member;
+    const member = sortedMembers[index];
+    const memberLabel = compact
+      ? member?.primaryName || member?.name || 'Member'
+      : member?.primaryName || member?.member;
     const hasUnsafeMemberName = Boolean(
       member?.primaryName && hasInvisibleCharacters(member.primaryName)
     );
+    const popoverWidth =
+      popoverAnchor?.getBoundingClientRect?.().width || (compact ? 240 : 325);
 
     return (
       <div key={key} style={style}>
@@ -309,34 +331,51 @@ const ListOfMembers = ({
             open={openPopoverIndex === index}
             anchorEl={popoverAnchor}
             onClose={handlePopoverClose}
-            anchorOrigin={{
-              vertical: 'bottom',
-              horizontal: 'center',
-            }}
             transformOrigin={{
               vertical: 'top',
-              horizontal: 'center',
+              horizontal: 'left',
             }}
-            style={{ marginTop: '8px' }}
+            anchorOrigin={{
+              vertical: 'bottom',
+              horizontal: 'left',
+            }}
+            slotProps={{
+              paper: {
+                sx: {
+                  backgroundColor: theme.palette.background.paper,
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '8px',
+                  boxShadow: theme.shadows[8],
+                  mt: 0.5,
+                  overflow: 'hidden',
+                  width: popoverWidth,
+                },
+              },
+            }}
           >
             <Box
               sx={{
-                alignItems: 'center',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '10px',
-                height: '250px',
-                padding: '10px',
-                width: '325px',
+                gap: 0.25,
+                p: 0.5,
               }}
             >
               {isOwner && (
                 <>
                   <LoadingButton
+                    fullWidth
                     loading={isLoadingKick}
                     loadingPosition="start"
-                    variant="contained"
                     onClick={() => handleKick(member?.member)}
+                    sx={{
+                      borderRadius: '6px',
+                      color: 'text.primary',
+                      justifyContent: 'flex-start',
+                      px: 1.25,
+                      textTransform: 'none',
+                    }}
+                    variant="text"
                   >
                     {t('group:action.kick_member', {
                       postProcess: 'capitalizeFirstChar',
@@ -344,10 +383,18 @@ const ListOfMembers = ({
                   </LoadingButton>
 
                   <LoadingButton
+                    fullWidth
                     loading={isLoadingBan}
                     loadingPosition="start"
-                    variant="contained"
                     onClick={() => handleBan(member?.member)}
+                    sx={{
+                      borderRadius: '6px',
+                      color: 'error.main',
+                      justifyContent: 'flex-start',
+                      px: 1.25,
+                      textTransform: 'none',
+                    }}
+                    variant="text"
                   >
                     {t('group:action.ban', {
                       postProcess: 'capitalizeFirstChar',
@@ -355,10 +402,18 @@ const ListOfMembers = ({
                   </LoadingButton>
 
                   <LoadingButton
+                    fullWidth
                     loading={isLoadingMakeAdmin}
                     loadingPosition="start"
-                    variant="contained"
                     onClick={() => makeAdmin(member?.member)}
+                    sx={{
+                      borderRadius: '6px',
+                      color: 'text.primary',
+                      justifyContent: 'flex-start',
+                      px: 1.25,
+                      textTransform: 'none',
+                    }}
+                    variant="text"
                   >
                     {t('group:action.make_admin', {
                       postProcess: 'capitalizeFirstChar',
@@ -366,10 +421,18 @@ const ListOfMembers = ({
                   </LoadingButton>
 
                   <LoadingButton
+                    fullWidth
                     loading={isLoadingRemoveAdmin}
                     loadingPosition="start"
-                    variant="contained"
                     onClick={() => removeAdmin(member?.member)}
+                    sx={{
+                      borderRadius: '6px',
+                      color: 'text.primary',
+                      justifyContent: 'flex-start',
+                      px: 1.25,
+                      textTransform: 'none',
+                    }}
+                    variant="text"
                   >
                     {t('group:action.remove_admin', {
                       postProcess: 'capitalizeFirstChar',
@@ -382,15 +445,28 @@ const ListOfMembers = ({
         )}
 
         <ListItem key={member?.member} disablePadding>
-          <ListItemButton onClick={(event) => handlePopoverOpen(event, index)}>
-            <ListItemAvatar>
+          <ListItemButton
+            onClick={
+              isOwner ? (event) => handlePopoverOpen(event, index) : undefined
+            }
+            sx={{
+              borderRadius: compact ? '6px' : undefined,
+              cursor: isOwner ? 'pointer' : 'default',
+              minHeight: compact ? 50 : undefined,
+              px: compact ? 1 : undefined,
+              py: compact ? 0.5 : undefined,
+            }}
+          >
+            <ListItemAvatar sx={{ minWidth: compact ? 42 : undefined }}>
               <PresenceStatusBadge
                 online={onlineAddresses.has(member?.member)}
                 status={statusMap.get(member?.member) ?? null}
               >
                 <Avatar
-                  alt={member?.primaryName || member?.member}
+                  alt={memberLabel}
                   sx={{
+                    height: compact ? 34 : undefined,
+                    width: compact ? 34 : undefined,
                     ...(!member?.primaryName
                       ? getFallbackAvatarOutlineSx(theme)
                       : {}),
@@ -409,6 +485,12 @@ const ListOfMembers = ({
               primary={memberLabel}
               primaryTypographyProps={{
                 sx: {
+                  color: 'text.primary',
+                  fontSize: compact ? 13 : undefined,
+                  fontWeight: compact ? 700 : undefined,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                   ...(hasUnsafeMemberName
                     ? {
                         textDecorationLine: 'line-through',
@@ -424,6 +506,8 @@ const ListOfMembers = ({
                 sx={{
                   color: theme.palette.text.primary,
                   marginLeft: 'auto',
+                  fontSize: compact ? 10 : undefined,
+                  fontWeight: compact ? 800 : undefined,
                 }}
               >
                 {member?.member === ownerAddress
@@ -442,18 +526,28 @@ const ListOfMembers = ({
   };
 
   return (
-    <div>
-      <p>
-        {t('core:list.members', {
-          postProcess: 'capitalizeFirstChar',
-        })}
-      </p>
+    <div
+      style={{
+        display: 'flex',
+        flex: 1,
+        flexDirection: 'column',
+        minHeight: 0,
+      }}
+    >
+      {!compact && (
+        <p>
+          {t('core:list.members', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        </p>
+      )}
       <div
         style={{
           display: 'flex',
           flexDirection: 'column',
           flexShrink: 1,
-          height: '500px',
+          height: compact ? '100%' : '500px',
+          minHeight: 0,
           position: 'relative',
           width: '100%',
         }}
@@ -464,8 +558,8 @@ const ListOfMembers = ({
               height={height}
               overscanRowCount={8}
               ref={listRef}
-              rowCount={members.length}
-              rowHeight={MEMBER_ROW_HEIGHT}
+              rowCount={sortedMembers.length}
+              rowHeight={compact ? 52 : MEMBER_ROW_HEIGHT}
               rowRenderer={rowRenderer}
               width={width}
             />

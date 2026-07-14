@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Editor, EditorProvider, useCurrentEditor } from '@tiptap/react';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -19,6 +19,7 @@ import FormatQuoteIcon from '@mui/icons-material/FormatQuote';
 import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
 import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
+import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
 import Compressor from 'compressorjs';
@@ -29,7 +30,7 @@ import 'tippy.js/dist/tippy.css';
 import { ReactRenderer } from '@tiptap/react';
 import MentionList from './MentionList.jsx';
 import { isDisabledEditorEnterAtom } from '../../atoms/global.js';
-import { Box, Checkbox, Typography, useTheme } from '@mui/material';
+import { Box, Checkbox, Tooltip, Typography, useTheme } from '@mui/material';
 import { useAtom } from 'jotai';
 import { fileToBase64 } from '../../utils/fileReading/index.js';
 import { useTranslation } from 'react-i18next';
@@ -60,10 +61,6 @@ const MenuBar = memo(
         setEditorRef(editor);
       }
     }, [editor, setEditorRef]);
-
-    if (!editor) {
-      return null;
-    }
 
     const handleImageUpload = async (file) => {
       if (!file?.type?.includes('image')) return;
@@ -131,6 +128,10 @@ const MenuBar = memo(
         };
       }
     }, [editor, isChat]);
+
+    if (!editor) {
+      return null;
+    }
 
     return (
       <Box
@@ -507,6 +508,8 @@ type TiptapProps = {
   enableMentions?: boolean;
   insertImage?: (image: any) => void;
   insertFiles?: (files: File[]) => void | Promise<void>;
+  compactChat?: boolean;
+  placeholder?: string;
 };
 
 const Tiptap = ({
@@ -526,8 +529,12 @@ const Tiptap = ({
   enableMentions,
   insertImage,
   insertFiles,
+  compactChat = false,
+  placeholder,
 }: TiptapProps) => {
   const theme = useTheme();
+  const compactFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [showFormattingTray, setShowFormattingTray] = useState(false);
   const [isDisabledEditorEnter, setIsDisabledEditorEnter] = useAtom(
     isDisabledEditorEnterAtom
   );
@@ -568,8 +575,19 @@ const Tiptap = ({
   );
 
   const extensionsFiltered = isChat
-    ? extensions.filter((item) => item?.name !== 'image')
-    : extensions;
+    ? extensions.filter((item) => item?.name !== 'image' && item?.name !== 'placeholder')
+    : extensions.filter((item) => item?.name !== 'placeholder');
+  const placeholderExtension = useMemo(
+    () =>
+      Placeholder.configure({
+        placeholder:
+          placeholder ||
+          i18n.t('core:action.start_typing', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+      }),
+    [placeholder]
+  );
   const editorRef = useRef(null);
   const setEditorRefFunc = useCallback(
     (editorInstance) => {
@@ -683,6 +701,247 @@ const Tiptap = ({
   }, []);
 
   const useComposerLook = isChat || composerStyle;
+  const slotBefore = compactChat ? (
+    showFormattingTray ? (
+      <MenuBar
+        setEditorRef={setEditorRefFunc}
+        isChat={isChat}
+        isDisabledEditorEnter={isDisabledEditorEnter}
+        setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
+        toolbarStyle={useComposerLook ? 'chat' : 'default'}
+        insertFiles={insertFiles}
+      />
+    ) : null
+  ) : (
+    <MenuBar
+      setEditorRef={setEditorRefFunc}
+      isChat={isChat}
+      isDisabledEditorEnter={isDisabledEditorEnter}
+      setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
+      toolbarStyle={useComposerLook ? 'chat' : 'default'}
+      insertFiles={insertFiles}
+    />
+  );
+  const editorProvider = (
+    <EditorProvider
+      slotBefore={slotBefore}
+      extensions={[...extensionsFiltered, placeholderExtension, ...additionalExtensions]}
+      content={content}
+      onCreate={({ editor }) => {
+        setEditorRefFunc(editor);
+        editor.on('blur', handleBlur); // Listen for blur event
+      }}
+      onUpdate={({ editor }) => {
+        editor.on('blur', handleBlur); // Ensure blur is updated
+        onContentUpdate?.(editor);
+      }}
+      editorProps={{
+        attributes: {
+          class: 'tiptap-prosemirror',
+          style: compactChat
+            ? `overflow: auto; max-height: 120px`
+            : `overflow: auto; max-height: 250px`,
+        },
+        handleKeyDown(view, event) {
+          if (typeof onKeyDown === 'function') {
+            const editor = editorRef.current;
+            if (editor) {
+              const handled = onKeyDown(event, editor);
+              if (handled) return true;
+            }
+          }
+          if (
+            !disableEnter &&
+            !isDisabledEditorEnter &&
+            event.key === 'Enter'
+          ) {
+            if (event.shiftKey) {
+              view.dispatch(
+                view.state.tr.replaceSelectionWith(
+                  view.state.schema.nodes.hardBreak.create()
+                )
+              );
+              return true;
+            } else {
+              if (typeof onEnter === 'function') {
+                onEnter();
+              }
+              return true;
+            }
+          }
+          return false;
+        },
+        handlePaste(view, event) {
+          if (!isChat) return false;
+          const items = event.clipboardData?.items;
+          if (!items) return false;
+
+          if (typeof insertFiles === 'function') {
+            const files = Array.from(event.clipboardData?.files || []);
+            if (files.length > 0) {
+              event.preventDefault();
+              void insertFiles(files);
+              return true;
+            }
+          }
+
+          if (typeof insertImage !== 'function') return false;
+
+          for (const item of items) {
+            if (item.type.startsWith('image/')) {
+              const file = item.getAsFile();
+              if (file) {
+                event.preventDefault(); // Block the default paste
+                handleImageUpload(file); // Custom handler
+                return true; // Let ProseMirror know we handled it
+              }
+            }
+          }
+
+          // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
+          const text = event.clipboardData?.getData('text/plain');
+          if (text != null && text !== '') {
+            event.preventDefault();
+            const schema = view.state.schema;
+            const paragraphs = text.split(/\n\n+/);
+            const paragraphNodes = paragraphs.map((block) => {
+              if (block === '') {
+                return schema.nodes.paragraph.create(null, Fragment.empty);
+              }
+              const parts = block.split('\n');
+              const content = parts.flatMap((t, i) => {
+                // ProseMirror does not allow empty text nodes; skip empty parts
+                if (t === '') {
+                  return i === 0 ? [] : [schema.nodes.hardBreak.create()];
+                }
+                return i === 0
+                  ? [schema.text(t)]
+                  : [
+                      schema.nodes.hardBreak.create(),
+                      schema.text(t),
+                    ];
+              });
+              return schema.nodes.paragraph.create(
+                null,
+                Fragment.from(content)
+              );
+            });
+            const fragment = Fragment.from(paragraphNodes);
+            const slice = new Slice(fragment, 0, 0);
+            view.dispatch(view.state.tr.replaceSelection(slice));
+            return true;
+          }
+
+          return false; // fallback to default behavior otherwise
+        },
+        handleDrop(_view, event) {
+          if (!isChat) return false;
+          const files = Array.from(event.dataTransfer?.files || []);
+          if (files.length > 0 && typeof insertFiles === 'function') {
+            event.preventDefault();
+            void insertFiles(files);
+            return true;
+          }
+          if (typeof insertImage !== 'function') return false;
+          const image = files.find((file) => file.type.startsWith('image/'));
+          if (!image) return false;
+          event.preventDefault();
+          handleImageUpload(image);
+          return true;
+        },
+      }}
+    />
+  );
+
+  if (compactChat) {
+    return (
+      <Box
+        className="tiptap-chat-composer tiptap-chat-composer--compact"
+        sx={{
+          display: 'flex',
+          flex: 1,
+          flexDirection: 'column',
+          minWidth: 0,
+          '--text-primary': theme.palette.text.primary,
+          '--text-secondary': theme.palette.text.secondary,
+          '--background-default': theme.palette.background.default,
+          '--background-secondary': theme.palette.background.paper,
+          '--code-block-bg': theme.palette.background.paper,
+          '--code-block-accent': theme.palette.primary.main,
+          '--code-block-border': theme.palette.divider,
+          '--composer-bg': theme.palette.background.default,
+          '--composer-border': theme.palette.divider,
+        }}
+      >
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: 0.5,
+            minHeight: 44,
+            width: '100%',
+          }}
+        >
+          <Tooltip title="Add attachment">
+            <span>
+              <IconButton
+                disabled={disableEnter || typeof insertFiles !== 'function'}
+                onClick={() => compactFileInputRef.current?.click()}
+                size="small"
+                sx={{
+                  color: theme.palette.text.secondary,
+                  flexShrink: 0,
+                  height: 34,
+                  width: 34,
+                }}
+              >
+                <AddCircleOutlineIcon sx={{ fontSize: 22 }} />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <input
+            multiple
+            ref={compactFileInputRef}
+            style={{ display: 'none' }}
+            type="file"
+            onChange={(event) => {
+              const files = Array.from(event.target.files || []);
+              if (files.length > 0 && typeof insertFiles === 'function') {
+                void insertFiles(files);
+              }
+              event.currentTarget.value = '';
+            }}
+          />
+          <Tooltip title="Formatting">
+            <IconButton
+              onClick={() => setShowFormattingTray((show) => !show)}
+              size="small"
+              sx={{
+                backgroundColor: showFormattingTray
+                  ? theme.palette.action.selected
+                  : 'transparent',
+                border: `1px solid ${theme.palette.divider}`,
+                borderRadius: '8px',
+                color: showFormattingTray
+                  ? theme.palette.text.primary
+                  : theme.palette.text.secondary,
+                flexShrink: 0,
+                fontFamily: 'Inter',
+                fontSize: 14,
+                fontWeight: 700,
+                height: 34,
+                width: 42,
+              }}
+            >
+              Aa
+            </IconButton>
+          </Tooltip>
+          <Box sx={{ flex: 1, minWidth: 0 }}>{editorProvider}</Box>
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <Box
       className={useComposerLook ? 'tiptap-chat-composer' : undefined}
@@ -704,140 +963,7 @@ const Tiptap = ({
         }),
       }}
     >
-      <EditorProvider
-        slotBefore={
-          <MenuBar
-            setEditorRef={setEditorRefFunc}
-            isChat={isChat}
-            isDisabledEditorEnter={isDisabledEditorEnter}
-            setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
-            toolbarStyle={useComposerLook ? 'chat' : 'default'}
-            insertFiles={insertFiles}
-          />
-        }
-        extensions={[...extensionsFiltered, ...additionalExtensions]}
-        content={content}
-        onCreate={({ editor }) => {
-          editor.on('blur', handleBlur); // Listen for blur event
-        }}
-        onUpdate={({ editor }) => {
-          editor.on('blur', handleBlur); // Ensure blur is updated
-          onContentUpdate?.(editor);
-        }}
-        editorProps={{
-          attributes: {
-            class: 'tiptap-prosemirror',
-            style: `overflow: auto; max-height: 250px`,
-          },
-          handleKeyDown(view, event) {
-            if (typeof onKeyDown === 'function') {
-              const editor = editorRef.current;
-              if (editor) {
-                const handled = onKeyDown(event, editor);
-                if (handled) return true;
-              }
-            }
-            if (
-              !disableEnter &&
-              !isDisabledEditorEnter &&
-              event.key === 'Enter'
-            ) {
-              if (event.shiftKey) {
-                view.dispatch(
-                  view.state.tr.replaceSelectionWith(
-                    view.state.schema.nodes.hardBreak.create()
-                  )
-                );
-                return true;
-              } else {
-                if (typeof onEnter === 'function') {
-                  onEnter();
-                }
-                return true;
-              }
-            }
-            return false;
-          },
-          handlePaste(view, event) {
-            if (!isChat) return false;
-            const items = event.clipboardData?.items;
-            if (!items) return false;
-
-            if (typeof insertFiles === 'function') {
-              const files = Array.from(event.clipboardData?.files || []);
-              if (files.length > 0) {
-                event.preventDefault();
-                void insertFiles(files);
-                return true;
-              }
-            }
-
-            if (typeof insertImage !== 'function') return false;
-
-            for (const item of items) {
-              if (item.type.startsWith('image/')) {
-                const file = item.getAsFile();
-                if (file) {
-                  event.preventDefault(); // Block the default paste
-                  handleImageUpload(file); // Custom handler
-                  return true; // Let ProseMirror know we handled it
-                }
-              }
-            }
-
-            // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
-            const text = event.clipboardData?.getData('text/plain');
-            if (text != null && text !== '') {
-              event.preventDefault();
-              const schema = view.state.schema;
-              const paragraphs = text.split(/\n\n+/);
-              const paragraphNodes = paragraphs.map((block) => {
-                if (block === '') {
-                  return schema.nodes.paragraph.create(null, Fragment.empty);
-                }
-                const parts = block.split('\n');
-                const content = parts.flatMap((t, i) => {
-                  // ProseMirror does not allow empty text nodes; skip empty parts
-                  if (t === '') {
-                    return i === 0 ? [] : [schema.nodes.hardBreak.create()];
-                  }
-                  return i === 0
-                    ? [schema.text(t)]
-                    : [
-                        schema.nodes.hardBreak.create(),
-                        schema.text(t),
-                      ];
-                });
-                return schema.nodes.paragraph.create(
-                  null,
-                  Fragment.from(content)
-                );
-              });
-              const fragment = Fragment.from(paragraphNodes);
-              const slice = new Slice(fragment, 0, 0);
-              view.dispatch(view.state.tr.replaceSelection(slice));
-              return true;
-            }
-
-            return false; // fallback to default behavior otherwise
-          },
-          handleDrop(_view, event) {
-            if (!isChat) return false;
-            const files = Array.from(event.dataTransfer?.files || []);
-            if (files.length > 0 && typeof insertFiles === 'function') {
-              event.preventDefault();
-              void insertFiles(files);
-              return true;
-            }
-            if (typeof insertImage !== 'function') return false;
-            const image = files.find((file) => file.type.startsWith('image/'));
-            if (!image) return false;
-            event.preventDefault();
-            handleImageUpload(image);
-            return true;
-          },
-        }}
-      />
+      {editorProvider}
     </Box>
   );
 };

@@ -713,7 +713,7 @@ export const ChatList = ({
                       gap: '5px',
                       left: '50%', // Move to the center horizontally
                       overscrollBehavior: 'none',
-                      padding: '10px 0',
+                      padding: reticulumChatEnabled ? '3px 0' : '10px 0',
                       position: 'absolute',
                       top: 0,
                       transform: `translateY(${virtualRow.start}px) translateX(-50%)`, // Adjust for centering
@@ -755,6 +755,7 @@ export const ChatList = ({
                         reply={reply}
                         replyIndex={replyIndex}
                         replyExpiredMeta={replyExpiredMeta}
+                        reticulumChatEnabled={reticulumChatEnabled}
                         scrollToItem={goToMessage}
                       />
                     </ErrorBoundary>
@@ -812,7 +813,9 @@ export const ChatList = ({
           ))}
       </Box>
 
-      {enableMentions && (hasSecretKey || isPrivate === false) && (
+      {enableMentions &&
+        !reticulumChatEnabled &&
+        (hasSecretKey || isPrivate === false) && (
         <ChatOptions
           goToMessage={goToMessage}
           isPrivate={isPrivate}
