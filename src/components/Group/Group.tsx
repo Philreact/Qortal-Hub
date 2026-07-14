@@ -280,8 +280,14 @@ const getGroupIdsFromGroupLikeList = (groups: unknown): number[] => {
 const getReticulumGroupMembershipsFromGroupLikeList = (
   groups: unknown,
   groupsProperties: Record<string, unknown>,
-  localAddress?: string
-): Array<{ groupId: number; isPrivate: boolean; localAddress?: string }> => {
+  localAddress: string | undefined,
+  adminGroupIds: ReadonlySet<number>
+): Array<{
+  groupId: number;
+  isPrivate: boolean;
+  isAdmin: boolean;
+  localAddress?: string;
+}> => {
   if (!Array.isArray(groups)) return [];
   const byGroupId = new Map<number, boolean>();
   const normalizedLocalAddress =
@@ -305,6 +311,7 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
   return [...byGroupId.entries()].map(([groupId, isPrivate]) => ({
     groupId,
     isPrivate,
+    isAdmin: adminGroupIds.has(groupId),
     ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
   }));
 };
@@ -388,13 +395,31 @@ function MemberGroupsEffects({
   groupsPropertiesRef,
   hasInitializedWebsocketRef,
 }: {
-  getGroupsWhereIAmAMember: (groups: any[]) => Promise<void>;
+  getGroupsWhereIAmAMember: (groups: any[]) => Promise<boolean>;
   getGroupsProperties: (address: string) => void;
   myAddress: string;
   groupsPropertiesRef: React.MutableRefObject<Record<string, unknown>>;
   hasInitializedWebsocketRef: React.MutableRefObject<boolean>;
 }) {
   const memberGroups = useAtomValue(memberGroupsAtom);
+  useEffect(() => {
+    if (!myAddress) return;
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+    const refresh = async () => {
+      const succeeded = await getGroupsWhereIAmAMember(memberGroups || []);
+      if (cancelled) return;
+      refreshTimer = window.setTimeout(
+        refresh,
+        succeeded ? TIME_MINUTES_10_IN_MILLISECONDS / 2 : 10_000
+      );
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+    };
+  }, [memberGroups, myAddress, getGroupsWhereIAmAMember]);
   useEffect(() => {
     if (!myAddress) return;
     if (
@@ -404,12 +429,10 @@ function MemberGroupsEffects({
       )
     ) {
       getGroupsProperties(myAddress);
-      getGroupsWhereIAmAMember(memberGroups || []);
     }
   }, [
     memberGroups,
     myAddress,
-    getGroupsWhereIAmAMember,
     getGroupsProperties,
     groupsPropertiesRef,
   ]);
@@ -753,7 +776,17 @@ export const Group = ({
   ]);
 
   const setUserInfoForLevels = useSetAtom(addressInfoControllerAtom);
-  const setMyGroupsWhereIAmAdmin = useSetAtom(myGroupsWhereIAmAdminAtom);
+  const [myGroupsWhereIAmAdmin, setMyGroupsWhereIAmAdmin] = useAtom(
+    myGroupsWhereIAmAdminAtom
+  );
+  const [reticulumAdminGroupsLoadedAddress, setReticulumAdminGroupsLoadedAddress] =
+    useState('');
+  const [reticulumMembershipsAppliedKey, setReticulumMembershipsAppliedKey] =
+    useState('');
+  const reticulumAdminGroupIds = useMemo(
+    () => new Set(getGroupIdsFromGroupLikeList(myGroupsWhereIAmAdmin)),
+    [myGroupsWhereIAmAdmin]
+  );
   const isPrivate = useMemo(() => {
     if (selectedGroup?.groupId === '0') return false;
     if (!selectedGroup?.groupId || !groupsProperties[selectedGroup?.groupId])
@@ -1177,6 +1210,8 @@ export const Group = ({
 
   useEffect(() => {
     myAddressRef.current = myAddress || '';
+    setReticulumAdminGroupsLoadedAddress('');
+    setReticulumMembershipsAppliedKey('');
     previousReticulumSummariesRef.current = null;
     notifiedReticulumEventIdsRef.current.clear();
     if (!myAddress) {
@@ -1185,30 +1220,48 @@ export const Group = ({
     }
   }, [myAddress]);
 
+  const reticulumMemberships = useMemo(
+    () =>
+      getReticulumGroupMembershipsFromGroupLikeList(
+        memberGroupsForReticulum,
+        groupsProperties,
+        myAddress,
+        reticulumAdminGroupIds
+      ),
+    [
+      groupsProperties,
+      memberGroupsForReticulum,
+      myAddress,
+      reticulumAdminGroupIds,
+    ]
+  );
+  const reticulumMembershipsKey = useMemo(
+    () =>
+      JSON.stringify(
+        reticulumMemberships.map(
+          ({ groupId, isPrivate, isAdmin, localAddress }) => ({
+            groupId,
+            isPrivate,
+            isAdmin,
+            localAddress: localAddress || '',
+          })
+        )
+      ),
+    [reticulumMemberships]
+  );
+
   useEffect(() => {
     if (!myAddress) return;
     if (memberGroupsLoadedAddress !== myAddress) {
       return;
     }
-    const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
-    const reticulumMemberships = getReticulumGroupMembershipsFromGroupLikeList(
-      memberGroupsForReticulum,
-      groupsProperties,
-      myAddress
-    );
-    if (groupIds.length === 0) {
-      for (const groupId of reticulumSubscribedGroupIdsRef.current) {
-        void window.reticulumChat?.unsubscribeGroup?.(groupId);
-      }
-      reticulumSubscribedGroupIdsRef.current = new Set();
-      void window.reticulumChat?.setLocalGroupMemberships?.([]);
-      reticulumMentionBadgeSummariesRef.current = null;
-      setReticulumChatSummaries({});
-      void window.reticulumChat?.updateMentionBadge?.(0);
+    if (reticulumAdminGroupsLoadedAddress !== myAddress) {
       return;
     }
+    const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
 
     let cancelled = false;
+    setReticulumMembershipsAppliedKey('');
     void (async () => {
       const enabled = await window.reticulumChat?.isEnabled?.();
       if (cancelled || !enabled) {
@@ -1224,7 +1277,11 @@ export const Group = ({
         }
         return;
       }
-      await window.reticulumChat?.setLocalGroupMemberships?.(reticulumMemberships);
+      const membershipResult = await window.reticulumChat?.setLocalGroupMemberships?.(
+        reticulumMemberships
+      );
+      if (cancelled || membershipResult?.success !== true) return;
+      setReticulumMembershipsAppliedKey(reticulumMembershipsKey);
       const nextIds = new Set(groupIds);
       const previousIds = reticulumSubscribedGroupIdsRef.current;
       for (const groupId of previousIds) {
@@ -1238,6 +1295,12 @@ export const Group = ({
         }
       }
       reticulumSubscribedGroupIdsRef.current = nextIds;
+      if (groupIds.length === 0) {
+        reticulumMentionBadgeSummariesRef.current = null;
+        setReticulumChatSummaries({});
+        void window.reticulumChat?.updateMentionBadge?.(0);
+        return;
+      }
       await refreshReticulumChatSummaries();
       scheduleReticulumChatSummariesRefresh();
     })();
@@ -1246,10 +1309,12 @@ export const Group = ({
       cancelled = true;
     };
   }, [
-    groupsProperties,
     memberGroupsLoadedAddress,
     memberGroupsForReticulum,
     myAddress,
+    reticulumAdminGroupsLoadedAddress,
+    reticulumMemberships,
+    reticulumMembershipsKey,
     refreshReticulumChatSummaries,
     scheduleReticulumChatSummariesRefresh,
     setReticulumChatSummaries,
@@ -2053,20 +2118,38 @@ export const Group = ({
 
   const getGroupsWhereIAmAMember = useCallback(
     async (_groups) => {
-      if (!myAddress) return;
+      if (!myAddress) return false;
+      const requestedAddress = myAddress;
       try {
         const response = await fetch(
-          `${getBaseApiReact()}/groups/member/${myAddress}?adminOnly=true`
+          `${getBaseApiReact()}/groups/member/${requestedAddress}?adminOnly=true`
         );
-        if (!response.ok) return;
+        if (!response.ok) {
+          throw new Error(`Unable to load group admins: ${response.status}`);
+        }
         const data = await response.json();
+        if (myAddressRef.current !== requestedAddress) return false;
         const groupsAsAdmin = Array.isArray(data) ? data : (data?.groups ?? []);
-        setMyGroupsWhereIAmAdmin(groupsAsAdmin);
+        setMyGroupsWhereIAmAdmin((current) =>
+          areKeysEqual(
+            getGroupIdsFromGroupLikeList(current),
+            getGroupIdsFromGroupLikeList(groupsAsAdmin)
+          )
+            ? current
+            : groupsAsAdmin
+        );
+        setReticulumAdminGroupsLoadedAddress(requestedAddress);
+        return true;
       } catch (error) {
         console.error(error);
+        if (myAddressRef.current === requestedAddress) {
+          setMyGroupsWhereIAmAdmin([]);
+          setReticulumAdminGroupsLoadedAddress(requestedAddress);
+        }
+        return false;
       }
     },
-    [myAddress]
+    [myAddress, setMyGroupsWhereIAmAdmin]
   );
 
   useEffect(() => {
@@ -3147,6 +3230,13 @@ export const Group = ({
               {triedToFetchSecretKey && (
                 <ChatGroup
                   myAddress={myAddress}
+                  isReticulumChannelAdmin={reticulumAdminGroupIds.has(
+                    Number(selectedGroup?.groupId)
+                  )}
+                  reticulumChannelAccessReady={
+                    reticulumAdminGroupsLoadedAddress === myAddress &&
+                    reticulumMembershipsAppliedKey === reticulumMembershipsKey
+                  }
                   selectedGroup={selectedGroup?.groupId}
                   selectedGroupName={
                     selectedGroup?.groupName || selectedGroup?.name || ''

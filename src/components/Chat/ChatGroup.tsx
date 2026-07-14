@@ -106,7 +106,6 @@ import Highlight from '@tiptap/extension-highlight';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
 import {
-  getGroupAdminsAddress,
   getGroupMembers,
   getPrimaryNamesForAddresses,
 } from '../Group/groupApi';
@@ -739,6 +738,8 @@ export const ChatGroup = ({
   secretKey,
   getSecretKey,
   myAddress,
+  isReticulumChannelAdmin = false,
+  reticulumChannelAccessReady = false,
   handleNewEncryptionNotification,
   hide,
   handleSecretKeyCreationInProgress,
@@ -838,7 +839,6 @@ export const ChatGroup = ({
     Array<ReticulumSearchCursor | null>
   >([null]);
   const reticulumPrimaryNameCacheRef = useRef<Map<string, string>>(new Map());
-  const [isReticulumChannelAdmin, setIsReticulumChannelAdmin] = useState(false);
   const [isCreateReticulumChannelOpen, setIsCreateReticulumChannelOpen] =
     useState(false);
   const [newReticulumChannelName, setNewReticulumChannelName] = useState('');
@@ -1182,7 +1182,12 @@ export const ChatGroup = ({
   }, [selectedGroup]);
 
   useEffect(() => {
-    if (!reticulumChatEnabled || !selectedGroup) return;
+    if (
+      !reticulumChatEnabled ||
+      !selectedGroup ||
+      !reticulumChannelAccessReady
+    )
+      return;
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
     let cancelled = false;
@@ -1214,7 +1219,13 @@ export const ChatGroup = ({
     return () => {
       cancelled = true;
     };
-  }, [refreshReticulumChannels, reticulumChatEnabled, selectedGroup]);
+  }, [
+    isReticulumChannelAdmin,
+    refreshReticulumChannels,
+    reticulumChannelAccessReady,
+    reticulumChatEnabled,
+    selectedGroup,
+  ]);
 
   const reticulumChannelSummariesById = useMemo(() => {
     const groupId = Number(selectedGroup);
@@ -1456,25 +1467,6 @@ export const ChatGroup = ({
     !reticulumChatEnabled ||
     selectedReticulumChannelWriteMode !== RETICULUM_CHANNEL_WRITE_MODE_ADMINS ||
     isReticulumChannelAdmin;
-
-  useEffect(() => {
-    const groupId = Number(selectedGroup);
-    if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
-      setIsReticulumChannelAdmin(false);
-      return;
-    }
-    let cancelled = false;
-    void getGroupAdminsAddress(groupId)
-      .then((admins) => {
-        if (!cancelled) setIsReticulumChannelAdmin(admins.includes(myAddress));
-      })
-      .catch(() => {
-        if (!cancelled) setIsReticulumChannelAdmin(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [myAddress, reticulumChatEnabled, selectedGroup]);
 
   useEffect(() => {
     const groupId = Number(selectedGroup);
