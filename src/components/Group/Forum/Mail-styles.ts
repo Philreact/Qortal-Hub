@@ -354,11 +354,11 @@ export const NewMessageAttachmentImg = styled('img')({
 
 export const NewMessageSendButton = styled(Box)(({ theme }) => ({
   alignItems: 'center',
-  backgroundColor: theme.palette.background.paper,
+  backgroundColor: '#2563eb',
   border: '1px solid',
-  borderColor: theme.palette.divider,
+  borderColor: '#2563eb',
   borderRadius: '8px',
-  color: theme.palette.text.primary,
+  color: theme.palette.common.white,
   cursor: 'pointer',
   display: 'inline-flex',
   fontFamily: 'Inter',
@@ -371,12 +371,19 @@ export const NewMessageSendButton = styled(Box)(({ theme }) => ({
   transition: 'background-color 0.2s ease, border-color 0.2s ease',
   width: 'fit-content',
   '&:hover': {
-    backgroundColor: theme.palette.action.hover,
-    borderColor: theme.palette.divider,
+    backgroundColor: '#1e40af',
+    borderColor: '#1e40af',
   },
   '&:disabled, &[aria-busy="true"]': {
     cursor: 'default',
     opacity: 0.7,
+    '& svg': {
+      visibility: 'hidden',
+    },
+  },
+  '& svg, & path': {
+    color: theme.palette.common.white,
+    stroke: theme.palette.common.white,
   },
 }));
 

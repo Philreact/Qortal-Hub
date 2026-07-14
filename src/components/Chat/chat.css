@@ -332,6 +332,33 @@
   padding: 14px 16px;
 }
 
+.tiptap-chat-composer--compact {
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+  min-height: 40px;
+  overflow: visible;
+}
+
+.tiptap-chat-composer--compact .tiptap-prosemirror {
+  border-top: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.tiptap-chat-composer--compact .ProseMirror {
+  min-height: 20px;
+}
+
+.tiptap-chat-composer--compact .tiptap p {
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.tiptap-chat-composer--compact .tiptap p + p {
+  margin-top: 0.45em;
+}
+
 .tiptap-chat-composer .tiptap-prosemirror:focus,
 .tiptap-chat-composer [contenteditable='true']:focus,
 .tiptap-chat-composer [contenteditable='true']:focus-visible {

@@ -1,4 +1,13 @@
-import { Box, Paper, Typography, useTheme } from '@mui/material';
+import {
+  Box,
+  ButtonBase,
+  IconButton,
+  Paper,
+  SvgIcon,
+  Tooltip,
+  Typography,
+  useTheme,
+} from '@mui/material';
 import {
   lazy,
   Profiler,
@@ -8,12 +17,24 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from 'react';
 import { ChatGroup } from '../Chat/ChatGroup';
 import { CreateCommonSecret } from '../Chat/CreateCommonSecret';
 import { base64ToUint8Array } from '../../qdn/encryption/group-encryption';
 import { uint8ArrayToObject } from '../../encryption/encryption';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import CallIcon from '@mui/icons-material/Call';
+import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
+import CircularProgress from '@mui/material/CircularProgress';
+import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
+import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
+import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
+import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
+import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 
 import {
   clearAllQueues,
@@ -109,6 +130,8 @@ import {
   SelectedDirectOverlay,
   SelectedGroupWrapper,
 } from './Group.styles';
+
+const RETICULUM_ACTIVE_BLUE = '#2563eb';
 
 const LazyAddGroup = lazy(() =>
   import('./AddGroup').then((m) => ({ default: m.AddGroup }))
@@ -454,6 +477,310 @@ function MemberGroupsEffects({
   return null;
 }
 
+function ReticulumSectionLayer({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <Box
+      sx={{
+        display: active ? 'flex' : 'none',
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        overflow: 'hidden',
+        width: '100%',
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
+const ReticulumMegaphoneIcon = (props) => (
+  <SvgIcon {...props} viewBox="0 0 24 24">
+    <path d="M20.5 4.75c0-.79-.87-1.27-1.54-.85L10.1 9.4H5.25A2.25 2.25 0 0 0 3 11.65v.7a2.25 2.25 0 0 0 2.25 2.25H6.4l1.52 4.18c.22.6.78.99 1.42.99h2.06c.72 0 1.2-.74.91-1.4l-1.63-3.75 8.28 5.48c.67.43 1.54-.05 1.54-.85V4.75Z" />
+  </SvgIcon>
+);
+
+function ReticulumGroupSectionHeader({
+  activeSection,
+  groupCallDisabled,
+  groupCallInCall,
+  groupCallJoining,
+  groupCallTooltip,
+  hasUnreadAnnouncements,
+  membersPanelOpen,
+  onAdminsClick,
+  onAnnouncementsClick,
+  onChatClick,
+  onGroupCallClick,
+  onMembersClick,
+  onQortalLandClick,
+  onThreadsClick,
+  sectionLabel,
+}: {
+  activeSection: string;
+  groupCallDisabled?: boolean;
+  groupCallInCall?: boolean;
+  groupCallJoining?: boolean;
+  groupCallTooltip?: string;
+  hasUnreadAnnouncements?: boolean;
+  membersPanelOpen?: boolean;
+  onAdminsClick?: () => void;
+  onAnnouncementsClick?: () => void;
+  onChatClick?: () => void;
+  onGroupCallClick?: () => void;
+  onMembersClick?: () => void;
+  onQortalLandClick?: () => void;
+  onThreadsClick?: () => void;
+  sectionLabel: string;
+}) {
+  const theme = useTheme();
+  const actionSx = (active?: boolean, showLabel?: boolean) => ({
+    alignItems: 'center',
+    borderRadius: '8px',
+    color: active ? theme.palette.common.white : theme.palette.text.secondary,
+    display: 'inline-flex',
+    flexShrink: 0,
+    fontFamily: 'Inter',
+    fontSize: 12,
+    fontWeight: 600,
+    gap: showLabel ? 0.6 : 0,
+    height: 36,
+    justifyContent: 'center',
+    lineHeight: 1,
+    minWidth: showLabel ? 0 : 36,
+    overflow: 'hidden',
+    px: showLabel ? 1 : 0,
+    textAlign: 'center',
+    transition: 'background-color 140ms ease, color 140ms ease',
+    width: showLabel ? 'auto' : 36,
+    backgroundColor: active ? RETICULUM_ACTIVE_BLUE : 'transparent',
+    '&:hover': {
+      backgroundColor: active ? RETICULUM_ACTIVE_BLUE : theme.palette.action.hover,
+      color: active ? theme.palette.common.white : theme.palette.text.primary,
+    },
+  });
+  const renderAction = ({
+    active,
+    disabled,
+    icon,
+    label,
+    onClick,
+    showLabel = false,
+    tooltip,
+  }: {
+    active?: boolean;
+    disabled?: boolean;
+    icon: ReactNode;
+    label: string;
+    onClick?: (event: ReactMouseEvent<HTMLElement>) => void;
+    showLabel?: boolean;
+    tooltip?: string;
+  }) => {
+    if (typeof onClick !== 'function') return null;
+    return (
+      <Tooltip key={label} title={tooltip || label}>
+        <span style={{ display: 'inline-flex' }}>
+          <ButtonBase
+            disabled={disabled}
+            onClick={onClick}
+            sx={actionSx(active, showLabel)}
+          >
+            {icon}
+            {showLabel && (
+              <Box
+                component="span"
+                sx={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {label}
+              </Box>
+            )}
+          </ButtonBase>
+        </span>
+      </Tooltip>
+    );
+  };
+
+  return (
+    <Box
+      sx={{
+        alignItems: 'center',
+        borderBottom: `1px solid ${theme.palette.divider}`,
+        display: 'flex',
+        flexShrink: 0,
+        gap: 0.75,
+        minHeight: 50,
+        overflow: 'hidden',
+        px: 1.5,
+      }}
+    >
+      <Typography
+        sx={{
+          flex: 1,
+          fontSize: 17,
+          fontWeight: 700,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {sectionLabel}
+      </Typography>
+      <Box
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          flexShrink: 0,
+          gap: 0.25,
+          minWidth: 0,
+          ml: 'auto',
+          overflowX: 'auto',
+        }}
+      >
+        {renderAction({
+          active: activeSection === 'land',
+          label: 'Qortal Land',
+          icon: <SportsEsportsIcon sx={{ fontSize: 19 }} />,
+          onClick: onQortalLandClick,
+          showLabel: true,
+        })}
+        {renderAction({
+          active: activeSection === 'chat',
+          label: 'Chat',
+          icon: <ChatRoundedIcon sx={{ fontSize: 19 }} />,
+          onClick: onChatClick,
+          showLabel: true,
+        })}
+        {renderAction({
+          label: groupCallJoining
+            ? 'Joining'
+            : groupCallInCall
+              ? 'Leave call'
+              : 'Group Call',
+          icon: groupCallJoining ? (
+            <CircularProgress size={17} sx={{ color: 'inherit' }} />
+          ) : groupCallInCall ? (
+            <CallEndRoundedIcon sx={{ fontSize: 19 }} />
+          ) : (
+            <CallIcon sx={{ fontSize: 19 }} />
+          ),
+          onClick: onGroupCallClick,
+          disabled: groupCallDisabled || groupCallJoining,
+          showLabel: true,
+          tooltip: groupCallTooltip,
+        })}
+        <Box
+          aria-hidden
+          sx={{
+            backgroundColor: theme.palette.divider,
+            flexShrink: 0,
+            height: 22,
+            mx: 0.5,
+            width: '1px',
+          }}
+        />
+        {renderAction({
+          active: activeSection === 'announcement',
+          label: 'Announcements',
+          icon: (
+            <ReticulumMegaphoneIcon
+              sx={{
+                color: hasUnreadAnnouncements
+                  ? theme.palette.other.unread
+                  : 'inherit',
+                fontSize: 20,
+              }}
+            />
+          ),
+          onClick: onAnnouncementsClick,
+        })}
+        {renderAction({
+          active: activeSection === 'forum',
+          label: 'Threads',
+          icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
+          onClick: onThreadsClick,
+        })}
+        {renderAction({
+          active: activeSection === 'adminSpace',
+          label: 'Admins',
+          icon: <SecurityRoundedIcon sx={{ fontSize: 19 }} />,
+          onClick: onAdminsClick,
+        })}
+        {renderAction({
+          label: 'Q-Manager',
+          icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
+          onClick: (event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            executeEvent('openReticulumQManager', {
+              anchorRect: {
+                bottom: rect.bottom,
+                height: rect.height,
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                width: rect.width,
+              },
+            });
+          },
+        })}
+        <Tooltip title={membersPanelOpen ? 'Hide members' : 'Members'}>
+          <IconButton
+            onClick={onMembersClick}
+            size="small"
+            sx={{
+              backgroundColor: membersPanelOpen
+                ? RETICULUM_ACTIVE_BLUE
+                : 'transparent',
+              borderRadius: '8px',
+              color: membersPanelOpen ? 'common.white' : 'text.secondary',
+              flexShrink: 0,
+              height: 36,
+              width: 36,
+              '&:hover': {
+                backgroundColor: membersPanelOpen
+                  ? RETICULUM_ACTIVE_BLUE
+                  : theme.palette.action.hover,
+                color: membersPanelOpen ? 'common.white' : theme.palette.text.primary,
+              },
+            }}
+          >
+            <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Search chat">
+          <IconButton
+            onClick={() => executeEvent('openReticulumChatSearch', {})}
+            size="small"
+            sx={{
+              color: 'text.secondary',
+              flexShrink: 0,
+              height: 36,
+              width: 36,
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+                color: theme.palette.text.primary,
+              },
+            }}
+          >
+            <SearchRoundedIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    </Box>
+  );
+}
+
 export const Group = ({
   myAddress,
   setDesktopViewMode,
@@ -522,6 +849,10 @@ export const Group = ({
   const [activeReticulumChannelId, setActiveReticulumChannelId] =
     useState('general');
   const [reticulumReadEntryToken, setReticulumReadEntryToken] = useState(0);
+  const [reticulumMountedGroupSections, setReticulumMountedGroupSections] =
+    useState<Record<string, string[]>>({});
+  const [reticulumMembersPanelOpen, setReticulumMembersPanelOpen] =
+    useState(false);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
@@ -830,6 +1161,26 @@ export const Group = ({
     activeReticulumChannelIdRef.current =
       activeReticulumChannelId || 'general';
   }, [activeReticulumChannelId]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !selectedGroup?.groupId) return;
+    if (
+      !['announcement', 'forum', 'land', 'members', 'adminSpace'].includes(
+        groupSection
+      )
+    ) {
+      return;
+    }
+    const groupId = String(selectedGroup.groupId);
+    setReticulumMountedGroupSections((current) => {
+      const mounted = current[groupId] || [];
+      if (mounted.includes(groupSection)) return current;
+      return {
+        ...current,
+        [groupId]: [...mounted, groupSection],
+      };
+    });
+  }, [groupSection, reticulumChatEnabled, selectedGroup?.groupId]);
 
   useEffect(() => {
     secretKeyRef.current = secretKey;
@@ -1613,6 +1964,35 @@ export const Group = ({
     myAddress,
     reticulumChatEnabled,
     userInfo?.name,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || desktopSideView !== 'directs') return;
+    if (selectedDirect || newChat) return;
+    const firstDirect = displayDirects[0];
+    if (!firstDirect?.address) {
+      return;
+    }
+    setSelectedDirect(firstDirect);
+    window
+      .sendMessage('addTimestampEnterChat', {
+        timestamp: Date.now(),
+        groupId: firstDirect.address,
+      })
+      .catch((error) => {
+        console.error(
+          'Failed to add timestamp:',
+          error.message || 'An error occurred'
+        );
+      });
+    getTimestampEnterChat();
+  }, [
+    desktopSideView,
+    displayDirects,
+    getTimestampEnterChat,
+    newChat,
+    reticulumChatEnabled,
+    selectedDirect,
   ]);
 
   const getSecretKey = useCallback(
@@ -2932,13 +3312,7 @@ export const Group = ({
     });
   }, []);
 
-  const goToAnnouncements = useCallback(async () => {
-    setGroupSection('default');
-    await new Promise((res) => {
-      setTimeout(() => {
-        res(null);
-      }, 200);
-    });
+  const goToAnnouncements = useCallback(() => {
     setSelectedDirect(null);
     setNewChat(false);
     setGroupSection('announcement');
@@ -2975,13 +3349,7 @@ export const Group = ({
     setGroupSection('land');
   }, []);
 
-  const goToChat = useCallback(async () => {
-    setGroupSection('default');
-    await new Promise((res) => {
-      setTimeout(() => {
-        res(null);
-      }, 200);
-    });
+  const goToChat = useCallback(() => {
     setGroupSection('chat');
     bumpReticulumReadEntryToken();
     setNewChat(false);
@@ -3004,6 +3372,10 @@ export const Group = ({
       }, 200);
     }
   }, [bumpReticulumReadEntryToken, getTimestampEnterChat]);
+
+  const toggleReticulumMembersPanel = useCallback(() => {
+    setReticulumMembersPanelOpen((open) => !open);
+  }, []);
 
   const loadingGroupSnackbarInfo = useMemo(
     () => ({
@@ -3039,6 +3411,22 @@ export const Group = ({
     setNewChat(false);
   }, []);
 
+  const isReticulumDirectOverlayOpen =
+    reticulumChatEnabled && desktopSideView === 'directs';
+
+  const setDesktopSideViewFromRail = useCallback(
+    (view: 'groups' | 'directs') => {
+      if (reticulumChatEnabled && view === 'directs') {
+        setDesktopSideView((currentView) =>
+          currentView === 'directs' ? 'groups' : 'directs'
+        );
+        return;
+      }
+      setDesktopSideView(view);
+    },
+    [reticulumChatEnabled]
+  );
+
   const handleNotifyAdminClick = useCallback(
     (e: { currentTarget: HTMLElement | null }) => {
       const address = e.currentTarget?.getAttribute('data-admin-address');
@@ -3056,7 +3444,7 @@ export const Group = ({
     setSelectedDirect(null);
     setTriedToFetchSecretKey(false);
     setNewChat(false);
-    setSelectedGroup(null);
+    setSelectedGroup(group);
     setUserInfoForLevels({});
     setSecretKey(null);
     secretKeyRef.current = null;
@@ -3074,10 +3462,18 @@ export const Group = ({
     bumpReticulumReadEntryToken();
     setIsOpenDrawer(false);
     setIsForceShowCreationKeyPopup(false);
-    setTimeout(() => {
-      setSelectedGroup(group);
-    }, 200);
   }, [bumpReticulumReadEntryToken]);
+
+  const selectedGroupIdKey = selectedGroup?.groupId
+    ? String(selectedGroup.groupId)
+    : '';
+  const mountedReticulumSections =
+    reticulumMountedGroupSections[selectedGroupIdKey] || [];
+  const shouldMountReticulumSection = useCallback(
+    (section: string) =>
+      groupSection === section || mountedReticulumSections.includes(section),
+    [groupSection, mountedReticulumSections]
+  );
 
   const renderQChatTabContent = ({
     hide = false,
@@ -3100,10 +3496,10 @@ export const Group = ({
           width: '100%',
         }}
       >
-        {desktopSideView !== 'directs' ? (
+        {reticulumChatEnabled || desktopSideView !== 'directs' ? (
           <GroupList
             selectGroupFunc={selectGroupFunc}
-            setDesktopSideView={setDesktopSideView}
+            setDesktopSideView={setDesktopSideViewFromRail}
             desktopSideView={desktopSideView}
             directChatHasUnread={directChatHasUnread}
             chatMode={chatMode}
@@ -3114,9 +3510,10 @@ export const Group = ({
             myAddress={myAddress}
             reticulumChatEnabled={reticulumChatEnabled}
           />
-        ) : (
+        ) : null}
+        {!reticulumChatEnabled && desktopSideView === 'directs' && (
           <DirectsSidebar
-            setDesktopSideView={setDesktopSideView}
+            setDesktopSideView={setDesktopSideViewFromRail}
             desktopSideView={desktopSideView}
             directChatHasUnread={directChatHasUnread}
             directs={displayDirects}
@@ -3153,7 +3550,7 @@ export const Group = ({
             position: 'relative',
           }}
         >
-          {newChat && (
+          {newChat && !reticulumChatEnabled && (
             <NewChatOverlay isChatMode={isVisible}>
               <ChatDirect
                 myAddress={myAddress}
@@ -3164,11 +3561,16 @@ export const Group = ({
                 getTimestampEnterChat={getTimestampEnterChat}
                 close={closeChatDirect}
                 setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                reticulumChatEnabled={reticulumChatEnabled}
               />
             </NewChatOverlay>
           )}
 
-          {isVisible && !selectedGroup && !selectedDirect && !newChat && (
+          {isVisible &&
+            !selectedDirect &&
+            !newChat &&
+            !selectedGroup &&
+            !isReticulumDirectOverlayOpen && (
             <CenterBox>
               <NoSelectionTypography>
                 {t('group:message.generic.no_selection', {
@@ -3178,56 +3580,188 @@ export const Group = ({
             </CenterBox>
           )}
 
-          <SelectedGroupWrapper isVisible={isVisible && !!selectedGroup}>
-            <DesktopHeader
-              isPrivate={isPrivate}
-              selectedGroup={selectedGroup}
-              groupSection={groupSection}
-              isUnread={isUnread}
-              goToAnnouncements={goToAnnouncements}
-              goToChat={goToChat}
-              goToThreads={goToThreads}
-              setOpenManageMembers={setOpenManageMembers}
-              directChatHasUnread={directChatHasUnread}
-              chatMode={chatMode}
-              openDrawerGroups={openDrawerGroups}
-              goToHome={goToHome}
-              mobileViewMode={mobileViewMode}
-              setMobileViewMode={setMobileViewMode}
-              setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
-              hasUnreadDirects={directChatHasUnread}
-              isHome={groupSection === 'home'}
-              isGroups={desktopSideView === 'groups'}
-              isDirects={desktopSideView === 'directs'}
-              setDesktopSideView={setDesktopSideView}
-              hasUnreadAnnouncements={isUnread}
-              isAnnouncement={groupSection === 'announcement'}
-              isChat={groupSection === 'chat'}
-              isQortalLand={groupSection === 'land'}
-              setGroupSection={setGroupSection}
-              isForum={groupSection === 'forum'}
-              onGroupCallClick={
-                gcallGroupNumericId !== null
-                  ? handleGroupCallHeaderClick
-                  : undefined
-              }
-              onQortalLandClick={goToQortalLand}
-              groupCallInCall={
-                inThisGroupGcall && gcallRoomState === 'connected'
-              }
-              groupCallJoining={gcallRoomState === 'joining'}
-              groupCallDisabled={inOtherGcall}
-              groupCallTooltip={
-                inOtherGcall
-                  ? t('core:group_call_blocked', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : ''
-              }
-            />
+          <SelectedGroupWrapper
+            isVisible={
+              isVisible &&
+              !!selectedGroup &&
+              (reticulumChatEnabled ||
+                (desktopSideView !== 'directs' && !selectedDirect && !newChat))
+            }
+          >
+            {reticulumChatEnabled && groupSection !== 'chat' && (
+              <ReticulumGroupSectionHeader
+                activeSection={groupSection}
+                sectionLabel={
+                  groupSection === 'land'
+                    ? 'QortalLand'
+                    : groupSection === 'announcement'
+                      ? 'Announcements'
+                      : groupSection === 'forum'
+                        ? 'Threads'
+                        : groupSection === 'members'
+                          ? 'Members'
+                          : groupSection === 'adminSpace'
+                            ? 'Admins'
+                            : selectedGroup?.groupName || 'Group'
+                }
+                onChatClick={goToChat}
+                onGroupCallClick={
+                  gcallGroupNumericId !== null
+                    ? handleGroupCallHeaderClick
+                    : undefined
+                }
+                onQortalLandClick={goToQortalLand}
+                onAnnouncementsClick={goToAnnouncements}
+                onThreadsClick={goToThreads}
+                onAdminsClick={() => setGroupSection('adminSpace')}
+                groupCallInCall={
+                  inThisGroupGcall && gcallRoomState === 'connected'
+                }
+                groupCallJoining={gcallRoomState === 'joining'}
+                groupCallDisabled={inOtherGcall}
+                groupCallTooltip={
+                  inOtherGcall
+                    ? t('core:group_call_blocked', {
+                        postProcess: 'capitalizeFirstChar',
+                      })
+                    : ''
+                }
+                hasUnreadAnnouncements={isUnread}
+                membersPanelOpen={reticulumMembersPanelOpen}
+                onMembersClick={toggleReticulumMembersPanel}
+              />
+            )}
+            {!reticulumChatEnabled && (
+              <DesktopHeader
+                isPrivate={isPrivate}
+                selectedGroup={selectedGroup}
+                groupSection={groupSection}
+                isUnread={isUnread}
+                goToAnnouncements={goToAnnouncements}
+                goToChat={goToChat}
+                goToThreads={goToThreads}
+                setOpenManageMembers={setOpenManageMembers}
+                directChatHasUnread={directChatHasUnread}
+                chatMode={chatMode}
+                openDrawerGroups={openDrawerGroups}
+                goToHome={goToHome}
+                mobileViewMode={mobileViewMode}
+                setMobileViewMode={setMobileViewMode}
+                setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                hasUnreadDirects={directChatHasUnread}
+                isHome={groupSection === 'home'}
+                isGroups={desktopSideView === 'groups'}
+                isDirects={desktopSideView === 'directs'}
+                setDesktopSideView={setDesktopSideView}
+                hasUnreadAnnouncements={isUnread}
+                isAnnouncement={groupSection === 'announcement'}
+                isChat={groupSection === 'chat'}
+                isQortalLand={groupSection === 'land'}
+                setGroupSection={setGroupSection}
+                isForum={groupSection === 'forum'}
+                onGroupCallClick={
+                  gcallGroupNumericId !== null
+                    ? handleGroupCallHeaderClick
+                    : undefined
+                }
+                onQortalLandClick={goToQortalLand}
+                groupCallInCall={
+                  inThisGroupGcall && gcallRoomState === 'connected'
+                }
+                groupCallJoining={gcallRoomState === 'joining'}
+                groupCallDisabled={inOtherGcall}
+                groupCallTooltip={
+                  inOtherGcall
+                    ? t('core:group_call_blocked', {
+                        postProcess: 'capitalizeFirstChar',
+                      })
+                    : ''
+                }
+              />
+            )}
 
             <ChatContentBox>
-              {triedToFetchSecretKey && (
+              {reticulumChatEnabled && !!selectedGroup && (
+                <ReticulumSectionLayer
+                  active={groupSection === 'chat'}
+                >
+                  <ChatGroup
+                    myAddress={myAddress}
+                    selectedGroup={selectedGroup?.groupId}
+                    selectedGroupName={
+                      selectedGroup?.groupName || selectedGroup?.name || ''
+                    }
+                    getSecretKey={getSecretKey}
+                    secretKey={secretKey}
+                    isPrivate={isPrivate}
+                    isActive={
+                      isVisible &&
+                      groupSection === 'chat' &&
+                      !isReticulumDirectOverlayOpen
+                    }
+                    setSecretKey={setSecretKey}
+                    handleNewEncryptionNotification={
+                      setNewEncryptionNotification
+                    }
+                    hide={false}
+                    hideView={
+                      !(isVisible && selectedGroup) ||
+                      (desktopViewMode !== 'apps' && desktopViewMode !== 'dev')
+                    }
+                    handleSecretKeyCreationInProgress={
+                      handleSecretKeyCreationInProgress
+                    }
+                    triedToFetchSecretKey={triedToFetchSecretKey}
+                    getTimestampEnterChatParent={getTimestampEnterChat}
+                    notificationReticulumChannelId={
+                      notificationReticulumChannelId
+                    }
+                    onGroupCallClick={
+                      gcallGroupNumericId !== null
+                        ? handleGroupCallHeaderClick
+                        : undefined
+                    }
+                    onQortalLandClick={goToQortalLand}
+                    onAnnouncementsClick={goToAnnouncements}
+                    onThreadsClick={goToThreads}
+                    onMembersClick={toggleReticulumMembersPanel}
+                    membersPanelOpen={reticulumMembersPanelOpen}
+                    onAdminsClick={() => setGroupSection('adminSpace')}
+                    groupCallInCall={
+                      inThisGroupGcall && gcallRoomState === 'connected'
+                    }
+                    groupCallJoining={gcallRoomState === 'joining'}
+                    groupCallDisabled={inOtherGcall}
+                    groupCallTooltip={
+                      inOtherGcall
+                        ? t('core:group_call_blocked', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                        : ''
+                    }
+                    hasUnreadAnnouncements={isUnread}
+                    onReticulumChannelSelected={(channelId) => {
+                      const normalizedChannelId = channelId || 'general';
+                      setActiveReticulumChannelId((previousChannelId) => {
+                        const previous = previousChannelId || 'general';
+                        if (previous !== normalizedChannelId) {
+                          bumpReticulumReadEntryToken();
+                        }
+                        return normalizedChannelId;
+                      });
+                      if (
+                        notificationReticulumChannelId &&
+                        notificationReticulumChannelId === normalizedChannelId
+                      ) {
+                        setNotificationReticulumChannelId('');
+                      }
+                    }}
+                    reticulumReadEntryToken={reticulumReadEntryToken}
+                    isGroupOwner={groupOwner?.owner === myAddress}
+                  />
+                </ReticulumSectionLayer>
+              )}
+              {!reticulumChatEnabled && triedToFetchSecretKey && (
                 <ChatGroup
                   myAddress={myAddress}
                   isReticulumChannelAdmin={reticulumAdminGroupIds.has(
@@ -3265,6 +3799,29 @@ export const Group = ({
                   notificationReticulumChannelId={
                     notificationReticulumChannelId
                   }
+                  onGroupCallClick={
+                    gcallGroupNumericId !== null
+                      ? handleGroupCallHeaderClick
+                      : undefined
+                  }
+                  onQortalLandClick={goToQortalLand}
+                  onAnnouncementsClick={goToAnnouncements}
+                  onThreadsClick={goToThreads}
+                  onMembersClick={() => setGroupSection('members')}
+                  onAdminsClick={() => setGroupSection('adminSpace')}
+                  groupCallInCall={
+                    inThisGroupGcall && gcallRoomState === 'connected'
+                  }
+                  groupCallJoining={gcallRoomState === 'joining'}
+                  groupCallDisabled={inOtherGcall}
+                  groupCallTooltip={
+                    inOtherGcall
+                      ? t('core:group_call_blocked', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : ''
+                  }
+                  hasUnreadAnnouncements={isUnread}
                   onReticulumChannelSelected={(channelId) => {
                     const normalizedChannelId = channelId || 'general';
                     setActiveReticulumChannelId((previousChannelId) => {
@@ -3395,54 +3952,138 @@ export const Group = ({
                 !secretKey &&
                 isPrivate &&
                 triedToFetchSecretKey ? null : !triedToFetchSecretKey ? null : (
-                <>
-                  <GroupAnnouncements
-                    myAddress={myAddress}
-                    selectedGroup={selectedGroup?.groupId}
-                    getSecretKey={getSecretKey}
-                    secretKey={secretKey}
-                    setSecretKey={setSecretKey}
-                    isAdmin={admins.includes(myAddress)}
-                    handleNewEncryptionNotification={
-                      setNewEncryptionNotification
-                    }
-                    hide={groupSection !== 'announcement'}
-                    isPrivate={isPrivate}
-                  />
-                  <GroupForum
-                    myAddress={myAddress}
-                    selectedGroup={selectedGroup}
-                    getSecretKey={getSecretKey}
-                    secretKey={secretKey}
-                    setSecretKey={setSecretKey}
-                    isAdmin={admins.includes(myAddress)}
-                    hide={groupSection !== 'forum'}
-                    defaultThread={defaultThread}
-                    setDefaultThread={setDefaultThread}
-                    isPrivate={isPrivate}
-                  />
-                  {groupSection === 'land' && (
-                    <Suspense fallback={null}>
-                      <LazyQortalLand
-                        key={selectedGroup?.groupId}
-                        groupId={Number(selectedGroup?.groupId)}
-                        groupName={
-                          selectedGroup?.groupName || selectedGroup?.name || ''
-                        }
-                        myAddress={myAddress}
-                      />
-                    </Suspense>
-                  )}
-                  {groupSection === 'adminSpace' && (
-                    <AdminSpace
-                      adminsWithNames={adminsWithNames}
-                      hide={groupSection !== 'adminSpace'}
-                      isAdmin={admins.includes(myAddress)}
-                      isOwner={groupOwner?.owner === myAddress}
+                reticulumChatEnabled ? (
+                  <>
+                    {shouldMountReticulumSection('announcement') && (
+                      <ReticulumSectionLayer
+                        active={groupSection === 'announcement'}
+                      >
+                        <GroupAnnouncements
+                          myAddress={myAddress}
+                          selectedGroup={selectedGroup?.groupId}
+                          getSecretKey={getSecretKey}
+                          secretKey={secretKey}
+                          setSecretKey={setSecretKey}
+                          isAdmin={admins.includes(myAddress)}
+                          handleNewEncryptionNotification={
+                            setNewEncryptionNotification
+                          }
+                          hide={false}
+                          isPrivate={isPrivate}
+                        />
+                      </ReticulumSectionLayer>
+                    )}
+                    {shouldMountReticulumSection('forum') && (
+                      <ReticulumSectionLayer active={groupSection === 'forum'}>
+                        <GroupForum
+                          myAddress={myAddress}
+                          selectedGroup={selectedGroup}
+                          getSecretKey={getSecretKey}
+                          secretKey={secretKey}
+                          setSecretKey={setSecretKey}
+                          isAdmin={admins.includes(myAddress)}
+                          hide={false}
+                          defaultThread={defaultThread}
+                          setDefaultThread={setDefaultThread}
+                          isPrivate={isPrivate}
+                        />
+                      </ReticulumSectionLayer>
+                    )}
+                    {shouldMountReticulumSection('land') && (
+                      <ReticulumSectionLayer active={groupSection === 'land'}>
+                        <Suspense fallback={null}>
+                          <LazyQortalLand
+                            key={selectedGroup?.groupId}
+                            groupId={Number(selectedGroup?.groupId)}
+                            groupName={
+                              selectedGroup?.groupName ||
+                              selectedGroup?.name ||
+                              ''
+                            }
+                            myAddress={myAddress}
+                          />
+                        </Suspense>
+                      </ReticulumSectionLayer>
+                    )}
+                    {shouldMountReticulumSection('adminSpace') && (
+                      <ReticulumSectionLayer
+                        active={groupSection === 'adminSpace'}
+                      >
+                        <AdminSpace
+                          adminsWithNames={adminsWithNames}
+                          hide={false}
+                          isAdmin={admins.includes(myAddress)}
+                          isOwner={groupOwner?.owner === myAddress}
+                          selectedGroup={selectedGroup?.groupId}
+                        />
+                      </ReticulumSectionLayer>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <GroupAnnouncements
+                      myAddress={myAddress}
                       selectedGroup={selectedGroup?.groupId}
+                      getSecretKey={getSecretKey}
+                      secretKey={secretKey}
+                      setSecretKey={setSecretKey}
+                      isAdmin={admins.includes(myAddress)}
+                      handleNewEncryptionNotification={
+                        setNewEncryptionNotification
+                      }
+                      hide={groupSection !== 'announcement'}
+                      isPrivate={isPrivate}
                     />
-                  )}
-                </>
+                    <GroupForum
+                      myAddress={myAddress}
+                      selectedGroup={selectedGroup}
+                      getSecretKey={getSecretKey}
+                      secretKey={secretKey}
+                      setSecretKey={setSecretKey}
+                      isAdmin={admins.includes(myAddress)}
+                      hide={groupSection !== 'forum'}
+                      defaultThread={defaultThread}
+                      setDefaultThread={setDefaultThread}
+                      isPrivate={isPrivate}
+                    />
+                    {groupSection === 'land' && (
+                      <Suspense fallback={null}>
+                        <LazyQortalLand
+                          key={selectedGroup?.groupId}
+                          groupId={Number(selectedGroup?.groupId)}
+                          groupName={
+                            selectedGroup?.groupName ||
+                            selectedGroup?.name ||
+                            ''
+                          }
+                          myAddress={myAddress}
+                        />
+                      </Suspense>
+                    )}
+                    {groupSection === 'adminSpace' && (
+                      <AdminSpace
+                        adminsWithNames={adminsWithNames}
+                        hide={groupSection !== 'adminSpace'}
+                        isAdmin={admins.includes(myAddress)}
+                        isOwner={groupOwner?.owner === myAddress}
+                        selectedGroup={selectedGroup?.groupId}
+                      />
+                    )}
+                    {groupSection === 'members' && (
+                      <Suspense fallback={null}>
+                        <LazyManageMembers
+                          inline
+                          selectedGroup={selectedGroup}
+                          address={myAddress}
+                          open
+                          setOpen={setOpenManageMembers}
+                          isAdmin={admins.includes(myAddress)}
+                          isOwner={groupOwner?.owner === myAddress}
+                        />
+                      </Suspense>
+                    )}
+                  </>
+                )
               )}
 
               <FloatingButtonContainerBox>
@@ -3474,7 +4115,38 @@ export const Group = ({
               </FloatingButtonContainerBox>
             </ChatContentBox>
 
-            {openManageMembers && (
+            {reticulumChatEnabled && selectedGroup && reticulumMembersPanelOpen && (
+              <Box
+                sx={{
+                  borderLeft: `1px solid ${theme.palette.divider}`,
+                  bottom: 0,
+                  boxShadow:
+                    groupSection === 'land'
+                      ? '-12px 0 24px rgba(0, 0, 0, 0.22)'
+                      : 'none',
+                  position: 'absolute',
+                  right: 0,
+                  top: 50,
+                  width: 280,
+                  zIndex: 8,
+                }}
+              >
+                <Suspense fallback={null}>
+                  <LazyManageMembers
+                    inline
+                    reticulumSidebar
+                    selectedGroup={selectedGroup}
+                    address={myAddress}
+                    open
+                    setOpen={setOpenManageMembers}
+                    isAdmin={admins.includes(myAddress)}
+                    isOwner={groupOwner?.owner === myAddress}
+                  />
+                </Suspense>
+              </Box>
+            )}
+
+            {openManageMembers && !reticulumChatEnabled && (
               <Suspense fallback={null}>
                 <LazyManageMembers
                   selectedGroup={selectedGroup}
@@ -3492,7 +4164,99 @@ export const Group = ({
             <LazyBlockedUsersModal />
           </Suspense>
 
-          {selectedDirect && !newChat && (
+          {isReticulumDirectOverlayOpen && (
+            <Box
+              sx={{
+                backgroundColor: 'background.default',
+                bottom: 0,
+                boxShadow: '-18px 0 36px rgba(0, 0, 0, 0.26)',
+                display: 'flex',
+                left: 0,
+                minHeight: 0,
+                minWidth: 0,
+                position: 'absolute',
+                right: 0,
+                top: 0,
+                zIndex: 16,
+              }}
+            >
+              <DirectsSidebar
+                setDesktopSideView={setDesktopSideViewFromRail}
+                desktopSideView={desktopSideView}
+                directChatHasUnread={directChatHasUnread}
+                directs={displayDirects}
+                dmFriendsByAddress={dmFriendsByAddress}
+                getUserAvatarUrl={getUserAvatarUrl}
+                directAvatarLoaded={directAvatarLoaded}
+                setDirectAvatarLoaded={setDirectAvatarLoaded}
+                setSelectedDirect={setSelectedDirect}
+                setNewChat={setNewChat}
+                setIsOpenDrawer={setIsOpenDrawer}
+                getTimestampEnterChat={getTimestampEnterChat}
+                selectedDirect={selectedDirect}
+                timestampEnterData={timestampEnterData}
+                timeDifferenceForNotificationChats={
+                  timeDifferenceForNotificationChats
+                }
+                myAddress={myAddress}
+                openAvatarPreview={openAvatarPreview}
+                avatarPreviewData={avatarPreviewData}
+                closeAvatarPreview={closeAvatarPreview}
+                isRunningPublicNode={isRunningPublicNode}
+                setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
+                reticulumChatEnabled={reticulumChatEnabled}
+              />
+              <Box
+                sx={{
+                  backgroundColor: 'background.default',
+                  display: 'flex',
+                  flex: 1,
+                  minHeight: 0,
+                  minWidth: 0,
+                  position: 'relative',
+                }}
+              >
+                {newChat ? (
+                  <ChatDirect
+                    myAddress={myAddress}
+                    isNewChat={newChat}
+                    selectedDirect={undefined}
+                    setSelectedDirect={setSelectedDirect}
+                    setNewChat={setNewChat}
+                    getTimestampEnterChat={getTimestampEnterChat}
+                    close={closeChatDirect}
+                    setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                    isActive={isVisible && isReticulumDirectOverlayOpen}
+                    reticulumChatEnabled={reticulumChatEnabled}
+                  />
+                ) : selectedDirect ? (
+                  <ChatDirect
+                    myAddress={myAddress}
+                    isNewChat={newChat}
+                    selectedDirect={selectedDirect}
+                    setSelectedDirect={setSelectedDirect}
+                    setNewChat={setNewChat}
+                    getTimestampEnterChat={getTimestampEnterChat}
+                    close={closeChatDirect}
+                    setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                    isActive={isVisible && isReticulumDirectOverlayOpen}
+                    reticulumChatEnabled={reticulumChatEnabled}
+                  />
+                ) : (
+                  <CenterBox>
+                    <NoSelectionTypography>
+                      No current private messages.
+                    </NoSelectionTypography>
+                  </CenterBox>
+                )}
+              </Box>
+            </Box>
+          )}
+
+          {selectedDirect &&
+            !newChat &&
+            desktopSideView === 'directs' &&
+            !reticulumChatEnabled && (
             <SelectedDirectOverlay isChatMode={isVisible}>
               <InnerChatBox>
                 <ChatDirect
@@ -3505,6 +4269,7 @@ export const Group = ({
                   close={closeChatDirect}
                   setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
                   isActive={isVisible && desktopSideView === 'directs'}
+                  reticulumChatEnabled={reticulumChatEnabled}
                 />
               </InnerChatBox>
             </SelectedDirectOverlay>

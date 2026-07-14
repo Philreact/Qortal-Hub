@@ -6,10 +6,28 @@ import {
   ListItem,
   ListItemAvatar,
   ListItemText,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
 import { HubsIcon } from '../../assets/Icons/HubsIcon';
 import { MessagingIcon } from '../../assets/Icons/MessagingIcon';
@@ -49,6 +67,133 @@ import {
   meshCallParticipantCountForMemberGroup,
 } from '../../lib/group-call/qortalGroupIdKey';
 
+const RETICULUM_GROUP_ORDER_STORAGE_KEY = 'qortal_reticulum_group_order_v1';
+const RETICULUM_ACTIVE_BLUE = '#2563eb';
+const RETICULUM_AVATAR_PALETTE = [
+  '#7dd3fc',
+  '#86efac',
+  '#f9a8d4',
+  '#c4b5fd',
+  '#fcd34d',
+  '#fdba74',
+  '#a7f3d0',
+  '#93c5fd',
+  '#f0abfc',
+  '#fca5a5',
+];
+
+const getPastelAvatarColor = (value?: string | number) => {
+  const key = String(value || 'group');
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) % RETICULUM_AVATAR_PALETTE.length;
+  }
+  return RETICULUM_AVATAR_PALETTE[Math.abs(hash) % RETICULUM_AVATAR_PALETTE.length];
+};
+
+const ReticulumDmMorphIcon = ({
+  active,
+  color,
+}: {
+  active: boolean;
+  color: string;
+}) => (
+  <Box
+    component="span"
+    sx={{
+      color,
+      display: 'inline-flex',
+      height: 25,
+      overflow: 'hidden',
+      position: 'relative',
+      width: 25,
+      '@keyframes reticulumDmLand': {
+        '0%': { opacity: 0, transform: 'translateY(-30px) scale(0.96)' },
+        '55%': { opacity: 1 },
+        '100%': { opacity: 1, transform: 'translateY(0) scale(1)' },
+      },
+      '@keyframes reticulumDmExit': {
+        '0%': { opacity: 1, transform: 'translateY(0) scale(1)' },
+        '100%': { opacity: 0, transform: 'translateY(30px) scale(0.94)' },
+      },
+      '@keyframes reticulumQortalDrop': {
+        '0%': { opacity: 0, transform: 'translateY(-30px) scale(0.94)' },
+        '55%': { opacity: 1 },
+        '100%': { opacity: 1, transform: 'translateY(0) scale(1)' },
+      },
+      '@keyframes reticulumQortalExit': {
+        '0%': { opacity: 1, transform: 'translateY(0) scale(1)' },
+        '100%': { opacity: 0, transform: 'translateY(30px) scale(0.94)' },
+      },
+      '& svg': {
+        display: 'block',
+        height: '100%',
+        inset: 0,
+        overflow: 'visible',
+        position: 'absolute',
+        transformBox: 'fill-box',
+        transformOrigin: '50% 50%',
+        width: '100%',
+      },
+      '& .reticulum-dm-front': {
+        animation: active
+          ? 'reticulumDmExit 360ms cubic-bezier(0.3, 0, 0.2, 1) both'
+          : 'reticulumDmLand 420ms cubic-bezier(0.2, 0.9, 0.2, 1) both',
+        opacity: active ? 0 : 1,
+        transform: active
+          ? 'translateY(30px) scale(0.94)'
+          : 'translateY(0) scale(1)',
+      },
+      '& .reticulum-dm-back': {
+        animation: active
+          ? 'reticulumQortalDrop 420ms cubic-bezier(0.2, 0.9, 0.2, 1) both'
+          : 'reticulumQortalExit 360ms cubic-bezier(0.3, 0, 0.2, 1) both',
+        opacity: active ? 1 : 0,
+        transform: active
+          ? 'translateY(0) scale(1)'
+          : 'translateY(30px) scale(0.94)',
+      },
+    }}
+  >
+    <svg
+      aria-hidden="true"
+      className="reticulum-dm-front"
+      focusable="false"
+      viewBox="0 0 32 32"
+    >
+      <g
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2.4"
+      >
+        <path d="M4.8 15.9 26.4 5.7 20 26.2l-4.4-8.1-6.8 5.2 2.3-7.3z" />
+        <path d="M11.2 16 20 10.2" opacity="0.55" />
+      </g>
+    </svg>
+    <svg
+      aria-hidden="true"
+      className="reticulum-dm-back"
+      focusable="false"
+      viewBox="0 0 32 32"
+    >
+      <g
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2.45"
+      >
+        <path d="M16 3.8 25.7 9.4v11.2L16 26.2l-9.7-5.6V9.4z" opacity="0.95" />
+        <path d="M16 8.2 22 11.7v7L16 22.2l-6-3.5v-7z" />
+        <path d="M13.2 20.5 16 22.1l2.6-1.5" />
+        <path d="M20.7 18.1 27.4 22.5" />
+      </g>
+    </svg>
+  </Box>
+);
+
 const GroupListInner = ({
   selectGroupFunc,
   setDesktopSideView,
@@ -74,6 +219,274 @@ const GroupListInner = ({
   const groups = useAtomValue(memberGroupsWithReticulumChatAtom);
   const groupChatHasUnread = useAtomValue(groupChatHasUnreadAtom);
   const groupsAnnHasUnread = useAtomValue(groupsAnnHasUnreadAtom);
+  const railMode = Boolean(reticulumChatEnabled);
+  const [manualGroupOrder, setManualGroupOrder] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const parsed = JSON.parse(
+        window.localStorage.getItem(RETICULUM_GROUP_ORDER_STORAGE_KEY) || '[]'
+      );
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  });
+  const groupDndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+  const orderedGroups = useMemo(() => {
+    if (!railMode) return groups;
+    const orderIndex = new Map(
+      manualGroupOrder.map((groupId, index) => [String(groupId), index])
+    );
+    return [...groups].sort((a: any, b: any) => {
+      const aIndex = orderIndex.get(String(a?.groupId));
+      const bIndex = orderIndex.get(String(b?.groupId));
+      if (aIndex != null && bIndex != null) return aIndex - bIndex;
+      if (aIndex != null) return -1;
+      if (bIndex != null) return 1;
+      return 0;
+    });
+  }, [groups, manualGroupOrder, railMode]);
+  const orderedGroupIds = useMemo(
+    () => orderedGroups.map((group: any) => String(group?.groupId)),
+    [orderedGroups]
+  );
+
+  const persistManualGroupOrder = useCallback((nextOrder: string[]) => {
+    setManualGroupOrder(nextOrder);
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      RETICULUM_GROUP_ORDER_STORAGE_KEY,
+      JSON.stringify(nextOrder)
+    );
+  }, []);
+
+  const handleGroupDragEnd = useCallback(
+    ({ active, over }: DragEndEvent) => {
+      if (!over || active.id === over.id) return;
+      const oldIndex = orderedGroupIds.indexOf(String(active.id));
+      const newIndex = orderedGroupIds.indexOf(String(over.id));
+      if (oldIndex === -1 || newIndex === -1) return;
+      persistManualGroupOrder(arrayMove(orderedGroupIds, oldIndex, newIndex));
+    },
+    [orderedGroupIds, persistManualGroupOrder]
+  );
+
+  if (railMode) {
+    return (
+      <Box
+        sx={{
+          alignItems: 'center',
+          background: theme.palette.background.surface,
+          borderRight: '1px solid',
+          borderColor: 'divider',
+          display: 'flex',
+          flexDirection: 'column',
+          flexShrink: 0,
+          height: '100%',
+          padding: '10px 9px',
+          width: '72px',
+        }}
+      >
+        <Tooltip
+          placement="right"
+          title={
+            desktopSideView === 'directs' ? 'Groups' : 'Direct Messages'
+          }
+        >
+          <ButtonBase
+            onClick={() => {
+              setDesktopSideView('directs');
+            }}
+            sx={{
+              alignItems: 'center',
+              backgroundColor:
+                desktopSideView === 'directs'
+                  ? theme.palette.action.selected
+                  : 'transparent',
+              borderRadius: '8px',
+              display: 'flex',
+              height: 42,
+              justifyContent: 'center',
+              mb: 1,
+              position: 'relative',
+              width: 42,
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+              },
+            }}
+          >
+            {directChatHasUnread && (
+              <Box
+                aria-hidden
+                sx={{
+                  backgroundColor: theme.palette.primary.main,
+                  border: `2px solid ${theme.palette.background.surface}`,
+                  borderRadius: '50%',
+                  height: 12,
+                  position: 'absolute',
+                  right: 4,
+                  top: 4,
+                  width: 12,
+                }}
+              />
+            )}
+            <ReticulumDmMorphIcon
+              active={desktopSideView === 'directs'}
+              color={
+                directChatHasUnread
+                  ? theme.palette.primary.main
+                  : desktopSideView === 'directs'
+                    ? theme.palette.text.primary
+                    : theme.palette.text.secondary
+              }
+            />
+          </ButtonBase>
+        </Tooltip>
+        <Box
+          sx={{
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            mb: 1,
+            width: 34,
+          }}
+        />
+
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            gap: '6px',
+            minHeight: 0,
+            overflowX: 'visible',
+            overflowY: 'auto',
+            scrollbarWidth: 'none',
+            width: '100%',
+            msOverflowStyle: 'none',
+            '&::-webkit-scrollbar': {
+              display: 'none',
+              height: 0,
+              width: 0,
+            },
+            '&::-webkit-scrollbar-corner': {
+              display: 'none',
+            },
+          }}
+        >
+          <DndContext
+            collisionDetection={closestCenter}
+            onDragEnd={handleGroupDragEnd}
+            sensors={groupDndSensors}
+          >
+            <SortableContext
+              items={orderedGroupIds}
+              strategy={verticalListSortingStrategy}
+            >
+              <List
+                className="group-list"
+                dense
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                  overflow: 'visible',
+                  p: 0,
+                  width: '100%',
+                }}
+              >
+                {orderedGroups.map((group: any) => (
+                  <GroupItem
+                    selectGroupFunc={selectGroupFunc}
+                    key={group.groupId}
+                    group={group}
+                    selectedGroupId={selectedGroup?.groupId ?? null}
+                    getUserSettings={getUserSettings}
+                    myAddress={myAddress}
+                    reticulumChatEnabled={reticulumChatEnabled}
+                    railMode
+                  />
+                ))}
+              </List>
+            </SortableContext>
+          </DndContext>
+        </Box>
+
+        <Box
+          sx={{
+            alignItems: 'center',
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            mt: 1,
+            pt: 1,
+            width: '100%',
+          }}
+        >
+          <Tooltip
+            placement="right"
+            title={t('group:group.group', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
+            <ButtonBase
+              onClick={() => {
+                setOpenAddGroup(true);
+              }}
+              sx={{
+                alignItems: 'center',
+                border: '1px solid',
+                borderColor: 'divider',
+                borderRadius: '8px',
+                color: theme.palette.text.secondary,
+                display: 'flex',
+                height: 34,
+                justifyContent: 'center',
+                width: 34,
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  color: theme.palette.text.primary,
+                },
+              }}
+            >
+              <AddCircleOutlineIcon sx={{ fontSize: 21 }} />
+            </ButtonBase>
+          </Tooltip>
+
+          {!isRunningPublicNode && (
+            <Tooltip placement="right" title="Blocked users">
+              <ButtonBase
+                onClick={() => {
+                  setIsOpenBlockedUserModal(true);
+                }}
+                sx={{
+                  alignItems: 'center',
+                  borderRadius: '8px',
+                  color: theme.palette.text.secondary,
+                  display: 'flex',
+                  height: 34,
+                  justifyContent: 'center',
+                  width: 34,
+                  '&:hover': {
+                    backgroundColor: theme.palette.action.hover,
+                    color: theme.palette.text.primary,
+                  },
+                }}
+              >
+                <PersonOffIcon sx={{ fontSize: 20 }} />
+              </ButtonBase>
+            </Tooltip>
+          )}
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -363,6 +776,7 @@ interface GroupItemProps {
   getUserSettings: () => Promise<any>;
   myAddress: string;
   reticulumChatEnabled?: boolean;
+  railMode?: boolean;
 }
 
 const GroupItem = memo(
@@ -373,9 +787,21 @@ const GroupItem = memo(
     getUserSettings,
     myAddress,
     reticulumChatEnabled = false,
+    railMode = false,
   }: GroupItemProps) => {
     const theme = useTheme();
     const { t } = useTranslation(['core', 'group']);
+    const {
+      attributes,
+      listeners,
+      setNodeRef,
+      transform,
+      transition,
+      isDragging,
+    } = useSortable({
+      id: String(group?.groupId),
+      disabled: !railMode,
+    });
     const ownerName = useAtomValue(groupsOwnerNamesSelector(group?.groupId));
     const announcement = useAtomValue(
       groupAnnouncementSelector(group?.groupId)
@@ -398,6 +824,8 @@ const GroupItem = memo(
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
     const [previewSrc, setPreviewSrc] = useState(null);
     const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
+    const [isGroupTooltipOpen, setIsGroupTooltipOpen] = useState(false);
+    const [isGroupContextMenuOpen, setIsGroupContextMenuOpen] = useState(false);
     const avatarUrl = useMemo(() => {
       if (!ownerName) return null;
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${group?.groupId}?async=true`;
@@ -434,8 +862,12 @@ const GroupItem = memo(
     }, [setIsPreviewOpen, setPreviewSrc]);
 
     const isSelected = group?.groupId === selectedGroupId;
+    const reticulumUnreadCount = Math.max(
+      0,
+      Number(group?.reticulumChatSummary?.unreadCount || 0)
+    );
     const hasReticulumUnread =
-      (group?.reticulumChatSummary?.unreadCount ?? 0) > 0;
+      reticulumUnreadCount > 0;
     const hasReticulumMention =
       group?.reticulumChatSummary?.hasUnreadMention === true ||
       (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
@@ -459,6 +891,226 @@ const GroupItem = memo(
       group?.groupId
     );
     const showGroupCallIndicator = Boolean(gcallRoomIdForRow) && (imInThisGroupGcall || meshShowsCall);
+
+    if (railMode) {
+      const groupLabel =
+        group.groupId === '0' ? 'General' : group.groupName || 'Group';
+      const fallbackAvatarColor = getPastelAvatarColor(
+        group?.groupId || group?.groupName
+      );
+      const unreadBadgeLabel =
+        reticulumUnreadCount > 99 ? '99+' : String(reticulumUnreadCount);
+      const avatarNode = ownerName ? (
+        <Avatar
+          sx={{
+            backgroundColor: fallbackAvatarColor,
+            color: theme.palette.common.white,
+            display: 'flex',
+            fontWeight: 800,
+            height: 38,
+            m: 'auto',
+            width: 38,
+            zIndex: 1,
+          }}
+          alt={group?.groupName?.charAt(0)}
+          src={avatarUrl || undefined}
+          imgProps={{
+            onLoad: () => {
+              setIsAvatarLoaded(true);
+            },
+            onError: () => {
+              setIsAvatarLoaded(false);
+            },
+          }}
+        >
+          {group?.groupName?.charAt(0).toUpperCase()}
+        </Avatar>
+      ) : (
+        <Avatar
+          alt={group?.groupName?.charAt(0)}
+          sx={{
+            backgroundColor: fallbackAvatarColor,
+            color: theme.palette.common.white,
+            display: 'flex',
+            fontWeight: 800,
+            height: 38,
+            m: 'auto',
+            width: 38,
+            zIndex: 1,
+          }}
+        >
+          {group?.groupName?.charAt(0).toUpperCase() || 'G'}
+        </Avatar>
+      );
+
+      return (
+        <Tooltip
+          disableFocusListener
+          disableHoverListener
+          disableTouchListener
+          open={isGroupTooltipOpen && !isGroupContextMenuOpen && !isDragging}
+          placement="right"
+          title={groupLabel}
+        >
+          <ListItem
+            ref={setNodeRef}
+            {...attributes}
+            {...listeners}
+            onClick={() => {
+              setIsGroupTooltipOpen(false);
+              selectGroupHandler();
+            }}
+            onContextMenuCapture={() => setIsGroupTooltipOpen(false)}
+            onMouseEnter={() => setIsGroupTooltipOpen(true)}
+            onMouseLeave={() => setIsGroupTooltipOpen(false)}
+            onPointerDownCapture={() => setIsGroupTooltipOpen(false)}
+            sx={{
+              alignItems: 'center',
+              backgroundColor: isSelected
+                ? RETICULUM_ACTIVE_BLUE
+                : 'transparent',
+              borderRadius: '8px',
+              boxSizing: 'border-box',
+              cursor: 'pointer',
+              display: 'grid',
+              flexShrink: 0,
+              height: 52,
+              justifyContent: 'center',
+              minHeight: 52,
+              placeItems: 'center',
+              mb: 0,
+              opacity: isDragging ? 0.58 : 1,
+              overflow: 'visible',
+              p: 0,
+              position: 'relative',
+              transform: CSS.Transform.toString(transform),
+              transition,
+              width: 52,
+              zIndex: isDragging ? 4 : 'auto',
+              '&:hover': {
+                backgroundColor: isSelected
+                  ? RETICULUM_ACTIVE_BLUE
+                  : theme.palette.action.hover,
+              },
+            }}
+          >
+            <ContextMenu
+              getUserSettings={getUserSettings}
+              groupId={group.groupId}
+              myAddress={myAddress}
+              onMenuOpenChange={setIsGroupContextMenuOpen}
+              reticulumGroup={group}
+            >
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  height: '100%',
+                  justifyContent: 'center',
+                  left: 0,
+                  margin: 'auto',
+                  overflow: 'visible',
+                  position: 'relative',
+                  right: 0,
+                  width: '100%',
+                }}
+              >
+                {avatarNode}
+
+                {(hasReticulumUnread ||
+                  (!reticulumChatEnabled &&
+                    group?.data &&
+                    groupChatTimestamp &&
+                    group?.sender !== myAddress &&
+                    group?.timestamp &&
+                    ((!timestampEnterData &&
+                      Date.now() - group?.timestamp <
+                        timeDifferenceForNotificationChats) ||
+                      timestampEnterData < group?.timestamp))) && (
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      backgroundColor: RETICULUM_ACTIVE_BLUE,
+                      border: `2px solid ${theme.palette.background.surface}`,
+                      borderRadius: '50%',
+                      bottom: -2,
+                      color: theme.palette.common.white,
+                      display: 'flex',
+                      fontSize: 10,
+                      fontWeight: 800,
+                      height: 18,
+                      justifyContent: 'center',
+                      lineHeight: 1,
+                      minWidth: 18,
+                      px: hasReticulumUnread && reticulumUnreadCount > 9 ? 0.45 : 0,
+                      position: 'absolute',
+                      right: -2,
+                      zIndex: 2,
+                    }}
+                  >
+                    {hasReticulumUnread ? unreadBadgeLabel : ''}
+                  </Box>
+                )}
+
+                {hasReticulumMention && (
+                  <AlternateEmailIcon
+                    sx={{
+                      backgroundColor: theme.palette.background.surface,
+                      borderRadius: '50%',
+                      color: theme.palette.other.unread,
+                      fontSize: 16,
+                      position: 'absolute',
+                      right: 0,
+                      top: 0,
+                      zIndex: 2,
+                    }}
+                  />
+                )}
+
+                {announcement && !announcement?.seentimestamp && (
+                  <CampaignIcon
+                    sx={{
+                      backgroundColor: theme.palette.background.surface,
+                      borderRadius: '50%',
+                      color: theme.palette.other.unread,
+                      fontSize: 16,
+                      left: 0,
+                      position: 'absolute',
+                      top: 0,
+                      zIndex: 2,
+                    }}
+                  />
+                )}
+
+                {showGroupCallIndicator && (
+                  <PhoneInTalkIcon
+                    sx={{
+                      backgroundColor: theme.palette.background.surface,
+                      borderRadius: '50%',
+                      color: imInThisGroupGcall
+                        ? theme.palette.primary.main
+                        : theme.palette.info.main,
+                      fontSize: 16,
+                      left: 0,
+                      position: 'absolute',
+                      top: 17,
+                      zIndex: 2,
+                    }}
+                  />
+                )}
+              </Box>
+            </ContextMenu>
+
+            <AvatarPreviewModal
+              open={isPreviewOpen}
+              src={previewSrc}
+              alt={group?.groupName}
+              onClose={handleClosePreview}
+            />
+          </ListItem>
+        </Tooltip>
+      );
+    }
 
     return (
       <ListItem

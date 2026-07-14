@@ -3,14 +3,17 @@ import {
   Avatar,
   Box,
   Button,
+  IconButton,
   ListItem,
   ListItemAvatar,
   ListItemButton,
   ListItemText,
   Popover,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import {
   AutoSizer,
   CellMeasurer,
@@ -61,6 +64,7 @@ export const ListOfJoinRequests = ({
   setInfoSnack,
   setOpenSnack,
   show,
+  compact = false,
 }) => {
   const [invites, setInvites] = useState([]);
   const [txList, setTxList] = useAtom(txListAtom);
@@ -135,6 +139,9 @@ export const ListOfJoinRequests = ({
               });
               setOpenSnack(true);
               handlePopoverClose();
+              setInvites((current) =>
+                current.filter((request) => request?.joiner !== address)
+              );
               res(response);
               setTxList((prev) => [
                 {
@@ -211,6 +218,7 @@ export const ListOfJoinRequests = ({
         {({ measure }) => (
           <div style={style} onLoad={measure}>
             <ListItem disablePadding>
+              {!compact && (
               <Popover
                 open={isSelected}
                 anchorEl={popoverAnchor}
@@ -305,11 +313,29 @@ export const ListOfJoinRequests = ({
                   </Box>
                 </Box>
               </Popover>
+              )}
 
               <ListItemButton
-                onClick={(event) => handlePopoverOpen(event, index)}
+                onClick={
+                  compact ? undefined : (event) => handlePopoverOpen(event, index)
+                }
+                sx={{
+                  borderRadius: compact ? '6px' : undefined,
+                  minHeight: compact ? 48 : undefined,
+                  px: compact ? 1 : undefined,
+                  py: compact ? 0.5 : undefined,
+                  '& .compact-row-action': {
+                    opacity: 0,
+                    pointerEvents: 'none',
+                    transition: 'opacity 120ms ease',
+                  },
+                  '&:hover .compact-row-action': {
+                    opacity: 1,
+                    pointerEvents: 'auto',
+                  },
+                }}
               >
-                <ListItemAvatar>
+                <ListItemAvatar sx={{ minWidth: compact ? 40 : undefined }}>
                   <Avatar
                     alt={member?.name}
                     src={
@@ -317,12 +343,22 @@ export const ListOfJoinRequests = ({
                         ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member?.name}/qortal_avatar?async=true`
                         : ''
                     }
+                    sx={{
+                      height: compact ? 32 : undefined,
+                      width: compact ? 32 : undefined,
+                    }}
                   />
                 </ListItemAvatar>
                 <ListItemText
                   primary={displayName}
                   primaryTypographyProps={{
                     sx: {
+                      fontSize: compact ? 13 : undefined,
+                      fontWeight: compact ? 700 : undefined,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      textTransform: compact ? 'capitalize' : undefined,
+                      whiteSpace: 'nowrap',
                       ...(hasUnsafeDisplayName
                         ? {
                             textDecorationLine: 'line-through',
@@ -333,6 +369,30 @@ export const ListOfJoinRequests = ({
                     },
                   }}
                 />
+                {compact && (
+                  <Tooltip title="Accept Join Request">
+                    <IconButton
+                      className="compact-row-action"
+                      disabled={isLoadingAccept}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleAcceptJoinRequest(member?.joiner);
+                      }}
+                      size="small"
+                      sx={{
+                        color: 'success.main',
+                        flexShrink: 0,
+                        height: 28,
+                        width: 28,
+                        '&:hover': {
+                          backgroundColor: 'rgba(34, 197, 94, 0.12)',
+                        },
+                      }}
+                    >
+                      <CheckRoundedIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </Tooltip>
+                )}
               </ListItemButton>
             </ListItem>
           </div>
@@ -342,16 +402,26 @@ export const ListOfJoinRequests = ({
   };
 
   return (
-    <div>
-      <p>
-        {t('core:list.join_request', { postProcess: 'capitalizeFirstChar' })}
-      </p>
+    <div
+      style={{
+        display: 'flex',
+        flex: 1,
+        flexDirection: 'column',
+        minHeight: 0,
+      }}
+    >
+      {!compact && (
+        <p>
+          {t('core:list.join_request', { postProcess: 'capitalizeFirstChar' })}
+        </p>
+      )}
       <div
         style={{
           display: 'flex',
           flexDirection: 'column',
           flexShrink: 1,
-          height: '500px',
+          height: compact ? '100%' : '500px',
+          minHeight: 0,
           position: 'relative',
           width: '100%',
         }}
@@ -363,9 +433,9 @@ export const ListOfJoinRequests = ({
               width={width}
               height={height}
               rowCount={invites.length}
-              rowHeight={cache.rowHeight}
+              rowHeight={compact ? 48 : cache.rowHeight}
               rowRenderer={rowRenderer}
-              deferredMeasurementCache={cache}
+              deferredMeasurementCache={compact ? undefined : cache}
             />
           )}
         </AutoSizer>

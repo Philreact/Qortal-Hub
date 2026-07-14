@@ -83,6 +83,7 @@ import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 import { fileToBase64 } from '../../utils/fileReading';
 
 const uid = new ShortUniqueId({ length: 5 });
+const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_DIRECT_TYPING_STOP_MS = 2500;
 
 const normalizeEditContent = (raw: unknown): string => {
@@ -289,6 +290,7 @@ export const ChatDirect = ({
   close,
   setMobileViewModeKeepOpen,
   isActive = true,
+  reticulumChatEnabled = false,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
@@ -445,6 +447,11 @@ export const ChatDirect = ({
     markRead: markReticulumDirectRead,
     sendTyping: sendReticulumDirectTyping,
   } = useReticulumDirectChat(myAddress, selectedDirect?.address);
+  const reticulumDirectUiEnabled = Boolean(
+    reticulumChatEnabled || (reticulumDirectEnabled && !isNewChat)
+  );
+  const reticulumDirectPending =
+    !isNewChat && reticulumDirectUiEnabled && !reticulumDirectEnabled;
   const [reticulumDirectLinkActive, setReticulumDirectLinkActive] =
     useState(false);
   const reticulumDirectTypingActiveRef = useRef(false);
@@ -1162,7 +1169,7 @@ export const ChatDirect = ({
   );
 
   useEffect(() => {
-    if (reticulumDirectEnabled) {
+    if (reticulumChatEnabled || reticulumDirectEnabled) {
       forceCloseWebSocket();
       setIsLoading(false);
       hasInitializedWebsocket.current = false;
@@ -1176,7 +1183,13 @@ export const ChatDirect = ({
     return () => {
       forceCloseWebSocket(); // Clean up WebSocket on component unmount
     };
-  }, [selectedDirect?.address, myAddress, isNewChat, reticulumDirectEnabled]);
+  }, [
+    selectedDirect?.address,
+    myAddress,
+    isNewChat,
+    reticulumChatEnabled,
+    reticulumDirectEnabled,
+  ]);
 
   const sendChatDirect = async (
     { chatReference = undefined, messageText, otherData }: any,
@@ -1957,6 +1970,7 @@ export const ChatDirect = ({
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
+      if (reticulumDirectPending) return;
       if (+balance < MIN_REQUIRED_QORTS)
         throw new Error(
           t('group:message.error.qortals_required', {
@@ -2101,11 +2115,10 @@ export const ChatDirect = ({
         flexDirection: 'column',
         height: '100%',
         minHeight: 0,
-        padding: '10px',
+        padding: reticulumDirectUiEnabled ? 0 : '10px',
         width: '100%',
       }}
     >
-      {/* Header: back button + optional new-chat title */}
       <Box
         sx={{
           alignItems: 'center',
@@ -2118,30 +2131,32 @@ export const ChatDirect = ({
           width: '100%',
         }}
       >
-        <ButtonBase
-          onClick={close}
-          sx={{
-            alignItems: 'center',
-            borderRadius: '8px',
-            color: theme.palette.text.secondary,
-            display: 'flex',
-            gap: '6px',
-            padding: '6px 10px',
-            transition: 'background-color 0.15s ease, color 0.15s ease',
-            '&:hover': {
-              backgroundColor: theme.palette.action.hover,
-              color: theme.palette.text.primary,
-            },
-          }}
-        >
-          <ArrowBackIcon sx={{ fontSize: '20px' }} />
-          <Typography sx={{ fontSize: '14px', fontWeight: 500 }}>
-            {t('core:action.close_chat', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-          </Typography>
-        </ButtonBase>
-        {isNewChat && (
+        {!reticulumDirectUiEnabled && (
+          <ButtonBase
+            onClick={close}
+            sx={{
+              alignItems: 'center',
+              borderRadius: '8px',
+              color: theme.palette.text.secondary,
+              display: 'flex',
+              gap: '6px',
+              padding: '6px 10px',
+              transition: 'background-color 0.15s ease, color 0.15s ease',
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+                color: theme.palette.text.primary,
+              },
+            }}
+          >
+            <ArrowBackIcon sx={{ fontSize: '20px' }} />
+            <Typography sx={{ fontSize: '14px', fontWeight: 500 }}>
+              {t('core:action.close_chat', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+          </ButtonBase>
+        )}
+        {isNewChat ? (
           <Typography
             sx={{
               color: theme.palette.text.secondary,
@@ -2152,6 +2167,37 @@ export const ChatDirect = ({
           >
             {t('core:action.new.chat', { postProcess: 'capitalizeFirstChar' })}
           </Typography>
+        ) : (
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontSize: 17,
+                fontWeight: 700,
+                lineHeight: 1.2,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {selectedDirect?.name || selectedDirect?.address || 'Direct Message'}
+            </Typography>
+            {selectedDirect?.name && selectedDirect?.address && (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: 11,
+                  lineHeight: 1.3,
+                  mt: 0.25,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {selectedDirect.address}
+              </Typography>
+            )}
+          </Box>
         )}
         {!isNewChat && selectedDirect?.address && (
           <Box
@@ -2747,7 +2793,7 @@ export const ChatDirect = ({
           onReply={onReply}
           chatId={selectedDirect?.address}
           initialMessages={
-            reticulumDirectEnabled ? reticulumDirectMessages : messages
+            reticulumDirectUiEnabled ? reticulumDirectMessages : messages
           }
           myAddress={myAddress}
           tempMessages={tempMessages}
@@ -2755,6 +2801,7 @@ export const ChatDirect = ({
           onAcceptQchatFileTransfer={handleAcceptQchatFileTransfer}
           qchatFileTransferStates={qchatFileTransferStates}
           qchatCompletedTransfers={qchatCompletedTransfers}
+          reticulumChatEnabled={reticulumDirectUiEnabled}
         />
         {reticulumDirectEnabled && reticulumDirectTypingUsers.size > 0 && (
           <Typography
@@ -2773,7 +2820,7 @@ export const ChatDirect = ({
       </Box>
 
       <Dialog
-        open={!!pendingQchatFileOffer}
+        open={!reticulumDirectUiEnabled && !!pendingQchatFileOffer}
         onClose={() => setPendingQchatFileOffer(null)}
         maxWidth="xs"
         fullWidth
@@ -2913,7 +2960,7 @@ export const ChatDirect = ({
 
       <Box
         sx={{
-          alignItems: 'flex-end',
+          alignItems: reticulumDirectUiEnabled ? 'center' : 'flex-end',
           backgroundColor: theme.palette.background.default,
           border: `1px solid ${theme.palette.divider}`,
           borderRadius: '8px',
@@ -2924,6 +2971,12 @@ export const ChatDirect = ({
           flexShrink: 0,
           gap: '12px',
           minHeight: '150px',
+          ...(reticulumDirectUiEnabled
+            ? {
+                minHeight: '52px',
+                padding: '8px 10px',
+              }
+            : {}),
           overflow: 'hidden',
           padding: '16px 20px 20px',
           position: isFocusedParent ? 'fixed' : 'relative',
@@ -2938,7 +2991,7 @@ export const ChatDirect = ({
             flexDirection: 'column',
             flex: 1,
             flexShrink: 0,
-            justifyContent: 'flex-end',
+            justifyContent: reticulumDirectUiEnabled ? 'center' : 'flex-end',
             minWidth: 0,
             overflow: 'auto',
           }}
@@ -2996,6 +3049,12 @@ export const ChatDirect = ({
             disableEnter={false}
             setIsFocusedParent={setIsFocusedParent}
             insertFiles={insertFiles}
+            compactChat={reticulumDirectUiEnabled}
+            placeholder={
+              reticulumDirectUiEnabled
+                ? 'Send message...'
+                : undefined
+            }
           />
           {pendingReticulumFiles.length > 0 && (
             <Box
@@ -3080,41 +3139,49 @@ export const ChatDirect = ({
             display: 'flex',
             gap: '8px',
             flexShrink: 0,
-            paddingBottom: '2px',
+            paddingBottom: reticulumDirectUiEnabled ? 0 : '2px',
           }}
         >
-          <Tooltip title="Transfer file with Reticulum">
-            <span>
-              <IconButton
-                onClick={handleSendQchatFileOffer}
-                disabled={isSending || isNewChat || !selectedDirect?.address}
-                sx={{
-                  border: '1px solid',
-                  borderColor: theme.palette.divider,
-                  borderRadius: '8px',
-                  height: 44,
-                  width: 44,
-                }}
-              >
-                <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
-              </IconButton>
-            </span>
-          </Tooltip>
+          {!reticulumDirectUiEnabled && (
+            <Tooltip title="Transfer file with Reticulum">
+              <span>
+                <IconButton
+                  onClick={handleSendQchatFileOffer}
+                  disabled={isSending || isNewChat || !selectedDirect?.address}
+                  sx={{
+                    border: '1px solid',
+                    borderColor: theme.palette.divider,
+                    borderRadius: '8px',
+                    height: 44,
+                    width: 44,
+                  }}
+                >
+                  <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
           <CustomButton
             onClick={() => {
-              if (isSending) return;
+              if (isSending || reticulumDirectPending) return;
               sendMessage();
             }}
             sx={{
               alignItems: 'center',
               backgroundColor: isSending
                 ? theme.palette.action.disabledBackground
-                : theme.palette.background.paper,
+                : reticulumDirectUiEnabled
+                  ? RETICULUM_ACTIVE_BLUE
+                  : theme.palette.background.paper,
               border: '1px solid',
-              borderColor: theme.palette.divider,
+              borderColor: reticulumDirectUiEnabled
+                ? RETICULUM_ACTIVE_BLUE
+                : theme.palette.divider,
               borderRadius: '8px',
-              color: theme.palette.text.primary,
-              cursor: isSending ? 'default' : 'pointer',
+              color: reticulumDirectUiEnabled
+                ? theme.palette.common.white
+                : theme.palette.text.primary,
+              cursor: isSending || reticulumDirectPending ? 'default' : 'pointer',
               display: 'inline-flex',
               gap: '6px',
               fontSize: '14px',
@@ -3125,18 +3192,31 @@ export const ChatDirect = ({
               padding: '10px 16px',
               position: 'relative',
               transition: 'background-color 0.2s ease, border-color 0.2s ease',
-              '&:hover': isSending
+              '&:hover': isSending || reticulumDirectPending
                 ? {}
                 : {
-                    backgroundColor: theme.palette.action.hover,
-                    borderColor: theme.palette.divider,
+                    backgroundColor: reticulumDirectUiEnabled
+                      ? '#1e40af'
+                      : theme.palette.action.hover,
+                    borderColor: reticulumDirectUiEnabled
+                      ? '#1e40af'
+                      : theme.palette.divider,
                   },
+              '& .MuiSvgIcon-root': {
+                color: reticulumDirectUiEnabled
+                  ? theme.palette.common.white
+                  : 'inherit',
+              },
             }}
           >
             {isSending ? (
               <CircularProgress
                 size={18}
-                sx={{ color: theme.palette.text.secondary }}
+                sx={{
+                  color: reticulumDirectUiEnabled
+                    ? theme.palette.common.white
+                    : theme.palette.text.secondary,
+                }}
               />
             ) : (
               <>

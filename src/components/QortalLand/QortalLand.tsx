@@ -4203,7 +4203,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           right: number;
           top: number;
           bottom: number;
-        };
+        }
         private parkPortalDoor?: {
           frames: any[];
           progress: number;
@@ -4222,7 +4222,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           right: number;
           top: number;
           bottom: number;
-        };
+        }
 
         constructor() {
           super('QortalLandScene');
@@ -4272,7 +4272,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             roomSize.height + verticalPadding * 2
           );
           camera.setScroll(scrollX, scrollY);
-        };
+        }
 
         preload() {
           this.load.spritesheet(LAND_CHARACTER_SPRITESHEET_KEY, defaultCharacterSpritesheetUrl, {
@@ -7371,6 +7371,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         type: Phaser.CANVAS,
         parent: containerRef.current,
         backgroundColor: '#050811',
+        audio: {
+          noAudio: true,
+        },
         scale: {
           mode: Phaser.Scale.RESIZE,
           width,

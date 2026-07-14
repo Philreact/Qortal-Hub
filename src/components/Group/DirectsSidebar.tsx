@@ -2,6 +2,7 @@ import {
   Avatar,
   Box,
   ButtonBase,
+  IconButton,
   List,
   ListItem,
   ListItemAvatar,
@@ -120,27 +121,32 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
       sx={{
         alignItems: 'flex-start',
         background: theme.palette.background.surface,
-        borderRadius: '0 15px 15px 0',
-        boxShadow: '6px 0 20px rgba(0,0,0,0.18), 2px 0 8px rgba(0,0,0,0.08)',
+        borderRadius: reticulumChatEnabled ? 0 : '0 15px 15px 0',
+        borderRight: reticulumChatEnabled ? '1px solid' : 'none',
+        borderColor: 'divider',
+        boxShadow: reticulumChatEnabled
+          ? 'none'
+          : '6px 0 20px rgba(0,0,0,0.18), 2px 0 8px rgba(0,0,0,0.08)',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        width: '400px',
-        padding: '0 2px 0 0',
+        width: reticulumChatEnabled ? { xs: 224, md: 220 } : '400px',
+        padding: 0,
       }}
     >
-      <Box
-        sx={{
-          alignItems: 'stretch',
-          borderBottom: '1px solid',
-          borderColor: 'divider',
-          display: 'flex',
-          gap: '10px',
-          justifyContent: 'center',
-          padding: '14px 12px',
-          width: '100%',
-        }}
-      >
+      {!reticulumChatEnabled && (
+        <Box
+          sx={{
+            alignItems: 'stretch',
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            gap: '10px',
+            justifyContent: 'center',
+            padding: '14px 12px',
+            width: '100%',
+          }}
+        >
         <ButtonBase
           onClick={() => {
             setDesktopSideView('groups');
@@ -299,7 +305,66 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             </Typography>
           </Box>
         </ButtonBase>
-      </Box>
+        </Box>
+      )}
+      {reticulumChatEnabled && (
+        <Box
+          sx={{
+            alignItems: 'center',
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            gap: 1,
+            justifyContent: 'space-between',
+            minHeight: 62,
+            px: '10px',
+            py: '10px',
+            width: '100%',
+          }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              sx={{
+                color: 'text.primary',
+                fontSize: 15,
+                fontWeight: 800,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Direct Messages
+            </Typography>
+            <Typography
+              sx={{
+                color: 'text.secondary',
+                fontSize: 11,
+                fontWeight: 600,
+                mt: 0.25,
+              }}
+            >
+              Private Reticulum chats
+            </Typography>
+          </Box>
+          <Tooltip
+            title={t('core:action.new.chat', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
+            <IconButton
+              size="small"
+              onClick={() => {
+                setNewChat(true);
+                setSelectedDirect(null);
+                setIsOpenDrawer(false);
+              }}
+              sx={{ color: 'text.secondary', p: 0.5 }}
+            >
+              <CreateIcon sx={{ fontSize: 17 }} />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
 
       <Box
         sx={{
@@ -308,7 +373,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           flexDirection: 'column',
           flexGrow: 1,
           overflowY: 'auto',
-          padding: '12px 8px',
+          padding: reticulumChatEnabled ? '10px' : '12px 8px',
           width: '100%',
         }}
       >
@@ -320,6 +385,19 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           className="group-list"
           dense={false}
         >
+          {directs.length === 0 && (
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: 13,
+                lineHeight: 1.45,
+                px: 1,
+                py: 1.5,
+              }}
+            >
+              No current private messages.
+            </Typography>
+          )}
           {directs.map((direct: any) => {
             const avatarUrl = getUserAvatarUrl(direct?.name);
             const avatarKey =
@@ -352,7 +430,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
               <ListItem
                 key={direct?.address || avatarKey}
                 onClick={() => {
-                  setSelectedDirect(null);
+                  setSelectedDirect(direct);
                   setNewChat(false);
                   setIsOpenDrawer(false);
                   window
@@ -366,12 +444,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                         error.message || 'An error occurred'
                       );
                     });
-
-                  setTimeout(() => {
-                    setSelectedDirect(direct);
-
-                    getTimestampEnterChat();
-                  }, 200);
+                  getTimestampEnterChat();
                 }}
                 sx={{
                   borderRadius: '10px',
@@ -379,7 +452,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                   display: 'flex',
                   flexDirection: 'column',
                   marginBottom: '6px',
-                  padding: '12px 14px',
+                  padding: reticulumChatEnabled ? '8px 9px' : '12px 14px',
                   width: '100%',
                   backgroundColor: isSelected
                     ? theme.palette.action.selected
@@ -400,7 +473,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                   sx={{
                     alignItems: 'center',
                     display: 'flex',
-                    gap: '20px',
+                    gap: reticulumChatEnabled ? '10px' : '20px',
                     width: '100%',
                   }}
                 >
@@ -408,8 +481,8 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                     <DirectsPresenceBadge address={direct?.address}>
                       <Avatar
                         sx={{
-                          height: 40,
-                          width: 40,
+                          height: reticulumChatEnabled ? 34 : 40,
+                          width: reticulumChatEnabled ? 34 : 40,
                           background: theme.palette.background.surface,
                           color: theme.palette.text.primary,
                           ...(!isAvatarLoaded
@@ -474,7 +547,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                           ? theme.palette.primary.main
                           : theme.palette.text.primary,
                         fontFamily: 'Inter',
-                        fontSize: '15px',
+                        fontSize: reticulumChatEnabled ? '13px' : '15px',
                         fontWeight: 600,
                         lineHeight: 1.3,
                         ...(hasUnsafeName
@@ -490,7 +563,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                       sx: {
                         color: theme.palette.text.secondary,
                         fontFamily: 'Inter',
-                        fontSize: '12px',
+                        fontSize: reticulumChatEnabled ? '11px' : '12px',
                         lineHeight: 1.4,
                         marginTop: '3px',
                       },
@@ -533,6 +606,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         </List>
       </Box>
 
+      {!reticulumChatEnabled && (
       <Box
         sx={{
           borderTop: '1px solid',
@@ -586,6 +660,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           </CustomButton>
         )}
       </Box>
+      )}
 
       <AvatarPreviewModal
         open={Boolean(avatarPreviewData)}
