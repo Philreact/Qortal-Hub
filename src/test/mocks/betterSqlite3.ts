@@ -8,6 +8,7 @@ type MockStore = {
   reticulumChatMessages: ReticulumChatRow[];
   reticulumChatExpiredEventMarkers: ReticulumChatRow[];
   reticulumChatMetadataSnapshots: ReticulumChatRow[];
+  reticulumChatMetadataEntityRevisions: ReticulumChatRow[];
   reticulumChatAuthorStreams: Map<string, string>;
   reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
@@ -152,6 +153,16 @@ class Statement {
             b.version - a.version ||
             b.created_at - a.created_at ||
             String(b.snapshot_hash).localeCompare(String(a.snapshot_hash))
+        );
+    }
+    if (this.sql.includes('FROM rchat_metadata_entity_revisions')) {
+      const [groupId] = args;
+      return this.store.reticulumChatMetadataEntityRevisions
+        .filter((row) => row.group_id === groupId)
+        .sort(
+          (a, b) =>
+            String(a.entity_type).localeCompare(String(b.entity_type)) ||
+            String(a.entity_id).localeCompare(String(b.entity_id))
         );
     }
     if (this.sql.includes('FROM rchat_message_projection')) {
@@ -448,6 +459,15 @@ class Statement {
             String(b.snapshot_hash).localeCompare(String(a.snapshot_hash))
         )[0];
     }
+    if (this.sql.includes('FROM rchat_metadata_entity_revisions')) {
+      const [groupId, entityType, entityId] = args;
+      return this.store.reticulumChatMetadataEntityRevisions.find(
+        (row) =>
+          row.group_id === groupId &&
+          row.entity_type === entityType &&
+          row.entity_id === entityId
+      );
+    }
     if (this.sql.includes('FROM rchat_message_projection')) {
       if (this.sql.includes('COUNT(*) AS cnt')) {
         return { cnt: this.store.reticulumChatMessages.length };
@@ -642,6 +662,32 @@ class Statement {
         lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumChatMetadataSnapshots.length,
       };
     }
+    if (this.sql.includes('INSERT INTO rchat_metadata_entity_revisions')) {
+      const values = Array.from(arguments);
+      const row = {
+        group_id: values[0],
+        entity_type: values[1],
+        entity_id: values[2],
+        event_id: values[3],
+        event_type: values[4],
+        event_timestamp: values[5],
+        deleted: values[6],
+        state_hash: values[7],
+      };
+      const index = this.store.reticulumChatMetadataEntityRevisions.findIndex(
+        (existing) =>
+          existing.group_id === row.group_id &&
+          existing.entity_type === row.entity_type &&
+          existing.entity_id === row.entity_id
+      );
+      if (index >= 0) this.store.reticulumChatMetadataEntityRevisions[index] = row;
+      else this.store.reticulumChatMetadataEntityRevisions.push(row);
+      return {
+        changes: 1,
+        lastInsertRowid:
+          index >= 0 ? index + 1 : this.store.reticulumChatMetadataEntityRevisions.length,
+      };
+    }
     if (this.sql.includes('INSERT INTO reticulum_resources')) {
       const index = this.store.reticulumResources.findIndex(
         (row) => row.file_hash === params.file_hash
@@ -806,6 +852,7 @@ class MockDatabase {
       reticulumChatMessages: [],
       reticulumChatExpiredEventMarkers: [],
       reticulumChatMetadataSnapshots: [],
+      reticulumChatMetadataEntityRevisions: [],
       reticulumChatAuthorStreams: new Map(),
       reticulumChatAuthorSequenceLeases: [],
       reticulumResources: [],

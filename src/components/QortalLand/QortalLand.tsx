@@ -3919,10 +3919,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       }
 
       if (callType === 'request') {
-        const localBusy = toAddress === myAddress
-          ? landVoiceCallStateRef.current !== 'idle' || Boolean(activeLandCallIdRef.current)
-          : false;
         if (toAddress !== myAddress || fromAddress === myAddress) return;
+        const existingCallPeer = landCallPeersRef.current.get(callId);
+        const duplicateActiveRequest =
+          activeLandCallIdRef.current === callId &&
+          existingCallPeer?.peerAddress === fromAddress &&
+          existingCallPeer.chatId === chatId;
+        if (duplicateActiveRequest) return;
+        const localBusy =
+          landVoiceCallStateRef.current !== 'idle' || Boolean(activeLandCallIdRef.current);
         if (localBusy) {
           void (async () => {
             const timestamp = Date.now();
