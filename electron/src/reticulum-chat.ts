@@ -6207,7 +6207,16 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       return false;
     }
-    const key = `${peerHash}:${groupId}:${kind}:${this.hashControlPayload(wire)}`;
+    let dedupePeer = peerHash;
+    let dedupeWire = wire;
+    if (kind === 'land_auth') {
+      const routeIndependentWire = { ...wire };
+      delete routeIndependentWire.o;
+      delete routeIndependentWire.h;
+      dedupePeer = '';
+      dedupeWire = routeIndependentWire;
+    }
+    const key = `${dedupePeer}:${groupId}:${kind}:${this.hashControlPayload(dedupeWire)}`;
     return this.markRecentOrDuplicate(
       this.recentInboundControlWires,
       key,
@@ -9162,10 +9171,10 @@ export class ReticulumChatManager extends EventEmitter {
     const authorAddress = deriveAddressFromPublicKey(wire.p);
     const ephemeralPublicKey = typeof wire.e === 'string' ? wire.e.trim() : '';
     if (!Number.isInteger(groupId) || groupId <= 0 || !authorAddress || !sessionId || !ephemeralPublicKey) return;
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     loggerLog(
       `[ReticulumChat] land_auth_received group=${groupId} author=${authorAddress} session=${sessionId} peer=${peer.slice(0, 16)}`
     );
-    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) return;
     const validationKey = `${groupId}:${authorAddress}`;
     const validationWasInflight = this.groupMemberValidationInflight.has(validationKey);
     loggerLog(

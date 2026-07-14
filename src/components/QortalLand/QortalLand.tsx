@@ -37,14 +37,18 @@ type LandPlayerState = {
   y: number;
   fromX: number;
   fromY: number;
+  fromTimelineAt: number;
+  timelineAt: number;
+  timelineOffsetMs: number;
   displayX: number;
   displayY: number;
+  fromDirection: string;
+  fromMovement: string;
   direction: string;
   movement: string;
   sentAt: number;
   receivedAt: number;
   lastSeenAt: number;
-  interpolationMs: number;
   velocityX: number;
   velocityY: number;
 };
@@ -171,8 +175,9 @@ const QORTAL_LAND_CHARACTER_PREVIEW_FACINGS: QortalLandCharacterPreviewFacing[] 
 const LAND_SEND_INTERVAL_MS = 200;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
-const LAND_REMOTE_MIN_INTERPOLATION_MS = 140;
-const LAND_REMOTE_MAX_INTERPOLATION_MS = 950;
+const LAND_REMOTE_INTERPOLATION_BUFFER_MS = 180;
+const LAND_REMOTE_TIMELINE_CATCH_UP_MS = 20;
+const LAND_REMOTE_RECONCILE_MS = 120;
 const LAND_REMOTE_EXTRAPOLATE_MS = 1100;
 const LAND_REMOTE_STOP_WALKING_AFTER_MS = 1450;
 const LAND_REMOTE_MAX_VELOCITY_PX_PER_MS = 0.32;
@@ -2260,16 +2265,6 @@ const formatQortAmount = (value: number): string => {
   }).format(value);
 };
 
-const estimateRemoteInterpolationMs = (distance: number, stateGapMs: number): number => {
-  const distanceWindow = distance * 3.2;
-  const gapWindow = stateGapMs > LAND_SEND_INTERVAL_MS * 2 ? stateGapMs * 0.42 : 0;
-  return clampNumber(
-    Math.max(LAND_REMOTE_MIN_INTERPOLATION_MS, distanceWindow, gapWindow),
-    LAND_REMOTE_MIN_INTERPOLATION_MS,
-    LAND_REMOTE_MAX_INTERPOLATION_MS
-  );
-};
-
 const clampRemoteVelocity = (velocity: number): number => {
   return clampNumber(velocity, -LAND_REMOTE_MAX_VELOCITY_PX_PER_MS, LAND_REMOTE_MAX_VELOCITY_PX_PER_MS);
 };
@@ -3730,7 +3725,22 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       const velocityY = existing && !roomChanged
         ? clampRemoteVelocity((payload.y - existing.y) / velocitySourceMs)
         : 0;
-      const distance = Math.hypot(payload.x - fromX, payload.y - fromY);
+      const observedTimelineOffsetMs = now - sentAt;
+      const timelineOffsetMs = roomChanged || !existing
+        ? observedTimelineOffsetMs
+        : observedTimelineOffsetMs < existing.timelineOffsetMs
+          ? Math.max(
+              observedTimelineOffsetMs,
+              existing.timelineOffsetMs - LAND_REMOTE_TIMELINE_CATCH_UP_MS
+            )
+          : existing.timelineOffsetMs;
+      const fromTimelineAt = roomChanged || !existing
+        ? now
+        : now - LAND_REMOTE_INTERPOLATION_BUFFER_MS;
+      const mappedTimelineAt = sentAt + timelineOffsetMs;
+      const timelineAt = roomChanged || !existing
+        ? now
+        : Math.max(fromTimelineAt + LAND_REMOTE_RECONCILE_MS, mappedTimelineAt);
       remotePlayersRef.current.set(key, {
         authorAddress: payload.authorAddress,
         sessionId: payload.sessionId,
@@ -3740,14 +3750,22 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         y: payload.y,
         fromX,
         fromY,
+        fromTimelineAt,
+        timelineAt,
+        timelineOffsetMs,
         displayX: fromX,
         displayY: fromY,
+        fromDirection: roomChanged
+          ? payload.direction || 'r'
+          : existing?.direction || payload.direction || 'r',
+        fromMovement: roomChanged
+          ? payload.movement || 'idle'
+          : existing?.movement || payload.movement || 'idle',
         direction: payload.direction || existing?.direction || 'r',
         movement: payload.movement || 'idle',
         sentAt,
         receivedAt: now,
         lastSeenAt: now,
-        interpolationMs: estimateRemoteInterpolationMs(distance, stateGapMs),
         velocityX,
         velocityY,
       });
@@ -7281,16 +7299,24 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               this.remoteLabels.set(key, label);
             }
             const elapsedSinceUpdate = now - player.receivedAt;
+            const renderAt = now - LAND_REMOTE_INTERPOLATION_BUFFER_MS;
+            const timelineSpan = Math.max(1, player.timelineAt - player.fromTimelineAt);
             const interpolationProgress = Phaser.Math.Clamp(
-              elapsedSinceUpdate / player.interpolationMs,
+              (renderAt - player.fromTimelineAt) / timelineSpan,
               0,
               1
             );
             let nextX = Phaser.Math.Linear(player.fromX, player.x, interpolationProgress);
             let nextY = Phaser.Math.Linear(player.fromY, player.y, interpolationProgress);
-            const afterTargetMs = Math.max(0, elapsedSinceUpdate - player.interpolationMs);
+            const afterTargetMs = Math.max(0, renderAt - player.timelineAt);
+            const renderDirection = interpolationProgress < 1
+              ? player.fromDirection
+              : player.direction;
+            const renderMovement = interpolationProgress < 1
+              ? player.fromMovement
+              : player.movement;
             const shouldPredict =
-              player.movement === 'walk' &&
+              renderMovement === 'walk' &&
               afterTargetMs > 0 &&
               afterTargetMs <= LAND_REMOTE_EXTRAPOLATE_MS &&
               (Math.abs(player.velocityX) > 0.001 || Math.abs(player.velocityY) > 0.001);
@@ -7320,11 +7346,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             avatar.setData('logicalX', nextX);
             avatar.setData('logicalY', nextY);
             avatar.setPosition(nextX, renderY);
-            avatar.setScale(avatarScaleXForDirection(player.direction, scale), scale);
+            avatar.setScale(avatarScaleXForDirection(renderDirection, scale), scale);
             this.animateAvatar(
               avatar,
-              player.movement === 'walk' && elapsedSinceUpdate <= LAND_REMOTE_STOP_WALKING_AFTER_MS,
-              player.direction
+              renderMovement === 'walk' && elapsedSinceUpdate <= LAND_REMOTE_STOP_WALKING_AFTER_MS,
+              renderDirection
             );
             avatar.setDepth(nextY + 20);
             label?.setPosition(nextX, renderY - LAND_CHARACTER_LABEL_OFFSET * scale);

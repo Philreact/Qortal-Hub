@@ -6530,6 +6530,46 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('dedupes the same Land auth across relay peers and hop counts', async () => {
+    const signer = createLandAuthSigner();
+    const validateGroupMember = vi.fn(async (_groupId: number, address: string) =>
+      address === signer.address
+    );
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      validateGroupMember,
+    });
+    const auth = signer.landAuthWire(73, 'session-relayed', 100_000);
+
+    manager.handleWire({ ...auth, o: 'origin-peer', h: 0 }, 'peer-a');
+    await vi.waitFor(() => expect(validateGroupMember).toHaveBeenCalledTimes(1));
+    await flushQueuedWork();
+    const initialRevision = (manager as any).landStateForwardingRevision;
+
+    manager.handleWire({ ...auth, o: 'origin-peer', h: 3 }, 'peer-b');
+    await flushQueuedWork();
+
+    expect(validateGroupMember).toHaveBeenCalledTimes(1);
+    expect((manager as any).landStateForwardingRevision).toBe(initialRevision);
+
+    manager.handleWire(
+      { ...signer.landAuthWire(73, 'session-relayed', 100_001), o: 'origin-peer', h: 0 },
+      'peer-a'
+    );
+    await flushQueuedWork();
+    expect(validateGroupMember).toHaveBeenCalledTimes(1);
+    expect((manager as any).landStateForwardingRevision).toBe(initialRevision + 1);
+    manager.close();
+  });
+
   it('relays a QortalLand state when Python used a stale forwarding revision', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const signer = createLandAuthSigner();
