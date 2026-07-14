@@ -4,7 +4,6 @@ import { performance } from 'perf_hooks';
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import nacl from 'tweetnacl';
 import {
   base58Encode,
   base58Decode,
@@ -71,6 +70,10 @@ import {
   wireFitsReticulum,
 } from './reticulum-wire-size';
 import {
+  ED25519_SIGNATURE_BYTES,
+  generateNativeEd25519KeyPair,
+  signEd25519Detached,
+  verifyEd25519Detached,
   verifyCallRequestDetached,
   verifyCallSignedDetached,
 } from './ed25519-verify-common';
@@ -634,8 +637,12 @@ type ReticulumLandAuthSession = {
 };
 
 type ReticulumLocalLandAuthSession = {
+  authorAddress: string;
+  groupId: number;
+  lastUsedAt: number;
+  privateKey: nodeCrypto.KeyObject;
   publicKey: string;
-  secretKey: Uint8Array;
+  sessionId: string;
 };
 
 type ReticulumChatPullQueueItem = {
@@ -731,7 +738,7 @@ export function verifyReticulumChatEventNotice(
     const sourcePeerHash = normalizeRoutePeerHash(notice.sp) ?? '';
     if (!sourcePeerHash) return false;
     const authorAddress = deriveAddressFromPublicKey(notice.p);
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(canonicalizeForSigning(buildReticulumChatEventNoticeSignedFields({
         eventId: notice.id,
         groupId,
@@ -1236,6 +1243,7 @@ const RETICULUM_LAND_AUTH_REFRESH_MS = 60_000;
 const RETICULUM_LAND_AUTH_SESSION_TTL_MS = 2 * 60_000;
 const RETICULUM_LAND_AUTH_SESSION_PRUNE_MS = 5_000;
 const RETICULUM_LAND_AUTH_SESSION_MAX = 4096;
+const RETICULUM_LOCAL_LAND_AUTH_SESSION_MAX = 64;
 const RETICULUM_LAND_AUTH_REQ_DEDUPE_MS = 5_000;
 const RETICULUM_LAND_AUTH_REQ_RESPONSE_MS = 3_000;
 const RETICULUM_LAND_AUTH_REQ_MAX = 4096;
@@ -2544,7 +2552,7 @@ function verifyReticulumMetadataSnapshot(snapshot: ReticulumChatMetadataSnapshot
       categories: snapshot.categories,
     });
     if (expectedHash !== snapshot.snapshotHash) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumMetadataSnapshotSignedFields({
@@ -2782,7 +2790,7 @@ export function verifyReticulumChatEvent(event: ReticulumChatEvent): boolean {
     const signature = new Uint8Array(base58Decode(event.signature));
     const publicKey = new Uint8Array(base58Decode(event.authorPublicKey));
     const signedFields = buildReticulumChatSignedFields(event);
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
       signature,
       publicKey
@@ -2796,7 +2804,7 @@ export function verifyReticulumDmEvent(event: ReticulumDmEvent): boolean {
   try {
     const derived = deriveAddressFromPublicKey(event.senderPublicKey);
     if (derived !== event.senderAddress) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(buildReticulumDmSignedFields(event))
       ),
@@ -2812,7 +2820,7 @@ export function verifyReticulumLandChatMessage(message: ReticulumLandChatMessage
   try {
     const derived = deriveAddressFromPublicKey(message.authorPublicKey);
     if (derived !== message.authorAddress) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(buildReticulumLandChatSignedFields(message))
       ),
@@ -2843,7 +2851,7 @@ export function verifyReticulumLandAuthWire(
     if (timestamp < now - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     if (!authorPublicKey || !ephemeralPublicKey || !signature) return false;
     if (typeof wire.a === 'string' && wire.a.trim() && wire.a.trim() !== authorAddress) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumLandAuthSignedFields({
@@ -2913,7 +2921,7 @@ export function verifyReticulumDmNotify(
       authorPublicKey: wire.p,
       timestamp: wire.n,
     });
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
       new Uint8Array(base58Decode(wire.z)),
       new Uint8Array(base58Decode(wire.p))
@@ -2947,7 +2955,7 @@ export function verifyReticulumDmProbe(
       authorPublicKey: wire.p,
       timestamp: wire.n,
     });
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
       new Uint8Array(base58Decode(wire.z)),
       new Uint8Array(base58Decode(wire.p))
@@ -2985,7 +2993,7 @@ export function verifyReticulumDmRequest(
       authorPublicKey: wire.p,
       timestamp: wire.n,
     });
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
       new Uint8Array(base58Decode(wire.z)),
       new Uint8Array(base58Decode(wire.p))
@@ -3028,7 +3036,7 @@ export function verifyReticulumDmResourceRequest(
       authorPublicKey: wire.p,
       timestamp: wire.n,
     });
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(canonicalizeForSigning(signedFields)),
       new Uint8Array(base58Decode(wire.z)),
       new Uint8Array(base58Decode(wire.p))
@@ -3071,7 +3079,7 @@ export function getReticulumDmResourceFindRejectReason(
     if (wire.n - now > RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return 'timestamp_in_future';
     if (now - wire.n > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return 'timestamp_too_old';
     if (wire.s == null) return 'missing_signed_size';
-    const ok = nacl.sign.detached.verify(
+    const ok = verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumDmResourceFindSignedFields({
@@ -3113,7 +3121,7 @@ export function verifyReticulumChatEventRequest(
     if (now - request.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(request.pk);
     if (derived !== request.a) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatEventRequestSignedFields({
@@ -3163,7 +3171,7 @@ export function verifyReticulumChatHistoryPageRequest(
     if (now - request.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(request.pk);
     if (derived !== request.a) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatHistoryPageRequestSignedFields({
@@ -3206,7 +3214,7 @@ export function verifyReticulumChatResourceAuth(
     if (now - request.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(request.p);
     if (derived !== request.a) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatResourceAuthSignedFields({
@@ -3244,7 +3252,7 @@ export function verifyReticulumChatResourceRequest(
     if (now - request.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(request.pk);
     if (!derived) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatResourceRequestSignedFields({
@@ -3297,7 +3305,7 @@ export function getReticulumChatResourceFindRejectReason(
     if (now - wire.n > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return 'timestamp_too_old';
     const authorAddress = deriveAddressFromPublicKey(wire.p);
     if (!authorAddress) return 'invalid_public_key';
-    const ok = nacl.sign.detached.verify(
+    const ok = verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatResourceFindSignedFields({
@@ -3338,7 +3346,7 @@ export function verifyReticulumChatGroupKeyDigest(
     if (now - wire.ts > RETICULUM_CHAT_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(wire.p);
     if (!derived) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatGroupKeyDigestSignedFields({
@@ -3376,7 +3384,7 @@ export function verifyReticulumChatGroupKeyRequest(
     if (now - wire.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(wire.p);
     if (!derived) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatGroupKeyRequestSignedFields({
@@ -3417,7 +3425,7 @@ export function verifyReticulumChatGroupKeyResponse(
     if (now - wire.ts > RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
     const derived = deriveAddressFromPublicKey(wire.p);
     if (!derived) return false;
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumChatGroupKeyResponseSignedFields({
@@ -3868,6 +3876,12 @@ export class ReticulumChatManager extends EventEmitter {
   private inboundLandChatRequests = new Map<string, ReticulumLandChatRequest>();
   private localLandAuthSentAt = new Map<string, number>();
   private localLandAuthSessions = new Map<string, ReticulumLocalLandAuthSession>();
+  private localLandAuthSessionTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private localLandAuthLifecycleGeneration = 0;
+  private localLandAuthGroupGenerations = new Map<number, number>();
   private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
   private latestVerifiedLandStateSequences = new Map<string, number>();
   private lastLandAuthSessionPruneAt = 0;
@@ -4242,6 +4256,9 @@ export class ReticulumChatManager extends EventEmitter {
       | 'resourceStore'
     >
   ): void {
+    const signerChanged =
+      this.signLocalFields != null &&
+      this.signLocalFields !== options.signLocalFields;
     const validateGroupMemberChanged = this.validateGroupMember !== options.validateGroupMember;
     const validateGroupAdminChanged = this.validateGroupAdmin !== options.validateGroupAdmin;
     this.signLocalFields = options.signLocalFields;
@@ -4249,6 +4266,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.validateGroupAdmin = options.validateGroupAdmin;
     this.getVerifiedReticulumPeers = options.getVerifiedReticulumPeers;
     this.hasGoodOverlayHealth = options.hasGoodOverlayHealth;
+    if (signerChanged) {
+      this.clearLocalLandAuthSessions();
+    }
     if ('resourceStore' in options) {
       this.resourceStore = options.resourceStore ?? null;
       this.resourceTransfer?.close();
@@ -4334,8 +4354,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.outboundLandChatOffers.clear();
     this.inboundLandChatRequests.clear();
-    this.localLandAuthSentAt.clear();
-    this.localLandAuthSessions.clear();
+    this.clearLocalLandAuthSessions();
     this.landAuthSessions.clear();
     this.latestVerifiedLandStateSequences.clear();
     this.lastLandAuthSessionPruneAt = 0;
@@ -4437,6 +4456,8 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   setLocalGroupMemberships(memberships: ReticulumChatLocalGroupMembership[]): void {
+    const previousGroupIds = this.localGroupIds;
+    const previousGroupAddresses = this.localGroupAddresses;
     const normalizedMemberships = this.normalizeLocalGroupMemberships(memberships);
     const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
     this.localPrivateGroupIds = new Set(
@@ -4456,6 +4477,24 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    const authMembershipGroups = new Set([
+      ...previousGroupIds,
+      ...this.localGroupIds,
+      ...previousGroupAddresses.keys(),
+      ...this.localGroupAddresses.keys(),
+    ]);
+    for (const groupId of authMembershipGroups) {
+      if (
+        previousGroupIds.has(groupId) === this.localGroupIds.has(groupId) &&
+        previousGroupAddresses.get(groupId) === this.localGroupAddresses.get(groupId)
+      ) {
+        continue;
+      }
+      this.clearLocalLandAuthSessions(
+        (session) => session.groupId === groupId,
+        groupId
+      );
+    }
     for (const groupId of this.getSubscriptions()) {
       if (this.localGroupIds.has(groupId)) continue;
       this.subscribedGroups.delete(groupId);
@@ -4706,6 +4745,10 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearDeferredMetadataSnapshotsForGroup(groupId);
     this.clearAuthorTreeGroupState(groupId);
     this.removeQueuedSubscriptionFanouts(groupId);
+    this.clearLocalLandAuthSessions(
+      (session) => session.groupId === groupId,
+      groupId
+    );
     if (this.subscribedGroups.size === 0) {
       this.stopLocalNotificationWatcher();
       this.stopSubscriptionRefreshTimer();
@@ -4864,6 +4907,98 @@ export class ReticulumChatManager extends EventEmitter {
     return `${groupId}:${authorAddress.trim()}:${sessionId.trim()}`;
   }
 
+  private clearLocalLandAuthSessions(
+    shouldClear: (session: ReticulumLocalLandAuthSession) => boolean = () => true,
+    groupId?: number
+  ): void {
+    if (groupId == null) {
+      this.localLandAuthLifecycleGeneration += 1;
+      this.localLandAuthGroupGenerations.clear();
+    } else {
+      this.localLandAuthGroupGenerations.set(
+        groupId,
+        (this.localLandAuthGroupGenerations.get(groupId) ?? 0) + 1
+      );
+    }
+    for (const [key, session] of this.localLandAuthSessions) {
+      if (!shouldClear(session)) continue;
+      this.deleteLocalLandAuthSession(key);
+    }
+  }
+
+  private deleteLocalLandAuthSession(key: string): void {
+    this.localLandAuthSessions.delete(key);
+    this.localLandAuthSentAt.delete(key);
+    const timer = this.localLandAuthSessionTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.localLandAuthSessionTimers.delete(key);
+  }
+
+  private scheduleLocalLandAuthSessionExpiry(key: string): void {
+    if (this.localLandAuthSessionTimers.has(key)) return;
+    const session = this.localLandAuthSessions.get(key);
+    if (!session) return;
+    const delayMs = Math.max(
+      1,
+      session.lastUsedAt + RETICULUM_LAND_AUTH_SESSION_TTL_MS - this.now()
+    );
+    const timer = setTimeout(() => {
+      this.localLandAuthSessionTimers.delete(key);
+      const current = this.localLandAuthSessions.get(key);
+      if (!current) return;
+      if (
+        current.lastUsedAt >
+        this.now() - RETICULUM_LAND_AUTH_SESSION_TTL_MS
+      ) {
+        this.scheduleLocalLandAuthSessionExpiry(key);
+        return;
+      }
+      this.deleteLocalLandAuthSession(key);
+    }, delayMs);
+    timer.unref?.();
+    this.localLandAuthSessionTimers.set(key, timer);
+  }
+
+  private pruneLocalLandAuthSessions(now: number): void {
+    for (const [key, session] of this.localLandAuthSessions) {
+      if (session.lastUsedAt <= now - RETICULUM_LAND_AUTH_SESSION_TTL_MS) {
+        this.deleteLocalLandAuthSession(key);
+      }
+    }
+    if (this.localLandAuthSessions.size < RETICULUM_LOCAL_LAND_AUTH_SESSION_MAX) {
+      return;
+    }
+    const removeCount =
+      this.localLandAuthSessions.size - RETICULUM_LOCAL_LAND_AUTH_SESSION_MAX + 1;
+    const oldest = [...this.localLandAuthSessions.entries()]
+      .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)
+      .slice(0, removeCount);
+    for (const [key] of oldest) {
+      this.deleteLocalLandAuthSession(key);
+    }
+  }
+
+  private isLocalLandAuthContextCurrent(
+    groupId: number,
+    authorAddress: string,
+    generation: number,
+    groupGeneration: number,
+    signer: NonNullable<ReticulumChatManagerOptions['signLocalFields']>
+  ): boolean {
+    if (
+      this.isClosed ||
+      this.localLandAuthLifecycleGeneration !== generation ||
+      (this.localLandAuthGroupGenerations.get(groupId) ?? 0) !== groupGeneration ||
+      this.signLocalFields !== signer ||
+      !this.localGroupIds.has(groupId) ||
+      !this.subscribedGroups.has(groupId)
+    ) {
+      return false;
+    }
+    const currentAddress = this.localGroupAddresses.get(groupId);
+    return !currentAddress || currentAddress === authorAddress;
+  }
+
   private landAuthRequestKey(groupId: number, authorAddress: string, sessionId: string): string {
     return this.landAuthSessionKey(groupId, authorAddress, sessionId);
   }
@@ -4949,9 +5084,12 @@ export class ReticulumChatManager extends EventEmitter {
     sessionId: string,
     force = false
   ): Promise<void> {
-    if (!this.signLocalFields) {
+    const signer = this.signLocalFields;
+    if (!signer) {
       throw new Error('QortalLand state signing unavailable');
     }
+    const lifecycleGeneration = this.localLandAuthLifecycleGeneration;
+    const groupGeneration = this.localLandAuthGroupGenerations.get(groupId) ?? 0;
     const key = this.landAuthSessionKey(groupId, authorAddress, sessionId);
     const now = this.now();
     if (!force && (this.localLandAuthSentAt.get(key) ?? 0) > now - RETICULUM_LAND_AUTH_REFRESH_MS) {
@@ -4961,16 +5099,40 @@ export class ReticulumChatManager extends EventEmitter {
     if (!authorIsMember) {
       throw new Error('QortalLand state author is not a group member');
     }
+    if (
+      !this.isLocalLandAuthContextCurrent(
+        groupId,
+        authorAddress,
+        lifecycleGeneration,
+        groupGeneration,
+        signer
+      )
+    ) {
+      throw new Error('QortalLand state signing context changed');
+    }
     let session = this.localLandAuthSessions.get(key);
+    if (
+      session &&
+      session.lastUsedAt <= now - RETICULUM_LAND_AUTH_SESSION_TTL_MS
+    ) {
+      this.deleteLocalLandAuthSession(key);
+      session = undefined;
+    }
     if (!session) {
-      const keyPair = nacl.sign.keyPair();
+      this.pruneLocalLandAuthSessions(now);
+      const keyPair = generateNativeEd25519KeyPair();
       session = {
+        authorAddress,
+        groupId,
+        lastUsedAt: now,
+        privateKey: keyPair.privateKey,
         publicKey: base58Encode(keyPair.publicKey),
-        secretKey: keyPair.secretKey,
+        sessionId,
       };
       this.localLandAuthSessions.set(key, session);
+      this.scheduleLocalLandAuthSessionExpiry(key);
     }
-    const signed = await this.signLocalFields({
+    const signed = await signer({
       ephemeralPublicKey: session.publicKey,
       groupId,
       sessionId,
@@ -4980,6 +5142,21 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn('[ReticulumChat] Failed to sign QortalLand auth:', err);
       return null;
     });
+    if (
+      !this.isLocalLandAuthContextCurrent(
+        groupId,
+        authorAddress,
+        lifecycleGeneration,
+        groupGeneration,
+        signer
+      ) ||
+      this.localLandAuthSessions.get(key) !== session
+    ) {
+      if (this.localLandAuthSessions.get(key) === session) {
+        this.deleteLocalLandAuthSession(key);
+      }
+      throw new Error('QortalLand state signing context changed');
+    }
     if (
       !signed ||
       signed.authorAddress !== authorAddress ||
@@ -5044,6 +5221,15 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const compactSessionId = sessionId.slice(0, 24);
     const authKey = this.landAuthSessionKey(groupId, address, compactSessionId);
+    const now = this.now();
+    const existingLocalSession = this.localLandAuthSessions.get(authKey);
+    if (
+      existingLocalSession &&
+      existingLocalSession.lastUsedAt <=
+        now - RETICULUM_LAND_AUTH_SESSION_TTL_MS
+    ) {
+      this.deleteLocalLandAuthSession(authKey);
+    }
     const lastAuthSentAt = this.localLandAuthSentAt.get(authKey) ?? 0;
     const hasLocalSession = this.localLandAuthSessions.has(authKey);
     if (!hasLocalSession || lastAuthSentAt <= this.now() - RETICULUM_LAND_AUTH_SESSION_TTL_MS) {
@@ -5066,7 +5252,7 @@ export class ReticulumChatManager extends EventEmitter {
       throw new Error('QortalLand state signing unavailable');
     }
     const timestamp = this.now();
-    const signature = nacl.sign.detached(
+    const signature = signEd25519Detached(
       new Uint8Array(
         canonicalizeForSigning(
           buildReticulumLandStateSignedFields({
@@ -5083,8 +5269,10 @@ export class ReticulumChatManager extends EventEmitter {
           })
         )
       ),
-      localSession.secretKey
+      localSession.privateKey
     );
+    localSession.lastUsedAt = timestamp;
+    this.scheduleLocalLandAuthSessionExpiry(authKey);
     const wire: Extract<ReticulumChatWire, { k: 'land_state' }> = {
       t: 'RCHAT',
       k: 'land_state',
@@ -9133,7 +9321,7 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] land_state_verify_fallback pending=${stats.pending} workers=${stats.workers} fallback=${stats.fallbackCount} crashes=${stats.crashCount}`
       );
     }
-    return nacl.sign.detached.verify(
+    return verifyEd25519Detached(
       input.signedBytes,
       input.signature,
       input.publicKey
@@ -9161,7 +9349,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (timestamp < now - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return null;
       if (ephemeralPublicKeyBytes.length !== 32 || !signature) return null;
       const signatureBytes = new Uint8Array(base58Decode(signature));
-      if (signatureBytes.length !== nacl.sign.signatureLength) return null;
+      if (signatureBytes.length !== ED25519_SIGNATURE_BYTES) return null;
       return {
         signedBytes: new Uint8Array(
           canonicalizeForSigning(
@@ -20432,6 +20620,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearDigestSnapshotBuildQueue();
     this.clearLandStateQueue();
     this.clearLandAuthQueue();
+    this.clearLocalLandAuthSessions();
     this.clearChatResourceQueue();
     this.clearLatestEventPullFallbackTimers();
     this.liveEventResourceDiagnostics.clear();

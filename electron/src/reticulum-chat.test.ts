@@ -6595,6 +6595,34 @@ describe('reticulum chat manager', () => {
       direction: 'r',
       movement: 'walk',
     });
+    await flushQueuedWork();
+    const outboundWires = [...direct.map(({ wire }) => wire), ...fanout];
+    const authWire = outboundWires.find((wire) => wire.k === 'land_auth');
+    const stateWire = outboundWires.find((wire) => wire.k === 'land_state');
+    expect(authWire?.e).toEqual(expect.any(String));
+    expect(stateWire?.z).toEqual(expect.any(String));
+    expect(
+      nacl.sign.detached.verify(
+        new Uint8Array(
+          canonicalizeForSigning(
+            buildReticulumLandStateSignedFields({
+              groupId: 73,
+              authorAddress: signer.address,
+              sessionId: 'session-1',
+              sequence: 1,
+              x: 20,
+              y: 30,
+              roomId: 'club',
+              direction: 'r',
+              movement: 'walk',
+              timestamp: Number(stateWire?.ts),
+            })
+          )
+        ),
+        new Uint8Array(base58Decode(String(stateWire?.z))),
+        new Uint8Array(base58Decode(String(authWire?.e)))
+      )
+    ).toBe(true);
     direct.length = 0;
     fanout.length = 0;
 
@@ -6623,7 +6651,209 @@ describe('reticulum chat manager', () => {
       )
     ).toBe(true);
     expect(fanout).toHaveLength(0);
+    expect((manager as any).localLandAuthSessions.size).toBe(1);
+    manager.unsubscribeGroup(73);
+    expect((manager as any).localLandAuthSessions.size).toBe(0);
+    expect((manager as any).localLandAuthSentAt.size).toBe(0);
+    expect((manager as any).localLandAuthSessionTimers.size).toBe(0);
     manager.close();
+  });
+
+  it('releases idle native QortalLand session keys after their session TTL', async () => {
+    vi.useFakeTimers();
+    let now = 100_000;
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => now,
+      signLocalFields: signer.signLocalFields,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
+    });
+
+    try {
+      manager.setLocalGroupMemberships([73]);
+      manager.subscribeGroup(73);
+      await manager.sendLandState(73, signer.address, {
+        sessionId: 'idle-session',
+        sequence: 1,
+        x: 20,
+        y: 30,
+      });
+      expect((manager as any).localLandAuthSessions.size).toBe(1);
+      expect((manager as any).localLandAuthSessionTimers.size).toBe(1);
+
+      now += 2 * 60_000 + 1;
+      await vi.advanceTimersByTimeAsync(2 * 60_000 + 1);
+
+      expect((manager as any).localLandAuthSessions.size).toBe(0);
+      expect((manager as any).localLandAuthSentAt.size).toBe(0);
+      expect((manager as any).localLandAuthSessionTimers.size).toBe(0);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not recreate a native QortalLand session after unsubscribe during validation', async () => {
+    const signer = createLandAuthSigner();
+    let resolveMembership: ((value: boolean) => void) | null = null;
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      signLocalFields: signer.signLocalFields,
+      validateGroupMember: async () =>
+        new Promise<boolean>((resolve) => {
+          resolveMembership = resolve;
+        }),
+    });
+
+    try {
+      manager.setLocalGroupMemberships([{ groupId: 73, localAddress: signer.address }]);
+      manager.subscribeGroup(73);
+      sent.length = 0;
+      const pending = manager.sendLandState(73, signer.address, {
+        sessionId: 'pending-session',
+        sequence: 1,
+        x: 20,
+        y: 30,
+      });
+      await Promise.resolve();
+      expect(resolveMembership).not.toBeNull();
+
+      manager.unsubscribeGroup(73);
+      resolveMembership?.(true);
+
+      await expect(pending).rejects.toThrow('signing context changed');
+      expect((manager as any).localLandAuthSessions.size).toBe(0);
+      expect((manager as any).localLandAuthSentAt.size).toBe(0);
+      expect((manager as any).localLandAuthSessionTimers.size).toBe(0);
+      expect(sent.some((wire) => wire.k === 'land_auth' || wire.k === 'land_state')).toBe(false);
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('discards a native QortalLand session when the signer changes during auth signing', async () => {
+    const signer = createLandAuthSigner();
+    const validateGroupMember = async (_groupId: number, address: string) =>
+      address === signer.address;
+    let releaseSigning: (() => void) | null = null;
+    let markSigningStarted: (() => void) | null = null;
+    const signingStarted = new Promise<void>((resolve) => {
+      markSigningStarted = resolve;
+    });
+    const signingGate = new Promise<void>((resolve) => {
+      releaseSigning = resolve;
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (messages: Record<string, unknown>[]) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      signLocalFields: async (fields) => {
+        markSigningStarted?.();
+        await signingGate;
+        return signer.signLocalFields(fields);
+      },
+      validateGroupMember,
+    });
+
+    try {
+      manager.setLocalGroupMemberships([{ groupId: 73, localAddress: signer.address }]);
+      manager.subscribeGroup(73);
+      sent.length = 0;
+      const pending = manager.sendLandState(73, signer.address, {
+        sessionId: 'changing-signer',
+        sequence: 1,
+        x: 20,
+        y: 30,
+      });
+      await signingStarted;
+
+      manager.setRuntimeCallbacks({
+        signLocalFields: signer.signLocalFields,
+        validateGroupMember,
+      });
+      releaseSigning?.();
+
+      await expect(pending).rejects.toThrow('signing context changed');
+      expect((manager as any).localLandAuthSessions.size).toBe(0);
+      expect((manager as any).localLandAuthSentAt.size).toBe(0);
+      expect((manager as any).localLandAuthSessionTimers.size).toBe(0);
+      expect(sent.some((wire) => wire.k === 'land_auth' || wire.k === 'land_state')).toBe(false);
+    } finally {
+      releaseSigning?.();
+      manager.close();
+    }
+  });
+
+  it('bounds native QortalLand session keys and expiry timers during session churn', async () => {
+    let now = 100_000;
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => now,
+      signLocalFields: signer.signLocalFields,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
+    });
+
+    try {
+      manager.setLocalGroupMemberships([{ groupId: 73, localAddress: signer.address }]);
+      manager.subscribeGroup(73);
+      for (let index = 0; index < 65; index += 1) {
+        await manager.sendLandState(73, signer.address, {
+          sessionId: `churn-${index}`,
+          sequence: 1,
+          x: 20,
+          y: 30,
+        });
+        now += 1;
+      }
+
+      expect((manager as any).localLandAuthSessions.size).toBe(64);
+      expect((manager as any).localLandAuthSentAt.size).toBe(64);
+      expect((manager as any).localLandAuthSessionTimers.size).toBe(64);
+      expect(
+        (manager as any).localLandAuthSessions.has(
+          `73:${signer.address}:churn-0`
+        )
+      ).toBe(false);
+      expect(
+        (manager as any).localLandAuthSessions.has(
+          `73:${signer.address}:churn-64`
+        )
+      ).toBe(true);
+    } finally {
+      manager.close();
+    }
   });
 
   it('accepts compact QortalLand call requests without sender address on the wire', async () => {

@@ -1,13 +1,104 @@
 /**
- * Shared Ed25519 verification used by worker threads and main-thread fallback.
+ * Shared native Ed25519 operations used by worker threads and Electron main.
  */
 
-import nacl from 'tweetnacl';
+import * as nodeCrypto from 'crypto';
 import {
   deriveAddressFromPublicKey,
   canonicalizeForSigning,
   base58Decode,
 } from './presence';
+
+export const ED25519_PUBLIC_KEY_BYTES = 32;
+export const ED25519_SIGNATURE_BYTES = 64;
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+const ED25519_PUBLIC_KEY_CACHE_MAX = 1_024;
+const ed25519PublicKeyCache = new Map<string, nodeCrypto.KeyObject>();
+
+export type NativeEd25519KeyPair = {
+  privateKey: nodeCrypto.KeyObject;
+  publicKey: Uint8Array;
+};
+
+export function generateNativeEd25519KeyPair(): NativeEd25519KeyPair {
+  const { privateKey, publicKey } = nodeCrypto.generateKeyPairSync('ed25519');
+  const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
+  if (
+    publicKeyDer.byteLength !==
+      ED25519_SPKI_PREFIX.byteLength + ED25519_PUBLIC_KEY_BYTES ||
+    !publicKeyDer.subarray(0, ED25519_SPKI_PREFIX.byteLength).equals(ED25519_SPKI_PREFIX)
+  ) {
+    throw new Error('Unexpected native Ed25519 public key format');
+  }
+  return {
+    privateKey,
+    publicKey: new Uint8Array(
+      publicKeyDer.subarray(ED25519_SPKI_PREFIX.byteLength)
+    ),
+  };
+}
+
+export function signEd25519Detached(
+  message: Uint8Array,
+  privateKey: nodeCrypto.KeyObject
+): Uint8Array {
+  if (
+    privateKey.type !== 'private' ||
+    privateKey.asymmetricKeyType !== 'ed25519'
+  ) {
+    throw new Error('Invalid native Ed25519 private key');
+  }
+  const signature = nodeCrypto.sign(null, Buffer.from(message), privateKey);
+  if (signature.byteLength !== ED25519_SIGNATURE_BYTES) {
+    throw new Error('Unexpected native Ed25519 signature size');
+  }
+  return new Uint8Array(signature);
+}
+
+export function verifyEd25519Detached(
+  message: Uint8Array,
+  signature: Uint8Array,
+  publicKey: Uint8Array
+): boolean {
+  try {
+    if (
+      signature.byteLength !== ED25519_SIGNATURE_BYTES ||
+      publicKey.byteLength !== ED25519_PUBLIC_KEY_BYTES
+    ) {
+      return false;
+    }
+
+    const publicKeyBytes = Buffer.from(publicKey);
+    const cacheKey = publicKeyBytes.toString('hex');
+    let publicKeyObject = ed25519PublicKeyCache.get(cacheKey);
+    if (publicKeyObject) {
+      ed25519PublicKeyCache.delete(cacheKey);
+      ed25519PublicKeyCache.set(cacheKey, publicKeyObject);
+    } else {
+      publicKeyObject = nodeCrypto.createPublicKey({
+        key: Buffer.concat([ED25519_SPKI_PREFIX, publicKeyBytes]),
+        format: 'der',
+        type: 'spki',
+      });
+      if (ed25519PublicKeyCache.size >= ED25519_PUBLIC_KEY_CACHE_MAX) {
+        const oldestKey = ed25519PublicKeyCache.keys().next().value;
+        if (typeof oldestKey === 'string') {
+          ed25519PublicKeyCache.delete(oldestKey);
+        }
+      }
+      ed25519PublicKeyCache.set(cacheKey, publicKeyObject);
+    }
+
+    return nodeCrypto.verify(
+      null,
+      Buffer.from(message),
+      publicKeyObject,
+      Buffer.from(signature)
+    );
+  } catch {
+    return false;
+  }
+}
 
 export type Ed25519VerifyPayload =
   | {
@@ -58,7 +149,7 @@ export function verifyGcDetached(
     const pkBytes = base58Decode(fromPublicKey);
     const sigBytes = base58Decode(signature);
     const msgBytes = canonicalizeForSigning(fields);
-    return nacl.sign.detached.verify(msgBytes, sigBytes, pkBytes);
+    return verifyEd25519Detached(msgBytes, sigBytes, pkBytes);
   } catch {
     return false;
   }
@@ -87,7 +178,7 @@ export function verifyPresenceDetached(
     const pkBytes = base58Decode(publicKeyBase58);
     const sigBytes = base58Decode(signature);
     const msgBytes = canonicalizeForSigning(signedFields);
-    return nacl.sign.detached.verify(msgBytes, sigBytes, pkBytes);
+    return verifyEd25519Detached(msgBytes, sigBytes, pkBytes);
   } catch {
     return false;
   }
@@ -102,7 +193,7 @@ export function verifyCallRequestDetached(
     const msgBytes = new Uint8Array(canonicalizeForSigning(fields));
     const sigBytes = new Uint8Array(base58Decode(signature));
     const keyBytes = new Uint8Array(base58Decode(fromPublicKey));
-    return nacl.sign.detached.verify(msgBytes, sigBytes, keyBytes);
+    return verifyEd25519Detached(msgBytes, sigBytes, keyBytes);
   } catch {
     return false;
   }
@@ -124,7 +215,7 @@ export function verifyCallSignedDetached(
     const msgBytes = canonicalizeForSigning({ callId, timestamp, type: wireType });
     const sigBytes = base58Decode(signature) as Uint8Array;
     const keyBytes = base58Decode(fromPublicKey) as Uint8Array;
-    return nacl.sign.detached.verify(msgBytes, sigBytes, keyBytes);
+    return verifyEd25519Detached(msgBytes, sigBytes, keyBytes);
   } catch {
     return false;
   }

@@ -117,6 +117,34 @@ async function main() {
     ) {
       throw new Error('Worker accepted an invalid QortalLand state signature');
     }
+    const malformedLandStateSignature = await pool.run({
+      kind: 'verify_land_state_signature',
+      signedBytes: landStateBytes,
+      signature: landStateSignature.subarray(0, landStateSignature.length - 1),
+      publicKey: landKeyPair.publicKey,
+    });
+    if (
+      !malformedLandStateSignature ||
+      !malformedLandStateSignature.ok ||
+      malformedLandStateSignature.kind !== 'verify_land_state_signature' ||
+      malformedLandStateSignature.valid
+    ) {
+      throw new Error('Worker accepted a malformed QortalLand state signature');
+    }
+    const malformedLandStatePublicKey = await pool.run({
+      kind: 'verify_land_state_signature',
+      signedBytes: landStateBytes,
+      signature: landStateSignature,
+      publicKey: landKeyPair.publicKey.subarray(0, landKeyPair.publicKey.length - 1),
+    });
+    if (
+      !malformedLandStatePublicKey ||
+      !malformedLandStatePublicKey.ok ||
+      malformedLandStatePublicKey.kind !== 'verify_land_state_signature' ||
+      malformedLandStatePublicKey.valid
+    ) {
+      throw new Error('Worker accepted a malformed QortalLand public key');
+    }
     console.log('reticulum chat worker integration: passed');
   } finally {
     pool.stop();

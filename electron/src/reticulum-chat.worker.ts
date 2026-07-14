@@ -2,7 +2,6 @@ import { parentPort } from 'worker_threads';
 import * as fs from 'fs';
 import * as nodeCrypto from 'crypto';
 import type { Database as DB } from 'better-sqlite3';
-import nacl from 'tweetnacl';
 import type {
   SerializedReticulumChatAuthorTreeSnapshot,
 } from './reticulum-chat-author-tree';
@@ -29,6 +28,11 @@ function loadAuthorTree(): typeof import('./reticulum-chat-author-tree') {
 }
 
 const DIGEST_WINDOW_EVENTS = 200;
+const ED25519_PUBLIC_KEY_BYTES = 32;
+const ED25519_SIGNATURE_BYTES = 64;
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+const LAND_STATE_PUBLIC_KEY_CACHE_MAX = 256;
+const landStatePublicKeyCache = new Map<string, nodeCrypto.KeyObject>();
 // Match the manager's existing digest freshness window. The worker changes
 // where the snapshot is built, not how long peers may reuse it.
 const DIGEST_STATE_MAX_CACHE_MS = 2_000;
@@ -534,13 +538,49 @@ function verifyLandStateSignature(
 ): ReticulumChatWorkerResult {
   const startedAt = Date.now();
   try {
-    const signedBytes = new Uint8Array(task.signedBytes);
-    const signature = new Uint8Array(task.signature);
-    const publicKey = new Uint8Array(task.publicKey);
-    const valid =
-      signature.length === nacl.sign.signatureLength &&
-      publicKey.length === nacl.sign.publicKeyLength &&
-      nacl.sign.detached.verify(signedBytes, signature, publicKey);
+    const signedBytes = Buffer.from(task.signedBytes);
+    const signature = Buffer.from(task.signature);
+    const publicKey = Buffer.from(task.publicKey);
+    if (
+      signature.length !== ED25519_SIGNATURE_BYTES ||
+      publicKey.length !== ED25519_PUBLIC_KEY_BYTES
+    ) {
+      return {
+        id: task.id,
+        ok: true,
+        kind: task.kind,
+        valid: false,
+        prepMs: Date.now() - startedAt,
+      };
+    }
+
+    const cacheKey = publicKey.toString('hex');
+    let publicKeyObject = landStatePublicKeyCache.get(cacheKey);
+    if (publicKeyObject) {
+      // Refresh insertion order so active Land sessions remain cached.
+      landStatePublicKeyCache.delete(cacheKey);
+      landStatePublicKeyCache.set(cacheKey, publicKeyObject);
+    } else {
+      publicKeyObject = nodeCrypto.createPublicKey({
+        key: Buffer.concat([ED25519_SPKI_PREFIX, publicKey]),
+        format: 'der',
+        type: 'spki',
+      });
+      if (landStatePublicKeyCache.size >= LAND_STATE_PUBLIC_KEY_CACHE_MAX) {
+        const oldestKey = landStatePublicKeyCache.keys().next().value;
+        if (typeof oldestKey === 'string') {
+          landStatePublicKeyCache.delete(oldestKey);
+        }
+      }
+      landStatePublicKeyCache.set(cacheKey, publicKeyObject);
+    }
+
+    const valid = nodeCrypto.verify(
+      null,
+      signedBytes,
+      publicKeyObject,
+      signature
+    );
     return {
       id: task.id,
       ok: true,
