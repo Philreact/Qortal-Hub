@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import queue
 import time
 import unittest
@@ -9,6 +10,17 @@ import RNS
 
 
 BRIDGE_PATH = Path(__file__).with_name("presence_bridge.py")
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def base58_encode(data):
+    leading_zeroes = len(data) - len(data.lstrip(b"\x00"))
+    value = int.from_bytes(data, "big")
+    encoded = ""
+    while value > 0:
+        value, remainder = divmod(value, 58)
+        encoded = BASE58_ALPHABET[remainder] + encoded
+    return ("1" * leading_zeroes) + (encoded or ("1" if not data else ""))
 
 
 def load_bridge():
@@ -83,6 +95,243 @@ class FakeRnsPacket:
 class FakeDestination:
     def __init__(self):
         self.hash = bytes.fromhex("44" * 16)
+
+
+class PresenceBridgeLandStateFastPathTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.bridge._destination = FakeDestination()
+        self.group_id = 73
+        self.author = "Q-land-author"
+        self.session_id = "land-session"
+        self.source_hash = "11" * 16
+        self.target_hash = "22" * 16
+        self.origin = "AQIDBAUGBwgJCgsMDQ4PEA"
+        self.private_key = RNS.Cryptography.Ed25519PrivateKey.generate()
+        public_key = self.private_key.public_key().public_bytes()
+        expires_at = int((time.time() + 60) * 1000)
+        self.bridge._configure_land_state_forwarding(
+            [
+                {
+                    "groupId": self.group_id,
+                    "targets": [
+                        {
+                            "peerPresenceHash": self.target_hash,
+                            "expiresAt": expires_at,
+                        }
+                    ],
+                }
+            ],
+            [
+                {
+                    "groupId": self.group_id,
+                    "authorAddress": self.author,
+                    "sessionId": self.session_id,
+                    "ephemeralPublicKey": base58_encode(public_key),
+                    "expiresAt": expires_at,
+                }
+            ],
+            7,
+        )
+
+    def state(self, sequence=1, signature=None):
+        timestamp = int(time.time() * 1000)
+        fields = {
+            "authorAddress": self.author,
+            "direction": "r",
+            "groupId": self.group_id,
+            "movement": "walk",
+            "roomId": "room",
+            "sequence": sequence,
+            "sessionId": self.session_id,
+            "timestamp": timestamp,
+            "type": "QORTAL_LAND_STATE",
+            "x": 50,
+            "y": 60,
+        }
+        signed_bytes = json.dumps(
+            fields,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        encoded_signature = signature
+        if encoded_signature is None:
+            encoded_signature = base58_encode(
+                self.private_key.sign(signed_bytes)
+            )
+        return {
+            "t": "RCHAT",
+            "k": "land_state",
+            "g": self.group_id,
+            "a": self.author,
+            "s": self.session_id,
+            "q": sequence,
+            "x": 50,
+            "y": 60,
+            "u": "room",
+            "d": "r",
+            "m": "walk",
+            "ts": timestamp,
+            "z": encoded_signature,
+            "o": self.origin,
+            "h": 1,
+        }
+
+    def queue_without_scheduler(self, message):
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ):
+            queued = self.bridge._queue_land_state_fast_path(
+                message,
+                self.source_hash,
+                "source-link",
+            )
+        self.assertTrue(queued)
+        return next(reversed(self.bridge._land_state_forward_pending))
+
+    def test_preserves_full_origin_and_reports_the_forwarding_revision(self):
+        message = self.state()
+        pending_key = self.queue_without_scheduler(message)
+        emitted = []
+        sent = []
+        with mock.patch.object(
+            self.bridge,
+            "_send_wire_to_established_overlay_peer",
+            side_effect=lambda peer, wire, _traffic: sent.append((peer, wire)) or True,
+        ), mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+            side_effect=lambda *args, **kwargs: emitted.append((args, kwargs)) or True,
+        ):
+            self.bridge._process_land_state_fast_path(pending_key)
+
+        self.assertEqual(len(sent), 1)
+        forwarded = json.loads(sent[0][1].decode("utf-8"))
+        self.assertEqual(forwarded["o"], self.origin)
+        self.assertTrue(emitted[0][1]["land_state_fast_forwarded"])
+        self.assertEqual(emitted[0][1]["land_state_forwarding_revision"], 7)
+
+    def test_destination_hash_matching_requires_exact_hash_equivalence(self):
+        full_hash = "0102030405060708090a0b0c0d0e0f10"
+        same_prefix = "01020304" + ("ff" * 12)
+
+        self.assertTrue(
+            self.bridge._land_state_hash_matches(self.origin, full_hash)
+        )
+        self.assertFalse(
+            self.bridge._land_state_hash_matches(full_hash, same_prefix)
+        )
+
+    def test_invalid_origin_is_replaced_with_the_verified_ingress_peer(self):
+        message = self.state()
+        message["o"] = "invalid"
+        pending_key = self.queue_without_scheduler(message)
+        sent = []
+        with mock.patch.object(
+            self.bridge,
+            "_send_wire_to_established_overlay_peer",
+            side_effect=lambda peer, wire, _traffic: sent.append((peer, wire)) or True,
+        ), mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+            return_value=True,
+        ):
+            self.bridge._process_land_state_fast_path(pending_key)
+
+        self.assertEqual(len(sent), 1)
+        forwarded = json.loads(sent[0][1].decode("utf-8"))
+        self.assertEqual(forwarded["o"], self.source_hash)
+
+    def test_route_revision_change_forces_electron_fallback(self):
+        pending_key = self.queue_without_scheduler(self.state())
+        emitted = []
+
+        def send_and_change_revision(_peer, _wire, _traffic):
+            self.bridge._land_state_forwarding_revision = 8
+            return True
+
+        with mock.patch.object(
+            self.bridge,
+            "_send_wire_to_established_overlay_peer",
+            side_effect=send_and_change_revision,
+        ), mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+            side_effect=lambda *args, **kwargs: emitted.append((args, kwargs)) or True,
+        ):
+            self.bridge._process_land_state_fast_path(pending_key)
+
+        self.assertFalse(emitted[0][1]["land_state_fast_forwarded"])
+        self.assertIsNone(emitted[0][1]["land_state_forwarding_revision"])
+
+    def test_unverified_higher_sequence_does_not_replace_pending_valid_state(self):
+        valid_key = self.queue_without_scheduler(self.state(sequence=1))
+        invalid_key = self.queue_without_scheduler(
+            self.state(sequence=999, signature="invalid")
+        )
+        self.assertEqual(len(self.bridge._land_state_forward_pending), 2)
+        emitted = []
+        with mock.patch.object(
+            self.bridge,
+            "_send_wire_to_established_overlay_peer",
+            return_value=True,
+        ) as send, mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+            side_effect=lambda *args, **kwargs: emitted.append((args, kwargs)) or True,
+        ):
+            self.bridge._process_land_state_fast_path(valid_key)
+            self.bridge._process_land_state_fast_path(invalid_key)
+
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(len(emitted), 1)
+
+    def test_oversized_target_plan_falls_back_instead_of_installing_part_of_it(self):
+        expires_at = int((time.time() + 60) * 1000)
+        targets = [
+            {
+                "peerPresenceHash": f"{index:032x}",
+                "expiresAt": expires_at,
+            }
+            for index in range(
+                1,
+                self.bridge._LAND_STATE_FORWARDING_MAX_TARGETS_PER_GROUP + 2,
+            )
+        ]
+        self.bridge._configure_land_state_forwarding(
+            [{"groupId": self.group_id, "targets": targets}],
+            [],
+            8,
+        )
+        self.assertNotIn(
+            self.group_id,
+            self.bridge._land_state_forwarding_plans,
+        )
+
+    def test_sequence_zero_is_forwarded_only_once(self):
+        message = self.state(sequence=0)
+        emitted = []
+        with mock.patch.object(
+            self.bridge,
+            "_send_wire_to_established_overlay_peer",
+            return_value=True,
+        ) as send, mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+            side_effect=lambda *args, **kwargs: emitted.append((args, kwargs)) or True,
+        ):
+            self.bridge._process_land_state_fast_path(
+                self.queue_without_scheduler(message)
+            )
+            self.bridge._process_land_state_fast_path(
+                self.queue_without_scheduler(message)
+            )
+
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(len(emitted), 1)
 
 
 class PresenceBridgeAudioForwardFastPathTest(unittest.TestCase):

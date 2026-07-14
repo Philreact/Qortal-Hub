@@ -457,6 +457,7 @@ _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
 _SCHEDULER_AUDIO_SHARDS = 4
 _SCHEDULER_PRESENCE_FANOUT_SHARDS = 8
+_SCHEDULER_LAND_STATE_SHARDS = 4
 _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS = 80.0
 _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "control-send": 256,
@@ -472,6 +473,8 @@ for _audio_shard in range(_SCHEDULER_AUDIO_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"audio-send-{_audio_shard}"] = 64
 for _presence_shard in range(_SCHEDULER_PRESENCE_FANOUT_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"presence-fanout-{_presence_shard}"] = 64
+for _land_state_shard in range(_SCHEDULER_LAND_STATE_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"land-state-forward-{_land_state_shard}"] = 64
 
 _shutdown = threading.Event()
 _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
@@ -706,6 +709,21 @@ _RETICULUM_CHAT_SOFT_FANOUT_TYPES = {
     "land_state",
 }
 _reticulum_chat_digest_fanout_recent: Dict[Tuple[str, str, str], float] = {}
+_land_state_forwarding_lock = threading.RLock()
+_land_state_forwarding_plans: Dict[int, Dict[str, float]] = {}
+_land_state_auth_sessions: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+_land_state_forward_pending: Dict[
+    Tuple[str, int, str, str, int, str], Dict[str, Any]
+] = {}
+_land_state_forwarding_revision = 0
+_LAND_STATE_FORWARDING_MAX_GROUPS = 1024
+_LAND_STATE_FORWARDING_MAX_TARGETS_PER_GROUP = 64
+_LAND_STATE_FORWARDING_MAX_SESSIONS = 4096
+_LAND_STATE_FORWARDING_MAX_PENDING = 4096
+_RETICULUM_CHAT_TARGET_BATCH_MAX = 4096
+_LAND_STATE_MAX_HOPS = 8
+_LAND_STATE_MAX_AGE_MS = 2 * 60_000
+_LAND_STATE_MAX_FUTURE_SKEW_MS = 30_000
 _AUDIO_LINK_WIRE_TYPES = frozenset(
     {_GROUP_AUDIO_HEARTBEAT_WIRE_TYPE}
 )
@@ -9867,7 +9885,11 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
 
 
 def _emit_call_bridge_message(
-    message: Dict[str, Any], peer_presence_hash: str = "", link_id: Optional[str] = None
+    message: Dict[str, Any],
+    peer_presence_hash: str = "",
+    link_id: Optional[str] = None,
+    land_state_fast_forwarded: bool = False,
+    land_state_forwarding_revision: Optional[int] = None,
 ) -> bool:
     sender_r = message.get("r")
     sender_call_hash = sender_r if isinstance(sender_r, str) else ""
@@ -9888,6 +9910,12 @@ def _emit_call_bridge_message(
         }
         if link_id:
             payload["linkId"] = link_id
+        if land_state_fast_forwarded and message.get("k") == "land_state":
+            payload["landStateFastForwarded"] = True
+            if isinstance(land_state_forwarding_revision, int):
+                payload["landStateForwardingRevision"] = (
+                    land_state_forwarding_revision
+                )
         emit_event("reticulum_chat_message", payload)
         chat_details = _reticulum_chat_wire_log_details(message)
         log(
@@ -10272,6 +10300,388 @@ def _promote_misclassified_overlay_link_to_qchat_file(
     )
 
 
+def _configure_land_state_forwarding(
+    plans: Any,
+    sessions: Any,
+    revision: Any,
+) -> Tuple[int, int, int]:
+    global _land_state_forwarding_plans
+    global _land_state_auth_sessions
+    global _land_state_forwarding_revision
+
+    now = time.time()
+    next_plans: Dict[int, Dict[str, float]] = {}
+    if isinstance(plans, list):
+        for raw_plan in plans[:_LAND_STATE_FORWARDING_MAX_GROUPS]:
+            if not isinstance(raw_plan, dict):
+                continue
+            group_id = raw_plan.get("groupId")
+            if isinstance(group_id, bool) or not isinstance(group_id, int) or group_id <= 0:
+                continue
+            targets: Dict[str, float] = {}
+            raw_targets = raw_plan.get("targets")
+            if isinstance(raw_targets, list):
+                # Never install a partial plan. Electron can safely fall back to
+                # its authoritative forwarding path when a group exceeds this cap.
+                if len(raw_targets) > _LAND_STATE_FORWARDING_MAX_TARGETS_PER_GROUP:
+                    continue
+                for raw_target in raw_targets[:_LAND_STATE_FORWARDING_MAX_TARGETS_PER_GROUP]:
+                    if not isinstance(raw_target, dict):
+                        continue
+                    peer_hash = str(raw_target.get("peerPresenceHash") or "").strip().lower()
+                    try:
+                        expires_at = float(raw_target.get("expiresAt") or 0) / 1000.0
+                    except Exception:
+                        expires_at = 0.0
+                    if not peer_hash or expires_at <= now:
+                        continue
+                    targets[peer_hash] = max(float(targets.get(peer_hash) or 0.0), expires_at)
+            if targets:
+                next_plans[group_id] = targets
+
+    with _land_state_forwarding_lock:
+        previous_sessions = _land_state_auth_sessions
+        next_sessions: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+        if isinstance(sessions, list):
+            for raw_session in sessions[:_LAND_STATE_FORWARDING_MAX_SESSIONS]:
+                if not isinstance(raw_session, dict):
+                    continue
+                group_id = raw_session.get("groupId")
+                author = str(raw_session.get("authorAddress") or "").strip()
+                session_id = str(raw_session.get("sessionId") or "").strip()
+                public_key_base58 = str(raw_session.get("ephemeralPublicKey") or "").strip()
+                try:
+                    expires_at = float(raw_session.get("expiresAt") or 0) / 1000.0
+                    public_key = qortal_base58_decode(public_key_base58)
+                except Exception:
+                    continue
+                if (
+                    isinstance(group_id, bool)
+                    or not isinstance(group_id, int)
+                    or group_id <= 0
+                    or not author
+                    or not session_id
+                    or len(session_id) > 24
+                    or len(public_key) != 32
+                    or expires_at <= now
+                ):
+                    continue
+                key = (group_id, author, session_id)
+                previous = previous_sessions.get(key)
+                last_sequence = -1
+                if previous is not None and previous.get("publicKey") == public_key:
+                    previous_sequence = previous.get("lastSequence")
+                    if isinstance(previous_sequence, int):
+                        last_sequence = previous_sequence
+                next_sessions[key] = {
+                    "publicKey": public_key,
+                    "expiresAt": expires_at,
+                    "lastSequence": last_sequence,
+                }
+
+        _land_state_forwarding_plans = next_plans
+        _land_state_auth_sessions = next_sessions
+        try:
+            _land_state_forwarding_revision = max(0, int(revision))
+        except Exception:
+            _land_state_forwarding_revision += 1
+
+    target_count = sum(len(targets) for targets in next_plans.values())
+    log(
+        "[presence_bridge] target=land-state-forwarding configured "
+        f"revision={_land_state_forwarding_revision} groups={len(next_plans)} "
+        f"targets={target_count} sessions={len(next_sessions)}"
+    )
+    return len(next_plans), target_count, len(next_sessions)
+
+
+def _land_state_normalized_int(value: Any, minimum: int, maximum: int) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    rounded = int(math.floor(numeric + 0.5))
+    return max(minimum, min(maximum, rounded))
+
+
+def _land_state_sequence_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return max(0, min(2**53 - 1, int(math.floor(numeric))))
+
+
+def _land_state_verification_fields(message: Dict[str, Any]) -> Optional[Tuple[Tuple[int, str, str], int, bytes]]:
+    group_id = message.get("g")
+    author = str(message.get("a") or "").strip()
+    session_id = str(message.get("s") or "").strip()
+    if (
+        isinstance(group_id, bool)
+        or not isinstance(group_id, int)
+        or group_id <= 0
+        or not author
+        or not session_id
+        or len(session_id) > 24
+    ):
+        return None
+    sequence = _land_state_sequence_int(message.get("q"))
+    x = _land_state_normalized_int(message.get("x"), 0, 4095)
+    y = _land_state_normalized_int(message.get("y"), 0, 2047)
+    if sequence is None or x is None or y is None:
+        return None
+    try:
+        timestamp_number = float(message.get("ts"))
+    except Exception:
+        return None
+    if not math.isfinite(timestamp_number):
+        return None
+    now_ms = time.time() * 1000.0
+    if (
+        timestamp_number > now_ms + _LAND_STATE_MAX_FUTURE_SKEW_MS
+        or timestamp_number < now_ms - _LAND_STATE_MAX_AGE_MS
+    ):
+        return None
+    timestamp: Any = (
+        int(timestamp_number) if timestamp_number.is_integer() else timestamp_number
+    )
+    signed_fields = {
+        "authorAddress": author,
+        "direction": str(message.get("d") or ""),
+        "groupId": group_id,
+        "movement": str(message.get("m") or ""),
+        "roomId": str(message.get("u") or ""),
+        "sequence": sequence,
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "type": "QORTAL_LAND_STATE",
+        "x": x,
+        "y": y,
+    }
+    signed_bytes = json.dumps(
+        signed_fields,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return (group_id, author, session_id), sequence, signed_bytes
+
+
+def _land_state_destination_hash(value: Any) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if len(lowered) == 32 and all(ch in "0123456789abcdef" for ch in lowered):
+        return lowered
+    try:
+        padded = text.replace("-", "+").replace("_", "/")
+        padded += "=" * ((4 - len(padded) % 4) % 4)
+        decoded = base64.b64decode(padded, validate=True)
+        return decoded.hex() if len(decoded) == 16 else ""
+    except Exception:
+        return ""
+
+
+def _land_state_hash_matches(candidate: str, expected: str) -> bool:
+    left = _land_state_destination_hash(candidate)
+    right = _land_state_destination_hash(expected)
+    return bool(left and right and left == right)
+
+
+def _process_land_state_fast_path(
+    pending_key: Tuple[str, int, str, str, int, str]
+) -> None:
+    with _land_state_forwarding_lock:
+        item = _land_state_forward_pending.pop(pending_key, None)
+    if item is None:
+        return
+    message = item["message"]
+    peer_hash = item["peerHash"]
+    link_id = item["linkId"]
+    parsed = _land_state_verification_fields(message)
+    if parsed is None:
+        _emit_call_bridge_message(message, peer_hash, link_id)
+        return
+    session_key, sequence, signed_bytes = parsed
+    now = time.time()
+    with _land_state_forwarding_lock:
+        session = _land_state_auth_sessions.get(session_key)
+    if session is None or float(session.get("expiresAt") or 0.0) <= now:
+        _emit_call_bridge_message(message, peer_hash, link_id)
+        return
+    try:
+        signature = qortal_base58_decode(str(message.get("z") or ""))
+        if len(signature) != 64:
+            raise ValueError("bad signature length")
+        public_key = bytes(session.get("publicKey") or b"")
+        RNS.Cryptography.Ed25519PublicKey.from_public_bytes(public_key).verify(
+            signature,
+            signed_bytes,
+        )
+    except Exception:
+        # This session key was already authenticated by Electron. A signature
+        # failure is terminal and must not enter Electron's coalescing queue,
+        # where an invalid high sequence could displace a valid pending state.
+        return
+
+    with _land_state_forwarding_lock:
+        current = _land_state_auth_sessions.get(session_key)
+        if (
+            current is None
+            or current.get("publicKey") != session.get("publicKey")
+            or float(current.get("expiresAt") or 0.0) <= time.time()
+        ):
+            _emit_call_bridge_message(message, peer_hash, link_id)
+            return
+        previous_sequence = current.get("lastSequence")
+        last_sequence = previous_sequence if isinstance(previous_sequence, int) else -1
+        if sequence <= last_sequence:
+            return
+        current["lastSequence"] = sequence
+        forwarding_revision = _land_state_forwarding_revision
+        targets = dict(_land_state_forwarding_plans.get(session_key[0]) or {})
+
+    if not targets:
+        _emit_call_bridge_message(message, peer_hash, link_id)
+        return
+
+    try:
+        hops = max(0, min(_LAND_STATE_MAX_HOPS, int(message.get("h") or 0)))
+    except Exception:
+        hops = 0
+    if hops >= _LAND_STATE_MAX_HOPS:
+        _emit_call_bridge_message(message, peer_hash, link_id)
+        return
+    raw_origin = message.get("o")
+    origin_candidate = (
+        raw_origin.strip()
+        if isinstance(raw_origin, str) and raw_origin.strip()
+        else ""
+    )
+    source_candidate = str(peer_hash or "").strip()
+    # Match Electron's route parsing: preserve a valid compact origin exactly,
+    # but never propagate arbitrary origin text through the native fast path.
+    origin = (
+        origin_candidate
+        if _land_state_destination_hash(origin_candidate)
+        else source_candidate
+    )
+    if not _land_state_destination_hash(origin):
+        _emit_call_bridge_message(message, peer_hash, link_id)
+        return
+    forwarded = dict(message)
+    # The compact Reticulum destination hash is normally 22 characters. It is
+    # routing identity, not display text, so truncating it changes the origin.
+    forwarded["o"] = origin
+    forwarded["h"] = hops + 1
+    encoded = _encode_group_signal_wire(forwarded)
+    if not encoded.get("ok"):
+        _emit_call_bridge_message(message, peer_hash, link_id)
+        return
+
+    attempted = 0
+    delivered = 0
+    for target_hash, expires_at in targets.items():
+        if expires_at <= time.time():
+            continue
+        if _land_state_hash_matches(target_hash, peer_hash) or _land_state_hash_matches(target_hash, origin):
+            continue
+        attempted += 1
+        if _send_wire_to_established_overlay_peer(
+            target_hash,
+            encoded["wire_bytes"],
+            "land_state_forward_fast_path",
+        ):
+            delivered += 1
+
+    with _land_state_forwarding_lock:
+        revision_is_current = (
+            forwarding_revision == _land_state_forwarding_revision
+        )
+    fast_forwarded = (
+        attempted > 0
+        and delivered == attempted
+        and revision_is_current
+    )
+    _emit_call_bridge_message(
+        message,
+        peer_hash,
+        link_id,
+        land_state_fast_forwarded=fast_forwarded,
+        land_state_forwarding_revision=(
+            forwarding_revision if fast_forwarded else None
+        ),
+    )
+
+
+def _queue_land_state_fast_path(
+    message: Dict[str, Any],
+    peer_hash: str,
+    link_id: str,
+) -> bool:
+    if message.get("t") != _RETICULUM_CHAT_WIRE_TYPE or message.get("k") != "land_state":
+        return False
+    if not peer_hash:
+        return False
+    parsed = _land_state_verification_fields(message)
+    if parsed is None:
+        return False
+    session_key, _sequence, _signed_bytes = parsed
+    now = time.time()
+    with _land_state_forwarding_lock:
+        session = _land_state_auth_sessions.get(session_key)
+        targets = _land_state_forwarding_plans.get(session_key[0])
+        if (
+            session is None
+            or float(session.get("expiresAt") or 0.0) <= now
+            or not targets
+            or not any(float(expires_at or 0.0) > now for expires_at in targets.values())
+        ):
+            return False
+        signature_key = hashlib.sha256(
+            str(message.get("z") or "").encode("utf-8")
+        ).hexdigest()[:16]
+        pending_key = (
+            peer_hash,
+            session_key[0],
+            session_key[1],
+            session_key[2],
+            _sequence,
+            signature_key,
+        )
+        if pending_key in _land_state_forward_pending:
+            return True
+        if len(_land_state_forward_pending) >= _LAND_STATE_FORWARDING_MAX_PENDING:
+            return False
+        _land_state_forward_pending[pending_key] = {
+            "message": message,
+            "peerHash": peer_hash,
+            "linkId": link_id,
+        }
+    try:
+        shard = int(hashlib.sha256(f"{session_key[1]}:{session_key[2]}".encode("utf-8")).hexdigest()[:8], 16) % _SCHEDULER_LAND_STATE_SHARDS
+    except Exception:
+        shard = 0
+    queued = _enqueue_scheduler_task(
+        f"land-state-forward-{shard}",
+        f"land-state:{session_key[0]}:{session_key[1][:12]}",
+        _process_land_state_fast_path,
+        pending_key,
+    )
+    if queued:
+        return True
+    with _land_state_forwarding_lock:
+        _land_state_forward_pending.pop(pending_key, None)
+    return False
+
+
 def _handle_overlay_link_packet(message, packet) -> None:
     link = getattr(packet, "link", None)
     link_id = get_overlay_link_id(link) if link is not None else None
@@ -10357,9 +10767,12 @@ def _handle_overlay_link_packet(message, packet) -> None:
                 emit_overlay_link_state(link_id, state, emit_reason)
                 _overlay_enqueue_dedup(peer_hash, reason="dedup_same_peer")
         return
+    peer_presence_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if _queue_land_state_fast_path(decoded, peer_presence_hash, link_id):
+        return
     _emit_call_bridge_message(
         decoded,
-        str(state.get("peerPresenceHash") or ""),
+        peer_presence_hash,
         link_id,
     )
 
@@ -15451,6 +15864,13 @@ def handle_overlay_note_candidate_failure(req_id: str, payload: Dict[str, Any]) 
 
 
 def handle_stop(req_id: str) -> None:
+    global _land_state_forwarding_plans
+    global _land_state_auth_sessions
+    global _land_state_forward_pending
+    with _land_state_forwarding_lock:
+        _land_state_forwarding_plans = {}
+        _land_state_auth_sessions = {}
+        _land_state_forward_pending = {}
     _flush_overlay_good_outbound_cache(force=True)
     _rns_announce_on_auth_session_end()
     emit_resp(req_id, True)
@@ -16350,6 +16770,80 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
         emit_resp(req_id, False, error=str(exc))
 
 
+def handle_send_reticulum_chat_targets(req_id: str, payload: Dict[str, Any]) -> None:
+    peer_hashes_raw = payload.get("peerPresenceHashes")
+    msg = payload.get("message")
+    if not isinstance(peer_hashes_raw, list) or not isinstance(msg, dict):
+        emit_resp(req_id, False, error="Missing peerPresenceHashes or message")
+        return
+    peer_hashes = list(
+        dict.fromkeys(
+            str(peer_hash).strip().lower()
+            for peer_hash in peer_hashes_raw[:_RETICULUM_CHAT_TARGET_BATCH_MAX]
+            if isinstance(peer_hash, str) and peer_hash.strip()
+        )
+    )
+    if not peer_hashes:
+        emit_resp(req_id, False, error="Missing peerPresenceHashes")
+        return
+    if msg.get("t") != _RETICULUM_CHAT_WIRE_TYPE:
+        emit_resp(req_id, False, error="Invalid Reticulum chat wire type")
+        return
+    if _destination is None:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "bridge_not_started"},
+            error="Bridge not started",
+        )
+        return
+    try:
+        encoded = _encode_group_signal_wire(msg)
+        if not encoded.get("ok"):
+            emit_resp(
+                req_id,
+                False,
+                payload=encoded.get("payload"),
+                error=str(encoded.get("error") or "Wire encoding failed"),
+            )
+            return
+        delivered: List[str] = []
+        failures: List[Dict[str, str]] = []
+        for peer_hash in peer_hashes:
+            failure = _prepare_group_signal_peer(peer_hash)
+            if failure is None:
+                failure = _send_group_signal_wire_to_peer(
+                    peer_hash,
+                    encoded["wire_bytes"],
+                )
+            if failure is None:
+                delivered.append(peer_hash)
+                continue
+            failure_payload = failure.get("payload")
+            code = (
+                str(failure_payload.get("code") or "packet_send_false")
+                if isinstance(failure_payload, dict)
+                else "packet_send_false"
+            )
+            failures.append(
+                {
+                    "peerPresenceHash": peer_hash,
+                    "code": code,
+                    "error": str(failure.get("error") or "Packet send returned False"),
+                }
+            )
+        emit_resp(
+            req_id,
+            True,
+            payload={
+                "deliveredPeerHashes": delivered,
+                "failures": failures,
+            },
+        )
+    except Exception as exc:
+        emit_resp(req_id, False, error=str(exc))
+
+
 def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages or any(
@@ -17037,6 +17531,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_fanout_group_call(req_id, payload)
     elif action == "send_reticulum_chat":
         handle_send_reticulum_chat(req_id, payload)
+    elif action == "send_reticulum_chat_targets":
+        handle_send_reticulum_chat_targets(req_id, payload)
     elif action == "fanout_reticulum_chat":
         handle_fanout_reticulum_chat(req_id, payload)
     elif action == "open_group_audio_link":
@@ -17075,6 +17571,21 @@ def handle_command(message: Dict[str, Any]) -> None:
             req_id,
             True,
             payload={"roomCount": room_count, "ruleCount": rule_count},
+        )
+    elif action == "configure_land_state_forwarding":
+        group_count, target_count, session_count = _configure_land_state_forwarding(
+            payload.get("plans"),
+            payload.get("sessions"),
+            payload.get("revision"),
+        )
+        emit_resp(
+            req_id,
+            True,
+            payload={
+                "groupCount": group_count,
+                "targetCount": target_count,
+                "sessionCount": session_count,
+            },
         )
     elif action == "get_local_identity_public_key":
         handle_get_local_identity_public_key(req_id, payload)

@@ -6445,6 +6445,194 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('does not relay a QortalLand state twice after Python fast forwarding', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const emitted: Array<Record<string, unknown>> = [];
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.on('landState', (payload) => emitted.push(payload as Record<string, unknown>));
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' },
+      'peer-a'
+    );
+    manager.handleWire(signer.landAuthWire(73, 'session-fast', 100_000), 'peer-c');
+    await flushQueuedWork();
+    direct.length = 0;
+    (manager as any).landStateForwardingRevision = 4;
+    (manager as any).landStateForwardingAppliedRevision = 4;
+
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'session-fast',
+        sequence: 1,
+        x: 50,
+        y: 60,
+        timestamp: 100_000,
+      }),
+      'peer-c',
+      '',
+      true,
+      4
+    );
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+
+    expect(
+      direct.some(({ wire }) => wire.k === 'land_state')
+    ).toBe(false);
+    manager.close();
+  });
+
+  it('does not rebuild Land forwarding for every unchanged route observation', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getState: () => 'ready',
+        configureLandStateForwarding: async () => ({ ok: true as const }),
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => now,
+    });
+
+    (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
+    const initialRevision = (manager as any).landStateForwardingRevision;
+
+    for (let index = 0; index < 20; index += 1) {
+      (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
+    }
+    expect((manager as any).landStateForwardingRevision).toBe(initialRevision);
+
+    now += 150_001;
+    (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
+    expect((manager as any).landStateForwardingRevision).toBe(initialRevision + 1);
+    manager.close();
+  });
+
+  it('relays a QortalLand state when Python used a stale forwarding revision', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (peer: string, wire: Record<string, unknown>) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) => address === signer.address,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' },
+      'peer-a'
+    );
+    manager.handleWire(signer.landAuthWire(73, 'session-stale', 100_000), 'peer-c');
+    await flushQueuedWork();
+    direct.length = 0;
+    (manager as any).landStateForwardingRevision = 5;
+    (manager as any).landStateForwardingAppliedRevision = 5;
+
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'session-stale',
+        sequence: 1,
+        x: 50,
+        y: 60,
+        timestamp: 100_000,
+      }),
+      'peer-c',
+      '',
+      true,
+      4
+    );
+
+    await vi.waitFor(() => {
+      expect(direct.some(({ wire }) => wire.k === 'land_state')).toBe(true);
+    });
+    manager.close();
+  });
+
+  it('reapplies Land forwarding after a bridge swap interrupts an in-flight snapshot', async () => {
+    let resolveOldSnapshot: ((result: { ok: true }) => void) | null = null;
+    const oldConfigure = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ ok: true }>((resolve) => {
+            resolveOldSnapshot = resolve;
+          })
+      )
+      .mockResolvedValue({ ok: true as const });
+    const newConfigure = vi.fn().mockResolvedValue({ ok: true as const });
+    const bridgeShape = {
+      on: () => undefined,
+      off: () => undefined,
+      getState: () => 'ready',
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    };
+    const oldBridge = {
+      ...bridgeShape,
+      configureLandStateForwarding: oldConfigure,
+    } as any;
+    const newBridge = {
+      ...bridgeShape,
+      configureLandStateForwarding: newConfigure,
+    } as any;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: oldBridge,
+      now: () => 100_000,
+    });
+
+    clearTimeout((manager as any).landStateForwardingSyncTimer);
+    (manager as any).landStateForwardingSyncTimer = null;
+    const oldApply = (manager as any).applyLandStateForwardingSnapshot();
+    await vi.waitFor(() => expect(oldConfigure).toHaveBeenCalledTimes(1));
+
+    manager.setBridge(newBridge);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(newConfigure).not.toHaveBeenCalled();
+
+    expect(resolveOldSnapshot).not.toBeNull();
+    resolveOldSnapshot?.({ ok: true });
+    await oldApply;
+    await vi.waitFor(() => expect(newConfigure).toHaveBeenCalledTimes(1));
+
+    manager.close();
+  });
+
   it('verifies different QortalLand sessions concurrently while serializing and coalescing each session', async () => {
     const emitted: Array<Record<string, unknown>> = [];
     const signer = createLandAuthSigner();

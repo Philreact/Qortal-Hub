@@ -213,6 +213,7 @@ type BridgeCmdFrame = {
     | 'send_group_call'
     | 'fanout_group_call'
     | 'send_reticulum_chat'
+    | 'send_reticulum_chat_targets'
     | 'fanout_reticulum_chat'
     | 'send_group_audio_link_heartbeat'
     | 'open_group_audio_link'
@@ -223,6 +224,7 @@ type BridgeCmdFrame = {
     | 'get_group_audio_data_plane_session'
     | 'configure_group_audio_data_plane_routes'
     | 'configure_group_audio_forwarding'
+    | 'configure_land_state_forwarding'
     | 'get_local_identity_public_key'
     | 'ensure_peer_identity'
     | 'register_peer_identity';
@@ -472,6 +474,24 @@ export type ReticulumAudioForwardingPlan = {
   rules: ReticulumAudioForwardingRule[];
 };
 
+export type ReticulumLandStateForwardingTarget = {
+  peerPresenceHash: string;
+  expiresAt: number;
+};
+
+export type ReticulumLandStateForwardingPlan = {
+  groupId: number;
+  targets: ReticulumLandStateForwardingTarget[];
+};
+
+export type ReticulumLandStateAuthSession = {
+  groupId: number;
+  authorAddress: string;
+  sessionId: string;
+  ephemeralPublicKey: string;
+  expiresAt: number;
+};
+
 export type ReticulumAudioDataPlaneSessionResult =
   | {
       ok: true;
@@ -489,6 +509,24 @@ export type ReticulumAudioDataPlaneSessionResult =
 
 export type ReticulumSendResult =
   | { ok: true }
+  | {
+      ok: false;
+      reason: ReticulumSendFailureReason;
+      error?: string;
+    };
+
+export type ReticulumTargetedChatFailure = {
+  peerPresenceHash: string;
+  reason: ReticulumSendFailureReason;
+  error?: string;
+};
+
+export type ReticulumTargetedChatResult =
+  | {
+      ok: true;
+      deliveredPeerHashes: string[];
+      failures: ReticulumTargetedChatFailure[];
+    }
   | {
       ok: false;
       reason: ReticulumSendFailureReason;
@@ -613,6 +651,8 @@ type BridgeEventFrame =
         senderDestinationHash?: string;
         peerPresenceHash?: string;
         linkId?: string;
+        landStateFastForwarded?: boolean;
+        landStateForwardingRevision?: number;
       };
     }
   | {
@@ -1694,6 +1734,93 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     });
   }
 
+  async sendReticulumChatTargetsDetailed(
+    peerPresenceHashes: string[],
+    message: Record<string, unknown>
+  ): Promise<ReticulumTargetedChatResult> {
+    const peers = [
+      ...new Set(
+        peerPresenceHashes
+          .map((peer) => peer.trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    ];
+    if (peers.length === 0) {
+      return { ok: false, reason: 'unknown-peer-presence-hash' };
+    }
+    try {
+      await this.start();
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'bridge-exception',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    try {
+      const resp = await this.sendCommand('send_reticulum_chat_targets', {
+        peerPresenceHashes: peers,
+        message,
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          reason: this.mapSendFailureReason(resp),
+          ...(resp.error ? { error: resp.error } : {}),
+        };
+      }
+      const deliveredPeerHashes = Array.isArray(resp.payload?.deliveredPeerHashes)
+        ? resp.payload.deliveredPeerHashes
+            .filter((peer): peer is string => typeof peer === 'string' && !!peer)
+            .map((peer) => peer.trim().toLowerCase())
+        : [];
+      const failures = Array.isArray(resp.payload?.failures)
+        ? resp.payload.failures.flatMap((failure) => {
+            if (!failure || typeof failure !== 'object') return [];
+            const record = failure as Record<string, unknown>;
+            const peerPresenceHash =
+              typeof record.peerPresenceHash === 'string'
+                ? record.peerPresenceHash.trim().toLowerCase()
+                : '';
+            if (!peerPresenceHash) return [];
+            const code =
+              typeof record.code === 'string'
+                ? record.code
+                : 'packet_send_false';
+            const error =
+              typeof record.error === 'string' ? record.error : undefined;
+            const reason = this.mapSendFailureReason({
+              type: 'resp',
+              id: '',
+              ok: false,
+              payload: { code },
+              ...(error ? { error } : {}),
+            });
+            return [
+              {
+                peerPresenceHash,
+                reason,
+                ...(error ? { error } : {}),
+              },
+            ];
+          })
+        : [];
+      return { ok: true, deliveredPeerHashes, failures };
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: messageText.includes('timed out')
+          ? 'bridge-timeout'
+          : 'bridge-exception',
+        error: messageText,
+      };
+    }
+  }
+
   async fanoutReticulumChatDetailed(
     messages: Record<string, unknown>[],
     excludePeerPresenceHashes: string[] = []
@@ -1978,6 +2105,55 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     try {
       const resp = await this.sendCommand('configure_group_audio_forwarding', {
         plans,
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          reason: this.mapSendFailureReason(resp),
+          ...(resp.error ? { error: resp.error } : {}),
+        };
+      }
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: message.includes('timed out')
+          ? 'bridge-timeout'
+          : 'bridge-exception',
+        error: message,
+      };
+    }
+  }
+
+  async configureLandStateForwarding(
+    plans: ReticulumLandStateForwardingPlan[],
+    sessions: ReticulumLandStateAuthSession[],
+    revision: number,
+    opts?: { startIfNeeded?: boolean }
+  ): Promise<ReticulumSendResult> {
+    if (this.state !== 'ready') {
+      if (opts?.startIfNeeded === false) {
+        return { ok: false, reason: 'bridge-not-ready' };
+      }
+      try {
+        await this.start();
+      } catch (err) {
+        return {
+          ok: false,
+          reason: 'bridge-exception',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    try {
+      const resp = await this.sendCommand('configure_land_state_forwarding', {
+        plans,
+        sessions,
+        revision,
       });
       if (!resp.ok) {
         return {
@@ -3943,7 +4119,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             ? senderDestinationHash
             : '',
           typeof peerPresenceHash === 'string' ? peerPresenceHash : '',
-          typeof frame.payload?.linkId === 'string' ? frame.payload.linkId : ''
+          typeof frame.payload?.linkId === 'string' ? frame.payload.linkId : '',
+          frame.payload?.landStateFastForwarded === true,
+          typeof frame.payload?.landStateForwardingRevision === 'number'
+            ? frame.payload.landStateForwardingRevision
+            : -1
         );
         return;
       }

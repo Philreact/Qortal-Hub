@@ -76,8 +76,23 @@ import { createTransaction } from '../transactions/transactions';
 import { getData, storeData } from '../utils/chromeStorage';
 import publicKeyToAddress from '../utils/generateWallet/publicKeyToAddress';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages.ts';
+import {
+  assertAllowedPresenceSigningPayload,
+  assertAllowedReticulumSigningPayload,
+} from './reticulum-signing-policy';
 
 const QORTAL_PUBLIC_VALIDATION_NODE = 'https://ext-node.qortal.link';
+
+function wipeTemporaryKeyPairSecrets(keyPair: unknown): void {
+  if (!keyPair || typeof keyPair !== 'object') return;
+  const record = keyPair as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) {
+    if (!/(private|seed)/iu.test(key)) continue;
+    if (value instanceof Uint8Array) value.fill(0);
+    else if (typeof value === 'string') record[key] = '';
+    else record[key] = null;
+  }
+}
 
 function isPublicValidationNode(apiUrl: string): boolean {
   return String(apiUrl || '')
@@ -2362,9 +2377,13 @@ export async function getRewardSharePrivateKeyCase(request, event) {
  *   { type, address, publicKey, sessionId, timestamp, clientVersion? }
  */
 export async function signPresenceMessageCase(request, event) {
+  let resKeyPair;
+  let privateKeyBytes: Uint8Array | null = null;
+  let messageBytes: Uint8Array | null = null;
   try {
-    const resKeyPair = await getKeyPair();
-    const privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    assertAllowedPresenceSigningPayload(request.payload);
+    resKeyPair = await getKeyPair();
+    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
 
     // Build canonical signed data — keys sorted alphabetically, then
     // JSON-stringify and UTF-8 encode. Must match canonicalizeForSigning()
@@ -2374,7 +2393,7 @@ export async function signPresenceMessageCase(request, event) {
     for (const key of Object.keys(fields).sort()) {
       sorted[key] = fields[key];
     }
-    const messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
+    messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
     const signature = nacl.sign.detached(messageBytes, privateKeyBytes);
     const signatureBase58 = Base58.encode(signature);
 
@@ -2397,13 +2416,21 @@ export async function signPresenceMessageCase(request, event) {
       },
       event.origin
     );
+  } finally {
+    messageBytes?.fill(0);
+    privateKeyBytes?.fill(0);
+    wipeTemporaryKeyPairSecrets(resKeyPair);
   }
 }
 
 export async function signReticulumChatEventCase(request, event) {
+  let resKeyPair;
+  let privateKeyBytes: Uint8Array | null = null;
+  let messageBytes: Uint8Array | null = null;
   try {
-    const resKeyPair = await getKeyPair();
-    const privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    assertAllowedReticulumSigningPayload(request.payload);
+    resKeyPair = await getKeyPair();
+    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
     const publicKey = resKeyPair.publicKey;
     const authorAddress = publicKeyToAddress(Base58.decode(publicKey));
     const fields = {
@@ -2415,7 +2442,7 @@ export async function signReticulumChatEventCase(request, event) {
     for (const key of Object.keys(fields).sort()) {
       sorted[key] = fields[key];
     }
-    const messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
+    messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
     const signature = nacl.sign.detached(messageBytes, privateKeyBytes);
 
     event.source.postMessage(
@@ -2441,6 +2468,10 @@ export async function signReticulumChatEventCase(request, event) {
       },
       event.origin
     );
+  } finally {
+    messageBytes?.fill(0);
+    privateKeyBytes?.fill(0);
+    wipeTemporaryKeyPairSecrets(resKeyPair);
   }
 }
 
@@ -2456,12 +2487,31 @@ export async function signReticulumChatEventCase(request, event) {
  *   [ephemeralPK (32 bytes)] + [nonce (24 bytes)] + [ciphertext]
  */
 export async function decryptBoxWithMyKeyCase(request, event) {
+  let resKeyPair;
+  let privateKeyBytes: Uint8Array | null = null;
+  let myCurve25519SK: Uint8Array | null = null;
+  let sharedKey: Uint8Array | null = null;
+  let plaintext: Uint8Array | null = null;
   try {
+    if (!request.payload || typeof request.payload !== 'object') {
+      throw new Error('Invalid encrypted key payload');
+    }
     const { ephemeralPublicKey, nonce, ciphertext } = request.payload;
-    const resKeyPair = await getKeyPair();
-    const privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    if (
+      typeof ephemeralPublicKey !== 'string' ||
+      typeof nonce !== 'string' ||
+      typeof ciphertext !== 'string' ||
+      ephemeralPublicKey.length > 128 ||
+      nonce.length > 128 ||
+      ciphertext.length > 64 * 1024
+    ) {
+      throw new Error('Invalid encrypted key payload');
+    }
+    resKeyPair = await getKeyPair();
+    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
 
-    const myCurve25519SK = ed2curve.convertSecretKey(privateKeyBytes);
+    myCurve25519SK = ed2curve.convertSecretKey(privateKeyBytes);
+    if (!myCurve25519SK) throw new Error('Unable to derive decryption key');
     const ephemeralPK = Uint8Array.from(atob(ephemeralPublicKey), (c) =>
       c.charCodeAt(0)
     );
@@ -2469,9 +2519,12 @@ export async function decryptBoxWithMyKeyCase(request, event) {
     const cipherBytes = Uint8Array.from(atob(ciphertext), (c) =>
       c.charCodeAt(0)
     );
+    if (ephemeralPK.length !== 32 || nonceBytes.length !== 24) {
+      throw new Error('Invalid encrypted key payload');
+    }
 
-    const sharedKey = nacl.box.before(ephemeralPK, myCurve25519SK);
-    const plaintext = nacl.box.open.after(cipherBytes, nonceBytes, sharedKey);
+    sharedKey = nacl.box.before(ephemeralPK, myCurve25519SK);
+    plaintext = nacl.box.open.after(cipherBytes, nonceBytes, sharedKey);
     if (!plaintext) throw new Error('Decryption failed');
 
     const decryptedKey = btoa(String.fromCharCode(...plaintext));
@@ -2494,6 +2547,12 @@ export async function decryptBoxWithMyKeyCase(request, event) {
       },
       event.origin
     );
+  } finally {
+    plaintext?.fill(0);
+    sharedKey?.fill(0);
+    myCurve25519SK?.fill(0);
+    privateKeyBytes?.fill(0);
+    wipeTemporaryKeyPairSecrets(resKeyPair);
   }
 }
 

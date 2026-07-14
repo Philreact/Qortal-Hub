@@ -171,7 +171,7 @@ const QORTAL_LAND_CHARACTER_PREVIEW_FACINGS: QortalLandCharacterPreviewFacing[] 
 const LAND_SEND_INTERVAL_MS = 200;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
-const LAND_REMOTE_MIN_INTERPOLATION_MS = 220;
+const LAND_REMOTE_MIN_INTERPOLATION_MS = 140;
 const LAND_REMOTE_MAX_INTERPOLATION_MS = 950;
 const LAND_REMOTE_EXTRAPOLATE_MS = 1100;
 const LAND_REMOTE_STOP_WALKING_AFTER_MS = 1450;
@@ -7286,9 +7286,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               0,
               1
             );
-            const easedProgress = Phaser.Math.Easing.Sine.InOut(interpolationProgress);
-            let nextX = Phaser.Math.Linear(player.fromX, player.x, easedProgress);
-            let nextY = Phaser.Math.Linear(player.fromY, player.y, easedProgress);
+            let nextX = Phaser.Math.Linear(player.fromX, player.x, interpolationProgress);
+            let nextY = Phaser.Math.Linear(player.fromY, player.y, interpolationProgress);
             const afterTargetMs = Math.max(0, elapsedSinceUpdate - player.interpolationMs);
             const shouldPredict =
               player.movement === 'walk' &&

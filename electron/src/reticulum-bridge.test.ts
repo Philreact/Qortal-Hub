@@ -1457,6 +1457,139 @@ describe('ReticulumBridge group audio support', () => {
   });
 });
 
+describe('ReticulumBridge chat forwarding support', () => {
+  it('emits the Land forwarding revision with a fast-forwarded state', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    const seen: unknown[][] = [];
+    bridge.on('reticulum-chat-message', (...args) => seen.push(args));
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'reticulum_chat_message',
+      payload: {
+        wire: { t: 'RCHAT', k: 'land_state', g: 73 },
+        senderDestinationHash: 'sender-hash',
+        peerPresenceHash: 'peer-hash',
+        linkId: 'link-1',
+        landStateFastForwarded: true,
+        landStateForwardingRevision: 9,
+      },
+    });
+
+    expect(seen).toEqual([[
+      { t: 'RCHAT', k: 'land_state', g: 73 },
+      'sender-hash',
+      'peer-hash',
+      'link-1',
+      true,
+      9,
+    ]]);
+  });
+
+  it('atomically configures validated Land forwarding state', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'land-plan-1',
+      ok: true,
+    }));
+    const plans = [
+      {
+        groupId: 73,
+        targets: [{ peerPresenceHash: 'peer-a', expiresAt: 200_000 }],
+      },
+    ];
+    const sessions = [
+      {
+        groupId: 73,
+        authorAddress: 'Q-author',
+        sessionId: 'session-1',
+        ephemeralPublicKey: 'public-key',
+        expiresAt: 150_000,
+      },
+    ];
+
+    await expect(
+      bridge.configureLandStateForwarding(plans, sessions, 4)
+    ).resolves.toEqual({ ok: true });
+    expect(internal.sendCommand).toHaveBeenCalledWith(
+      'configure_land_state_forwarding',
+      { plans, sessions, revision: 4 }
+    );
+  });
+
+  it('batches targeted chat delivery and preserves per-peer failures', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'chat-targets-1',
+      ok: true,
+      payload: {
+        deliveredPeerHashes: ['peer-a'],
+        failures: [
+          {
+            peerPresenceHash: 'peer-b',
+            code: 'no_route',
+            error: 'No overlay route',
+          },
+        ],
+      },
+    }));
+    const message = { t: 'RCHAT', k: 'group_state_digest_v3', g: 73 };
+
+    await expect(
+      bridge.sendReticulumChatTargetsDetailed(['PEER-A', 'peer-b'], message)
+    ).resolves.toEqual({
+      ok: true,
+      deliveredPeerHashes: ['peer-a'],
+      failures: [
+        {
+          peerPresenceHash: 'peer-b',
+          reason: 'no-route',
+          error: 'No overlay route',
+        },
+      ],
+    });
+    expect(internal.sendCommand).toHaveBeenCalledWith(
+      'send_reticulum_chat_targets',
+      { peerPresenceHashes: ['peer-a', 'peer-b'], message }
+    );
+  });
+
+  it('starts the bridge before targeted chat batch delivery', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'stopped';
+    internal.start = vi.fn(async () => {
+      internal.state = 'ready';
+    });
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'chat-targets-started',
+      ok: true,
+      payload: { deliveredPeerHashes: ['peer-a'], failures: [] },
+    }));
+
+    await expect(
+      bridge.sendReticulumChatTargetsDetailed(
+        ['peer-a'],
+        { t: 'RCHAT', k: 'group_state_digest_v3', g: 73 }
+      )
+    ).resolves.toEqual({
+      ok: true,
+      deliveredPeerHashes: ['peer-a'],
+      failures: [],
+    });
+    expect(internal.start).toHaveBeenCalledTimes(1);
+    expect(internal.sendCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('ReticulumBridge publish_presence payload', () => {
   beforeEach(() => {
     vi.mocked(getPresenceManager).mockReturnValue(null);

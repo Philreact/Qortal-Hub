@@ -60,6 +60,8 @@ import {
 export { buildReticulumChatAuthorTreeSnapshot } from './reticulum-chat-author-tree';
 import type {
   ReticulumBridge,
+  ReticulumLandStateAuthSession,
+  ReticulumLandStateForwardingPlan,
   ReticulumSendFailureReason,
   ReticulumSendResult,
 } from './reticulum-bridge';
@@ -277,6 +279,8 @@ interface ReticulumChatQueuedLandState {
   sequence: number;
   enqueuedAt: number;
   coalescedCount: number;
+  fastForwarded: boolean;
+  forwardingRevision: number;
 }
 
 interface ReticulumChatQueuedLandAuth {
@@ -631,6 +635,9 @@ type ReticulumDmResourceFindRoute = {
 };
 
 type ReticulumLandAuthSession = {
+  groupId: number;
+  authorAddress: string;
+  sessionId: string;
   expiresAt: number;
   ephemeralPublicKey: string;
   ephemeralPublicKeyBytes: Uint8Array;
@@ -1374,6 +1381,8 @@ const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX = 4096;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_MS = 30_000;
 const RETICULUM_CHAT_ACTIVE_DM_LINK_GRACE_MS = 5 * 60_000;
 const RETICULUM_CHAT_GROUP_ROUTE_TTL_MS = 5 * 60_000;
+const RETICULUM_CHAT_GROUP_ROUTE_REFRESH_REMAINING_MS =
+  RETICULUM_CHAT_GROUP_ROUTE_TTL_MS / 2;
 const RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS = 8;
 const RETICULUM_CHAT_GROUP_ROUTE_MAX_ROUTES = 4096;
 const RETICULUM_CHAT_GROUP_ROUTE_FORWARD_DEDUPE_MS = 60_000;
@@ -3935,6 +3944,11 @@ export class ReticulumChatManager extends EventEmitter {
   private identityRequestRoutes = new Map<string, ReticulumChatIdentityRoute>();
   private localIdentityRequests = new Map<string, ReticulumChatIdentityWaiter>();
   private groupInterestRoutes = new Map<string, ReticulumChatGroupInterestRoute>();
+  private landStateForwardingSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private landStateForwardingSyncInFlight = false;
+  private landStateForwardingRevision = 0;
+  private landStateForwardingAppliedRevision = -1;
+  private landStateForwardingAppliedKey = '';
   private forwardedGroupSubKeys = new Map<string, number>();
   private forwardedGroupControlKeys = new Map<string, number>();
   private dmDigestTimer: ReturnType<typeof setInterval> | null = null;
@@ -5013,10 +5027,12 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     this.lastLandAuthSessionPruneAt = now;
+    let sessionsChanged = false;
     for (const [key, session] of this.landAuthSessions) {
       if (session.expiresAt <= now) {
         this.landAuthSessions.delete(key);
         this.latestVerifiedLandStateSequences.delete(key);
+        sessionsChanged = true;
       }
     }
     if (this.landAuthSessions.size > RETICULUM_LAND_AUTH_SESSION_MAX) {
@@ -5027,6 +5043,7 @@ export class ReticulumChatManager extends EventEmitter {
       for (const [key] of oldest) {
         this.landAuthSessions.delete(key);
         this.latestVerifiedLandStateSequences.delete(key);
+        sessionsChanged = true;
       }
     }
     if (this.latestVerifiedLandStateSequences.size > RETICULUM_LAND_STATE_SEQUENCE_MAX) {
@@ -5036,6 +5053,7 @@ export class ReticulumChatManager extends EventEmitter {
         if (this.latestVerifiedLandStateSequences.size <= RETICULUM_LAND_STATE_SEQUENCE_MAX) break;
       }
     }
+    if (sessionsChanged) this.scheduleLandStateForwardingSync();
   }
 
   private getValidLandAuthSession(
@@ -5070,11 +5088,15 @@ export class ReticulumChatManager extends EventEmitter {
     this.landAuthSessions.set(
       sessionKey,
       {
+        groupId,
+        authorAddress,
+        sessionId,
         ephemeralPublicKey,
         ephemeralPublicKeyBytes,
         expiresAt: this.now() + RETICULUM_LAND_AUTH_SESSION_TTL_MS,
       }
     );
+    this.scheduleLandStateForwardingSync();
     return true;
   }
 
@@ -6085,8 +6107,12 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private pruneGroupInterestRoutes(now = this.now()): void {
+    let routesChanged = false;
     for (const [key, route] of this.groupInterestRoutes) {
-      if (route.expiresAt <= now) this.groupInterestRoutes.delete(key);
+      if (route.expiresAt <= now) {
+        this.groupInterestRoutes.delete(key);
+        routesChanged = true;
+      }
     }
     for (const [key, expiresAt] of this.forwardedGroupSubKeys) {
       if (expiresAt <= now) this.forwardedGroupSubKeys.delete(key);
@@ -6096,8 +6122,12 @@ export class ReticulumChatManager extends EventEmitter {
       const oldest = [...this.groupInterestRoutes.entries()]
         .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
         .slice(0, excess);
-      for (const [key] of oldest) this.groupInterestRoutes.delete(key);
+      for (const [key] of oldest) {
+        this.groupInterestRoutes.delete(key);
+        routesChanged = true;
+      }
     }
+    if (routesChanged) this.scheduleLandStateForwardingSync();
   }
 
   private pruneGroupControlRoutes(now = this.now()): void {
@@ -6995,7 +7025,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private enqueueLandStateWire(
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
-    peerHash: string
+    peerHash: string,
+    fastForwarded = false,
+    forwardingRevision = -1
   ): void {
     if (this.isClosed) return;
     const groupId = Number(wire.g);
@@ -7014,6 +7046,8 @@ export class ReticulumChatManager extends EventEmitter {
       existing.peerHash = peerHash;
       existing.sequence = sequence;
       existing.enqueuedAt = this.now();
+      existing.fastForwarded = fastForwarded;
+      existing.forwardingRevision = forwardingRevision;
       existing.coalescedCount += 1;
       this.landStateQueueStats.coalesced += 1;
       return;
@@ -7036,6 +7070,8 @@ export class ReticulumChatManager extends EventEmitter {
       sequence,
       enqueuedAt: Date.now(),
       coalescedCount: 0,
+      fastForwarded,
+      forwardingRevision,
     });
     this.logLandStateQueuePressureIfNeeded();
     this.scheduleLandStateQueue();
@@ -7108,7 +7144,12 @@ export class ReticulumChatManager extends EventEmitter {
   private async processLandStateQueueItem(item: ReticulumChatQueuedLandState): Promise<void> {
     const startedAt = Date.now();
     try {
-      await this.handleLandStateWire(item.wire, item.peerHash);
+      await this.handleLandStateWire(
+        item.wire,
+        item.peerHash,
+        item.fastForwarded,
+        item.forwardingRevision
+      );
     } catch (err) {
       loggerWarn(
         `[ReticulumChat] Failed to process land_state group=${item.groupId} author=${item.authorAddress} session=${item.sessionId}:`,
@@ -7299,7 +7340,9 @@ export class ReticulumChatManager extends EventEmitter {
   handleWire(
     wire: Record<string, unknown>,
     peerPresenceHash = '',
-    senderDestinationHash = ''
+    senderDestinationHash = '',
+    landStateFastForwarded = false,
+    landStateForwardingRevision = -1
   ): void {
     if (wire.t !== 'RCHAT' || typeof wire.k !== 'string') return;
     const peerHash = this.peerKey(peerPresenceHash, senderDestinationHash);
@@ -7554,7 +7597,9 @@ export class ReticulumChatManager extends EventEmitter {
       {
         this.enqueueLandStateWire(
           wire as Extract<ReticulumChatWire, { k: 'land_state' }>,
-          peerHash
+          peerHash,
+          landStateFastForwarded,
+          landStateForwardingRevision
         );
         return;
       }
@@ -7634,6 +7679,144 @@ export class ReticulumChatManager extends EventEmitter {
     return RETICULUM_CHAT_PROTOCOL_FEATURES.every((feature) => features.has(feature));
   }
 
+  private buildLandStateForwardingSnapshot(): {
+    plans: ReticulumLandStateForwardingPlan[];
+    sessions: ReticulumLandStateAuthSession[];
+  } {
+    const now = this.now();
+    const local = this.localPeerHash();
+    const targetsByGroup = new Map<number, Map<string, number>>();
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.expiresAt <= now) continue;
+      if (local && route.originPeerHash === local) continue;
+      const target = this.routePeerHash(route.reversePeerHash);
+      if (!target || (local && target === local)) continue;
+      const targets = targetsByGroup.get(route.groupId) ?? new Map<string, number>();
+      targets.set(target, Math.max(targets.get(target) ?? 0, route.expiresAt));
+      targetsByGroup.set(route.groupId, targets);
+    }
+    const plans = [...targetsByGroup.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([groupId, targets]) => ({
+        groupId,
+        targets: [...targets.entries()]
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([peerPresenceHash, expiresAt]) => ({ peerPresenceHash, expiresAt })),
+      }));
+    const sessions = [...this.landAuthSessions.values()]
+      .filter((session) => session.expiresAt > now)
+      .sort((a, b) =>
+        a.groupId - b.groupId ||
+        a.authorAddress.localeCompare(b.authorAddress) ||
+        a.sessionId.localeCompare(b.sessionId)
+      )
+      .map((session) => ({
+        groupId: session.groupId,
+        authorAddress: session.authorAddress,
+        sessionId: session.sessionId,
+        ephemeralPublicKey: session.ephemeralPublicKey,
+        expiresAt: session.expiresAt,
+      }));
+    return { plans, sessions };
+  }
+
+  private scheduleLandStateForwardingSync(delayMs = 25): void {
+    this.landStateForwardingRevision += 1;
+    if (this.isClosed || !this.bridge) return;
+    if (this.landStateForwardingSyncTimer) return;
+    this.landStateForwardingSyncTimer = setTimeout(() => {
+      this.landStateForwardingSyncTimer = null;
+      void this.applyLandStateForwardingSnapshot();
+    }, Math.max(0, delayMs));
+    this.landStateForwardingSyncTimer.unref?.();
+  }
+
+  private async applyLandStateForwardingSnapshot(): Promise<void> {
+    const bridge = this.bridge;
+    if (this.isClosed || !bridge || this.landStateForwardingSyncInFlight) return;
+    if (typeof bridge.configureLandStateForwarding !== 'function') return;
+    this.landStateForwardingSyncInFlight = true;
+    const revision = this.landStateForwardingRevision;
+    let retry = false;
+    try {
+      const snapshot = this.buildLandStateForwardingSnapshot();
+      const appliedKey = nodeCrypto
+        .createHash('sha256')
+        .update(JSON.stringify(snapshot), 'utf8')
+        .digest('hex');
+      if (
+        appliedKey !== this.landStateForwardingAppliedKey ||
+        revision !== this.landStateForwardingAppliedRevision
+      ) {
+        const result = await bridge.configureLandStateForwarding(
+          snapshot.plans,
+          snapshot.sessions,
+          revision,
+          { startIfNeeded: false }
+        );
+        if (result.ok === true) {
+          if (this.bridge !== bridge || this.isClosed) {
+            void bridge.configureLandStateForwarding([], [], revision + 1, {
+              startIfNeeded: false,
+            });
+            return;
+          }
+          this.landStateForwardingAppliedKey = appliedKey;
+          this.landStateForwardingAppliedRevision = revision;
+          loggerLog(
+            `[ReticulumChat] land_state_forwarding_configured revision=${revision} groups=${snapshot.plans.length} targets=${snapshot.plans.reduce((sum, plan) => sum + plan.targets.length, 0)} sessions=${snapshot.sessions.length}`
+          );
+        } else {
+          const failure = result as Exclude<ReticulumSendResult, { ok: true }>;
+          retry = true;
+          loggerWarn(
+            `[ReticulumChat] land_state_forwarding_config_failed revision=${revision} reason=${failure.reason}${failure.error ? ` error=${failure.error}` : ''}`
+          );
+        }
+      }
+    } catch (err) {
+      retry = true;
+      loggerWarn('[ReticulumChat] Failed to configure Land state forwarding:', err);
+    } finally {
+      this.landStateForwardingSyncInFlight = false;
+      if (this.isClosed) return;
+      if (this.bridge !== bridge) {
+        // A bridge swap can consume the new bridge's first scheduled sync while
+        // this older request is still in flight. Schedule it again now that the
+        // shared in-flight guard has been released.
+        this.scheduleLandStateForwardingSync(0);
+        return;
+      }
+      if (revision !== this.landStateForwardingRevision) {
+        this.scheduleLandStateForwardingSync(0);
+      } else if (retry) {
+        this.scheduleLandStateForwardingSync(1_000);
+      }
+    }
+  }
+
+  private clearLandStateForwardingOnBridge(bridge: ReticulumBridge): void {
+    if (this.landStateForwardingSyncTimer) {
+      clearTimeout(this.landStateForwardingSyncTimer);
+      this.landStateForwardingSyncTimer = null;
+    }
+    this.landStateForwardingAppliedKey = '';
+    this.landStateForwardingAppliedRevision = -1;
+    this.landStateForwardingRevision += 1;
+    if (
+      typeof bridge.getState === 'function' &&
+      bridge.getState() === 'ready' &&
+      typeof bridge.configureLandStateForwarding === 'function'
+    ) {
+      void bridge.configureLandStateForwarding(
+        [],
+        [],
+        this.landStateForwardingRevision,
+        { startIfNeeded: false }
+      );
+    }
+  }
+
   private noteGroupInterestRoute(
     groupId: number,
     originPeerHash: string,
@@ -7645,22 +7828,32 @@ export class ReticulumChatManager extends EventEmitter {
     const local = this.localPeerHash();
     if (!origin || !reverse || (local && origin === local)) return;
     this.pruneGroupInterestRoutes();
+    const now = this.now();
     const key = this.groupInterestRouteKey(groupId, origin);
     const existing = this.groupInterestRoutes.get(key);
-    if (existing && existing.hops < hops) {
-      existing.expiresAt = Math.max(
-        existing.expiresAt,
-        this.now() + RETICULUM_CHAT_GROUP_ROUTE_TTL_MS
-      );
-      return;
+    if (existing) {
+      const sameNextHop = existing.reversePeerHash === reverse;
+      const sameRoute = sameNextHop && existing.hops === hops;
+      const keepBetterRoute = existing.hops < hops;
+      if (sameRoute || keepBetterRoute) {
+        if (
+          sameNextHop &&
+          existing.expiresAt - now <= RETICULUM_CHAT_GROUP_ROUTE_REFRESH_REMAINING_MS
+        ) {
+          existing.expiresAt = now + RETICULUM_CHAT_GROUP_ROUTE_TTL_MS;
+          this.scheduleLandStateForwardingSync();
+        }
+        return;
+      }
     }
     this.groupInterestRoutes.set(key, {
       reversePeerHash: reverse,
       originPeerHash: origin,
       groupId,
       hops,
-      expiresAt: this.now() + RETICULUM_CHAT_GROUP_ROUTE_TTL_MS,
+      expiresAt: now + RETICULUM_CHAT_GROUP_ROUTE_TTL_MS,
     });
+    this.scheduleLandStateForwardingSync();
   }
 
   private shouldPruneGroupInterestRouteOnSendFailure(reason: ReticulumSendFailureReason): boolean {
@@ -7686,6 +7879,7 @@ export class ReticulumChatManager extends EventEmitter {
       removed += 1;
     }
     if (removed > 0) {
+      this.scheduleLandStateForwardingSync();
       loggerWarn(
         `[ReticulumChat] group_interest_route_pruned group=${groupId} nextHop=${reverse.slice(0, 16)} removed=${removed} reason=${reason}`
       );
@@ -7734,22 +7928,70 @@ export class ReticulumChatManager extends EventEmitter {
     const nextHops = this.getGroupInterestNextHops(groupId, excludePeerHashes);
     let delivered = 0;
     let lastFailure: Exclude<ReticulumSendResult, { ok: true }> | null = null;
-    for (const peerHash of nextHops) {
-      const result = options.useRetryQueue === true
-        ? await this.sendToPeer(peerHash, wire)
-        : await this.sendToPeerOnce(peerHash, wire);
-      if (result.ok === true) {
-        delivered += 1;
-        continue;
+    if (
+      nextHops.length > 1 &&
+      this.bridge &&
+      typeof this.bridge.sendReticulumChatTargetsDetailed === 'function'
+    ) {
+      const batch = await this.bridge.sendReticulumChatTargetsDetailed(nextHops, wire);
+      if (batch.ok === true) {
+        delivered = batch.deliveredPeerHashes.length;
+        for (const failure of batch.failures) {
+          const failed: Exclude<ReticulumSendResult, { ok: true }> = {
+            ok: false,
+            reason: failure.reason,
+            ...(failure.error ? { error: failure.error } : {}),
+          };
+          lastFailure = failed;
+          this.pruneGroupInterestRoutesForNextHop(
+            groupId,
+            failure.peerPresenceHash,
+            failure.reason
+          );
+          if (
+            options.useRetryQueue === true &&
+            this.shouldRetryControlSend(wire, failure.reason)
+          ) {
+            this.enqueueControlRetry({
+              peerHash: failure.peerPresenceHash,
+              wire,
+            });
+          }
+          loggerWarn(
+            `[ReticulumChat] group_routed_control_failed group=${groupId} kind=${wire.k} peer=${failure.peerPresenceHash.slice(0, 16)} reason=${failure.reason}${
+              options.context ? ` context=${options.context}` : ''
+            }`
+          );
+        }
+      } else {
+        lastFailure = batch;
+        if (
+          options.useRetryQueue === true &&
+          this.shouldRetryControlSend(wire, batch.reason)
+        ) {
+          for (const peerHash of nextHops) {
+            this.enqueueControlRetry({ peerHash, wire });
+          }
+        }
       }
-      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
-      lastFailure = failed;
-      this.pruneGroupInterestRoutesForNextHop(groupId, peerHash, failed.reason);
-      loggerWarn(
-        `[ReticulumChat] group_routed_control_failed group=${groupId} kind=${wire.k} peer=${peerHash.slice(0, 16)} reason=${failed.reason}${
-          options.context ? ` context=${options.context}` : ''
-        }`
-      );
+    } else {
+      for (const peerHash of nextHops) {
+        const result = options.useRetryQueue === true
+          ? await this.sendToPeer(peerHash, wire)
+          : await this.sendToPeerOnce(peerHash, wire);
+        if (result.ok === true) {
+          delivered += 1;
+          continue;
+        }
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        lastFailure = failed;
+        this.pruneGroupInterestRoutesForNextHop(groupId, peerHash, failed.reason);
+        loggerWarn(
+          `[ReticulumChat] group_routed_control_failed group=${groupId} kind=${wire.k} peer=${peerHash.slice(0, 16)} reason=${failed.reason}${
+            options.context ? ` context=${options.context}` : ''
+          }`
+        );
+      }
     }
     if (
       delivered > 0
@@ -9042,7 +9284,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async handleLandStateWire(
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
-    peerHash: string
+    peerHash: string,
+    fastForwarded = false,
+    forwardingRevision = -1
   ): Promise<void> {
     const traceStartedAt = performance.now();
     let traceLastAt = traceStartedAt;
@@ -9142,7 +9386,15 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       }
       markTracePhase('dedupe');
-      void this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
+      const forwardingIsCurrent =
+        fastForwarded &&
+        Number.isInteger(forwardingRevision) &&
+        forwardingRevision >= 0 &&
+        forwardingRevision === this.landStateForwardingAppliedRevision &&
+        forwardingRevision === this.landStateForwardingRevision;
+      if (!forwardingIsCurrent) {
+        void this.forwardLandStateToInterestRoutes(groupId, wire, peerHash);
+      }
       markTracePhase('forward_sync');
       if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId)) {
         markTracePhase('local_membership');
@@ -20604,13 +20856,17 @@ export class ReticulumChatManager extends EventEmitter {
 
   private attachBridge(bridge: ReticulumBridge | null): void {
     if (!bridge) return;
+    bridge.on('ready', this.onBridgeReady);
     bridge.on('reticulum-chat-message', this.onBridgeChatMessage);
     bridge.on('reticulum-chat-resource', this.onBridgeChatResource);
     bridge.on('reticulum-resource', this.onBridgeGenericResource);
+    this.scheduleLandStateForwardingSync(0);
   }
 
   private detachBridge(): void {
     if (!this.bridge) return;
+    this.clearLandStateForwardingOnBridge(this.bridge);
+    this.bridge.off('ready', this.onBridgeReady);
     this.bridge.off('reticulum-chat-message', this.onBridgeChatMessage);
     this.bridge.off('reticulum-chat-resource', this.onBridgeChatResource);
     this.bridge.off('reticulum-resource', this.onBridgeGenericResource);
@@ -20626,13 +20882,28 @@ export class ReticulumChatManager extends EventEmitter {
     this.liveEventResourceDiagnostics.clear();
   }
 
+  private onBridgeReady = (): void => {
+    this.landStateForwardingAppliedKey = '';
+    this.landStateForwardingAppliedRevision = -1;
+    this.scheduleLandStateForwardingSync(0);
+  };
+
   private onBridgeChatMessage = (
     wire: Record<string, unknown>,
     senderDestinationHash: string,
-    peerPresenceHash: string
+    peerPresenceHash: string,
+    _linkId = '',
+    landStateFastForwarded = false,
+    landStateForwardingRevision = -1
   ): void => {
     try {
-      this.handleWire(wire, peerPresenceHash, senderDestinationHash);
+      this.handleWire(
+        wire,
+        peerPresenceHash,
+        senderDestinationHash,
+        landStateFastForwarded,
+        landStateForwardingRevision
+      );
     } catch (err) {
       loggerWarn('[ReticulumChat] Failed to handle inbound wire:', err);
     }
