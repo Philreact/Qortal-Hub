@@ -12415,11 +12415,21 @@ export class ReticulumChatManager extends EventEmitter {
       const cached = decisions.get(normalizedChannelId);
       if (cached != null) return cached;
       const channel = this.db.getChannel(groupId, normalizedChannelId);
-      // A valid event can arrive before its channel metadata. Do not hide an
-      // unknown channel while its signed metadata catches up.
       if (!channel) {
-        decisions.set(normalizedChannelId, true);
-        return true;
+        if (!visibleSnapshotChannels || visibleSnapshotChannels.has(normalizedChannelId)) {
+          decisions.set(normalizedChannelId, true);
+          return true;
+        }
+        // Preserve the live event-before-metadata race, but do not resurrect
+        // old channels omitted from the authoritative public snapshot.
+        const [latestMessage] = this.db.getRecentMessageEvents(
+          groupId,
+          1,
+          normalizedChannelId
+        );
+        const readable = !!latestMessage && latestMessage.timestamp > publicSnapshot!.createdAt;
+        decisions.set(normalizedChannelId, readable);
+        return readable;
       }
       let readable = channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS;
       if (readable && visibleSnapshotChannels && !visibleSnapshotChannels.has(normalizedChannelId)) {

@@ -11009,7 +11009,10 @@ describe('reticulum chat manager', () => {
         { t: 'RCHAT', k: 'group_sub', groups: [58], mode: 'summary' },
         'peer'
       );
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await vi.waitUntil(
+        () => direct.some((wire) => wire.k === 'group_state_digest_v3' && wire.g === 58),
+        { timeout: 1_000 }
+      );
       expect(direct).toContainEqual(expect.objectContaining({
         t: 'RCHAT',
         v: 3,
@@ -15586,6 +15589,27 @@ describe('reticulum chat manager', () => {
     )).resolves.toEqual([]);
     expect(manager.getChatSummaries().flatMap((summary) => summary.channels)
       .map((item) => item.channelId)).not.toContain(channel.channelId);
+
+    // Losing the projection row must not make an old omitted channel readable
+    // again or restore its unread count.
+    (db as any).memoryChannels.delete(`${groupId}:${channel.channelId}`);
+    (db as any).stmtDeleteChannel.run(groupId, channel.channelId);
+    expect(manager.getHistory(groupId, channel.channelId, 10)).toEqual([]);
+    expect(manager.getChatSummaries().flatMap((summary) => summary.channels)
+      .map((item) => item.channelId)).not.toContain(channel.channelId);
+
+    // A genuinely new message may arrive before its channel metadata and the
+    // next public snapshot. Keep that live delivery race visible.
+    const newChannelEvent = signedEvent({
+      eventId: 'new-channel-before-metadata',
+      groupId,
+      channelId: 'new-after-snapshot',
+      timestamp: 400,
+      encryptedPayload: 'new message',
+    });
+    expect(db.insertEvent(newChannelEvent, true)).toBe(true);
+    expect(manager.getHistory(groupId, newChannelEvent.channelId, 10)
+      .map((item) => item.eventId)).toContain(newChannelEvent.eventId);
     manager.close();
   });
 
