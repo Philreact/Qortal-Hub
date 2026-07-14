@@ -4302,6 +4302,71 @@ export class ReticulumChatDatabase {
       .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
   }
 
+  getChannelMetadataEventsForChannel(
+    groupId: number,
+    channelId: string
+  ): ReticulumChatEvent[] {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    if (!Number.isInteger(groupId) || groupId <= 0 || !normalizedChannelId) return [];
+    const matches = (event: ReticulumChatEvent): boolean =>
+      event.groupId === groupId &&
+      normalizeReticulumChatChannelId(event.channelId) === normalizedChannelId &&
+      event.eventType.startsWith('channel_');
+    const seen = new Set<string>();
+    return [
+      ...(this.db.prepare(`
+        SELECT * FROM reticulum_chat_events
+        WHERE group_id = ?
+          AND channel_id = ?
+          AND event_type IN (
+            'channel_create',
+            'channel_update',
+            'channel_archive',
+            'channel_restore',
+            'channel_reorder'
+          )
+        ORDER BY timestamp ASC, event_id ASC
+      `).all(groupId, normalizedChannelId) as EventRow[]).map(rowToEvent),
+      ...[...this.memoryEvents.values()].filter(matches),
+    ].filter((event) => {
+      if (!matches(event) || seen.has(event.eventId)) return false;
+      seen.add(event.eventId);
+      return true;
+    }).sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId));
+  }
+
+  getUnprojectedChannelCreateEvents(
+    groupId: number,
+    limit: number
+  ): ReticulumChatEvent[] {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const rows = this.db.prepare(`
+      SELECT events.*
+      FROM reticulum_chat_events AS events
+      LEFT JOIN reticulum_chat_channels AS channels
+        ON channels.group_id = events.group_id
+       AND channels.channel_id = events.channel_id
+      WHERE events.group_id = ?
+        AND events.event_type = 'channel_create'
+        AND channels.channel_id IS NULL
+      ORDER BY events.timestamp ASC, events.event_id ASC
+      LIMIT ?
+    `).all(groupId, safeLimit) as EventRow[];
+    const seen = new Set(rows.map((row) => row.event_id));
+    return [
+      ...rows.map(rowToEvent),
+      ...[...this.memoryEvents.values()]
+        .filter((event) =>
+          event.groupId === groupId &&
+          event.eventType === 'channel_create' &&
+          !this.getChannel(groupId, event.channelId) &&
+          !seen.has(event.eventId)
+        ),
+    ]
+      .sort((a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId))
+      .slice(0, safeLimit);
+  }
+
   hasRemoteChannelMetadataEvents(groupId: number): boolean {
     const row = this.db.prepare(`
       SELECT 1 AS present
@@ -6069,7 +6134,8 @@ export class ReticulumChatDatabase {
 
   upsertMetadataEntityRevision(
     groupId: number,
-    revision: ReticulumChatMetadataEntityRevision
+    revision: ReticulumChatMetadataEntityRevision,
+    options: { replaceSameEvent?: boolean } = {}
   ): boolean {
     const normalizedId = revision.entityType === 'channel'
       ? normalizeReticulumChatChannelId(revision.entityId)
@@ -6081,7 +6147,15 @@ export class ReticulumChatDatabase {
     ) return false;
     const current = this.getMetadataEntityRevision(groupId, revision.entityType, normalizedId);
     const normalized = { ...revision, entityId: normalizedId };
-    if (current && compareMetadataEntityRevisions(normalized, current) <= 0) return false;
+    const replacesSameEvent =
+      options.replaceSameEvent === true &&
+      current?.eventId === normalized.eventId &&
+      current.timestamp === normalized.timestamp;
+    if (
+      current &&
+      !replacesSameEvent &&
+      compareMetadataEntityRevisions(normalized, current) <= 0
+    ) return false;
     const result = this.db.prepare(`
       INSERT INTO rchat_metadata_entity_revisions
         (group_id, entity_type, entity_id, event_id, event_type, event_timestamp, deleted, state_hash)
@@ -6935,6 +7009,15 @@ export class ReticulumChatDatabase {
           'category_create',
           'category_update',
           'category_delete'
+        );
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_channel_metadata
+        ON reticulum_chat_events (group_id, channel_id, timestamp, event_id)
+        WHERE event_type IN (
+          'channel_create',
+          'channel_update',
+          'channel_archive',
+          'channel_restore',
+          'channel_reorder'
         );
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_feed
         ON reticulum_chat_events (group_id, channel_id, feed_timestamp, event_id);

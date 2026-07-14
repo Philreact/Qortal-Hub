@@ -14356,6 +14356,182 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('rebuilds a missing channel projection before applying newer incremental metadata', async () => {
+    const groupId = 820;
+    const channelId = 'persisted-reordered-channel';
+    const now = Date.now();
+    const createEvent = signedEvent({
+      eventId: 'event-channel-persisted-create',
+      groupId,
+      channelId,
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify({
+        channelId,
+        name: 'original-name',
+        position: 8,
+        writeMode: 'members',
+        readMode: 'members',
+      }),
+      timestamp: now - 3_000,
+    });
+    const updateEvent = signedEvent({
+      eventId: 'event-channel-persisted-update',
+      groupId,
+      channelId,
+      eventType: 'channel_update',
+      encryptedPayload: JSON.stringify({
+        channelId,
+        name: 'current-name',
+        position: 8,
+        writeMode: 'members',
+        readMode: 'members',
+      }),
+      timestamp: now - 2_000,
+    });
+    const reorderEvent = signedEvent({
+      eventId: 'event-channel-persisted-reorder',
+      groupId,
+      channelId,
+      eventType: 'channel_reorder',
+      encryptedPayload: JSON.stringify({
+        channelId,
+        categoryId: 'cat-current-category',
+        position: 2,
+      }),
+      timestamp: now - 1_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    upsertTestCategory(manager, {
+      groupId,
+      categoryId: 'cat-current-category',
+    });
+    expect((manager as any).db.insertEvent(createEvent, false)).toBe(true);
+    expect((manager as any).db.insertEvent(updateEvent, false)).toBe(true);
+    expect((manager as any).db.insertEvent(reorderEvent, false)).toBe(true);
+
+    manager.subscribeGroup(groupId);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(manager.getChannels(groupId, true)).toContainEqual(
+      expect.objectContaining({
+        channelId,
+        categoryId: 'cat-current-category',
+        name: 'current-name',
+        position: 2,
+      })
+    );
+    expect(
+      (manager as any).db.getMetadataEntityRevision(groupId, 'channel', channelId)
+    ).toMatchObject({
+      eventId: reorderEvent.eventId,
+      eventType: 'channel_reorder',
+    });
+    manager.close();
+  });
+
+  it('does not let event-log projection repair overwrite a newer snapshot revision', async () => {
+    const groupId = 821;
+    const channelId = 'snapshot-owned-channel';
+    const now = Date.now();
+    const createEvent = signedEvent({
+      eventId: 'event-channel-before-snapshot-create',
+      groupId,
+      channelId,
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify({
+        channelId,
+        name: 'old-event-name',
+        position: 8,
+      }),
+      timestamp: now - 2_000,
+    });
+    const reorderEvent = signedEvent({
+      eventId: 'event-channel-before-snapshot-reorder',
+      groupId,
+      channelId,
+      eventType: 'channel_reorder',
+      encryptedPayload: JSON.stringify({ channelId, position: 1 }),
+      timestamp: now - 1_000,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    expect((manager as any).db.insertEvent(createEvent, false)).toBe(true);
+    expect((manager as any).db.insertEvent(reorderEvent, false)).toBe(true);
+    const snapshotChannel = {
+      groupId,
+      channelId,
+      name: 'snapshot-name',
+      position: 1,
+      archived: false,
+      writeMode: 'members',
+      readMode: 'members',
+      writeModeUpdatedAt: now - 2_000,
+      createdBy: createEvent.authorAddress,
+      createdAt: now - 2_000,
+      updatedAt: now,
+    };
+    const snapshotStateHash = hashReticulumChatMetadataEntityState(
+      'channel',
+      channelId,
+      snapshotChannel
+    );
+    expect((manager as any).db.applyMetadataSnapshot({
+      groupId,
+      snapshotId: 'snapshot-newer-revision',
+      scope: 'public',
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: now,
+      latestEventId: reorderEvent.eventId,
+      latestFeedTimestamp: reorderEvent.feedTimestamp,
+      snapshotHash: 'c'.repeat(64),
+      adminAddress: reorderEvent.authorAddress,
+      adminPublicKey: reorderEvent.authorPublicKey,
+      signature: 'snapshot-signature',
+      channels: [snapshotChannel],
+      categories: [],
+      revisions: [{
+        entityType: 'channel',
+        entityId: channelId,
+        eventId: reorderEvent.eventId,
+        eventType: reorderEvent.eventType,
+        timestamp: reorderEvent.timestamp,
+        deleted: false,
+        stateHash: snapshotStateHash,
+      }],
+    })).toBe(true);
+
+    manager.subscribeGroup(groupId);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect((manager as any).db.getChannel(groupId, channelId)).toEqual(
+      expect.objectContaining({ name: 'snapshot-name', position: 1 })
+    );
+    expect(
+      (manager as any).db.getMetadataEntityRevision(groupId, 'channel', channelId)
+    ).toMatchObject({ eventId: reorderEvent.eventId, stateHash: snapshotStateHash });
+    manager.close();
+  });
+
   it('does not let older channel metadata override newer channel state', async () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

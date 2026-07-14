@@ -12283,6 +12283,13 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return 'skipped';
     }
+    if (event.eventType.startsWith('channel_')) {
+      const entityKey = this.metadataEntityKey(event, payload);
+      const channelId = entityKey?.startsWith('channel:')
+        ? entityKey.slice('channel:'.length)
+        : '';
+      if (channelId) return this.rebuildChannelMetadataProjection(event.groupId, channelId);
+    }
     if (await this.isSupersededChannelMetadataEvent(event, payload)) {
       return 'applied';
     }
@@ -12463,6 +12470,10 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.channelMetadataProjectionRepairGroups.has(groupId)) return;
     this.channelMetadataProjectionRepairGroups.add(groupId);
     try {
+      for (const event of this.db.getUnprojectedChannelCreateEvents(groupId, limit)) {
+        this.channelMetadataProjectionAttemptedIds.delete(event.eventId);
+        this.queueChannelMetadataProjection(event);
+      }
       for (const event of this.db.getChannelMetadataEvents(groupId, limit)) {
         this.queueChannelMetadataProjection(event);
       }
@@ -12634,16 +12645,125 @@ export class ReticulumChatManager extends EventEmitter {
     return false;
   }
 
+  private async rebuildChannelMetadataProjection(
+    groupId: number,
+    channelId: string
+  ): Promise<ReticulumChatMetadataProjectionResult> {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    if (!normalizedChannelId) return 'skipped';
+    const events = this.db.getChannelMetadataEventsForChannel(
+      groupId,
+      normalizedChannelId
+    );
+    let channel: ReticulumGroupChannel | null = null;
+    let revision: ReticulumChatMetadataEntityRevision | null = null;
+    const projectedEventIds: string[] = [];
+    const completeProjectedEvents = (): void => {
+      for (const eventId of projectedEventIds) {
+        this.channelMetadataProjectionAttemptedIds.add(eventId);
+        const timer = this.channelMetadataProjectionRetryTimers.get(eventId);
+        if (timer) clearTimeout(timer);
+        this.channelMetadataProjectionRetryTimers.delete(eventId);
+      }
+    };
+    const adminStatuses = new Map<string, ReticulumChatAdminValidationStatus>();
+    let scanned = 0;
+    for (const event of events) {
+      scanned += 1;
+      if (scanned % 50 === 0) await this.yieldEventPageImportTurn();
+      let payload: unknown;
+      try {
+        payload = JSON.parse(event.encryptedPayload);
+      } catch {
+        continue;
+      }
+      if (this.metadataEntityKey(event, payload) !== `channel:${normalizedChannelId}`) {
+        continue;
+      }
+      let adminStatus = adminStatuses.get(event.authorAddress);
+      if (!adminStatus) {
+        adminStatus = await this.getValidatedGroupAdminStatus(
+          event.groupId,
+          event.authorAddress
+        );
+        adminStatuses.set(event.authorAddress, adminStatus);
+      }
+      if (this.isClosed) return 'deferred';
+      if (adminStatus === 'unknown') return 'deferred';
+      if (adminStatus !== 'admin') {
+        this.channelMetadataProjectionAttemptedIds.add(event.eventId);
+        continue;
+      }
+      if (!channel && event.eventType !== 'channel_create') continue;
+      const nextChannel = this.channelFromMetadataPayload(event, payload, channel);
+      if (!nextChannel) continue;
+      const nextRevision = this.metadataEntityRevision(event, payload, nextChannel);
+      if (!nextRevision) continue;
+      channel = nextChannel;
+      revision = nextRevision;
+      projectedEventIds.push(event.eventId);
+    }
+    if (!channel || !revision) return 'deferred';
+    const currentRevision = this.db.getMetadataEntityRevision(
+      groupId,
+      'channel',
+      normalizedChannelId
+    );
+    const revisionHeadComparison = currentRevision
+      ? revision.timestamp - currentRevision.timestamp ||
+        revision.eventId.localeCompare(currentRevision.eventId)
+      : 1;
+    const snapshotScopes: Array<'public' | 'full'> = this.localGroupAdminIds.has(groupId)
+      ? ['full', 'public']
+      : ['public'];
+    const currentRevisionIsSnapshotBacked = !!currentRevision && snapshotScopes.some((scope) => {
+      const snapshot = this.db.getLatestMetadataSnapshot(groupId, scope);
+      return snapshot?.revisions.some((snapshotRevision) =>
+        snapshotRevision.entityType === 'channel' &&
+        snapshotRevision.entityId === normalizedChannelId &&
+        snapshotRevision.eventId === currentRevision.eventId &&
+        snapshotRevision.timestamp === currentRevision.timestamp &&
+        snapshotRevision.stateHash === currentRevision.stateHash
+      ) === true;
+    });
+    if (
+      currentRevision &&
+      (revisionHeadComparison < 0 ||
+        (revisionHeadComparison === 0 && currentRevisionIsSnapshotBacked))
+    ) {
+      completeProjectedEvents();
+      return 'applied';
+    }
+    const changed = this.db.upsertChannel(channel);
+    if (!changed && !this.db.getChannel(groupId, normalizedChannelId)) {
+      return 'deferred';
+    }
+    this.db.upsertMetadataEntityRevision(groupId, revision, {
+      replaceSameEvent: true,
+    });
+    completeProjectedEvents();
+    if (changed) this.invalidateGroupDigestSnapshot(groupId);
+    this.invalidateStateHeadsCache(groupId);
+    this.emitSummaryChanged(groupId);
+    loggerLog(
+      `[ReticulumChat] channel_metadata_projection_rebuilt group=${groupId} channel=${normalizedChannelId} events=${projectedEventIds.length} final_type=${revision.eventType}`
+    );
+    return 'applied';
+  }
+
   private channelFromMetadataPayload(
     event: ReticulumChatEvent,
-    payload: unknown
+    payload: unknown,
+    existingOverride?: ReticulumGroupChannel | null
   ): ReticulumGroupChannel | null {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
     const data = payload as Record<string, unknown>;
     const channelId = normalizeReticulumChatChannelId(
       typeof data.channelId === 'string' ? data.channelId : event.channelId
     );
-    const existing = this.db.getChannel(event.groupId, channelId);
+    const existing = existingOverride === undefined
+      ? this.db.getChannel(event.groupId, channelId)
+      : existingOverride;
     const now = event.timestamp;
     const name = normalizeReticulumChatChannelId(data.name ?? channelId);
     const categoryId = normalizeReticulumChatCategoryId(data.categoryId);
