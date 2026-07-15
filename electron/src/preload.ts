@@ -1705,10 +1705,10 @@ try {
         };
       },
       onSummaryChanged: (
-        cb: (payload: { groupId: number; eventId?: string; timestamp?: number }) => void
+        cb: (payload: { groupId: number; eventId?: string; timestamp?: number; metadataChanged?: boolean }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
-          cb(payload as { groupId: number; eventId?: string; timestamp?: number });
+          cb(payload as { groupId: number; eventId?: string; timestamp?: number; metadataChanged?: boolean });
         };
         ipcRenderer.on('reticulumChat:summaryChanged', handler);
         ipcRenderer.send('reticulumChat:summaryChanged:subscribe');
@@ -2321,10 +2321,10 @@ try {
         };
       },
       onSummaryChanged: (
-        cb: (payload: { groupId: number; eventId?: string; timestamp?: number }) => void
+        cb: (payload: { groupId: number; eventId?: string; timestamp?: number; metadataChanged?: boolean }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
-          cb(payload as { groupId: number; eventId?: string; timestamp?: number });
+          cb(payload as { groupId: number; eventId?: string; timestamp?: number; metadataChanged?: boolean });
         };
         ipcRenderer.on('reticulumChat:summaryChanged', handler);
         ipcRenderer.send('reticulumChat:summaryChanged:subscribe');

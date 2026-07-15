@@ -748,6 +748,7 @@ declare global {
           groupId: number;
           eventId?: string;
           timestamp?: number;
+          metadataChanged?: boolean;
         }) => void
       ) => () => void;
       onDirectEvent: (

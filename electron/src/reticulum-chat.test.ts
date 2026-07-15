@@ -13,6 +13,7 @@ import {
   buildReticulumChatGroupKeyRequestSignedFields,
   buildReticulumChatGroupKeyResponseSignedFields,
   buildReticulumChatHistoryPageRequestSignedFields,
+  buildReticulumMetadataSnapshotRequestSignedFields,
   buildReticulumChatResourceAuthSignedFields,
   buildReticulumChatResourceFindSignedFields,
   buildReticulumChatResourceRequestSignedFields,
@@ -25,6 +26,7 @@ import {
   getReticulumDmResourceFindRejectReason,
   hashReticulumChatPayload,
   isDisabledRelayCache,
+  metadataSnapshotHasConsistentRevisions,
   ReticulumChatManager,
   serializeReticulumChatEvent,
   type ReticulumChatEvent,
@@ -37,6 +39,7 @@ import {
   verifyReticulumDmNotify,
   verifyReticulumDmProbe,
   verifyReticulumDmRequest,
+  verifyReticulumMetadataSnapshotRequest,
   type ReticulumChatManagerOptions,
 } from './reticulum-chat';
 import {
@@ -433,6 +436,19 @@ function createReticulumChatTestSigner(): NonNullable<ReticulumChatManagerOption
             : undefined,
         includeCursor: fullFields.includeCursor === true,
         limit: fullFields.limit,
+        authorAddress,
+        authorPublicKey,
+        timestamp: fullFields.timestamp,
+      });
+    } else if (
+      fullFields.type === 'RCHAT_METADATA_SNAPSHOT_REQ' &&
+      typeof fullFields.groupId === 'number' &&
+      typeof fullFields.timestamp === 'number'
+    ) {
+      signedFields = buildReticulumMetadataSnapshotRequestSignedFields({
+        groupId: fullFields.groupId,
+        snapshotHash:
+          typeof fullFields.snapshotHash === 'string' ? fullFields.snapshotHash : undefined,
         authorAddress,
         authorPublicKey,
         timestamp: fullFields.timestamp,
@@ -13704,6 +13720,7 @@ describe('reticulum chat manager', () => {
         },
       } as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => true,
     });
@@ -14436,6 +14453,660 @@ describe('reticulum chat manager', () => {
       eventId: reorderEvent.eventId,
       eventType: 'channel_reorder',
     });
+    manager.close();
+  });
+
+  it('rebuilds built-in qortal-land metadata without a channel-create event', async () => {
+    const groupId = 822;
+    const channelId = RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID;
+    const now = Date.now();
+    const [reorderEvent, updateEvent] = signedAuthorEvents([
+      {
+        eventId: 'event-qortal-land-reorder-without-create',
+        groupId,
+        channelId,
+        authorSeq: 1,
+        eventType: 'channel_reorder',
+        encryptedPayload: JSON.stringify({ channelId, position: 3 }),
+        timestamp: now - 2_000,
+      },
+      {
+        eventId: 'event-qortal-land-update-without-create',
+        groupId,
+        channelId,
+        authorSeq: 2,
+        eventType: 'channel_update',
+        encryptedPayload: JSON.stringify({
+          channelId,
+          name: '🎲︱qortal-land',
+          position: 0,
+          writeMode: 'members',
+          readMode: 'members',
+        }),
+        timestamp: now - 1_000,
+      },
+    ]);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    (manager as any).db.upsertChannel({
+      groupId,
+      channelId,
+      name: 'general',
+      position: 1,
+      archived: false,
+      writeMode: 'members',
+      readMode: 'members',
+      writeModeUpdatedAt: 0,
+      expiryDurationMs: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+      createdBy: '',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    expect((manager as any).db.insertEvent(reorderEvent, false)).toBe(true);
+    expect((manager as any).db.insertEvent(updateEvent, false)).toBe(true);
+
+    manager.subscribeGroup(groupId);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(
+      manager.getChannels(groupId, true).find((channel) => channel.channelId === channelId)
+    ).toEqual(
+      expect.objectContaining({
+        channelId,
+        name: '🎲︱qortal-land',
+        position: 0,
+        expiryDurationMs: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+      })
+    );
+    expect(
+      (manager as any).db.getMetadataEntityRevisionRecord(groupId, 'channel', channelId)
+    ).toMatchObject({
+      source: 'event',
+      revision: {
+        eventId: updateEvent.eventId,
+        eventType: updateEvent.eventType,
+      },
+    });
+    manager.close();
+  });
+
+  it('lets a same-head snapshot repair event-derived channel state', () => {
+    const groupId = 823;
+    const channelId = RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID;
+    const eventId = 'event-qortal-land-same-head-update';
+    const timestamp = 200;
+    const db = new ReticulumChatDatabase(tempDbPath());
+    const badChannel = {
+      groupId,
+      channelId,
+      name: 'general',
+      position: 0,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: timestamp,
+      expiryDurationMs: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+      createdBy: 'Qadmin',
+      createdAt: 100,
+      updatedAt: timestamp,
+    };
+    const snapshotChannel = {
+      ...badChannel,
+      name: '🎲︱qortal-land',
+    };
+    const snapshotStateHash = hashReticulumChatMetadataEntityState(
+      'channel',
+      channelId,
+      snapshotChannel
+    );
+    db.upsertChannel(badChannel);
+    db.upsertMetadataEntityRevision(groupId, {
+      entityType: 'channel',
+      entityId: channelId,
+      eventId,
+      eventType: 'channel_update',
+      timestamp,
+      deleted: false,
+      stateHash: 'f'.repeat(64),
+    });
+    expect(db.getMetadataEntityRevisionRecord(groupId, 'channel', channelId)?.source)
+      .toBe('event');
+
+    expect(db.applyMetadataSnapshot({
+      groupId,
+      snapshotId: 'snapshot-repairs-event-derived-state',
+      scope: 'public',
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 300,
+      latestEventId: eventId,
+      latestFeedTimestamp: timestamp,
+      snapshotHash: 'd'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [snapshotChannel],
+      categories: [],
+      revisions: [{
+        entityType: 'channel',
+        entityId: channelId,
+        eventId,
+        eventType: 'channel_update',
+        timestamp,
+        deleted: false,
+        stateHash: snapshotStateHash,
+      }],
+    })).toBe(true);
+
+    expect(
+      db.getChannels(groupId, true).find((channel) => channel.channelId === channelId)
+    ).toEqual(expect.objectContaining({ name: '🎲︱qortal-land' }));
+    expect(db.getMetadataEntityRevisionRecord(groupId, 'channel', channelId)).toMatchObject({
+      source: 'snapshot',
+      revision: { stateHash: snapshotStateHash },
+    });
+    db.close();
+  });
+
+  it('requires built-in snapshot revisions to match their advertised channel state', () => {
+    const channel = {
+      groupId: 824,
+      channelId: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
+      name: '🎲︱qortal-land',
+      position: 1,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: 100,
+      expiryDurationMs: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+      createdBy: 'Qadmin',
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const snapshot = {
+      groupId: 824,
+      snapshotId: 'built-in-revision-mismatch',
+      scope: 'public' as const,
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 100,
+      latestEventId: 'qortal-land-update',
+      latestFeedTimestamp: 100,
+      snapshotHash: 'a'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [channel],
+      categories: [],
+      revisions: [{
+        entityType: 'channel' as const,
+        entityId: channel.channelId,
+        eventId: 'qortal-land-update',
+        eventType: 'channel_update',
+        timestamp: 100,
+        deleted: false,
+        stateHash: hashReticulumChatMetadataEntityState('channel', channel.channelId, {
+          ...channel,
+          name: 'wrong-name',
+        }),
+      }],
+    };
+
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(false);
+    snapshot.revisions[0].stateHash = hashReticulumChatMetadataEntityState(
+      'channel',
+      channel.channelId,
+      channel
+    );
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+
+    snapshot.revisions = [];
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(false);
+    snapshot.channels = [{
+      ...channel,
+      name: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
+      position: 1,
+      writeModeUpdatedAt: 0,
+      createdBy: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }];
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+  });
+
+  it('rejects malformed snapshot channel records instead of normalizing them', () => {
+    const groupId = 829;
+    const channel = {
+      groupId,
+      channelId: 'valid-channel',
+      name: 'Valid channel',
+      position: 1,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: 100,
+      createdBy: 'Qadmin',
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const snapshot = {
+      groupId,
+      snapshotId: 'malformed-channel-record',
+      scope: 'public' as const,
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 100,
+      latestEventId: 'valid-channel-create',
+      latestFeedTimestamp: 100,
+      snapshotHash: 'e'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [channel],
+      categories: [],
+      revisions: [{
+        entityType: 'channel' as const,
+        entityId: channel.channelId,
+        eventId: 'valid-channel-create',
+        eventType: 'channel_create',
+        timestamp: 100,
+        deleted: false,
+        stateHash: hashReticulumChatMetadataEntityState(
+          'channel',
+          channel.channelId,
+          channel
+        ),
+      }],
+    };
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+
+    snapshot.channels = [{ ...channel, channelId: 'INVALID CHANNEL' }];
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(false);
+    snapshot.channels = [{ ...channel, name: ' Valid channel ' }];
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(false);
+  });
+
+  it('rejects snapshot channels that reference a missing category', () => {
+    const channel = {
+      groupId: 825,
+      channelId: 'orphaned-channel',
+      categoryId: 'cat-missing',
+      name: 'orphaned-channel',
+      position: 1,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: 100,
+      createdBy: 'Qadmin',
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    expect(metadataSnapshotHasConsistentRevisions({
+      groupId: 825,
+      snapshotId: 'orphaned-channel-snapshot',
+      scope: 'full',
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 100,
+      latestEventId: 'orphaned-channel-create',
+      latestFeedTimestamp: 100,
+      snapshotHash: 'b'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [channel],
+      categories: [],
+      revisions: [{
+        entityType: 'channel',
+        entityId: channel.channelId,
+        eventId: 'orphaned-channel-create',
+        eventType: 'channel_create',
+        timestamp: 100,
+        deleted: false,
+        stateHash: hashReticulumChatMetadataEntityState(
+          'channel',
+          channel.channelId,
+          channel
+        ),
+      }],
+    })).toBe(false);
+  });
+
+  it('keeps category deletion and affected channel snapshot revisions consistent', async () => {
+    const groupId = 826;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 1_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([{
+      groupId,
+      isAdmin: true,
+      localAddress: 'QlocalAdmin',
+    }]);
+    const summaryChanges: Array<Record<string, unknown>> = [];
+    manager.on('summaryChanged', (payload) => {
+      summaryChanges.push(payload as Record<string, unknown>);
+    });
+    const apply = async (
+      eventId: string,
+      eventType: ReticulumChatEvent['eventType'],
+      payload: Record<string, unknown>,
+      timestamp: number,
+      channelId = 'general'
+    ) => {
+      const event = signedEvent({
+        eventId,
+        groupId,
+        channelId,
+        eventType,
+        timestamp,
+        encryptedPayload: JSON.stringify(payload),
+      });
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+      await expect(manager.applyChannelMetadataEvent(eventId, payload)).resolves.toBe(true);
+      return event;
+    };
+    await apply('category-cascade-create', 'category_create', {
+      categoryId: 'cat-cascade',
+      name: 'Cascade',
+      position: 0,
+    }, 100);
+    await apply('category-cascade-channel', 'channel_create', {
+      channelId: 'cascade-channel',
+      categoryId: 'cat-cascade',
+      name: 'Cascade channel',
+      position: 0,
+    }, 200, 'cascade-channel');
+    const deleteEvent = await apply('category-cascade-delete', 'category_delete', {
+      categoryId: 'cat-cascade',
+    }, 300);
+
+    const channel = (manager as any).db.getChannel(groupId, 'cascade-channel');
+    const revision = (manager as any).db.getMetadataEntityRevision(
+      groupId,
+      'channel',
+      'cascade-channel'
+    );
+    expect(channel).toMatchObject({ channelId: 'cascade-channel', categoryId: undefined });
+    expect(revision).toMatchObject({
+      eventId: deleteEvent.eventId,
+      eventType: 'channel_reorder',
+      timestamp: deleteEvent.timestamp,
+      stateHash: hashReticulumChatMetadataEntityState(
+        'channel',
+        'cascade-channel',
+        channel
+      ),
+    });
+    expect(summaryChanges).toContainEqual(expect.objectContaining({
+      groupId,
+      eventId: deleteEvent.eventId,
+      metadataChanged: true,
+    }));
+    const snapshot = await (manager as any).ensureLocalMetadataSnapshot(groupId);
+    expect(snapshot).toBeTruthy();
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+    manager.close();
+  });
+
+  it('rebuilds a custom channel from a complete update and preserves omitted fields', async () => {
+    const groupId = 827;
+    const now = Date.now();
+    const [updateEvent, partialEvent] = signedAuthorEvents([
+      {
+        eventId: 'channel-update-without-create',
+        groupId,
+        channelId: 'updates-only-channel',
+        authorSeq: 1,
+        eventType: 'channel_update',
+        encryptedPayload: JSON.stringify({
+          channelId: 'updates-only-channel',
+          name: 'Updates only',
+          description: 'Keep this description',
+          position: 2,
+          writeMode: 'members',
+          readMode: 'members',
+        }),
+        timestamp: now - 1_000,
+      },
+      {
+        eventId: 'channel-partial-update',
+        groupId,
+        channelId: 'updates-only-channel',
+        authorSeq: 2,
+        eventType: 'channel_update',
+        encryptedPayload: JSON.stringify({
+          channelId: 'updates-only-channel',
+          position: 4,
+        }),
+        timestamp: now,
+      },
+    ]);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    expect((manager as any).db.insertEvent(updateEvent, false)).toBe(true);
+    expect((manager as any).db.insertEvent(partialEvent, false)).toBe(true);
+
+    manager.subscribeGroup(groupId);
+    await vi.waitUntil(
+      () => manager.getChannels(groupId, true).some(
+        (channel) => channel.channelId === 'updates-only-channel'
+      ),
+      { timeout: 1_000 }
+    );
+
+    expect(manager.getChannels(groupId, true)).toContainEqual(expect.objectContaining({
+      channelId: 'updates-only-channel',
+      name: 'Updates only',
+      description: 'Keep this description',
+      position: 4,
+    }));
+    manager.close();
+  });
+
+  it('does not map malformed metadata channel ids onto general', async () => {
+    const groupId = 830;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    const event = signedEvent({
+      eventId: 'malformed-channel-id-update',
+      groupId,
+      channelId: 'general',
+      eventType: 'channel_update',
+      encryptedPayload: JSON.stringify({
+        channelId: 'INVALID CHANNEL',
+        name: 'Wrong general name',
+      }),
+    });
+    expect((manager as any).db.insertEvent(event, false)).toBe(true);
+
+    await expect(
+      manager.applyChannelMetadataEvent(event.eventId, JSON.parse(event.encryptedPayload))
+    ).resolves.toBe(false);
+    expect((manager as any).db.getChannel(groupId, 'general'))
+      .toEqual(expect.objectContaining({ name: 'general' }));
+    expect(
+      (manager as any).db.getMetadataEntityRevision(
+        groupId,
+        'channel',
+        'general'
+      )
+    ).toBeNull();
+    manager.close();
+  });
+
+  it('does not let a metadata payload target a different channel than its event', async () => {
+    const groupId = 831;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([groupId]);
+    const event = signedEvent({
+      eventId: 'mismatched-channel-target-update',
+      groupId,
+      channelId: 'general',
+      eventType: 'channel_update',
+      encryptedPayload: JSON.stringify({
+        channelId: 'qortal-land',
+        name: 'Wrong QortalLand name',
+      }),
+    });
+    expect((manager as any).db.insertEvent(event, false)).toBe(true);
+
+    await expect(
+      manager.applyChannelMetadataEvent(event.eventId, JSON.parse(event.encryptedPayload))
+    ).resolves.toBe(false);
+    expect((manager as any).db.getChannel(groupId, 'qortal-land'))
+      .toEqual(expect.objectContaining({ name: 'qortal-land' }));
+    expect(
+      (manager as any).db.getMetadataEntityRevision(
+        groupId,
+        'channel',
+        'qortal-land'
+      )
+    ).toBeNull();
+    manager.close();
+  });
+
+  it('keeps a late channel event detached from an already deleted category', async () => {
+    const groupId = 832;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 1_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    manager.setLocalGroupMemberships([{
+      groupId,
+      isAdmin: true,
+      localAddress: 'QlocalAdmin',
+    }]);
+    const deleteEvent = signedEvent({
+      eventId: 'out-of-order-category-delete',
+      groupId,
+      eventType: 'category_delete',
+      timestamp: 300,
+      encryptedPayload: JSON.stringify({ categoryId: 'cat-deleted-first' }),
+    });
+    const channelEvent = signedEvent({
+      eventId: 'out-of-order-channel-create',
+      groupId,
+      channelId: 'late-channel',
+      eventType: 'channel_create',
+      timestamp: 200,
+      encryptedPayload: JSON.stringify({
+        channelId: 'late-channel',
+        categoryId: 'cat-deleted-first',
+        name: 'Late channel',
+        position: 0,
+      }),
+    });
+    expect((manager as any).db.insertEvent(deleteEvent, true)).toBe(true);
+    await expect(manager.applyChannelMetadataEvent(
+      deleteEvent.eventId,
+      JSON.parse(deleteEvent.encryptedPayload)
+    )).resolves.toBe(true);
+    expect((manager as any).db.insertEvent(channelEvent, true)).toBe(true);
+    await expect(manager.applyChannelMetadataEvent(
+      channelEvent.eventId,
+      JSON.parse(channelEvent.encryptedPayload)
+    )).resolves.toBe(true);
+
+    expect((manager as any).db.getChannel(groupId, 'late-channel')).toEqual(
+      expect.objectContaining({ channelId: 'late-channel', categoryId: undefined })
+    );
+    const snapshot = await (manager as any).ensureLocalMetadataSnapshot(groupId);
+    expect(snapshot).toBeTruthy();
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+    manager.close();
+  });
+
+  it('authenticates metadata snapshot requests before serving full admin state', async () => {
+    const groupId = 828;
+    const peerHash = '8'.repeat(32);
+    const sent: ReticulumChatWire[] = [];
+    let requesterIsAdmin = false;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async (_peer: string, wire: ReticulumChatWire) => {
+          sent.push(wire);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 1_000,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => requesterIsAdmin,
+    });
+    const fullSnapshot = {
+      groupId,
+      snapshotId: 'full-admin-snapshot',
+      scope: 'full' as const,
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 900,
+      latestEventId: '',
+      latestFeedTimestamp: 0,
+      snapshotHash: 'c'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [],
+      categories: [],
+      revisions: [],
+    };
+    (manager as any).db.upsertMetadataSnapshot(fullSnapshot);
+    const signer = createReticulumChatTestSigner();
+    const signed = await signer({
+      groupId,
+      snapshotHash: fullSnapshot.snapshotHash,
+      timestamp: 1_000,
+      type: 'RCHAT_METADATA_SNAPSHOT_REQ',
+    });
+    const request = {
+      h: fullSnapshot.snapshotHash,
+      p: signed.authorPublicKey,
+      ts: 1_000,
+      z: signed.signature,
+    };
+    expect(verifyReticulumMetadataSnapshotRequest(groupId, request, 1_000)).toBe(true);
+
+    await (manager as any).handleMetadataSnapshotReq(groupId, request, peerHash);
+    expect(sent).toEqual([]);
+
+    requesterIsAdmin = true;
+    (manager as any).groupAdminValidationCache.clear();
+    await (manager as any).handleMetadataSnapshotReq(groupId, request, peerHash);
+    expect(sent).toContainEqual(expect.objectContaining({
+      k: 'metadata_snapshot_offer_v3',
+      g: groupId,
+      s: expect.objectContaining({ h: fullSnapshot.snapshotHash, sc: 'full' }),
+    }));
     manager.close();
   });
 
@@ -15344,18 +16015,33 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([{ groupId: 74, isAdmin: true, localAddress: 'QlocalSnapshotAdmin' }]);
     manager.subscribeGroup(74);
-    upsertTestChannel(manager, {
-      groupId: 74,
-      channelId: 'general',
-    });
-    upsertTestChannel(manager, {
+    const privateChannelEvent = signedEvent({
+      eventId: 'metadata-snapshot-private-channel-create',
       groupId: 74,
       channelId: 'admin-private',
-      writeMode: 'admins',
-      readMode: 'admins',
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify({
+        channelId: 'admin-private',
+        name: 'Admin private',
+        position: 1,
+        writeMode: 'admins',
+        readMode: 'admins',
+      }),
+      timestamp: 100_000,
     });
+    expect((manager as any).db.insertEvent(privateChannelEvent, true)).toBe(true);
+    await expect(
+      manager.applyChannelMetadataEvent(
+        privateChannelEvent.eventId,
+        JSON.parse(privateChannelEvent.encryptedPayload)
+      )
+    ).resolves.toBe(true);
     const snapshot = await (manager as any).ensureLocalMetadataSnapshot(74);
     expect(snapshot).toBeTruthy();
+    expect(snapshot.channels).toContainEqual(expect.objectContaining({
+      channelId: 'admin-private',
+      readMode: 'admins',
+    }));
     const transferId = 'metadata-snapshot-private-transfer';
     const fileHash = 'f'.repeat(64);
     (manager as any).outboundMetadataSnapshotResources.set(transferId, {
@@ -15548,6 +16234,7 @@ describe('reticulum chat manager', () => {
         },
       } as any,
       now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => true,
     });
@@ -15570,10 +16257,21 @@ describe('reticulum chat manager', () => {
       'peer-public-snapshot'
     );
     expect((adminReceiver as any).db.getLatestMetadataSnapshot(74, 'public')).toBeNull();
-    expect(adminRequests).toContainEqual(expect.objectContaining({
-      k: 'metadata_snapshot_req_v3',
-      h: (sender as any).db.getLatestMetadataSnapshot(74, 'full').snapshotHash,
-    }));
+    await vi.waitUntil(
+      () => adminRequests.some((wire) => wire.k === 'metadata_snapshot_req_v3'),
+      { timeout: 1_000 }
+    );
+    const fullSnapshotRequest = adminRequests.find(
+      (wire): wire is Extract<ReticulumChatWire, { k: 'metadata_snapshot_req_v3' }> =>
+        wire.k === 'metadata_snapshot_req_v3'
+    );
+    expect(fullSnapshotRequest?.g).toBe(74);
+    expect(fullSnapshotRequest?.q.h).toBe(
+      (sender as any).db.getLatestMetadataSnapshot(74, 'full').snapshotHash
+    );
+    expect(fullSnapshotRequest?.q.p).toEqual(expect.any(String));
+    expect(fullSnapshotRequest?.q.ts).toBe(100_000);
+    expect(fullSnapshotRequest?.q.z).toEqual(expect.any(String));
     sender.close();
     receiver.close();
     adminReceiver.close();
@@ -15969,6 +16667,103 @@ describe('reticulum chat manager', () => {
       revisions: [],
     })).toBe(true);
     expect(db.getChannel(741, 'tasks')?.name).toBe('tasks');
+    db.close();
+  });
+
+  it('does not let a stale snapshot reconnect a channel to a deleted category', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    const groupId = 757;
+    const categoryId = 'cat-deleted-before-snapshot';
+    const channel = {
+      groupId,
+      channelId: 'snapshot-channel',
+      categoryId,
+      name: 'Snapshot channel',
+      position: 1,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: 200,
+      createdBy: 'Qadmin',
+      createdAt: 200,
+      updatedAt: 200,
+    };
+    const category = {
+      groupId,
+      categoryId,
+      name: 'Deleted category',
+      position: 1,
+      createdBy: 'Qadmin',
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    db.upsertMetadataEntityRevision(groupId, {
+      entityType: 'category',
+      entityId: categoryId,
+      eventId: 'newer-category-delete',
+      eventType: 'category_delete',
+      timestamp: 300,
+      deleted: true,
+      stateHash: hashReticulumChatMetadataEntityState('category', categoryId, null),
+    });
+
+    expect(db.applyMetadataSnapshot({
+      groupId,
+      snapshotId: 'stale-category-snapshot',
+      scope: 'full',
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 250,
+      latestEventId: 'snapshot-channel-create',
+      latestFeedTimestamp: 200,
+      snapshotHash: '8'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [channel],
+      categories: [category],
+      revisions: [
+        {
+          entityType: 'channel',
+          entityId: channel.channelId,
+          eventId: 'snapshot-channel-create',
+          eventType: 'channel_create',
+          timestamp: 200,
+          deleted: false,
+          stateHash: hashReticulumChatMetadataEntityState(
+            'channel',
+            channel.channelId,
+            channel
+          ),
+        },
+        {
+          entityType: 'category',
+          entityId: categoryId,
+          eventId: 'older-category-create',
+          eventType: 'category_create',
+          timestamp: 100,
+          deleted: false,
+          stateHash: hashReticulumChatMetadataEntityState(
+            'category',
+            categoryId,
+            category
+          ),
+        },
+      ],
+    })).toBe(true);
+
+    const projectedChannel = db.getChannel(groupId, channel.channelId);
+    expect(db.getCategory(groupId, categoryId)).toBeNull();
+    expect(projectedChannel).toEqual(expect.objectContaining({
+      channelId: channel.channelId,
+      categoryId: undefined,
+    }));
+    expect(db.getMetadataEntityRevision(groupId, 'channel', channel.channelId)?.stateHash)
+      .toBe(hashReticulumChatMetadataEntityState(
+        'channel',
+        channel.channelId,
+        projectedChannel
+      ));
     db.close();
   });
 

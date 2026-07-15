@@ -256,6 +256,12 @@ describe('Reticulum wallet signing policy', () => {
         parentSnapshotHash: '',
         version: 1,
       },
+      {
+        type: 'RCHAT_METADATA_SNAPSHOT_REQ',
+        groupId: 1,
+        snapshotHash: 'h',
+        timestamp: 1,
+      },
       { type: 'RCHAT_EVENT_REQ', eventId: 'e', groupId: 1, timestamp: 1 },
       {
         type: 'RCHAT_RESOURCE_AUTH',

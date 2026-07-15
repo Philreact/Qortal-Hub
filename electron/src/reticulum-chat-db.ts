@@ -103,12 +103,25 @@ export type ReticulumChatMetadataEntityRevision = {
   stateHash: string;
 };
 
+export type ReticulumChatMetadataEntityRevisionSource = 'event' | 'snapshot';
+
+export type ReticulumChatMetadataEntityRevisionRecord = {
+  revision: ReticulumChatMetadataEntityRevision;
+  source: ReticulumChatMetadataEntityRevisionSource;
+};
+
+export function compareMetadataEntityRevisionHeads(
+  a: Pick<ReticulumChatMetadataEntityRevision, 'timestamp' | 'eventId'>,
+  b: Pick<ReticulumChatMetadataEntityRevision, 'timestamp' | 'eventId'>
+): number {
+  return a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId);
+}
+
 export function compareMetadataEntityRevisions(
   a: Pick<ReticulumChatMetadataEntityRevision, 'timestamp' | 'eventId' | 'stateHash'>,
   b: Pick<ReticulumChatMetadataEntityRevision, 'timestamp' | 'eventId' | 'stateHash'>
 ): number {
-  return a.timestamp - b.timestamp ||
-    a.eventId.localeCompare(b.eventId) ||
+  return compareMetadataEntityRevisionHeads(a, b) ||
     String(a.stateHash || '').localeCompare(String(b.stateHash || ''));
 }
 
@@ -5782,6 +5795,17 @@ export class ReticulumChatDatabase {
     ) ?? null;
   }
 
+  getBuiltInChannelBase(groupId: number, channelId: string): ReticulumGroupChannel | null {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    if (normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
+      return this.defaultChannel(groupId);
+    }
+    if (normalizedChannelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID) {
+      return this.defaultQortalLandChannel(groupId);
+    }
+    return null;
+  }
+
   upsertChannel(channel: ReticulumGroupChannelInput): boolean {
     const expiryDurationMs = normalizeReticulumChatExpiryDurationMs(channel.expiryDurationMs);
     const normalizedChannel: ReticulumGroupChannel = {
@@ -6038,19 +6062,30 @@ export class ReticulumChatDatabase {
       ])
     );
     for (const revision of snapshot.revisions) {
-      const current = this.getMetadataEntityRevision(
+      const currentRecord = this.getMetadataEntityRevisionRecord(
         snapshot.groupId,
         revision.entityType,
         revision.entityId
       );
+      const current = currentRecord?.revision ?? null;
+      const headComparison = current
+        ? compareMetadataEntityRevisionHeads(revision, current)
+        : 1;
       const comparison = current ? compareMetadataEntityRevisions(revision, current) : 1;
-      if (comparison < 0) continue;
+      if (
+        headComparison < 0 ||
+        (headComparison === 0 && currentRecord?.source === 'snapshot' && comparison < 0)
+      ) continue;
       if (revision.entityType === 'channel') {
         const channelId = normalizeReticulumChatChannelId(revision.entityId);
         const channel = channels.get(channelId);
         const projected = this.getChannel(snapshot.groupId, channelId);
         const projectedHash = hashReticulumChatMetadataEntityState('channel', channelId, projected);
-        if (comparison === 0 && projectedHash === revision.stateHash) continue;
+        if (
+          comparison === 0 &&
+          currentRecord?.source === 'snapshot' &&
+          projectedHash === revision.stateHash
+        ) continue;
         if (revision.deleted) {
           if (
             channelId !== RETICULUM_CHAT_DEFAULT_CHANNEL_ID &&
@@ -6069,31 +6104,79 @@ export class ReticulumChatDatabase {
         const category = categories.get(categoryId);
         const projected = this.getCategory(snapshot.groupId, categoryId);
         const projectedHash = hashReticulumChatMetadataEntityState('category', categoryId, projected);
-        if (comparison === 0 && projectedHash === revision.stateHash) continue;
+        if (
+          comparison === 0 &&
+          currentRecord?.source === 'snapshot' &&
+          projectedHash === revision.stateHash
+        ) continue;
         if (revision.deleted) {
-          this.deleteCategory(snapshot.groupId, categoryId);
+          this.deleteCategory(snapshot.groupId, categoryId, {
+            clearChannelAssignments: false,
+          });
         } else if (category) {
           this.upsertCategory(category);
         } else {
           continue;
         }
       }
-      if (comparison > 0) this.upsertMetadataEntityRevision(snapshot.groupId, revision);
+      this.upsertMetadataEntityRevision(snapshot.groupId, revision, {
+        replaceSameEvent: headComparison === 0,
+        source: 'snapshot',
+      });
     }
+    this.clearDeletedCategoryAssignments(snapshot.groupId);
     return true;
   }
 
-  getMetadataEntityRevision(
+  private clearDeletedCategoryAssignments(groupId: number): void {
+    const deletedCategoryIds = new Set(
+      this.getMetadataEntityRevisions(groupId)
+        .filter((revision) => revision.entityType === 'category' && revision.deleted)
+        .map((revision) => revision.entityId)
+    );
+    if (deletedCategoryIds.size === 0) return;
+    for (const channel of this.getChannels(groupId, true)) {
+      if (!channel.categoryId || !deletedCategoryIds.has(channel.categoryId)) continue;
+      const nextChannel = {
+        ...channel,
+        categoryId: undefined,
+      };
+      this.upsertChannel(nextChannel);
+      const revision = this.getMetadataEntityRevision(groupId, 'channel', channel.channelId);
+      if (!revision) continue;
+      this.upsertMetadataEntityRevision(groupId, {
+        ...revision,
+        stateHash: hashReticulumChatMetadataEntityState(
+          'channel',
+          channel.channelId,
+          nextChannel
+        ),
+      }, {
+        replaceSameEvent: true,
+        source: 'event',
+      });
+    }
+  }
+
+  getMetadataEntityRevisionRecord(
     groupId: number,
     entityType: 'channel' | 'category',
     entityId: string
-  ): ReticulumChatMetadataEntityRevision | null {
+  ): ReticulumChatMetadataEntityRevisionRecord | null {
     const normalizedId = entityType === 'channel'
       ? normalizeReticulumChatChannelId(entityId)
       : normalizeReticulumChatCategoryId(entityId);
     if (!normalizedId) return null;
     const row = this.db.prepare(`
-      SELECT entity_type, entity_id, event_id, event_type, event_timestamp, deleted, state_hash
+      SELECT
+        entity_type,
+        entity_id,
+        event_id,
+        event_type,
+        event_timestamp,
+        deleted,
+        state_hash,
+        source_kind
       FROM rchat_metadata_entity_revisions
       WHERE group_id = ? AND entity_type = ? AND entity_id = ?
       LIMIT 1
@@ -6105,17 +6188,29 @@ export class ReticulumChatDatabase {
       event_timestamp: number;
       deleted: number;
       state_hash: string;
+      source_kind: string;
     } | undefined;
     if (!row) return null;
     return {
-      entityType: row.entity_type === 'category' ? 'category' : 'channel',
-      entityId: row.entity_id,
-      eventId: row.event_id,
-      eventType: row.event_type,
-      timestamp: row.event_timestamp,
-      deleted: row.deleted === 1,
-      stateHash: row.state_hash,
+      revision: {
+        entityType: row.entity_type === 'category' ? 'category' : 'channel',
+        entityId: row.entity_id,
+        eventId: row.event_id,
+        eventType: row.event_type,
+        timestamp: row.event_timestamp,
+        deleted: row.deleted === 1,
+        stateHash: row.state_hash,
+      },
+      source: row.source_kind === 'snapshot' ? 'snapshot' : 'event',
     };
+  }
+
+  getMetadataEntityRevision(
+    groupId: number,
+    entityType: 'channel' | 'category',
+    entityId: string
+  ): ReticulumChatMetadataEntityRevision | null {
+    return this.getMetadataEntityRevisionRecord(groupId, entityType, entityId)?.revision ?? null;
   }
 
   getMetadataEntityRevisions(groupId: number): ReticulumChatMetadataEntityRevision[] {
@@ -6147,7 +6242,10 @@ export class ReticulumChatDatabase {
   upsertMetadataEntityRevision(
     groupId: number,
     revision: ReticulumChatMetadataEntityRevision,
-    options: { replaceSameEvent?: boolean } = {}
+    options: {
+      replaceSameEvent?: boolean;
+      source?: ReticulumChatMetadataEntityRevisionSource;
+    } = {}
   ): boolean {
     const normalizedId = revision.entityType === 'channel'
       ? normalizeReticulumChatChannelId(revision.entityId)
@@ -6159,6 +6257,7 @@ export class ReticulumChatDatabase {
     ) return false;
     const current = this.getMetadataEntityRevision(groupId, revision.entityType, normalizedId);
     const normalized = { ...revision, entityId: normalizedId };
+    const source = options.source === 'snapshot' ? 'snapshot' : 'event';
     const replacesSameEvent =
       options.replaceSameEvent === true &&
       current?.eventId === normalized.eventId &&
@@ -6170,14 +6269,25 @@ export class ReticulumChatDatabase {
     ) return false;
     const result = this.db.prepare(`
       INSERT INTO rchat_metadata_entity_revisions
-        (group_id, entity_type, entity_id, event_id, event_type, event_timestamp, deleted, state_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (
+          group_id,
+          entity_type,
+          entity_id,
+          event_id,
+          event_type,
+          event_timestamp,
+          deleted,
+          state_hash,
+          source_kind
+        )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(group_id, entity_type, entity_id) DO UPDATE SET
         event_id = excluded.event_id,
         event_type = excluded.event_type,
         event_timestamp = excluded.event_timestamp,
         deleted = excluded.deleted,
-        state_hash = excluded.state_hash
+        state_hash = excluded.state_hash,
+        source_kind = excluded.source_kind
     `).run(
       groupId,
       normalized.entityType,
@@ -6186,7 +6296,8 @@ export class ReticulumChatDatabase {
       normalized.eventType,
       Math.max(0, Math.floor(normalized.timestamp)),
       normalized.deleted ? 1 : 0,
-      normalized.stateHash
+      normalized.stateHash,
+      source
     );
     return result.changes > 0;
   }
@@ -6218,16 +6329,22 @@ export class ReticulumChatDatabase {
     return row ? metadataSnapshotRowToRecord(row) : null;
   }
 
-  deleteCategory(groupId: number, categoryId: string): boolean {
+  deleteCategory(
+    groupId: number,
+    categoryId: string,
+    options: { clearChannelAssignments?: boolean } = {}
+  ): boolean {
     const normalizedCategoryId = normalizeReticulumChatCategoryId(categoryId);
     if (!normalizedCategoryId) return false;
     this.memoryCategories.delete(`${groupId}:${normalizedCategoryId}`);
-    for (const [key, channel] of this.memoryChannels.entries()) {
-      if (channel.groupId === groupId && channel.categoryId === normalizedCategoryId) {
-        this.memoryChannels.set(key, { ...channel, categoryId: undefined });
+    if (options.clearChannelAssignments !== false) {
+      for (const [key, channel] of this.memoryChannels.entries()) {
+        if (channel.groupId === groupId && channel.categoryId === normalizedCategoryId) {
+          this.memoryChannels.set(key, { ...channel, categoryId: undefined });
+        }
       }
+      this.stmtClearChannelCategory.run(groupId, normalizedCategoryId);
     }
-    this.stmtClearChannelCategory.run(groupId, normalizedCategoryId);
     const result = this.stmtDeleteCategory.run(groupId, normalizedCategoryId);
     return result.changes > 0;
   }
@@ -7101,6 +7218,7 @@ export class ReticulumChatDatabase {
         event_timestamp INTEGER NOT NULL,
         deleted INTEGER NOT NULL DEFAULT 0,
         state_hash TEXT NOT NULL,
+        source_kind TEXT NOT NULL DEFAULT 'event',
         PRIMARY KEY (group_id, entity_type, entity_id)
       );
       CREATE TABLE IF NOT EXISTS rchat_sync_state (
@@ -7534,6 +7652,7 @@ export class ReticulumChatDatabase {
         event_timestamp INTEGER NOT NULL,
         deleted INTEGER NOT NULL DEFAULT 0,
         state_hash TEXT NOT NULL,
+        source_kind TEXT NOT NULL DEFAULT 'event',
         PRIMARY KEY (group_id, entity_type, entity_id)
       );
     `);
@@ -7541,6 +7660,11 @@ export class ReticulumChatDatabase {
       'rchat_metadata_entity_revisions',
       'state_hash',
       `ALTER TABLE rchat_metadata_entity_revisions ADD COLUMN state_hash TEXT NOT NULL DEFAULT ''`
+    );
+    this.ensureColumn(
+      'rchat_metadata_entity_revisions',
+      'source_kind',
+      `ALTER TABLE rchat_metadata_entity_revisions ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'event'`
     );
     this.db.exec(`
       DROP INDEX IF EXISTS idx_rchat_metadata_snapshots_latest;
@@ -7665,6 +7789,10 @@ export class ReticulumChatDatabase {
       {
         table: 'rchat_metadata_snapshots',
         columns: ['group_id', 'snapshot_hash', 'channels_json', 'categories_json'],
+      },
+      {
+        table: 'rchat_metadata_entity_revisions',
+        columns: ['group_id', 'entity_type', 'entity_id', 'state_hash', 'source_kind'],
       },
       {
         table: 'reticulum_chat_channels',

@@ -1316,6 +1316,9 @@ export const ChatGroup = ({
     useState(false);
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
   const reticulumChannelRefreshSeqRef = useRef(0);
+  const reticulumChannelMetadataRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const hasInitializedWebsocket = useRef(false);
   const socketRef = useRef(null); // WebSocket reference
   const timeoutIdRef = useRef(null); // Timeout ID reference
@@ -1630,7 +1633,7 @@ export const ChatGroup = ({
       : [];
     if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return false;
     setReticulumChannelStateGroupId(String(groupId));
-    const availableChannels = parsedChannels.length
+    const availableChannels = Array.isArray(channels)
       ? parsedChannels.filter((channel) => !channel.archived)
       : [
           {
@@ -1663,15 +1666,13 @@ export const ChatGroup = ({
     setSelectedReticulumChannelId((current) =>
       availableChannels.some((channel) => channel.channelId === current)
         ? current
-        : DEFAULT_RETICULUM_CHANNEL_ID
+        : availableChannels.find(
+              (channel) => channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID
+            )?.channelId ??
+            availableChannels[0]?.channelId ??
+            DEFAULT_RETICULUM_CHANNEL_ID
     );
-    const knownChannelIds = new Set(
-      parsedChannels.map((channel) => channel.channelId)
-    );
-    return (
-      knownChannelIds.has(DEFAULT_RETICULUM_CHANNEL_ID) &&
-      knownChannelIds.has(QORTAL_LAND_RETICULUM_CHANNEL_ID)
-    );
+    return Array.isArray(channels);
   }, [selectedGroup]);
 
   useEffect(() => {
@@ -1715,6 +1716,31 @@ export const ChatGroup = ({
     selectedGroup,
   ]);
 
+  useEffect(() => {
+    if (!reticulumChatEnabled || !selectedGroup) return;
+    const groupId = Number(selectedGroup);
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    const offSummaryChanged = window.reticulumChat?.onSummaryChanged?.((payload) => {
+      if (payload?.metadataChanged !== true || Number(payload.groupId) !== groupId) return;
+      if (reticulumChannelMetadataRefreshTimerRef.current) {
+        clearTimeout(reticulumChannelMetadataRefreshTimerRef.current);
+      }
+      reticulumChannelMetadataRefreshTimerRef.current = setTimeout(() => {
+        reticulumChannelMetadataRefreshTimerRef.current = null;
+        void refreshReticulumChannels().catch((error) => {
+          console.warn('Unable to refresh Reticulum chat metadata', error);
+        });
+      }, 50);
+    });
+    return () => {
+      offSummaryChanged?.();
+      if (reticulumChannelMetadataRefreshTimerRef.current) {
+        clearTimeout(reticulumChannelMetadataRefreshTimerRef.current);
+        reticulumChannelMetadataRefreshTimerRef.current = null;
+      }
+    };
+  }, [refreshReticulumChannels, reticulumChatEnabled, selectedGroup]);
+
   const reticulumChannelSummariesById = useMemo(() => {
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) {
@@ -1745,7 +1771,6 @@ export const ChatGroup = ({
     () =>
       reticulumAllChannelsForSelectedGroup.filter(
         (channel) =>
-          channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID ||
           channel.readMode !== RETICULUM_CHANNEL_READ_MODE_ADMINS ||
           isReticulumChannelAdmin
       ),
@@ -1776,7 +1801,13 @@ export const ChatGroup = ({
     ) {
       return;
     }
-    setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
+    setSelectedReticulumChannelId(
+      reticulumChannelsForSelectedGroup.find(
+        (channel) => channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID
+      )?.channelId ??
+        reticulumChannelsForSelectedGroup[0]?.channelId ??
+        DEFAULT_RETICULUM_CHANNEL_ID
+    );
   }, [
     reticulumChannelsForSelectedGroup,
     reticulumChatEnabled,

@@ -673,6 +673,7 @@ class Statement {
         event_timestamp: values[5],
         deleted: values[6],
         state_hash: values[7],
+        source_kind: values[8] ?? 'event',
       };
       const index = this.store.reticulumChatMetadataEntityRevisions.findIndex(
         (existing) =>
