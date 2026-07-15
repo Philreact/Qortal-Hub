@@ -31,6 +31,7 @@ import {
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   normalizeReticulumChatAuthorStreamId,
+  normalizeReticulumChatDisplayName,
   normalizeReticulumChatChannelId,
   normalizeReticulumChatCategoryId,
   compareMetadataEntityRevisions,
@@ -12645,7 +12646,7 @@ export class ReticulumChatManager extends EventEmitter {
     );
     const existing = this.db.getChannel(event.groupId, channelId);
     const now = event.timestamp;
-    const name = normalizeReticulumChatChannelId(data.name ?? channelId);
+    const name = normalizeReticulumChatDisplayName(data.name, channelId);
     const categoryId = normalizeReticulumChatCategoryId(data.categoryId);
     const description =
       typeof data.description === 'string' && data.description.trim()
@@ -12680,7 +12681,13 @@ export class ReticulumChatManager extends EventEmitter {
       ? normalizeReticulumChatExpiryDurationMs(data.expiryDurationMs)
       : existing?.expiryDurationMs;
     if (event.eventType === 'channel_archive') {
-      if (!existing || channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) return null;
+      if (
+        !existing ||
+        channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+        channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+      ) {
+        return null;
+      }
       return { ...existing, archived: true, updatedAt: now };
     }
     if (event.eventType === 'channel_restore') {
@@ -12735,7 +12742,11 @@ export class ReticulumChatManager extends EventEmitter {
       typeof data.channelId === 'string' ? data.channelId : event.channelId
     );
     if (!channelId) return false;
-    if (event.eventType === 'channel_archive' && channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
+    if (
+      event.eventType === 'channel_archive' &&
+      (channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+        channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID)
+    ) {
       return false;
     }
     return !this.db.getChannel(event.groupId, channelId);
@@ -12751,7 +12762,10 @@ export class ReticulumChatManager extends EventEmitter {
     if (!categoryId) return null;
     const existing = this.db.getCategory(event.groupId, categoryId);
     const now = event.timestamp;
-    const name = normalizeReticulumChatChannelId(data.name ?? categoryId.replace(/^cat-/, ''));
+    const name = normalizeReticulumChatDisplayName(
+      data.name,
+      categoryId.replace(/^cat-/, '')
+    );
     const position = Number.isFinite(Number(data.position))
       ? Math.max(0, Math.floor(Number(data.position)))
       : existing?.position ?? 1000;

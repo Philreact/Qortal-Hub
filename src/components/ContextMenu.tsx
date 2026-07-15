@@ -14,6 +14,7 @@ import NotificationsOffIcon from '@mui/icons-material/NotificationsOff';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
+import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../utils/events';
 import { mutedGroupsAtom, txListAtom } from '../atoms/global';
@@ -23,15 +24,37 @@ import { getFee } from '../background/background.ts';
 import { QORTAL_PROTOCOL } from '../constants/constants.ts';
 import { CustomizedSnackbars } from './Snackbar/Snackbar';
 
-const CustomStyledMenu = styled(Menu)(({ theme }) => ({
+export const CustomStyledMenu = styled(Menu, {
+  shouldForwardProp: (prop) => prop !== 'reticulumMenu',
+})(({ theme, reticulumMenu }) => ({
   '& .MuiPaper-root': {
-    borderRadius: '12px',
-    padding: theme.spacing(1),
-    boxShadow: '0 5px 15px rgba(0, 0, 0, 0.2)',
+    ...(reticulumMenu
+      ? {
+          backgroundColor: `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000)`,
+          backgroundImage: 'none',
+          border: `1px solid ${theme.palette.divider}`,
+          borderRadius: '8px',
+          boxShadow: '0 12px 28px rgba(0, 0, 0, 0.28)',
+          minWidth: 220,
+          padding: theme.spacing(0.65),
+        }
+      : {
+          borderRadius: '12px',
+          boxShadow: '0 5px 15px rgba(0, 0, 0, 0.2)',
+          padding: theme.spacing(1),
+        }),
   },
   '& .MuiMenuItem-root': {
-    fontSize: '14px',
-    transition: '0.3s background-color',
+    fontSize: '13px',
+    ...(reticulumMenu
+      ? {
+          borderRadius: '6px',
+          fontWeight: 600,
+          minHeight: 36,
+          padding: theme.spacing(0.65, 1),
+          transition: 'background-color 120ms ease',
+        }
+      : { transition: '0.3s background-color' }),
     '&:hover': {
       backgroundColor: theme.palette.action.hover,
     },
@@ -46,6 +69,7 @@ export const ContextMenu = ({
   onMenuOpenChange,
   openOnClick = false,
   reticulumGroup = null,
+  onChangeAvatar,
   showGroupInfo = true,
   showStandardActions = true,
 }) => {
@@ -325,6 +349,7 @@ export const ContextMenu = ({
       {children}
 
       <CustomStyledMenu
+        reticulumMenu={Boolean(reticulumGroup)}
         disableAutoFocus
         disableAutoFocusItem
         disableEnforceFocus
@@ -408,6 +433,21 @@ export const ContextMenu = ({
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
               Copy Invite Link
+            </Typography>
+          </MenuItem>
+        )}
+        {reticulumGroup && isGroupOwner && onChangeAvatar && (
+          <MenuItem
+            onClick={(event) => {
+              handleClose(event);
+              onChangeAvatar();
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <UploadRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Change Group Avatar
             </Typography>
           </MenuItem>
         )}

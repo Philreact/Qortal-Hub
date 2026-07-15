@@ -63,7 +63,9 @@ const addPrimaryNamesToEvents = async (
     try {
       const primaryNames = await getPrimaryNamesForAddresses(missingAddresses);
       for (const address of missingAddresses) {
-        primaryNameCache.set(address, primaryNames[address]?.trim() || '');
+        const primaryName = primaryNames[address]?.trim();
+        // A missing result can be transient. Do not cache it so it can resolve later.
+        if (primaryName) primaryNameCache.set(address, primaryName);
       }
     } catch (error) {
       console.error('[useReticulumGroupChat] Failed to resolve primary names:', error);
@@ -78,9 +80,7 @@ const addPrimaryNamesToEvents = async (
     return {
       ...event,
       authorPrimaryName: primaryName,
-      senderName: typeof event.senderName === 'string' && event.senderName
-        ? event.senderName
-        : primaryName,
+      senderName: primaryName,
     };
   });
 };
@@ -109,6 +109,8 @@ export function useReticulumGroupChat(
   const pendingEventsRef = useRef<ReticulumChatHookEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
+  const primaryNameRetryAttemptsRef = useRef(0);
+  const [primaryNameRetryToken, setPrimaryNameRetryToken] = useState(0);
   const loadingOlderRef = useRef(false);
   const retryOlderAfterRef = useRef(0);
   const activeChatKey = enabled && validGroupId != null
@@ -245,6 +247,7 @@ export function useReticulumGroupChat(
     setHasOlder(false);
     loadingOlderRef.current = false;
     retryOlderAfterRef.current = 0;
+    primaryNameRetryAttemptsRef.current = 0;
     const historyPromise =
       window.reticulumChat?.getMessageHistory?.(
         validGroupId,
@@ -323,6 +326,42 @@ export function useReticulumGroupChat(
     enrichVisibleEvents,
     mergeEvents,
     normalizedChannelId,
+    validGroupId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      validGroupId == null ||
+      primaryNameRetryAttemptsRef.current >= 3
+    ) {
+      return;
+    }
+
+    const unresolvedEvents = (eventsRef.current as ReticulumChatHookEvent[]).filter(
+      (event) => {
+        const address =
+          typeof event.authorAddress === 'string' ? event.authorAddress : '';
+        return address && !primaryNameCacheRef.current.get(address)?.trim();
+      }
+    );
+    if (unresolvedEvents.length === 0) return;
+
+    const expectedChatKey = `${validGroupId}:${normalizedChannelId}`;
+    const retryTimer = window.setTimeout(() => {
+      if (activeChatKeyRef.current !== expectedChatKey) return;
+      primaryNameRetryAttemptsRef.current += 1;
+      void enrichVisibleEvents(unresolvedEvents, expectedChatKey);
+      setPrimaryNameRetryToken((token) => token + 1);
+    }, 2500);
+
+    return () => window.clearTimeout(retryTimer);
+  }, [
+    enabled,
+    enrichVisibleEvents,
+    events,
+    normalizedChannelId,
+    primaryNameRetryToken,
     validGroupId,
   ]);
 

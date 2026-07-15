@@ -39,6 +39,7 @@ type ChatListProps = {
   hasSecretKey?: any;
   isPrivate?: any;
   reticulumChatEnabled?: boolean;
+  reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   secretKeyObject?: any;
   compactScrollButton?: boolean;
   chatId?: any;
@@ -73,6 +74,7 @@ export const ChatList = ({
   hasSecretKey,
   isPrivate,
   reticulumChatEnabled = false,
+  reticulumMemberRolesByAddress,
   secretKeyObject,
   compactScrollButton = false,
   chatId,
@@ -756,6 +758,7 @@ export const ChatList = ({
                         replyIndex={replyIndex}
                         replyExpiredMeta={replyExpiredMeta}
                         reticulumChatEnabled={reticulumChatEnabled}
+                        reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
                         scrollToItem={goToMessage}
                       />
                     </ErrorBoundary>

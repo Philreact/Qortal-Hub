@@ -294,6 +294,7 @@ export const ManageMembers = ({
               isOwner={isOwner}
               show={show}
               ownerAddress={groupInfo?.owner}
+              reticulumUserCards
             />
           )}
           {value === 1 && (

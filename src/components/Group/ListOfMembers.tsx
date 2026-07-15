@@ -18,9 +18,11 @@ import { useTranslation } from 'react-i18next';
 import { useOnlineAddresses } from '../../hooks/usePresence';
 import { useAtomValue } from 'jotai';
 import { statusMapAtom } from '../../atoms/presence';
+import { userInfoAtom } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { getFallbackAvatarOutlineSx } from '../Chat/clickableAvatarStyles';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { WrapperUserAction } from '../WrapperUserAction';
 
 const MEMBER_ROW_HEIGHT = 64;
 
@@ -34,6 +36,7 @@ const ListOfMembers = ({
   show,
   ownerAddress,
   compact = false,
+  reticulumUserCards = false,
 }) => {
   const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
   const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
@@ -52,6 +55,7 @@ const ListOfMembers = ({
   const listRef = useRef(null);
   const onlineAddresses = useOnlineAddresses();
   const statusMap = useAtomValue(statusMapAtom);
+  const currentAddress = useAtomValue(userInfoAtom)?.address;
   const sortedMembers = useMemo(() => {
     return [...(members || [])].sort((a, b) => {
       const aIsOwner = a?.member === ownerAddress;
@@ -323,6 +327,108 @@ const ListOfMembers = ({
     );
     const popoverWidth =
       popoverAnchor?.getBoundingClientRect?.().width || (compact ? 240 : 325);
+    const memberRole =
+      member?.member === ownerAddress ? 'Owner' : member?.isAdmin ? 'Admin' : null;
+    const memberRoleColor =
+      memberRole === 'Owner'
+        ? theme.palette.mode === 'dark'
+          ? '#ffb454'
+          : '#a84a00'
+        : memberRole === 'Admin'
+          ? theme.palette.mode === 'dark'
+            ? '#58a6ff'
+            : '#1d4ed8'
+          : theme.palette.mode === 'dark'
+            ? '#f2f2f4'
+            : '#1b1d24';
+    const reticulumUserCard =
+      reticulumUserCards && member?.member
+        ? {
+            address: member.member,
+            avatarUrl: member?.primaryName
+              ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(member.primaryName)}/qortal_avatar?async=true`
+              : undefined,
+            isMinterResolved: false,
+            isOwn: member.member === currentAddress,
+            name: member?.primaryName || member?.name,
+            role:
+              memberRole === 'Owner'
+                ? 'owner'
+                : memberRole === 'Admin'
+                  ? 'admin'
+                  : undefined,
+            roleColor: memberRole ? memberRoleColor : undefined,
+            status: statusMap.get(member.member) ?? null,
+          }
+        : undefined;
+    const memberContent = (
+      <>
+        <ListItemAvatar sx={{ minWidth: compact ? 42 : undefined }}>
+          <PresenceStatusBadge
+            online={onlineAddresses.has(member?.member)}
+            status={statusMap.get(member?.member) ?? null}
+          >
+            <Avatar
+              alt={memberLabel}
+              sx={{
+                height: compact ? 34 : undefined,
+                width: compact ? 34 : undefined,
+                ...(!member?.primaryName ? getFallbackAvatarOutlineSx(theme) : {}),
+              }}
+              src={
+                member?.primaryName
+                  ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member.primaryName}/qortal_avatar?async=true`
+                  : ''
+              }
+            />
+          </PresenceStatusBadge>
+        </ListItemAvatar>
+        <ListItemText
+          id={memberLabel}
+          primary={
+            <Box component="span" sx={{ alignItems: 'baseline', display: 'flex', gap: 0.5, minWidth: 0 }}>
+              <Box
+                component="span"
+                sx={{
+                  color: memberRoleColor,
+                  fontSize: compact ? 13 : undefined,
+                  fontWeight: compact ? 700 : undefined,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  ...(hasUnsafeMemberName
+                    ? {
+                        textDecorationColor: theme.palette.error.main,
+                        textDecorationLine: 'line-through',
+                        textDecorationThickness: '2px',
+                      }
+                    : {}),
+                }}
+              >
+                {memberLabel}
+              </Box>
+              {memberRole && (
+                <Box
+                  component="span"
+                  sx={{
+                    color: memberRoleColor,
+                    flexShrink: 0,
+                    fontSize: compact ? 10 : 11,
+                    fontWeight: 400,
+                    lineHeight: 1.2,
+                  }}
+                >
+                  ({memberRole})
+                </Box>
+              )}
+            </Box>
+          }
+          primaryTypographyProps={{
+            sx: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          }}
+        />
+      </>
+    );
 
     return (
       <div key={key} style={style}>
@@ -445,81 +551,51 @@ const ListOfMembers = ({
         )}
 
         <ListItem key={member?.member} disablePadding>
-          <ListItemButton
-            onClick={
-              isOwner ? (event) => handlePopoverOpen(event, index) : undefined
-            }
-            sx={{
-              borderRadius: compact ? '6px' : undefined,
-              cursor: isOwner ? 'pointer' : 'default',
-              minHeight: compact ? 50 : undefined,
-              px: compact ? 1 : undefined,
-              py: compact ? 0.5 : undefined,
-            }}
-          >
-            <ListItemAvatar sx={{ minWidth: compact ? 42 : undefined }}>
-              <PresenceStatusBadge
-                online={onlineAddresses.has(member?.member)}
-                status={statusMap.get(member?.member) ?? null}
-              >
-                <Avatar
-                  alt={memberLabel}
-                  sx={{
-                    height: compact ? 34 : undefined,
-                    width: compact ? 34 : undefined,
-                    ...(!member?.primaryName
-                      ? getFallbackAvatarOutlineSx(theme)
-                      : {}),
-                  }}
-                  src={
-                    member?.primaryName
-                      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member?.primaryName}/qortal_avatar?async=true`
-                      : ''
-                  }
-                />
-              </PresenceStatusBadge>
-            </ListItemAvatar>
-
-            <ListItemText
-              id={memberLabel}
-              primary={memberLabel}
-              primaryTypographyProps={{
-                sx: {
-                  color: 'text.primary',
-                  fontSize: compact ? 13 : undefined,
-                  fontWeight: compact ? 700 : undefined,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  ...(hasUnsafeMemberName
-                    ? {
-                        textDecorationLine: 'line-through',
-                        textDecorationThickness: '2px',
-                        textDecorationColor: theme.palette.error.main,
+          {reticulumUserCard ? (
+            <WrapperUserAction
+              address={member.member}
+              fullWidth
+              name={memberLabel}
+              reticulumUserCard={reticulumUserCard}
+            >
+              <ListItemButton
+                onContextMenu={
+                  isOwner
+                    ? (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        handlePopoverOpen(event, index);
                       }
-                    : {}),
-                },
-              }}
-            />
-            {(member?.isAdmin || member?.member === ownerAddress) && (
-              <Typography
+                    : undefined
+                }
                 sx={{
-                  color: theme.palette.text.primary,
-                  marginLeft: 'auto',
-                  fontSize: compact ? 10 : undefined,
-                  fontWeight: compact ? 800 : undefined,
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  minHeight: 50,
+                  px: 1,
+                  py: 0.5,
+                  width: '100%',
                 }}
               >
-                {member?.member === ownerAddress
-                  ? t('group:group.owner', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('core:admin', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-              </Typography>
-            )}
-          </ListItemButton>
+                {memberContent}
+              </ListItemButton>
+            </WrapperUserAction>
+          ) : (
+            <ListItemButton
+              onClick={
+                isOwner ? (event) => handlePopoverOpen(event, index) : undefined
+              }
+              sx={{
+                borderRadius: compact ? '6px' : undefined,
+                cursor: isOwner ? 'pointer' : 'default',
+                minHeight: compact ? 50 : undefined,
+                px: compact ? 1 : undefined,
+                py: compact ? 0.5 : undefined,
+              }}
+            >
+              {memberContent}
+            </ListItemButton>
+          )}
         </ListItem>
       </div>
     );

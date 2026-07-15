@@ -34,6 +34,7 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import PersonAddRoundedIcon from '@mui/icons-material/PersonAddRounded';
@@ -2961,24 +2962,23 @@ export const ChatDirect = ({
       <Box
         sx={{
           alignItems: reticulumDirectUiEnabled ? 'center' : 'flex-end',
-          backgroundColor: theme.palette.background.default,
+          backgroundColor: reticulumDirectUiEnabled
+            ? alpha(theme.palette.background.paper, 0.72)
+            : theme.palette.background.default,
           border: `1px solid ${theme.palette.divider}`,
-          borderRadius: '8px',
+          borderRadius: reticulumDirectUiEnabled ? 0 : '8px',
+          borderBottom: reticulumDirectUiEnabled ? 'none' : undefined,
+          borderLeft: reticulumDirectUiEnabled ? 'none' : undefined,
+          borderRight: reticulumDirectUiEnabled ? 'none' : undefined,
           bottom: isFocusedParent ? '0px' : 'unset',
           boxSizing: 'border-box',
           display: 'flex',
           flexDirection: 'row',
           flexShrink: 0,
-          gap: '12px',
-          minHeight: '150px',
-          ...(reticulumDirectUiEnabled
-            ? {
-                minHeight: '52px',
-                padding: '8px 10px',
-              }
-            : {}),
-          overflow: 'hidden',
-          padding: '16px 20px 20px',
+          gap: reticulumDirectUiEnabled ? '8px' : '12px',
+          minHeight: reticulumDirectUiEnabled ? '58px' : '150px',
+          overflow: reticulumDirectUiEnabled ? 'visible' : 'hidden',
+          padding: reticulumDirectUiEnabled ? '8px 12px' : '16px 20px 20px',
           position: isFocusedParent ? 'fixed' : 'relative',
           top: isFocusedParent ? '0px' : 'unset',
           width: '100%',
@@ -2993,7 +2993,7 @@ export const ChatDirect = ({
             flexShrink: 0,
             justifyContent: reticulumDirectUiEnabled ? 'center' : 'flex-end',
             minWidth: 0,
-            overflow: 'auto',
+            overflow: reticulumDirectUiEnabled ? 'visible' : 'auto',
           }}
         >
           {replyMessage && (
@@ -3187,9 +3187,9 @@ export const ChatDirect = ({
               fontSize: '14px',
               fontWeight: 500,
               justifyContent: 'center',
-              minHeight: '44px',
-              minWidth: '88px',
-              padding: '10px 16px',
+              minHeight: reticulumDirectUiEnabled ? '38px' : '44px',
+              minWidth: reticulumDirectUiEnabled ? '74px' : '88px',
+              padding: reticulumDirectUiEnabled ? '8px 14px' : '10px 16px',
               position: 'relative',
               transition: 'background-color 0.2s ease, border-color 0.2s ease',
               '&:hover': isSending || reticulumDirectPending

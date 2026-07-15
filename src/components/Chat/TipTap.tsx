@@ -701,18 +701,7 @@ const Tiptap = ({
   }, []);
 
   const useComposerLook = isChat || composerStyle;
-  const slotBefore = compactChat ? (
-    showFormattingTray ? (
-      <MenuBar
-        setEditorRef={setEditorRefFunc}
-        isChat={isChat}
-        isDisabledEditorEnter={isDisabledEditorEnter}
-        setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
-        toolbarStyle={useComposerLook ? 'chat' : 'default'}
-        insertFiles={insertFiles}
-      />
-    ) : null
-  ) : (
+  const formattingTray = (
     <MenuBar
       setEditorRef={setEditorRefFunc}
       isChat={isChat}
@@ -721,6 +710,29 @@ const Tiptap = ({
       toolbarStyle={useComposerLook ? 'chat' : 'default'}
       insertFiles={insertFiles}
     />
+  );
+  // This must render inside EditorProvider so useCurrentEditor can resolve it.
+  const slotBefore = compactChat ? (
+    showFormattingTray ? (
+      <Box
+        sx={{
+          backgroundColor: theme.palette.background.paper,
+          border: `1px solid ${theme.palette.divider}`,
+          borderRadius: '8px',
+          bottom: 'calc(100% + 8px)',
+          boxShadow: '0 10px 28px rgba(0, 0, 0, 0.28)',
+          left: 0,
+          p: 0.5,
+          position: 'absolute',
+          right: 0,
+          zIndex: 3,
+        }}
+      >
+        {formattingTray}
+      </Box>
+    ) : null
+  ) : (
+    formattingTray
   );
   const editorProvider = (
     <EditorProvider
@@ -862,6 +874,9 @@ const Tiptap = ({
           flex: 1,
           flexDirection: 'column',
           minWidth: 0,
+          overflow: 'visible',
+          position: 'relative',
+          zIndex: 1,
           '--text-primary': theme.palette.text.primary,
           '--text-secondary': theme.palette.text.secondary,
           '--background-default': theme.palette.background.default,
