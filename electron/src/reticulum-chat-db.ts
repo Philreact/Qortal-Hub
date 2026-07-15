@@ -34,6 +34,18 @@ export function normalizeReticulumChatAuthorStreamId(value: unknown): string {
   return /^[0-9a-f]{32}$/.test(normalized) ? normalized : '';
 }
 
+export function normalizeReticulumChatDisplayName(
+  value: unknown,
+  fallback = ''
+): string {
+  const normalized = (typeof value === 'string' ? value : '')
+    .normalize('NFC')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+    .trim();
+  const safeName = Array.from(normalized).slice(0, 80).join('');
+  return safeName || fallback;
+}
+
 const RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS = 60 * 1000;
 const RETICULUM_CHAT_VISIBLE_EVENT_SQL =
   "(expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)";
@@ -122,7 +134,7 @@ export function hashReticulumChatMetadataEntityState(
       description: channel.description?.trim() || '',
       expiryDurationMs: normalizeReticulumChatExpiryDurationMs(channel.expiryDurationMs) ?? 0,
       groupId: Math.floor(Number(channel.groupId) || 0),
-      name: normalizeReticulumChatChannelId(channel.name),
+      name: normalizeReticulumChatDisplayName(channel.name, channel.channelId),
       position: Math.max(0, Math.floor(Number(channel.position) || 0)),
       readMode: normalizeReticulumChannelReadMode(channel.readMode),
       updatedAt: Math.max(0, Math.floor(Number(channel.updatedAt) || 0)),
@@ -136,7 +148,7 @@ export function hashReticulumChatMetadataEntityState(
       createdAt: Math.max(0, Math.floor(Number(category.createdAt) || 0)),
       createdBy: String(category.createdBy || ''),
       groupId: Math.floor(Number(category.groupId) || 0),
-      name: normalizeReticulumChatChannelId(category.name),
+      name: normalizeReticulumChatDisplayName(category.name, category.categoryId),
       position: Math.max(0, Math.floor(Number(category.position) || 0)),
       updatedAt: Math.max(0, Math.floor(Number(category.updatedAt) || 0)),
     };
@@ -5717,7 +5729,7 @@ export class ReticulumChatDatabase {
       groupId: row.group_id,
       channelId: normalizeReticulumChatChannelId(row.channel_id),
       ...(normalizeReticulumChatCategoryId(row.category_id) ? { categoryId: normalizeReticulumChatCategoryId(row.category_id) } : {}),
-      name: normalizeReticulumChatChannelId(row.name),
+      name: normalizeReticulumChatDisplayName(row.name, row.channel_id),
       ...(row.description ? { description: row.description } : {}),
       position: row.position,
       archived: row.archived === 1,
@@ -5776,7 +5788,7 @@ export class ReticulumChatDatabase {
       ...channel,
       channelId: normalizeReticulumChatChannelId(channel.channelId),
       categoryId: normalizeReticulumChatCategoryId(channel.categoryId) || undefined,
-      name: normalizeReticulumChatChannelId(channel.name),
+      name: normalizeReticulumChatDisplayName(channel.name, channel.channelId),
       position: Math.max(0, Math.floor(channel.position)),
       archived: channel.archived === true,
       writeMode: normalizeReticulumChannelWriteMode(channel.writeMode),
@@ -5857,7 +5869,7 @@ export class ReticulumChatDatabase {
       .map((row) => ({
         groupId: row.group_id,
         categoryId: normalizeReticulumChatCategoryId(row.category_id),
-        name: normalizeReticulumChatChannelId(row.name),
+        name: normalizeReticulumChatDisplayName(row.name, row.category_id),
         position: Math.max(0, Math.floor(row.position)),
         createdBy: row.created_by,
         createdAt: row.created_at,
@@ -5900,7 +5912,7 @@ export class ReticulumChatDatabase {
     return {
       groupId: row.group_id,
       categoryId: normalizeReticulumChatCategoryId(row.category_id),
-      name: normalizeReticulumChatChannelId(row.name),
+      name: normalizeReticulumChatDisplayName(row.name, row.category_id),
       position: Math.max(0, Math.floor(row.position)),
       createdBy: row.created_by,
       createdAt: row.created_at,
@@ -5912,7 +5924,7 @@ export class ReticulumChatDatabase {
     const normalizedCategory: ReticulumGroupCategory = {
       ...category,
       categoryId: normalizeReticulumChatCategoryId(category.categoryId),
-      name: normalizeReticulumChatChannelId(category.name),
+      name: normalizeReticulumChatDisplayName(category.name, category.categoryId),
       position: Math.max(0, Math.floor(category.position)),
     };
     if (!normalizedCategory.categoryId) return false;

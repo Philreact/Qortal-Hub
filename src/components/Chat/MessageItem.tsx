@@ -70,6 +70,7 @@ import {
 } from './clickableAvatarStyles';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
@@ -78,6 +79,42 @@ const RETICULUM_IMAGE_REQUEST_BACKOFF_MS = 30_000;
 const RETICULUM_IMAGE_REQUEST_TRACK_LIMIT = 500;
 
 const reticulumImageResourceRequestTimes = new Map<string, number>();
+const reticulumMintershipCache = new Map<string, boolean>();
+const reticulumMintershipRequests = new Map<string, Promise<boolean>>();
+
+const getReticulumMintership = (address: string): Promise<boolean> => {
+  const normalizedAddress = address.trim();
+  if (!normalizedAddress) return Promise.resolve(false);
+
+  const cachedResult = reticulumMintershipCache.get(normalizedAddress);
+  if (cachedResult !== undefined) return Promise.resolve(cachedResult);
+
+  const existingRequest = reticulumMintershipRequests.get(normalizedAddress);
+  if (existingRequest) return existingRequest;
+
+  const request = fetch(
+    `${getBaseApiReact()}/groups/member/${encodeURIComponent(normalizedAddress)}`
+  )
+    .then(async (response) => {
+      if (!response.ok) return false;
+      const data = await response.json();
+      const groups = Array.isArray(data) ? data : data?.groups ?? [];
+      return groups.some(
+        (group) => String(group?.groupName ?? '').trim().toUpperCase() === 'MINTER'
+      );
+    })
+    .catch(() => false)
+    .then((isMinter) => {
+      reticulumMintershipCache.set(normalizedAddress, isMinter);
+      return isMinter;
+    })
+    .finally(() => {
+      reticulumMintershipRequests.delete(normalizedAddress);
+    });
+
+  reticulumMintershipRequests.set(normalizedAddress, request);
+  return request;
+};
 
 const shouldRequestReticulumImageResource = (key: string, nowMs: number) => {
   const previousRequestAt = reticulumImageResourceRequestTimes.get(key);
@@ -230,6 +267,7 @@ type MessageItemProps = {
   replyIndex: number;
   replyExpiredMeta?: any;
   reticulumChatEnabled?: boolean;
+  reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   scrollToItem: (index: number) => void;
 };
 
@@ -258,12 +296,16 @@ export const MessageItemComponent = ({
   replyIndex,
   replyExpiredMeta,
   reticulumChatEnabled = false,
+  reticulumMemberRolesByAddress,
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
   const [anchorEl, setAnchorEl] = useState(null);
   const [selectedReaction, setSelectedReaction] = useState(null);
   const [userInfo, setUserInfo] = useState(null);
+  const [isUserInfoResolved, setIsUserInfoResolved] = useState(false);
+  const [isReticulumMinter, setIsReticulumMinter] = useState(false);
+  const [isReticulumMinterResolved, setIsReticulumMinterResolved] = useState(false);
   const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState(null);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
@@ -271,18 +313,50 @@ export const MessageItemComponent = ({
 
   useEffect(() => {
     const getInfo = async () => {
-      if (!message?.sender) return;
+      if (!message?.sender) {
+        setIsUserInfoResolved(true);
+        return;
+      }
+      setIsUserInfoResolved(false);
       try {
         const res = await getIndividualUserInfo(message?.sender);
-        if (!res) return null;
+        if (!res && !(reticulumChatEnabled && res === 0)) return null;
         setUserInfo(res);
       } catch (error) {
         //
+      } finally {
+        setIsUserInfoResolved(true);
       }
     };
 
     getInfo();
-  }, [message?.sender, getIndividualUserInfo]);
+  }, [message?.sender, getIndividualUserInfo, reticulumChatEnabled]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const senderAddress = message?.sender;
+
+    if (!reticulumChatEnabled || !senderAddress) {
+      setIsReticulumMinter(false);
+      setIsReticulumMinterResolved(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setIsReticulumMinter(false);
+    setIsReticulumMinterResolved(false);
+    void getReticulumMintership(senderAddress).then((isMinter) => {
+      if (!cancelled) {
+        setIsReticulumMinter(isMinter);
+        setIsReticulumMinterResolved(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [message?.sender, reticulumChatEnabled]);
 
   // Defer only main message body so generateHTML runs when React has time (reduces scroll-time CPU spikes).
   // Reply block uses reply/replyExpiredMeta directly so the reply preview always shows.
@@ -330,11 +404,11 @@ export const MessageItemComponent = ({
   }, [userAvatarUrl]);
 
   const handleAvatarPreview = useCallback(
-    (event) => {
-      if (!userAvatarUrl || !isAvatarLoaded) return;
+    (event, src = userAvatarUrl, requireLoaded = true) => {
+      if (!src || (requireLoaded && !isAvatarLoaded)) return;
       event.preventDefault();
       event.stopPropagation();
-      setAvatarPreviewSrc(userAvatarUrl);
+      setAvatarPreviewSrc(src);
       setIsAvatarPreviewOpen(true);
     },
     [isAvatarLoaded, setAvatarPreviewSrc, setIsAvatarPreviewOpen, userAvatarUrl]
@@ -350,6 +424,29 @@ export const MessageItemComponent = ({
   }, [message?.id]);
 
   const theme = useTheme();
+  const reticulumMemberRole = reticulumChatEnabled
+    ? reticulumMemberRolesByAddress?.[message?.sender]
+    : undefined;
+  const reticulumMemberRoleColor =
+    reticulumMemberRole === 'owner'
+      ? theme.palette.mode === 'dark'
+        ? '#ffb454'
+        : '#a84a00'
+      : reticulumMemberRole === 'admin'
+        ? theme.palette.mode === 'dark'
+          ? '#58a6ff'
+          : '#1d4ed8'
+        : theme.palette.mode === 'dark'
+          ? '#f2f2f4'
+          : '#1b1d24';
+  const reticulumMinterLevel =
+    reticulumChatEnabled &&
+    isReticulumMinter &&
+    typeof userInfo === 'number' &&
+    Number.isFinite(userInfo) &&
+    userInfo >= 0
+      ? Math.trunc(userInfo)
+      : null;
   const { t } = useTranslation([
     'auth',
     'core',
@@ -1152,6 +1249,23 @@ export const MessageItemComponent = ({
 
   const isOwn = message?.sender === myAddress;
   const senderStatus = useStatus(message?.sender);
+  const reticulumUserCard = reticulumChatEnabled && message?.sender
+    ? {
+        address: message.sender,
+        avatarUrl: userAvatarUrl,
+        isMinterResolved: isReticulumMinterResolved && isUserInfoResolved,
+        isOwn,
+        minterLevel:
+          isReticulumMinterResolved && isUserInfoResolved
+            ? reticulumMinterLevel
+            : undefined,
+        name: message.senderName,
+        onAvatarPreview: (event, src) => handleAvatarPreview(event, src, false),
+        role: reticulumMemberRole,
+        roleColor: reticulumMemberRoleColor,
+        status: senderStatus,
+      }
+    : undefined;
   const isRepliedToMe =
     reply?.sender === myAddress || replyExpiredMeta?.sender === myAddress;
   const isQchatFileOffer = qchatFileTransfer?.data?.status === 'offer';
@@ -1252,44 +1366,91 @@ export const MessageItemComponent = ({
               }}
             >
               <WrapperUserAction
-                disabled={myAddress === message?.sender}
+                disabled={!reticulumChatEnabled && myAddress === message?.sender}
                 address={message?.sender}
                 name={message?.senderName}
+                reticulumMenu={reticulumChatEnabled}
+                reticulumUserCard={reticulumUserCard}
+                trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
               >
-                <PresenceStatusBadge
-                  online={Boolean(senderStatus)}
-                  status={senderStatus}
-                >
-                  <Avatar
-                    sx={{
-                      backgroundColor: alpha(theme.palette.text.primary, 0.06),
-                      color: theme.palette.text.primary,
-                      height: '38px',
-                      width: '38px',
-                      fontSize: '15px',
-                      fontWeight: 600,
-                      ...(!isAvatarLoaded
-                        ? getFallbackAvatarOutlineSx(theme)
-                        : {}),
-                      ...getClickableAvatarSx(theme, isAvatarLoaded),
-                    }}
-                    alt={message?.senderName}
-                    src={userAvatarUrl}
-                    onClick={handleAvatarPreview}
-                    imgProps={{
-                      onLoad: () => {
-                        setIsAvatarLoaded(true);
-                      },
-                      onError: () => {
-                        setIsAvatarLoaded(false);
-                      },
-                    }}
+                {reticulumMinterLevel !== null ? (
+                  <MinterAvatarOrnament
+                    accentColor={
+                      reticulumMemberRole === 'owner'
+                        ? reticulumMemberRoleColor
+                        : undefined
+                    }
+                    level={reticulumMinterLevel}
                   >
-                    {message?.senderName?.charAt(0)}
-                  </Avatar>
-                </PresenceStatusBadge>
+                    <PresenceStatusBadge
+                      online={Boolean(senderStatus)}
+                      status={senderStatus}
+                    >
+                      <Avatar
+                        sx={{
+                          backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                          color: theme.palette.text.primary,
+                          height: '38px',
+                          width: '38px',
+                          fontSize: '15px',
+                          fontWeight: 600,
+                          ...(!isAvatarLoaded
+                            ? getFallbackAvatarOutlineSx(theme)
+                            : {}),
+                          ...getClickableAvatarSx(theme, isAvatarLoaded),
+                        }}
+                        alt={message?.senderName}
+                        src={userAvatarUrl}
+                        onClick={reticulumChatEnabled ? undefined : handleAvatarPreview}
+                        imgProps={{
+                          onLoad: () => {
+                            setIsAvatarLoaded(true);
+                          },
+                          onError: () => {
+                            setIsAvatarLoaded(false);
+                          },
+                        }}
+                      >
+                        {message?.senderName?.charAt(0)}
+                      </Avatar>
+                    </PresenceStatusBadge>
+                  </MinterAvatarOrnament>
+                ) : (
+                  <PresenceStatusBadge
+                    online={Boolean(senderStatus)}
+                    status={senderStatus}
+                  >
+                    <Avatar
+                      sx={{
+                        backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                        color: theme.palette.text.primary,
+                        height: '38px',
+                        width: '38px',
+                        fontSize: '15px',
+                        fontWeight: 600,
+                        ...(!isAvatarLoaded
+                          ? getFallbackAvatarOutlineSx(theme)
+                          : {}),
+                        ...getClickableAvatarSx(theme, isAvatarLoaded),
+                      }}
+                      alt={message?.senderName}
+                      src={userAvatarUrl}
+                      onClick={reticulumChatEnabled ? undefined : handleAvatarPreview}
+                      imgProps={{
+                        onLoad: () => {
+                          setIsAvatarLoaded(true);
+                        },
+                        onError: () => {
+                          setIsAvatarLoaded(false);
+                        },
+                      }}
+                    >
+                      {message?.senderName?.charAt(0)}
+                    </Avatar>
+                  </PresenceStatusBadge>
+                )}
               </WrapperUserAction>
-              <UserBadge userInfo={userInfo} />
+              {!reticulumChatEnabled && <UserBadge userInfo={userInfo} />}
             </Box>
           )}
 
@@ -1324,16 +1485,19 @@ export const MessageItemComponent = ({
                   minWidth: 0,
                 }}
               >
-                <WrapperUserAction
-                  disabled={myAddress === message?.sender}
+              <WrapperUserAction
+                  disabled={!reticulumChatEnabled && myAddress === message?.sender}
                   address={message?.sender}
                   name={message?.senderName}
+                  reticulumUserCard={reticulumUserCard}
                 >
                   <Typography
                     sx={{
-                      color: isOwn
-                        ? theme.palette.primary.main
-                        : theme.palette.text.primary,
+                      color: reticulumChatEnabled
+                        ? reticulumMemberRoleColor
+                        : isOwn
+                          ? theme.palette.primary.main
+                          : theme.palette.text.primary,
                       fontFamily: 'Inter',
                       fontSize: '14px',
                       fontWeight: 600,
@@ -1356,6 +1520,21 @@ export const MessageItemComponent = ({
                     {message?.senderName || message?.sender}
                   </Typography>
                 </WrapperUserAction>
+
+                {reticulumChatEnabled && reticulumMemberRole && (
+                  <Typography
+                    sx={{
+                      color: reticulumMemberRoleColor,
+                      flexShrink: 0,
+                      fontFamily: 'Inter',
+                      fontSize: '11px',
+                      fontWeight: 400,
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    ({reticulumMemberRole === 'owner' ? 'Owner' : 'Admin'})
+                  </Typography>
+                )}
 
                 {!isUpdating && !isTemp && (
                   <Typography
@@ -1573,17 +1752,31 @@ export const MessageItemComponent = ({
                     </Typography>
                   </Box>
 
-                  {reply?.messageText && (
-                    <MessageDisplay isReply htmlContent={htmlReply} />
-                  )}
-
-                  {reply?.decryptedData?.type === 'notification' ? (
-                    <MessageDisplay
-                      isReply
-                      htmlContent={reply.decryptedData?.data?.message}
-                    />
+                  {reticulumChatEnabled ? (
+                    htmlReply ? (
+                      <MessageDisplay isReply htmlContent={htmlReply} />
+                    ) : reply?.decryptedData?.type === 'notification' ? (
+                      <MessageDisplay
+                        isReply
+                        htmlContent={reply.decryptedData?.data?.message}
+                      />
+                    ) : reply?.text ? (
+                      <MessageDisplay isReply htmlContent={reply.text} />
+                    ) : null
                   ) : (
-                    <MessageDisplay isReply htmlContent={reply.text} />
+                    <>
+                      {reply?.messageText && (
+                        <MessageDisplay isReply htmlContent={htmlReply} />
+                      )}
+                      {reply?.decryptedData?.type === 'notification' ? (
+                        <MessageDisplay
+                          isReply
+                          htmlContent={reply.decryptedData?.data?.message}
+                        />
+                      ) : (
+                        <MessageDisplay isReply htmlContent={reply.text} />
+                      )}
+                    </>
                   )}
                 </Box>
               </Box>
@@ -1672,15 +1865,27 @@ export const MessageItemComponent = ({
                     </Typography>
                   </Box>
 
-                  {replyExpiredMeta?.messageText && (
-                    <MessageDisplay isReply htmlContent={htmlReplyExpired} />
-                  )}
-
-                  {replyExpiredMeta?.text && (
-                    <MessageDisplay
-                      isReply
-                      htmlContent={replyExpiredMeta.text}
-                    />
+                  {reticulumChatEnabled ? (
+                    htmlReplyExpired ? (
+                      <MessageDisplay isReply htmlContent={htmlReplyExpired} />
+                    ) : replyExpiredMeta?.text ? (
+                      <MessageDisplay
+                        isReply
+                        htmlContent={replyExpiredMeta.text}
+                      />
+                    ) : null
+                  ) : (
+                    <>
+                      {replyExpiredMeta?.messageText && (
+                        <MessageDisplay isReply htmlContent={htmlReplyExpired} />
+                      )}
+                      {replyExpiredMeta?.text && (
+                        <MessageDisplay
+                          isReply
+                          htmlContent={replyExpiredMeta.text}
+                        />
+                      )}
+                    </>
                   )}
                 </Box>
               </Box>

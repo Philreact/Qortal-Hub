@@ -1,6 +1,4 @@
 import { useCallback, useContext, useEffect, useState } from 'react';
-import { useAtomValue } from 'jotai';
-import { userInfoAtom, balanceAtom } from '../../atoms/global';
 import {
   QORTAL_APP_CONTEXT,
   getArbitrarySearchSimpleEndpointReact,
@@ -30,7 +28,6 @@ import { base64ToUint8Array } from '../../qdn/encryption/group-encryption';
 import { uint8ArrayToObject } from '../../encryption/encryption.ts';
 import { formatTimestampForum } from '../../utils/time';
 import { Spacer } from '../../common/Spacer';
-import { GroupAvatar } from './GroupAvatar';
 import { useTranslation } from 'react-i18next';
 import i18next from 'i18next';
 import { useSetAtom } from 'jotai';
@@ -79,8 +76,6 @@ export const AdminSpaceInner = ({
   adminsWithNames,
   isOwner,
 }) => {
-  const userInfo = useAtomValue(userInfoAtom);
-  const balance = useAtomValue(balanceAtom);
   const [adminGroupSecretKey, setAdminGroupSecretKey] = useState(null);
   const [isFetchingAdminGroupSecretKey, setIsFetchingAdminGroupSecretKey] =
     useState(true);
@@ -624,37 +619,6 @@ export const AdminSpaceInner = ({
         </Typography>
       </Box>
 
-      <Spacer height="25px" />
-
-      {isOwner && (
-        <Box
-          sx={{
-            border: '1px solid gray',
-            borderRadius: '6px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '20px',
-            maxWidth: '90%',
-            padding: '10px',
-            width: '300px',
-            alignItems: 'center',
-          }}
-        >
-          <Typography>
-            {t('group:group.avatar', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-          </Typography>
-
-          <GroupAvatar
-            setOpenSnack={setOpenSnackGlobal}
-            setInfoSnack={setInfoSnackCustom}
-            myName={userInfo?.name}
-            balance={balance}
-            groupId={selectedGroup}
-          />
-        </Box>
-      )}
     </Box>
   );
 };

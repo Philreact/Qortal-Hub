@@ -2,6 +2,7 @@ import {
   Avatar,
   Box,
   ButtonBase,
+  GlobalStyles,
   List,
   ListItem,
   ListItemAvatar,
@@ -17,17 +18,16 @@ import {
   KeyboardSensor,
   PointerSensor,
   type DragEndEvent,
+  type DragOverEvent,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
 import {
-  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
 import { HubsIcon } from '../../assets/Icons/HubsIcon';
 import { MessagingIcon } from '../../assets/Icons/MessagingIcon';
@@ -81,6 +81,65 @@ const RETICULUM_AVATAR_PALETTE = [
   '#f0abfc',
   '#fca5a5',
 ];
+
+type GroupDragInsertionPosition = 'before' | 'after';
+
+type GroupDragTarget = {
+  activeId: string;
+  overId: string;
+  position: GroupDragInsertionPosition;
+};
+
+const groupDragInsertionPosition = (
+  event: DragEndEvent | DragOverEvent
+): GroupDragInsertionPosition => {
+  const translated = event.active.rect.current.translated;
+  if (!translated || !event.over) return 'before';
+  const activeMiddle = translated.top + translated.height / 2;
+  const overMiddle = event.over.rect.top + event.over.rect.height / 2;
+  return activeMiddle > overMiddle ? 'after' : 'before';
+};
+
+const moveGroupByInsertion = <T,>(
+  items: T[],
+  sourceIndex: number,
+  targetIndex: number,
+  position: GroupDragInsertionPosition
+) => {
+  const next = [...items];
+  const [moved] = next.splice(sourceIndex, 1);
+  const rawIndex = targetIndex + (position === 'after' ? 1 : 0);
+  const insertionIndex = Math.max(
+    0,
+    Math.min(rawIndex - (sourceIndex < rawIndex ? 1 : 0), next.length)
+  );
+  next.splice(insertionIndex, 0, moved);
+  return next;
+};
+
+function GroupDropIndicator({
+  position,
+}: {
+  position: GroupDragInsertionPosition;
+}) {
+  return (
+    <Box
+      aria-hidden
+      sx={{
+        backgroundColor: RETICULUM_ACTIVE_BLUE,
+        borderRadius: '999px',
+        boxShadow: '0 0 0 1px rgba(37, 99, 235, 0.22)',
+        height: 2,
+        left: 6,
+        pointerEvents: 'none',
+        position: 'absolute',
+        right: 6,
+        ...(position === 'before' ? { top: -4 } : { bottom: -4 }),
+        zIndex: 7,
+      }}
+    />
+  );
+}
 
 const getPastelAvatarColor = (value?: string | number) => {
   const key = String(value || 'group');
@@ -231,6 +290,8 @@ const GroupListInner = ({
       return [];
     }
   });
+  const [groupDragTarget, setGroupDragTarget] =
+    useState<GroupDragTarget | null>(null);
   const groupDndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -264,15 +325,35 @@ const GroupListInner = ({
   }, []);
 
   const handleGroupDragEnd = useCallback(
-    ({ active, over }: DragEndEvent) => {
+    (event: DragEndEvent) => {
+      const { active, over } = event;
       if (!over || active.id === over.id) return;
       const oldIndex = orderedGroupIds.indexOf(String(active.id));
       const newIndex = orderedGroupIds.indexOf(String(over.id));
       if (oldIndex === -1 || newIndex === -1) return;
-      persistManualGroupOrder(arrayMove(orderedGroupIds, oldIndex, newIndex));
+      persistManualGroupOrder(
+        moveGroupByInsertion(
+          orderedGroupIds,
+          oldIndex,
+          newIndex,
+          groupDragInsertionPosition(event)
+        )
+      );
     },
     [orderedGroupIds, persistManualGroupOrder]
   );
+
+  const handleGroupDragOver = useCallback((event: DragOverEvent) => {
+    if (!event.over || event.active.id === event.over.id) {
+      setGroupDragTarget(null);
+      return;
+    }
+    setGroupDragTarget({
+      activeId: String(event.active.id),
+      overId: String(event.over.id),
+      position: groupDragInsertionPosition(event),
+    });
+  }, []);
 
   if (railMode) {
     return (
@@ -290,6 +371,23 @@ const GroupListInner = ({
           width: '72px',
         }}
       >
+        <GlobalStyles
+          styles={{
+            '.MuiTooltip-tooltip': {
+              backgroundColor: `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000) !important`,
+              border: `1px solid ${theme.palette.divider} !important`,
+              borderRadius: '6px',
+              boxShadow: '0 8px 18px rgba(0, 0, 0, 0.28)',
+              color: theme.palette.text.primary,
+              fontSize: 12,
+              fontWeight: 600,
+              padding: '6px 8px',
+            },
+            '.MuiTooltip-arrow': {
+              color: `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000) !important`,
+            },
+          }}
+        />
         <Tooltip
           placement="right"
           title={
@@ -379,7 +477,12 @@ const GroupListInner = ({
         >
           <DndContext
             collisionDetection={closestCenter}
-            onDragEnd={handleGroupDragEnd}
+            onDragCancel={() => setGroupDragTarget(null)}
+            onDragEnd={(event) => {
+              setGroupDragTarget(null);
+              handleGroupDragEnd(event);
+            }}
+            onDragOver={handleGroupDragOver}
             sensors={groupDndSensors}
           >
             <SortableContext
@@ -404,6 +507,12 @@ const GroupListInner = ({
                     selectGroupFunc={selectGroupFunc}
                     key={group.groupId}
                     group={group}
+                    dropPosition={
+                      groupDragTarget?.activeId !== String(group.groupId) &&
+                      groupDragTarget?.overId === String(group.groupId)
+                        ? groupDragTarget.position
+                        : undefined
+                    }
                     selectedGroupId={selectedGroup?.groupId ?? null}
                     getUserSettings={getUserSettings}
                     myAddress={myAddress}
@@ -772,6 +881,7 @@ export const GroupList = memo(GroupListInner);
 interface GroupItemProps {
   selectGroupFunc: (group: any) => void;
   group: any;
+  dropPosition?: GroupDragInsertionPosition;
   selectedGroupId: string | null;
   getUserSettings: () => Promise<any>;
   myAddress: string;
@@ -783,6 +893,7 @@ const GroupItem = memo(
   ({
     selectGroupFunc,
     group,
+    dropPosition,
     selectedGroupId,
     getUserSettings,
     myAddress,
@@ -795,8 +906,6 @@ const GroupItem = memo(
       attributes,
       listeners,
       setNodeRef,
-      transform,
-      transition,
       isDragging,
     } = useSortable({
       id: String(group?.groupId),
@@ -903,7 +1012,11 @@ const GroupItem = memo(
       const avatarNode = ownerName ? (
         <Avatar
           sx={{
-            backgroundColor: fallbackAvatarColor,
+            backgroundColor: isAvatarLoaded
+              ? isSelected
+                ? RETICULUM_ACTIVE_BLUE
+                : theme.palette.background.surface
+              : fallbackAvatarColor,
             color: theme.palette.common.white,
             display: 'flex',
             fontWeight: 800,
@@ -983,8 +1096,6 @@ const GroupItem = memo(
               overflow: 'visible',
               p: 0,
               position: 'relative',
-              transform: CSS.Transform.toString(transform),
-              transition,
               width: 52,
               zIndex: isDragging ? 4 : 'auto',
               '&:hover': {
@@ -994,6 +1105,7 @@ const GroupItem = memo(
               },
             }}
           >
+            {dropPosition && <GroupDropIndicator position={dropPosition} />}
             <ContextMenu
               getUserSettings={getUserSettings}
               groupId={group.groupId}
