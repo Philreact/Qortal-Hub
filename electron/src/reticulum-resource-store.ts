@@ -25,7 +25,7 @@ const STORAGE_MAINTENANCE_INTERVAL_MS = 15 * 60_000;
 const STARTUP_RECONCILE_BATCH_SIZE = 256;
 const STARTUP_RECONCILE_RETRY_MS = 30_000;
 const DISK_SPACE_CACHE_MS = 5_000;
-const RESOURCE_SCHEMA_VERSION = 1;
+const RESOURCE_SCHEMA_VERSION = 2;
 const STORAGE_ACCOUNTING_VERSION = 2;
 const RESOURCE_OPERATION_LEASE_MS = 15 * 60_000;
 
@@ -3234,60 +3234,112 @@ export class ReticulumResourceStore {
       CREATE TRIGGER trg_reticulum_resource_dirty_insert
       AFTER INSERT ON reticulum_resources WHEN NEW.managed = 1
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_resource_dirty_update
       AFTER UPDATE OF managed, resident_bytes, status, provenance, updated_at,
         last_accessed_at, retention_until ON reticulum_resources
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_ref_dirty_insert
       AFTER INSERT ON reticulum_resource_refs
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_ref_dirty_update
       AFTER UPDATE OF state, expires_at ON reticulum_resource_refs
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_ref_dirty_delete
       AFTER DELETE ON reticulum_resource_refs
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (OLD.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT OLD.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = OLD.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_lease_dirty_insert
       AFTER INSERT ON reticulum_resource_leases
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_lease_dirty_update
       AFTER UPDATE OF file_hash, expires_at ON reticulum_resource_leases
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (OLD.file_hash);
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT OLD.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = OLD.file_hash
+        );
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_lease_dirty_delete
       AFTER DELETE ON reticulum_resource_leases
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (OLD.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT OLD.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = OLD.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_provider_dirty_insert
       AFTER INSERT ON reticulum_resource_providers
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_provider_dirty_update
       AFTER UPDATE OF file_hash, retention_until ON reticulum_resource_providers
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (OLD.file_hash);
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (NEW.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT OLD.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = OLD.file_hash
+        );
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT NEW.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = NEW.file_hash
+        );
       END;
       CREATE TRIGGER trg_reticulum_provider_dirty_delete
       AFTER DELETE ON reticulum_resource_providers
       BEGIN
-        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash) VALUES (OLD.file_hash);
+        INSERT INTO reticulum_resource_cleanup_dirty(file_hash)
+        SELECT OLD.file_hash
+        WHERE NOT EXISTS (
+          SELECT 1 FROM reticulum_resource_cleanup_dirty WHERE file_hash = OLD.file_hash
+        );
       END;
     `);
   }

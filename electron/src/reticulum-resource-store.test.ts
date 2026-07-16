@@ -214,6 +214,87 @@ describe('reticulum resource store', () => {
     ).toThrow(/encryption conflicts/);
   });
 
+  it('keeps cleanup bookkeeping idempotent across repeated resource updates', () => {
+    const { store } = tempStore();
+    stores.push(store);
+    const contents = Buffer.from('repeat resource request');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:remote',
+      fileName: 'image.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: cryptoHash(contents),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 716 },
+    };
+
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    expect(() =>
+      store.storeManifest(manifest, { provenance: 'remote_downloaded' })
+    ).not.toThrow();
+
+    const reference = {
+      manifest,
+      scopeType: 'group' as const,
+      scopeId: 716,
+      eventId: 'event-repeat-resource',
+    };
+    store.recordReference(reference);
+    expect(() => store.recordReference(reference)).not.toThrow();
+
+    store.acquireLease(manifest.fileHash, 'viewer');
+    expect(() => store.acquireLease(manifest.fileHash, 'viewer')).not.toThrow();
+
+    const receipt = {
+      fileHash: manifest.fileHash,
+      providerId: 'provider-a',
+      scopeType: 'group' as const,
+      scopeId: 716,
+      retentionUntil: 200_000,
+    };
+    store.recordProviderReceipt(receipt);
+    expect(() => store.recordProviderReceipt(receipt)).not.toThrow();
+  });
+
+  it('reinstalls corrected cleanup triggers when an existing store reopens', () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, 'resources.db');
+    const rootDir = path.join(dir, 'resources');
+    const first = new ReticulumResourceStore({ dbPath, rootDir, now: () => 100_000 });
+    const contents = Buffer.from('existing resource database');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      fileName: 'existing.webp',
+      mimeType: 'image/webp',
+      sizeBytes: contents.length,
+      fileHash: cryptoHash(contents),
+      encrypted: false,
+      createdAt: 100_000,
+    };
+    first.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    const rawDb = (first as unknown as { db: BetterSqliteDatabase }).db;
+    rawDb.exec(`
+      DROP TRIGGER trg_reticulum_resource_dirty_update;
+      CREATE TRIGGER trg_reticulum_resource_dirty_update
+      AFTER UPDATE OF updated_at ON reticulum_resources
+      BEGIN
+        INSERT OR IGNORE INTO reticulum_resource_cleanup_dirty(file_hash)
+        VALUES (NEW.file_hash);
+      END;
+      UPDATE reticulum_resource_meta SET value = '1' WHERE key = 'schema_version';
+    `);
+    first.close();
+
+    const reopened = new ReticulumResourceStore({ dbPath, rootDir, now: () => 100_000 });
+    stores.push(reopened);
+
+    expect(() =>
+      reopened.storeManifest(manifest, { provenance: 'remote_downloaded' })
+    ).not.toThrow();
+  });
+
   it('does not trust manifest metadata as a live chat reference', () => {
     const { store } = tempStore();
     stores.push(store);
@@ -988,7 +1069,7 @@ describe('reticulum resource store', () => {
     const dbPath = path.join(dir, 'resources.db');
     const rootDir = path.join(dir, 'resources');
     const first = new ReticulumResourceStore({ dbPath, rootDir, now: () => 100_000 });
-    expect((first as any).getResourceMeta('schema_version')).toBe('1');
+    expect((first as any).getResourceMeta('schema_version')).toBe('2');
     expect((first as any).getResourceMeta('accounting_version')).toBe('2');
     first.close();
     const rebuild = vi.spyOn(
