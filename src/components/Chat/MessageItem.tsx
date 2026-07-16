@@ -15,6 +15,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  IconButton,
   LinearProgress,
   List,
   ListItem,
@@ -598,7 +599,6 @@ export const MessageItemComponent = ({
     averageBytesPerSecond?: number;
     nextRequestAt?: number | null;
   } | null>(null);
-
   useEffect(() => {
     if (
       !isReticulumResourceImage ||
@@ -2145,22 +2145,24 @@ export const MessageItemComponent = ({
                     Cancel
                   </Button>
                 ) : (
-                  <Button
-                    size="small"
-                    variant="contained"
-                    startIcon={<DownloadRoundedIcon />}
-                    disabled={fileResourceStatus === 'saving'}
-                    onClick={() => {
-                      void saveReticulumFileResource();
-                    }}
-                    sx={{ flexShrink: 0, textTransform: 'none' }}
-                  >
-                    {fileResourceStatus === 'ready'
-                      ? 'Save'
-                      : fileResourceStatus === 'error'
-                        ? 'Retry'
-                        : 'Download'}
-                  </Button>
+                  <Box sx={{ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 0.5 }}>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<DownloadRoundedIcon />}
+                      disabled={fileResourceStatus === 'saving'}
+                      onClick={() => {
+                        void saveReticulumFileResource();
+                      }}
+                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                    >
+                      {fileResourceStatus === 'ready'
+                        ? 'Save'
+                        : fileResourceStatus === 'error'
+                          ? 'Retry'
+                          : 'Download'}
+                    </Button>
+                  </Box>
                 )}
               </Box>
             )}

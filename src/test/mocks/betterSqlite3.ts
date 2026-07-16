@@ -1,6 +1,7 @@
 type ReticulumChatRow = Record<string, any>;
 type ReticulumResourceRow = Record<string, any>;
 type ReticulumResourceChunkRow = Record<string, any>;
+type ReticulumResourceStateRow = Record<string, any>;
 
 type MockStore = {
   reticulumChatEvents: ReticulumChatRow[];
@@ -13,6 +14,13 @@ type MockStore = {
   reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
+  reticulumResourceRanges: ReticulumResourceStateRow[];
+  reticulumResourceGroupRefs: ReticulumResourceStateRow[];
+  reticulumResourceRefs: ReticulumResourceStateRow[];
+  reticulumResourceLeases: ReticulumResourceStateRow[];
+  reticulumResourceReservations: ReticulumResourceStateRow[];
+  reticulumResourceProviders: ReticulumResourceStateRow[];
+  reticulumResourceMeta: Map<string, string>;
   schema: Map<string, Set<string>>;
 };
 
@@ -229,6 +237,98 @@ class Statement {
       return this.store.reticulumResourceChunks
         .filter((row) => row.file_hash === fileHash)
         .sort((a, b) => a.chunk_index - b.chunk_index);
+    }
+    if (this.sql.includes('FROM reticulum_resource_ranges')) {
+      const [fileHash, overlapEnd, overlapStart] = args;
+      return this.store.reticulumResourceRanges
+        .filter(
+          (row) =>
+            row.file_hash === fileHash &&
+            (!this.sql.includes("status = 'complete'") || row.status === 'complete') &&
+            (!this.sql.includes('start_byte <= ?') ||
+              (Number(row.start_byte) <= Number(overlapEnd) &&
+                Number(row.end_byte_exclusive) >= Number(overlapStart)))
+        )
+        .sort(
+          (a, b) =>
+            Number(a.start_byte) - Number(b.start_byte) ||
+            Number(a.end_byte_exclusive) - Number(b.end_byte_exclusive)
+        );
+    }
+    if (this.sql.includes('FROM reticulum_resource_group_refs')) {
+      const [fileHash] = args;
+      return this.store.reticulumResourceGroupRefs
+        .filter((row) => row.file_hash === fileHash)
+        .sort(
+          (a, b) =>
+            Number(a.group_id) - Number(b.group_id) ||
+            String(a.event_id).localeCompare(String(b.event_id))
+        );
+    }
+    if (
+      this.sql.includes('FROM reticulum_resource_refs') &&
+      !this.sql.includes('FROM reticulum_resources r')
+    ) {
+      const [fileHash] = args;
+      return this.store.reticulumResourceRefs
+        .filter((row) => row.file_hash === fileHash)
+        .sort(
+          (a, b) =>
+            String(a.scope_type).localeCompare(String(b.scope_type)) ||
+            String(a.scope_id).localeCompare(String(b.scope_id)) ||
+            String(a.event_id).localeCompare(String(b.event_id))
+        );
+    }
+    if (this.sql.includes('FROM reticulum_resources r')) {
+      const [liveNow = 0, providerNow = 0, leaseNow = 0] = args;
+      return this.store.reticulumResources
+        .filter(
+          (row) =>
+            ['reticulum-group-resource', 'reticulum-dm-resource'].includes(
+              String(row.namespace)
+            ) ||
+            this.store.reticulumResourceRefs.some(
+              (ref) =>
+                ref.file_hash === row.file_hash &&
+                ['reticulum-group-resource', 'reticulum-dm-resource'].includes(
+                  String(ref.namespace)
+                )
+            )
+        )
+        .map((row) => ({
+          ...row,
+          live_ref_count: this.store.reticulumResourceRefs.filter(
+            (ref) =>
+              ref.file_hash === row.file_hash &&
+              (!this.sql.includes("event_id <> ''") || Boolean(ref.event_id)) &&
+              ref.state === 'live' &&
+              (ref.expires_at == null || Number(ref.expires_at) > Number(liveNow))
+          ).length,
+          provider_count: new Set(
+            this.store.reticulumResourceProviders
+              .filter(
+                (provider) =>
+                  provider.file_hash === row.file_hash &&
+                  Number(provider.retention_until) > Number(providerNow)
+              )
+              .map((provider) => provider.provider_id)
+          ).size,
+          active_lease_count: this.store.reticulumResourceLeases.filter(
+            (lease) =>
+              lease.file_hash === row.file_hash &&
+              Number(lease.expires_at) > Number(leaseNow)
+          ).length,
+        }));
+    }
+    if (this.sql.includes('FROM reticulum_resources')) {
+      if (this.sql.includes('WHERE file_hash > ?')) {
+        const [afterFileHash = '', limit = Infinity] = args;
+        return this.store.reticulumResources
+          .filter((row) => String(row.file_hash) > String(afterFileHash))
+          .sort((a, b) => String(a.file_hash).localeCompare(String(b.file_hash)))
+          .slice(0, Number(limit) || Infinity);
+      }
+      return [...this.store.reticulumResources];
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
       if (this.sql.includes('WHERE event_id = ? OR target_event_id = ?')) {
@@ -473,9 +573,125 @@ class Statement {
         return { cnt: this.store.reticulumChatMessages.length };
       }
     }
+    if (this.sql.includes('FROM reticulum_resource_meta')) {
+      const [key] = args;
+      const value = this.store.reticulumResourceMeta.get(String(key));
+      return value == null ? undefined : { value };
+    }
+    if (
+      this.sql.includes('SELECT 1 AS present') &&
+      this.sql.includes('FROM reticulum_resources')
+    ) {
+      return this.store.reticulumResources.length > 0 ? { present: 1 } : undefined;
+    }
+    if (this.sql.includes('FROM reticulum_resources r')) {
+      const [liveNow = 0, providerNow = 0, leaseNow = 0, fileHash] = args;
+      const row = this.store.reticulumResources.find(
+        (item) => item.file_hash === fileHash
+      );
+      if (!row) return undefined;
+      return {
+        ...row,
+        live_ref_count: this.store.reticulumResourceRefs.filter(
+          (ref) =>
+            ref.file_hash === row.file_hash &&
+            (!this.sql.includes("event_id <> ''") || Boolean(ref.event_id)) &&
+            ref.state === 'live' &&
+            (ref.expires_at == null || Number(ref.expires_at) > Number(liveNow))
+        ).length,
+        provider_count: new Set(
+          this.store.reticulumResourceProviders
+            .filter(
+              (provider) =>
+                provider.file_hash === row.file_hash &&
+                Number(provider.retention_until) > Number(providerNow)
+            )
+            .map((provider) => provider.provider_id)
+        ).size,
+        active_lease_count: this.store.reticulumResourceLeases.filter(
+          (lease) =>
+            lease.file_hash === row.file_hash &&
+            Number(lease.expires_at) > Number(leaseNow)
+        ).length,
+      };
+    }
     if (this.sql.includes('FROM reticulum_resources')) {
       const [fileHash] = args;
-      return this.store.reticulumResources.find((row) => row.file_hash === fileHash);
+      const row = this.store.reticulumResources.find((item) => item.file_hash === fileHash);
+      if (!row) return undefined;
+      if (this.sql.includes('SELECT provenance')) return { provenance: row.provenance };
+      return row;
+    }
+    if (this.sql.includes('FROM reticulum_resource_group_refs')) {
+      const [fileHash, groupId] = args;
+      const row = this.store.reticulumResourceGroupRefs.find(
+        (item) => item.file_hash === fileHash && item.group_id === groupId
+      );
+      return row ? { 1: 1 } : undefined;
+    }
+    if (this.sql.includes('FROM reticulum_resource_refs')) {
+      const [fileHash, scopeType, scopeId] = args;
+      const hasEventPredicate = this.sql.includes('event_id = ?');
+      const eventBeforeExpiry =
+        hasEventPredicate &&
+        this.sql.indexOf('event_id = ?') < this.sql.indexOf('expires_at');
+      const eventId = hasEventPredicate
+        ? args[eventBeforeExpiry ? 3 : 4]
+        : undefined;
+      const expiryNow = this.sql.includes('expires_at')
+        ? args[hasEventPredicate && eventBeforeExpiry ? 4 : 3]
+        : undefined;
+      const rows = this.store.reticulumResourceRefs
+        .filter(
+          (row) =>
+            row.file_hash === fileHash &&
+            row.scope_type === scopeType &&
+            row.scope_id === scopeId &&
+            (!this.sql.includes("event_id <> ''") || Boolean(row.event_id)) &&
+            (!this.sql.includes('event_id = ?') || row.event_id === eventId) &&
+            (!this.sql.includes("state = 'live'") || row.state === 'live') &&
+            (expiryNow == null ||
+              row.expires_at == null ||
+              Number(row.expires_at) > Number(expiryNow))
+        )
+        .sort((a, b) => Number(b.updated_at) - Number(a.updated_at));
+      if (rows.length === 0) return undefined;
+      return this.sql.includes('SELECT 1') ? { 1: 1 } : rows[0];
+    }
+    if (this.sql.includes('FROM reticulum_resource_providers')) {
+      const [fileHash, now] = args;
+      return {
+        count: new Set(
+          this.store.reticulumResourceProviders
+            .filter(
+              (row) =>
+                row.file_hash === fileHash && Number(row.retention_until) > Number(now)
+            )
+            .map((row) => row.provider_id)
+        ).size,
+      };
+    }
+    if (this.sql.includes('FROM reticulum_resource_reservations')) {
+      const [now] = args;
+      return {
+        bytes: this.store.reticulumResourceReservations
+          .filter((row) => Number(row.expires_at) > Number(now))
+          .reduce((total, row) => total + Number(row.size_bytes || 0), 0),
+      };
+    }
+    if (
+      this.sql.includes('MAX(updated_at) AS updated_at') &&
+      this.sql.includes('FROM reticulum_resource_ranges')
+    ) {
+      const [fileHash] = args;
+      const updatedAt = this.store.reticulumResourceRanges
+        .filter((row) => row.file_hash === fileHash && row.status === 'complete')
+        .reduce<number | null>(
+          (latest, row) =>
+            latest == null ? Number(row.updated_at) : Math.max(latest, Number(row.updated_at)),
+          null
+        );
+      return { updated_at: updatedAt };
     }
     if (this.sql.includes('FROM reticulum_resource_chunks')) {
       if (this.sql.includes('COUNT(*) AS count')) {
@@ -562,9 +778,10 @@ class Statement {
     return undefined;
   }
 
-  run(params?: any, second?: any) {
+  run(...args: any[]) {
+    const [params, second] = args;
     if (this.sql.includes('INSERT INTO rchat_author_sequence_leases')) {
-      const values = Array.from(arguments);
+      const values = args;
       const row = {
         group_id: values[0],
         author_address: values[1],
@@ -592,7 +809,7 @@ class Statement {
       };
     }
     if (this.sql.includes('DELETE FROM rchat_author_sequence_leases')) {
-      const values = Array.from(arguments);
+      const values = args;
       const before = this.store.reticulumChatAuthorSequenceLeases.length;
       if (this.sql.includes('group_id = ?')) {
         const [groupId, authorAddress, authorStreamId, authorSeq, ownerId] = values;
@@ -640,7 +857,7 @@ class Statement {
       return { changes: 0, lastInsertRowid: 0 };
     }
     if (this.sql.includes('INSERT OR REPLACE INTO rchat_metadata_snapshots')) {
-      const values = Array.from(arguments);
+      const values = args;
       const row = params && typeof params === 'object' && !Array.isArray(params)
         ? { ...params }
         : {
@@ -663,7 +880,7 @@ class Statement {
       };
     }
     if (this.sql.includes('INSERT INTO rchat_metadata_entity_revisions')) {
-      const values = Array.from(arguments);
+      const values = args;
       const row = {
         group_id: values[0],
         entity_type: values[1],
@@ -694,28 +911,442 @@ class Statement {
         (row) => row.file_hash === params.file_hash
       );
       if (index >= 0) {
+        const existing = this.store.reticulumResources[index];
         this.store.reticulumResources[index] = {
-          ...this.store.reticulumResources[index],
-          ...params,
+          ...existing,
+          size_bytes: params.size_bytes,
+          encrypted: params.encrypted,
+          status: existing.status === 'complete' ? 'complete' : params.status,
+          assembled_path:
+            params.assembled_path !== undefined
+              ? params.assembled_path
+              : existing.assembled_path,
+          partial_path:
+            params.partial_path !== undefined
+              ? params.partial_path
+              : existing.partial_path,
+          owner_id: existing.owner_id ?? params.owner_id,
+          metadata: existing.metadata ?? params.metadata,
+          thumbnail: existing.thumbnail ?? params.thumbnail,
+          updated_at: params.updated_at,
+          final_verified_at: params.final_verified_at ?? existing.final_verified_at,
+          provenance:
+            existing.provenance === 'local_authored'
+              ? 'local_authored'
+              : params.provenance,
+          resident_bytes: Math.max(
+            Number(existing.resident_bytes || 0),
+            Number(params.resident_bytes || 0)
+          ),
+          last_accessed_at: params.last_accessed_at ?? existing.last_accessed_at,
+          last_served_at: params.last_served_at ?? existing.last_served_at,
+          access_count: Math.max(
+            Number(existing.access_count || 0),
+            Number(params.access_count || 0)
+          ),
+          retention_until: Math.max(
+            Number(existing.retention_until || 0),
+            Number(params.retention_until || 0)
+          ) || null,
+          managed: Math.max(Number(existing.managed || 0), Number(params.managed || 0)),
         };
         return { changes: 1, lastInsertRowid: index + 1 };
       }
       this.store.reticulumResources.push({ ...params });
       return { changes: 1, lastInsertRowid: this.store.reticulumResources.length };
     }
+    if (this.sql.includes('INSERT INTO reticulum_resource_meta')) {
+      const [key, value] = args;
+      this.store.reticulumResourceMeta.set(String(key), String(value));
+      return { changes: 1, lastInsertRowid: 0 };
+    }
     if (this.sql.includes('UPDATE reticulum_resources')) {
-      const [status, assembledPath, updatedAt, fileHash] = Array.isArray(params)
-        ? params
-        : [params, second, arguments[2], arguments[3]];
+      const values = args;
+      const fileHash = values[values.length - 1];
       const row = this.store.reticulumResources.find(
         (item) => item.file_hash === fileHash
       );
-      if (row) {
+      if (!row) return { changes: 0, lastInsertRowid: 0 };
+      if (this.sql.includes('SET status = ?')) {
+        const [status, assembledPath, partialPath, updatedAt, finalVerifiedAt] = values;
         row.status = status;
         row.assembled_path = assembledPath;
+        row.partial_path = partialPath;
         row.updated_at = updatedAt;
+        row.final_verified_at = finalVerifiedAt;
+      } else if (this.sql.includes('SET partial_path = ?')) {
+        const [partialPath, updatedAt] = values;
+        row.partial_path = partialPath;
+        row.updated_at = updatedAt;
+      } else if (this.sql.includes("SET provenance = 'local_authored'")) {
+        row.provenance = 'local_authored';
+        if (this.sql.includes('retention_until = NULL')) row.retention_until = null;
+        if (this.sql.includes('managed = MAX')) {
+          row.managed = Math.max(Number(row.managed || 0), Number(values[0] || 0));
+          row.updated_at = values[1];
+        } else {
+          row.updated_at = values[0];
+        }
+      } else if (this.sql.includes('SET managed = 1')) {
+        row.managed = 1;
+        row.updated_at = values[0];
+      } else if (this.sql.includes("SET provenance = 'remote_downloaded'")) {
+        row.provenance = 'remote_downloaded';
+      } else if (this.sql.includes('SET provenance = CASE')) {
+        if (row.provenance !== 'local_authored') row.provenance = 'replica';
+        row.retention_until = Math.max(
+          Number(row.retention_until || 0),
+          Number(values[0] || 0)
+        );
+        row.updated_at = values[1];
+      } else if (this.sql.includes('SET resident_bytes = 0')) {
+        row.resident_bytes = 0;
+        row.updated_at = values[0];
+      } else if (this.sql.includes('SET resident_bytes = ?')) {
+        row.resident_bytes = Number(values[0] || 0);
+        if (this.sql.includes('retention_until = CASE')) {
+          if (row.provenance !== 'local_authored') {
+            row.retention_until = Math.max(
+              Number(row.retention_until || 0),
+              Number(values[1] || 0)
+            );
+          }
+          row.updated_at = values[2];
+        } else {
+          row.updated_at = values[1];
+        }
+      } else if (this.sql.includes('SET retention_until = MAX')) {
+        if (row.provenance !== 'local_authored') {
+          row.retention_until = Math.max(
+            Number(row.retention_until || 0),
+            Number(values[0] || 0)
+          );
+        }
+      } else if (this.sql.includes('SET last_served_at = ?')) {
+        row.last_served_at = values[0];
+        row.last_accessed_at = values[1];
+        row.access_count = Number(row.access_count || 0) + 1;
+      } else if (this.sql.includes('SET last_accessed_at = ?')) {
+        row.last_accessed_at = values[0];
+        row.access_count = Number(row.access_count || 0) + 1;
       }
       return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT OR REPLACE INTO reticulum_resource_ranges')) {
+      const values = args;
+      const row = {
+        file_hash: values[0],
+        start_byte: values[1],
+        end_byte_exclusive: values[2],
+        status: 'complete',
+        updated_at: values[3],
+      };
+      const index = this.store.reticulumResourceRanges.findIndex(
+        (existing) =>
+          existing.file_hash === row.file_hash &&
+          existing.start_byte === row.start_byte &&
+          existing.end_byte_exclusive === row.end_byte_exclusive
+      );
+      if (index >= 0) this.store.reticulumResourceRanges[index] = row;
+      else this.store.reticulumResourceRanges.push(row);
+      return {
+        changes: 1,
+        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumResourceRanges.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM reticulum_resource_ranges')) {
+      const [fileHash, overlapEnd, overlapStart] = args;
+      const before = this.store.reticulumResourceRanges.length;
+      this.store.reticulumResourceRanges = this.store.reticulumResourceRanges.filter(
+        (row) =>
+          row.file_hash !== fileHash ||
+          (this.sql.includes('start_byte <= ?') &&
+            !(
+              Number(row.start_byte) <= Number(overlapEnd) &&
+              Number(row.end_byte_exclusive) >= Number(overlapStart)
+            ))
+      );
+      return {
+        changes: before - this.store.reticulumResourceRanges.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (this.sql.includes('INSERT INTO reticulum_resource_group_refs')) {
+      const values = args;
+      const row = {
+        file_hash: values[0],
+        group_id: values[1],
+        event_id: values[2],
+        owner_id: values[3],
+        created_at: values[4],
+        updated_at: values[5],
+      };
+      const index = this.store.reticulumResourceGroupRefs.findIndex(
+        (existing) =>
+          existing.file_hash === row.file_hash &&
+          existing.group_id === row.group_id &&
+          existing.event_id === row.event_id
+      );
+      if (index >= 0) {
+        this.store.reticulumResourceGroupRefs[index] = {
+          ...this.store.reticulumResourceGroupRefs[index],
+          owner_id: row.owner_id ?? this.store.reticulumResourceGroupRefs[index].owner_id,
+          updated_at: row.updated_at,
+        };
+      } else {
+        this.store.reticulumResourceGroupRefs.push(row);
+      }
+      return {
+        changes: 1,
+        lastInsertRowid:
+          index >= 0 ? index + 1 : this.store.reticulumResourceGroupRefs.length,
+      };
+    }
+    if (this.sql.includes('INSERT INTO reticulum_resource_refs')) {
+      const values = args;
+      const row = {
+        file_hash: values[0],
+        scope_type: values[1],
+        scope_id: values[2],
+        event_id: values[3],
+        owner_id: values[4],
+        namespace: values[5],
+        file_name: values[6],
+        mime_type: values[7],
+        size_bytes: values[8],
+        encrypted: values[9],
+        metadata: values[10],
+        thumbnail: values[11],
+        state: values[12],
+        locally_authored: values[13],
+        created_at: values[14],
+        updated_at: values[15],
+        expires_at: values[16] ?? null,
+      };
+      const index = this.store.reticulumResourceRefs.findIndex(
+        (existing) =>
+          existing.file_hash === row.file_hash &&
+          existing.scope_type === row.scope_type &&
+          existing.scope_id === row.scope_id &&
+          existing.event_id === row.event_id
+      );
+      if (index >= 0) {
+        const existing = this.store.reticulumResourceRefs[index];
+        this.store.reticulumResourceRefs[index] = {
+          ...existing,
+          ...row,
+          owner_id: row.owner_id ?? existing.owner_id,
+          locally_authored: Math.max(
+            Number(existing.locally_authored || 0),
+            Number(row.locally_authored || 0)
+          ),
+          created_at: existing.created_at,
+          state: ['deleted', 'expired'].includes(String(existing.state))
+            ? existing.state
+            : row.state,
+          expires_at:
+            existing.expires_at == null
+              ? row.expires_at
+              : row.expires_at == null
+                ? existing.expires_at
+                : Math.min(Number(existing.expires_at), Number(row.expires_at)),
+        };
+      } else {
+        this.store.reticulumResourceRefs.push(row);
+      }
+      return {
+        changes: 1,
+        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumResourceRefs.length,
+      };
+    }
+    if (this.sql.includes('UPDATE reticulum_resource_refs')) {
+      const values = args;
+      let changes = 0;
+      if (this.sql.includes('SET expires_at = ?')) {
+        const [expiresAt, fileHash, scopeType, scopeId, eventId] = values;
+        for (const row of this.store.reticulumResourceRefs) {
+          if (
+            row.file_hash === fileHash &&
+            row.scope_type === scopeType &&
+            row.scope_id === scopeId &&
+            row.event_id === eventId
+          ) {
+            row.expires_at = expiresAt;
+            changes += 1;
+          }
+        }
+      } else if (this.sql.includes("SET state = 'expired'")) {
+        const [updatedAt, now] = values;
+        for (const row of this.store.reticulumResourceRefs) {
+          if (
+            row.state === 'live' &&
+            row.expires_at != null &&
+            Number(row.expires_at) <= Number(now)
+          ) {
+            row.state = 'expired';
+            row.updated_at = updatedAt;
+            changes += 1;
+          }
+        }
+      } else if (this.sql.includes('SET state = ?')) {
+        const [state, updatedAt, scopeType, scopeId, eventId, fileHash] = values;
+        for (const row of this.store.reticulumResourceRefs) {
+          if (
+            row.scope_type === scopeType &&
+            row.scope_id === scopeId &&
+            row.event_id === eventId &&
+            (fileHash == null || row.file_hash === fileHash)
+          ) {
+            row.state = state;
+            row.updated_at = updatedAt;
+            changes += 1;
+          }
+        }
+      }
+      return { changes, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT INTO reticulum_resource_leases')) {
+      const values = args;
+      const next = {
+        lease_id: values[0],
+        file_hash: values[1],
+        lease_type: values[2],
+        expires_at: values[3],
+        created_at: values[4],
+      };
+      const existing = this.store.reticulumResourceLeases.findIndex(
+        (row) => row.lease_id === next.lease_id
+      );
+      if (existing >= 0) {
+        this.store.reticulumResourceLeases[existing] = {
+          ...this.store.reticulumResourceLeases[existing],
+          ...next,
+          created_at: this.store.reticulumResourceLeases[existing].created_at,
+        };
+      } else {
+        this.store.reticulumResourceLeases.push(next);
+      }
+      return {
+        changes: 1,
+        lastInsertRowid:
+          existing >= 0 ? existing + 1 : this.store.reticulumResourceLeases.length,
+      };
+    }
+    if (this.sql.includes('UPDATE reticulum_resource_leases')) {
+      const values = args;
+      const row = this.store.reticulumResourceLeases.find(
+        (item) => item.lease_id === values[1]
+      );
+      if (row) row.expires_at = values[0];
+      return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('DELETE FROM reticulum_resource_leases')) {
+      const values = args;
+      const before = this.store.reticulumResourceLeases.length;
+      this.store.reticulumResourceLeases = this.store.reticulumResourceLeases.filter(
+        (row) =>
+          this.sql.includes('expires_at <= ?')
+            ? Number(row.expires_at) > Number(values[0])
+            : row.lease_id !== values[0]
+      );
+      return {
+        changes: before - this.store.reticulumResourceLeases.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (this.sql.includes('INSERT INTO reticulum_resource_reservations')) {
+      const values = args;
+      this.store.reticulumResourceReservations.push({
+        reservation_id: values[0],
+        file_hash: values[1],
+        provenance: values[2],
+        size_bytes: values[3],
+        expires_at: values[4],
+        created_at: values[5],
+      });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumResourceReservations.length,
+      };
+    }
+    if (this.sql.includes('UPDATE reticulum_resource_reservations')) {
+      const values = args;
+      const updatesSize = this.sql.includes('SET size_bytes = ?');
+      const reservationId = updatesSize ? values[2] : values[1];
+      const row = this.store.reticulumResourceReservations.find(
+        (item) => item.reservation_id === reservationId
+      );
+      if (row) {
+        if (updatesSize) {
+          row.size_bytes = values[0];
+          row.expires_at = values[1];
+        } else {
+          row.expires_at = values[0];
+        }
+      }
+      return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('DELETE FROM reticulum_resource_reservations')) {
+      const values = args;
+      const before = this.store.reticulumResourceReservations.length;
+      this.store.reticulumResourceReservations =
+        this.store.reticulumResourceReservations.filter((row) =>
+          this.sql.includes('expires_at <= ?')
+            ? Number(row.expires_at) > Number(values[0])
+            : row.reservation_id !== values[0]
+        );
+      return {
+        changes: before - this.store.reticulumResourceReservations.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (this.sql.includes('INSERT INTO reticulum_resource_providers')) {
+      const values = args;
+      const row = {
+        file_hash: values[0],
+        provider_id: values[1],
+        scope_type: values[2],
+        scope_id: values[3],
+        receipt_at: values[4],
+        retention_until: values[5],
+        last_confirmed_at: values[6],
+      };
+      const index = this.store.reticulumResourceProviders.findIndex(
+        (existing) =>
+          existing.file_hash === row.file_hash &&
+          existing.provider_id === row.provider_id &&
+          existing.scope_type === row.scope_type &&
+          existing.scope_id === row.scope_id
+      );
+      if (index >= 0) {
+        const existing = this.store.reticulumResourceProviders[index];
+        this.store.reticulumResourceProviders[index] = {
+          ...existing,
+          receipt_at: row.receipt_at,
+          retention_until: Math.max(
+            Number(existing.retention_until),
+            Number(row.retention_until)
+          ),
+          last_confirmed_at: row.last_confirmed_at,
+        };
+      } else {
+        this.store.reticulumResourceProviders.push(row);
+      }
+      return {
+        changes: 1,
+        lastInsertRowid:
+          index >= 0 ? index + 1 : this.store.reticulumResourceProviders.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM reticulum_resource_providers')) {
+      const before = this.store.reticulumResourceProviders.length;
+      this.store.reticulumResourceProviders = this.store.reticulumResourceProviders.filter(
+        (row) => Number(row.retention_until) > Number(params)
+      );
+      return {
+        changes: before - this.store.reticulumResourceProviders.length,
+        lastInsertRowid: 0,
+      };
     }
     if (this.sql.includes('INSERT INTO reticulum_resource_chunks')) {
       const index = this.store.reticulumResourceChunks.findIndex(
@@ -739,7 +1370,7 @@ class Statement {
     if (this.sql.includes('UPDATE reticulum_resource_chunks')) {
       const [localPath, updatedAt, fileHash, chunkIndex] = Array.isArray(params)
         ? params
-        : [params, second, arguments[2], arguments[3]];
+        : [params, second, args[2], args[3]];
       const row = this.store.reticulumResourceChunks.find(
         (item) => item.file_hash === fileHash && item.chunk_index === chunkIndex
       );
@@ -768,7 +1399,7 @@ class Statement {
       return { changes: 1, lastInsertRowid: this.store.reticulumChatEvents.length };
     }
     if (this.sql.includes('INSERT OR IGNORE INTO rchat_expired_event_markers')) {
-      const values = Array.from(arguments);
+      const values = args;
       const [eventId, groupId, channelId, authorAddress, authorStreamId, authorSeq, timestamp, expiredAt] =
         values;
       if (
@@ -858,6 +1489,13 @@ class MockDatabase {
       reticulumChatAuthorSequenceLeases: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
+      reticulumResourceRanges: [],
+      reticulumResourceGroupRefs: [],
+      reticulumResourceRefs: [],
+      reticulumResourceLeases: [],
+      reticulumResourceReservations: [],
+      reticulumResourceProviders: [],
+      reticulumResourceMeta: new Map(),
       schema: new Map<string, Set<string>>(),
     };
     storesByPath.set(key, store);

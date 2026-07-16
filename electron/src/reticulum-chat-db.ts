@@ -2275,6 +2275,17 @@ export class ReticulumChatDatabase {
     return row ? rowToDirectEvent(row) : null;
   }
 
+  isDirectEventDeleted(eventId: string): boolean {
+    if (!eventId) return false;
+    return !!this.db
+      .prepare(`
+        SELECT 1 FROM rchat_dm_events
+        WHERE event_type = 'delete' AND target_event_id = ?
+        LIMIT 1
+      `)
+      .get(eventId);
+  }
+
   getDirectHistory(conversationId: string, limit = 100): ReticulumDmEvent[] {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     if (!normalized) return [];
@@ -2546,6 +2557,14 @@ export class ReticulumChatDatabase {
   private eventIsVisible(event: ReticulumChatEvent, now = Date.now()): boolean {
     const expiresAt = this.eventExpiresAt(event);
     return expiresAt === null || expiresAt > now;
+  }
+
+  getEventExpiresAt(eventId: string): number | null {
+    const normalizedEventId = String(eventId || '').trim();
+    if (!normalizedEventId) return null;
+    const row = this.stmtGetEvent.get(normalizedEventId) as EventRow | undefined;
+    const expiresAt = Number(row?.expires_at);
+    return Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : null;
   }
 
   private recordExpiredEventMarker(event: ReticulumChatEvent, expiredAt = Date.now()): void {

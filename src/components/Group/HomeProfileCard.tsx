@@ -126,6 +126,24 @@ type ReticulumConfigEditorInfo = {
   maxBytes: number;
   updatedAt?: number;
 };
+type ReticulumResourceStorageStatus = {
+  limitBytes: number;
+  totalResidentBytes: number;
+  authoredResidentBytes: number;
+  remoteResidentBytes: number;
+  partialResidentBytes: number;
+  reservedBytes: number;
+};
+
+const RETICULUM_RESOURCE_GIB = 1024 * 1024 * 1024;
+const formatStorageBytes = (bytes: number) => {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= RETICULUM_RESOURCE_GIB) {
+    return `${(value / RETICULUM_RESOURCE_GIB).toFixed(value >= 10 * RETICULUM_RESOURCE_GIB ? 0 : 1)} GB`;
+  }
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(0)} MB`;
+  return `${Math.round(value / 1024)} KB`;
+};
 
 const ACCOUNT_SETTINGS_PRIVACY_STORAGE_KEY =
   'home_account_settings_privacy_mode';
@@ -272,6 +290,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
   const [reticulumChatEnabled, setReticulumChatEnabled] = useState(false);
+  const [reticulumResourceLimitBytes, setReticulumResourceLimitBytes] =
+    useState(10 * RETICULUM_RESOURCE_GIB);
+  const [reticulumResourceStorage, setReticulumResourceStorage] =
+    useState<ReticulumResourceStorageStatus | null>(null);
+  const [isReticulumStorageCleaning, setIsReticulumStorageCleaning] =
+    useState(false);
   const [reticulumConfigEditorInfo, setReticulumConfigEditorInfo] =
     useState<ReticulumConfigEditorInfo | null>(null);
   const [reticulumConfigDraft, setReticulumConfigDraft] = useState('');
@@ -750,6 +774,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
       setReticulumChatEnabled(settings?.reticulumChatEnabled === true);
+      setReticulumResourceLimitBytes(
+        Number(settings?.reticulumResourceLimitBytes) ||
+          10 * RETICULUM_RESOURCE_GIB
+      );
+      const storageResponse =
+        await window.reticulumResources?.getStorageStatus?.();
+      if (storageResponse?.success && storageResponse.status) {
+        setReticulumResourceStorage(storageResponse.status);
+      }
       if (settings?.closeAction) setCloseAction(settings.closeAction);
       window.localStorage.setItem(
         ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY,
@@ -1084,6 +1117,63 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     },
     [reticulumChatEnabled, setInfoSnack, setOpenSnack, td]
   );
+
+  const handleReticulumResourceLimitChange = useCallback(
+    async (limitBytes: number) => {
+      const previous = reticulumResourceLimitBytes;
+      setReticulumResourceLimitBytes(limitBytes);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumResourceLimitBytes: limitBytes,
+        });
+        const response = await window.reticulumResources?.getStorageStatus?.();
+        if (response?.success && response.status) {
+          setReticulumResourceStorage(response.status);
+        }
+      } catch {
+        setReticulumResourceLimitBytes(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_storage_limit_error',
+            'We could not update attachment storage right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumResourceLimitBytes, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleReticulumStorageCleanup = useCallback(async () => {
+    if (isReticulumStorageCleaning) return;
+    setIsReticulumStorageCleaning(true);
+    try {
+      const response = await window.reticulumResources?.cleanupStorage?.();
+      if (!response?.success) {
+        throw new Error(response?.error || 'Storage cleanup failed');
+      }
+      if (response.status) {
+        setReticulumResourceStorage(response.status as ReticulumResourceStorageStatus);
+      }
+      setInfoSnack({
+        type: 'success',
+        message: td('reticulum_storage_cleaned', 'Attachment storage cleaned.'),
+      });
+      setOpenSnack(true);
+    } catch {
+      setInfoSnack({
+        type: 'error',
+        message: td(
+          'reticulum_storage_cleanup_error',
+          'We could not clean attachment storage right now.'
+        ),
+      });
+      setOpenSnack(true);
+    } finally {
+      setIsReticulumStorageCleaning(false);
+    }
+  }, [isReticulumStorageCleaning, setInfoSnack, setOpenSnack, td]);
 
   const handleSaveReticulumConfig = useCallback(async () => {
     if (
@@ -3605,6 +3695,87 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         onChange={handleToggleReticulumChat}
                         sx={settingsSwitchSx}
                       />
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: { sm: 'center' },
+                        display: 'flex',
+                        flexDirection: { xs: 'column', sm: 'row' },
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('reticulum_attachment_storage', 'Attachment storage')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {formatStorageBytes(
+                            reticulumResourceStorage?.totalResidentBytes || 0
+                          )}{' '}
+                          / {formatStorageBytes(reticulumResourceLimitBytes)}
+                        </Typography>
+                      </Box>
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          flexShrink: 0,
+                          gap: 0.8,
+                        }}
+                      >
+                        <Select
+                          size="small"
+                          value={reticulumResourceLimitBytes}
+                          onChange={(event) =>
+                            void handleReticulumResourceLimitChange(
+                              Number(event.target.value)
+                            )
+                          }
+                          sx={{ fontSize: '0.78rem', minWidth: 90 }}
+                        >
+                          {[2, 5, 10, 25, 50].map((gib) => (
+                            <MenuItem key={gib} value={gib * RETICULUM_RESOURCE_GIB}>
+                              {gib} GB
+                            </MenuItem>
+                          ))}
+                        </Select>
+                        <Button
+                          disabled={isReticulumStorageCleaning}
+                          onClick={() => void handleReticulumStorageCleanup()}
+                          size="small"
+                          variant="outlined"
+                          sx={{ minWidth: 74, textTransform: 'none' }}
+                        >
+                          {isReticulumStorageCleaning
+                            ? td('cleaning', 'Cleaning')
+                            : td('clean', 'Clean')}
+                        </Button>
+                      </Box>
                     </Box>
 
                     <Box

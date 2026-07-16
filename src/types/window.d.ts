@@ -84,6 +84,7 @@ declare global {
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumChatEnabled?: boolean;
+        reticulumResourceLimitBytes?: number;
       }>;
       setAppSettings?: (settings: {
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
@@ -93,6 +94,7 @@ declare global {
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumChatEnabled?: boolean;
+        reticulumResourceLimitBytes?: number;
       }) => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
@@ -101,6 +103,7 @@ declare global {
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumChatEnabled?: boolean;
+        reticulumResourceLimitBytes?: number;
       }>;
       /** Reticulum (rnsd) child process status from main process. */
       reticulumGetStatus?: () => Promise<{
@@ -896,6 +899,42 @@ declare global {
           progress?: number;
           nextRequestAt?: number | null;
         } | null;
+        error?: string;
+      }>;
+      getStorageStatus: () => Promise<{
+        success: boolean;
+        status?: {
+          limitBytes: number;
+          lowWatermarkBytes: number;
+          totalResidentBytes: number;
+          authoredResidentBytes: number;
+          remoteResidentBytes: number;
+          partialResidentBytes: number;
+          reservedBytes: number;
+          protectedBytes: number;
+          evictableBytes: number;
+          blobCount: number;
+          residentBlobCount: number;
+          lastCleanupAt: number | null;
+          lastCleanupFreedBytes: number;
+          blockedAuthoredPublishes: number;
+        };
+        error?: string;
+      }>;
+      cleanupStorage: () => Promise<{
+        success: boolean;
+        result?: {
+          freedBytes: number;
+          evictedBlobs: number;
+        };
+        status?: {
+          limitBytes: number;
+          totalResidentBytes: number;
+          authoredResidentBytes: number;
+          remoteResidentBytes: number;
+          partialResidentBytes: number;
+          reservedBytes: number;
+        };
         error?: string;
       }>;
       saveAs: (

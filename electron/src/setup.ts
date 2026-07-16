@@ -28,6 +28,11 @@ import {
   error as loggerError,
   warn as loggerWarn,
 } from './logger';
+import {
+  isRendererFrameUnavailableError,
+  isRendererMainFrameReady,
+  sendToRenderer,
+} from './renderer-delivery';
 import { myCapacitorApp, isQuitting, setIsQuitting } from '.';
 import {
   bootstrap,
@@ -122,7 +127,11 @@ import {
   startReticulumMeshCoordinator,
   stopReticulumMeshCoordinator,
 } from './reticulum-mesh';
-import { ReticulumResourceStore } from './reticulum-resource-store';
+import {
+  RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
+  RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
+  ReticulumResourceStore,
+} from './reticulum-resource-store';
 import { isDisabledLegacy } from './feature-flags';
 import {
   AUDIO_SURFACE_WINDOW_ROLE,
@@ -425,7 +434,7 @@ async function registerReticulumResourceProtocol(): Promise<void> {
       if (!manifest) return new Response('Not Found', { status: 404 });
       const filePath =
         store.getVerifiedAssembledPath(fileHash) ??
-        store.assembleResource(fileHash);
+        await store.assembleResourceAsync(fileHash);
       const response = await net.fetch(pathToFileURL(filePath).toString());
       const headers = new Headers(response.headers);
       headers.set('content-type', manifest.mimeType || 'application/octet-stream');
@@ -1652,6 +1661,8 @@ export interface AppSettings {
   reticulumManagedConfigEnabled?: boolean;
   /** Opt-in Reticulum-backed group chat transport. Default false until stable. */
   reticulumChatEnabled?: boolean;
+  /** Maximum disk bytes used by Reticulum chat images and attachments. */
+  reticulumResourceLimitBytes?: number;
 }
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -1661,6 +1672,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
   reticulumChatEnabled: false,
+  reticulumResourceLimitBytes: RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
 };
 
 export async function readAppSettings(): Promise<AppSettings> {
@@ -1691,6 +1703,16 @@ export async function readAppSettings(): Promise<AppSettings> {
       reticulumManagedConfigEnabled:
         parsed.reticulumManagedConfigEnabled === false ? false : true,
       reticulumChatEnabled: parsed.reticulumChatEnabled === true,
+      reticulumResourceLimitBytes: Math.max(
+        RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
+        Math.min(
+          100 * 1024 * 1024 * 1024,
+          Math.floor(
+            Number(parsed.reticulumResourceLimitBytes) ||
+              RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES
+          )
+        )
+      ),
     };
   } catch {
     return { ...DEFAULT_APP_SETTINGS };
@@ -1786,6 +1808,16 @@ ipcMain.handle(
     const next: AppSettings = {
       ...current,
       ...partial,
+      reticulumResourceLimitBytes: Math.max(
+        RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
+        Math.min(
+          100 * 1024 * 1024 * 1024,
+          Math.floor(
+            Number(partial.reticulumResourceLimitBytes ?? current.reticulumResourceLimitBytes) ||
+              RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES
+          )
+        )
+      ),
       ...(isDisabledLegacy
         ? {
             p2pEnabled: false,
@@ -1794,6 +1826,13 @@ ipcMain.handle(
         : {}),
     };
     await writeAppSettings(next);
+    if (reticulumResourceStore) {
+      reticulumResourceStore.setStoragePolicy({
+        limitBytes:
+          Number(next.reticulumResourceLimitBytes) ||
+          RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
+      });
+    }
     if (!isDisabledLegacy) {
       getStunCoordinator()?.setLegacyPublicStunFallback(
         next.legacyPublicStunFallback === true
@@ -2324,10 +2363,8 @@ function broadcastToSet(
   payload: unknown
 ): void {
   for (const wc of subscribers) {
-    if (wc.isDestroyed()) {
+    if (sendToRenderer(wc, channel, payload) === 'destroyed') {
       subscribers.delete(wc);
-    } else {
-      wc.send(channel, payload);
     }
   }
 }
@@ -2352,8 +2389,9 @@ function sendPresenceMainHeartbeatRequest(): void {
     stopPresenceMainHeartbeatScheduler();
     return;
   }
+  if (!isRendererMainFrameReady(mainWindow.webContents)) return;
   loggerLog('[Presence] Main heartbeat scheduler tick');
-  mainWindow.webContents.send('presence:heartbeat-request');
+  sendToRenderer(mainWindow.webContents, 'presence:heartbeat-request');
 }
 
 function startPresenceMainHeartbeatScheduler(): void {
@@ -2453,6 +2491,13 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
     pm = startPresenceManager(transports);
     attachPresenceListeners(pm);
   }
+  const appSettings = await readAppSettings();
+  const resourceStore = getReticulumResourceStore();
+  resourceStore.setStoragePolicy({
+    limitBytes:
+      Number(appSettings.reticulumResourceLimitBytes) ||
+      RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
+  });
   const reticulumChat = startReticulumChatManager(bridgeTransport ?? null, undefined, {
     signLocalFields: signReticulumChatControlFields,
     validateGroupMember: validateQortalGroupMember,
@@ -2466,7 +2511,7 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
         manager.getReticulumVerifiedPeers().length > 0
       );
     },
-    resourceStore: getReticulumResourceStore(),
+    resourceStore,
   });
   attachReticulumChatListeners(reticulumChat);
   startReticulumOverlayMaintenanceSync();
@@ -2766,6 +2811,7 @@ async function signReticulumChatControlFields(
 } | null> {
   const main = myCapacitorApp.getMainWindow();
   if (!main || main.isDestroyed()) return null;
+  if (!isRendererMainFrameReady(main.webContents)) return null;
   const pJson = JSON.stringify(fields ?? {});
   try {
     const result = await main.webContents.executeJavaScript(
@@ -2792,6 +2838,10 @@ async function signReticulumChatControlFields(
       };
     }
   } catch (err) {
+    if (
+      isRendererFrameUnavailableError(err) ||
+      !isRendererMainFrameReady(main.webContents)
+    ) return null;
     loggerWarn('[ReticulumChat] Control signing failed:', err);
   }
   return null;
@@ -4058,7 +4108,7 @@ ipcMain.handle('reticulumChat:cancelResource', async (_event, fileHash: string) 
     return { success: false, error: 'Reticulum chat manager is not running' };
   }
   try {
-    return { success: true, canceled: manager.cancelResource(hash) };
+    return { success: true, canceled: await manager.cancelResource(hash) };
   } catch (err) {
     return {
       success: false,
@@ -4066,6 +4116,13 @@ ipcMain.handle('reticulumChat:cancelResource', async (_event, fileHash: string) 
     };
   }
 });
+
+function managedReticulumChatResourceNamespace(value: unknown): string | null {
+  const namespace = typeof value === 'string' ? value.trim() : '';
+  return namespace === 'reticulum-group-resource' || namespace === 'reticulum-dm-resource'
+    ? namespace
+    : null;
+}
 
 ipcMain.handle(
   'reticulumResource:importBase64',
@@ -4091,10 +4148,8 @@ ipcMain.handle(
       typeof payload?.fileName === 'string' && payload.fileName.trim()
         ? payload.fileName.trim()
         : 'resource.bin';
-    const namespace =
-      typeof payload?.namespace === 'string' && payload.namespace.trim()
-        ? payload.namespace.trim()
-        : 'default';
+    const namespace = managedReticulumChatResourceNamespace(payload?.namespace);
+    if (!namespace) return { success: false, error: 'Invalid chat resource namespace' };
     const tempDir = path.join(app.getPath('temp'), 'qortal-reticulum-resource-imports');
     const tempPath = path.join(
       tempDir,
@@ -4103,7 +4158,7 @@ ipcMain.handle(
     try {
       await fs.promises.mkdir(tempDir, { recursive: true });
       await fs.promises.writeFile(tempPath, Buffer.from(base64, 'base64'));
-      const manifest = getReticulumResourceStore().importLocalFile({
+      const manifest = await getReticulumResourceStore().importLocalFileAsync({
         sourcePath: tempPath,
         namespace,
         ownerId:
@@ -4160,11 +4215,9 @@ ipcMain.handle(
         typeof payload?.mimeType === 'string' && payload.mimeType.trim()
           ? payload.mimeType.trim()
           : guessMimeTypeFromFileName(fileName);
-      const namespace =
-        typeof payload?.namespace === 'string' && payload.namespace.trim()
-          ? payload.namespace.trim()
-          : 'default';
-      const manifest = getReticulumResourceStore().importLocalFile({
+      const namespace = managedReticulumChatResourceNamespace(payload?.namespace);
+      if (!namespace) return { success: false, error: 'Invalid chat resource namespace' };
+      const manifest = await getReticulumResourceStore().importLocalFileAsync({
         sourcePath,
         namespace,
         ownerId:
@@ -4197,8 +4250,9 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
     const manifest = store.getManifest(hash);
     if (!manifest) return { success: false, error: 'Unknown resource' };
     const assembledPath =
-      store.getVerifiedAssembledPath(hash) ?? store.assembleResource(hash);
+      store.getVerifiedAssembledPath(hash) ?? await store.assembleResourceAsync(hash);
     if (!assembledPath) return { success: false, error: 'Resource not assembled' };
+    store.acquireLease(hash, 'viewer', RETICULUM_RESOURCE_URL_TOKEN_TTL_MS);
     return {
       success: true,
       url: reticulumResourceUrl(hash),
@@ -4208,6 +4262,37 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Reticulum resource URL failed',
+    };
+  }
+});
+
+ipcMain.handle('reticulumResource:getStorageStatus', async () => {
+  try {
+    const settings = await readAppSettings();
+    const store = getReticulumResourceStore();
+    store.setStoragePolicy({
+      limitBytes:
+        Number(settings.reticulumResourceLimitBytes) ||
+        RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
+    });
+    return { success: true, status: store.getStorageStatus() };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Reticulum storage status failed',
+    };
+  }
+});
+
+ipcMain.handle('reticulumResource:cleanupStorage', async () => {
+  try {
+    const store = getReticulumResourceStore();
+    const result = await store.cleanupStorage('manual');
+    return { success: true, result, status: store.getStorageStatus() };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Reticulum storage cleanup failed',
     };
   }
 });
@@ -4263,23 +4348,28 @@ ipcMain.handle(
       const store = getReticulumResourceStore();
       const manifest = store.getManifest(hash);
       if (!manifest) return { success: false, error: 'Unknown resource' };
-      const assembledPath =
-        store.getVerifiedAssembledPath(hash) ?? store.assembleResource(hash);
-      const defaultPath = path.basename(
-        typeof suggestedFileName === 'string' && suggestedFileName.trim()
-          ? suggestedFileName.trim()
-          : manifest.fileName || 'resource.bin'
-      );
-      const result = await dialog.showSaveDialog({ defaultPath });
-      if (result.canceled || !result.filePath) {
-        return { success: false, canceled: true };
+      const leaseId = store.acquireLease(hash, 'save', 60 * 60_000);
+      try {
+        const assembledPath =
+          store.getVerifiedAssembledPath(hash) ?? await store.assembleResourceAsync(hash);
+        const defaultPath = path.basename(
+          typeof suggestedFileName === 'string' && suggestedFileName.trim()
+            ? suggestedFileName.trim()
+            : manifest.fileName || 'resource.bin'
+        );
+        const result = await dialog.showSaveDialog({ defaultPath });
+        if (result.canceled || !result.filePath) {
+          return { success: false, canceled: true };
+        }
+        await fs.promises.mkdir(path.dirname(result.filePath), { recursive: true });
+        await pipeline(
+          fs.createReadStream(assembledPath),
+          fs.createWriteStream(result.filePath)
+        );
+        return { success: true, path: result.filePath };
+      } finally {
+        store.releaseLease(leaseId);
       }
-      await fs.promises.mkdir(path.dirname(result.filePath), { recursive: true });
-      await pipeline(
-        fs.createReadStream(assembledPath),
-        fs.createWriteStream(result.filePath)
-      );
-      return { success: true, path: result.filePath };
     } catch (err) {
       return {
         success: false,

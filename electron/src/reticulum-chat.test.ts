@@ -16,6 +16,7 @@ import {
   buildReticulumMetadataSnapshotRequestSignedFields,
   buildReticulumChatResourceAuthSignedFields,
   buildReticulumChatResourceFindSignedFields,
+  buildReticulumChatResourceReceiptSignedFields,
   buildReticulumChatResourceRequestSignedFields,
   buildReticulumLandAuthSignedFields,
   buildReticulumLandStateSignedFields,
@@ -35,10 +36,12 @@ import {
   validateReticulumDmEventShape,
   validateReticulumChatEventShape,
   verifyReticulumChatEvent,
+  verifyReticulumChatResourceReceipt,
   verifyReticulumDmEvent,
   verifyReticulumDmNotify,
   verifyReticulumDmProbe,
   verifyReticulumDmRequest,
+  verifyReticulumDmResourceReceipt,
   verifyReticulumMetadataSnapshotRequest,
   type ReticulumChatManagerOptions,
 } from './reticulum-chat';
@@ -1036,6 +1039,83 @@ describe('reticulum chat protocol', () => {
     expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_notify', d: notify })).toBe(true);
     expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_probe', q: probe })).toBe(true);
     expect(wireFitsReticulum({ t: 'RCHAT', k: 'dm_req', q: request })).toBe(true);
+  });
+
+  it('validates signed resource retention receipts and rejects tampering', () => {
+    const now = Date.now();
+    const groupId = 716;
+    const keyPair = nacl.sign.keyPair();
+    const authorPublicKey = base58Encode(keyPair.publicKey);
+    const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
+    const fields = buildReticulumChatResourceReceiptSignedFields({
+      groupId,
+      fileHash: 'f'.repeat(64),
+      sizeBytes: 1_024,
+      providerPeerHash: 'a'.repeat(32),
+      retentionUntil: now + 60_000,
+      authorAddress,
+      authorPublicKey,
+      timestamp: now,
+    });
+    const receipt: Extract<ReticulumChatWire, { k: 'resource_receipt' }>['r'] = {
+      f: 'f'.repeat(64),
+      s: 1_024,
+      l: now + 60_000,
+      sp: 'a'.repeat(32),
+      p: authorPublicKey,
+      n: now,
+      z: base58Encode(
+        nacl.sign.detached(
+          new Uint8Array(canonicalizeForSigning(fields)),
+          keyPair.secretKey
+        )
+      ),
+    };
+
+    expect(verifyReticulumChatResourceReceipt(groupId, receipt, now)).toBe(true);
+    expect(
+      verifyReticulumChatResourceReceipt(groupId, { ...receipt, s: 2_048 }, now)
+    ).toBe(false);
+    expect(verifyReticulumChatResourceReceipt(groupId, receipt, receipt.l + 1)).toBe(false);
+  });
+
+  it('binds signed DM resource receipts to the exact conversation', () => {
+    const now = Date.now();
+    const provider = createDmIdentity();
+    const peer = createDmIdentity();
+    const conversationId = reticulumDmConversationId(provider.address, peer.address);
+    const fields = buildReticulumChatResourceReceiptSignedFields({
+      conversationId,
+      peerAddress: peer.address,
+      fileHash: 'e'.repeat(64),
+      sizeBytes: 2_048,
+      providerPeerHash: 'b'.repeat(32),
+      retentionUntil: now + 60_000,
+      authorAddress: provider.address,
+      authorPublicKey: provider.publicKey,
+      timestamp: now,
+    });
+    const receipt: Extract<ReticulumChatWire, { k: 'dm_resource_receipt' }>['r'] = {
+      c: conversationId,
+      b: peer.address,
+      f: 'e'.repeat(64),
+      s: 2_048,
+      l: now + 60_000,
+      sp: 'b'.repeat(32),
+      p: provider.publicKey,
+      n: now,
+      z: base58Encode(
+        nacl.sign.detached(
+          new Uint8Array(canonicalizeForSigning(fields)),
+          provider.secretKey
+        )
+      ),
+    };
+
+    expect(verifyReticulumDmResourceReceipt(receipt, now)).toBe(true);
+    expect(
+      verifyReticulumDmResourceReceipt({ ...receipt, b: createDmIdentity().address }, now)
+    ).toBe(false);
   });
 
   it('keeps DM resource discovery as a compact locator packet', () => {
@@ -8978,6 +9058,12 @@ describe('reticulum chat manager', () => {
       encrypted: false,
       metadata: { groupId: 81 },
     });
+    resourceStore.recordGroupReference({
+      fileHash: manifest.fileHash,
+      groupId: 81,
+      eventId: 'event-linked-resource',
+      ownerId: manifest.ownerId,
+    });
 
     const offeredResources: Array<Record<string, unknown>> = [];
     const authorizations: Array<Record<string, unknown>> = [];
@@ -9033,7 +9119,6 @@ describe('reticulum chat manager', () => {
       peerPresenceHash: requesterPeerHash,
       auth: authRequest,
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
     manager.handleGenericResourceEvent({
       status: 'auth',
       linkId: 'resource-link-1-resource',
@@ -9041,7 +9126,7 @@ describe('reticulum chat manager', () => {
       peerPresenceHash: requesterPeerHash,
       auth: authRequest,
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => expect(authorizations).toHaveLength(2));
 
     const expectedPayloadHash = nodeCrypto
       .createHash('sha256')
@@ -9068,6 +9153,33 @@ describe('reticulum chat manager', () => {
         transferId: 'linked-transfer-1',
       },
     ]);
+
+    resourceStore.setReferenceState({
+      fileHash: manifest.fileHash,
+      scopeType: 'group',
+      scopeId: 81,
+      eventId: 'event-linked-resource',
+      state: 'deleted',
+    });
+    manager.handleGenericResourceEvent({
+      status: 'auth',
+      linkId: 'resource-link-deleted',
+      transferId: 'linked-transfer-deleted',
+      peerPresenceHash: requesterPeerHash,
+      auth: {
+        ...authRequest,
+        transferId: 'linked-transfer-deleted',
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(offeredResources).toHaveLength(1);
+    expect(rejections).toContainEqual(
+      expect.objectContaining({
+        transferId: 'linked-transfer-deleted',
+        reason: 'request_not_allowed',
+      })
+    );
     manager.close();
     resourceStore.close();
   });
@@ -9257,7 +9369,7 @@ describe('reticulum chat manager', () => {
         requesterPeerHash,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => expect(offeredResources).toHaveLength(1));
 
     expect(rejections).toEqual([]);
     expect(offeredResources).toHaveLength(1);
@@ -9372,7 +9484,7 @@ describe('reticulum chat manager', () => {
       encrypted: false,
       metadata: { groupId: 81, eventId: 'event-file-group-81' },
     });
-    resourceStore.importLocalFile({
+    const secondManifest = resourceStore.importLocalFile({
       sourcePath,
       namespace: 'reticulum-chat-file',
       ownerId: '82:sender',
@@ -9380,6 +9492,20 @@ describe('reticulum chat manager', () => {
       mimeType: 'application/octet-stream',
       encrypted: false,
       metadata: { groupId: 82, eventId: 'event-file-group-82' },
+    });
+    resourceStore.recordReference({
+      manifest,
+      scopeType: 'group',
+      scopeId: 81,
+      eventId: 'event-file-group-81',
+      locallyAuthored: true,
+    });
+    resourceStore.recordReference({
+      manifest: secondManifest,
+      scopeType: 'group',
+      scopeId: 82,
+      eventId: 'event-file-group-82',
+      locallyAuthored: true,
     });
 
     const offeredResources: Array<Record<string, unknown>> = [];
@@ -9429,10 +9555,11 @@ describe('reticulum chat manager', () => {
         requesterPeerHash: 'a'.repeat(32),
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => expect(offeredResources).toHaveLength(1));
 
-    expect(resourceStore.getManifest(manifest.fileHash)?.metadata?.groupId).toBe(82);
-    expect(resourceStore.hasGroupReference(manifest.fileHash, 81)).toBe(true);
+    expect(resourceStore.getManifest(manifest.fileHash)?.metadata?.groupId).toBe(81);
+    expect(resourceStore.hasLiveReference(manifest.fileHash, 'group', 81)).toBe(true);
+    expect(resourceStore.hasLiveReference(manifest.fileHash, 'group', 82)).toBe(true);
     expect(offeredResources).toHaveLength(1);
     expect(offeredResources[0].metadata).toEqual(
       expect.objectContaining({
@@ -10065,9 +10192,8 @@ describe('reticulum chat manager', () => {
     });
 
     manager.handleWire(findWire, '2'.repeat(32));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(validateGroupMember).toHaveBeenCalledTimes(1));
 
-    expect(validateGroupMember).toHaveBeenCalledTimes(1);
     expect(direct.some((item) => item.wire.k === 'resource_have')).toBe(false);
     expect(fanouts.some((call) => call.messages.some((wire) => wire.k === 'rf'))).toBe(false);
     manager.close();
@@ -10127,9 +10253,8 @@ describe('reticulum chat manager', () => {
     });
 
     manager.handleWire(findWire, '2'.repeat(32));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(validateGroupMember).toHaveBeenCalledTimes(1));
 
-    expect(validateGroupMember).toHaveBeenCalledTimes(1);
     expect(direct.some((item) =>
       item.peer === '2'.repeat(32) &&
       item.wire.k === 'resource_have' &&
@@ -10744,7 +10869,7 @@ describe('reticulum chat manager', () => {
       activeTransfers: 1,
       inFlightRangeCount: 1,
     });
-    expect(manager.cancelResource(fileHash)).toBe(true);
+    await expect(manager.cancelResource(fileHash)).resolves.toBe(true);
     expect(bridge.cancelReticulumResourceDetailed).toHaveBeenCalledWith(
       expect.objectContaining({
         transferId: accepted[0].transferId,
@@ -15107,6 +15232,81 @@ describe('reticulum chat manager', () => {
       g: groupId,
       s: expect.objectContaining({ h: fullSnapshot.snapshotHash, sc: 'full' }),
     }));
+    manager.close();
+  });
+
+  it('does not let metadata request cooldown suppress live chat or QortalLand wires', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 1_000,
+    });
+    const peerHash = '9'.repeat(32);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      manager.handleWire({
+        t: 'RCHAT',
+        v: 3,
+        k: 'metadata_snapshot_req_v3',
+        g: 716,
+        q: {},
+      }, peerHash);
+    }
+
+    expect(
+      (manager as any).isPeerProtocolCooledDown(peerHash, 'metadata_snapshot_req_v3')
+    ).toBe(true);
+    expect((manager as any).isPeerProtocolCooledDown(peerHash, 'event_notice_v3')).toBe(false);
+    expect((manager as any).isPeerProtocolCooledDown(peerHash, 'land_auth')).toBe(false);
+    expect((manager as any).isPeerProtocolCooledDown(peerHash, 'land_state')).toBe(false);
+
+    const metadataRequest = vi.spyOn(manager as any, 'handleMetadataSnapshotReq')
+      .mockResolvedValue(undefined);
+    const metadataOffer = vi.spyOn(manager as any, 'handleMetadataSnapshotOffer')
+      .mockResolvedValue(undefined);
+    const eventNotice = vi.spyOn(manager as any, 'handleEventNotice')
+      .mockImplementation(() => undefined);
+    const landAuth = vi.spyOn(manager as any, 'enqueueLandAuthWire')
+      .mockImplementation(() => undefined);
+    const landState = vi.spyOn(manager as any, 'enqueueLandStateWire')
+      .mockImplementation(() => undefined);
+
+    manager.handleWire({
+      t: 'RCHAT',
+      v: 3,
+      k: 'metadata_snapshot_req_v3',
+      g: 716,
+      q: {},
+    }, peerHash);
+    manager.handleWire({
+      t: 'RCHAT',
+      v: 3,
+      k: 'metadata_snapshot_offer_v3',
+      g: 716,
+      s: {},
+    }, peerHash);
+    manager.handleWire({
+      t: 'RCHAT',
+      v: 3,
+      k: 'event_notice_v3',
+      g: 716,
+      n: {},
+    }, peerHash);
+    manager.handleWire({
+      t: 'RCHAT',
+      k: 'land_auth',
+      g: 716,
+    }, peerHash);
+    manager.handleWire({
+      t: 'RCHAT',
+      k: 'land_state',
+      g: 716,
+    }, peerHash);
+
+    expect(metadataRequest).not.toHaveBeenCalled();
+    expect(metadataOffer).toHaveBeenCalledOnce();
+    expect(eventNotice).toHaveBeenCalledOnce();
+    expect(landAuth).toHaveBeenCalledOnce();
+    expect(landState).toHaveBeenCalledOnce();
     manager.close();
   });
 

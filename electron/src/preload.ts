@@ -362,6 +362,7 @@ try {
       reticulumMeshUpnpEnabled?: boolean;
       reticulumManagedConfigEnabled?: boolean;
       reticulumChatEnabled?: boolean;
+      reticulumResourceLimitBytes?: number;
     }) => ipcRenderer.invoke('appSettings:set', settings),
     reticulumGetStatus: () =>
       ipcRenderer.invoke('reticulum:getStatus') as Promise<{
@@ -921,6 +922,19 @@ try {
           averageBytesPerSecond?: number;
           nextRequestAt?: number | null;
         } | null;
+        error?: string;
+      }>,
+    getStorageStatus: async () =>
+      ipcRenderer.invoke('reticulumResource:getStorageStatus') as Promise<{
+        success: boolean;
+        status?: unknown;
+        error?: string;
+      }>,
+    cleanupStorage: async () =>
+      ipcRenderer.invoke('reticulumResource:cleanupStorage') as Promise<{
+        success: boolean;
+        result?: unknown;
+        status?: unknown;
         error?: string;
       }>,
     saveAs: async (fileHash: string, suggestedFileName?: string) =>

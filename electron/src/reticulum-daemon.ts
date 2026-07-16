@@ -44,6 +44,7 @@ import {
   meshConfigSliceFromState,
 } from './reticulum-mesh-store';
 import { runEd25519VerifySync } from './ed25519-verify-common';
+import { sendToRenderer } from './renderer-delivery';
 
 /**
  * Reticulum hub mesh: listen on the mesh port with optional private-gateway discovery.
@@ -2702,11 +2703,9 @@ async function broadcastReticulumStatusSnapshot(): Promise<void> {
   if (reticulumStatusSubscribers.size === 0) return;
   const status = await collectReticulumStatusSnapshot();
   for (const wc of reticulumStatusSubscribers) {
-    if (wc.isDestroyed()) {
+    if (sendToRenderer(wc, RETICULUM_STATUS_CHANNEL, status) === 'destroyed') {
       reticulumStatusSubscribers.delete(wc);
-      continue;
     }
-    wc.send(RETICULUM_STATUS_CHANNEL, status);
   }
 }
 
@@ -3640,8 +3639,11 @@ export function registerReticulumIpcHandlers(): void {
     reticulumStatusSubscribers.add(event.sender);
     void collectReticulumStatusSnapshot()
       .then((status) => {
-        if (!event.sender.isDestroyed()) {
-          event.sender.send(RETICULUM_STATUS_CHANNEL, status);
+        if (
+          sendToRenderer(event.sender, RETICULUM_STATUS_CHANNEL, status) ===
+          'destroyed'
+        ) {
+          reticulumStatusSubscribers.delete(event.sender);
         }
       })
       .catch((error) => {

@@ -936,6 +936,21 @@ export type ReticulumDmResourceFindWire = {
   z?: string;
 };
 
+export type ReticulumChatResourceReceiptWire = {
+  f: string;
+  s: number;
+  l: number;
+  sp: string;
+  p: string;
+  n: number;
+  z: string;
+};
+
+export type ReticulumDmResourceReceiptWire = ReticulumChatResourceReceiptWire & {
+  c: string;
+  b: string;
+};
+
 export type ReticulumDmPageOfferWire = {
   x: string;
   c: string;
@@ -1024,6 +1039,7 @@ export type ReticulumChatWire =
       z: string;
     }
   | { t: 'RCHAT'; k: 'resource_have'; g: number; fh: string; s: number; rid?: string; sp?: string; rk?: string }
+  | { t: 'RCHAT'; k: 'resource_receipt'; g: number; r: ReticulumChatResourceReceiptWire }
   | {
       t: 'RCHAT';
       k: 'feed_req';
@@ -1075,6 +1091,7 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'dm_typing'; c: string; a: string; ts: number; active: boolean }
   | { t: 'RCHAT'; k: 'dm_resource_find'; q: ReticulumDmResourceFindWire }
   | { t: 'RCHAT'; k: 'dm_resource_have'; c: string; fh: string; s: number; rid?: string; sp?: string; rk?: string }
+  | { t: 'RCHAT'; k: 'dm_resource_receipt'; r: ReticulumDmResourceReceiptWire }
   | { t: 'RCHAT'; k: 'dm_page_offer'; p: ReticulumDmPageOfferWire }
   | {
       t: 'RCHAT';
@@ -1388,6 +1405,8 @@ const RETICULUM_CHAT_RESOURCE_FIND_TTL_MS = 30_000;
 const RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS = 5;
 const RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_RESOURCE_FIND_ROUTE_MAX = 4096;
+const RETICULUM_CHAT_RESOURCE_REPLICA_RETENTION_MS = 24 * 60 * 60_000;
+const RETICULUM_CHAT_RESOURCE_RECEIPT_MAX_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const RETICULUM_CHAT_DIRECT_RESOURCE_FIND_FANOUT_FALLBACK_MS = 2_000;
 const RETICULUM_DM_RESOURCE_CONTEXT_ID = 1;
 const RETICULUM_CHAT_IDENTITY_REQUEST_TTL_MS = 30_000;
@@ -1472,6 +1491,13 @@ type ReticulumChatPeerViolationRecord = {
   lastAt: number;
   cooldownUntil: number;
 };
+
+type ReticulumChatPeerViolationScope =
+  | 'hello'
+  | 'metadata_offer'
+  | 'metadata_request'
+  | 'event_notice'
+  | 'event_history';
 
 type ReticulumChatGroupInterestRoute = {
   reversePeerHash: string;
@@ -2496,6 +2522,103 @@ export function buildReticulumChatResourceFindSignedFields(input: {
     timestamp: input.timestamp,
     type: 'RCHAT_RESOURCE_FIND',
   };
+}
+
+export function buildReticulumChatResourceReceiptSignedFields(input: {
+  groupId?: number;
+  conversationId?: string;
+  peerAddress?: string;
+  fileHash: string;
+  sizeBytes: number;
+  providerPeerHash: string;
+  retentionUntil: number;
+  authorAddress: string;
+  authorPublicKey: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    authorAddress: input.authorAddress,
+    authorPublicKey: input.authorPublicKey,
+    ...(input.groupId ? { groupId: input.groupId } : {}),
+    ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+    ...(input.peerAddress ? { peerAddress: input.peerAddress } : {}),
+    fileHash: input.fileHash.toLowerCase(),
+    providerPeerHash: input.providerPeerHash.toLowerCase(),
+    retentionUntil: input.retentionUntil,
+    sizeBytes: input.sizeBytes,
+    timestamp: input.timestamp,
+    type: input.groupId
+      ? 'RCHAT_RESOURCE_RECEIPT'
+      : 'RCHAT_DM_RESOURCE_RECEIPT',
+  };
+}
+
+export function verifyReticulumChatResourceReceipt(
+  groupId: number,
+  wire: ReticulumChatResourceReceiptWire,
+  now = Date.now()
+): boolean {
+  return verifyResourceReceiptFields({ groupId, wire, now });
+}
+
+export function verifyReticulumDmResourceReceipt(
+  wire: ReticulumDmResourceReceiptWire,
+  now = Date.now()
+): boolean {
+  const conversationId = normalizeReticulumDmConversationId(wire?.c);
+  const peerAddress = typeof wire?.b === 'string' ? wire.b.trim() : '';
+  if (!conversationId || !peerAddress) return false;
+  return verifyResourceReceiptFields({ conversationId, peerAddress, wire, now });
+}
+
+function verifyResourceReceiptFields(input: {
+  groupId?: number;
+  conversationId?: string;
+  peerAddress?: string;
+  wire: ReticulumChatResourceReceiptWire;
+  now: number;
+}): boolean {
+  try {
+    const { wire, now } = input;
+    if (input.groupId != null && (!Number.isInteger(input.groupId) || input.groupId <= 0)) return false;
+    if (typeof wire.f !== 'string' || !/^[0-9a-f]{64}$/i.test(wire.f)) return false;
+    if (!Number.isInteger(wire.s) || wire.s <= 0) return false;
+    if (!Number.isFinite(wire.n)) return false;
+    if (wire.n > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
+    if (wire.n < now - RETICULUM_CHAT_CONTROL_MAX_AGE_MS) return false;
+    if (!Number.isFinite(wire.l) || wire.l <= now) return false;
+    if (wire.l - now > RETICULUM_CHAT_RESOURCE_RECEIPT_MAX_RETENTION_MS) return false;
+    const providerPeerHash = normalizePeerHashFromWire(wire.sp);
+    if (!providerPeerHash) return false;
+    const authorAddress = deriveAddressFromPublicKey(wire.p);
+    if (!authorAddress || typeof wire.z !== 'string' || !wire.z) return false;
+    if (input.conversationId) {
+      if (!input.peerAddress || authorAddress === input.peerAddress) return false;
+      if (reticulumDmConversationId(authorAddress, input.peerAddress) !== input.conversationId) return false;
+    }
+    return verifyEd25519Detached(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumChatResourceReceiptSignedFields({
+            ...(input.groupId ? { groupId: input.groupId } : {}),
+            ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+            ...(input.peerAddress ? { peerAddress: input.peerAddress } : {}),
+            fileHash: wire.f,
+            sizeBytes: wire.s,
+            providerPeerHash,
+            retentionUntil: wire.l,
+            authorAddress,
+            authorPublicKey: wire.p,
+            timestamp: wire.n,
+          })
+        )
+      ),
+      new Uint8Array(base58Decode(wire.z)),
+      new Uint8Array(base58Decode(wire.p))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function normalizedMetadataSnapshotBody(input: {
@@ -4244,6 +4367,7 @@ export class ReticulumChatManager extends EventEmitter {
   private directResourceFindRoutes = new Map<string, ReticulumDmResourceFindRoute>();
   private localDirectResourceFindRequests = new Map<string, number>();
   private recentDirectResourceDiscoveryRequests = new Map<string, number>();
+  private recentResourceReceiptsSent = new Map<string, number>();
   private learnedResourceIdentityPublicKeys = new Map<string, string>();
   private identityRequestRoutes = new Map<string, ReticulumChatIdentityRoute>();
   private localIdentityRequests = new Map<string, ReticulumChatIdentityWaiter>();
@@ -4334,6 +4458,19 @@ export class ReticulumChatManager extends EventEmitter {
           );
           return false;
         }
+        if (
+          !this.resourceStore?.hasLiveReference(
+            fileHash,
+            'group',
+            groupId,
+            request.eventId
+          )
+        ) {
+          loggerWarn(
+            `[ReticulumChat] Refusing resource ${fileHash}: no live message reference${request.eventId ? ` for event ${request.eventId}` : ''}`
+          );
+          return false;
+        }
         if (request.eventId) {
           const event = this.db.getEvent(request.eventId);
           if (!event || event.groupId !== groupId) {
@@ -4411,6 +4548,19 @@ export class ReticulumChatManager extends EventEmitter {
         if (!conversationId || !this.resourceManifestBelongsToDirectConversation(manifest, conversationId)) {
           loggerWarn(
             `[ReticulumChat] Refusing DM resource ${fileHash}: resource is not for conversation=${conversationId || 'unknown'}`
+          );
+          return false;
+        }
+        if (
+          !this.resourceStore?.hasLiveReference(
+            fileHash,
+            'dm',
+            conversationId,
+            request.eventId
+          )
+        ) {
+          loggerWarn(
+            `[ReticulumChat] Refusing DM resource ${fileHash}: no live message reference${request.eventId ? ` for event ${request.eventId}` : ''}`
           );
           return false;
         }
@@ -4547,6 +4697,7 @@ export class ReticulumChatManager extends EventEmitter {
       failed: progress.failed,
       canceled: progress.canceled,
     });
+    if (progress.complete) void this.sendGroupResourceReceipts(progress);
   }
 
   private emitDirectResourceTransferProgress(progress: ReticulumResourceTransferProgress): void {
@@ -4561,6 +4712,235 @@ export class ReticulumChatManager extends EventEmitter {
       failed: progress.failed,
       canceled: progress.canceled,
     });
+    if (progress.complete) void this.sendDirectResourceReceipts(progress);
+  }
+
+  private async sendGroupResourceReceipts(
+    progress: ReticulumResourceTransferProgress
+  ): Promise<void> {
+    if (!this.resourceStore || !this.signLocalFields) return;
+    const groupId = progress.contextId;
+    const fileHash = progress.fileHash.toLowerCase();
+    const sourcePeers = (progress.sourcePeerHashes ?? [])
+      .map((peer) => this.normalizeResourcePeerHash(peer))
+      .filter((peer): peer is string => Boolean(peer));
+    if (!Number.isInteger(groupId) || groupId <= 0 || sourcePeers.length === 0) return;
+    if (!this.resourceStore.hasLiveReference(fileHash, 'group', groupId, progress.eventId)) return;
+    const manifest = this.resourceStore.getReferenceManifest(
+      fileHash,
+      'group',
+      groupId,
+      progress.eventId
+    );
+    const providerPeerHash = this.getLocalResourcePeerHash();
+    if (!manifest || !providerPeerHash) return;
+    const leaseId = this.resourceStore.acquireLease(fileHash, 'seed', 60_000);
+    try {
+      const timestamp = this.now();
+      this.pruneRecentResourceReceipts(timestamp);
+      const retentionUntil = timestamp + RETICULUM_CHAT_RESOURCE_REPLICA_RETENTION_MS;
+      const signed = await this.signLocalFields({
+        groupId,
+        fileHash,
+        sizeBytes: manifest.sizeBytes,
+        providerPeerHash,
+        retentionUntil,
+        timestamp,
+        type: 'RCHAT_RESOURCE_RECEIPT',
+      }).catch(() => null);
+      if (!signed?.authorPublicKey || !signed.signature || !signed.authorAddress) return;
+      if (!(await this.isValidatedGroupMember(groupId, signed.authorAddress))) return;
+      const receipt: ReticulumChatResourceReceiptWire = {
+        f: fileHash,
+        s: manifest.sizeBytes,
+        l: retentionUntil,
+        sp: this.compactResourcePeerHash(providerPeerHash),
+        p: signed.authorPublicKey,
+        n: timestamp,
+        z: signed.signature,
+      };
+      if (!verifyReticulumChatResourceReceipt(groupId, receipt, timestamp)) return;
+      let sent = false;
+      for (const peer of new Set(sourcePeers)) {
+        const key = `group:${groupId}:${fileHash}:${peer}`;
+        if ((this.recentResourceReceiptsSent.get(key) ?? 0) > timestamp) continue;
+        const result = await this.sendToPeer(peer, {
+          t: 'RCHAT',
+          k: 'resource_receipt',
+          g: groupId,
+          r: receipt,
+        });
+        if (!result.ok) continue;
+        sent = true;
+        this.recentResourceReceiptsSent.set(key, retentionUntil);
+      }
+      if (sent) {
+        this.resourceStore.markReplicaRetention(fileHash, retentionUntil);
+        loggerLog(
+          `[ReticulumChat] resource_replica_receipt_sent group=${groupId} file=${fileHash.slice(0, 12)} providers=${sourcePeers.length} retentionMs=${RETICULUM_CHAT_RESOURCE_REPLICA_RETENTION_MS}`
+        );
+      }
+    } finally {
+      this.resourceStore.releaseLease(leaseId);
+    }
+  }
+
+  private async sendDirectResourceReceipts(
+    progress: ReticulumResourceTransferProgress
+  ): Promise<void> {
+    if (!this.resourceStore || !this.signLocalFields) return;
+    const conversationId = normalizeReticulumDmConversationId(
+      progress.featureData?.conversationId
+    );
+    const peerAddress =
+      typeof progress.featureData?.peerAddress === 'string'
+        ? progress.featureData.peerAddress.trim()
+        : '';
+    const requesterAddress =
+      typeof progress.featureData?.requesterAddress === 'string'
+        ? progress.featureData.requesterAddress.trim()
+        : '';
+    const fileHash = progress.fileHash.toLowerCase();
+    const sourcePeers = (progress.sourcePeerHashes ?? [])
+      .map((peer) => this.normalizeResourcePeerHash(peer))
+      .filter((peer): peer is string => Boolean(peer));
+    if (
+      !conversationId ||
+      !peerAddress ||
+      !requesterAddress ||
+      reticulumDmConversationId(requesterAddress, peerAddress) !== conversationId ||
+      sourcePeers.length === 0
+    ) return;
+    if (!this.resourceStore.hasLiveReference(fileHash, 'dm', conversationId, progress.eventId)) return;
+    const manifest = this.resourceStore.getReferenceManifest(
+      fileHash,
+      'dm',
+      conversationId,
+      progress.eventId
+    );
+    const providerPeerHash = this.getLocalResourcePeerHash();
+    if (!manifest || !providerPeerHash) return;
+    const leaseId = this.resourceStore.acquireLease(fileHash, 'seed', 60_000);
+    try {
+      const timestamp = this.now();
+      this.pruneRecentResourceReceipts(timestamp);
+      const retentionUntil = timestamp + RETICULUM_CHAT_RESOURCE_REPLICA_RETENTION_MS;
+      const signed = await this.signLocalFields({
+        conversationId,
+        peerAddress,
+        fileHash,
+        sizeBytes: manifest.sizeBytes,
+        providerPeerHash,
+        retentionUntil,
+        timestamp,
+        type: 'RCHAT_DM_RESOURCE_RECEIPT',
+      }).catch(() => null);
+      if (
+        !signed?.authorPublicKey ||
+        !signed.signature ||
+        signed.authorAddress !== requesterAddress
+      ) return;
+      const receipt: ReticulumDmResourceReceiptWire = {
+        c: conversationId,
+        b: peerAddress,
+        f: fileHash,
+        s: manifest.sizeBytes,
+        l: retentionUntil,
+        sp: this.compactResourcePeerHash(providerPeerHash),
+        p: signed.authorPublicKey,
+        n: timestamp,
+        z: signed.signature,
+      };
+      if (!verifyReticulumDmResourceReceipt(receipt, timestamp)) return;
+      let sent = false;
+      for (const peer of new Set(sourcePeers)) {
+        const key = `dm:${conversationId}:${fileHash}:${peer}`;
+        if ((this.recentResourceReceiptsSent.get(key) ?? 0) > timestamp) continue;
+        const result = await this.sendToPeer(peer, {
+          t: 'RCHAT',
+          k: 'dm_resource_receipt',
+          r: receipt,
+        });
+        if (!result.ok) continue;
+        sent = true;
+        this.recentResourceReceiptsSent.set(key, retentionUntil);
+      }
+      if (sent) {
+        this.resourceStore.markReplicaRetention(fileHash, retentionUntil);
+        loggerLog(
+          `[ReticulumChat] dm_resource_replica_receipt_sent conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} retentionMs=${RETICULUM_CHAT_RESOURCE_REPLICA_RETENTION_MS}`
+        );
+      }
+    } finally {
+      this.resourceStore.releaseLease(leaseId);
+    }
+  }
+
+  private pruneRecentResourceReceipts(now: number): void {
+    for (const [key, expiresAt] of this.recentResourceReceiptsSent) {
+      if (expiresAt <= now) this.recentResourceReceiptsSent.delete(key);
+    }
+    const maxEntries = 4_096;
+    if (this.recentResourceReceiptsSent.size <= maxEntries) return;
+    const overflow = [...this.recentResourceReceiptsSent.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, this.recentResourceReceiptsSent.size - maxEntries);
+    for (const [key] of overflow) this.recentResourceReceiptsSent.delete(key);
+  }
+
+  private async handleResourceReceipt(
+    groupId: number,
+    receipt: ReticulumChatResourceReceiptWire,
+    peerHash: string
+  ): Promise<void> {
+    if (!this.resourceStore || !verifyReticulumChatResourceReceipt(groupId, receipt, this.now())) return;
+    const providerPeerHash = this.normalizeResourcePeerHash(receipt.sp);
+    const inboundPeerHash = this.normalizeResourcePeerHash(peerHash);
+    if (!providerPeerHash || providerPeerHash !== inboundPeerHash) return;
+    const providerAddress = deriveAddressFromPublicKey(receipt.p);
+    if (!(await this.isValidatedGroupMember(groupId, providerAddress))) return;
+    const manifest = this.resourceStore.getReferenceManifest(receipt.f, 'group', groupId);
+    if (!manifest || manifest.sizeBytes !== receipt.s) return;
+    this.resourceStore.recordProviderReceipt({
+      fileHash: receipt.f,
+      providerId: providerPeerHash,
+      scopeType: 'group',
+      scopeId: groupId,
+      retentionUntil: receipt.l,
+      receiptAt: receipt.n,
+    });
+    loggerLog(
+      `[ReticulumChat] resource_replica_receipt_accepted group=${groupId} file=${receipt.f.slice(0, 12)} provider=${providerPeerHash.slice(0, 16)} retentionMs=${Math.max(0, receipt.l - this.now())}`
+    );
+  }
+
+  private async handleDirectResourceReceipt(
+    receipt: ReticulumDmResourceReceiptWire,
+    peerHash: string
+  ): Promise<void> {
+    if (!this.resourceStore || !verifyReticulumDmResourceReceipt(receipt, this.now())) return;
+    const conversationId = normalizeReticulumDmConversationId(receipt.c);
+    const providerPeerHash = this.normalizeResourcePeerHash(receipt.sp);
+    const inboundPeerHash = this.normalizeResourcePeerHash(peerHash);
+    if (!conversationId || !providerPeerHash || providerPeerHash !== inboundPeerHash) return;
+    const providerAddress = deriveAddressFromPublicKey(receipt.p);
+    if (
+      !this.localDmAddresses.has(receipt.b) ||
+      reticulumDmConversationId(providerAddress, receipt.b) !== conversationId
+    ) return;
+    const manifest = this.resourceStore.getReferenceManifest(receipt.f, 'dm', conversationId);
+    if (!manifest || manifest.sizeBytes !== receipt.s) return;
+    this.resourceStore.recordProviderReceipt({
+      fileHash: receipt.f,
+      providerId: providerPeerHash,
+      scopeType: 'dm',
+      scopeId: conversationId,
+      retentionUntil: receipt.l,
+      receiptAt: receipt.n,
+    });
+    loggerLog(
+      `[ReticulumChat] dm_resource_replica_receipt_accepted conversation=${conversationId.slice(0, 16)} file=${receipt.f.slice(0, 12)} provider=${providerPeerHash.slice(0, 16)} retentionMs=${Math.max(0, receipt.l - this.now())}`
+    );
   }
 
   setRuntimeCallbacks(
@@ -4664,6 +5044,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.localIdentityRequests.clear();
     this.recentResourceDiscoveryRequests.clear();
+    this.recentResourceReceiptsSent.clear();
     this.directResourceFindRoutes.clear();
     this.localDirectResourceFindRequests.clear();
     this.recentDirectResourceDiscoveryRequests.clear();
@@ -5863,13 +6244,15 @@ export class ReticulumChatManager extends EventEmitter {
       return { ok: false, reason: 'send-command-failed', error: 'Resource is not for this group' };
     }
     this.resourceStore.storeManifest(manifest);
-    this.resourceStore.recordGroupReference({
-      fileHash: manifest.fileHash,
-      groupId,
-      eventId,
-      ownerId: manifest.ownerId,
-      createdAt: manifest.createdAt,
-    });
+    if (eventId) {
+      this.resourceStore.recordGroupReference({
+        fileHash: manifest.fileHash,
+        groupId,
+        eventId,
+        ownerId: manifest.ownerId,
+        createdAt: manifest.createdAt,
+      });
+    }
     const candidatePeers = this.getResourceRequestPeers(eventId);
     this.resourceTransfer.requestResource({
       contextId: groupId,
@@ -5906,6 +6289,16 @@ export class ReticulumChatManager extends EventEmitter {
       return { ok: false, reason: 'send-command-failed', error: 'Resource is not for this DM conversation' };
     }
     this.resourceStore.storeManifest(manifest);
+    if (eventId) {
+      this.resourceStore.recordDirectReference({
+        manifest,
+        conversationId,
+        eventId,
+        ownerId: manifest.ownerId,
+        locallyAuthored: false,
+        createdAt: manifest.createdAt,
+      });
+    }
     const candidatePeers = this.getDirectResourceRequestPeers(remoteAddress, eventId);
     this.directResourceTransfer.requestResource({
       contextId: RETICULUM_DM_RESOURCE_CONTEXT_ID,
@@ -5928,9 +6321,11 @@ export class ReticulumChatManager extends EventEmitter {
     return { ok: true };
   }
 
-  cancelResource(fileHash: string): boolean {
-    const groupCanceled = this.resourceTransfer?.cancelResource(fileHash) ?? false;
-    const directCanceled = this.directResourceTransfer?.cancelResource(fileHash) ?? false;
+  async cancelResource(fileHash: string): Promise<boolean> {
+    const [groupCanceled, directCanceled] = await Promise.all([
+      this.resourceTransfer?.cancelResource(fileHash) ?? false,
+      this.directResourceTransfer?.cancelResource(fileHash) ?? false,
+    ]);
     return groupCanceled || directCanceled;
   }
 
@@ -7713,7 +8108,7 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     if (wire.t !== 'RCHAT' || typeof wire.k !== 'string') return;
     const peerHash = this.peerKey(peerPresenceHash, senderDestinationHash);
-    if (this.isPeerProtocolCooledDown(peerHash)) return;
+    if (this.isPeerProtocolCooledDown(peerHash, wire.k)) return;
 
     switch (wire.k) {
       case 'hello_v3':
@@ -7899,6 +8294,17 @@ export class ReticulumChatManager extends EventEmitter {
         void this.handleResourceHave(groupId, wire, peerHash);
         return;
       }
+      case 'resource_receipt':
+      {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.handleResourceReceipt(
+          groupId,
+          wire.r as ReticulumChatResourceReceiptWire,
+          peerHash
+        );
+        return;
+      }
       case 'feed_req': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
@@ -7937,6 +8343,12 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       case 'dm_resource_have':
         void this.handleDirectResourceHave(wire as Extract<ReticulumChatWire, { k: 'dm_resource_have' }>, peerHash);
+        return;
+      case 'dm_resource_receipt':
+        void this.handleDirectResourceReceipt(
+          wire.r as ReticulumDmResourceReceiptWire,
+          peerHash
+        );
         return;
       case 'dm_page_offer':
         void this.handleDirectPageOffer(wire as Extract<ReticulumChatWire, { k: 'dm_page_offer' }>, peerHash);
@@ -12291,32 +12703,71 @@ export class ReticulumChatManager extends EventEmitter {
     return Math.max(1, Math.min(RETICULUM_CHAT_MAX_DIGEST_CHANNELS_PER_GROUP, Math.floor(limit)));
   }
 
+  private peerViolationScopeForReason(reason: string): ReticulumChatPeerViolationScope {
+    if (reason === 'bad_hello') return 'hello';
+    if (reason === 'bad_metadata_snapshot_request') return 'metadata_request';
+    if (reason.startsWith('metadata_snapshot_') || reason === 'bad_metadata_snapshot') {
+      return 'metadata_offer';
+    }
+    if (reason === 'bad_event_notice_v3') return 'event_notice';
+    return 'event_history';
+  }
+
+  private peerViolationScopeForWireKind(
+    kind: string
+  ): ReticulumChatPeerViolationScope | null {
+    switch (kind) {
+      case 'hello_v3':
+        return 'hello';
+      case 'metadata_snapshot_offer_v3':
+        return 'metadata_offer';
+      case 'metadata_snapshot_req_v3':
+        return 'metadata_request';
+      case 'event_notice_v3':
+        return 'event_notice';
+      case 'event_batch':
+      case 'event_page_offer':
+        return 'event_history';
+      default:
+        return null;
+    }
+  }
+
+  private peerViolationKey(peerHash: string, scope: ReticulumChatPeerViolationScope): string {
+    return `${peerHash.trim().toLowerCase()}:${scope}`;
+  }
+
   private notePeerViolation(peerHash: string, reason: string): void {
     const key = peerHash.trim().toLowerCase();
     if (!key) return;
+    const scope = this.peerViolationScopeForReason(reason);
+    const violationKey = this.peerViolationKey(key, scope);
     const now = this.now();
-    const existing = this.peerProtocolViolations.get(key);
+    const existing = this.peerProtocolViolations.get(violationKey);
     const count = existing && now - existing.lastAt < RETICULUM_CHAT_PEER_VIOLATION_COOLDOWN_MS
       ? existing.count + 1
       : 1;
     const cooldownUntil = count >= RETICULUM_CHAT_MAX_PEER_VIOLATIONS_BEFORE_COOLDOWN
       ? now + RETICULUM_CHAT_PEER_VIOLATION_COOLDOWN_MS
       : 0;
-    this.peerProtocolViolations.set(key, { count, lastAt: now, cooldownUntil });
+    this.peerProtocolViolations.set(violationKey, { count, lastAt: now, cooldownUntil });
     loggerWarn(
-      `[ReticulumChat] Peer protocol violation peer=${key} reason=${reason} count=${count}` +
+      `[ReticulumChat] Peer protocol violation peer=${key} scope=${scope} reason=${reason} count=${count}` +
         (cooldownUntil ? ` cooldownMs=${cooldownUntil - now}` : '')
     );
   }
 
-  private isPeerProtocolCooledDown(peerHash: string): boolean {
+  private isPeerProtocolCooledDown(peerHash: string, wireKind: string): boolean {
     const key = peerHash.trim().toLowerCase();
     if (!key) return false;
-    const record = this.peerProtocolViolations.get(key);
+    const scope = this.peerViolationScopeForWireKind(wireKind);
+    if (!scope) return false;
+    const violationKey = this.peerViolationKey(key, scope);
+    const record = this.peerProtocolViolations.get(violationKey);
     if (!record || record.cooldownUntil <= 0) return false;
     const now = this.now();
     if (record.cooldownUntil > now) return true;
-    this.peerProtocolViolations.delete(key);
+    this.peerProtocolViolations.delete(violationKey);
     return false;
   }
 
@@ -12356,6 +12807,7 @@ export class ReticulumChatManager extends EventEmitter {
       options.deliveryStatus
     );
     if (inserted) {
+      this.syncDirectResourceReferences(event, ownEvent);
       const emittedEvent: ReticulumDmEvent = {
         ...event,
         localDeliveryStatus:
@@ -12382,6 +12834,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.db.hasEvent(event.eventId)) return false;
     const inserted = this.db.insertEvent(event, ownEvent);
     if (inserted) {
+      this.syncGroupResourceReferences(event, ownEvent);
       this.invalidateGroupDigestSnapshot(event.groupId);
       this.updateAuthorTreeCacheForEvent(event);
       if (CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
@@ -17338,11 +17791,11 @@ export class ReticulumChatManager extends EventEmitter {
     return verifyReticulumChatResourceFind(groupId, wire, this.now());
   }
 
-  private checkLocalResourceServeAvailability(
+  private async checkLocalResourceServeAvailability(
     groupId: number,
     fileHash: string,
     sizeBytes: number
-  ): ReticulumChatResourceServeCheck {
+  ): Promise<ReticulumChatResourceServeCheck> {
     const manifest = this.resourceStore?.getManifest(fileHash);
     if (!manifest) return { ok: false, reason: 'manifest_missing' };
     if (manifest.fileHash.toLowerCase() !== fileHash) return { ok: false, reason: 'hash_mismatch' };
@@ -17351,18 +17804,18 @@ export class ReticulumChatManager extends EventEmitter {
     try {
       const sourcePath =
         this.resourceStore?.getVerifiedAssembledPath(fileHash) ??
-        this.resourceStore?.assembleResource(fileHash);
+        await this.resourceStore?.assembleResourceAsync(fileHash);
       return sourcePath ? { ok: true } : { ok: false, reason: 'not_complete' };
     } catch {
       return { ok: false, reason: 'not_complete' };
     }
   }
 
-  private checkLocalDirectResourceServeAvailability(
+  private async checkLocalDirectResourceServeAvailability(
     conversationId: string,
     fileHash: string,
     sizeBytes?: number
-  ): ReticulumChatResourceServeCheck {
+  ): Promise<ReticulumChatResourceServeCheck> {
     const manifest = this.resourceStore?.getManifest(fileHash);
     if (!manifest) return { ok: false, reason: 'manifest_missing' };
     if (manifest.fileHash.toLowerCase() !== fileHash) return { ok: false, reason: 'hash_mismatch' };
@@ -17373,7 +17826,7 @@ export class ReticulumChatManager extends EventEmitter {
     try {
       const sourcePath =
         this.resourceStore?.getVerifiedAssembledPath(fileHash) ??
-        this.resourceStore?.assembleResource(fileHash);
+        await this.resourceStore?.assembleResourceAsync(fileHash);
       return sourcePath ? { ok: true } : { ok: false, reason: 'not_complete' };
     } catch {
       return { ok: false, reason: 'not_complete' };
@@ -17434,7 +17887,7 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: routeExpiresAt,
     });
 
-    const localServe = this.checkLocalResourceServeAvailability(groupId, fileHash, sizeBytes);
+    const localServe = await this.checkLocalResourceServeAvailability(groupId, fileHash, sizeBytes);
     if (localServe.ok && localPeerHash) {
       const requesterAddress = deriveAddressFromPublicKey(wire.p);
       const requesterMembership = requesterAddress
@@ -17633,7 +18086,7 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: Math.min(query.x, now + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS),
     });
 
-    const localServe = this.checkLocalDirectResourceServeAvailability(
+    const localServe = await this.checkLocalDirectResourceServeAvailability(
       conversationId,
       fileHash,
       Number.isInteger(requestedSizeBytes) && requestedSizeBytes > 0 ? requestedSizeBytes : undefined
@@ -18832,16 +19285,161 @@ export class ReticulumChatManager extends EventEmitter {
     return true;
   }
 
+  private resourceManifestsFromPayload(payload: string): {
+    manifests: ReticulumResourceManifest[];
+    expiresInMs?: number;
+  } | null {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const manifests = new Map<string, ReticulumResourceManifest>();
+    for (const collection of [record.images, record.attachments]) {
+      if (!Array.isArray(collection)) continue;
+      for (const candidate of collection) {
+        if (!this.isValidReticulumResourceManifest(candidate)) continue;
+        if (
+          candidate.namespace !== 'reticulum-group-resource' &&
+          candidate.namespace !== 'reticulum-dm-resource'
+        ) continue;
+        manifests.set(candidate.fileHash.toLowerCase(), {
+          ...candidate,
+          fileHash: candidate.fileHash.toLowerCase(),
+        });
+      }
+    }
+    const expiresInMs = normalizeReticulumChatExpiryDurationMs(
+      record.expiryDurationMs ?? record.expiresInMs ?? record.messageExpiryDurationMs
+    );
+    return {
+      manifests: [...manifests.values()],
+      ...(expiresInMs != null ? { expiresInMs } : {}),
+    };
+  }
+
+  private syncGroupResourceReferences(event: ReticulumChatEvent, ownEvent: boolean): void {
+    if (!this.resourceStore) return;
+    if (event.eventType === 'delete') {
+      if (event.targetEventId) {
+        this.resourceStore.setReferenceState({
+          scopeType: 'group',
+          scopeId: event.groupId,
+          eventId: event.targetEventId,
+          state: 'deleted',
+        });
+      }
+      return;
+    }
+    if (
+      event.eventType !== 'message' &&
+      event.eventType !== 'edit' &&
+      event.eventType !== 'attachment_manifest'
+    ) return;
+    const payload = this.resourceManifestsFromPayload(event.encryptedPayload);
+    if (!payload) return;
+    const referenceEventId =
+      event.eventType === 'edit' ? event.targetEventId : event.eventId;
+    if (!referenceEventId) return;
+    if (this.db.isEventPayloadScrubbed(referenceEventId)) {
+      this.resourceStore.setReferenceState({
+        scopeType: 'group',
+        scopeId: event.groupId,
+        eventId: referenceEventId,
+        state: 'deleted',
+      });
+      return;
+    }
+    if (event.eventType === 'edit') {
+      this.resourceStore.setReferenceState({
+        scopeType: 'group',
+        scopeId: event.groupId,
+        eventId: referenceEventId,
+        state: 'inaccessible',
+      });
+    }
+    const expiresAt =
+      this.db.getEventExpiresAt(referenceEventId) ??
+      (payload.expiresInMs ? event.timestamp + payload.expiresInMs : undefined);
+    for (const manifest of payload.manifests) {
+      if (manifest.namespace !== 'reticulum-group-resource') continue;
+      if (!this.resourceManifestBelongsToGroup(manifest, event.groupId)) continue;
+      this.resourceStore.recordReference({
+        manifest,
+        scopeType: 'group',
+        scopeId: event.groupId,
+        eventId: referenceEventId,
+        ownerId: manifest.ownerId,
+        locallyAuthored: ownEvent,
+        createdAt: event.timestamp,
+        expiresAt,
+      });
+    }
+  }
+
+  private syncDirectResourceReferences(event: ReticulumDmEvent, ownEvent: boolean): void {
+    if (!this.resourceStore) return;
+    if (event.eventType === 'delete') {
+      if (event.targetEventId) {
+        this.resourceStore.setReferenceState({
+          scopeType: 'dm',
+          scopeId: event.conversationId,
+          eventId: event.targetEventId,
+          state: 'deleted',
+        });
+      }
+      return;
+    }
+    if (event.eventType !== 'message' && event.eventType !== 'edit') return;
+    const payload = this.resourceManifestsFromPayload(event.payload);
+    if (!payload) return;
+    const referenceEventId =
+      event.eventType === 'edit' ? event.targetEventId : event.eventId;
+    if (!referenceEventId) return;
+    if (this.db.isDirectEventDeleted(referenceEventId)) {
+      this.resourceStore.setReferenceState({
+        scopeType: 'dm',
+        scopeId: event.conversationId,
+        eventId: referenceEventId,
+        state: 'deleted',
+      });
+      return;
+    }
+    if (event.eventType === 'edit') {
+      this.resourceStore.setReferenceState({
+        scopeType: 'dm',
+        scopeId: event.conversationId,
+        eventId: referenceEventId,
+        state: 'inaccessible',
+      });
+    }
+    for (const manifest of payload.manifests) {
+      if (manifest.namespace !== 'reticulum-dm-resource') continue;
+      if (!this.resourceManifestBelongsToDirectConversation(manifest, event.conversationId)) continue;
+      this.resourceStore.recordDirectReference({
+        manifest,
+        conversationId: event.conversationId,
+        eventId: referenceEventId,
+        ownerId: manifest.ownerId,
+        locallyAuthored: ownEvent,
+        createdAt: event.timestamp,
+      });
+    }
+  }
+
   private resourceManifestBelongsToGroup(
     manifest: ReticulumResourceManifest,
     groupId: number
   ): boolean {
+    if (this.resourceStore?.hasLiveReference(manifest.fileHash, 'group', groupId)) return true;
     const metadata = manifest.metadata && typeof manifest.metadata === 'object' ? manifest.metadata : {};
     const metadataGroupId = Number(metadata.groupId);
     if (Number.isInteger(metadataGroupId) && metadataGroupId === groupId) return true;
     const ownerId = typeof manifest.ownerId === 'string' ? manifest.ownerId : '';
     if (ownerId.startsWith(`${groupId}:`) || ownerId.startsWith(`group:${groupId}:`)) return true;
-    if (this.resourceStore?.hasGroupReference(manifest.fileHash, groupId)) return true;
     return false;
   }
 
@@ -18851,6 +19449,13 @@ export class ReticulumChatManager extends EventEmitter {
   ): boolean {
     const normalizedConversationId = normalizeReticulumDmConversationId(conversationId);
     if (!normalizedConversationId) return false;
+    if (
+      this.resourceStore?.hasLiveReference(
+        manifest.fileHash,
+        'dm',
+        normalizedConversationId
+      )
+    ) return true;
     const metadata = manifest.metadata && typeof manifest.metadata === 'object' ? manifest.metadata : {};
     const metadataConversationId = normalizeReticulumDmConversationId(metadata.conversationId);
     if (metadataConversationId && metadataConversationId === normalizedConversationId) return true;

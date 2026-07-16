@@ -59,7 +59,7 @@
     "entitlements": "buildmac/entitlements.mac.plist",
     "entitlementsInherit": "buildmac/entitlements.mac.plist",
     "category": "public.app-category.utilities",
-    "asarUnpack": ["**/*.node", "build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js"],
+    "asarUnpack": ["**/*.node", "build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js", "build/src/reticulum-resource.worker.js"],
     "x64ArchFiles": "Contents/Resources/reticulum/**/*",
     "target": ["dmg", "pkg"]
   },
