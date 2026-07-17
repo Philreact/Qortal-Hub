@@ -42,6 +42,7 @@ import {
   MAX_SIZE_MESSAGE,
   MIN_REQUIRED_QORTS,
   PUBLIC_NOTIFICATION_CODE_FIRST_SECRET_KEY,
+  TIME_DAYS_1_IN_MILLISECONDS,
   TIME_MINUTES_2_IN_MILLISECONDS,
 } from '../../constants/constants';
 import { useMessageQueue } from '../../messaging/MessageQueueContext.tsx';
@@ -111,6 +112,7 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import TagRoundedIcon from '@mui/icons-material/TagRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { ContextMenu } from '../ContextMenu';
 import { GroupAvatar } from './GroupAvatar';
 import { messageHasImage } from '../../utils/chat';
@@ -151,6 +153,13 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import EmojiPicker, { EmojiStyle, Theme } from 'emoji-picker-react';
+import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
+import {
+  buildReticulumMessageExpiryPayload,
+  formatReticulumExpiryDuration,
+  isReticulumMessageExpiryOptionAllowed,
+  RETICULUM_MESSAGE_EXPIRY_OPTIONS,
+} from './reticulumMessageExpiry';
 
 type PendingReticulumResourceFile = {
   filePath?: string;
@@ -174,6 +183,7 @@ type ReticulumGroupChannel = {
   archived: boolean;
   writeMode?: ReticulumGroupChannelWriteMode;
   readMode?: ReticulumGroupChannelReadMode;
+  expiryDurationMs?: number;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
@@ -181,7 +191,10 @@ type ReticulumGroupChannel = {
 
 type ReticulumGroupChannelWriteMode = 'members' | 'admins';
 type ReticulumGroupChannelReadMode = 'members' | 'admins';
-type ReticulumGroupChannelAccessMode = 'regular' | 'admin_write' | 'admin_private';
+type ReticulumGroupChannelAccessMode =
+  | 'regular'
+  | 'admin_write'
+  | 'admin_private';
 
 type ReticulumSearchResult = {
   event: {
@@ -239,7 +252,9 @@ function reticulumChannelAccessFromModes(
   return RETICULUM_CHANNEL_ACCESS_REGULAR;
 }
 
-function reticulumChannelModesFromAccess(accessMode: ReticulumGroupChannelAccessMode): {
+function reticulumChannelModesFromAccess(
+  accessMode: ReticulumGroupChannelAccessMode
+): {
   writeMode: ReticulumGroupChannelWriteMode;
   readMode: ReticulumGroupChannelReadMode;
 } {
@@ -473,6 +488,77 @@ const reticulumDialogTextFieldSx = {
   },
 } as const;
 
+function ReticulumChannelExpiryField({
+  id,
+  onChange,
+  value,
+}: {
+  id: string;
+  onChange: (durationMs: number | undefined) => void;
+  value?: number;
+}) {
+  const hasCustomValue =
+    value != null &&
+    !RETICULUM_MESSAGE_EXPIRY_OPTIONS.some(
+      (option) => option.durationMs === value
+    );
+  return (
+    <Box>
+      <Typography
+        component="label"
+        htmlFor={id}
+        sx={{
+          color: 'text.primary',
+          display: 'block',
+          fontSize: 15,
+          fontWeight: 800,
+          mb: 1,
+        }}
+      >
+        Message expiry
+      </Typography>
+      <TextField
+        fullWidth
+        id={id}
+        onChange={(event) => {
+          const durationMs = Number(event.target.value);
+          onChange(
+            Number.isFinite(durationMs) && durationMs > 0
+              ? durationMs
+              : undefined
+          );
+        }}
+        select
+        sx={reticulumDialogTextFieldSx}
+        value={value ?? ''}
+      >
+        <MenuItem value="">No expiry</MenuItem>
+        {hasCustomValue && (
+          <MenuItem value={value}>
+            {formatReticulumExpiryDuration(value)}
+          </MenuItem>
+        )}
+        {RETICULUM_MESSAGE_EXPIRY_OPTIONS.map((option) => (
+          <MenuItem key={option.durationMs} value={option.durationMs}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </TextField>
+      <Typography
+        sx={{
+          color: 'text.secondary',
+          fontSize: 12.5,
+          lineHeight: '18px',
+          mt: 0.75,
+        }}
+      >
+        Applies to existing and future messages. A message can choose a shorter
+        expiry.
+      </Typography>
+    </Box>
+  );
+}
+
 const ReticulumMegaphoneIcon = (props) => (
   <SvgIcon {...props} viewBox="0 0 24 24">
     <path d="M20.5 4.75c0-.79-.87-1.27-1.54-.85L10.1 9.4H5.25A2.25 2.25 0 0 0 3 11.65v.7a2.25 2.25 0 0 0 2.25 2.25H6.4l1.52 4.18c.22.6.78.99 1.42.99h2.06c.72 0 1.2-.74.91-1.4l-1.63-3.75 8.28 5.48c.67.43 1.54-.05 1.54-.85V4.75Z" />
@@ -684,12 +770,7 @@ function ReticulumSortableChannelButton({
   selected,
   unreadCount,
 }: ReticulumSortableChannelButtonProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    isDragging,
-  } = useSortable({
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumChannelDragId(channel.channelId),
     disabled: !isAdmin,
   });
@@ -708,9 +789,7 @@ function ReticulumSortableChannelButton({
       onClick={() => onSelect(channel.channelId)}
       sx={{
         alignItems: 'center',
-        backgroundColor: selected
-          ? alpha('#9fb3c8', 0.12)
-          : 'transparent',
+        backgroundColor: selected ? alpha('#9fb3c8', 0.12) : 'transparent',
         borderRadius: '6px',
         color: emphasized ? 'common.white' : 'text.secondary',
         cursor: 'pointer',
@@ -948,12 +1027,7 @@ function ReticulumSortableCategory({
   onCreateChannel: (categoryId: string) => void;
   onToggleCollapsed: (categoryId: string) => void;
 }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    isDragging,
-  } = useSortable({
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumCategoryDragId(category.categoryId),
     disabled: !isAdmin,
   });
@@ -1103,7 +1177,9 @@ const textHasMentionToken = (text: string, label: string): boolean => {
 };
 
 const normalizeMentionTargetLabel = (value: unknown): string =>
-  String(value || '').trim().slice(0, 120);
+  String(value || '')
+    .trim()
+    .slice(0, 120);
 
 const mentionedAddressesFromPayload = (payload: unknown): string[] => {
   if (!payload || typeof payload !== 'object') return [];
@@ -1118,6 +1194,45 @@ const mentionedAddressesFromPayload = (payload: unknown): string[] => {
     ),
   ];
 };
+
+type ReticulumSilenceState = {
+  ownerAddress: string;
+  targetAddress: string;
+  scopeType: 'group' | 'dm';
+  scopeId: string;
+  createdAt: number;
+  expiresAt: number | null;
+  ignoredThrough: number;
+  updatedAt: number;
+  active: boolean;
+};
+
+const normalizeReticulumHideAddress = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : '';
+
+const areStringSetsEqual = (left: Set<string>, right: Set<string>): boolean => {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+};
+
+const activeReticulumHiddenAuthorsForGroup = (
+  silences: ReticulumSilenceState[],
+  groupId: number
+): Set<string> =>
+  new Set(
+    silences
+      .filter(
+        (silence) =>
+          silence.active &&
+          silence.scopeType === 'group' &&
+          silence.scopeId === String(groupId)
+      )
+      .map((silence) => normalizeReticulumHideAddress(silence.targetAddress))
+      .filter(Boolean)
+  );
 
 export const ChatGroup = ({
   selectedGroup,
@@ -1184,6 +1299,27 @@ export const ChatGroup = ({
   const [groupMentionMembers, setGroupMentionMembers] = useState<
     { name: string; address: string; role?: 'owner' | 'admin' }[]
   >([]);
+  const [
+    reticulumPrivilegedMemberRolesByAddress,
+    setReticulumPrivilegedMemberRolesByAddress,
+  ] = useState<Record<string, 'owner' | 'admin'>>({});
+  const [reticulumMemberRolesReady, setReticulumMemberRolesReady] =
+    useState(false);
+  const [reticulumSilencedUsersOpen, setReticulumSilencedUsersOpen] =
+    useState(false);
+  const [reticulumSilencedUsers, setReticulumSilencedUsers] = useState<
+    ReticulumSilenceState[]
+  >([]);
+  const [reticulumSilencedUsersLoading, setReticulumSilencedUsersLoading] =
+    useState(false);
+  const [reticulumSilencedUsersError, setReticulumSilencedUsersError] =
+    useState('');
+  const [reticulumUnsilencingAddress, setReticulumUnsilencingAddress] =
+    useState('');
+  const reticulumSilenceListRequestRef = useRef(0);
+  const reticulumSilenceScopeRevisionRef = useRef(0);
+  const [reticulumHiddenAuthorAddresses, setReticulumHiddenAuthorAddresses] =
+    useState<Set<string>>(() => new Set());
   const [isOpenQManager, setIsOpenQManager] = useState(null);
   const [isDeleteImage, setIsDeleteImage] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
@@ -1193,6 +1329,10 @@ export const ChatGroup = ({
   const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
     PendingReticulumResourceFile[]
   >([]);
+  const [
+    reticulumMessageExpiryDurationMs,
+    setReticulumMessageExpiryDurationMs,
+  ] = useState<number | undefined>(undefined);
   const [reticulumChannels, setReticulumChannels] = useState<
     ReticulumGroupChannel[]
   >([]);
@@ -1262,18 +1402,22 @@ export const ChatGroup = ({
   const [newReticulumChannelCategoryId, setNewReticulumChannelCategoryId] =
     useState('');
   const [newReticulumChannelAccessMode, setNewReticulumChannelAccessMode] =
-    useState<ReticulumGroupChannelAccessMode>(
-      RETICULUM_CHANNEL_ACCESS_REGULAR
-    );
+    useState<ReticulumGroupChannelAccessMode>(RETICULUM_CHANNEL_ACCESS_REGULAR);
+  const [
+    newReticulumChannelExpiryDurationMs,
+    setNewReticulumChannelExpiryDurationMs,
+  ] = useState<number | undefined>(undefined);
   const [reticulumChannelSettingsOpen, setReticulumChannelSettingsOpen] =
     useState(false);
   const [editingReticulumChannel, setEditingReticulumChannel] =
     useState<ReticulumGroupChannel | null>(null);
   const [reticulumChannelName, setReticulumChannelName] = useState('');
   const [reticulumChannelAccessMode, setReticulumChannelAccessMode] =
-    useState<ReticulumGroupChannelAccessMode>(
-      RETICULUM_CHANNEL_ACCESS_REGULAR
-    );
+    useState<ReticulumGroupChannelAccessMode>(RETICULUM_CHANNEL_ACCESS_REGULAR);
+  const [
+    reticulumChannelExpiryDurationMs,
+    setReticulumChannelExpiryDurationMs,
+  ] = useState<number | undefined>(undefined);
   const [reticulumChannelError, setReticulumChannelError] = useState('');
   const [reticulumNameEmojiPicker, setReticulumNameEmojiPicker] = useState<{
     anchorEl: HTMLElement;
@@ -1283,15 +1427,18 @@ export const ChatGroup = ({
     useState<'settings' | 'confirm-delete'>('settings');
   const [reticulumDeleteConfirmationName, setReticulumDeleteConfirmationName] =
     useState('');
-  const [reticulumDeleteConfirmationError, setReticulumDeleteConfirmationError] =
-    useState('');
+  const [
+    reticulumDeleteConfirmationError,
+    setReticulumDeleteConfirmationError,
+  ] = useState('');
   const [isDeletingReticulumChannel, setIsDeletingReticulumChannel] =
     useState(false);
   const reticulumRemoveChannelButtonRef = useRef<HTMLButtonElement | null>(
     null
   );
-  const reticulumDeleteConfirmationInputRef =
-    useRef<HTMLInputElement | null>(null);
+  const reticulumDeleteConfirmationInputRef = useRef<HTMLInputElement | null>(
+    null
+  );
   const [isReticulumCategoryDialogOpen, setIsReticulumCategoryDialogOpen] =
     useState(false);
   const [reticulumCategoryDialogMode, setReticulumCategoryDialogMode] =
@@ -1300,25 +1447,23 @@ export const ChatGroup = ({
     useState<ReticulumGroupCategory | null>(null);
   const [reticulumCategoryName, setReticulumCategoryName] = useState('');
   const [reticulumCategoryError, setReticulumCategoryError] = useState('');
-  const [
-    collapsedReticulumCategoryIds,
-    setCollapsedReticulumCategoryIds,
-  ] = useState<Set<string>>(() => new Set());
+  const [collapsedReticulumCategoryIds, setCollapsedReticulumCategoryIds] =
+    useState<Set<string>>(() => new Set());
   const [reticulumCategoryMenuPosition, setReticulumCategoryMenuPosition] =
     useState<{ mouseX: number; mouseY: number } | null>(null);
   const [reticulumCategoryMenuCategory, setReticulumCategoryMenuCategory] =
     useState<ReticulumGroupCategory | null>(null);
-  const [
-    reticulumLargeImageChoice,
-    setReticulumLargeImageChoice,
-  ] = useState<{ file: File; filePath: string } | null>(null);
+  const [reticulumLargeImageChoice, setReticulumLargeImageChoice] = useState<{
+    file: File;
+    filePath: string;
+  } | null>(null);
   const [isCompressingReticulumImage, setIsCompressingReticulumImage] =
     useState(false);
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
   const reticulumChannelRefreshSeqRef = useRef(0);
-  const reticulumChannelMetadataRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+  const reticulumChannelMetadataRefreshTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const hasInitializedWebsocket = useRef(false);
   const socketRef = useRef(null); // WebSocket reference
   const timeoutIdRef = useRef(null); // Timeout ID reference
@@ -1334,6 +1479,7 @@ export const ChatGroup = ({
     publishEvent: publishReticulumChatEvent,
     sendTyping: sendReticulumTypingSignal,
     typing: reticulumTyping,
+    visibilityChange: reticulumVisibilityChange,
   } = useReticulumGroupChat(selectedGroup, selectedReticulumChannelId);
   const shouldSuppressLegacyGroupChat =
     !reticulumChatEnabled && !isReticulumModeResolved;
@@ -1393,10 +1539,10 @@ export const ChatGroup = ({
   const reticulumEventContextRef = useRef('');
   reticulumEventContextRef.current = `${selectedGroup || ''}:${
     selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
-  }`;
-  const reticulumTypingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+  }:${reticulumVisibilityChange?.revision || 0}`;
+  const reticulumTypingStopTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const reticulumTypingActiveRef = useRef(false);
   const reticulumChatSummaries = useAtomValue(reticulumChatSummariesAtom);
   const [windowSize, setWindowSize] = useState(() =>
@@ -1464,32 +1610,32 @@ export const ChatGroup = ({
     [maxQManagerWidth, maxQManagerHeight]
   );
 
-  const qManagerPosition = useMemo(
-    () => {
-      const anchorBottom = qManagerAnchorRect?.bottom ?? appHeighOffset + 50;
-      const anchorCenter =
-        qManagerAnchorRect !== null
-          ? qManagerAnchorRect.left + qManagerAnchorRect.width / 2
-          : windowSize.width - 120;
-      return {
-        x: Math.max(
-          8,
-          Math.min(
-            windowSize.width - qManagerSize.width - 8,
-            anchorCenter - qManagerSize.width / 2
-          )
-        ),
-        y: Math.max(appHeighOffset + 8, Math.min(windowSize.height - qManagerSize.height - 8, anchorBottom + 8)),
-      };
-    },
-    [
-      windowSize.width,
-      windowSize.height,
-      qManagerSize.width,
-      qManagerSize.height,
-      qManagerAnchorRect,
-    ]
-  );
+  const qManagerPosition = useMemo(() => {
+    const anchorBottom = qManagerAnchorRect?.bottom ?? appHeighOffset + 50;
+    const anchorCenter =
+      qManagerAnchorRect !== null
+        ? qManagerAnchorRect.left + qManagerAnchorRect.width / 2
+        : windowSize.width - 120;
+    return {
+      x: Math.max(
+        8,
+        Math.min(
+          windowSize.width - qManagerSize.width - 8,
+          anchorCenter - qManagerSize.width / 2
+        )
+      ),
+      y: Math.max(
+        appHeighOffset + 8,
+        Math.min(windowSize.height - qManagerSize.height - 8, anchorBottom + 8)
+      ),
+    };
+  }, [
+    windowSize.width,
+    windowSize.height,
+    qManagerSize.width,
+    qManagerSize.height,
+    qManagerAnchorRect,
+  ]);
 
   useEffect(() => {
     reticulumChatEnabledRef.current = reticulumChatEnabled;
@@ -1666,11 +1812,11 @@ export const ChatGroup = ({
     setSelectedReticulumChannelId((current) =>
       availableChannels.some((channel) => channel.channelId === current)
         ? current
-        : availableChannels.find(
-              (channel) => channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID
-            )?.channelId ??
-            availableChannels[0]?.channelId ??
-            DEFAULT_RETICULUM_CHANNEL_ID
+        : (availableChannels.find(
+            (channel) => channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID
+          )?.channelId ??
+          availableChannels[0]?.channelId ??
+          DEFAULT_RETICULUM_CHANNEL_ID)
     );
     return Array.isArray(channels);
   }, [selectedGroup]);
@@ -1701,7 +1847,10 @@ export const ChatGroup = ({
         }
       }
       if (!cancelled && lastError) {
-        console.warn('Unable to finish loading Reticulum chat channels', lastError);
+        console.warn(
+          'Unable to finish loading Reticulum chat channels',
+          lastError
+        );
       }
     })();
 
@@ -1720,18 +1869,24 @@ export const ChatGroup = ({
     if (!reticulumChatEnabled || !selectedGroup) return;
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
-    const offSummaryChanged = window.reticulumChat?.onSummaryChanged?.((payload) => {
-      if (payload?.metadataChanged !== true || Number(payload.groupId) !== groupId) return;
-      if (reticulumChannelMetadataRefreshTimerRef.current) {
-        clearTimeout(reticulumChannelMetadataRefreshTimerRef.current);
+    const offSummaryChanged = window.reticulumChat?.onSummaryChanged?.(
+      (payload) => {
+        if (
+          payload?.metadataChanged !== true ||
+          Number(payload.groupId) !== groupId
+        )
+          return;
+        if (reticulumChannelMetadataRefreshTimerRef.current) {
+          clearTimeout(reticulumChannelMetadataRefreshTimerRef.current);
+        }
+        reticulumChannelMetadataRefreshTimerRef.current = setTimeout(() => {
+          reticulumChannelMetadataRefreshTimerRef.current = null;
+          void refreshReticulumChannels().catch((error) => {
+            console.warn('Unable to refresh Reticulum chat metadata', error);
+          });
+        }, 50);
       }
-      reticulumChannelMetadataRefreshTimerRef.current = setTimeout(() => {
-        reticulumChannelMetadataRefreshTimerRef.current = null;
-        void refreshReticulumChannels().catch((error) => {
-          console.warn('Unable to refresh Reticulum chat metadata', error);
-        });
-      }, 50);
-    });
+    );
     return () => {
       offSummaryChanged?.();
       if (reticulumChannelMetadataRefreshTimerRef.current) {
@@ -1847,6 +2002,31 @@ export const ChatGroup = ({
       ) || null,
     [reticulumChannelsForSelectedGroup, selectedReticulumChannelId]
   );
+  const selectedReticulumChannelExpiryDurationMs =
+    selectedReticulumChannel?.expiryDurationMs ??
+    (selectedReticulumChannelId === QORTAL_LAND_RETICULUM_CHANNEL_ID
+      ? TIME_DAYS_1_IN_MILLISECONDS
+      : undefined);
+
+  useEffect(() => {
+    setReticulumMessageExpiryDurationMs(undefined);
+  }, [selectedGroup, selectedReticulumChannelId]);
+
+  useEffect(() => {
+    setReticulumMessageExpiryDurationMs((current) =>
+      current === undefined ||
+      isReticulumMessageExpiryOptionAllowed(
+        current,
+        selectedReticulumChannelExpiryDurationMs
+      )
+        ? current
+        : undefined
+    );
+  }, [selectedReticulumChannelExpiryDurationMs]);
+
+  useEffect(() => {
+    if (onEditMessage) setReticulumMessageExpiryDurationMs(undefined);
+  }, [onEditMessage]);
   const reticulumVisibleChannelIds = useMemo(
     () =>
       new Set(
@@ -1870,16 +2050,246 @@ export const ChatGroup = ({
     if (myAddress && myName) entries.push([myAddress, myName]);
     return new Map(entries);
   }, [groupMentionMembers, myAddress, myName]);
+
+  const loadActiveReticulumGroupSilences = useCallback(async () => {
+    const groupId = Number(selectedGroup);
+    if (
+      !reticulumChatEnabled ||
+      !myAddress ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !window.reticulumChat?.listSilences
+    ) {
+      return [];
+    }
+    const silences = await window.reticulumChat.listSilences(
+      myAddress,
+      'group',
+      groupId
+    );
+    return silences.filter(
+      (silence): silence is ReticulumSilenceState =>
+        silence.active && silence.scopeId === String(groupId)
+    );
+  }, [myAddress, reticulumChatEnabled, selectedGroup]);
+
+  const setReticulumHiddenAuthorsFromSilences = useCallback(
+    (silences: ReticulumSilenceState[]) => {
+      const groupId = Number(selectedGroup);
+      const nextHiddenAuthors =
+        Number.isInteger(groupId) && groupId > 0
+          ? activeReticulumHiddenAuthorsForGroup(silences, groupId)
+          : new Set<string>();
+      setReticulumHiddenAuthorAddresses((current) =>
+        areStringSetsEqual(current, nextHiddenAuthors)
+          ? current
+          : nextHiddenAuthors
+      );
+    },
+    [selectedGroup]
+  );
+
+  const isReticulumHiddenAuthor = useCallback(
+    (address: unknown) => {
+      const normalizedAddress = normalizeReticulumHideAddress(address);
+      return (
+        Boolean(normalizedAddress) &&
+        reticulumHiddenAuthorAddresses.has(normalizedAddress)
+      );
+    },
+    [reticulumHiddenAuthorAddresses]
+  );
+
+  const filterReticulumVisibleMessages = useCallback(
+    <T extends { sender?: unknown },>(items: T[]): T[] =>
+      items.filter((item) => !isReticulumHiddenAuthor(item?.sender)),
+    [isReticulumHiddenAuthor]
+  );
+
+  const refreshReticulumSilencedUsers = useCallback(async () => {
+    const requestId = ++reticulumSilenceListRequestRef.current;
+    const groupId = Number(selectedGroup);
+    if (
+      !reticulumChatEnabled ||
+      !myAddress ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !window.reticulumChat?.listSilences
+    ) {
+      setReticulumSilencedUsers([]);
+      setReticulumHiddenAuthorAddresses((current) =>
+        current.size === 0 ? current : new Set<string>()
+      );
+      setReticulumSilencedUsersLoading(false);
+      setReticulumSilencedUsersError('');
+      return;
+    }
+    setReticulumSilencedUsersLoading(true);
+    setReticulumSilencedUsersError('');
+    try {
+      const silences = await loadActiveReticulumGroupSilences();
+      if (reticulumSilenceListRequestRef.current !== requestId) return;
+      setReticulumSilencedUsers(silences);
+      setReticulumHiddenAuthorsFromSilences(silences);
+    } catch (error) {
+      if (reticulumSilenceListRequestRef.current !== requestId) return;
+      setReticulumSilencedUsers([]);
+      setReticulumSilencedUsersError(
+        error instanceof Error ? error.message : 'Unable to load hidden users'
+      );
+    } finally {
+      if (reticulumSilenceListRequestRef.current === requestId) {
+        setReticulumSilencedUsersLoading(false);
+      }
+    }
+  }, [
+    loadActiveReticulumGroupSilences,
+    myAddress,
+    reticulumChatEnabled,
+    selectedGroup,
+    setReticulumHiddenAuthorsFromSilences,
+  ]);
+
+  const openReticulumSilencedUsers = useCallback(() => {
+    setReticulumSilencedUsersOpen(true);
+    void refreshReticulumSilencedUsers();
+  }, [refreshReticulumSilencedUsers]);
+
+  const closeReticulumSilencedUsers = useCallback(() => {
+    reticulumSilenceListRequestRef.current += 1;
+    reticulumSilenceScopeRevisionRef.current += 1;
+    setReticulumSilencedUsersOpen(false);
+    setReticulumSilencedUsersLoading(false);
+    setReticulumSilencedUsersError('');
+    setReticulumUnsilencingAddress('');
+  }, []);
+
+  const unsilenceReticulumGroupUser = useCallback(
+    async (targetAddress: string) => {
+      const groupId = Number(selectedGroup);
+      if (
+        !myAddress ||
+        !targetAddress ||
+        !Number.isInteger(groupId) ||
+        groupId <= 0 ||
+        !window.reticulumChat?.clearSilence
+      ) {
+        return;
+      }
+      const scopeRevision = reticulumSilenceScopeRevisionRef.current;
+      setReticulumUnsilencingAddress(targetAddress);
+      setReticulumSilencedUsersError('');
+      try {
+        const result = await window.reticulumChat.clearSilence(
+          myAddress,
+          targetAddress,
+          'group',
+          groupId
+        );
+        if (!result?.success) {
+          throw new Error(result?.error || 'Unable to unhide user');
+        }
+        if (reticulumSilenceScopeRevisionRef.current !== scopeRevision) return;
+        setReticulumSilencedUsers((current) =>
+          current.filter((silence) => silence.targetAddress !== targetAddress)
+        );
+      } catch (error) {
+        if (reticulumSilenceScopeRevisionRef.current !== scopeRevision) return;
+        setReticulumSilencedUsersError(
+          error instanceof Error ? error.message : 'Unable to unhide user'
+        );
+      } finally {
+        if (reticulumSilenceScopeRevisionRef.current === scopeRevision) {
+          setReticulumUnsilencingAddress('');
+        }
+      }
+    },
+    [myAddress, selectedGroup]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const groupId = Number(selectedGroup);
+    if (
+      !reticulumChatEnabled ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0
+    ) {
+      setReticulumHiddenAuthorAddresses((current) =>
+        current.size === 0 ? current : new Set<string>()
+      );
+      return;
+    }
+    void loadActiveReticulumGroupSilences()
+      .then((silences) => {
+        if (cancelled) return;
+        setReticulumHiddenAuthorsFromSilences(silences);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('[ReticulumChat] Failed to load hidden users:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loadActiveReticulumGroupSilences,
+    reticulumChatEnabled,
+    selectedGroup,
+    setReticulumHiddenAuthorsFromSilences,
+  ]);
+
+  useEffect(() => {
+    const groupId = Number(selectedGroup);
+    if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0)
+      return;
+    return window.reticulumChat?.onSilenceChanged?.((payload) => {
+      if (
+        payload.scopeType === 'group' &&
+        Number(payload.scopeId) === groupId
+      ) {
+        const targetAddress = normalizeReticulumHideAddress(
+          payload.targetAddress
+        );
+        if (targetAddress) {
+          setReticulumHiddenAuthorAddresses((current) => {
+            const next = new Set(current);
+            if (payload.active) {
+              next.add(targetAddress);
+            } else {
+              next.delete(targetAddress);
+            }
+            return areStringSetsEqual(current, next) ? current : next;
+          });
+        }
+        if (reticulumSilencedUsersOpen) {
+          void refreshReticulumSilencedUsers();
+        }
+      }
+    });
+  }, [
+    refreshReticulumSilencedUsers,
+    reticulumChatEnabled,
+    reticulumSilencedUsersOpen,
+    selectedGroup,
+  ]);
+
+  useEffect(() => {
+    closeReticulumSilencedUsers();
+  }, [closeReticulumSilencedUsers, selectedGroup]);
   const reticulumSearchAuthorOptions = useMemo(() => {
     const map = new Map<string, string>();
     for (const member of groupMentionMembers) {
-      if (member.address) map.set(member.address, member.name || member.address);
+      if (member.address && !isReticulumHiddenAuthor(member.address))
+        map.set(member.address, member.name || member.address);
     }
     for (const message of messages) {
       if (message?.sender) {
         map.set(
           message.sender,
-          message.senderName || reticulumMemberNameByAddress.get(message.sender) || message.sender
+          message.senderName ||
+            reticulumMemberNameByAddress.get(message.sender) ||
+            message.sender
         );
       }
     }
@@ -1887,7 +2297,14 @@ export const ChatGroup = ({
     return [...map.entries()]
       .map(([address, name]) => ({ address, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [groupMentionMembers, messages, myAddress, myName, reticulumMemberNameByAddress]);
+  }, [
+    groupMentionMembers,
+    isReticulumHiddenAuthor,
+    messages,
+    myAddress,
+    myName,
+    reticulumMemberNameByAddress,
+  ]);
   const reticulumSearchActiveFilterCount = useMemo(() => {
     return [
       reticulumSearchChannelFilter !== RETICULUM_SEARCH_CHANNEL_CURRENT,
@@ -1991,9 +2408,12 @@ export const ChatGroup = ({
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) {
       setGroupMentionMembers([]);
+      setReticulumPrivilegedMemberRolesByAddress({});
+      setReticulumMemberRolesReady(false);
       return;
     }
     let cancelled = false;
+    setReticulumMemberRolesReady(false);
     void getGroupMembers(groupId)
       .then(async (data) => {
         if (cancelled) return;
@@ -2007,6 +2427,20 @@ export const ChatGroup = ({
         const adminAddressSet = new Set(adminAddresses);
         const ownerAddress =
           typeof groupDetails?.owner === 'string' ? groupDetails.owner : '';
+        const privilegedRoles: Record<string, 'owner' | 'admin'> = {};
+        if (ownerAddress) {
+          privilegedRoles[ownerAddress] = 'owner';
+        }
+        for (const adminAddress of adminAddressSet) {
+          const normalizedAdminAddress =
+            typeof adminAddress === 'string' ? adminAddress.trim() : '';
+          if (
+            normalizedAdminAddress &&
+            normalizedAdminAddress !== ownerAddress
+          ) {
+            privilegedRoles[normalizedAdminAddress] = 'admin';
+          }
+        }
         const membersWithNames = Array.isArray(data?.members)
           ? data.members
               .map((member: any) => ({
@@ -2027,12 +2461,16 @@ export const ChatGroup = ({
               }))
               .filter((member) => member.address && member.name)
           : [];
+        setReticulumPrivilegedMemberRolesByAddress(privilegedRoles);
         setGroupMentionMembers(membersWithNames);
+        setReticulumMemberRolesReady(true);
       })
       .catch((error) => {
         if (!cancelled) {
           console.error('Failed to load group members for mentions:', error);
           setGroupMentionMembers([]);
+          setReticulumPrivilegedMemberRolesByAddress({});
+          setReticulumMemberRolesReady(false);
         }
       });
     return () => {
@@ -2041,14 +2479,16 @@ export const ChatGroup = ({
   }, [selectedGroup]);
 
   const reticulumMemberRolesByAddress = useMemo(() => {
-    const roles: Record<string, 'owner' | 'admin'> = {};
+    const roles: Record<string, 'owner' | 'admin'> = {
+      ...reticulumPrivilegedMemberRolesByAddress,
+    };
     for (const member of groupMentionMembers) {
       if (member.address && member.role) {
         roles[member.address] = member.role;
       }
     }
     return roles;
-  }, [groupMentionMembers]);
+  }, [groupMentionMembers, reticulumPrivilegedMemberRolesByAddress]);
 
   const mentionNameToAddress = useMemo(() => {
     const map = new Map<string, string>();
@@ -2104,16 +2544,25 @@ export const ChatGroup = ({
     });
 
     return Array.from(uniqueMembers);
-  }, [groupMentionMembers, messages, reticulumChannelsForSelectedGroup, selectedGroupName]);
+  }, [
+    groupMentionMembers,
+    messages,
+    reticulumChannelsForSelectedGroup,
+    selectedGroupName,
+  ]);
 
   const reticulumTypingText = useMemo(() => {
     if (isDisabledTyping || !reticulumChatEnabled) return '';
     const nameByAddress = new Map<string, string>();
     for (const member of groupMentionMembers) {
-      if (member.address && member.name) nameByAddress.set(member.address, member.name);
+      if (member.address && member.name)
+        nameByAddress.set(member.address, member.name);
     }
     const addresses = Object.entries(reticulumTyping || {})
-      .filter(([address, active]) => active === true && address && address !== myAddress)
+      .filter(
+        ([address, active]) =>
+          active === true && address && address !== myAddress
+      )
       .map(([address]) => address)
       .slice(0, 4);
     if (addresses.length === 0) return '';
@@ -2230,7 +2679,12 @@ export const ChatGroup = ({
         stopReticulumTyping();
       }, RETICULUM_TYPING_IDLE_STOP_MS);
     },
-    [myAddress, reticulumChatEnabled, sendReticulumTypingSignal, stopReticulumTyping]
+    [
+      myAddress,
+      reticulumChatEnabled,
+      sendReticulumTypingSignal,
+      stopReticulumTyping,
+    ]
   );
 
   useEffect(() => () => stopReticulumTyping(), [stopReticulumTyping]);
@@ -2282,6 +2736,45 @@ export const ChatGroup = ({
     appliedReticulumEventIdsRef.current.clear();
     processingReticulumEventIdsRef.current.clear();
   }, [reticulumChatEnabled, selectedGroup, selectedReticulumChannelId]);
+
+  useEffect(() => {
+    if (
+      !reticulumChatEnabled ||
+      !reticulumVisibilityChange ||
+      reticulumVisibilityChange.groupId !== Number(selectedGroup)
+    ) {
+      return;
+    }
+    appliedReticulumEventIdsRef.current.clear();
+    processingReticulumEventIdsRef.current.clear();
+    setChatReferences({});
+    if (!reticulumVisibilityChange.active) return;
+    setMessages((previous) =>
+      previous.filter(
+        (message) =>
+          String(message?.sender || '').trim() !==
+          reticulumVisibilityChange.targetAddress
+      )
+    );
+  }, [
+    reticulumChatEnabled,
+    reticulumVisibilityChange,
+    selectedGroup,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || reticulumHiddenAuthorAddresses.size === 0)
+      return;
+    setMessages((previous) => {
+      const filtered = filterReticulumVisibleMessages(previous);
+      return filtered.length === previous.length ? previous : filtered;
+    });
+    setChatReferences({});
+  }, [
+    filterReticulumVisibleMessages,
+    reticulumChatEnabled,
+    reticulumHiddenAuthorAddresses,
+  ]);
 
   useEffect(() => {
     if (!reticulumChatEnabled || !notificationReticulumChannelId) return;
@@ -2935,10 +3428,8 @@ export const ChatGroup = ({
               : target
           )
         : [];
-      const authorSequence = await window.reticulumChat?.reserveAuthorSequence?.(
-        groupId,
-        myAddress
-      );
+      const authorSequence =
+        await window.reticulumChat?.reserveAuthorSequence?.(groupId, myAddress);
       if (
         !authorSequence ||
         !/^[0-9a-f]{32}$/.test(authorSequence.authorStreamId) ||
@@ -2971,7 +3462,9 @@ export const ChatGroup = ({
           baseFields
         );
         if (!signed || signed.error) {
-          throw new Error(signed?.error || 'Unable to sign Reticulum chat event');
+          throw new Error(
+            signed?.error || 'Unable to sign Reticulum chat event'
+          );
         }
         if (signed.authorAddress !== myAddress) {
           throw new Error('Signed Reticulum chat author mismatch');
@@ -3057,9 +3550,11 @@ export const ChatGroup = ({
 
   const applyReticulumChatItem = useCallback(
     (item) => {
-      if (!item || isChatSenderBlocked(item)) return;
+      if (!item) return;
+      if (isReticulumHiddenAuthor(item?.sender)) return;
       const processed = processWithNewMessages([item], reticulumChatQueueId);
       const nextItem = processed?.[0] || item;
+      if (isReticulumHiddenAuthor(nextItem?.sender)) return;
       const targetReference = nextItem.chatReference;
       const itemType =
         nextItem?.eventType || nextItem?.decryptedData?.type || nextItem?.type;
@@ -3156,7 +3651,7 @@ export const ChatGroup = ({
         return [...prev, nextItem];
       });
     },
-    [isChatSenderBlocked, processWithNewMessages, reticulumChatQueueId]
+    [isReticulumHiddenAuthor, processWithNewMessages, reticulumChatQueueId]
   );
 
   const convertReticulumEventToChatItem = useCallback(
@@ -3179,6 +3674,12 @@ export const ChatGroup = ({
         typeof event.eventType === 'string' &&
         (event.eventType.startsWith('channel_') ||
           event.eventType.startsWith('category_'));
+      if (
+        !isChannelMetadataEvent &&
+        isReticulumHiddenAuthor(event.authorAddress)
+      ) {
+        return null;
+      }
       const eventChannel = reticulumAllChannelsForSelectedGroup.find(
         (channel) => channel.channelId === eventChannelId
       );
@@ -3189,10 +3690,7 @@ export const ChatGroup = ({
       ) {
         return null;
       }
-      if (
-        !isChannelMetadataEvent &&
-        eventChannelId !== activeChannelId
-      ) {
+      if (!isChannelMetadataEvent && eventChannelId !== activeChannelId) {
         return null;
       }
       const baseItem = {
@@ -3363,6 +3861,7 @@ export const ChatGroup = ({
       refreshReticulumChannels,
       reticulumChatEnabled,
       reticulumAllChannelsForSelectedGroup,
+      isReticulumHiddenAuthor,
       reticulumMemberNameByAddress,
       resolveMentionedAddresses,
       selectedGroup,
@@ -3454,6 +3953,9 @@ export const ChatGroup = ({
           })) as ReticulumSearchResult[] | undefined;
           if (reticulumSearchRequestSeqRef.current !== requestSeq) return;
           const visibleResults = (results ?? []).filter((result) => {
+            if (isReticulumHiddenAuthor(result?.event?.authorAddress)) {
+              return false;
+            }
             const channelId =
               normalizeReticulumChannelName(result?.event?.channelId || '') ||
               DEFAULT_RETICULUM_CHANNEL_ID;
@@ -3471,11 +3973,10 @@ export const ChatGroup = ({
           );
           const nextCursor = pageResults[pageResults.length - 1]?.cursor;
           if (canUseCursorPaging) {
-            const nextPageCursors =
-              reticulumSearchPageCursorsRef.current.slice(
-                0,
-                reticulumSearchPage + 1
-              );
+            const nextPageCursors = reticulumSearchPageCursorsRef.current.slice(
+              0,
+              reticulumSearchPage + 1
+            );
             if (
               visibleResults.length > RETICULUM_SEARCH_PAGE_SIZE &&
               nextCursor
@@ -3502,6 +4003,7 @@ export const ChatGroup = ({
     };
   }, [
     myAddress,
+    isReticulumHiddenAuthor,
     reticulumChatEnabled,
     reticulumSearchAfterDate,
     reticulumSearchAuthorFilter,
@@ -3617,7 +4119,9 @@ export const ChatGroup = ({
             convertReticulumEventToChatItem(windowEvent, { channelId })
           )
         );
-        const convertedMessages = converted.filter(Boolean);
+        const convertedMessages = filterReticulumVisibleMessages(
+          converted.filter(Boolean)
+        );
         const hasTargetMessage = convertedMessages.some(
           (message) => message?.signature === event.eventId
         );
@@ -3644,6 +4148,7 @@ export const ChatGroup = ({
     },
     [
       convertReticulumEventToChatItem,
+      filterReticulumVisibleMessages,
       myAddress,
       reticulumVisibleChannelIds,
       resolvePrimaryNamesForReticulumEvents,
@@ -3655,7 +4160,7 @@ export const ChatGroup = ({
     if (!reticulumChatEnabled || reticulumChatEvents.length === 0) return;
     const eventContext = `${selectedGroup || ''}:${
       selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
-    }`;
+    }:${reticulumVisibilityChange?.revision || 0}`;
     void (async () => {
       for (const event of reticulumChatEvents) {
         const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
@@ -3702,16 +4207,13 @@ export const ChatGroup = ({
     reticulumChatEnabled,
     reticulumChatEvents,
     reticulumMemberNameByAddress,
+    reticulumVisibilityChange?.revision,
     selectedGroup,
     selectedReticulumChannelId,
   ]);
 
   useEffect(() => {
-    if (
-      !reticulumChatEnabled ||
-      !isActive ||
-      !selectedGroup
-    ) {
+    if (!reticulumChatEnabled || !isActive || !selectedGroup) {
       if (!isActive) {
         reticulumReadWasActiveRef.current = false;
       }
@@ -3731,16 +4233,21 @@ export const ChatGroup = ({
     }
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
-    const latestVisibleTimestamp = reticulumChatEvents.reduce<number>((latest, event: any) => {
-      if (Number(event?.groupId) !== groupId) return latest;
-      const eventChannelId =
-        normalizeReticulumChannelName(
-          event?.channelId || DEFAULT_RETICULUM_CHANNEL_ID
-        ) || DEFAULT_RETICULUM_CHANNEL_ID;
-      if (eventChannelId !== selectedReticulumChannelId) return latest;
-      const timestamp = Number(event?.timestamp);
-      return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
-    }, 0);
+    const latestVisibleTimestamp = reticulumChatEvents.reduce<number>(
+      (latest, event: any) => {
+        if (Number(event?.groupId) !== groupId) return latest;
+        const eventChannelId =
+          normalizeReticulumChannelName(
+            event?.channelId || DEFAULT_RETICULUM_CHANNEL_ID
+          ) || DEFAULT_RETICULUM_CHANNEL_ID;
+        if (eventChannelId !== selectedReticulumChannelId) return latest;
+        const timestamp = Number(event?.timestamp);
+        return Number.isFinite(timestamp)
+          ? Math.max(latest, timestamp)
+          : latest;
+      },
+      0
+    );
     const channelSummary = reticulumChannelSummariesById.get(
       selectedReticulumChannelId
     );
@@ -3907,13 +4414,13 @@ export const ChatGroup = ({
           htmlContent = null;
         }
         setIsSending(true);
-        const reticulumPlainPayload = reticulumChatEnabled || isPrivate === false;
-        const message =
-          reticulumPlainPayload
-            ? !htmlContent
-              ? '<p></p>'
-              : editorRef.current.getJSON()
-            : htmlContent;
+        const reticulumPlainPayload =
+          reticulumChatEnabled || isPrivate === false;
+        const message = reticulumPlainPayload
+          ? !htmlContent
+            ? '<p></p>'
+            : editorRef.current.getJSON()
+          : htmlContent;
         const secretKeyObject = reticulumPlainPayload
           ? null
           : await getSecretKey(false, true);
@@ -3925,6 +4432,13 @@ export const ChatGroup = ({
         }
 
         const chatReference = onEditMessage?.signature;
+        const messageExpiryPayload =
+          reticulumChatEnabled && !chatReference
+            ? buildReticulumMessageExpiryPayload(
+                reticulumMessageExpiryDurationMs,
+                selectedReticulumChannelExpiryDurationMs
+              )
+            : {};
 
         const publicData = reticulumPlainPayload
           ? {
@@ -4217,14 +4731,14 @@ export const ChatGroup = ({
         const objectMessage = {
           ...(otherData || {}),
           [reticulumPlainPayload ? 'messageText' : 'message']: message,
+          ...messageExpiryPayload,
           version: 3,
         };
         const message64: any = await objectToBase64(objectMessage);
 
-        const encryptSingle =
-          reticulumPlainPayload
-            ? JSON.stringify(objectMessage)
-            : await encryptChatMessage(message64, secretKeyObject);
+        const encryptSingle = reticulumPlainPayload
+          ? JSON.stringify(objectMessage)
+          : await encryptChatMessage(message64, secretKeyObject);
 
         const sendMessageFunc = async () => {
           if (reticulumChatEnabled) {
@@ -4269,6 +4783,7 @@ export const ChatGroup = ({
         setIsDeleteImage(false);
         setChatImagesToSave([]);
         clearPendingReticulumFiles();
+        setReticulumMessageExpiryDurationMs(undefined);
       }
       // send chat message
     } catch (error) {
@@ -4558,7 +5073,8 @@ export const ChatGroup = ({
         setIsSending(true);
 
         const message = '';
-        const reticulumPlainPayload = reticulumChatEnabled || isPrivate === false;
+        const reticulumPlainPayload =
+          reticulumChatEnabled || isPrivate === false;
         const secretKeyObject = reticulumPlainPayload
           ? null
           : await getSecretKey(false, true);
@@ -4574,14 +5090,13 @@ export const ChatGroup = ({
         };
         const message64: any = await objectToBase64(objectMessage);
         const reactiontypeNumber = RESOURCE_TYPE_NUMBER_GROUP_CHAT_REACTIONS;
-        const encryptSingle =
-          reticulumPlainPayload
-            ? JSON.stringify(objectMessage)
-            : await encryptChatMessage(
-                message64,
-                secretKeyObject,
-                reactiontypeNumber
-              );
+        const encryptSingle = reticulumPlainPayload
+          ? JSON.stringify(objectMessage)
+          : await encryptChatMessage(
+              message64,
+              secretKeyObject,
+              reactiontypeNumber
+            );
         const sendMessageFunc = async () => {
           if (reticulumChatEnabled) {
             const result = await publishReticulumGroupChatEvent({
@@ -4714,7 +5229,8 @@ export const ChatGroup = ({
           ? String((file as File & { path?: unknown }).path)
           : '');
       const isImage =
-        file.type?.startsWith('image/') === true && options.asAttachment !== true;
+        file.type?.startsWith('image/') === true &&
+        options.asAttachment !== true;
       if (options.asAttachment && !filePath) {
         setInfoSnack({
           type: 'error',
@@ -4725,7 +5241,8 @@ export const ChatGroup = ({
       }
       const dimensions = isImage ? await getImageFileDimensions(file) : null;
       const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
-      const base64 = isImage && !filePath ? await fileToBase64(file) : undefined;
+      const base64 =
+        isImage && !filePath ? await fileToBase64(file) : undefined;
       setPendingReticulumFiles([
         {
           ...(filePath ? { filePath } : {}),
@@ -4963,6 +5480,7 @@ export const ChatGroup = ({
     setNewReticulumChannelCategoryId(categoryId);
     setNewReticulumChannelName('');
     setNewReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
+    setNewReticulumChannelExpiryDurationMs(undefined);
     setNewReticulumChannelError('');
     setIsCreateReticulumChannelOpen(true);
   }, []);
@@ -4973,6 +5491,7 @@ export const ChatGroup = ({
     setNewReticulumChannelError('');
     setNewReticulumChannelCategoryId('');
     setNewReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
+    setNewReticulumChannelExpiryDurationMs(undefined);
     setReticulumNameEmojiPicker(null);
   }, []);
 
@@ -4985,7 +5504,9 @@ export const ChatGroup = ({
     }
     if (
       reticulumChannelsForSelectedGroup.some(
-        (channel) => reticulumDisplayNameKey(channel.name) === reticulumDisplayNameKey(name)
+        (channel) =>
+          reticulumDisplayNameKey(channel.name) ===
+          reticulumDisplayNameKey(name)
       )
     ) {
       setNewReticulumChannelError('Channel already exists');
@@ -5014,6 +5535,7 @@ export const ChatGroup = ({
         position,
         writeMode: channelModes.writeMode,
         readMode: channelModes.readMode,
+        expiryDurationMs: newReticulumChannelExpiryDurationMs ?? 0,
       });
       setSelectedReticulumChannelId(channelId);
       closeCreateReticulumChannelDialog();
@@ -5025,6 +5547,7 @@ export const ChatGroup = ({
     isCreatingReticulumChannel,
     newReticulumChannelCategoryId,
     newReticulumChannelAccessMode,
+    newReticulumChannelExpiryDurationMs,
     newReticulumChannelName,
     publishReticulumChannelMetadata,
     reticulumCategoriesForSelectedGroup,
@@ -5039,6 +5562,7 @@ export const ChatGroup = ({
       setReticulumChannelAccessMode(
         reticulumChannelAccessFromModes(channel.writeMode, channel.readMode)
       );
+      setReticulumChannelExpiryDurationMs(channel.expiryDurationMs);
       setReticulumChannelError('');
       setReticulumChannelSettingsView('settings');
       setReticulumDeleteConfirmationName('');
@@ -5054,6 +5578,7 @@ export const ChatGroup = ({
     setEditingReticulumChannel(null);
     setReticulumChannelName('');
     setReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
+    setReticulumChannelExpiryDurationMs(undefined);
     setReticulumChannelError('');
     setReticulumChannelSettingsView('settings');
     setReticulumDeleteConfirmationName('');
@@ -5081,6 +5606,11 @@ export const ChatGroup = ({
     const channelModes = reticulumChannelModesFromAccess(
       reticulumChannelAccessMode
     );
+    const expiryPayload = isReticulumSystemChannelId(
+      editingReticulumChannel.channelId
+    )
+      ? {}
+      : { expiryDurationMs: reticulumChannelExpiryDurationMs ?? 0 };
     await publishReticulumChannelMetadata('channel_update', {
       channelId: editingReticulumChannel.channelId,
       categoryId: editingReticulumChannel.categoryId || '',
@@ -5088,6 +5618,7 @@ export const ChatGroup = ({
       position: editingReticulumChannel.position,
       writeMode: channelModes.writeMode,
       readMode: channelModes.readMode,
+      ...expiryPayload,
     });
     closeReticulumChannelSettings();
   }, [
@@ -5095,6 +5626,7 @@ export const ChatGroup = ({
     editingReticulumChannel,
     publishReticulumChannelMetadata,
     reticulumChannelAccessMode,
+    reticulumChannelExpiryDurationMs,
     reticulumChannelName,
     reticulumChannelsForSelectedGroup,
   ]);
@@ -5134,7 +5666,8 @@ export const ChatGroup = ({
     }
     const duplicate = reticulumCategoriesForSelectedGroup.some(
       (category) =>
-        reticulumDisplayNameKey(category.name) === reticulumDisplayNameKey(name) &&
+        reticulumDisplayNameKey(category.name) ===
+          reticulumDisplayNameKey(name) &&
         category.categoryId !== editingReticulumCategory?.categoryId
     );
     if (duplicate) {
@@ -5187,10 +5720,7 @@ export const ChatGroup = ({
   }, []);
 
   const openReticulumCategoryContextMenu = useCallback(
-    (
-      event: ReactMouseEvent<HTMLElement>,
-      category: ReticulumGroupCategory
-    ) => {
+    (event: ReactMouseEvent<HTMLElement>, category: ReticulumGroupCategory) => {
       if (!isReticulumChannelAdmin) return;
       event.preventDefault();
       setReticulumCategoryMenuCategory(category);
@@ -5272,7 +5802,9 @@ export const ChatGroup = ({
       const dropPosition = reticulumDragInsertionPosition(event);
 
       const categoryIds = new Set(
-        reticulumCategoriesForSelectedGroup.map((category) => category.categoryId)
+        reticulumCategoriesForSelectedGroup.map(
+          (category) => category.categoryId
+        )
       );
       const sourceCategoryId =
         activeChannel.categoryId && categoryIds.has(activeChannel.categoryId)
@@ -5530,7 +6062,8 @@ export const ChatGroup = ({
         channel={channel}
         dropPosition={
           parseReticulumChannelDragId(reticulumDragTarget?.activeId) &&
-          reticulumDragTarget?.overId === reticulumChannelDragId(channel.channelId)
+          reticulumDragTarget?.overId ===
+            reticulumChannelDragId(channel.channelId)
             ? reticulumDragTarget.position
             : undefined
         }
@@ -5601,35 +6134,36 @@ export const ChatGroup = ({
       reticulumChannelTypeOptions.length;
     selectAccessMode(reticulumChannelTypeOptions[nextIndex].value);
     requestAnimationFrame(() => {
-      document
-        .getElementById(`${elementIdPrefix}-${nextIndex}`)
-        ?.focus();
+      document.getElementById(`${elementIdPrefix}-${nextIndex}`)?.focus();
     });
   };
-  const reticulumHeaderActionSx = (active?: boolean, showLabel?: boolean) => ({
-    alignItems: 'center',
-    borderRadius: '8px',
-    backgroundColor: active ? RETICULUM_ACTIVE_BLUE : 'transparent',
-    color: active ? theme.palette.common.white : theme.palette.text.secondary,
-    display: 'inline-flex',
-    flexShrink: 0,
-    fontFamily: 'Inter',
-    fontSize: 12,
-    fontWeight: 600,
-    gap: showLabel ? 0.6 : 0,
-    height: 36,
-    justifyContent: 'center',
-    minWidth: showLabel ? 0 : 36,
-    overflow: 'hidden',
-    px: showLabel ? 1 : 0,
-    textAlign: 'center',
-    transition: 'background-color 140ms ease, color 140ms ease',
-    width: showLabel ? 'auto' : 36,
-    '&:hover': {
-      backgroundColor: active ? RETICULUM_ACTIVE_BLUE : theme.palette.action.hover,
-      color: active ? theme.palette.common.white : theme.palette.text.primary,
-    },
-  }) as const;
+  const reticulumHeaderActionSx = (active?: boolean, showLabel?: boolean) =>
+    ({
+      alignItems: 'center',
+      borderRadius: '8px',
+      backgroundColor: active ? RETICULUM_ACTIVE_BLUE : 'transparent',
+      color: active ? theme.palette.common.white : theme.palette.text.secondary,
+      display: 'inline-flex',
+      flexShrink: 0,
+      fontFamily: 'Inter',
+      fontSize: 12,
+      fontWeight: 600,
+      gap: showLabel ? 0.6 : 0,
+      height: 36,
+      justifyContent: 'center',
+      minWidth: showLabel ? 0 : 36,
+      overflow: 'hidden',
+      px: showLabel ? 1 : 0,
+      textAlign: 'center',
+      transition: 'background-color 140ms ease, color 140ms ease',
+      width: showLabel ? 'auto' : 36,
+      '&:hover': {
+        backgroundColor: active
+          ? RETICULUM_ACTIVE_BLUE
+          : theme.palette.action.hover,
+        color: active ? theme.palette.common.white : theme.palette.text.primary,
+      },
+    }) as const;
   const renderReticulumHeaderAction = ({
     active = false,
     label,
@@ -5817,22 +6351,44 @@ export const ChatGroup = ({
                       {selectedGroupName || 'Group'}
                     </Typography>
                     <ExpandMoreRoundedIcon
-                      sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 17 }}
+                      sx={{
+                        color: 'text.secondary',
+                        flexShrink: 0,
+                        fontSize: 17,
+                      }}
                     />
                   </Box>
                 </Tooltip>
               </ContextMenu>
-              {isReticulumChannelAdmin && (
-                <Tooltip title="Create category">
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexShrink: 0,
+                  gap: 0.25,
+                }}
+              >
+                <Tooltip title="Hidden users">
                   <IconButton
                     size="small"
-                    onClick={openCreateReticulumCategoryDialog}
+                    onClick={openReticulumSilencedUsers}
                     sx={{ color: 'text.secondary', p: 0.5 }}
                   >
-                    <CategoryOutlinedIcon sx={{ fontSize: 17 }} />
+                    <VisibilityOffRoundedIcon sx={{ fontSize: 17 }} />
                   </IconButton>
                 </Tooltip>
-              )}
+                {isReticulumChannelAdmin && (
+                  <Tooltip title="Create category">
+                    <IconButton
+                      size="small"
+                      onClick={openCreateReticulumCategoryDialog}
+                      sx={{ color: 'text.secondary', p: 0.5 }}
+                    >
+                      <CategoryOutlinedIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                  </Tooltip>
+                )}
+              </Box>
             </Box>
             <Box
               sx={{
@@ -5886,60 +6442,68 @@ export const ChatGroup = ({
                 strategy={verticalListSortingStrategy}
               >
                 <Box sx={{ px: '10px' }}>
-                <ReticulumCategoryDropZone
-                  disabled={!isReticulumChannelAdmin}
-                  dropPosition={
-                    parseReticulumChannelDragId(reticulumDragTarget?.activeId) &&
-                    reticulumDragTarget?.overId === reticulumCategoryDropId('')
-                      ? reticulumDragTarget.position
-                      : undefined
-                  }
-                  id={reticulumCategoryDropId('')}
-                >
-                  {(reticulumChannelsByCategory.get('') ?? []).map(
-                    renderReticulumChannelButton
-                  )}
-                </ReticulumCategoryDropZone>
-                <SortableContext
-                  items={reticulumCategoryDragItems}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {reticulumCategoriesForSelectedGroup.map((category) => {
-                    const channels =
-                      reticulumChannelsByCategory.get(category.categoryId) ?? [];
-                    return (
-                      <ReticulumSortableCategory
-                        category={category}
-                        channelDropPosition={
-                          parseReticulumChannelDragId(reticulumDragTarget?.activeId) &&
-                          reticulumDragTarget?.overId ===
-                            reticulumCategoryDropId(category.categoryId)
-                            ? reticulumDragTarget.position
-                            : undefined
-                        }
-                        dropPosition={
-                          parseReticulumCategoryDragId(reticulumDragTarget?.activeId) &&
-                          (reticulumDragTarget?.overId ===
-                            reticulumCategoryDragId(category.categoryId) ||
+                  <ReticulumCategoryDropZone
+                    disabled={!isReticulumChannelAdmin}
+                    dropPosition={
+                      parseReticulumChannelDragId(
+                        reticulumDragTarget?.activeId
+                      ) &&
+                      reticulumDragTarget?.overId ===
+                        reticulumCategoryDropId('')
+                        ? reticulumDragTarget.position
+                        : undefined
+                    }
+                    id={reticulumCategoryDropId('')}
+                  >
+                    {(reticulumChannelsByCategory.get('') ?? []).map(
+                      renderReticulumChannelButton
+                    )}
+                  </ReticulumCategoryDropZone>
+                  <SortableContext
+                    items={reticulumCategoryDragItems}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {reticulumCategoriesForSelectedGroup.map((category) => {
+                      const channels =
+                        reticulumChannelsByCategory.get(category.categoryId) ??
+                        [];
+                      return (
+                        <ReticulumSortableCategory
+                          category={category}
+                          channelDropPosition={
+                            parseReticulumChannelDragId(
+                              reticulumDragTarget?.activeId
+                            ) &&
                             reticulumDragTarget?.overId ===
-                              reticulumCategoryDropId(category.categoryId))
-                            ? reticulumDragTarget.position
-                            : undefined
-                        }
-                        isAdmin={isReticulumChannelAdmin}
-                        isCollapsed={collapsedReticulumCategoryIds.has(
-                          category.categoryId
-                        )}
-                        key={category.categoryId}
-                        onContextMenu={openReticulumCategoryContextMenu}
-                        onCreateChannel={openCreateReticulumChannelDialog}
-                        onToggleCollapsed={toggleReticulumCategoryCollapsed}
-                      >
-                        {channels.map(renderReticulumChannelButton)}
-                      </ReticulumSortableCategory>
-                    );
-                  })}
-                </SortableContext>
+                              reticulumCategoryDropId(category.categoryId)
+                              ? reticulumDragTarget.position
+                              : undefined
+                          }
+                          dropPosition={
+                            parseReticulumCategoryDragId(
+                              reticulumDragTarget?.activeId
+                            ) &&
+                            (reticulumDragTarget?.overId ===
+                              reticulumCategoryDragId(category.categoryId) ||
+                              reticulumDragTarget?.overId ===
+                                reticulumCategoryDropId(category.categoryId))
+                              ? reticulumDragTarget.position
+                              : undefined
+                          }
+                          isAdmin={isReticulumChannelAdmin}
+                          isCollapsed={collapsedReticulumCategoryIds.has(
+                            category.categoryId
+                          )}
+                          key={category.categoryId}
+                          onContextMenu={openReticulumCategoryContextMenu}
+                          onCreateChannel={openCreateReticulumChannelDialog}
+                          onToggleCollapsed={toggleReticulumCategoryCollapsed}
+                        >
+                          {channels.map(renderReticulumChannelButton)}
+                        </ReticulumSortableCategory>
+                      );
+                    })}
+                  </SortableContext>
                 </Box>
               </SortableContext>
             </DndContext>
@@ -6181,7 +6745,9 @@ export const ChatGroup = ({
                         ? RETICULUM_ACTIVE_BLUE
                         : 'transparent',
                       borderRadius: '8px',
-                      color: membersPanelOpen ? 'common.white' : 'text.secondary',
+                      color: membersPanelOpen
+                        ? 'common.white'
+                        : 'text.secondary',
                       flexShrink: 0,
                       height: 36,
                       width: 36,
@@ -6220,43 +6786,44 @@ export const ChatGroup = ({
             </Box>
           )}
           {!shouldSuppressLegacyGroupChat && (
-          <ChatList
-            chatId={
-              reticulumChatEnabled
-                ? `${selectedGroup}:${selectedReticulumChannelId}`
-                : selectedGroup
-            }
-            chatReferences={chatReferences}
-            enableMentions
-            handleReaction={handleReaction}
-            hasSecretKey={!!secretKey}
-            initialMessages={messages}
-            isPrivate={isPrivate}
-            members={members}
-            reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
-            myAddress={myAddress}
-            myName={myName}
-            hasOlderMessages={
-              reticulumChatEnabled ? reticulumHasOlderMessages : undefined
-            }
-            isLoadingOlderMessages={
-              reticulumChatEnabled ? reticulumLoadingOlderMessages : undefined
-            }
-            onLoadOlder={
-              reticulumChatEnabled ? loadOlderReticulumMessages : undefined
-            }
-            onDelete={onDelete}
-            onEdit={onEdit}
-            onReply={onReply}
-            openQManager={openQManager}
-            reticulumChatEnabled={reticulumChatEnabled}
-            selectedGroup={selectedGroup}
-            secretKeyObject={secretKey}
-            tempChatReferences={tempChatReferences}
-            tempMessages={tempMessages}
-            scrollToMessageId={reticulumSearchScrollTarget?.messageId}
-            scrollToMessageNonce={reticulumSearchScrollTarget?.nonce}
-          />
+            <ChatList
+              chatId={
+                reticulumChatEnabled
+                  ? `${selectedGroup}:${selectedReticulumChannelId}`
+                  : selectedGroup
+              }
+              chatReferences={chatReferences}
+              enableMentions
+              handleReaction={handleReaction}
+              hasSecretKey={!!secretKey}
+              initialMessages={messages}
+              isPrivate={isPrivate}
+              members={members}
+              reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
+              reticulumMemberRolesReady={reticulumMemberRolesReady}
+              myAddress={myAddress}
+              myName={myName}
+              hasOlderMessages={
+                reticulumChatEnabled ? reticulumHasOlderMessages : undefined
+              }
+              isLoadingOlderMessages={
+                reticulumChatEnabled ? reticulumLoadingOlderMessages : undefined
+              }
+              onLoadOlder={
+                reticulumChatEnabled ? loadOlderReticulumMessages : undefined
+              }
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onReply={onReply}
+              openQManager={openQManager}
+              reticulumChatEnabled={reticulumChatEnabled}
+              selectedGroup={selectedGroup}
+              secretKeyObject={secretKey}
+              tempChatReferences={tempChatReferences}
+              tempMessages={tempMessages}
+              scrollToMessageId={reticulumSearchScrollTarget?.messageId}
+              scrollToMessageNonce={reticulumSearchScrollTarget?.nonce}
+            />
           )}
 
           {reticulumTypingText && (
@@ -6276,56 +6843,106 @@ export const ChatGroup = ({
 
           {!shouldSuppressLegacyGroupChat &&
             (reticulumChatEnabled || !!secretKey || isPrivate === false) && (
-            <Box
-              sx={{
-                alignItems: reticulumChatEnabled ? 'center' : 'flex-end',
-                backgroundColor: reticulumChatEnabled
-                  ? alpha(theme.palette.background.paper, 0.72)
-                  : theme.palette.background.default,
-                border: `1px solid ${theme.palette.divider}`,
-                borderRadius: reticulumChatEnabled ? 0 : '8px',
-                borderLeft: reticulumChatEnabled ? 'none' : undefined,
-                borderRight: reticulumChatEnabled ? 'none' : undefined,
-                borderBottom: reticulumChatEnabled ? 'none' : undefined,
-                bottom: isFocusedParent ? '0px' : 'unset',
-                boxSizing: 'border-box',
-                display: 'flex',
-                flexDirection: 'row',
-                flexShrink: 0,
-                gap: reticulumChatEnabled ? '8px' : '12px',
-                minHeight: reticulumChatEnabled ? '58px' : '150px',
-                overflow: reticulumChatEnabled ? 'visible' : 'hidden',
-                padding: reticulumChatEnabled ? '8px 12px' : '16px 20px 20px',
-                position: isFocusedParent ? 'fixed' : 'relative',
-                top: isFocusedParent ? '0px' : 'unset',
-                width: '100%',
-                zIndex: isFocusedParent ? 5 : 'unset',
-              }}
-            >
               <Box
                 sx={{
+                  alignItems: reticulumChatEnabled ? 'center' : 'flex-end',
+                  backgroundColor: reticulumChatEnabled
+                    ? alpha(theme.palette.background.paper, 0.72)
+                    : theme.palette.background.default,
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: reticulumChatEnabled ? 0 : '8px',
+                  borderLeft: reticulumChatEnabled ? 'none' : undefined,
+                  borderRight: reticulumChatEnabled ? 'none' : undefined,
+                  borderBottom: reticulumChatEnabled ? 'none' : undefined,
+                  bottom: isFocusedParent ? '0px' : 'unset',
+                  boxSizing: 'border-box',
                   display: 'flex',
-                  flexDirection: 'column',
-                  flex: 1,
+                  flexDirection: 'row',
                   flexShrink: 0,
-                  justifyContent: reticulumChatEnabled ? 'center' : 'flex-end',
-                  minWidth: 0,
-                  overflow: reticulumChatEnabled ? 'visible' : 'auto',
+                  gap: reticulumChatEnabled ? '8px' : '12px',
+                  minHeight: reticulumChatEnabled ? '58px' : '150px',
+                  overflow: reticulumChatEnabled ? 'visible' : 'hidden',
+                  padding: reticulumChatEnabled ? '8px 12px' : '16px 20px 20px',
+                  position: isFocusedParent ? 'fixed' : 'relative',
+                  top: isFocusedParent ? '0px' : 'unset',
+                  width: '100%',
+                  zIndex: isFocusedParent ? 5 : 'unset',
                 }}
               >
                 <Box
                   sx={{
-                    alignItems: 'flex-start',
                     display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '10px',
-                    width: '100%',
+                    flexDirection: 'column',
+                    flex: 1,
+                    flexShrink: 0,
+                    justifyContent: reticulumChatEnabled
+                      ? 'center'
+                      : 'flex-end',
+                    minWidth: 0,
+                    overflow: reticulumChatEnabled ? 'visible' : 'auto',
                   }}
                 >
-                  {!isDeleteImage &&
-                    onEditMessage &&
-                    messageHasImage(onEditMessage) &&
-                    onEditMessage?.images?.map((_, index) => (
+                  <Box
+                    sx={{
+                      alignItems: 'flex-start',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '10px',
+                      width: '100%',
+                    }}
+                  >
+                    {!isDeleteImage &&
+                      onEditMessage &&
+                      messageHasImage(onEditMessage) &&
+                      onEditMessage?.images?.map((_, index) => (
+                        <div
+                          key={index}
+                          style={{
+                            height: '50px',
+                            position: 'relative',
+                            width: '50px',
+                          }}
+                        >
+                          <ImageIcon
+                            color="primary"
+                            sx={{
+                              borderRadius: '3px',
+                              height: '100%',
+                              width: '100%',
+                            }}
+                          />
+
+                          <Tooltip title="Delete image">
+                            <IconButton
+                              onClick={() => setIsDeleteImage(true)}
+                              size="small"
+                              sx={{
+                                position: 'absolute',
+                                top: '50%',
+                                left: '50%',
+                                transform: 'translate(-50%, -50%)',
+                                backgroundColor: (theme) =>
+                                  theme.palette.background.paper,
+                                color: (theme) => theme.palette.text.primary,
+                                borderRadius: '50%',
+                                opacity: 0,
+                                transition: 'opacity 0.2s',
+                                boxShadow: (theme) => theme.shadows[2],
+                                '&:hover': {
+                                  backgroundColor: (theme) =>
+                                    theme.palette.background.default,
+                                  opacity: 1,
+                                },
+                                pointerEvents: 'auto',
+                              }}
+                            >
+                              <CloseIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </div>
+                      ))}
+
+                    {chatImagesToSave.map((imgBase64, index) => (
                       <div
                         key={index}
                         style={{
@@ -6334,18 +6951,23 @@ export const ChatGroup = ({
                           width: '50px',
                         }}
                       >
-                        <ImageIcon
-                          color="primary"
-                          sx={{
-                            borderRadius: '3px',
+                        <img
+                          src={`data:image/webp;base64,${imgBase64}`}
+                          style={{
                             height: '100%',
                             width: '100%',
+                            objectFit: 'contain',
+                            borderRadius: '3px',
                           }}
                         />
 
-                        <Tooltip title="Delete image">
+                        <Tooltip title="Remove image">
                           <IconButton
-                            onClick={() => setIsDeleteImage(true)}
+                            onClick={() =>
+                              setChatImagesToSave((prev) =>
+                                prev.filter((_, i) => i !== index)
+                              )
+                            }
                             size="small"
                             sx={{
                               position: 'absolute',
@@ -6373,332 +6995,299 @@ export const ChatGroup = ({
                       </div>
                     ))}
 
-                  {chatImagesToSave.map((imgBase64, index) => (
-                    <div
-                      key={index}
-                      style={{
-                        height: '50px',
-                        position: 'relative',
-                        width: '50px',
-                      }}
-                    >
-                      <img
-                        src={`data:image/webp;base64,${imgBase64}`}
-                        style={{
-                          height: '100%',
-                          width: '100%',
-                          objectFit: 'contain',
-                          borderRadius: '3px',
+                    {pendingReticulumFiles.map((file, index) => (
+                      <Box
+                        key={`${file.fileName}-${index}`}
+                        sx={{
+                          alignItems: 'center',
+                          border: '1px solid',
+                          borderColor: theme.palette.divider,
+                          borderRadius: '8px',
+                          display: 'flex',
+                          gap: '8px',
+                          maxWidth: 260,
+                          minHeight: '50px',
+                          p: '6px 8px',
+                          position: 'relative',
                         }}
-                      />
-
-                      <Tooltip title="Remove image">
-                        <IconButton
-                          onClick={() =>
-                            setChatImagesToSave((prev) =>
-                              prev.filter((_, i) => i !== index)
-                            )
-                          }
-                          size="small"
-                          sx={{
-                            position: 'absolute',
-                            top: '50%',
-                            left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            backgroundColor: (theme) =>
-                              theme.palette.background.paper,
-                            color: (theme) => theme.palette.text.primary,
-                            borderRadius: '50%',
-                            opacity: 0,
-                            transition: 'opacity 0.2s',
-                            boxShadow: (theme) => theme.shadows[2],
-                            '&:hover': {
-                              backgroundColor: (theme) =>
-                                theme.palette.background.default,
-                              opacity: 1,
-                            },
-                            pointerEvents: 'auto',
-                          }}
-                        >
-                          <CloseIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                    </div>
-                  ))}
-
-                  {pendingReticulumFiles.map((file, index) => (
-                    <Box
-                      key={`${file.fileName}-${index}`}
-                      sx={{
-                        alignItems: 'center',
-                        border: '1px solid',
-                        borderColor: theme.palette.divider,
-                        borderRadius: '8px',
-                        display: 'flex',
-                        gap: '8px',
-                        maxWidth: 260,
-                        minHeight: '50px',
-                        p: '6px 8px',
-                        position: 'relative',
-                      }}
-                    >
-                      {file.isImage && file.previewUrl ? (
-                        <Box
-                          component="img"
-                          src={file.previewUrl}
-                          sx={{
-                            borderRadius: '4px',
-                            flexShrink: 0,
-                            height: 38,
-                            objectFit: 'cover',
-                            width: 38,
-                          }}
-                        />
-                      ) : (
-                        <InsertDriveFileRoundedIcon
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            flexShrink: 0,
-                          }}
-                        />
-                      )}
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            fontSize: '12px',
-                            fontWeight: 600,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {file.fileName}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '11px',
-                          }}
-                        >
-                          {file.mimeType || 'application/octet-stream'}
-                        </Typography>
+                      >
+                        {file.isImage && file.previewUrl ? (
+                          <Box
+                            component="img"
+                            src={file.previewUrl}
+                            sx={{
+                              borderRadius: '4px',
+                              flexShrink: 0,
+                              height: 38,
+                              objectFit: 'cover',
+                              width: 38,
+                            }}
+                          />
+                        ) : (
+                          <InsertDriveFileRoundedIcon
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              flexShrink: 0,
+                            }}
+                          />
+                        )}
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              fontSize: '12px',
+                              fontWeight: 600,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {file.fileName}
+                          </Typography>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              fontSize: '11px',
+                            }}
+                          >
+                            {file.mimeType || 'application/octet-stream'}
+                          </Typography>
+                        </Box>
+                        <Tooltip title="Remove file">
+                          <IconButton
+                            onClick={() => {
+                              setPendingReticulumFiles((prev) => {
+                                const removed = prev[index];
+                                if (removed?.previewUrl) {
+                                  URL.revokeObjectURL(removed.previewUrl);
+                                }
+                                return prev.filter((_, i) => i !== index);
+                              });
+                            }}
+                            size="small"
+                            sx={{
+                              ml: 'auto',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <CloseIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
                       </Box>
-                      <Tooltip title="Remove file">
-                        <IconButton
-                          onClick={() => {
-                            setPendingReticulumFiles((prev) => {
-                              const removed = prev[index];
-                              if (removed?.previewUrl) {
-                                URL.revokeObjectURL(removed.previewUrl);
-                              }
-                              return prev.filter((_, i) => i !== index);
-                            });
-                          }}
-                          size="small"
-                          sx={{
-                            ml: 'auto',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <CloseIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
+                    ))}
+                  </Box>
+
+                  {replyMessage && (
+                    <Box
+                      sx={{
+                        alignItems: 'flex-start',
+                        display: 'flex',
+                        gap: '5px',
+                        width: '100%',
+                      }}
+                    >
+                      <ReplyPreview message={replyMessage} />
+
+                      <ButtonBase
+                        onClick={() => {
+                          setReplyMessage(null);
+
+                          setOnEditMessage(null);
+                          setIsDeleteImage(false);
+                          setChatImagesToSave([]);
+                          clearPendingReticulumFiles();
+                        }}
+                      >
+                        <ExitIcon />
+                      </ButtonBase>
                     </Box>
-                  ))}
-                </Box>
+                  )}
 
-                {replyMessage && (
-                  <Box
-                    sx={{
-                      alignItems: 'flex-start',
-                      display: 'flex',
-                      gap: '5px',
-                      width: '100%',
-                    }}
-                  >
-                    <ReplyPreview message={replyMessage} />
-
-                    <ButtonBase
-                      onClick={() => {
-                        setReplyMessage(null);
-
-                        setOnEditMessage(null);
-                        setIsDeleteImage(false);
-                        setChatImagesToSave([]);
-                        clearPendingReticulumFiles();
+                  {onEditMessage && (
+                    <Box
+                      sx={{
+                        alignItems: 'flex-start',
+                        display: 'flex',
+                        gap: '5px',
+                        width: '100%',
                       }}
                     >
-                      <ExitIcon />
-                    </ButtonBase>
-                  </Box>
-                )}
+                      <ReplyPreview isEdit message={onEditMessage} />
 
-                {onEditMessage && (
-                  <Box
-                    sx={{
-                      alignItems: 'flex-start',
-                      display: 'flex',
-                      gap: '5px',
-                      width: '100%',
-                    }}
-                  >
-                    <ReplyPreview isEdit message={onEditMessage} />
+                      <ButtonBase
+                        onClick={() => {
+                          setReplyMessage(null);
+                          setOnEditMessage(null);
+                          setIsDeleteImage(false);
+                          setChatImagesToSave([]);
+                          clearPendingReticulumFiles();
+                          clearEditorContent();
+                        }}
+                      >
+                        <ExitIcon />
+                      </ButtonBase>
+                    </Box>
+                  )}
 
-                    <ButtonBase
-                      onClick={() => {
-                        setReplyMessage(null);
-                        setOnEditMessage(null);
-                        setIsDeleteImage(false);
-                        setChatImagesToSave([]);
-                        clearPendingReticulumFiles();
-                        clearEditorContent();
-                      }}
-                    >
-                      <ExitIcon />
-                    </ButtonBase>
-                  </Box>
-                )}
-
-                <Tiptap
-                  enableMentions
-                  setEditorRef={setEditorRef}
-                  onEnter={sendMessage}
-                  onKeyDown={handleComposerKeyDown}
-                  onContentUpdate={(editor) => {
-                    noteReticulumComposerActivity(
-                      Boolean(editor.getText().trim())
-                    );
-                  }}
-                  isChat
-                  disableEnter={!canWriteSelectedReticulumChannel}
-                  isFocusedParent={isFocusedParent}
-                  setIsFocusedParent={setIsFocusedParent}
-                  membersWithNames={members}
-                  insertImage={insertImage}
-                  insertFiles={insertFiles}
-                  compactChat={reticulumChatEnabled}
-                  placeholder={
-                    reticulumChatEnabled
-                      ? 'Message channel...'
-                      : undefined
-                  }
-                />
-                {!canWriteSelectedReticulumChannel && (
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontSize: '12px',
+                  <Tiptap
+                    enableMentions
+                    setEditorRef={setEditorRef}
+                    onEnter={sendMessage}
+                    onKeyDown={handleComposerKeyDown}
+                    onContentUpdate={(editor) => {
+                      noteReticulumComposerActivity(
+                        Boolean(editor.getText().trim())
+                      );
                     }}
-                  >
-                    Only group admins can write in this channel.
-                  </Typography>
-                )}
-                {messageSize >= 3200 && (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      justifyContent: 'flex-start',
-                      position: 'relative',
-                      width: '100%',
-                    }}
-                  >
+                    isChat
+                    disableEnter={!canWriteSelectedReticulumChannel}
+                    isFocusedParent={isFocusedParent}
+                    setIsFocusedParent={setIsFocusedParent}
+                    membersWithNames={members}
+                    insertImage={insertImage}
+                    insertFiles={insertFiles}
+                    compactChat={reticulumChatEnabled}
+                    compactActions={
+                      reticulumChatEnabled ? (
+                        <ReticulumMessageExpiryButton
+                          channelExpiryDurationMs={
+                            selectedReticulumChannelExpiryDurationMs
+                          }
+                          disabled={
+                            Boolean(onEditMessage) ||
+                            !canWriteSelectedReticulumChannel
+                          }
+                          disabledReason={
+                            onEditMessage
+                              ? 'Expiry cannot be changed while editing'
+                              : 'You cannot write in this channel'
+                          }
+                          onChange={setReticulumMessageExpiryDurationMs}
+                          value={reticulumMessageExpiryDurationMs}
+                        />
+                      ) : undefined
+                    }
+                    placeholder={
+                      reticulumChatEnabled ? 'Message channel...' : undefined
+                    }
+                  />
+                  {!canWriteSelectedReticulumChannel && (
                     <Typography
                       sx={{
+                        color: theme.palette.text.secondary,
                         fontSize: '12px',
-                        color:
-                          messageSize > MAX_SIZE_MESSAGE
-                            ? theme.palette.other.danger
-                            : 'unset',
                       }}
                     >
-                      {t('core:message.error.message_size', {
-                        maximum: MAX_SIZE_MESSAGE,
-                        size: messageSize,
-                        postProcess: 'capitalizeFirstChar',
-                      })}
+                      Only group admins can write in this channel.
                     </Typography>
-                  </Box>
-                )}
-              </Box>
+                  )}
+                  {messageSize >= 3200 && (
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        justifyContent: 'flex-start',
+                        position: 'relative',
+                        width: '100%',
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          fontSize: '12px',
+                          color:
+                            messageSize > MAX_SIZE_MESSAGE
+                              ? theme.palette.other.danger
+                              : 'unset',
+                        }}
+                      >
+                        {t('core:message.error.message_size', {
+                          maximum: MAX_SIZE_MESSAGE,
+                          size: messageSize,
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
 
-              <Box
-                sx={{
-                  flexShrink: 0,
-                  paddingBottom: reticulumChatEnabled ? 0 : '2px',
-                }}
-              >
-                <CustomButton
-                  onClick={() => {
-                    if (isSending || !canWriteSelectedReticulumChannel) return;
-                    sendMessage();
-                  }}
+                <Box
                   sx={{
-                    alignItems: 'center',
-                    backgroundColor:
-                      isSending || !canWriteSelectedReticulumChannel
-                        ? theme.palette.action.disabledBackground
-                        : reticulumChatEnabled
-                          ? RETICULUM_ACTIVE_BLUE
-                          : theme.palette.background.paper,
-                    border: '1px solid',
-                    borderColor: reticulumChatEnabled
-                      ? RETICULUM_ACTIVE_BLUE
-                      : theme.palette.divider,
-                    borderRadius: '8px',
-                    color: reticulumChatEnabled
-                      ? theme.palette.common.white
-                      : theme.palette.text.primary,
-                    cursor:
-                      isSending || !canWriteSelectedReticulumChannel
-                        ? 'default'
-                        : 'pointer',
-                    display: 'inline-flex',
-                    gap: '6px',
-                    fontSize: '14px',
-                    fontWeight: 500,
-                    justifyContent: 'center',
-                    minHeight: reticulumChatEnabled ? '38px' : '44px',
-                    minWidth: reticulumChatEnabled ? '74px' : '88px',
-                    padding: reticulumChatEnabled ? '8px 14px' : '10px 16px',
-                    position: 'relative',
-                    transition:
-                      'background-color 0.2s ease, border-color 0.2s ease',
-                    '&:hover': isSending || !canWriteSelectedReticulumChannel
-                      ? {}
-                      : {
-                          backgroundColor: reticulumChatEnabled
-                            ? '#1e40af'
-                            : theme.palette.action.hover,
-                          borderColor: reticulumChatEnabled
-                            ? '#1e40af'
-                            : theme.palette.divider,
-                        },
-                    '& .MuiSvgIcon-root': {
-                      color: reticulumChatEnabled
-                        ? theme.palette.common.white
-                        : 'inherit',
-                    },
+                    flexShrink: 0,
+                    paddingBottom: reticulumChatEnabled ? 0 : '2px',
                   }}
                 >
-                  {isSending ? (
-                    <CircularProgress
-                      size={18}
-                      sx={{
+                  <CustomButton
+                    onClick={() => {
+                      if (isSending || !canWriteSelectedReticulumChannel)
+                        return;
+                      sendMessage();
+                    }}
+                    sx={{
+                      alignItems: 'center',
+                      backgroundColor:
+                        isSending || !canWriteSelectedReticulumChannel
+                          ? theme.palette.action.disabledBackground
+                          : reticulumChatEnabled
+                            ? RETICULUM_ACTIVE_BLUE
+                            : theme.palette.background.paper,
+                      border: '1px solid',
+                      borderColor: reticulumChatEnabled
+                        ? RETICULUM_ACTIVE_BLUE
+                        : theme.palette.divider,
+                      borderRadius: '8px',
+                      color: reticulumChatEnabled
+                        ? theme.palette.common.white
+                        : theme.palette.text.primary,
+                      cursor:
+                        isSending || !canWriteSelectedReticulumChannel
+                          ? 'default'
+                          : 'pointer',
+                      display: 'inline-flex',
+                      gap: '6px',
+                      fontSize: '14px',
+                      fontWeight: 500,
+                      justifyContent: 'center',
+                      minHeight: reticulumChatEnabled ? '38px' : '44px',
+                      minWidth: reticulumChatEnabled ? '74px' : '88px',
+                      padding: reticulumChatEnabled ? '8px 14px' : '10px 16px',
+                      position: 'relative',
+                      transition:
+                        'background-color 0.2s ease, border-color 0.2s ease',
+                      '&:hover':
+                        isSending || !canWriteSelectedReticulumChannel
+                          ? {}
+                          : {
+                              backgroundColor: reticulumChatEnabled
+                                ? '#1e40af'
+                                : theme.palette.action.hover,
+                              borderColor: reticulumChatEnabled
+                                ? '#1e40af'
+                                : theme.palette.divider,
+                            },
+                      '& .MuiSvgIcon-root': {
                         color: reticulumChatEnabled
                           ? theme.palette.common.white
-                          : theme.palette.text.secondary,
-                      }}
-                    />
-                  ) : (
-                    <>
-                      <SendIcon sx={{ fontSize: '18px' }} />
-                      Send
-                    </>
-                  )}
-                </CustomButton>
+                          : 'inherit',
+                      },
+                    }}
+                  >
+                    {isSending ? (
+                      <CircularProgress
+                        size={18}
+                        sx={{
+                          color: reticulumChatEnabled
+                            ? theme.palette.common.white
+                            : theme.palette.text.secondary,
+                        }}
+                      />
+                    ) : (
+                      <>
+                        <SendIcon sx={{ fontSize: '18px' }} />
+                        Send
+                      </>
+                    )}
+                  </CustomButton>
+                </Box>
               </Box>
-            </Box>
-          )}
+            )}
         </Box>
       </Box>
 
@@ -6752,7 +7341,9 @@ export const ChatGroup = ({
               <TextField
                 autoFocus
                 fullWidth
-                onChange={(event) => setReticulumSearchQuery(event.target.value)}
+                onChange={(event) =>
+                  setReticulumSearchQuery(event.target.value)
+                }
                 placeholder={`Search ${
                   reticulumSearchChannelFilter ===
                   RETICULUM_SEARCH_CHANNEL_CURRENT
@@ -6792,7 +7383,10 @@ export const ChatGroup = ({
                       }
                       size="small"
                       sx={{
-                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.18
+                        ),
                         borderRadius: '4px',
                         color: theme.palette.primary.light,
                         height: 24,
@@ -6805,7 +7399,10 @@ export const ChatGroup = ({
                       onDelete={() => setReticulumSearchAuthorFilter('')}
                       size="small"
                       sx={{
-                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.18
+                        ),
                         borderRadius: '4px',
                         color: theme.palette.primary.light,
                         height: 24,
@@ -6820,15 +7417,17 @@ export const ChatGroup = ({
                       }
                       size="small"
                       sx={{
-                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.18
+                        ),
                         borderRadius: '4px',
                         color: theme.palette.primary.light,
                         height: 24,
                       }}
                     />
                   )}
-                  {(reticulumSearchAfterDate ||
-                    reticulumSearchBeforeDate) && (
+                  {(reticulumSearchAfterDate || reticulumSearchBeforeDate) && (
                     <Chip
                       label={`date: ${reticulumSearchDateFilterLabel}`}
                       onDelete={() => {
@@ -6837,7 +7436,10 @@ export const ChatGroup = ({
                       }}
                       size="small"
                       sx={{
-                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.18
+                        ),
                         borderRadius: '4px',
                         color: theme.palette.primary.light,
                         height: 24,
@@ -6850,7 +7452,10 @@ export const ChatGroup = ({
                       onDelete={() => setReticulumSearchSort('relevance')}
                       size="small"
                       sx={{
-                        backgroundColor: alpha(theme.palette.primary.main, 0.18),
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.18
+                        ),
                         borderRadius: '4px',
                         color: theme.palette.primary.light,
                         height: 24,
@@ -6940,7 +7545,10 @@ export const ChatGroup = ({
                       }
                       sx={{
                         alignItems: 'center',
-                        backgroundColor: alpha(theme.palette.common.black, 0.12),
+                        backgroundColor: alpha(
+                          theme.palette.common.black,
+                          0.12
+                        ),
                         border: `1px solid ${alpha(
                           theme.palette.common.white,
                           0.12
@@ -7149,7 +7757,9 @@ export const ChatGroup = ({
                     type="date"
                     value={reticulumSearchBeforeDate}
                   />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Box
+                    sx={{ display: 'flex', justifyContent: 'space-between' }}
+                  >
                     <Button
                       onClick={() => {
                         setReticulumSearchAfterDate('');
@@ -7234,9 +7844,10 @@ export const ChatGroup = ({
                   DEFAULT_RETICULUM_CHANNEL_ID;
                 const channelName =
                   reticulumVisibleChannelNameById.get(channelId) || channelId;
-                const searchResultChannel = reticulumChannelsForSelectedGroup.find(
-                  (channel) => channel.channelId === channelId
-                );
+                const searchResultChannel =
+                  reticulumChannelsForSelectedGroup.find(
+                    (channel) => channel.channelId === channelId
+                  );
                 const searchResultChannelOption =
                   reticulumChannelTypeOptionByAccess(
                     reticulumChannelAccessFromModes(
@@ -7244,8 +7855,7 @@ export const ChatGroup = ({
                       searchResultChannel?.readMode
                     )
                   );
-                const SearchResultChannelIcon =
-                  searchResultChannelOption.icon;
+                const SearchResultChannelIcon = searchResultChannelOption.icon;
                 const authorName = reticulumSearchAuthorName(event);
                 const timestamp = Number(event.timestamp || 0);
                 const attachmentNames = reticulumAttachmentNamesFromPayload(
@@ -7254,7 +7864,9 @@ export const ChatGroup = ({
                 return (
                   <ButtonBase
                     key={event.eventId}
-                    onClick={() => void handleReticulumSearchResultClick(result)}
+                    onClick={() =>
+                      void handleReticulumSearchResultClick(result)
+                    }
                     sx={{
                       alignItems: 'stretch',
                       backgroundColor: alpha(theme.palette.action.hover, 0.35),
@@ -7418,7 +8030,9 @@ export const ChatGroup = ({
                 }}
               >
                 <ButtonBase
-                  disabled={reticulumSearchPage === 0 || isReticulumSearchLoading}
+                  disabled={
+                    reticulumSearchPage === 0 || isReticulumSearchLoading
+                  }
                   onClick={() => {
                     setReticulumSearchHasNextPage(false);
                     setReticulumSearchPage((page) => Math.max(0, page - 1));
@@ -7511,20 +8125,23 @@ export const ChatGroup = ({
                 {reticulumSearchHasNextPage &&
                   reticulumSearchVisiblePageNumbers[
                     reticulumSearchVisiblePageNumbers.length - 1
-                  ] > reticulumSearchPage + 1 && (
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontSize: 13,
-                      fontWeight: 700,
-                      px: 0.5,
-                    }}
-                  >
-                    ...
-                  </Typography>
-                )}
+                  ] >
+                    reticulumSearchPage + 1 && (
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: 13,
+                        fontWeight: 700,
+                        px: 0.5,
+                      }}
+                    >
+                      ...
+                    </Typography>
+                  )}
                 <ButtonBase
-                  disabled={!reticulumSearchHasNextPage || isReticulumSearchLoading}
+                  disabled={
+                    !reticulumSearchHasNextPage || isReticulumSearchLoading
+                  }
                   onClick={() => {
                     setReticulumSearchHasNextPage(false);
                     setReticulumSearchPage((page) =>
@@ -7562,6 +8179,131 @@ export const ChatGroup = ({
       )}
 
       <Dialog
+        open={reticulumSilencedUsersOpen}
+        onClose={closeReticulumSilencedUsers}
+        fullWidth
+        maxWidth="xs"
+        PaperProps={{ sx: reticulumDialogPaperSx }}
+      >
+        <DialogTitle sx={reticulumDialogTitleSx}>Hidden users</DialogTitle>
+        <DialogContent sx={{ px: 3, pb: 1.5 }}>
+          {reticulumSilencedUsersLoading ? (
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                justifyContent: 'center',
+                minHeight: 96,
+              }}
+            >
+              <CircularProgress size={24} />
+            </Box>
+          ) : reticulumSilencedUsers.length === 0 ? (
+            <Typography
+              sx={{ color: 'text.secondary', fontSize: 14, py: 2 }}
+            >
+              No users are hidden in this group.
+            </Typography>
+          ) : (
+            <Box>
+              {reticulumSilencedUsers.map((silence, index) => {
+                const displayName =
+                  reticulumMemberNameByAddress.get(silence.targetAddress) ||
+                  silence.targetAddress;
+                return (
+                  <Box
+                    key={silence.targetAddress}
+                    sx={{
+                      alignItems: 'center',
+                      borderTop: index === 0 ? 'none' : '1px solid',
+                      borderColor: 'divider',
+                      display: 'flex',
+                      gap: 1.5,
+                      minHeight: 64,
+                      py: 1,
+                    }}
+                  >
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          fontSize: 14,
+                          fontWeight: 700,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {displayName}
+                      </Typography>
+                      {displayName !== silence.targetAddress && (
+                        <Typography
+                          sx={{
+                            color: 'text.secondary',
+                            fontSize: 11,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {silence.targetAddress}
+                        </Typography>
+                      )}
+                      <Typography
+                        sx={{ color: 'text.secondary', fontSize: 11, mt: 0.25 }}
+                      >
+                        {silence.expiresAt == null
+                          ? 'Until turned off'
+                          : `Until ${new Date(
+                              silence.expiresAt
+                            ).toLocaleString()}`}
+                      </Typography>
+                    </Box>
+                    <Tooltip title="Unhide">
+                      <span>
+                        <IconButton
+                          aria-label={`Unhide ${displayName}`}
+                          disabled={
+                            reticulumUnsilencingAddress === silence.targetAddress
+                          }
+                          onClick={() =>
+                            void unsilenceReticulumGroupUser(
+                              silence.targetAddress
+                            )
+                          }
+                          size="small"
+                          sx={{ color: 'text.secondary' }}
+                        >
+                          {reticulumUnsilencingAddress ===
+                          silence.targetAddress ? (
+                            <CircularProgress size={18} />
+                          ) : (
+                            <VisibilityRoundedIcon sx={{ fontSize: 19 }} />
+                          )}
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  </Box>
+                );
+              })}
+            </Box>
+          )}
+          {reticulumSilencedUsersError && (
+            <Typography color="error" sx={{ fontSize: 12, mt: 1 }}>
+              {reticulumSilencedUsersError}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button
+            onClick={closeReticulumSilencedUsers}
+            sx={reticulumSecondaryButtonSx}
+          >
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
         open={Boolean(reticulumLargeImageChoice)}
         onClose={closeReticulumLargeImageChoice}
         fullWidth
@@ -7570,9 +8312,12 @@ export const ChatGroup = ({
         <DialogTitle>Send large image</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: '14px', mb: 1 }}>
-            This image is {formatReticulumFileSize(reticulumLargeImageChoice?.file.size)}.
+            This image is{' '}
+            {formatReticulumFileSize(reticulumLargeImageChoice?.file.size)}.
           </Typography>
-          <Typography sx={{ color: theme.palette.text.secondary, fontSize: '13px' }}>
+          <Typography
+            sx={{ color: theme.palette.text.secondary, fontSize: '13px' }}
+          >
             Compress it for inline chat display, or send the original image as a
             downloadable attachment.
           </Typography>
@@ -7691,9 +8436,8 @@ export const ChatGroup = ({
                 'Use letters, numbers, special characters and emojis.'
               }
               InputProps={{
-                endAdornment: renderReticulumNameEmojiAdornment(
-                  'channel-create'
-                ),
+                endAdornment:
+                  renderReticulumNameEmojiAdornment('channel-create'),
               }}
               onChange={(event) => {
                 setNewReticulumChannelName(event.target.value);
@@ -7734,8 +8478,7 @@ export const ChatGroup = ({
               }}
             >
               {reticulumChannelTypeOptions.map((option, index) => {
-                const selected =
-                  newReticulumChannelAccessMode === option.value;
+                const selected = newReticulumChannelAccessMode === option.value;
                 const Icon = option.icon;
                 return (
                   <ButtonBase
@@ -7842,6 +8585,12 @@ export const ChatGroup = ({
               })}
             </Box>
           </Box>
+
+          <ReticulumChannelExpiryField
+            id="reticulum-channel-expiry-input"
+            onChange={setNewReticulumChannelExpiryDurationMs}
+            value={newReticulumChannelExpiryDurationMs}
+          />
         </DialogContent>
         <DialogActions
           sx={{
@@ -7943,7 +8692,11 @@ export const ChatGroup = ({
               </Box>
 
               <Typography
-                sx={{ color: 'text.secondary', fontSize: 14, lineHeight: '21px' }}
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  lineHeight: '21px',
+                }}
               >
                 This action cannot be undone. To permanently delete '
                 {reticulumDeleteConfirmationChannelName}', type the channel name
@@ -8076,295 +8829,310 @@ export const ChatGroup = ({
           </>
         ) : (
           <>
-        <DialogContent
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2.5,
-            maxHeight: 'calc(100vh - 96px)',
-            overflowY: 'auto',
-            px: { xs: 2.5, sm: 4 },
-            py: { xs: 2.5, sm: 3.5 },
-          }}
-        >
-          <Box>
-            <DialogTitle
+            <DialogContent
               sx={{
-                ...reticulumDialogTitleSx,
-                fontSize: { xs: 25, sm: 28 },
-                lineHeight: 1.15,
-                p: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2.5,
+                maxHeight: 'calc(100vh - 96px)',
+                overflowY: 'auto',
+                px: { xs: 2.5, sm: 4 },
+                py: { xs: 2.5, sm: 3.5 },
               }}
             >
-              Channel settings
-            </DialogTitle>
-            <Typography
-              sx={{
-                color: 'text.secondary',
-                fontSize: 14,
-                lineHeight: '20px',
-                mt: 0.75,
-              }}
-            >
-              Update this channel&apos;s name and permissions.
-            </Typography>
-          </Box>
+              <Box>
+                <DialogTitle
+                  sx={{
+                    ...reticulumDialogTitleSx,
+                    fontSize: { xs: 25, sm: 28 },
+                    lineHeight: 1.15,
+                    p: 0,
+                  }}
+                >
+                  Channel settings
+                </DialogTitle>
+                <Typography
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: 14,
+                    lineHeight: '20px',
+                    mt: 0.75,
+                  }}
+                >
+                  Update this channel&apos;s name and permissions.
+                </Typography>
+              </Box>
 
-          <Box>
-            <Typography
-              component="label"
-              htmlFor="reticulum-channel-settings-name-input"
-              sx={{
-                color: 'text.primary',
-                display: 'block',
-                fontSize: 15,
-                fontWeight: 800,
-                mb: 1,
-              }}
-            >
-              Channel name
-            </Typography>
-            <TextField
-              autoFocus
-              fullWidth
-              id="reticulum-channel-settings-name-input"
-              sx={{
-                ...reticulumDialogTextFieldSx,
-                '& .MuiOutlinedInput-root': {
-                  ...reticulumDialogTextFieldSx['& .MuiOutlinedInput-root'],
-                  height: 48,
-                },
-                '& .MuiOutlinedInput-input': {
-                  py: 1.5,
-                },
-              }}
-              value={reticulumChannelName}
-              error={Boolean(reticulumChannelError)}
-              FormHelperTextProps={{
-                sx: {
-                  fontSize: 12.5,
-                  lineHeight: '18px',
-                  minHeight: 18,
-                  ml: 0,
-                  mt: 0.75,
-                },
-              }}
-              helperText={
-                reticulumChannelError ||
-                'Use letters, numbers, special characters and emojis.'
-              }
-              InputProps={{
-                endAdornment: renderReticulumNameEmojiAdornment(
-                  'channel-settings'
-                ),
-              }}
-              onChange={(event) => {
-                setReticulumChannelName(event.target.value);
-                if (reticulumChannelError) setReticulumChannelError('');
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  void saveReticulumChannelSettings();
-                }
-              }}
-            />
-          </Box>
+              <Box>
+                <Typography
+                  component="label"
+                  htmlFor="reticulum-channel-settings-name-input"
+                  sx={{
+                    color: 'text.primary',
+                    display: 'block',
+                    fontSize: 15,
+                    fontWeight: 800,
+                    mb: 1,
+                  }}
+                >
+                  Channel name
+                </Typography>
+                <TextField
+                  autoFocus
+                  fullWidth
+                  id="reticulum-channel-settings-name-input"
+                  sx={{
+                    ...reticulumDialogTextFieldSx,
+                    '& .MuiOutlinedInput-root': {
+                      ...reticulumDialogTextFieldSx['& .MuiOutlinedInput-root'],
+                      height: 48,
+                    },
+                    '& .MuiOutlinedInput-input': {
+                      py: 1.5,
+                    },
+                  }}
+                  value={reticulumChannelName}
+                  error={Boolean(reticulumChannelError)}
+                  FormHelperTextProps={{
+                    sx: {
+                      fontSize: 12.5,
+                      lineHeight: '18px',
+                      minHeight: 18,
+                      ml: 0,
+                      mt: 0.75,
+                    },
+                  }}
+                  helperText={
+                    reticulumChannelError ||
+                    'Use letters, numbers, special characters and emojis.'
+                  }
+                  InputProps={{
+                    endAdornment:
+                      renderReticulumNameEmojiAdornment('channel-settings'),
+                  }}
+                  onChange={(event) => {
+                    setReticulumChannelName(event.target.value);
+                    if (reticulumChannelError) setReticulumChannelError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      void saveReticulumChannelSettings();
+                    }
+                  }}
+                />
+              </Box>
 
-          <Box>
-            <Typography
-              id="reticulum-channel-settings-type-label"
-              sx={{
-                color: 'text.primary',
-                fontSize: 15,
-                fontWeight: 800,
-                mb: 1,
-              }}
-            >
-              Channel type
-            </Typography>
-            <Box
-              aria-labelledby="reticulum-channel-settings-type-label"
-              role="radiogroup"
-              sx={{
-                backgroundColor: '#0c0e13',
-                border: '1px solid',
-                borderColor: 'rgba(0, 0, 0, 0.72)',
-                borderRadius: '10px',
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                overflow: 'hidden',
-              }}
-            >
-              {reticulumChannelTypeOptions.map((option, index) => {
-                const selected = reticulumChannelAccessMode === option.value;
-                const Icon = option.icon;
-                return (
-                  <ButtonBase
-                    aria-checked={selected}
-                    aria-describedby={`reticulum-channel-settings-type-description-${index}`}
-                    aria-label={`${option.label}. ${option.description}`}
-                    id={`reticulum-channel-settings-type-${index}`}
-                    key={option.value}
-                    onClick={() =>
-                      setReticulumChannelAccessMode(option.value)
-                    }
-                    onKeyDown={(event) =>
-                      handleReticulumChannelTypeKeyDown(
-                        event,
-                        index,
-                        'settings'
-                      )
-                    }
-                    role="radio"
-                    sx={{
-                      alignItems: 'center',
-                      backgroundColor: selected
-                        ? 'rgba(37, 99, 235, 0.12)'
-                        : 'background.default',
-                      borderColor: selected
-                        ? RETICULUM_ACTIVE_BLUE
-                        : 'rgba(0, 0, 0, 0.72)',
-                      borderLeft:
-                        index === 0 ? 'none' : '1px solid rgba(0, 0, 0, 0.72)',
-                      borderRadius:
-                        index === 0
-                          ? '9px 0 0 9px'
-                          : index === reticulumChannelTypeOptions.length - 1
-                            ? '0 9px 9px 0'
-                            : 0,
-                      borderTop: 'none',
-                      boxShadow: selected
-                        ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}`
-                        : 'none',
-                      color: selected ? 'common.white' : 'text.primary',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 0.75,
-                      justifyContent: 'center',
-                      minHeight: { xs: 148, sm: 135 },
-                      p: { xs: 1.25, sm: 1.5 },
-                      position: 'relative',
-                      textAlign: 'center',
-                      transition:
-                        'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
-                      '&:hover': {
-                        backgroundColor: selected
-                          ? 'rgba(37, 99, 235, 0.16)'
-                          : 'action.hover',
-                        borderColor: selected
-                          ? RETICULUM_ACTIVE_BLUE
-                          : 'text.secondary',
-                      },
-                      '&.Mui-focusVisible': {
-                        outline: `2px solid ${RETICULUM_ACTIVE_BLUE}`,
-                        outlineOffset: -4,
-                      },
-                      zIndex: selected ? 1 : 0,
-                    }}
-                    tabIndex={selected ? 0 : -1}
-                  >
-                    {selected && (
-                      <CheckCircleRoundedIcon
+              <Box>
+                <Typography
+                  id="reticulum-channel-settings-type-label"
+                  sx={{
+                    color: 'text.primary',
+                    fontSize: 15,
+                    fontWeight: 800,
+                    mb: 1,
+                  }}
+                >
+                  Channel type
+                </Typography>
+                <Box
+                  aria-labelledby="reticulum-channel-settings-type-label"
+                  role="radiogroup"
+                  sx={{
+                    backgroundColor: '#0c0e13',
+                    border: '1px solid',
+                    borderColor: 'rgba(0, 0, 0, 0.72)',
+                    borderRadius: '10px',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {reticulumChannelTypeOptions.map((option, index) => {
+                    const selected =
+                      reticulumChannelAccessMode === option.value;
+                    const Icon = option.icon;
+                    return (
+                      <ButtonBase
+                        aria-checked={selected}
+                        aria-describedby={`reticulum-channel-settings-type-description-${index}`}
+                        aria-label={`${option.label}. ${option.description}`}
+                        id={`reticulum-channel-settings-type-${index}`}
+                        key={option.value}
+                        onClick={() =>
+                          setReticulumChannelAccessMode(option.value)
+                        }
+                        onKeyDown={(event) =>
+                          handleReticulumChannelTypeKeyDown(
+                            event,
+                            index,
+                            'settings'
+                          )
+                        }
+                        role="radio"
                         sx={{
-                          color: RETICULUM_ACTIVE_BLUE,
-                          fontSize: 19,
-                          position: 'absolute',
-                          right: 9,
-                          top: 9,
+                          alignItems: 'center',
+                          backgroundColor: selected
+                            ? 'rgba(37, 99, 235, 0.12)'
+                            : 'background.default',
+                          borderColor: selected
+                            ? RETICULUM_ACTIVE_BLUE
+                            : 'rgba(0, 0, 0, 0.72)',
+                          borderLeft:
+                            index === 0
+                              ? 'none'
+                              : '1px solid rgba(0, 0, 0, 0.72)',
+                          borderRadius:
+                            index === 0
+                              ? '9px 0 0 9px'
+                              : index === reticulumChannelTypeOptions.length - 1
+                                ? '0 9px 9px 0'
+                                : 0,
+                          borderTop: 'none',
+                          boxShadow: selected
+                            ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}`
+                            : 'none',
+                          color: selected ? 'common.white' : 'text.primary',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 0.75,
+                          justifyContent: 'center',
+                          minHeight: { xs: 148, sm: 135 },
+                          p: { xs: 1.25, sm: 1.5 },
+                          position: 'relative',
+                          textAlign: 'center',
+                          transition:
+                            'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
+                          '&:hover': {
+                            backgroundColor: selected
+                              ? 'rgba(37, 99, 235, 0.16)'
+                              : 'action.hover',
+                            borderColor: selected
+                              ? RETICULUM_ACTIVE_BLUE
+                              : 'text.secondary',
+                          },
+                          '&.Mui-focusVisible': {
+                            outline: `2px solid ${RETICULUM_ACTIVE_BLUE}`,
+                            outlineOffset: -4,
+                          },
+                          zIndex: selected ? 1 : 0,
                         }}
-                      />
-                    )}
-                    <Icon
+                        tabIndex={selected ? 0 : -1}
+                      >
+                        {selected && (
+                          <CheckCircleRoundedIcon
+                            sx={{
+                              color: RETICULUM_ACTIVE_BLUE,
+                              fontSize: 19,
+                              position: 'absolute',
+                              right: 9,
+                              top: 9,
+                            }}
+                          />
+                        )}
+                        <Icon
+                          sx={{
+                            color: selected ? 'common.white' : 'text.secondary',
+                            fontSize: 26,
+                            transition: 'color 140ms ease',
+                          }}
+                        />
+                        <Typography
+                          sx={{
+                            color: selected ? 'common.white' : 'text.primary',
+                            fontSize: 15,
+                            fontWeight: 800,
+                            lineHeight: '18px',
+                          }}
+                        >
+                          {option.label}
+                        </Typography>
+                        <Typography
+                          id={`reticulum-channel-settings-type-description-${index}`}
+                          sx={{
+                            color: 'text.secondary',
+                            fontSize: 13,
+                            lineHeight: '18px',
+                            maxWidth: 180,
+                          }}
+                        >
+                          {option.description}
+                        </Typography>
+                      </ButtonBase>
+                    );
+                  })}
+                </Box>
+              </Box>
+
+              {editingReticulumChannel &&
+                !isReticulumSystemChannelId(
+                  editingReticulumChannel.channelId
+                ) && (
+                  <ReticulumChannelExpiryField
+                    id="reticulum-channel-settings-expiry-input"
+                    onChange={setReticulumChannelExpiryDurationMs}
+                    value={reticulumChannelExpiryDurationMs}
+                  />
+                )}
+            </DialogContent>
+            <DialogActions
+              sx={{
+                borderTop: '1px solid',
+                borderColor: 'divider',
+                flexWrap: 'wrap',
+                gap: 1,
+                justifyContent: 'space-between',
+                px: { xs: 2.5, sm: 4 },
+                py: 1.5,
+              }}
+            >
+              <Box sx={{ width: { xs: '100%', sm: 'auto' } }}>
+                {editingReticulumChannel &&
+                  !isReticulumSystemChannelId(
+                    editingReticulumChannel.channelId
+                  ) && (
+                    <Button
+                      ref={reticulumRemoveChannelButtonRef}
+                      color="error"
+                      startIcon={<DeleteOutlineRoundedIcon />}
+                      onClick={openReticulumDeleteConfirmation}
                       sx={{
-                        color: selected ? 'common.white' : 'text.secondary',
-                        fontSize: 26,
-                        transition: 'color 140ms ease',
-                      }}
-                    />
-                    <Typography
-                      sx={{
-                        color: selected ? 'common.white' : 'text.primary',
-                        fontSize: 15,
-                        fontWeight: 800,
-                        lineHeight: '18px',
+                        minHeight: 40,
+                        px: 1,
+                        textTransform: 'none',
                       }}
                     >
-                      {option.label}
-                    </Typography>
-                    <Typography
-                      id={`reticulum-channel-settings-type-description-${index}`}
-                      sx={{
-                        color: 'text.secondary',
-                        fontSize: 13,
-                        lineHeight: '18px',
-                        maxWidth: 180,
-                      }}
-                    >
-                      {option.description}
-                    </Typography>
-                  </ButtonBase>
-                );
-              })}
-            </Box>
-          </Box>
-        </DialogContent>
-        <DialogActions
-          sx={{
-            borderTop: '1px solid',
-            borderColor: 'divider',
-            flexWrap: 'wrap',
-            gap: 1,
-            justifyContent: 'space-between',
-            px: { xs: 2.5, sm: 4 },
-            py: 1.5,
-          }}
-        >
-          <Box sx={{ width: { xs: '100%', sm: 'auto' } }}>
-            {editingReticulumChannel &&
-              !isReticulumSystemChannelId(editingReticulumChannel.channelId) && (
-              <Button
-                ref={reticulumRemoveChannelButtonRef}
-                color="error"
-                startIcon={<DeleteOutlineRoundedIcon />}
-                onClick={openReticulumDeleteConfirmation}
+                      Remove channel
+                    </Button>
+                  )}
+              </Box>
+              <Box
                 sx={{
-                  minHeight: 40,
-                  px: 1,
-                  textTransform: 'none',
+                  display: 'flex',
+                  gap: 1,
+                  justifyContent: 'flex-end',
+                  width: { xs: '100%', sm: 'auto' },
                 }}
               >
-                Remove channel
-              </Button>
-            )}
-          </Box>
-          <Box
-            sx={{
-              display: 'flex',
-              gap: 1,
-              justifyContent: 'flex-end',
-              width: { xs: '100%', sm: 'auto' },
-            }}
-          >
-            <Button
-              onClick={closeReticulumChannelSettings}
-              sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="contained"
-              onClick={() => void saveReticulumChannelSettings()}
-              sx={{
-                ...reticulumPrimaryButtonSx,
-                minHeight: 40,
-                minWidth: 140,
-              }}
-            >
-              Save changes
-            </Button>
-          </Box>
-        </DialogActions>
+                <Button
+                  onClick={closeReticulumChannelSettings}
+                  sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={() => void saveReticulumChannelSettings()}
+                  sx={{
+                    ...reticulumPrimaryButtonSx,
+                    minHeight: 40,
+                    minWidth: 140,
+                  }}
+                >
+                  Save changes
+                </Button>
+              </Box>
+            </DialogActions>
           </>
         )}
       </Dialog>

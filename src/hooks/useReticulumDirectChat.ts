@@ -154,6 +154,7 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
   const lastSenderSeqRef = useRef(0);
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const activeConversationGenerationRef = useRef(0);
+  const visibilityRevisionRef = useRef(0);
 
   const valid = Boolean(myAddress && peerAddress);
   const messages = useMemo(() => events.map(reticulumDmEventToChatMessage), [events]);
@@ -167,11 +168,17 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     }
     if (pending.length === 0) return;
     const generation = activeConversationGenerationRef.current;
+    const visibilityRevision = visibilityRevisionRef.current;
     void addPrimaryNamesToDirectEvents(
       pending,
       primaryNameCacheRef.current
     ).then((enriched) => {
-      if (activeConversationGenerationRef.current !== generation) return;
+      if (
+        activeConversationGenerationRef.current !== generation ||
+        visibilityRevisionRef.current !== visibilityRevision
+      ) {
+        return;
+      }
       setEvents((prev) => mergeEvents(prev, enriched));
     });
   }, []);
@@ -213,6 +220,7 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     }
     const generation = activeConversationGenerationRef.current + 1;
     activeConversationGenerationRef.current = generation;
+    const historyVisibilityRevision = visibilityRevisionRef.current;
     let cancelled = false;
     let currentConversationId = '';
     const currentConversationIdPromise = conversationIdFor(myAddress, peerAddress).then((conversationId) => {
@@ -226,7 +234,11 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
           history as ReticulumDmEvent[],
           primaryNameCacheRef.current
         ).then((enriched) => {
-          if (!cancelled && activeConversationGenerationRef.current === generation) {
+          if (
+            !cancelled &&
+            activeConversationGenerationRef.current === generation &&
+            visibilityRevisionRef.current === historyVisibilityRevision
+          ) {
             setEvents(enriched);
           }
         });
@@ -265,11 +277,70 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
         applyTyping(conversationId);
       });
     });
+    const offSilence = window.reticulumChat?.onSilenceChanged?.((payload) => {
+      if (
+        payload.scopeType !== 'dm' ||
+        payload.ownerAddress !== myAddress ||
+        payload.targetAddress !== peerAddress
+      ) {
+        return;
+      }
+      const silenceVisibilityRevision = visibilityRevisionRef.current + 1;
+      visibilityRevisionRef.current = silenceVisibilityRevision;
+      if (payload.active) {
+        pendingRef.current = pendingRef.current.filter(
+          (event) => event.senderAddress !== peerAddress
+        );
+        setEvents((previous) =>
+          previous.filter((event) => event.senderAddress !== peerAddress)
+        );
+        setTypingUsers((prev) => {
+          if (!prev.has(peerAddress)) return prev;
+          const next = new Set(prev);
+          next.delete(peerAddress);
+          return next;
+        });
+      }
+      void window.reticulumChat?.getDirectHistory?.(
+        myAddress,
+        peerAddress,
+        200
+      )
+        ?.then((history) => {
+          if (
+            cancelled ||
+            activeConversationGenerationRef.current !== generation ||
+            visibilityRevisionRef.current !== silenceVisibilityRevision ||
+            !Array.isArray(history)
+          ) {
+            return;
+          }
+          void addPrimaryNamesToDirectEvents(
+            history as ReticulumDmEvent[],
+            primaryNameCacheRef.current
+          ).then((enriched) => {
+            if (
+              !cancelled &&
+              activeConversationGenerationRef.current === generation &&
+              visibilityRevisionRef.current === silenceVisibilityRevision
+            ) {
+              setEvents(enriched);
+            }
+          });
+        })
+        .catch((error) => {
+          console.warn(
+            '[useReticulumDirectChat] Failed to refresh after silence change:',
+            error
+          );
+        });
+    });
     return () => {
       cancelled = true;
       activeConversationGenerationRef.current += 1;
       off?.();
       offTyping?.();
+      offSilence?.();
       setTypingUsers(new Set());
       if (batchTimerRef.current) {
         clearTimeout(batchTimerRef.current);

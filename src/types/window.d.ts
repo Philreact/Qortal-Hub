@@ -565,6 +565,50 @@ declare global {
       setLocalDmAddresses: (
         addresses: string[]
       ) => Promise<{ success: boolean; error?: string }>;
+      getSilence: (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) => Promise<{
+        ownerAddress: string;
+        targetAddress: string;
+        scopeType: 'group' | 'dm';
+        scopeId: string;
+        expiresAt: number | null;
+        ignoredThrough: number;
+        active: boolean;
+      } | null>;
+      listSilences: (
+        ownerAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) => Promise<
+        Array<{
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          createdAt: number;
+          expiresAt: number | null;
+          ignoredThrough: number;
+          updatedAt: number;
+          active: boolean;
+        }>
+      >;
+      setSilence: (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        durationMs: number | null,
+        groupId?: number
+      ) => Promise<{ success: boolean; silence?: unknown; error?: string }>;
+      clearSilence: (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) => Promise<{ success: boolean; silence?: unknown; error?: string }>;
       setActiveDirectChat: (
         localAddress: string,
         peerAddress: string,
@@ -768,6 +812,16 @@ declare global {
         cb: (payload: {
           conversationId?: string;
           peerAddress?: string;
+        }) => void
+      ) => () => void;
+      onSilenceChanged: (
+        cb: (payload: {
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          expiresAt: number | null;
+          active: boolean;
         }) => void
       ) => () => void;
       onTyping: (

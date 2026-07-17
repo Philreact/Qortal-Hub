@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Editor, EditorProvider, useCurrentEditor } from '@tiptap/react';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -509,6 +517,7 @@ type TiptapProps = {
   insertImage?: (image: any) => void;
   insertFiles?: (files: File[]) => void | Promise<void>;
   compactChat?: boolean;
+  compactActions?: ReactNode;
   placeholder?: string;
 };
 
@@ -530,6 +539,7 @@ const Tiptap = ({
   insertImage,
   insertFiles,
   compactChat = false,
+  compactActions,
   placeholder,
 }: TiptapProps) => {
   const theme = useTheme();
@@ -951,6 +961,7 @@ const Tiptap = ({
               Aa
             </IconButton>
           </Tooltip>
+          {compactActions}
           <Box sx={{ flex: 1, minWidth: 0 }}>{editorProvider}</Box>
         </Box>
       </Box>

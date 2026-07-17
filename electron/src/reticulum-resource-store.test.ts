@@ -1227,6 +1227,58 @@ describe('reticulum resource store', () => {
     expect(store.listReferences(manifest.fileHash)[0]?.expiresAt).toBe(150_000);
   });
 
+  it('replaces a resource reference expiry when channel policy changes', () => {
+    const { store } = tempStore();
+    stores.push(store);
+    const firstExpiry = 200_000;
+    const laterExpiry = firstExpiry + 100_000;
+    const contents = Buffer.from('pending expiry reference');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'pending-expiry.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: cryptoHash(contents),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 716 },
+    };
+    store.storeManifest(manifest);
+    store.recordReference({
+      manifest,
+      scopeType: 'group',
+      scopeId: 716,
+      eventId: 'pending-expiry-event',
+    });
+
+    expect(
+      store.setReferenceExpiry({
+        scopeType: 'group',
+        scopeId: 716,
+        eventId: 'pending-expiry-event',
+        expiresAt: firstExpiry,
+      })
+    ).toBe(1);
+    expect(store.listReferences(manifest.fileHash)[0]?.expiresAt).toBe(firstExpiry);
+
+    store.setReferenceExpiry({
+      scopeType: 'group',
+      scopeId: 716,
+      eventId: 'pending-expiry-event',
+      expiresAt: laterExpiry,
+    });
+    expect(store.listReferences(manifest.fileHash)[0]?.expiresAt).toBe(laterExpiry);
+
+    store.setReferenceExpiry({
+      scopeType: 'group',
+      scopeId: 716,
+      eventId: 'pending-expiry-event',
+      expiresAt: null,
+    });
+    expect(store.listReferences(manifest.fileHash)[0]?.expiresAt).toBeUndefined();
+  });
+
   it('evicts bytes after the last message reference is deleted but keeps the manifest', async () => {
     const { dir, store } = tempStore();
     stores.push(store);

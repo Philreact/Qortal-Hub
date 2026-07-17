@@ -12,6 +12,15 @@ type Deferred<T> = {
   resolve: (value: T) => void;
 };
 
+type SilencePayload = {
+  ownerAddress: string;
+  targetAddress: string;
+  scopeType: 'group' | 'dm';
+  scopeId: string;
+  expiresAt: number | null;
+  active: boolean;
+};
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -33,10 +42,12 @@ function event(eventId: string, channelId: string, timestamp: number) {
 
 describe('useReticulumGroupChat', () => {
   let listeners: Array<(payload: { event: unknown }) => void>;
+  let silenceListeners: Array<(payload: SilencePayload) => void>;
   let getMessageHistory: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     listeners = [];
+    silenceListeners = [];
     getMessageHistory = vi.fn();
     vi.mocked(getPrimaryNamesForAddresses).mockResolvedValue({});
     Object.defineProperty(window, 'reticulumChat', {
@@ -54,6 +65,14 @@ describe('useReticulumGroupChat', () => {
           };
         }),
         onTyping: vi.fn(() => () => undefined),
+        onSilenceChanged: vi.fn((listener: (payload: SilencePayload) => void) => {
+          silenceListeners.push(listener);
+          return () => {
+            silenceListeners = silenceListeners.filter(
+              (candidate) => candidate !== listener
+            );
+          };
+        }),
       },
     });
   });
@@ -167,6 +186,74 @@ describe('useReticulumGroupChat', () => {
           senderName: 'Author',
         }),
       ]);
+    });
+  });
+
+  it('does not restore stale history after a silence change', async () => {
+    const staleHistory = deferred<unknown[]>();
+    getMessageHistory
+      .mockReturnValueOnce(staleHistory.promise)
+      .mockResolvedValueOnce([]);
+    const { result } = renderHook(() =>
+      useReticulumGroupChat(42, 'general')
+    );
+    await waitFor(() => expect(silenceListeners).toHaveLength(1));
+
+    act(() => {
+      silenceListeners[0]({
+        ownerAddress: 'Qowner',
+        targetAddress: 'Qauthor',
+        scopeType: 'group',
+        scopeId: '42',
+        expiresAt: null,
+        active: true,
+      });
+    });
+    await waitFor(() => expect(getMessageHistory).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      staleHistory.resolve([event('stale-hidden', 'general', 100)]);
+      await staleHistory.promise;
+    });
+
+    expect(result.current.events).toEqual([]);
+  });
+
+  it('removes an already visible hidden-author message immediately', async () => {
+    const refreshedHistory = deferred<unknown[]>();
+    getMessageHistory
+      .mockResolvedValueOnce([event('visible-before-hide', 'general', 100)])
+      .mockReturnValueOnce(refreshedHistory.promise);
+    const { result } = renderHook(() =>
+      useReticulumGroupChat(42, 'general')
+    );
+    await waitFor(() => {
+      expect(result.current.events).toEqual([
+        expect.objectContaining({ eventId: 'visible-before-hide' }),
+      ]);
+    });
+
+    act(() => {
+      silenceListeners[0]({
+        ownerAddress: 'Qowner',
+        targetAddress: 'Qauthor',
+        scopeType: 'group',
+        scopeId: '42',
+        expiresAt: null,
+        active: true,
+      });
+    });
+
+    expect(result.current.events).toEqual([]);
+    expect(result.current.visibilityChange).toEqual({
+      groupId: 42,
+      targetAddress: 'Qauthor',
+      active: true,
+      revision: 1,
+    });
+    await act(async () => {
+      refreshedHistory.resolve([]);
+      await refreshedHistory.promise;
     });
   });
 });

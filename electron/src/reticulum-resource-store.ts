@@ -1034,6 +1034,81 @@ export class ReticulumResourceStore {
     return Number(result.changes);
   }
 
+  setReferenceExpiry(input: {
+    scopeType: 'group' | 'dm';
+    scopeId: string | number;
+    eventId: string;
+    expiresAt: number | null;
+  }): number {
+    return this.setReferenceExpiries({
+      scopeType: input.scopeType,
+      scopeId: input.scopeId,
+      references: [{ eventId: input.eventId, expiresAt: input.expiresAt }],
+    });
+  }
+
+  setReferenceExpiries(input: {
+    scopeType: 'group' | 'dm';
+    scopeId: string | number;
+    references: Array<{ eventId: string; expiresAt: number | null }>;
+  }): number {
+    const scopeId = String(input.scopeId ?? '').trim();
+    if (!scopeId || !Array.isArray(input.references) || input.references.length === 0) {
+      return 0;
+    }
+    const references = input.references
+      .map((reference) => ({
+        eventId: String(reference.eventId || '').trim(),
+        expiresAt:
+          reference.expiresAt === null
+            ? null
+            : Math.floor(Number(reference.expiresAt)),
+      }))
+      .filter(
+        (reference) =>
+          !!reference.eventId &&
+          (reference.expiresAt === null ||
+            (Number.isFinite(reference.expiresAt) && reference.expiresAt > 0))
+      );
+    if (references.length === 0) return 0;
+    const update = this.db.prepare(`
+      UPDATE reticulum_resource_refs
+      SET expires_at = ?, updated_at = ?
+      WHERE scope_type = ? AND scope_id = ? AND event_id = ?
+        AND state = 'live'
+    `);
+    const updatedAt = this.now();
+    const tx = this.db.transaction(() => {
+      let changes = 0;
+      for (const reference of references) {
+        changes += Number(
+          update.run(
+            reference.expiresAt,
+            updatedAt,
+            input.scopeType,
+            scopeId,
+            reference.eventId
+          ).changes
+        );
+      }
+      return changes;
+    });
+    const changes = tx();
+    if (changes > 0) {
+      const nextExpiry = references.reduce<number | null>(
+        (earliest, reference) =>
+          reference.expiresAt === null
+            ? earliest
+            : earliest === null
+              ? reference.expiresAt
+              : Math.min(earliest, reference.expiresAt),
+        null
+      );
+      if (nextExpiry !== null) this.considerExpirationAt(nextExpiry);
+    }
+    return changes;
+  }
+
   hasLiveReference(
     fileHash: string,
     scopeType: 'group' | 'dm',

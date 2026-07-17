@@ -1882,18 +1882,20 @@ export const Group = ({
       .map((summary: any) => {
         const peerAddress = String(summary?.peerAddress || '').trim();
         const lastEvent = summary?.lastEvent || null;
-        if (!peerAddress || !lastEvent) return null;
+        const silenced = summary?.silenced === true;
+        if (!peerAddress || (!lastEvent && !silenced)) return null;
         const friend = dmFriendsByAddress?.[peerAddress];
         return {
           address: peerAddress,
           name: friend?.name || peerAddress,
-          timestamp: Number(summary?.updatedAt || lastEvent.timestamp || 0),
-          sender: lastEvent.senderAddress,
+          timestamp: Number(summary?.updatedAt || lastEvent?.timestamp || 0),
+          sender: lastEvent?.senderAddress || '',
           senderName:
-            lastEvent.senderAddress === myAddress
+            lastEvent?.senderAddress === myAddress
               ? userInfo?.name
               : friend?.name || peerAddress,
           reticulumDirect: true,
+          reticulumSilenced: silenced,
           unreadCount: Number(summary?.unreadCount || 0),
         };
       })

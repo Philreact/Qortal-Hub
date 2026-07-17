@@ -3299,6 +3299,7 @@ const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
+const reticulumChatSilenceSubscribers = new Set<Electron.WebContents>();
 let reticulumChatListenersAttached = false;
 
 export function attachChatListeners(
@@ -3412,6 +3413,14 @@ export function attachReticulumChatListeners(
       payload
     )
   );
+
+  manager.on('silenceChanged', (payload: unknown) =>
+    broadcastToSet(
+      reticulumChatSilenceSubscribers,
+      'reticulumChat:silenceChanged',
+      payload
+    )
+  );
 }
 
 ipcMain.handle('reticulumChat:isEnabled', async () => {
@@ -3457,6 +3466,99 @@ ipcMain.handle(
     }
     manager.setLocalDmAddresses(Array.isArray(addresses) ? addresses : []);
     return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getSilence',
+  async (
+    _event,
+    ownerAddress: string,
+    targetAddress: string,
+    scopeType: 'group' | 'dm',
+    groupId?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.getSilence(ownerAddress, targetAddress, scopeType, groupId)
+      : null;
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:listSilences',
+  async (
+    _event,
+    ownerAddress: string,
+    scopeType: 'group' | 'dm',
+    groupId?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.listSilences(ownerAddress, scopeType, groupId)
+      : [];
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:setSilence',
+  async (
+    _event,
+    ownerAddress: string,
+    targetAddress: string,
+    scopeType: 'group' | 'dm',
+    durationMs: number | null,
+    groupId?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      const silence = manager.setSilence(
+        ownerAddress,
+        targetAddress,
+        scopeType,
+        durationMs,
+        groupId
+      );
+      return { success: true, silence };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:clearSilence',
+  async (
+    _event,
+    ownerAddress: string,
+    targetAddress: string,
+    scopeType: 'group' | 'dm',
+    groupId?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      const silence = manager.clearSilence(
+        ownerAddress,
+        targetAddress,
+        scopeType,
+        groupId
+      );
+      return { success: true, silence };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 );
 
@@ -4720,6 +4822,12 @@ ipcMain.on('reticulumChat:resource:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:resource:unsubscribe', (event) => {
   reticulumChatResourceSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:silenceChanged:subscribe', (event) => {
+  reticulumChatSilenceSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:silenceChanged:unsubscribe', (event) => {
+  reticulumChatSilenceSubscribers.delete(event.sender);
 });
 
 /**

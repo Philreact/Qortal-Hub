@@ -269,6 +269,7 @@ type MessageItemProps = {
   replyExpiredMeta?: any;
   reticulumChatEnabled?: boolean;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
+  reticulumMemberRolesReady?: boolean;
   scrollToItem: (index: number) => void;
 };
 
@@ -298,6 +299,7 @@ export const MessageItemComponent = ({
   replyExpiredMeta,
   reticulumChatEnabled = false,
   reticulumMemberRolesByAddress,
+  reticulumMemberRolesReady = true,
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
@@ -563,6 +565,44 @@ export const MessageItemComponent = ({
       selectedGroup?.id ??
       0
   );
+  const reticulumSilenceContext = useMemo(() => {
+    if (!reticulumChatEnabled || !myAddress || myAddress === message?.sender) {
+      return undefined;
+    }
+    if (message?.reticulumDirect === true) {
+      return {
+        ownerAddress: myAddress,
+        scopeType: 'dm' as const,
+      };
+    }
+    if (!reticulumMemberRolesReady) {
+      return undefined;
+    }
+    if (reticulumMemberRole === 'owner' || reticulumMemberRole === 'admin') {
+      return undefined;
+    }
+    const groupId = Number(
+      message?.groupId ??
+        selectedGroup?.groupId ??
+        selectedGroup?.id ??
+        selectedGroup
+    );
+    if (!Number.isInteger(groupId) || groupId <= 0) return undefined;
+    return {
+      ownerAddress: myAddress,
+      scopeType: 'group' as const,
+      groupId,
+    };
+  }, [
+    message?.groupId,
+    message?.reticulumDirect,
+    message?.sender,
+    myAddress,
+    reticulumChatEnabled,
+    reticulumMemberRole,
+    reticulumMemberRolesReady,
+    selectedGroup,
+  ]);
   const reticulumResourceEventId =
     typeof message?.signature === 'string'
       ? message.signature
@@ -1366,10 +1406,11 @@ export const MessageItemComponent = ({
               }}
             >
               <WrapperUserAction
-                disabled={!reticulumChatEnabled && myAddress === message?.sender}
+                disabled={myAddress === message?.sender}
                 address={message?.sender}
                 name={message?.senderName}
                 reticulumMenu={reticulumChatEnabled}
+                reticulumSilenceContext={reticulumSilenceContext}
                 reticulumUserCard={reticulumUserCard}
                 trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
               >

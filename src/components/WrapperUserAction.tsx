@@ -15,6 +15,8 @@ import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceW
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import PersonSearchRoundedIcon from '@mui/icons-material/PersonSearchRounded';
 import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { executeEvent } from '../utils/events';
 import { useBlockedAddresses } from '../hooks/useBlockUsers';
 import { useAtom } from 'jotai';
@@ -31,6 +33,7 @@ export const WrapperUserAction = ({
   disabled,
   reticulumMenu = false,
   reticulumUserCard,
+  reticulumSilenceContext,
   trigger = 'click',
   fullWidth = false,
 }) => {
@@ -196,13 +199,14 @@ export const WrapperUserAction = ({
                 <ListItemText primary="User Details" />
               </MenuItem>
 
-              {!isRunningPublicNode && <Divider sx={{ borderColor: theme.palette.divider, my: 0.45 }} />}
-              {!isRunningPublicNode && (
-                <BlockUser
+              {reticulumSilenceContext && (
+                <Divider sx={{ borderColor: theme.palette.divider, my: 0.45 }} />
+              )}
+              {reticulumSilenceContext && (
+                <ReticulumHideUser
                   handleClose={handleClose}
                   address={address}
-                  name={name}
-                  reticulumMenu
+                  context={reticulumSilenceContext}
                 />
               )}
             </Box>
@@ -406,5 +410,121 @@ const BlockUser = ({ address, name, handleClose, reticulumMenu = false }) => {
       {isAlreadyBlocked === false &&
         t('auth:action.block_name', { postProcess: 'capitalizeFirstChar' })}
     </Button>
+  );
+};
+
+const ReticulumHideUser = ({ address, context, handleClose }) => {
+  const [silence, setSilence] = useState<any>(null);
+  const [showDurations, setShowDurations] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!address || !context?.ownerAddress || !context?.scopeType) return;
+    void window.reticulumChat
+      ?.getSilence?.(
+        context.ownerAddress,
+        address,
+        context.scopeType,
+        context.groupId
+      )
+      .then((value) => {
+        if (!cancelled) setSilence(value);
+      })
+      .catch((error) => {
+        console.error('[ReticulumChat] Failed to read silence state:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [address, context?.groupId, context?.ownerAddress, context?.scopeType]);
+
+  const applySilence = async (durationMs: number | null) => {
+    if (isLoading) return;
+    try {
+      setIsLoading(true);
+      const result = await window.reticulumChat?.setSilence?.(
+        context.ownerAddress,
+        address,
+        context.scopeType,
+        durationMs,
+        context.groupId
+      );
+      if (!result?.success) {
+        throw new Error(result?.error || 'Unable to hide user');
+      }
+      handleClose();
+    } catch (error) {
+      console.error('[ReticulumChat] Failed to hide user:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const clearSilence = async () => {
+    if (isLoading) return;
+    try {
+      setIsLoading(true);
+      const result = await window.reticulumChat?.clearSilence?.(
+        context.ownerAddress,
+        address,
+        context.scopeType,
+        context.groupId
+      );
+      if (!result?.success) {
+        throw new Error(result?.error || 'Unable to unhide user');
+      }
+      handleClose();
+    } catch (error) {
+      console.error('[ReticulumChat] Failed to unhide user:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (silence?.active) {
+    return (
+      <MenuItem disabled={isLoading} onClick={clearSilence} sx={reticulumMenuItemSx}>
+        <ListItemIcon>
+          {isLoading ? <CircularProgress size={17} /> : <VisibilityRoundedIcon />}
+        </ListItemIcon>
+        <ListItemText primary="Unhide" />
+      </MenuItem>
+    );
+  }
+
+  if (!showDurations) {
+    return (
+      <MenuItem
+        disabled={isLoading}
+        onClick={(event) => {
+          event.stopPropagation();
+          setShowDurations(true);
+        }}
+        sx={reticulumMenuItemSx}
+      >
+        <ListItemIcon><VisibilityOffRoundedIcon /></ListItemIcon>
+        <ListItemText primary="Hide" />
+      </MenuItem>
+    );
+  }
+
+  return (
+    <>
+      <MenuItem disabled={isLoading} onClick={() => applySilence(60 * 60 * 1000)} sx={reticulumMenuItemSx}>
+        <ListItemIcon><VisibilityOffRoundedIcon /></ListItemIcon>
+        <ListItemText primary="Hide for 1 hour" />
+      </MenuItem>
+      <MenuItem disabled={isLoading} onClick={() => applySilence(24 * 60 * 60 * 1000)} sx={reticulumMenuItemSx}>
+        <ListItemIcon><VisibilityOffRoundedIcon /></ListItemIcon>
+        <ListItemText primary="Hide for 24 hours" />
+      </MenuItem>
+      <MenuItem disabled={isLoading} onClick={() => applySilence(null)} sx={reticulumMenuItemSx}>
+        <ListItemIcon>
+          {isLoading ? <CircularProgress size={17} /> : <VisibilityOffRoundedIcon />}
+        </ListItemIcon>
+        <ListItemText primary="Hide until unhidden" />
+      </MenuItem>
+    </>
   );
 };

@@ -43,6 +43,7 @@ import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
 import MicRoundedIcon from '@mui/icons-material/MicRounded';
 import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
 import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendIcon from '@mui/icons-material/Send';
 import { LoadingSnackbar } from '../Snackbar/LoadingSnackbar';
@@ -99,6 +100,16 @@ const QCHAT_FILE_DEFAULT_EXPIRY_HOURS = 2;
 const QCHAT_FILE_COMPLETED_CACHE_KEY = 'qchat-dm-file-transfer-completed-v1';
 const QCHAT_FILE_COMPLETED_CACHE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const QCHAT_FILE_COMPLETED_CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
+type ReticulumDirectSilenceState = {
+  ownerAddress: string;
+  targetAddress: string;
+  scopeType: 'group' | 'dm';
+  scopeId: string;
+  expiresAt: number | null;
+  ignoredThrough: number;
+  active: boolean;
+};
 
 const isReticulumChatInternalTransferEvent = (payload: any): boolean => {
   const resourceType = String(
@@ -455,6 +466,10 @@ export const ChatDirect = ({
     !isNewChat && reticulumDirectUiEnabled && !reticulumDirectEnabled;
   const [reticulumDirectLinkActive, setReticulumDirectLinkActive] =
     useState(false);
+  const [reticulumPeerSilence, setReticulumPeerSilence] =
+    useState<ReticulumDirectSilenceState | null>(null);
+  const [reticulumSilenceBusy, setReticulumSilenceBusy] = useState(false);
+  const reticulumSilencePeerRef = useRef('');
   const reticulumDirectTypingActiveRef = useRef(false);
   const reticulumDirectTypingStopTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -465,6 +480,99 @@ export const ChatDirect = ({
       reticulumDirectTypingStopTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    const peerAddress = String(selectedDirect?.address || '').trim();
+    if (
+      !reticulumDirectUiEnabled ||
+      isNewChat ||
+      !myAddress ||
+      !peerAddress ||
+      !window.reticulumChat?.getSilence
+    ) {
+      reticulumSilencePeerRef.current = '';
+      setReticulumPeerSilence(null);
+      setReticulumSilenceBusy(false);
+      return;
+    }
+    reticulumSilencePeerRef.current = peerAddress;
+    setReticulumPeerSilence(null);
+    setReticulumSilenceBusy(false);
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
+        if (cancelled) return;
+        const silence = await window.reticulumChat?.getSilence?.(
+          myAddress,
+          peerAddress,
+          'dm'
+        );
+        if (!cancelled) {
+          setReticulumPeerSilence(silence?.active ? silence : null);
+        }
+      } catch {
+        if (!cancelled) setReticulumPeerSilence(null);
+      }
+    };
+    void refresh();
+    const offSilence = window.reticulumChat?.onSilenceChanged?.((payload) => {
+      if (
+        payload.ownerAddress === myAddress &&
+        payload.targetAddress === peerAddress &&
+        payload.scopeType === 'dm'
+      ) {
+        void refresh();
+      }
+    });
+    return () => {
+      cancelled = true;
+      offSilence?.();
+    };
+  }, [
+    isNewChat,
+    myAddress,
+    reticulumDirectUiEnabled,
+    selectedDirect?.address,
+  ]);
+
+  const unsilenceReticulumDirectPeer = useCallback(async () => {
+    const peerAddress = String(selectedDirect?.address || '').trim();
+    if (
+      !myAddress ||
+      !peerAddress ||
+      !reticulumPeerSilence?.active ||
+      !window.reticulumChat?.clearSilence
+    ) {
+      return;
+    }
+    setReticulumSilenceBusy(true);
+    try {
+      const result = await window.reticulumChat.clearSilence(
+        myAddress,
+        peerAddress,
+        'dm'
+      );
+      if (!result?.success) {
+        throw new Error(result?.error || 'Unable to unhide user');
+      }
+      if (reticulumSilencePeerRef.current === peerAddress) {
+        setReticulumPeerSilence(null);
+      }
+    } catch (error) {
+      if (reticulumSilencePeerRef.current !== peerAddress) return;
+      setInfoSnack({
+        type: 'error',
+        message:
+          error instanceof Error ? error.message : 'Unable to unhide user',
+      });
+      setOpenSnack(true);
+    } finally {
+      if (reticulumSilencePeerRef.current === peerAddress) {
+        setReticulumSilenceBusy(false);
+      }
+    }
+  }, [myAddress, reticulumPeerSilence?.active, selectedDirect?.address]);
 
   const sendReticulumDirectTypingState = useCallback(
     async (active: boolean, allowGrace = false) => {
@@ -2210,6 +2318,28 @@ export const ChatDirect = ({
               marginLeft: 'auto',
             }}
           >
+            {reticulumDirectUiEnabled && reticulumPeerSilence?.active && (
+              <Tooltip title="Unhide user">
+                <span>
+                  <IconButton
+                    aria-label="Unhide user"
+                    disabled={reticulumSilenceBusy}
+                    onClick={() => void unsilenceReticulumDirectPeer()}
+                    size="small"
+                    sx={{
+                      color: 'warning.main',
+                      '&:hover': { color: 'warning.dark' },
+                    }}
+                  >
+                    {reticulumSilenceBusy ? (
+                      <CircularProgress size={18} />
+                    ) : (
+                      <VisibilityRoundedIcon sx={{ fontSize: 20 }} />
+                    )}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
             <Tooltip
               title={
                 peerOnline

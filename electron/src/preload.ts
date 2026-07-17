@@ -60,6 +60,23 @@ const isAudioSurfaceWindow = windowRole === AUDIO_SURFACE_WINDOW_ROLE;
 let gcallFullStreamOnEventRefCount = 0;
 /** Same idea as gcall: avoid dropping main fanout if `call.onEvent` is registered more than once. */
 let callOnEventRefCount = 0;
+/** Group and DM chat can both observe local hide-state changes in the same renderer. */
+let reticulumChatSilenceChangedRefCount = 0;
+
+function subscribeReticulumChatSilenceChanged(): void {
+  reticulumChatSilenceChangedRefCount += 1;
+  if (reticulumChatSilenceChangedRefCount === 1) {
+    ipcRenderer.send('reticulumChat:silenceChanged:subscribe');
+  }
+}
+
+function unsubscribeReticulumChatSilenceChanged(): void {
+  reticulumChatSilenceChangedRefCount -= 1;
+  if (reticulumChatSilenceChangedRefCount <= 0) {
+    reticulumChatSilenceChangedRefCount = 0;
+    ipcRenderer.send('reticulumChat:silenceChanged:unsubscribe');
+  }
+}
 
 type PresenceUpdatePayload = {
   address: string;
@@ -1398,6 +1415,58 @@ try {
           'reticulumChat:setLocalDmAddresses',
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
+      getSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown | null>,
+      listSilences: async (
+        ownerAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:listSilences',
+          ownerAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown[]>,
+      setSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        durationMs: number | null,
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          durationMs,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
+      clearSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
       setActiveDirectChat: async (
         localAddress: string,
         peerAddress: string,
@@ -1776,6 +1845,35 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:directSummaryChanged', handler);
           ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+        };
+      },
+      onSilenceChanged: (
+        cb: (payload: {
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          expiresAt: number | null;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              ownerAddress: string;
+              targetAddress: string;
+              scopeType: 'group' | 'dm';
+              scopeId: string;
+              expiresAt: number | null;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:silenceChanged', handler);
+        subscribeReticulumChatSilenceChanged();
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:silenceChanged', handler);
+          unsubscribeReticulumChatSilenceChanged();
         };
       },
       onResource: (
@@ -2014,6 +2112,58 @@ try {
           'reticulumChat:setLocalDmAddresses',
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
+      getSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown | null>,
+      listSilences: async (
+        ownerAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:listSilences',
+          ownerAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown[]>,
+      setSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        durationMs: number | null,
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          durationMs,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
+      clearSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
       setActiveDirectChat: async (
         localAddress: string,
         peerAddress: string,
@@ -2392,6 +2542,35 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:directSummaryChanged', handler);
           ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+        };
+      },
+      onSilenceChanged: (
+        cb: (payload: {
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          expiresAt: number | null;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              ownerAddress: string;
+              targetAddress: string;
+              scopeType: 'group' | 'dm';
+              scopeId: string;
+              expiresAt: number | null;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:silenceChanged', handler);
+        subscribeReticulumChatSilenceChanged();
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:silenceChanged', handler);
+          unsubscribeReticulumChatSilenceChanged();
         };
       },
       onResource: (
