@@ -5423,6 +5423,7 @@ export class ReticulumChatManager extends EventEmitter {
       complete: progress.complete,
       failed: progress.failed,
       canceled: progress.canceled,
+      reset: progress.reset,
     });
     if (progress.complete) void this.sendGroupResourceReceipts(progress);
   }
@@ -5440,6 +5441,7 @@ export class ReticulumChatManager extends EventEmitter {
       complete: progress.complete,
       failed: progress.failed,
       canceled: progress.canceled,
+      reset: progress.reset,
     });
     if (progress.complete) void this.sendDirectResourceReceipts(progress);
   }
