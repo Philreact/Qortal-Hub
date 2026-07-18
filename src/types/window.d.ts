@@ -896,7 +896,6 @@ declare global {
           complete?: boolean;
           failed?: boolean;
           canceled?: boolean;
-          reset?: boolean;
         }) => void
       ) => () => void;
     };

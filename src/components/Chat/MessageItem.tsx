@@ -909,8 +909,6 @@ export const MessageItemComponent = ({
       progress?: number;
       complete?: boolean;
       failed?: boolean;
-      canceled?: boolean;
-      reset?: boolean;
       latestRangeUpdatedAt?: number | null;
       checkedAt?: number;
       runtime?: {
@@ -937,9 +935,7 @@ export const MessageItemComponent = ({
       if (typeof payload.progress === 'number') {
         const nextProgress = Math.max(0, Math.min(100, Math.round(payload.progress * 100)));
         setFileResourceProgress((progress) =>
-          payload.reset || typeof progress !== 'number'
-            ? nextProgress
-            : Math.max(progress, nextProgress)
+          typeof progress === 'number' ? Math.max(progress, nextProgress) : nextProgress
         );
         if (nextProgress > 0) {
           setFileResourceLastChunkAt(Date.now());
@@ -957,15 +953,13 @@ export const MessageItemComponent = ({
         );
         setFileResourceBytes((bytes) => ({
           received:
-            !payload.reset && bytes && bytes.total === payload.totalBytes
+            bytes && bytes.total === payload.totalBytes
               ? Math.max(bytes.received, received)
               : received,
           total: payload.totalBytes,
         }));
         setFileResourceProgress((progress) =>
-          payload.reset || typeof progress !== 'number'
-            ? byteProgress
-            : Math.max(progress, byteProgress)
+          typeof progress === 'number' ? Math.max(progress, byteProgress) : byteProgress
         );
         if (received > 0) {
           setFileResourceLastChunkAt(Date.now());
@@ -982,10 +976,6 @@ export const MessageItemComponent = ({
         setFileResourceStartedAt(null);
         setFileResourceLastChunkAt(null);
         return;
-      }
-      if (payload.reset && !payload.failed && !payload.complete) {
-        setFileResourceStatus('downloading');
-        setFileResourceStartedAt(Date.now());
       }
       if (payload.complete) {
         setFileResourceStatus('ready');
@@ -1276,11 +1266,6 @@ export const MessageItemComponent = ({
       const details = [fileResourceActivityText, fileResourcePeerText]
         .filter(Boolean)
         .join(' · ');
-      if (fileResourceProgress >= 100) {
-        return `verifying${bytesText ? ` · ${bytesText}` : ''}${
-          fileResourcePeerText ? ` · ${fileResourcePeerText}` : ''
-        }`;
-      }
       return `downloading ${fileResourceProgress}%${
         bytesText ? ` · ${bytesText}` : ''
       }${
