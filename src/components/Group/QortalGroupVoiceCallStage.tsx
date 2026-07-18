@@ -277,17 +277,17 @@ export function QortalGroupVoiceCallStage() {
     },
     tooltip: {
       sx: {
-        bgcolor: '#f8fafc',
-        border: `1px solid ${alpha('#0f172a', 0.12)}`,
+        bgcolor: '#111827',
+        border: `1px solid ${alpha('#ffffff', 0.16)}`,
         boxShadow: '0 10px 30px rgba(0,0,0,0.32)',
-        color: '#111827',
+        color: '#ffffff',
         fontSize: 12,
         fontWeight: 700,
       },
     },
     arrow: {
       sx: {
-        color: '#f8fafc',
+        color: '#111827',
       },
     },
   } as const;

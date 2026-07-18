@@ -36,6 +36,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import { WrapperUserAction } from '../WrapperUserAction';
 import ReplyIcon from '@mui/icons-material/Reply';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
@@ -1308,6 +1309,17 @@ export const MessageItemComponent = ({
     isOwn &&
     message?.reticulumChat &&
     (!message?.isNotEncrypted || isPrivate === false);
+  const copyReticulumMessage = useCallback(async () => {
+    const html = String(
+      message?.decryptedData?.data?.message ??
+        message?.messageText ??
+        message?.text ??
+        ''
+    );
+    const text = html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').trim();
+    if (!text || !navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(text);
+  }, [message]);
   const [isOwnReticulumMessageHovered, setIsOwnReticulumMessageHovered] =
     useState(false);
 
@@ -2717,6 +2729,19 @@ export const MessageItemComponent = ({
           },
         }}
       >
+        <MenuItem
+          onClick={() => {
+            setReticulumMessageMenuPosition(null);
+            void copyReticulumMessage();
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: '32px' }}>
+            <ContentCopyRoundedIcon fontSize="small" />
+          </ListItemIcon>
+          <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+            Copy Message
+          </Typography>
+        </MenuItem>
         <MenuItem
           onClick={() => {
             setReticulumMessageMenuPosition(null);

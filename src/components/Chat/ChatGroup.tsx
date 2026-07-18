@@ -27,10 +27,6 @@ import {
 } from '../../qdn/encryption/group-encryption';
 import { ChatList } from './ChatList';
 import { AdminSpaceInner } from './AdminSpaceInner';
-import {
-  ReticulumDiagnosticsDialog,
-  type ReticulumRuntimeMetrics,
-} from './ReticulumDiagnosticsDialog';
 import Tiptap from './TipTap';
 import './chat.css';
 import { CustomButton } from '../../styles/App-styles';
@@ -107,7 +103,6 @@ import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import MonitorHeartOutlinedIcon from '@mui/icons-material/MonitorHeartOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -822,11 +817,17 @@ function ReticulumSortableChannelButton({
                 fontWeight: 800,
                 height: 18,
                 justifyContent: 'center',
+                lineHeight: 1,
                 minWidth: 18,
                 px: 0.5,
               }}
             >
-              {mentionCount > 1 ? mentionCount : '@'}
+              <Box
+                component="span"
+                sx={{ position: 'relative', top: mentionCount > 1 ? 0 : '-0.5px' }}
+              >
+                {mentionCount > 1 ? mentionCount : '@'}
+              </Box>
             </Box>
           </Tooltip>
         )}
@@ -842,18 +843,15 @@ function ReticulumSortableChannelButton({
               component="span"
               sx={{
                 alignItems: 'center',
-                backgroundColor: hasUnreadMention
-                  ? 'action.selected'
-                  : 'primary.main',
+                backgroundColor: 'error.main',
                 borderRadius: '999px',
-                color: hasUnreadMention
-                  ? 'text.primary'
-                  : 'primary.contrastText',
+                color: 'error.contrastText',
                 display: 'inline-flex',
                 fontSize: 11,
                 fontWeight: 800,
                 height: 18,
                 justifyContent: 'center',
+                lineHeight: 1,
                 minWidth: 18,
                 px: 0.5,
               }}
@@ -1225,71 +1223,6 @@ export const ChatGroup = ({
     null
   );
   const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
-  const [reticulumDiagnosticsOpen, setReticulumDiagnosticsOpen] =
-    useState(false);
-  const reticulumDiagnosticsMetricsRef = useRef<ReticulumRuntimeMetrics>({
-    chatGroupRenders: 0,
-    parentRendersWithStableProps: 0,
-    parentPropChanges: {},
-    queuedMessageUpdates: 0,
-    reticulumEventListUpdates: 0,
-    visibleMessageUpdates: 0,
-    visibleReticulumEvents: 0,
-  });
-  reticulumDiagnosticsMetricsRef.current.chatGroupRenders += 1;
-  const reticulumDiagnosticsPreviousPropsRef = useRef<
-    Record<string, unknown> | null
-  >(null);
-  const reticulumDiagnosticsCurrentProps = {
-    selectedGroup,
-    selectedGroupName,
-    secretKey,
-    getSecretKey,
-    myAddress,
-    adminsWithNames,
-    isReticulumChannelAdmin,
-    reticulumChannelAccessReady,
-    handleNewEncryptionNotification,
-    hide,
-    handleSecretKeyCreationInProgress,
-    triedToFetchSecretKey,
-    getTimestampEnterChatParent,
-    hideView,
-    isActive,
-    isPrivate,
-    notificationReticulumChannelId,
-    onReticulumChannelSelected,
-    onGroupCallClick,
-    onQortalLandClick,
-    onThreadsClick,
-    onMembersClick,
-    membersPanelOpen,
-    groupCallInCall,
-    groupCallJoining,
-    groupCallDisabled,
-    groupCallTooltip,
-    reticulumReadEntryToken,
-    isGroupOwner,
-  };
-  const reticulumDiagnosticsPreviousProps =
-    reticulumDiagnosticsPreviousPropsRef.current;
-  if (reticulumDiagnosticsPreviousProps) {
-    const changedPropNames = Object.keys(reticulumDiagnosticsCurrentProps).filter(
-      (name) =>
-        reticulumDiagnosticsCurrentProps[
-          name as keyof typeof reticulumDiagnosticsCurrentProps
-        ] !== reticulumDiagnosticsPreviousProps[name]
-    );
-    if (changedPropNames.length === 0) {
-      reticulumDiagnosticsMetricsRef.current.parentRendersWithStableProps += 1;
-    } else {
-      for (const name of changedPropNames) {
-        const counts = reticulumDiagnosticsMetricsRef.current.parentPropChanges;
-        counts[name] = (counts[name] || 0) + 1;
-      }
-    }
-  }
-  reticulumDiagnosticsPreviousPropsRef.current = reticulumDiagnosticsCurrentProps;
   const [qManagerAnchorRect, setQManagerAnchorRect] =
     useState<QManagerAnchorRect | null>(null);
   const [reticulumSearchQuery, setReticulumSearchQuery] = useState('');
@@ -1432,29 +1365,6 @@ export const ChatGroup = ({
     sendTyping: sendReticulumTypingSignal,
     typing: reticulumTyping,
   } = useReticulumGroupChat(selectedGroup, selectedReticulumChannelId);
-  useEffect(() => {
-    const metrics = reticulumDiagnosticsMetricsRef.current;
-    metrics.reticulumEventListUpdates += 1;
-    metrics.visibleReticulumEvents = reticulumChatEvents.length;
-  }, [reticulumChatEvents]);
-  useEffect(() => {
-    reticulumDiagnosticsMetricsRef.current.visibleMessageUpdates += 1;
-  }, [messages]);
-  const resetReticulumDiagnosticsMetrics = useCallback(() => {
-    reticulumDiagnosticsMetricsRef.current = {
-      chatGroupRenders: 0,
-      parentRendersWithStableProps: 0,
-      parentPropChanges: {},
-      queuedMessageUpdates: 0,
-      reticulumEventListUpdates: 0,
-      visibleMessageUpdates: 0,
-      visibleReticulumEvents: reticulumChatEvents.length,
-    };
-  }, [reticulumChatEvents.length]);
-  const getReticulumDiagnosticsMetrics = useCallback(
-    () => ({ ...reticulumDiagnosticsMetricsRef.current }),
-    []
-  );
   const shouldSuppressLegacyGroupChat =
     !reticulumChatEnabled && !isReticulumModeResolved;
 
@@ -1500,9 +1410,6 @@ export const ChatGroup = ({
     reticulumChatEnabled && selectedGroup
       ? `${selectedGroup}:${selectedReticulumChannelId}`
       : selectedGroup;
-  useEffect(() => {
-    reticulumDiagnosticsMetricsRef.current.queuedMessageUpdates += 1;
-  }, [queueChats, reticulumChatQueueId]);
   const reticulumChatEnabledRef = useRef(false);
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
   const lastReadTimestamp = useRef(null);
@@ -6991,24 +6898,6 @@ export const ChatGroup = ({
                     <SearchRoundedIcon sx={{ fontSize: 18 }} />
                   </IconButton>
                 </Tooltip>
-                <Tooltip title="Reticulum diagnostics">
-                  <IconButton
-                    onClick={() => setReticulumDiagnosticsOpen(true)}
-                    size="small"
-                    sx={{
-                      color: 'text.secondary',
-                      flexShrink: 0,
-                      height: 36,
-                      width: 36,
-                      '&:hover': {
-                        backgroundColor: theme.palette.action.hover,
-                        color: theme.palette.text.primary,
-                      },
-                    }}
-                  >
-                    <MonitorHeartOutlinedIcon sx={{ fontSize: 18 }} />
-                  </IconButton>
-                </Tooltip>
               </Box>
             </Box>
           )}
@@ -9958,15 +9847,6 @@ export const ChatGroup = ({
           onDialogClose={() => setIsGroupAvatarDialogOpen(false)}
           setInfoSnack={setInfoSnack}
           setOpenSnack={setOpenSnack}
-        />
-      )}
-
-      {reticulumChatEnabled && (
-        <ReticulumDiagnosticsDialog
-          getRuntimeMetrics={getReticulumDiagnosticsMetrics}
-          onCaptureStart={resetReticulumDiagnosticsMetrics}
-          onClose={() => setReticulumDiagnosticsOpen(false)}
-          open={reticulumDiagnosticsOpen}
         />
       )}
 

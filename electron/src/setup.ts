@@ -82,7 +82,6 @@ import {
   getChatManager,
   flushChatStore,
 } from './chat';
-import { captureReticulumRendererCpuProfile } from './reticulum-diagnostics';
 import {
   startReticulumChatManager,
   stopReticulumChatManager,
@@ -3369,16 +3368,6 @@ ipcMain.handle('reticulumChat:isEnabled', async () => {
   const settings = await readAppSettings();
   return settings.reticulumChatEnabled === true;
 });
-
-ipcMain.handle(
-  'reticulumDiagnostics:captureRendererCpuProfile',
-  async (event, durationMs?: unknown) =>
-    captureReticulumRendererCpuProfile(
-      event.sender,
-      app.getPath('userData'),
-      durationMs
-    )
-);
 
 ipcMain.handle(
   'reticulumChat:setLocalGroupMemberships',

@@ -277,6 +277,7 @@ const getReticulumMentionBadgeStateForRefresh = (
 
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX = 10_000;
+const RETICULUM_DIRECT_NAME_RETRY_DELAY_MS = 5 * 60_000;
 const RETICULUM_OS_NOTIFICATION_EVENT_TYPES = new Set([
   'message',
   'attachment_manifest',
@@ -891,7 +892,9 @@ export const Group = ({
   );
   const [reticulumDirectNamesByAddress, setReticulumDirectNamesByAddress] =
     useState<Record<string, string>>({});
+  const reticulumDirectNamesByAddressRef = useRef<Record<string, string>>({});
   const reticulumDirectNameResolutionsRef = useRef(new Set<string>());
+  const reticulumDirectNameRetryAfterRef = useRef(new Map<string, number>());
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
   const reticulumBackgroundProcessedEventIdsRef = useRef<Map<string, number>>(
     new Map()
@@ -1897,7 +1900,11 @@ export const Group = ({
   useEffect(() => {
     if (!reticulumChatEnabled) {
       reticulumDirectNameResolutionsRef.current.clear();
-      setReticulumDirectNamesByAddress({});
+      reticulumDirectNameRetryAfterRef.current.clear();
+      reticulumDirectNamesByAddressRef.current = {};
+      setReticulumDirectNamesByAddress((previous) =>
+        Object.keys(previous).length ? {} : previous
+      );
       return;
     }
 
@@ -1912,20 +1919,27 @@ export const Group = ({
       if (address && name) knownNames[address] = name;
     }
     if (Object.keys(knownNames).length) {
-      setReticulumDirectNamesByAddress((previous) => ({
-        ...previous,
-        ...knownNames,
-      }));
+      setReticulumDirectNamesByAddress((previous) => {
+        const changed = Object.entries(knownNames).some(
+          ([address, name]) => previous[address] !== name
+        );
+        if (!changed) return previous;
+        const next = { ...previous, ...knownNames };
+        reticulumDirectNamesByAddressRef.current = next;
+        return next;
+      });
     }
 
+    const now = Date.now();
     const unresolvedAddresses = Object.values(reticulumDirectSummaries || {})
       .map((summary: any) => String(summary?.peerAddress || '').trim())
       .filter(
         (address) =>
           address &&
           !knownNames[address] &&
-          !reticulumDirectNamesByAddress[address] &&
-          !reticulumDirectNameResolutionsRef.current.has(address)
+          !reticulumDirectNamesByAddressRef.current[address] &&
+          !reticulumDirectNameResolutionsRef.current.has(address) &&
+          (reticulumDirectNameRetryAfterRef.current.get(address) || 0) <= now
       );
     if (!unresolvedAddresses.length) return;
     unresolvedAddresses.forEach((address) =>
@@ -1937,26 +1951,43 @@ export const Group = ({
           const name = await requestQueueMemberNames.enqueue(() =>
             getNameInfo(address)
           );
-          return name ? [address, name] as const : null;
+          return [address, name || null] as const;
+        } catch {
+          return [address, null] as const;
         } finally {
           reticulumDirectNameResolutionsRef.current.delete(address);
         }
       })
     ).then((resolved) => {
       const entries = resolved.filter(
-        (entry): entry is readonly [string, string] => Boolean(entry)
+        (entry): entry is readonly [string, string] => Boolean(entry[1])
       );
+      for (const [address, name] of resolved) {
+        if (name) {
+          reticulumDirectNameRetryAfterRef.current.delete(address);
+        } else {
+          reticulumDirectNameRetryAfterRef.current.set(
+            address,
+            Date.now() + RETICULUM_DIRECT_NAME_RETRY_DELAY_MS
+          );
+        }
+      }
       if (!entries.length) return;
-      setReticulumDirectNamesByAddress((previous) => ({
-        ...previous,
-        ...Object.fromEntries(entries),
-      }));
+      setReticulumDirectNamesByAddress((previous) => {
+        const additions = Object.fromEntries(entries);
+        const changed = Object.entries(additions).some(
+          ([address, name]) => previous[address] !== name
+        );
+        if (!changed) return previous;
+        const next = { ...previous, ...additions };
+        reticulumDirectNamesByAddressRef.current = next;
+        return next;
+      });
     });
   }, [
     directs,
     dmFriendsByAddress,
     reticulumChatEnabled,
-    reticulumDirectNamesByAddress,
     reticulumDirectSummaries,
   ]);
 

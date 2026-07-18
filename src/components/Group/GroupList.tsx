@@ -31,7 +31,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
+import PhoneIcon from '@mui/icons-material/Phone';
 import { HubsIcon } from '../../assets/Icons/HubsIcon';
 import { MessagingIcon } from '../../assets/Icons/MessagingIcon';
 import { ContextMenu } from '../ContextMenu';
@@ -77,6 +77,8 @@ import {
 
 const RETICULUM_GROUP_ORDER_STORAGE_KEY = 'qortal_reticulum_group_order_v1';
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
+const RETICULUM_NOTIFICATION_RED = '#f23f42';
+const RETICULUM_CALL_GREEN = '#22c55e';
 const RETICULUM_AVATAR_PALETTE = [
   '#7dd3fc',
   '#86efac',
@@ -1426,7 +1428,7 @@ const GroupItem = memo(
                   <Box
                     sx={{
                       alignItems: 'center',
-                      backgroundColor: RETICULUM_ACTIVE_BLUE,
+                      backgroundColor: RETICULUM_NOTIFICATION_RED,
                       border: `2px solid ${theme.palette.background.surface}`,
                       borderRadius: '50%',
                       bottom: -2,
@@ -1453,7 +1455,7 @@ const GroupItem = memo(
                     sx={{
                       backgroundColor: theme.palette.background.surface,
                       borderRadius: '50%',
-                      color: theme.palette.other.unread,
+                      color: RETICULUM_NOTIFICATION_RED,
                       fontSize: 16,
                       position: 'absolute',
                       right: 0,
@@ -1481,20 +1483,58 @@ const GroupItem = memo(
                 )}
 
                 {showGroupCallIndicator && (
-                  <PhoneInTalkIcon
-                    sx={{
-                      backgroundColor: theme.palette.background.surface,
-                      borderRadius: '50%',
-                      color: imInThisGroupGcall
-                        ? theme.palette.primary.main
-                        : theme.palette.info.main,
-                      fontSize: 16,
-                      left: 0,
-                      position: 'absolute',
-                      top: 17,
-                      zIndex: 2,
-                    }}
-                  />
+                  <Tooltip
+                    title={
+                      imInThisGroupGcall
+                        ? t('core:group_list_call_youre_in', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                        : t('core:group_list_call_active', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                    }
+                    placement="right"
+                  >
+                    <ButtonBase
+                      aria-label={
+                        imInThisGroupGcall
+                          ? t('core:group_list_call_youre_in', {
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                          : t('core:group_list_call_active', {
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                      }
+                      onClick={(event) => {
+                        stopEvent(event);
+                        selectGroupHandler();
+                      }}
+                      onPointerEnter={() => setIsGroupTooltipOpen(false)}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: RETICULUM_CALL_GREEN,
+                        border: `3px solid ${theme.palette.background.surface}`,
+                        borderRadius: '50%',
+                        bottom: -5,
+                        boxShadow: '0 2px 5px rgba(0,0,0,0.34)',
+                        color: theme.palette.common.white,
+                        display: 'flex',
+                        height: 23,
+                        justifyContent: 'center',
+                        left: -4,
+                        position: 'absolute',
+                        transition: 'background-color 120ms ease, transform 120ms ease',
+                        width: 23,
+                        zIndex: 3,
+                        '&:hover': {
+                          backgroundColor: '#32d468',
+                          transform: 'scale(1.08)',
+                        },
+                      }}
+                    >
+                      <PhoneIcon sx={{ fontSize: 14 }} />
+                    </ButtonBase>
+                  </Tooltip>
                 )}
               </Box>
             </ContextMenu>
@@ -1658,7 +1698,9 @@ const GroupItem = memo(
                     timestampEnterData < group?.timestamp))) && (
                   <MarkChatUnreadIcon
                     sx={{
-                      color: theme.palette.other.unread,
+                      color: hasReticulumUnread
+                        ? RETICULUM_NOTIFICATION_RED
+                        : theme.palette.other.unread,
                       fontSize: '18px',
                     }}
                   />
@@ -1667,7 +1709,7 @@ const GroupItem = memo(
               {hasReticulumMention && (
                 <AlternateEmailIcon
                   sx={{
-                    color: theme.palette.other.unread,
+                    color: RETICULUM_NOTIFICATION_RED,
                     fontSize: '18px',
                   }}
                 />
@@ -1686,9 +1728,7 @@ const GroupItem = memo(
                 <Box
                   sx={{
                     alignItems: 'center',
-                    color: imInThisGroupGcall
-                      ? theme.palette.primary.main
-                      : theme.palette.info.main,
+                    color: RETICULUM_CALL_GREEN,
                     display: 'flex',
                     gap: '3px',
                     flexShrink: 0,
@@ -1703,7 +1743,7 @@ const GroupItem = memo(
                         })
                   }
                 >
-                  <PhoneInTalkIcon
+                  <PhoneIcon
                     sx={{
                       color: 'inherit',
                       fontSize: '18px',
