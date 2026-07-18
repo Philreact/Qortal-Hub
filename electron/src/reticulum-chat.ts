@@ -4627,6 +4627,12 @@ export class ReticulumChatManager extends EventEmitter {
     const previousGroupAddresses = this.localGroupAddresses;
     const normalizedMemberships = this.normalizeLocalGroupMemberships(memberships);
     const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
+    const newlyJoinedMemberships = normalizedMemberships.filter(
+      ({ groupId, localAddress }) =>
+        Boolean(localAddress) &&
+        (!previousGroupIds.has(groupId) ||
+          previousGroupAddresses.get(groupId) !== localAddress)
+    );
     this.localPrivateGroupIds = new Set(
       normalizedMemberships
         .filter(({ isPrivate }) => isPrivate)
@@ -4644,6 +4650,12 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    for (const membership of newlyJoinedMemberships) {
+      this.db.initializeGroupReadBaseline(
+        membership.groupId,
+        membership.localAddress as string
+      );
+    }
     const authMembershipGroups = new Set([
       ...previousGroupIds,
       ...this.localGroupIds,
@@ -12897,9 +12909,16 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return status;
     }
-    let isAdmin = false;
     try {
-      isAdmin = await this.validateGroupAdmin(groupId, normalizedAddress);
+      const isAdmin = await this.validateGroupAdmin(groupId, normalizedAddress);
+      loggerLog(
+        `[ReticulumChat] group_admin_validation_resolved group=${groupId} address=${normalizedAddress} status=${isAdmin ? 'admin' : 'not_admin'}`
+      );
+      this.groupAdminValidationCache.set(cacheKey, {
+        isAdmin,
+        expiresAt: this.now() + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
+      });
+      return isAdmin ? 'admin' : 'not_admin';
     } catch (err) {
       loggerWarn(
         `[ReticulumChat] group_admin_validation_unknown group=${groupId} address=${normalizedAddress}:`,
@@ -12907,14 +12926,6 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return 'unknown';
     }
-    loggerLog(
-      `[ReticulumChat] group_admin_validation_resolved group=${groupId} address=${normalizedAddress} status=${isAdmin ? 'admin' : 'not_admin'}`
-    );
-    this.groupAdminValidationCache.set(cacheKey, {
-      isAdmin,
-      expiresAt: now + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
-    });
-    return isAdmin ? 'admin' : 'not_admin';
   }
 
   private async canAcceptEventForChannelWritePolicy(

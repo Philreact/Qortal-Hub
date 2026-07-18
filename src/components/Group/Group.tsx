@@ -3,13 +3,13 @@ import {
   ButtonBase,
   IconButton,
   Paper,
-  SvgIcon,
   Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
 import {
   lazy,
+  memo,
   Profiler,
   Suspense,
   useCallback,
@@ -101,6 +101,7 @@ import { sortArrayByTimestampAndGroupName } from '../../utils/time';
 import { WalletsAppWrapper } from './WalletsAppWrapper';
 import { useTranslation } from 'react-i18next';
 import { GroupList } from './GroupList';
+import { ReticulumGroupAboutModal } from './ReticulumGroupAbout';
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
@@ -132,6 +133,10 @@ import {
 } from './Group.styles';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
+
+// Keeps the Reticulum chat tree out of unrelated Group-shell re-renders. The
+// legacy ChatGroup instance below deliberately retains its existing behavior.
+const ReticulumChatGroup = memo(ChatGroup);
 
 const LazyAddGroup = lazy(() =>
   import('./AddGroup').then((m) => ({ default: m.AddGroup }))
@@ -500,22 +505,14 @@ function ReticulumSectionLayer({
   );
 }
 
-const ReticulumMegaphoneIcon = (props) => (
-  <SvgIcon {...props} viewBox="0 0 24 24">
-    <path d="M20.5 4.75c0-.79-.87-1.27-1.54-.85L10.1 9.4H5.25A2.25 2.25 0 0 0 3 11.65v.7a2.25 2.25 0 0 0 2.25 2.25H6.4l1.52 4.18c.22.6.78.99 1.42.99h2.06c.72 0 1.2-.74.91-1.4l-1.63-3.75 8.28 5.48c.67.43 1.54-.05 1.54-.85V4.75Z" />
-  </SvgIcon>
-);
-
 function ReticulumGroupSectionHeader({
   activeSection,
+  canManageReticulumGroup,
   groupCallDisabled,
   groupCallInCall,
   groupCallJoining,
   groupCallTooltip,
-  hasUnreadAnnouncements,
   membersPanelOpen,
-  onAdminsClick,
-  onAnnouncementsClick,
   onChatClick,
   onGroupCallClick,
   onMembersClick,
@@ -524,14 +521,12 @@ function ReticulumGroupSectionHeader({
   sectionLabel,
 }: {
   activeSection: string;
+  canManageReticulumGroup: boolean;
   groupCallDisabled?: boolean;
   groupCallInCall?: boolean;
   groupCallJoining?: boolean;
   groupCallTooltip?: string;
-  hasUnreadAnnouncements?: boolean;
   membersPanelOpen?: boolean;
-  onAdminsClick?: () => void;
-  onAnnouncementsClick?: () => void;
   onChatClick?: () => void;
   onGroupCallClick?: () => void;
   onMembersClick?: () => void;
@@ -540,6 +535,23 @@ function ReticulumGroupSectionHeader({
   sectionLabel: string;
 }) {
   const theme = useTheme();
+  const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false);
+  const [isQManagerOpen, setIsQManagerOpen] = useState(false);
+
+  useEffect(() => {
+    const syncAdminMenu = (event: any) => {
+      setIsAdminMenuOpen(Boolean(event?.detail?.open ?? event?.open));
+    };
+    const syncQManager = (event: any) => {
+      setIsQManagerOpen(Boolean(event?.detail?.open ?? event?.open));
+    };
+    subscribeToEvent('reticulumAdminKeysOpenState', syncAdminMenu);
+    subscribeToEvent('reticulumQManagerOpenState', syncQManager);
+    return () => {
+      unsubscribeFromEvent('reticulumAdminKeysOpenState', syncAdminMenu);
+      unsubscribeFromEvent('reticulumQManagerOpenState', syncQManager);
+    };
+  }, []);
   const actionSx = (active?: boolean, showLabel?: boolean) => ({
     alignItems: 'center',
     borderRadius: '8px',
@@ -691,33 +703,33 @@ function ReticulumGroupSectionHeader({
           }}
         />
         {renderAction({
-          active: activeSection === 'announcement',
-          label: 'Announcements',
-          icon: (
-            <ReticulumMegaphoneIcon
-              sx={{
-                color: hasUnreadAnnouncements
-                  ? theme.palette.other.unread
-                  : 'inherit',
-                fontSize: 20,
-              }}
-            />
-          ),
-          onClick: onAnnouncementsClick,
-        })}
-        {renderAction({
           active: activeSection === 'forum',
           label: 'Threads',
           icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
           onClick: onThreadsClick,
         })}
+        {canManageReticulumGroup &&
+          renderAction({
+            active: isAdminMenuOpen,
+            label: 'Admins',
+            icon: <SecurityRoundedIcon sx={{ fontSize: 19 }} />,
+            onClick: (event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              executeEvent('toggleReticulumAdminKeys', {
+                anchorRect: {
+                  bottom: rect.bottom,
+                  height: rect.height,
+                  left: rect.left,
+                  right: rect.right,
+                  top: rect.top,
+                  width: rect.width,
+                },
+                toggle: true,
+              });
+            },
+          })}
         {renderAction({
-          active: activeSection === 'adminSpace',
-          label: 'Admins',
-          icon: <SecurityRoundedIcon sx={{ fontSize: 19 }} />,
-          onClick: onAdminsClick,
-        })}
-        {renderAction({
+          active: isQManagerOpen,
           label: 'Q-Manager',
           icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
           onClick: (event) => {
@@ -731,6 +743,7 @@ function ReticulumGroupSectionHeader({
                 top: rect.top,
                 width: rect.width,
               },
+              toggle: true,
             });
           },
         })}
@@ -876,6 +889,9 @@ export const Group = ({
   const [reticulumDirectSummaries, setReticulumDirectSummaries] = useAtom(
     reticulumDirectSummariesAtom
   );
+  const [reticulumDirectNamesByAddress, setReticulumDirectNamesByAddress] =
+    useState<Record<string, string>>({});
+  const reticulumDirectNameResolutionsRef = useRef(new Set<string>());
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
   const reticulumBackgroundProcessedEventIdsRef = useRef<Map<string, number>>(
     new Map()
@@ -1039,7 +1055,9 @@ export const Group = ({
       roomId: gcallRoomIdForGroup,
     });
     if (!confirmed) return;
-    setQcallMinimized(false);
+    // Calls deliberately start in the compact nav widget. The stage is opened
+    // only when the user explicitly expands it there.
+    setQcallMinimized(true);
     let memberGateAddresses: string[] = [];
     const primaryNamesByAddress: Record<string, string> = {};
     try {
@@ -1876,6 +1894,72 @@ export const Group = ({
     }
   }, []);
 
+  useEffect(() => {
+    if (!reticulumChatEnabled) {
+      reticulumDirectNameResolutionsRef.current.clear();
+      setReticulumDirectNamesByAddress({});
+      return;
+    }
+
+    const knownNames: Record<string, string> = {};
+    for (const direct of directs || []) {
+      const address = typeof direct?.address === 'string' ? direct.address : '';
+      const name = typeof direct?.name === 'string' ? direct.name.trim() : '';
+      if (address && name && name !== address) knownNames[address] = name;
+    }
+    for (const [address, friend] of Object.entries(dmFriendsByAddress || {})) {
+      const name = friend?.name?.trim();
+      if (address && name) knownNames[address] = name;
+    }
+    if (Object.keys(knownNames).length) {
+      setReticulumDirectNamesByAddress((previous) => ({
+        ...previous,
+        ...knownNames,
+      }));
+    }
+
+    const unresolvedAddresses = Object.values(reticulumDirectSummaries || {})
+      .map((summary: any) => String(summary?.peerAddress || '').trim())
+      .filter(
+        (address) =>
+          address &&
+          !knownNames[address] &&
+          !reticulumDirectNamesByAddress[address] &&
+          !reticulumDirectNameResolutionsRef.current.has(address)
+      );
+    if (!unresolvedAddresses.length) return;
+    unresolvedAddresses.forEach((address) =>
+      reticulumDirectNameResolutionsRef.current.add(address)
+    );
+    void Promise.all(
+      unresolvedAddresses.map(async (address) => {
+        try {
+          const name = await requestQueueMemberNames.enqueue(() =>
+            getNameInfo(address)
+          );
+          return name ? [address, name] as const : null;
+        } finally {
+          reticulumDirectNameResolutionsRef.current.delete(address);
+        }
+      })
+    ).then((resolved) => {
+      const entries = resolved.filter(
+        (entry): entry is readonly [string, string] => Boolean(entry)
+      );
+      if (!entries.length) return;
+      setReticulumDirectNamesByAddress((previous) => ({
+        ...previous,
+        ...Object.fromEntries(entries),
+      }));
+    });
+  }, [
+    directs,
+    dmFriendsByAddress,
+    reticulumChatEnabled,
+    reticulumDirectNamesByAddress,
+    reticulumDirectSummaries,
+  ]);
+
   const reticulumDirectRows = useMemo(() => {
     if (!reticulumChatEnabled) return [];
     return Object.values(reticulumDirectSummaries || {})
@@ -1884,15 +1968,19 @@ export const Group = ({
         const lastEvent = summary?.lastEvent || null;
         if (!peerAddress || !lastEvent) return null;
         const friend = dmFriendsByAddress?.[peerAddress];
+        const resolvedName =
+          friend?.name || reticulumDirectNamesByAddress[peerAddress];
         return {
           address: peerAddress,
-          name: friend?.name || peerAddress,
+          // Do not turn a known peer back into an address merely because the
+          // optional DM-friend relationship was removed.
+          name: resolvedName,
           timestamp: Number(summary?.updatedAt || lastEvent.timestamp || 0),
           sender: lastEvent.senderAddress,
           senderName:
             lastEvent.senderAddress === myAddress
               ? userInfo?.name
-              : friend?.name || peerAddress,
+              : resolvedName || peerAddress,
           reticulumDirect: true,
           unreadCount: Number(summary?.unreadCount || 0),
         };
@@ -1903,6 +1991,7 @@ export const Group = ({
     myAddress,
     reticulumChatEnabled,
     reticulumDirectSummaries,
+    reticulumDirectNamesByAddress,
     userInfo?.name,
   ]);
 
@@ -1918,7 +2007,11 @@ export const Group = ({
     }
     for (const direct of reticulumDirectRows) {
       const existing = byAddress.get(direct.address);
-      byAddress.set(direct.address, { ...(existing || {}), ...direct });
+      byAddress.set(direct.address, {
+        ...(existing || {}),
+        ...direct,
+        name: direct.name || existing?.name || direct.address,
+      });
     }
     return [...byAddress.values()];
   }, [directs, reticulumChatEnabled, reticulumDirectRows]);
@@ -3340,8 +3433,13 @@ export const Group = ({
   const goToThreads = useCallback(() => {
     setSelectedDirect(null);
     setNewChat(false);
+    if (reticulumChatEnabled && groupSection === 'forum') {
+      setGroupSection('chat');
+      bumpReticulumReadEntryToken();
+      return;
+    }
     setGroupSection('forum');
-  }, []);
+  }, [bumpReticulumReadEntryToken, groupSection, reticulumChatEnabled]);
 
   const goToQortalLand = useCallback(() => {
     setSelectedDirect(null);
@@ -3373,9 +3471,46 @@ export const Group = ({
     }
   }, [bumpReticulumReadEntryToken, getTimestampEnterChat]);
 
+  useEffect(() => {
+    if (
+      reticulumChatEnabled &&
+      (groupSection === 'announcement' || groupSection === 'adminSpace')
+    ) {
+      setGroupSection('chat');
+    }
+  }, [groupSection, reticulumChatEnabled]);
+
   const toggleReticulumMembersPanel = useCallback(() => {
     setReticulumMembersPanelOpen((open) => !open);
   }, []);
+
+  const handleReticulumChannelSelected = useCallback(
+    (channelId: string) => {
+      const normalizedChannelId = channelId || 'general';
+      setActiveReticulumChannelId((previousChannelId) => {
+        const previous = previousChannelId || 'general';
+        if (previous !== normalizedChannelId) {
+          bumpReticulumReadEntryToken();
+        }
+        return normalizedChannelId;
+      });
+      if (
+        notificationReticulumChannelId &&
+        notificationReticulumChannelId === normalizedChannelId
+      ) {
+        setNotificationReticulumChannelId('');
+      }
+    },
+    [bumpReticulumReadEntryToken, notificationReticulumChannelId]
+  );
+
+  useEffect(() => {
+    if (!reticulumChatEnabled) return;
+    const closeMembersPanel = () => setReticulumMembersPanelOpen(false);
+    subscribeToEvent('closeReticulumMembersPanel', closeMembersPanel);
+    return () =>
+      unsubscribeFromEvent('closeReticulumMembersPanel', closeMembersPanel);
+  }, [reticulumChatEnabled]);
 
   const loadingGroupSnackbarInfo = useMemo(
     () => ({
@@ -3467,6 +3602,11 @@ export const Group = ({
   const selectedGroupIdKey = selectedGroup?.groupId
     ? String(selectedGroup.groupId)
     : '';
+  const canManageReticulumGroup = Boolean(
+    reticulumAdminGroupIds.has(Number(selectedGroup?.groupId)) ||
+      admins.includes(myAddress) ||
+      groupOwner?.owner === myAddress
+  );
   const mountedReticulumSections =
     reticulumMountedGroupSections[selectedGroupIdKey] || [];
   const shouldMountReticulumSection = useCallback(
@@ -3496,6 +3636,7 @@ export const Group = ({
           width: '100%',
         }}
       >
+        {reticulumChatEnabled && <ReticulumGroupAboutModal />}
         {reticulumChatEnabled || desktopSideView !== 'directs' ? (
           <GroupList
             selectGroupFunc={selectGroupFunc}
@@ -3591,18 +3732,15 @@ export const Group = ({
             {reticulumChatEnabled && groupSection !== 'chat' && (
               <ReticulumGroupSectionHeader
                 activeSection={groupSection}
+                canManageReticulumGroup={canManageReticulumGroup}
                 sectionLabel={
                   groupSection === 'land'
                     ? 'QortalLand'
-                    : groupSection === 'announcement'
-                      ? 'Announcements'
-                      : groupSection === 'forum'
+                    : groupSection === 'forum'
                         ? 'Threads'
                         : groupSection === 'members'
                           ? 'Members'
-                          : groupSection === 'adminSpace'
-                            ? 'Admins'
-                            : selectedGroup?.groupName || 'Group'
+                          : selectedGroup?.groupName || 'Group'
                 }
                 onChatClick={goToChat}
                 onGroupCallClick={
@@ -3611,9 +3749,7 @@ export const Group = ({
                     : undefined
                 }
                 onQortalLandClick={goToQortalLand}
-                onAnnouncementsClick={goToAnnouncements}
                 onThreadsClick={goToThreads}
-                onAdminsClick={() => setGroupSection('adminSpace')}
                 groupCallInCall={
                   inThisGroupGcall && gcallRoomState === 'connected'
                 }
@@ -3626,7 +3762,6 @@ export const Group = ({
                       })
                     : ''
                 }
-                hasUnreadAnnouncements={isUnread}
                 membersPanelOpen={reticulumMembersPanelOpen}
                 onMembersClick={toggleReticulumMembersPanel}
               />
@@ -3685,11 +3820,10 @@ export const Group = ({
                 <ReticulumSectionLayer
                   active={groupSection === 'chat'}
                 >
-                  <ChatGroup
+                  <ReticulumChatGroup
                     myAddress={myAddress}
-                    isReticulumChannelAdmin={reticulumAdminGroupIds.has(
-                      Number(selectedGroup?.groupId)
-                    )}
+                    adminsWithNames={adminsWithNames}
+                    isReticulumChannelAdmin={canManageReticulumGroup}
                     reticulumChannelAccessReady={
                       reticulumAdminGroupsLoadedAddress === myAddress &&
                       reticulumMembershipsAppliedKey === reticulumMembershipsKey
@@ -3729,11 +3863,9 @@ export const Group = ({
                         : undefined
                     }
                     onQortalLandClick={goToQortalLand}
-                    onAnnouncementsClick={goToAnnouncements}
                     onThreadsClick={goToThreads}
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}
-                    onAdminsClick={() => setGroupSection('adminSpace')}
                     groupCallInCall={
                       inThisGroupGcall && gcallRoomState === 'connected'
                     }
@@ -3746,23 +3878,7 @@ export const Group = ({
                           })
                         : ''
                     }
-                    hasUnreadAnnouncements={isUnread}
-                    onReticulumChannelSelected={(channelId) => {
-                      const normalizedChannelId = channelId || 'general';
-                      setActiveReticulumChannelId((previousChannelId) => {
-                        const previous = previousChannelId || 'general';
-                        if (previous !== normalizedChannelId) {
-                          bumpReticulumReadEntryToken();
-                        }
-                        return normalizedChannelId;
-                      });
-                      if (
-                        notificationReticulumChannelId &&
-                        notificationReticulumChannelId === normalizedChannelId
-                      ) {
-                        setNotificationReticulumChannelId('');
-                      }
-                    }}
+                    onReticulumChannelSelected={handleReticulumChannelSelected}
                     reticulumReadEntryToken={reticulumReadEntryToken}
                     isGroupOwner={groupOwner?.owner === myAddress}
                   />
@@ -3954,25 +4070,6 @@ export const Group = ({
                 triedToFetchSecretKey ? null : !triedToFetchSecretKey ? null : (
                 reticulumChatEnabled ? (
                   <>
-                    {shouldMountReticulumSection('announcement') && (
-                      <ReticulumSectionLayer
-                        active={groupSection === 'announcement'}
-                      >
-                        <GroupAnnouncements
-                          myAddress={myAddress}
-                          selectedGroup={selectedGroup?.groupId}
-                          getSecretKey={getSecretKey}
-                          secretKey={secretKey}
-                          setSecretKey={setSecretKey}
-                          isAdmin={admins.includes(myAddress)}
-                          handleNewEncryptionNotification={
-                            setNewEncryptionNotification
-                          }
-                          hide={false}
-                          isPrivate={isPrivate}
-                        />
-                      </ReticulumSectionLayer>
-                    )}
                     {shouldMountReticulumSection('forum') && (
                       <ReticulumSectionLayer active={groupSection === 'forum'}>
                         <GroupForum
@@ -4003,19 +4100,6 @@ export const Group = ({
                             myAddress={myAddress}
                           />
                         </Suspense>
-                      </ReticulumSectionLayer>
-                    )}
-                    {shouldMountReticulumSection('adminSpace') && (
-                      <ReticulumSectionLayer
-                        active={groupSection === 'adminSpace'}
-                      >
-                        <AdminSpace
-                          adminsWithNames={adminsWithNames}
-                          hide={false}
-                          isAdmin={admins.includes(myAddress)}
-                          isOwner={groupOwner?.owner === myAddress}
-                          selectedGroup={selectedGroup?.groupId}
-                        />
                       </ReticulumSectionLayer>
                     )}
                   </>

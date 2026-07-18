@@ -169,6 +169,14 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
 // When in Electron, use appStorage-backed persistence; otherwise Jotai uses localStorage (undefined = default).
 const electronStorage = getElectronPersistentStorage();
 
+export type ReticulumChatTextScale = 'default' | 'medium' | 'high';
+/** Persisted, Reticulum-only chat reading size preference. */
+export const reticulumChatTextScaleAtom = atomWithStorage<ReticulumChatTextScale>(
+  'qortal_reticulum_chat_text_scale',
+  'default',
+  electronStorage as any
+);
+
 /** Persisted: true = Q-Wallets embedded workspace opens edge-to-edge. */
 export const qWalletsWorkspaceFullScreenAtom = atomWithStorage<boolean>(
   'qortal_q_wallets_workspace_full_screen',

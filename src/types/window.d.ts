@@ -545,6 +545,17 @@ declare global {
       onEvent: (cb: (event: string, payload: unknown) => void) => () => void;
     };
 
+    reticulumDiagnostics?: {
+      captureRendererCpuProfile: (durationMs?: number) => Promise<{
+        success: boolean;
+        error?: string;
+        durationMs?: number;
+        profilePath?: string;
+        sampleCount?: number;
+        hotspots?: Array<{ label: string; samples: number }>;
+      }>;
+    };
+
     reticulumChat?: {
       isEnabled: () => Promise<boolean>;
       setLocalGroupMemberships: (

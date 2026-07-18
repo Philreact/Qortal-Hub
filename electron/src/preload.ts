@@ -2592,6 +2592,14 @@ try {
   //   2. Sign with nacl.sign.detached(canonicalBytes, privateKeyBytes).
   //   3. Base58-encode the signature.
   //   4. Call window.call.initiate(targetAddress, chatId, localAddress, sig, pubKey).
+  contextBridge.exposeInMainWorld('reticulumDiagnostics', {
+    captureRendererCpuProfile: (durationMs?: number) =>
+      ipcRenderer.invoke(
+        'reticulumDiagnostics:captureRendererCpuProfile',
+        durationMs
+      ),
+  });
+
   contextBridge.exposeInMainWorld('call', {
     /**
      * Initiate an outbound call to `targetAddress`.

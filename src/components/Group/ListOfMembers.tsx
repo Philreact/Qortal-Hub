@@ -18,7 +18,7 @@ import { useTranslation } from 'react-i18next';
 import { useOnlineAddresses } from '../../hooks/usePresence';
 import { useAtomValue } from 'jotai';
 import { statusMapAtom } from '../../atoms/presence';
-import { userInfoAtom } from '../../atoms/global';
+import { reticulumChatTextScaleAtom, userInfoAtom } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { getFallbackAvatarOutlineSx } from '../Chat/clickableAvatarStyles';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
@@ -56,6 +56,19 @@ const ListOfMembers = ({
   const onlineAddresses = useOnlineAddresses();
   const statusMap = useAtomValue(statusMapAtom);
   const currentAddress = useAtomValue(userInfoAtom)?.address;
+  const reticulumTextScale = useAtomValue(reticulumChatTextScaleAtom);
+  const compactTextSize =
+    reticulumTextScale === 'high'
+      ? 16
+      : reticulumTextScale === 'medium'
+        ? 14.5
+        : 13;
+  const compactRowHeight =
+    reticulumTextScale === 'high'
+      ? 62
+      : reticulumTextScale === 'medium'
+        ? 57
+        : 52;
   const sortedMembers = useMemo(() => {
     return [...(members || [])].sort((a, b) => {
       const aIsOwner = a?.member === ownerAddress;
@@ -391,7 +404,12 @@ const ListOfMembers = ({
                 component="span"
                 sx={{
                   color: memberRoleColor,
-                  fontSize: compact ? 13 : undefined,
+                  fontSize:
+                    compact && reticulumUserCards
+                      ? compactTextSize
+                      : compact
+                        ? 13
+                        : undefined,
                   fontWeight: compact ? 700 : undefined,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -413,7 +431,12 @@ const ListOfMembers = ({
                   sx={{
                     color: memberRoleColor,
                     flexShrink: 0,
-                    fontSize: compact ? 10 : 11,
+                    fontSize:
+                      compact && reticulumUserCards
+                        ? Math.max(11, compactTextSize - 3)
+                        : compact
+                          ? 10
+                          : 11,
                     fontWeight: 400,
                     lineHeight: 1.2,
                   }}
@@ -571,7 +594,8 @@ const ListOfMembers = ({
                 sx={{
                   borderRadius: '6px',
                   cursor: 'pointer',
-                  minHeight: 50,
+                  minHeight:
+                    compact && reticulumUserCards ? compactRowHeight : 50,
                   px: 1,
                   py: 0.5,
                   width: '100%',
@@ -588,7 +612,12 @@ const ListOfMembers = ({
               sx={{
                 borderRadius: compact ? '6px' : undefined,
                 cursor: isOwner ? 'pointer' : 'default',
-                minHeight: compact ? 50 : undefined,
+                minHeight:
+                  compact && reticulumUserCards
+                    ? compactRowHeight
+                    : compact
+                      ? 50
+                      : undefined,
                 px: compact ? 1 : undefined,
                 py: compact ? 0.5 : undefined,
               }}
@@ -635,7 +664,13 @@ const ListOfMembers = ({
               overscanRowCount={8}
               ref={listRef}
               rowCount={sortedMembers.length}
-              rowHeight={compact ? 52 : MEMBER_ROW_HEIGHT}
+              rowHeight={
+                compact && reticulumUserCards
+                  ? compactRowHeight
+                  : compact
+                    ? 52
+                    : MEMBER_ROW_HEIGHT
+              }
               rowRenderer={rowRenderer}
               width={width}
             />
