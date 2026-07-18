@@ -1070,7 +1070,6 @@ export class ReticulumChatDatabase {
     }>
   >();
   private memoryReadWatermarks = new Map<string, number>();
-  private memoryRelayDeletedRoots = new Set<string>();
   private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
   private lastExpiryPruneAt = 0;
   private memoryMeta = new Map<
@@ -1116,9 +1115,6 @@ export class ReticulumChatDatabase {
   private stmtGetUnreadMentionTargetEvents: Statement;
   private stmtGetWatermark: Statement;
   private stmtUpsertWatermark: Statement;
-  private stmtGetGroupReadBaseline: Statement;
-  private stmtUpsertGroupReadBaseline: Statement;
-  private stmtHasAnyReadState: Statement;
   private stmtUpsertMention: Statement;
   private stmtDeleteMentionsForEvent: Statement;
   private stmtCountUnreadMentions: Statement;
@@ -1127,6 +1123,7 @@ export class ReticulumChatDatabase {
   private stmtTotalCacheBytes: Statement;
   private stmtEvictCandidate: Statement;
   private stmtDeleteEvent: Statement;
+  private stmtGetRelayEventsForGroup: Statement;
   private stmtGetDeleteEvents: Statement;
   private stmtUpdateScrubbedEvent: Statement;
   private stmtInsertScrubbedEvent: Statement;
@@ -1621,17 +1618,6 @@ export class ReticulumChatDatabase {
       VALUES (?, ?, ?, ?)
       ON CONFLICT(group_id, channel_id, address) DO UPDATE SET timestamp = excluded.timestamp
     `);
-    this.stmtGetGroupReadBaseline = this.db.prepare(
-      'SELECT timestamp FROM reticulum_chat_group_read_baselines WHERE group_id = ? AND address = ?'
-    );
-    this.stmtUpsertGroupReadBaseline = this.db.prepare(`
-      INSERT INTO reticulum_chat_group_read_baselines (group_id, address, timestamp)
-      VALUES (?, ?, ?)
-      ON CONFLICT(group_id, address) DO UPDATE SET timestamp = excluded.timestamp
-    `);
-    this.stmtHasAnyReadState = this.db.prepare(
-      'SELECT 1 FROM reticulum_chat_read_watermarks WHERE group_id = ? AND address = ? LIMIT 1'
-    );
     this.stmtUpsertMention = this.db.prepare(`
       INSERT INTO reticulum_chat_mentions
         (event_id, group_id, channel_id, mentioned_address, author_address, timestamp, read_at)
@@ -2020,6 +2006,9 @@ export class ReticulumChatDatabase {
     );
     this.stmtDeleteRelayByEvent = this.db.prepare(
       'DELETE FROM rchat_relay_cache WHERE event_id = ?'
+    );
+    this.stmtGetRelayEventsForGroup = this.db.prepare(
+      'SELECT event_id, payload_json FROM rchat_relay_cache WHERE group_id = ?'
     );
     this.stmtGetDeleteEvents = this.db.prepare(`
       SELECT event_id, target_event_id, timestamp
@@ -2886,6 +2875,11 @@ export class ReticulumChatDatabase {
     if (typeof rootEventId !== 'string' || !rootEventId) return null;
     const rows = this.stmtGetMessageProjectionEvents.all(rootEventId, rootEventId) as EventRow[];
     const events = rows.map(rowToEvent);
+    for (const event of this.memoryEvents.values()) {
+      if (event.eventId === rootEventId || event.targetEventId === rootEventId) {
+        events.push(event);
+      }
+    }
     const root = events.find((event) => event.eventId === rootEventId);
     if (!root) return null;
     const deleteEvent = events
@@ -2920,6 +2914,12 @@ export class ReticulumChatDatabase {
       }
     } catch {
       // The in-memory write-through cache below still covers current-runtime deletes.
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId !== rootEvent.groupId) continue;
+      if (event.eventId === rootEventId || event.targetEventId === rootEventId) {
+        candidates.set(event.eventId, event);
+      }
     }
     if (deletedEventId) {
       const deleteEvent = candidates.get(deletedEventId);
@@ -3008,13 +3008,46 @@ export class ReticulumChatDatabase {
     this.rebuildMessageProjection(rootEventId);
   }
 
-  private deleteRelayPayloadsForDeletedRoot(_groupId: number, rootEventId: string): void {
-    if (typeof rootEventId !== 'string' || !rootEventId) return;
-    this.memoryRelayDeletedRoots.add(
-      this.relayDeletedRootKey(_groupId, rootEventId)
-    );
-    this.memoryRelayCache.delete(rootEventId);
-    this.stmtDeleteRelayByEvent.run(rootEventId);
+  private deleteRelayPayloadsForDeletedRoot(groupId: number, rootEventId: string): void {
+    for (const [eventId, entry] of [...this.memoryRelayCache.entries()]) {
+      if (entry.groupId !== groupId) continue;
+      if (eventId === rootEventId) {
+        this.memoryRelayCache.delete(eventId);
+        this.stmtDeleteRelayByEvent.run(eventId);
+        continue;
+      }
+      try {
+        const candidate = JSON.parse(entry.payloadJson) as Partial<ReticulumChatEvent>;
+        if (candidate.eventType === 'edit' && candidate.targetEventId === rootEventId) {
+          this.memoryRelayCache.delete(eventId);
+          this.stmtDeleteRelayByEvent.run(eventId);
+        }
+      } catch {
+        // Malformed relay payloads are ignored here; normal relay validation handles them.
+      }
+    }
+    const rows = this.stmtGetRelayEventsForGroup.all(groupId) as Array<{
+      event_id?: string;
+      payload_json?: string;
+    }>;
+    for (const row of rows) {
+      const eventId = typeof row.event_id === 'string' ? row.event_id : '';
+      if (!eventId) continue;
+      if (eventId === rootEventId) {
+        this.stmtDeleteRelayByEvent.run(eventId);
+        this.memoryRelayCache.delete(eventId);
+        continue;
+      }
+      try {
+        const candidate = JSON.parse(String(row.payload_json || '')) as Partial<ReticulumChatEvent>;
+        if (candidate.eventType === 'edit' && candidate.targetEventId === rootEventId) {
+          this.stmtDeleteRelayByEvent.run(eventId);
+          this.memoryRelayCache.delete(eventId);
+        }
+      } catch {
+        // Malformed relay payloads are ignored here; normal relay validation handles them.
+      }
+    }
   }
 
   hasEvent(eventId: string): boolean {
@@ -3221,15 +3254,6 @@ export class ReticulumChatDatabase {
       ) {
         return null;
       }
-      if (
-        (event.eventType === 'message' || event.eventType === 'edit') &&
-        this.isRelayRootDeleted(
-          entry.groupId,
-          event.eventType === 'edit' ? event.targetEventId : event.eventId
-        )
-      ) {
-        return null;
-      }
       return {
         blobId: entry.blobId,
         eventId: entry.eventId,
@@ -3321,30 +3345,6 @@ export class ReticulumChatDatabase {
     return this.findDeleteTombstone(rootEventId) !== null;
   }
 
-  private relayDeletedRootKey(groupId: number, rootEventId: string): string {
-    return `${groupId}:${rootEventId}`;
-  }
-
-  private isRelayRootDeleted(groupId: number, rootEventId: string | undefined): boolean {
-    if (typeof rootEventId !== 'string' || !rootEventId) return false;
-    return (
-      this.memoryRelayDeletedRoots.has(
-        this.relayDeletedRootKey(groupId, rootEventId)
-      ) || this.eventHasDeleteTombstone(rootEventId)
-    );
-  }
-
-  private relayEntryReferencesDeletedRoot(entry: ReticulumChatRelayCacheEntry): boolean {
-    try {
-      const event = JSON.parse(entry.payloadJson) as Partial<ReticulumChatEvent>;
-      if (event.eventType !== 'message' && event.eventType !== 'edit') return false;
-      const rootEventId = event.eventType === 'edit' ? event.targetEventId : event.eventId;
-      return this.isRelayRootDeleted(entry.groupId, rootEventId);
-    } catch {
-      return false;
-    }
-  }
-
   getRelayEventBlob(
     groupId: number,
     eventId: string,
@@ -3352,11 +3352,6 @@ export class ReticulumChatDatabase {
   ): ReticulumChatRelayCacheEntry | null {
     const memoryEntry = this.memoryRelayCache.get(eventId);
     if (memoryEntry && memoryEntry.groupId === groupId && memoryEntry.expiresAt > now) {
-      if (this.relayEntryReferencesDeletedRoot(memoryEntry)) {
-        this.memoryRelayCache.delete(eventId);
-        this.stmtDeleteRelayByEvent.run(eventId);
-        return null;
-      }
       const served = {
         ...memoryEntry,
         servedCount: memoryEntry.servedCount + 1,
@@ -3369,14 +3364,8 @@ export class ReticulumChatDatabase {
     this.stmtDeleteRelayExpired.run(now);
     const row = this.stmtGetRelayBlobByEvent.get(groupId, eventId, now) as RelayCacheRow | undefined;
     if (!row) return null;
-    const entry = relayRowToEntry(row);
-    if (this.relayEntryReferencesDeletedRoot(entry)) {
-      this.memoryRelayCache.delete(eventId);
-      this.stmtDeleteRelayBlob.run(row.blob_id);
-      return null;
-    }
     this.stmtMarkRelayBlobServed.run(now, row.blob_id);
-    return entry;
+    return relayRowToEntry(row);
   }
 
   listRelayDigestEntries(
@@ -6509,37 +6498,7 @@ export class ReticulumChatDatabase {
       return exactWatermark;
     }
     if (!normalizedAddress) return 0;
-    const baseline = this.stmtGetGroupReadBaseline.get(groupId, normalizedAddress) as
-      | { timestamp?: number }
-      | undefined;
-    return typeof baseline?.timestamp === 'number' && Number.isFinite(baseline.timestamp)
-      ? baseline.timestamp
-      : 0;
-  }
-
-  initializeGroupReadBaseline(groupId: number, address: string, timestamp = Date.now()): void {
-    const normalizedAddress = typeof address === 'string' ? address.trim() : '';
-    if (
-      !Number.isInteger(groupId) ||
-      groupId <= 0 ||
-      !normalizedAddress ||
-      !Number.isFinite(timestamp) ||
-      timestamp <= 0
-    ) {
-      return;
-    }
-
-    const existingBaseline = this.stmtGetGroupReadBaseline.get(groupId, normalizedAddress) as
-      | { timestamp?: number }
-      | undefined;
-    const existingReadState = this.stmtHasAnyReadState.get(groupId, normalizedAddress);
-    if (existingBaseline || existingReadState) return;
-
-    this.stmtUpsertGroupReadBaseline.run(
-      groupId,
-      normalizedAddress,
-      Math.floor(timestamp)
-    );
+    return 0;
   }
 
   private readWatermarkKey(groupId: number, channelId: string, address: string): string {
@@ -7243,12 +7202,6 @@ export class ReticulumChatDatabase {
         address TEXT NOT NULL DEFAULT '',
         timestamp INTEGER NOT NULL,
         PRIMARY KEY (group_id, channel_id, address)
-      );
-      CREATE TABLE IF NOT EXISTS reticulum_chat_group_read_baselines (
-        group_id INTEGER NOT NULL,
-        address TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        PRIMARY KEY (group_id, address)
       );
       CREATE TABLE IF NOT EXISTS reticulum_chat_mentions (
         event_id TEXT NOT NULL,
