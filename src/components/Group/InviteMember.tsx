@@ -7,12 +7,11 @@ import {
   Select,
   SelectChangeEvent,
   TextField,
+  Typography,
 } from '@mui/material';
 import { useMemo, useState } from 'react';
-import { Spacer } from '../../common/Spacer';
 import { getFee } from '../../background/background.ts';
 import { useTranslation } from 'react-i18next';
-import { Label } from '../../styles/App-styles.ts';
 import { useNameSearch } from '../../hooks/useNameSearch';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { validateAddress } from '../../utils/validateAddress';
@@ -126,67 +125,43 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
       sx={{
         display: 'flex',
         flexDirection: 'column',
+        gap: 1.5,
+        height: '100%',
+        p: 0.25,
       }}
     >
-      {t('group:action.invite_member', { postProcess: 'capitalizeFirstChar' })}
-
-      <Spacer height="20px" />
-
+      <Box>
+        <Typography sx={{ color: 'text.primary', fontSize: 15, fontWeight: 650, lineHeight: '20px' }}>
+          Invite member
+        </Typography>
+        <Typography sx={{ color: 'text.secondary', fontSize: 12.5, lineHeight: '18px', mt: 0.35 }}>
+          Send an invitation to a Qortal name or address.
+        </Typography>
+      </Box>
       <Autocomplete
-        freeSolo
-        value={value}
-        inputValue={searchValue}
-        loading={isLoadingNameSearch}
-        noOptionsText={t('core:option_no', {
-          postProcess: 'capitalizeFirstChar',
-        })}
-        options={nameOptions}
-        onChange={(_event, newValue) => {
-          const nextValue =
-            typeof newValue === 'string' ? newValue.trim() : '';
-          setValue(nextValue);
-          setSearchValue(nextValue);
-        }}
-        onInputChange={(_event, newInputValue) => {
-          setSearchValue(newInputValue);
-          setValue(newInputValue);
-        }}
-        renderInput={(params) => (
-          <TextField
-            {...params}
-            variant="standard"
-            placeholder={t('auth:message.generic.name_address', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-            InputProps={{
-              ...params.InputProps,
-              endAdornment: (
-                <>
-                  {isLoadingNameSearch ? (
-                    <CircularProgress color="inherit" size={16} />
-                  ) : null}
-                  {params.InputProps.endAdornment}
-                </>
-              ),
-            }}
-          />
-        )}
-      />
-
-      <Spacer height="20px" />
-
-      <Label>
-        {t('group:invitation_expiry', { postProcess: 'capitalizeFirstChar' })}
-      </Label>
-
-      <Select
-        labelId="demo-simple-select-label"
-        id="demo-simple-select"
+          freeSolo value={value} inputValue={searchValue} loading={isLoadingNameSearch}
+          noOptionsText={t('core:option_no', { postProcess: 'capitalizeFirstChar' })}
+          options={nameOptions}
+          onChange={(_event, newValue) => { const nextValue = typeof newValue === 'string' ? newValue.trim() : ''; setValue(nextValue); setSearchValue(nextValue); }}
+          onInputChange={(_event, newInputValue) => { setSearchValue(newInputValue); setValue(newInputValue); }}
+          renderInput={(params) => (
+            <TextField {...params} placeholder={t('auth:message.generic.name_address', { postProcess: 'capitalizeFirstChar' })}
+              InputProps={{ ...params.InputProps, endAdornment: <>{isLoadingNameSearch ? <CircularProgress color="inherit" size={16} /> : null}{params.InputProps.endAdornment}</> }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: '8px', fontSize: 13, minHeight: 40 } }}
+            />
+          )}
+        />
+      <Box>
+        <Typography component="label" htmlFor="reticulum-invite-expiry" sx={{ color: 'text.secondary', display: 'block', fontSize: 12, fontWeight: 600, lineHeight: '18px', mb: 0.65 }}>
+          {t('group:invitation_expiry', { postProcess: 'capitalizeFirstChar' })}
+        </Typography>
+        <Select
+        fullWidth
+        id="reticulum-invite-expiry"
+        size="small"
         value={expiryTime}
-        label={t('group:invitation_expiry', {
-          postProcess: 'capitalizeFirstChar',
-        })}
         onChange={handleChange}
+        sx={{ borderRadius: '8px', fontSize: 13, height: 40 }}
       >
         <MenuItem value={10800}>{t('core:time.hour', { count: 3 })}</MenuItem>
         <MenuItem value={21600}>{t('core:time.hour', { count: 6 })}</MenuItem>
@@ -199,14 +174,14 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
         <MenuItem value={1296000}>{t('core:time.day', { count: 15 })}</MenuItem>
         <MenuItem value={2592000}>{t('core:time.day', { count: 30 })}</MenuItem>
       </Select>
-
-      <Spacer height="20px" />
+      </Box>
 
       <LoadingButton
         variant="contained"
         loadingPosition="start"
         loading={isLoadingInvite}
         onClick={inviteMember}
+        sx={{ alignSelf: 'flex-start', borderRadius: '8px', fontSize: 13, fontWeight: 600, minHeight: 38, px: 2, textTransform: 'none' }}
       >
         {t('core:action.invite', { postProcess: 'capitalizeFirstChar' })}
       </LoadingButton>

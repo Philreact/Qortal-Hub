@@ -17,8 +17,8 @@ export const MinterAvatarOrnament = ({
   const theme = useTheme();
   const isCard = size === 'card';
   const isDarkMode = theme.palette.mode === 'dark';
-  const accent = accentColor || (isDarkMode ? '#2f81f7' : '#1d4ed8');
   const neutral = isDarkMode ? '#56606d' : '#6b7280';
+  const accent = accentColor || neutral;
   const plateFill = isDarkMode ? '#10141b' : '#f4f7fb';
   const plateText = isDarkMode ? '#f5f7fa' : '#171b22';
   const frameSize = isCard ? 90 : 42;
@@ -42,8 +42,7 @@ export const MinterAvatarOrnament = ({
           position: 'relative',
           width: ornamentWidth,
           '&:hover .minter-avatar-ornament-frame, &:focus-visible .minter-avatar-ornament-frame': {
-            borderColor: neutral,
-            boxShadow: `0 0 0 1px ${accent}`,
+            filter: 'brightness(1.18)',
           },
           '&:hover .minter-avatar-ornament-plate, &:focus-visible .minter-avatar-ornament-plate': {
             filter: 'brightness(1.12)',
@@ -54,9 +53,8 @@ export const MinterAvatarOrnament = ({
           aria-hidden
           className="minter-avatar-ornament-frame"
           sx={{
-            border: `1px solid ${neutral}`,
+            border: `1.25px solid ${accent}`,
             borderRadius: '50%',
-            boxShadow: `0 0 0 1px ${accent}`,
             boxSizing: 'border-box',
             height: frameSize,
             left: '50%',
@@ -64,33 +62,8 @@ export const MinterAvatarOrnament = ({
             position: 'absolute',
             top: 0,
             transform: 'translateX(-50%)',
-            transition: 'border-color 120ms ease, box-shadow 120ms ease',
+            transition: 'filter 120ms ease',
             width: frameSize,
-            zIndex: 1,
-            '&::after': {
-              border: `1px solid ${accent}`,
-              borderRadius: '50%',
-              content: '""',
-              inset: isCard ? 2 : 0,
-              opacity: 0.9,
-              position: 'absolute',
-            },
-          }}
-        />
-        <Box
-          aria-hidden
-          sx={{
-            backgroundColor: plateFill,
-            borderLeft: `1px solid ${accent}`,
-            borderRight: `1px solid ${accent}`,
-            boxSizing: 'border-box',
-            height: isCard ? 8 : 6,
-            left: '50%',
-            pointerEvents: 'none',
-            position: 'absolute',
-            top: isCard ? 83 : 38,
-            transform: 'translateX(-50%)',
-            width: isCard ? 8 : 6,
             zIndex: 1,
           }}
         />

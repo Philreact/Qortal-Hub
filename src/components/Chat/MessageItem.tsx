@@ -19,7 +19,9 @@ import {
   LinearProgress,
   List,
   ListItem,
+  ListItemIcon,
   ListItemText,
+  MenuItem,
   Popover,
   Tooltip,
   Typography,
@@ -35,6 +37,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import { WrapperUserAction } from '../WrapperUserAction';
 import ReplyIcon from '@mui/icons-material/Reply';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
@@ -72,6 +75,9 @@ import {
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
+import { ReticulumImageViewer } from './ReticulumImageViewer';
+import { ReticulumGroupInvitePreviews } from './ReticulumGroupInvitePreview';
+import { CustomStyledMenu } from '../ContextMenu';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
@@ -246,6 +252,7 @@ const getQchatFileTransfer = (message: any) => {
 type MessageItemProps = {
   handleReaction: (reaction: string, messageId: string) => void;
   isLast: boolean;
+  isGroupedWithPrevious?: boolean;
   isPrivate: boolean;
   isScrollTarget?: boolean;
   isShowingAsReply?: boolean;
@@ -276,6 +283,7 @@ type MessageItemProps = {
 export const MessageItemComponent = ({
   handleReaction,
   isLast,
+  isGroupedWithPrevious = false,
   isPrivate,
   isScrollTarget,
   isShowingAsReply,
@@ -313,6 +321,8 @@ export const MessageItemComponent = ({
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState(null);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [reticulumMessageMenuPosition, setReticulumMessageMenuPosition] =
+    useState<{ mouseX: number; mouseY: number } | null>(null);
 
   useEffect(() => {
     const getInfo = async () => {
@@ -373,6 +383,21 @@ export const MessageItemComponent = ({
       return normalizeMessageHtmlContent(source);
     }
   }, [deferredMessage?.messageText, deferredMessage?.editTimestamp]);
+
+  const reticulumInviteSource = useMemo(
+    () =>
+      String(
+        deferredMessage?.messageText ??
+          deferredMessage?.text ??
+          message?.decryptedData?.data?.message ??
+          ''
+      ),
+    [
+      deferredMessage?.messageText,
+      deferredMessage?.text,
+      message?.decryptedData?.data?.message,
+    ]
+  );
 
   const htmlReply = useMemo(() => {
     const source = reply?.messageText;
@@ -531,6 +556,16 @@ export const MessageItemComponent = ({
     imageResourceWidth && imageResourceHeight
       ? `${imageResourceWidth} / ${imageResourceHeight}`
       : '4 / 3';
+  const imageResourceDisplayMaxWidth =
+    imageResourceWidth && imageResourceHeight
+      ? Math.min(
+          640,
+          Math.max(
+            160,
+            Math.round(360 * (imageResourceWidth / imageResourceHeight))
+          )
+        )
+      : 480;
   const reticulumFileAttachment =
     isReticulumMessageWithResources && Array.isArray(message?.attachments)
       ? message.attachments.find(
@@ -613,7 +648,27 @@ export const MessageItemComponent = ({
     ? buildImageEmbedLink(message.images[0])
     : null;
   const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
+  const [isReticulumImageViewerOpen, setIsReticulumImageViewerOpen] = useState(false);
+  const [reticulumImageViewerContainer, setReticulumImageViewerContainer] =
+    useState<HTMLElement | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
+  const reticulumImageFileName =
+    typeof imageResourceManifest?.fileName === 'string' &&
+    imageResourceManifest.fileName.trim()
+      ? imageResourceManifest.fileName.trim()
+      : 'image.png';
+  const reticulumImageMimeType =
+    typeof imageResourceManifest?.mimeType === 'string'
+      ? imageResourceManifest.mimeType
+      : typeof imageResourceManifest?.metadata?.originalMimeType === 'string'
+        ? imageResourceManifest.metadata.originalMimeType
+        : 'image/png';
+  const canOpenReticulumImage =
+    reticulumChatEnabled &&
+    Boolean(
+      displayImageUrl &&
+        (localResourceImageUrl || displayImageUrl.startsWith('data:image/'))
+    );
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
   const [fileResourceStatus, setFileResourceStatus] = useState<
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
@@ -1288,6 +1343,48 @@ export const MessageItemComponent = ({
     (!message?.text || message?.text === '<p></p>');
 
   const isOwn = message?.sender === myAddress;
+  const isOwnReticulumDeletable =
+    isOwn && message?.reticulumChat && typeof onDelete === 'function';
+  const isOwnReticulumEditable =
+    isOwn &&
+    message?.reticulumChat &&
+    (!message?.isNotEncrypted || isPrivate === false);
+  const copyReticulumMessage = useCallback(async () => {
+    const html = String(
+      message?.decryptedData?.data?.message ??
+        message?.messageText ??
+        message?.text ??
+        ''
+    );
+    const text = html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').trim();
+    if (!text || !navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(text);
+  }, [message]);
+  const [isOwnReticulumMessageHovered, setIsOwnReticulumMessageHovered] =
+    useState(false);
+
+  useEffect(() => {
+    if (!isOwnReticulumMessageHovered || !isOwnReticulumDeletable) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key !== 'Delete' ||
+        !event.shiftKey ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.repeat
+      ) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      event.preventDefault();
+      onDelete(message);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOwnReticulumDeletable, isOwnReticulumMessageHovered, message, onDelete]);
+
   const senderStatus = useStatus(message?.sender);
   const reticulumUserCard = reticulumChatEnabled && message?.sender
     ? {
@@ -1309,14 +1406,44 @@ export const MessageItemComponent = ({
   const isRepliedToMe =
     reply?.sender === myAddress || replyExpiredMeta?.sender === myAddress;
   const isQchatFileOffer = qchatFileTransfer?.data?.status === 'offer';
+  const displayTimestamp = reticulumChatEnabled
+    ? (() => {
+        const timestamp = Number(message?.timestamp);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+        const timestampMs = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+        const date = new Date(timestampMs);
+        const now = new Date();
+        const isToday =
+          date.getFullYear() === now.getFullYear() &&
+          date.getMonth() === now.getMonth() &&
+          date.getDate() === now.getDate();
+        const time = date.toLocaleTimeString(undefined, {
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+        const minutesAgo = Math.max(
+          0,
+          Math.floor((Date.now() - timestampMs) / 60_000)
+        );
+        if (minutesAgo < 60) {
+          return `${time} (${minutesAgo}min ago)`;
+        }
+        return isToday ? time : `${date.toLocaleDateString()} ${time}`;
+      })()
+    : formatTimestamp(message.timestamp);
 
   return (
     <>
       {message?.divide && (
-        <div className="unread-divider" id="unread-divider-id">
-          {t('core:message.generic.unread_messages', {
-            postProcess: 'capitalizeFirstChar',
-          })}
+        <div
+          className={`unread-divider${reticulumChatEnabled ? ' reticulum-unread-divider' : ''}`}
+          id="unread-divider-id"
+        >
+          {reticulumChatEnabled
+            ? 'New messages'
+            : t('core:message.generic.unread_messages', {
+                postProcess: 'capitalizeFirstChar',
+              })}
         </div>
       )}
 
@@ -1327,6 +1454,28 @@ export const MessageItemComponent = ({
       >
         <Box
           className="message-item-row"
+          onContextMenu={
+            reticulumChatEnabled
+              ? (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setReticulumMessageMenuPosition({
+                    mouseX: event.clientX + 2,
+                    mouseY: event.clientY - 6,
+                  });
+                }
+              : undefined
+          }
+          onMouseEnter={
+            isOwnReticulumDeletable
+              ? () => setIsOwnReticulumMessageHovered(true)
+              : undefined
+          }
+          onMouseLeave={
+            isOwnReticulumDeletable
+              ? () => setIsOwnReticulumMessageHovered(false)
+              : undefined
+          }
           sx={{
             display: 'flex',
             flexDirection: 'row',
@@ -1335,13 +1484,16 @@ export const MessageItemComponent = ({
             padding: isShowingAsReply
               ? '2px 8px'
               : reticulumChatEnabled
-                ? '5px 14px 6px'
+                ? isGroupedWithPrevious
+                  ? '1px 14px 2px'
+                  : '5px 14px 6px'
                 : '8px 16px 10px',
             marginBottom: isShowingAsReply ? 0 : reticulumChatEnabled ? 0 : '3px',
             position: 'relative',
             transition: 'background-color 0.1s ease',
             width: '100%',
             ...(isOwn &&
+              !reticulumChatEnabled &&
               !isScrollTarget && {
                 backgroundColor: alpha(theme.palette.primary.main, 0.045),
                 ...(!reticulumChatEnabled
@@ -1394,6 +1546,13 @@ export const MessageItemComponent = ({
                 mt: '2px',
               }}
             />
+          ) : isGroupedWithPrevious ? (
+            <Box
+              sx={{
+                flexShrink: 0,
+                width: reticulumMinterLevel !== null ? '44px' : '38px',
+              }}
+            />
           ) : (
             <Box
               sx={{
@@ -1417,7 +1576,7 @@ export const MessageItemComponent = ({
                 {reticulumMinterLevel !== null ? (
                   <MinterAvatarOrnament
                     accentColor={
-                      reticulumMemberRole === 'owner'
+                      reticulumMemberRole
                         ? reticulumMemberRoleColor
                         : undefined
                     }
@@ -1499,8 +1658,8 @@ export const MessageItemComponent = ({
           <Box
             sx={{
               display: 'flex',
-              flexDirection: 'column',
-              gap: '4px',
+            flexDirection: 'column',
+              gap: isGroupedWithPrevious ? 0 : '4px',
               height: isShowingAsReply ? '40px' : undefined,
               minWidth: 0,
               width: '100%',
@@ -1514,16 +1673,28 @@ export const MessageItemComponent = ({
                 flexWrap: 'wrap',
                 gap: '8px',
                 justifyContent: 'space-between',
-                minHeight: '32px',
+                height: isGroupedWithPrevious ? 0 : undefined,
+                minHeight: isGroupedWithPrevious ? 0 : '32px',
+                overflow: isGroupedWithPrevious ? 'visible' : undefined,
+                ...(isGroupedWithPrevious
+                  ? {
+                      alignSelf: 'flex-end',
+                      position: 'absolute',
+                      right: '14px',
+                      top: '1px',
+                      width: 'auto',
+                      zIndex: 3,
+                    }
+                  : {}),
               }}
             >
               <Box
                 sx={{
                   alignItems: 'center',
-                  display: 'flex',
                   flexWrap: 'wrap',
                   gap: '8px',
                   minWidth: 0,
+                  display: isGroupedWithPrevious ? 'none' : 'flex',
                 }}
               >
               <WrapperUserAction
@@ -1540,7 +1711,7 @@ export const MessageItemComponent = ({
                           ? theme.palette.primary.main
                           : theme.palette.text.primary,
                       fontFamily: 'Inter',
-                      fontSize: '14px',
+                      fontSize: '15.5px',
                       fontWeight: 600,
                       lineHeight: 1.3,
                       maxWidth: reticulumChatEnabled
@@ -1568,7 +1739,7 @@ export const MessageItemComponent = ({
                       color: reticulumMemberRoleColor,
                       flexShrink: 0,
                       fontFamily: 'Inter',
-                      fontSize: '11px',
+                      fontSize: '12px',
                       fontWeight: 400,
                       lineHeight: 1.2,
                     }}
@@ -1587,7 +1758,7 @@ export const MessageItemComponent = ({
                       lineHeight: 1,
                     }}
                   >
-                    {formatTimestamp(message.timestamp)}
+                    {displayTimestamp}
                   </Typography>
                 )}
 
@@ -1627,8 +1798,50 @@ export const MessageItemComponent = ({
                     zIndex: 2,
                   }}
                 >
-                  {message?.sender === myAddress &&
-                    (!message?.isNotEncrypted || isPrivate === false) && (
+                  {reticulumChatEnabled &&
+                    ['👍', '💯', '😂'].map((emoji) => (
+                      <Tooltip key={emoji} title={`React with ${emoji}`} disableFocusListener>
+                        <ButtonBase
+                          aria-label={`React with ${emoji}`}
+                          sx={{
+                            borderRadius: '6px',
+                            fontSize: '18px',
+                            lineHeight: 1,
+                            padding: '4px',
+                            '&:hover': {
+                              backgroundColor: theme.palette.action.hover,
+                            },
+                          }}
+                          onClick={() => {
+                            const hasReacted = reactions?.[emoji]?.some(
+                              (item) => item?.sender === myAddress
+                            );
+                            handleReaction(emoji, message, !hasReacted);
+                          }}
+                        >
+                          {emoji}
+                        </ButtonBase>
+                      </Tooltip>
+                    ))}
+
+                  {handleReaction && (
+                    <ReactionPicker
+                      neutralIcon={reticulumChatEnabled}
+                      onReaction={(val) => {
+                        if (
+                          reactions &&
+                          reactions[val] &&
+                          reactions[val]?.find((item) => item?.sender === myAddress)
+                        ) {
+                          handleReaction(val, message, false);
+                        } else {
+                          handleReaction(val, message, true);
+                        }
+                      }}
+                    />
+                  )}
+
+                  {isOwnReticulumEditable && (
                       <Tooltip title="Edit" disableFocusListener>
                         <ButtonBase
                           sx={{
@@ -1645,29 +1858,6 @@ export const MessageItemComponent = ({
                           }}
                         >
                           <EditIcon sx={{ fontSize: '18px' }} />
-                        </ButtonBase>
-                      </Tooltip>
-                    )}
-
-                  {message?.sender === myAddress &&
-                    message?.reticulumChat &&
-                    typeof onDelete === 'function' && (
-                      <Tooltip title="Delete" disableFocusListener>
-                        <ButtonBase
-                          sx={{
-                            borderRadius: '6px',
-                            color: theme.palette.text.secondary,
-                            padding: '4px',
-                            '&:hover': {
-                              backgroundColor: theme.palette.action.hover,
-                              color: theme.palette.text.primary,
-                            },
-                          }}
-                          onClick={() => {
-                            onDelete(message);
-                          }}
-                        >
-                          <DeleteOutlineIcon sx={{ fontSize: '18px' }} />
                         </ButtonBase>
                       </Tooltip>
                     )}
@@ -1691,21 +1881,27 @@ export const MessageItemComponent = ({
                     </ButtonBase>
                   </Tooltip>
 
-                  {handleReaction && (
-                    <ReactionPicker
-                      onReaction={(val) => {
-                        if (
-                          reactions &&
-                          reactions[val] &&
-                          reactions[val]?.find((item) => item?.sender === myAddress)
-                        ) {
-                          handleReaction(val, message, false);
-                        } else {
-                          handleReaction(val, message, true);
-                        }
-                      }}
-                    />
+                  {isOwnReticulumDeletable && (
+                    <Tooltip title="Delete (shift+del)" disableFocusListener>
+                      <ButtonBase
+                        sx={{
+                          borderRadius: '6px',
+                          color: theme.palette.error.main,
+                          padding: '4px',
+                          '&:hover': {
+                            backgroundColor: theme.palette.action.hover,
+                            color: theme.palette.error.light,
+                          },
+                        }}
+                        onClick={() => {
+                          onDelete(message);
+                        }}
+                      >
+                        <DeleteOutlineIcon sx={{ fontSize: '18px' }} />
+                      </ButtonBase>
+                    </Tooltip>
                   )}
+
                 </Box>
               )}
             </Box>
@@ -1727,11 +1923,15 @@ export const MessageItemComponent = ({
                   marginTop: '4px',
                   marginBottom: '6px',
                   marginLeft: '2px',
+                  height: isRepliedToMe ? '72px' : undefined,
                   maxHeight: '72px',
+                  minWidth: 0,
                   overflow: 'hidden',
                   padding: '4px 0 4px 10px',
                   transition: 'opacity 0.1s ease',
-                  width: '100%',
+                  width: 'auto',
+                  alignSelf: 'stretch',
+                  boxSizing: 'border-box',
                   opacity: isRepliedToMe ? 1 : 0.72,
                   '& *': {
                     cursor: 'pointer',
@@ -1744,7 +1944,7 @@ export const MessageItemComponent = ({
                   scrollToItem(replyIndex);
                 }}
               >
-                <Box sx={{ minWidth: 0 }}>
+                <Box sx={{ minWidth: 0, overflow: 'hidden', width: '100%' }}>
                   <Box
                     sx={{
                       alignItems: 'center',
@@ -1840,17 +2040,21 @@ export const MessageItemComponent = ({
                   marginTop: '4px',
                   marginBottom: '6px',
                   marginLeft: '2px',
+                  height: isRepliedToMe ? '72px' : undefined,
                   maxHeight: '72px',
+                  minWidth: 0,
                   overflow: 'hidden',
                   padding: '4px 0 4px 10px',
-                  width: '100%',
+                  width: 'auto',
+                  alignSelf: 'stretch',
+                  boxSizing: 'border-box',
                   opacity: isRepliedToMe ? 1 : 0.6,
                   '& *': {
                     cursor: 'pointer',
                   },
                 }}
               >
-                <Box sx={{ minWidth: 0 }}>
+                <Box sx={{ minWidth: 0, overflow: 'hidden', width: '100%' }}>
                   <Box
                     sx={{
                       alignItems: 'center',
@@ -1930,6 +2134,10 @@ export const MessageItemComponent = ({
                   )}
                 </Box>
               </Box>
+            )}
+
+            {reticulumChatEnabled && reticulumInviteSource && (
+              <ReticulumGroupInvitePreviews source={reticulumInviteSource} />
             )}
 
             {/* Message body - show only one of htmlText or message.text to avoid duplicate for open groups */}
@@ -2061,25 +2269,47 @@ export const MessageItemComponent = ({
               (displayImageUrl &&
               (localResourceImageUrl || displayImageUrl.startsWith('data:image/')) ? (
                 <Box
-                  component="img"
-                  src={displayImageUrl}
-                  loading="lazy"
-                  decoding="async"
-                  onError={() => {
-                    if (!isReticulumResourceImage || !localResourceImageUrl) return;
-                    setLocalResourceImageUrl(null);
-                    setResourceReloadNonce((value) => value + 1);
-                  }}
                   sx={{
                     aspectRatio: imageResourceAspectRatio,
+                    alignSelf: 'flex-start',
                     borderRadius: '8px',
-                    display: 'block',
-                    marginTop: '8px',
-                    maxHeight: 360,
-                    maxWidth: '100%',
-                    objectFit: 'contain',
+                    contain: 'layout paint',
+                    isolation: 'isolate',
+                    margin: '8px 0 0',
+                    overflow: 'hidden',
+                    width: `min(100%, ${imageResourceDisplayMaxWidth}px)`,
                   }}
-                />
+                >
+                  <Box
+                    component="img"
+                    src={displayImageUrl}
+                    alt={reticulumImageFileName}
+                    loading="lazy"
+                    decoding="async"
+                    onClick={(event) => {
+                      if (canOpenReticulumImage) {
+                        setReticulumImageViewerContainer(
+                          event.currentTarget.closest(
+                            '[data-reticulum-chat-root="true"]'
+                          ) as HTMLElement | null
+                        );
+                        setIsReticulumImageViewerOpen(true);
+                      }
+                    }}
+                    onError={() => {
+                      if (!isReticulumResourceImage || !localResourceImageUrl) return;
+                      setLocalResourceImageUrl(null);
+                      setResourceReloadNonce((value) => value + 1);
+                    }}
+                    sx={{
+                      cursor: canOpenReticulumImage ? 'pointer' : 'default',
+                      display: 'block',
+                      height: '100%',
+                      objectFit: 'contain',
+                      width: '100%',
+                    }}
+                  />
+                </Box>
               ) : imageEmbedLink ? (
                 <Embed embedLink={imageEmbedLink} />
               ) : isReticulumResourceImage && shouldAutoDownloadReticulumImage ? (
@@ -2096,11 +2326,10 @@ export const MessageItemComponent = ({
                     justifyContent: 'center',
                     marginTop: '8px',
                     maxHeight: 360,
-                    maxWidth: '100%',
                     minHeight: 96,
                     overflow: 'hidden',
                     position: 'relative',
-                    width: 'min(100%, 480px)',
+                    width: `min(100%, ${imageResourceDisplayMaxWidth}px)`,
                   }}
                 >
                   <Typography sx={{ fontSize: '13px' }}>
@@ -2509,7 +2738,98 @@ export const MessageItemComponent = ({
           alt={message?.senderName}
           onClose={closeAvatarPreview}
         />
+        {canOpenReticulumImage && displayImageUrl && (
+          <ReticulumImageViewer
+            alt={reticulumImageFileName}
+            containerElement={reticulumImageViewerContainer}
+            fileName={reticulumImageFileName}
+            mimeType={reticulumImageMimeType}
+            open={isReticulumImageViewerOpen}
+            src={displayImageUrl}
+            onClose={() => setIsReticulumImageViewerOpen(false)}
+          />
+        )}
       </MessageWragger>
+      <CustomStyledMenu
+        reticulumMenu
+        anchorReference="anchorPosition"
+        anchorPosition={
+          reticulumMessageMenuPosition
+            ? {
+                left: reticulumMessageMenuPosition.mouseX,
+                top: reticulumMessageMenuPosition.mouseY,
+              }
+            : undefined
+        }
+        onClose={() => setReticulumMessageMenuPosition(null)}
+        open={Boolean(reticulumMessageMenuPosition)}
+        slotProps={{
+          paper: {
+            sx: {
+              backgroundColor: `${theme.palette.background.surface} !important`,
+              minWidth: '190px !important',
+            },
+          },
+        }}
+      >
+        <MenuItem
+          onClick={() => {
+            setReticulumMessageMenuPosition(null);
+            void copyReticulumMessage();
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: '32px' }}>
+            <ContentCopyRoundedIcon fontSize="small" />
+          </ListItemIcon>
+          <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+            Copy Message
+          </Typography>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setReticulumMessageMenuPosition(null);
+            onReply(message);
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: '32px' }}>
+            <ReplyIcon fontSize="small" />
+          </ListItemIcon>
+          <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+            Reply Message
+          </Typography>
+        </MenuItem>
+        {isOwnReticulumEditable && (
+          <MenuItem
+            onClick={() => {
+              setReticulumMessageMenuPosition(null);
+              onEdit(message);
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <EditIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Edit Message
+            </Typography>
+          </MenuItem>
+        )}
+        {isOwnReticulumDeletable && (
+          <MenuItem
+            onClick={() => {
+              setReticulumMessageMenuPosition(null);
+              onDelete(message);
+            }}
+            sx={{ color: 'error.main' }}
+          >
+            <ListItemIcon sx={{ color: 'inherit', minWidth: '32px' }}>
+              <DeleteOutlineIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Delete Message
+            </Typography>
+          </MenuItem>
+        )}
+      </CustomStyledMenu>
     </>
   );
 };
@@ -2519,7 +2839,11 @@ MemoizedMessageItem.displayName = 'MessageItem'; // It ensures React DevTools sh
 
 export const MessageItem = MemoizedMessageItem;
 
-export const ReplyPreview = ({ message, isEdit = false }) => {
+export const ReplyPreview = ({
+  message,
+  isEdit = false,
+  reticulumOnlyContent = false,
+}) => {
   const theme = useTheme();
   const { t } = useTranslation([
     'auth',
@@ -2623,17 +2947,31 @@ export const ReplyPreview = ({ message, isEdit = false }) => {
           </Box>
         )}
 
-        {replyMessageText && (
-          <MessageDisplay isReply htmlContent={replyMessageText} />
-        )}
-
-        {message?.decryptedData?.type === 'notification' ? (
-          <MessageDisplay
-            isReply
-            htmlContent={message.decryptedData?.data?.message}
-          />
+        {reticulumOnlyContent ? (
+          replyMessageText ? (
+            <MessageDisplay isReply htmlContent={replyMessageText} />
+          ) : message?.decryptedData?.type === 'notification' ? (
+            <MessageDisplay
+              isReply
+              htmlContent={message.decryptedData?.data?.message}
+            />
+          ) : message?.text ? (
+            <MessageDisplay isReply htmlContent={message.text} />
+          ) : null
         ) : (
-          <MessageDisplay isReply htmlContent={message.text} />
+          <>
+            {replyMessageText && (
+              <MessageDisplay isReply htmlContent={replyMessageText} />
+            )}
+            {message?.decryptedData?.type === 'notification' ? (
+              <MessageDisplay
+                isReply
+                htmlContent={message.decryptedData?.data?.message}
+              />
+            ) : (
+              <MessageDisplay isReply htmlContent={message.text} />
+            )}
+          </>
         )}
       </Box>
     </Box>

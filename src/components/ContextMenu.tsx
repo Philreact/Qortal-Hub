@@ -15,6 +15,9 @@ import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
 import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
+import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../utils/events';
 import { mutedGroupsAtom, txListAtom } from '../atoms/global';
@@ -70,6 +73,8 @@ export const ContextMenu = ({
   openOnClick = false,
   reticulumGroup = null,
   onChangeAvatar,
+  onCreateCategory,
+  onCreateChannel,
   showGroupInfo = true,
   showStandardActions = true,
 }) => {
@@ -276,6 +281,11 @@ export const ContextMenu = ({
         displayedGroupInfo?.owner &&
         displayedGroupInfo.owner === myAddress
     );
+  const isClosedGroup =
+    displayedGroupInfo?.isOpen === false ||
+    Number(displayedGroupInfo?.groupType) === 1 ||
+    displayedGroupInfo?.groupType === 'CLOSED';
+  const groupTypeLabel = isClosedGroup ? 'Closed' : 'Open';
 
   const copyInviteLink = async (event) => {
     handleClose(event);
@@ -451,6 +461,36 @@ export const ContextMenu = ({
             </Typography>
           </MenuItem>
         )}
+        {reticulumGroup && onCreateChannel && (
+          <MenuItem
+            onClick={(event) => {
+              handleClose(event);
+              onCreateChannel();
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <ForumRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Create Channel
+            </Typography>
+          </MenuItem>
+        )}
+        {reticulumGroup && onCreateCategory && (
+          <MenuItem
+            onClick={(event) => {
+              handleClose(event);
+              onCreateCategory();
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <FolderRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Create Category
+            </Typography>
+          </MenuItem>
+        )}
         {reticulumGroup && !isGroupOwner && (
           <MenuItem onClick={leaveGroup} sx={{ color: 'error.main' }}>
             <ListItemIcon sx={{ color: 'inherit', minWidth: '32px' }}>
@@ -458,6 +498,30 @@ export const ContextMenu = ({
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
               Leave Group
+            </Typography>
+          </MenuItem>
+        )}
+        {reticulumGroup && (
+          <MenuItem
+            onClick={(event) => {
+              handleClose(event);
+              executeEvent('openReticulumGroupAbout', {
+                group: displayedGroupInfo,
+              });
+            }}
+            sx={{
+              backgroundColor: 'rgba(76, 141, 255, 0.12)',
+              color: '#d7e6ff',
+              '&:hover': {
+                backgroundColor: 'rgba(76, 141, 255, 0.2)',
+              },
+            }}
+          >
+            <ListItemIcon sx={{ color: '#a9c9ff', minWidth: '32px' }}>
+              <InfoOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              About Group
             </Typography>
           </MenuItem>
         )}
@@ -472,9 +536,10 @@ export const ContextMenu = ({
             />
             <Box sx={{ display: 'grid', gap: 0.75, minWidth: 230, px: 1.25, py: 0.5 }}>
               {[
-                ['Group ID', displayedGroupInfo.groupId],
                 ['Group Name', displayedGroupInfo.groupName],
                 ['Members', displayedGroupInfo.memberCount],
+                ['Group Type', groupTypeLabel],
+                ['Group ID', displayedGroupInfo.groupId],
               ].map(([label, value]) => (
                 <Box
                   key={label}

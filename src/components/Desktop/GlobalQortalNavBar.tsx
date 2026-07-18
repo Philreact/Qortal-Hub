@@ -52,7 +52,6 @@ import { QMailStatus } from '../QMailStatus';
 import { GeneralNotifications } from '../GeneralNotifications';
 import { TaskManager } from '../TaskManager/TaskManager';
 import { GlobalActions } from '../GlobalActions/GlobalActions';
-import { ChatWidgetReopenIcon } from '../Profile/ChatWidgetReopenIcon';
 import { SubscriptionsStatus } from './SubscriptionsStatus';
 import { AppBookmarksButton } from '../Apps/AppBookmarks';
 import { saveToLocalStorage } from '../Apps/AppsNavBarDesktop';
@@ -1691,18 +1690,6 @@ export function GlobalQortalNavBar({
               sx={utilitySectionSx}
             >
               <GlobalActions />
-              <Box
-                component={motion.span}
-                layout
-                transition={utilityLayoutTransition}
-                sx={{ display: 'inline-flex', flexShrink: 0 }}
-              >
-                <ChatWidgetReopenIcon
-                  inTitleBar
-                  buttonSx={utilityModuleButtonSx}
-                  iconSx={utilityModuleIconSx}
-                />
-              </Box>
               <Box
                 component={motion.span}
                 layout

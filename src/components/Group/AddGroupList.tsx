@@ -1,16 +1,20 @@
 import {
+  Avatar,
   Box,
+  ButtonBase,
   CircularProgress,
   Dialog,
   DialogContent,
   DialogTitle,
   Divider,
   IconButton,
+  InputAdornment,
   ListItem,
   ListItemButton,
   Skeleton,
   Stack,
   TextField,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
@@ -24,14 +28,36 @@ import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
 import { LoadingButton } from '@mui/lab';
 import { getFee } from '../../background/background.ts';
 import LockIcon from '@mui/icons-material/Lock';
-import NoEncryptionGmailerrorredIcon from '@mui/icons-material/NoEncryptionGmailerrorred';
+import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import WhatshotRoundedIcon from '@mui/icons-material/WhatshotRounded';
+import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import { useTranslation } from 'react-i18next';
 import { useAtom, useSetAtom } from 'jotai';
 import { memberGroupsAtom, txListAtom } from '../../atoms/global';
 import { formatTimestamp } from '../../utils/time.ts';
 import { Spacer } from '../../common/Spacer.tsx';
+import Logo2 from '../../assets/svgs/Logo2.svg';
+import {
+  getGroupLevel,
+  getGroupLevelColor,
+} from './ReticulumGroupLevel';
+import {
+  getCommunityLevel,
+  getLegacyLevel,
+} from './ReticulumGroupAbout';
 
-const GROUP_ROW_HEIGHT = 104;
+const GROUP_ROW_HEIGHT = 88;
+const FIND_GROUPS_PAGE_SIZE = 10;
+const FIND_GROUPS_AVATAR_LIMIT = 20;
+
+const isOpenGroup = (group) =>
+  group?.isOpen === true || group?.groupType === 0 || group?.groupType === 'OPEN';
+const formatMemberCount = (count) =>
+  new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(
+    Number(count) || 0
+  );
 
 export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
@@ -52,6 +78,11 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const [ownerLoading, setOwnerLoading] = useState(false);
   const listRef = useRef(null);
   const [inputValue, setInputValue] = useState('');
+  const [sortMode, setSortMode] = useState<'popular' | 'newest'>('popular');
+  const [showOpen, setShowOpen] = useState(false);
+  const [showPrivate, setShowPrivate] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(FIND_GROUPS_PAGE_SIZE);
+  const [topGroupOwnerNames, setTopGroupOwnerNames] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const theme = useTheme();
 
@@ -93,11 +124,77 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   // Derive filtered list from groups + search so refetches (e.g. when memberGroups updates) don't clear the filter
   const filteredItems = useMemo(() => {
     const query = (inputValue || '').trim().toLowerCase();
-    if (!query) return groups;
-    return groups.filter((item) =>
-      item.groupName.toLowerCase().includes(query)
-    );
-  }, [groups, inputValue]);
+    return groups
+      .filter((item) => {
+        const matchesQuery = !query || item.groupName.toLowerCase().includes(query);
+        const matchesAccess = (!showOpen && !showPrivate) ||
+          (showOpen && isOpenGroup(item)) ||
+          (showPrivate && !isOpenGroup(item));
+        return matchesQuery && matchesAccess;
+      })
+      .sort((a, b) => {
+        if (sortMode === 'newest') {
+          return Number(b?.created || 0) - Number(a?.created || 0);
+        }
+        const aLevel = getGroupLevel(
+          getLegacyLevel(a?.created ?? a?.creationTimestamp ?? a?.createdAt),
+          getCommunityLevel(Number(a?.memberCount) || 0)
+        ) ?? -1;
+        const bLevel = getGroupLevel(
+          getLegacyLevel(b?.created ?? b?.creationTimestamp ?? b?.createdAt),
+          getCommunityLevel(Number(b?.memberCount) || 0)
+        ) ?? -1;
+        return bLevel - aLevel || Number(b?.memberCount || 0) - Number(a?.memberCount || 0);
+      });
+  }, [groups, inputValue, showOpen, showPrivate, sortMode]);
+
+  const avatarEligibleGroupIds = useMemo(
+    () => new Set(
+      [...groups]
+        .sort((a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0))
+        .slice(0, FIND_GROUPS_AVATAR_LIMIT)
+        .map((group) => String(group.groupId))
+    ),
+    [groups]
+  );
+  const visibleItems = useMemo(
+    () => filteredItems.slice(0, visibleCount),
+    [filteredItems, visibleCount]
+  );
+
+  useEffect(() => {
+    setVisibleCount(FIND_GROUPS_PAGE_SIZE);
+    listRef.current?.scrollToRow?.(0);
+  }, [inputValue, showOpen, showPrivate, sortMode]);
+
+  // Discover only the owners needed for the top twenty avatar requests.  Groups
+  // further down the directory deliberately keep the local fallback artwork.
+  useEffect(() => {
+    let cancelled = false;
+    const topGroups = [...groups]
+      .sort((a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0))
+      .slice(0, FIND_GROUPS_AVATAR_LIMIT);
+    if (topGroups.length === 0) {
+      setTopGroupOwnerNames({});
+      return undefined;
+    }
+    void Promise.all(
+      topGroups.map(async (group) => {
+        try {
+          const response = await fetch(`${getBaseApiReact()}/groups/${group.groupId}`);
+          const data = await response.json();
+          return [String(group.groupId), data?.ownerPrimaryName || null];
+        } catch {
+          return [String(group.groupId), null];
+        }
+      })
+    ).then((entries) => {
+      if (!cancelled) setTopGroupOwnerNames(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [groups]);
 
   const handleChange = (event) => {
     setInputValue(event.target.value);
@@ -257,59 +354,90 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   };
 
   const rowRenderer = ({ index, key, parent, style }) => {
-    const group = filteredItems[index];
+    if (index === visibleItems.length) {
+      return (
+        <div key={key} style={style}>
+          <Box sx={{ alignItems: 'center', borderTop: `1px solid ${theme.palette.divider}`, display: 'flex', height: '100%', justifyContent: 'center' }}>
+            <ButtonBase onClick={() => setVisibleCount((count) => Math.min(count + FIND_GROUPS_PAGE_SIZE, filteredItems.length))} sx={{ border: `1px solid ${theme.palette.divider}`, borderRadius: '7px', color: 'text.secondary', fontSize: 13.5, fontWeight: 650, minHeight: 34, px: 3.5, '&:hover': { backgroundColor: theme.palette.action.hover, color: 'text.primary' } }}>
+              Load more
+            </ButtonBase>
+          </Box>
+        </div>
+      );
+    }
+    const group = visibleItems[index];
     const memberCount = group?.memberCount ?? 0;
+    const openGroup = isOpenGroup(group);
+    const ownerName = topGroupOwnerNames[String(group?.groupId)];
+    const showRemoteAvatar = avatarEligibleGroupIds.has(String(group?.groupId)) && Boolean(ownerName);
+    const avatarUrl = showRemoteAvatar
+      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerName)}/qortal_group_avatar_${group.groupId}?async=true`
+      : undefined;
+    const legacyLevel = getLegacyLevel(group?.created ?? group?.creationTimestamp ?? group?.createdAt);
+    const communityLevel = getCommunityLevel(Number(memberCount) || 0);
+    const level = getGroupLevel(legacyLevel, communityLevel);
+    const levelColor = getGroupLevelColor(level);
     const createdDate = group?.created ? formatTimestamp(group.created) : '—';
 
     return (
       <div key={key} style={style}>
-        <ListItem disablePadding sx={{ px: 0, py: 0.75 }}>
+        <ListItem disablePadding sx={{ borderBottom: `1px solid ${theme.palette.divider}`, px: 0 }}>
           <ListItemButton
             onClick={() => handleOpenDialog(group)}
             sx={{
-              borderRadius: 2,
-              py: 1.5,
-              px: 2,
-              alignItems: 'flex-start',
-              minHeight: GROUP_ROW_HEIGHT - 12,
+              borderRadius: 0,
+              py: 0.9,
+              px: 1,
+              alignItems: 'center',
+              gap: 1.2,
+              minHeight: GROUP_ROW_HEIGHT,
               '&:hover': {
                 bgcolor: theme.palette.action.hover,
               },
             }}
           >
+            <Avatar
+              alt=""
+              imgProps={{ loading: 'lazy' }}
+              src={avatarUrl}
+              sx={{ backgroundColor: '#151a22', border: `1px solid ${theme.palette.divider}`, flexShrink: 0, height: 58, width: 58 }}
+            >
+              <Box alt="" component="img" src={Logo2} sx={{ height: 30, width: 30 }} />
+            </Avatar>
             <Box
               sx={{
                 display: 'flex',
                 alignItems: 'center',
+                alignSelf: 'flex-start',
                 flexShrink: 0,
-                mt: 0.25,
-                mr: 1.5,
+                mr: 0,
+                mt: 0.15,
               }}
             >
-              {group?.isOpen === false && (
+              {!openGroup ? (
                 <LockIcon
                   sx={{
-                    color: theme.palette.other.positive,
-                    fontSize: 22,
+                    color: theme.palette.text.secondary,
+                    fontSize: 18,
                   }}
                 />
-              )}
-              {group?.isOpen === true && (
-                <NoEncryptionGmailerrorredIcon
+              ) : (
+                <PublicRoundedIcon
                   sx={{
-                    color: theme.palette.other.danger,
-                    fontSize: 22,
+                    color: theme.palette.text.secondary,
+                    fontSize: 18,
                   }}
                 />
               )}
             </Box>
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography
-                variant="body1"
                 sx={{
-                  fontWeight: 600,
+                  display: 'inline-block',
+                  fontSize: 16,
+                  fontWeight: 750,
                   color: theme.palette.text.primary,
-                  lineHeight: 1.35,
+                  lineHeight: '21px',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
@@ -317,30 +445,39 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               >
                 {group?.groupName}
               </Typography>
+              {level !== null && (
+                <Tooltip title={`Group Level ${level} (${legacyLevel} legacy + ${communityLevel} community)`}>
+                  <Box aria-label={`Group Level ${level}`} component="span" sx={{ alignItems: 'center', backgroundColor: levelColor, borderRadius: '50%', boxShadow: `0 2px 7px ${levelColor}55`, color: '#ffffff', display: 'inline-flex', fontSize: 12, fontWeight: 800, height: 28, justifyContent: 'center', ml: 0.8, verticalAlign: 'middle', width: 28 }}>
+                    {level}
+                  </Box>
+                </Tooltip>
+              )}
               {group?.description && (
+                <Tooltip disableInteractive placement="top-start" title={group.description}>
                 <Typography
                   variant="body2"
                   sx={{
                     color: theme.palette.text.secondary,
-                    display: '-webkit-box',
-                    mt: 0.75,
-                    lineHeight: 1.45,
-                    overflow: 'hidden',
-                    overflowWrap: 'anywhere',
-                    WebkitBoxOrient: 'vertical',
-                    WebkitLineClamp: 2,
-                  }}
+                  mt: 0.2,
+                  fontSize: 13,
+                  lineHeight: '18px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  display: 'block',
+                }}
                 >
                   {group.description}
                 </Typography>
+                </Tooltip>
               )}
               <Typography
-                variant="caption"
                 sx={{
                   color: theme.palette.text.secondary,
                   opacity: 0.85,
-                  display: 'block',
-                  mt: 0.75,
+                  display: 'none',
+                  fontSize: 12,
+                  mt: 0.25,
                   lineHeight: 1.4,
                 }}
               >
@@ -352,6 +489,16 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
                 })}
               </Typography>
             </Box>
+            <Typography noWrap sx={{ color: 'text.secondary', display: { xs: 'none', sm: 'block' }, flex: '0 0 112px', fontSize: 13, lineHeight: '18px', textAlign: 'right' }}>
+              {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
+            </Typography>
+            <ButtonBase
+              aria-label={`${openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
+              onClick={(event) => { event.stopPropagation(); handleJoinGroup(group, openGroup); }}
+              sx={{ backgroundColor: openGroup ? 'primary.main' : 'transparent', border: `1px solid ${openGroup ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '7px', color: openGroup ? 'primary.contrastText' : 'text.secondary', flex: '0 0 84px', fontSize: 14, fontWeight: 650, minHeight: 42, px: 1.25, '&:hover': { backgroundColor: openGroup ? 'primary.dark' : theme.palette.action.hover, color: openGroup ? 'primary.contrastText' : 'text.primary' } }}
+            >
+              {openGroup ? 'Join' : 'Request'}
+            </ButtonBase>
           </ListItemButton>
         </ListItem>
       </div>
@@ -690,46 +837,24 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
           minHeight: 0,
         }}
       >
-        <Typography
-          variant="h6"
-          sx={{
-            fontWeight: 600,
-            letterSpacing: '-0.02em',
-            color: theme.palette.text.primary,
-          }}
-        >
-          {t('core:list.groups', {
-            postProcess: 'capitalizeFirstChar',
-          })}
-        </Typography>
-
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-          <Typography
-            component="label"
-            variant="body2"
-            sx={{
-              color: theme.palette.text.primary,
-              fontWeight: 600,
-              letterSpacing: '0.02em',
-            }}
-          >
-            {t('core:action.search_groups', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-          </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.35 }}>
           <TextField
-            placeholder={t('core:action.search_groups', {
-              postProcess: 'capitalizeFirstChar',
-            })}
+            placeholder="Search by group name"
             variant="outlined"
             fullWidth
             value={inputValue}
             onChange={handleChange}
-            size="small"
+            InputProps={{
+              startAdornment: <InputAdornment position="start"><SearchRoundedIcon sx={{ color: 'text.secondary', fontSize: 20 }} /></InputAdornment>,
+              endAdornment: inputValue ? <InputAdornment position="end"><IconButton aria-label="Clear search" onClick={() => setInputValue('')} size="small"><CloseRoundedIcon fontSize="small" /></IconButton></InputAdornment> : undefined,
+            }}
             sx={{
               '& .MuiOutlinedInput-root': {
-                borderRadius: 2,
+                borderRadius: '8px',
                 bgcolor: theme.palette.background.paper,
+                fontSize: 16,
+                minHeight: 48,
+                px: 1.25,
                 '&:hover .MuiOutlinedInput-notchedOutline': {
                   borderColor: theme.palette.action.hover,
                 },
@@ -739,6 +864,16 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               },
             }}
           />
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+            {[
+              { icon: <WhatshotRoundedIcon sx={{ fontSize: 20 }} />, label: 'Popular', selected: sortMode === 'popular', onClick: () => setSortMode('popular') },
+              { icon: <ScheduleRoundedIcon sx={{ fontSize: 20 }} />, label: 'Newest', selected: sortMode === 'newest', onClick: () => setSortMode('newest') },
+              { icon: <PublicRoundedIcon sx={{ fontSize: 20 }} />, label: 'Open', selected: showOpen, onClick: () => setShowOpen((current) => !current) },
+              { icon: <LockIcon sx={{ fontSize: 20 }} />, label: 'Private', selected: showPrivate, onClick: () => setShowPrivate((current) => !current) },
+            ].map((filter) => (
+              <ButtonBase aria-pressed={filter.selected} key={filter.label} onClick={filter.onClick} sx={{ backgroundColor: filter.selected ? 'primary.main' : 'transparent', border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '8px', color: filter.selected ? 'primary.contrastText' : 'text.secondary', fontSize: 15, fontWeight: 600, gap: 0.9, height: 42, minWidth: 120, px: 1.6, '&:hover': { backgroundColor: filter.selected ? 'primary.dark' : theme.palette.action.hover } }}>{filter.icon}{filter.label}</ButtonBase>
+            ))}
+          </Box>
         </Box>
 
         <Box
@@ -749,6 +884,10 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
             minHeight: 0,
           }}
         >
+          <Box sx={{ alignItems: 'center', borderBottom: `1px solid ${theme.palette.divider}`, display: 'flex', justifyContent: 'space-between', mb: 0 }}>
+            <Typography sx={{ fontSize: 18, fontWeight: 750, lineHeight: '25px', pb: 1.1 }}>Groups</Typography>
+            <Typography sx={{ color: 'text.secondary', fontSize: 13, pb: 1.1 }}>{sortMode === 'popular' ? 'Sorted by Server Level' : 'Sorted by newest'}</Typography>
+          </Box>
           {groupsLoading ? (
             <Stack
               alignItems="center"
@@ -790,8 +929,8 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
                   ref={listRef}
                   width={width}
                   height={height}
-                  rowCount={filteredItems.length}
-                  rowHeight={GROUP_ROW_HEIGHT}
+                  rowCount={visibleItems.length + (visibleItems.length < filteredItems.length ? 1 : 0)}
+                  rowHeight={({ index }) => index === visibleItems.length ? 60 : GROUP_ROW_HEIGHT}
                   rowRenderer={rowRenderer}
                 />
               )}

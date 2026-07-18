@@ -1,22 +1,23 @@
 import {
   Fragment,
-  SyntheticEvent,
   useContext,
   useEffect,
   useState,
 } from 'react';
 import Button from '@mui/material/Button';
 import Dialog from '@mui/material/Dialog';
-import AppBar from '@mui/material/AppBar';
-import Toolbar from '@mui/material/Toolbar';
 import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
-import CloseIcon from '@mui/icons-material/Close';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import {
   Box,
   Collapse,
@@ -24,10 +25,8 @@ import {
   MenuItem,
   Select,
   SelectChangeEvent,
-  Tab,
-  Tabs,
   TextField,
-  useTheme,
+  Tooltip,
 } from '@mui/material';
 import { AddGroupList } from './AddGroupList';
 import { UserListOfInvites } from './UserListOfInvites';
@@ -40,6 +39,24 @@ import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
+const GROUP_DESCRIPTION_MAX_LENGTH = 300;
+const GROUP_MODAL_CONTROL_SX = {
+  '& .MuiOutlinedInput-root': {
+    backgroundColor: '#0D0F14',
+    borderRadius: '8px',
+    color: 'text.primary',
+    '&:hover .MuiOutlinedInput-notchedOutline': {
+      borderColor: 'rgba(255, 255, 255, 0.2)',
+    },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+      borderColor: RETICULUM_ACTIVE_BLUE,
+      borderWidth: 1,
+    },
+  },
+  '& .MuiOutlinedInput-notchedOutline': {
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+  },
+} as const;
 
 export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
@@ -55,17 +72,11 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   const [value, setValue] = useState(initialTab);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
-
-  const handleChange = (event: SyntheticEvent, newValue: number) => {
-    setValue(newValue);
-  };
+  const [isCreating, setIsCreating] = useState(false);
 
   const handleClose = () => {
+    if (isCreating) return;
     setOpen(false);
-  };
-
-  const handleChangeGroupType = (event: SelectChangeEvent) => {
-    setGroupType(event.target.value as string);
   };
 
   const handleChangeApprovalThreshold = (event: SelectChangeEvent) => {
@@ -87,9 +98,8 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     'question',
     'tutorial',
   ]);
-  const theme = useTheme();
-
   const handleCreateGroup = async () => {
+    if (isCreating) return;
     try {
       if (!name)
         throw new Error(
@@ -103,6 +113,13 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
             postProcess: 'capitalizeFirstChar',
           })
         );
+      if (description.length > GROUP_DESCRIPTION_MAX_LENGTH) {
+        throw new Error(
+          `Description must be ${GROUP_DESCRIPTION_MAX_LENGTH} characters or fewer`
+        );
+      }
+
+      setIsCreating(true);
 
       const fee = await getFee('CREATE_GROUP');
 
@@ -177,15 +194,10 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
         message: error?.message,
       });
       setOpenSnack(true);
+    } finally {
+      setIsCreating(false);
     }
   };
-
-  function a11yProps(index: number) {
-    return {
-      id: `simple-tab-${index}`,
-      'aria-controls': `simple-tabpanel-${index}`,
-    };
-  }
 
   const openGroupInvitesRequestFunc = () => {
     setValue(2);
@@ -238,380 +250,276 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     };
   }, []);
 
+  const modeTitle =
+    value === 0 ? 'Create group' : value === 1 ? 'Find groups' : 'Group invites';
+  const modeDescription =
+    value === 0
+      ? 'Choose a name, describe your group, and get started.'
+      : value === 1
+        ? 'Discover groups that are available to join.'
+        : 'Review the invitations you have received.';
+  const canCreateGroup = Boolean(name.trim() && description.trim()) && !isCreating;
+
+  const handleDialogClose = (_event, reason) => {
+    if (isCreating) return;
+    // MUI only emits this reason for a primary click on the Dialog backdrop.
+    if (reason !== 'backdropClick' && reason !== 'escapeKeyDown') return;
+    handleClose();
+  };
+
   if (!open) return null;
 
   return (
     <Fragment>
       <Dialog
         open={open}
-        onClose={handleClose}
+        onClose={handleDialogClose}
         fullWidth
-        maxWidth="md"
+        maxWidth={false}
         PaperProps={{
           sx: {
-            bgcolor: theme.palette.background.default,
-            border: `1px solid ${theme.palette.divider}`,
+            backgroundColor: '#1D2028',
+            backgroundImage: 'none',
+            border: '1px solid rgba(255, 255, 255, 0.13)',
             borderRadius: '12px',
-            boxShadow: '0 24px 70px rgba(0,0,0,0.42)',
-            height: 'min(760px, calc(100vh - 80px))',
-            maxHeight: 'calc(100vh - 80px)',
+            boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
+            display: 'flex',
+            flexDirection: 'column',
+            height: value === 1 ? 'min(900px, calc(100vh - 32px))' : 'min(680px, calc(100vh - 32px))',
+            m: 2,
+            maxHeight: value === 1 ? 'min(900px, calc(100vh - 32px))' : 'min(720px, calc(100vh - 32px))',
+            maxWidth: 'calc(100vw - 32px)',
             overflow: 'hidden',
+            width: value === 1 ? 1000 : 680,
           },
         }}
       >
-        <AppBar
-          position="relative"
-          elevation={0}
-          sx={{
-            bgcolor: theme.palette.background.paper,
-            borderBottom: `1px solid ${theme.palette.divider}`,
-            color: theme.palette.text.primary,
-          }}
-        >
-          <Toolbar sx={{ minHeight: { xs: 56, sm: 64 }, px: { xs: 1, sm: 2 } }}>
-            <Typography
-              sx={{
-                flex: 1,
-                fontSize: { xs: '1rem', sm: '1.05rem' },
-                fontWeight: 800,
-                letterSpacing: 0,
-              }}
-              variant="h6"
-              component="div"
-            >
-              {t('group:group.management', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-
-            <IconButton
-              aria-label={t('core:action.close', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              onClick={handleClose}
-              sx={{
-                bgcolor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-                '&:hover': {
-                  bgcolor: theme.palette.action.selected,
-                },
-              }}
-            >
-              <CloseIcon />
-            </IconButton>
-          </Toolbar>
-        </AppBar>
-
         <Box
+          component="header"
           sx={{
-            bgcolor: theme.palette.background.default,
-            color: theme.palette.text.primary,
+            alignItems: 'flex-start',
             display: 'flex',
-            flexDirection: 'column',
-            flexGrow: 1,
-            overflowY: 'auto',
+            gap: 2,
+            justifyContent: 'space-between',
+            px: { xs: 2.5, sm: 4 },
+            pt: { xs: 2.5, sm: 3.5 },
           }}
         >
-          <Tabs
-            value={value}
-            onChange={handleChange}
-            centered
-            sx={{
-              borderBottom: `1px solid ${theme.palette.divider}`,
-              minHeight: 58,
-              '& .MuiTabs-flexContainer': {
-                gap: 1,
-                justifyContent: 'center',
-                py: 1,
-              },
-              '& .MuiTab-root': {
-                borderRadius: '8px',
-                color: theme.palette.text.secondary,
-                minHeight: 38,
-                minWidth: 46,
-                px: 1.5,
-                transition: 'background-color 140ms ease, color 140ms ease',
-                '&.Mui-selected': {
-                  backgroundColor: RETICULUM_ACTIVE_BLUE,
-                  color: theme.palette.common.white,
-                },
-                '&:hover': {
-                  backgroundColor: theme.palette.action.hover,
-                  color: theme.palette.text.primary,
-                },
-                '&.Mui-selected:hover': {
-                  backgroundColor: RETICULUM_ACTIVE_BLUE,
-                  color: theme.palette.common.white,
-                },
-              },
-              '& .MuiTabs-indicator': {
-                display: 'none',
-              },
-            }}
-          >
-            {tabItems.map((item, index) => (
-              <Tab
-                aria-label={item.label}
-                icon={item.icon}
-                key={item.label}
-                title={item.label}
-                {...a11yProps(index)}
-              />
-            ))}
-          </Tabs>
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              gap: 1.25,
-              justifyContent: 'center',
-              px: 3,
-              pt: 2.5,
-            }}
-          >
+          <Box sx={{ minWidth: 0 }}>
             <Typography
-              sx={{
-                fontSize: 20,
-                fontWeight: 800,
-                textAlign: 'center',
-              }}
+              component="h2"
+              sx={{ color: 'text.primary', fontSize: value === 1 ? { xs: 30, sm: 38 } : { xs: 25, sm: 28 }, fontWeight: 800, lineHeight: 1.15 }}
             >
-              {tabItems[value]?.label}
+              {modeTitle}
+            </Typography>
+            <Typography sx={{ color: 'text.secondary', fontSize: value === 1 ? 18 : 14, lineHeight: value === 1 ? '26px' : '20px', mt: 0.75 }}>
+              {modeDescription}
             </Typography>
           </Box>
+          <Box aria-label="Group management modes" sx={{ display: 'flex', flexShrink: 0, gap: 0.5 }}>
+            {tabItems.map((item, index) => {
+              const selected = value === index;
+              return (
+                <Tooltip key={item.label} title={item.label}>
+                  <IconButton
+                    aria-label={item.label}
+                    aria-pressed={selected}
+                    onClick={() => setValue(index)}
+                    sx={{
+                      backgroundColor: selected ? RETICULUM_ACTIVE_BLUE : 'transparent',
+                      borderRadius: '8px',
+                      color: selected ? 'common.white' : 'text.secondary',
+                      height: 40,
+                      width: 40,
+                      '&:hover': {
+                        backgroundColor: selected ? RETICULUM_ACTIVE_BLUE : 'action.hover',
+                        color: 'common.white',
+                      },
+                    }}
+                  >
+                    {item.icon}
+                  </IconButton>
+                </Tooltip>
+              );
+            })}
+          </Box>
+        </Box>
 
+        <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           {value === 0 && (
             <Box
+              component="form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleCreateGroup();
+              }}
               sx={{
-                width: '100%',
-                p: { xs: 2, sm: 3 },
                 display: 'flex',
-                justifyContent: 'center',
+                flex: 1,
+                flexDirection: 'column',
+                gap: 2,
+                minHeight: 0,
+                overflowY: 'auto',
+                px: { xs: 2.5, sm: 4 },
+                py: 2.5,
+                scrollbarColor: 'rgba(143, 150, 165, 0.7) transparent',
+                scrollbarWidth: 'thin',
+                '&::-webkit-scrollbar': { width: 7 },
+                '&::-webkit-scrollbar-thumb': { backgroundColor: 'rgba(143, 150, 165, 0.7)', borderRadius: 8 },
               }}
             >
-              <Box
-                sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 3,
-                  maxWidth: 480,
-                  width: '100%',
-                }}
-              >
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                  <Typography
-                    component="label"
-                    variant="body2"
-                    sx={{
-                      color: theme.palette.text.primary,
-                      fontWeight: 600,
-                      letterSpacing: '0.02em',
-                    }}
-                  >
-                    {t('group:group.name', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                  <TextField
-                    placeholder={t('group:group.name', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    inputProps={{ maxLength: 32 }}
-                    variant="outlined"
-                    fullWidth
-                    helperText={`${name?.length || 0}/32`}
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: 2,
-                        bgcolor: theme.palette.background.paper,
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: theme.palette.action.hover,
-                        },
-                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                          borderWidth: 2,
-                        },
-                      },
-                    }}
-                  />
-                </Box>
-
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                  <Typography
-                    component="label"
-                    variant="body2"
-                    sx={{
-                      color: theme.palette.text.primary,
-                      fontWeight: 600,
-                      letterSpacing: '0.02em',
-                    }}
-                  >
-                    {t('group:group.description', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                  <TextField
-                    placeholder={t('group:group.description', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    inputProps={{ maxLength: 120 }}
-                    variant="outlined"
-                    fullWidth
-                    multiline
-                    minRows={2}
-                    helperText={`${description?.length || 0}/120`}
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: 2,
-                        bgcolor: theme.palette.background.paper,
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: theme.palette.action.hover,
-                        },
-                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                          borderWidth: 2,
-                        },
-                      },
-                    }}
-                  />
-                </Box>
-
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                  <Typography
-                    component="label"
-                    variant="body2"
-                    sx={{
-                      color: theme.palette.text.primary,
-                      fontWeight: 600,
-                      letterSpacing: '0.02em',
-                    }}
-                  >
-                    {t('group:group.type', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                  <FormControl
-                    fullWidth
-                    variant="outlined"
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: 2,
-                        bgcolor: theme.palette.background.paper,
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: theme.palette.action.hover,
-                        },
-                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                          borderWidth: 2,
-                        },
-                      },
-                    }}
-                  >
-                    <Select
-                      value={groupType}
-                      onChange={handleChangeGroupType}
-                      fullWidth
-                      displayEmpty
-                    >
-                      <MenuItem value="1">
-                        {t('group:group.open', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                      </MenuItem>
-                      <MenuItem value="0">
-                        {t('group:group.closed', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                      </MenuItem>
-                    </Select>
-                  </FormControl>
-                </Box>
-
-                <Box
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      setOpenAdvance((prev) => !prev);
-                    }
-                  }}
+              <Box>
+                <Typography component="label" htmlFor="reticulum-group-name" sx={{ color: 'text.primary', display: 'block', fontSize: 15, fontWeight: 800, mb: 1 }}>
+                  Group name
+                </Typography>
+                <TextField
+                  autoFocus
+                  fullWidth
+                  id="reticulum-group-name"
+                  inputProps={{ maxLength: 32 }}
+                  placeholder="e.g. Qortal developers"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
                   sx={{
-                    alignItems: 'center',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    gap: 1,
-                    py: 1,
-                    px: 1.5,
-                    borderRadius: 2,
-                    bgcolor: theme.palette.action.hover,
-                    '&:hover': {
-                      bgcolor: theme.palette.action.selected,
+                    ...GROUP_MODAL_CONTROL_SX,
+                    '& .MuiOutlinedInput-root': {
+                      ...GROUP_MODAL_CONTROL_SX['& .MuiOutlinedInput-root'],
+                      height: 48,
                     },
                   }}
-                  onClick={() => setOpenAdvance((prev) => !prev)}
-                >
-                  <Typography variant="body2" fontWeight={500}>
-                    {t('group:advanced_options', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                  {openAdvance ? <ExpandLess /> : <ExpandMore />}
+                />
+                <Box sx={{ color: 'text.secondary', display: 'flex', fontSize: 12.5, justifyContent: 'space-between', lineHeight: '18px', mt: 0.75 }}>
+                  <span>Use a clear, recognizable name.</span>
+                  <span>{name.length} / 32</span>
                 </Box>
+              </Box>
 
-                <Collapse in={openAdvance} timeout="auto" unmountOnExit>
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 2.5,
-                      p: 2,
-                      borderRadius: 2,
-                      bgcolor: theme.palette.background.paper,
-                      border: `1px solid ${theme.palette.divider}`,
-                    }}
-                  >
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                      <Typography
-                        component="label"
-                        variant="body2"
+              <Box>
+                <Typography component="label" htmlFor="reticulum-group-description" sx={{ color: 'text.primary', display: 'block', fontSize: 15, fontWeight: 800, mb: 1 }}>
+                  Description
+                </Typography>
+                <TextField
+                  fullWidth
+                  id="reticulum-group-description"
+                  inputProps={{ maxLength: GROUP_DESCRIPTION_MAX_LENGTH }}
+                  maxRows={4}
+                  minRows={2}
+                  multiline
+                  placeholder="What is this group about?"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  sx={{
+                    ...GROUP_MODAL_CONTROL_SX,
+                    '& .MuiInputBase-inputMultiline': {
+                      scrollbarColor: 'rgba(143, 150, 165, 0.72) transparent',
+                      scrollbarWidth: 'thin',
+                      '&::-webkit-scrollbar': { width: 6 },
+                      '&::-webkit-scrollbar-thumb': {
+                        backgroundColor: 'rgba(143, 150, 165, 0.72)',
+                        borderRadius: 8,
+                      },
+                    },
+                  }}
+                />
+                <Box sx={{ color: 'text.secondary', display: 'flex', fontSize: 12.5, justifyContent: 'flex-end', lineHeight: '18px', mt: 0.75 }}>
+                  {description.length} / {GROUP_DESCRIPTION_MAX_LENGTH}
+                </Box>
+              </Box>
+
+              <Box>
+                <Typography id="reticulum-group-access-label" sx={{ color: 'text.primary', fontSize: 15, fontWeight: 800, mb: 1 }}>
+                  Group access
+                </Typography>
+                <Box
+                  aria-labelledby="reticulum-group-access-label"
+                  role="radiogroup"
+                  sx={{
+                    backgroundColor: '#0D0F14',
+                    border: '1px solid rgba(0, 0, 0, 0.72)',
+                    borderRadius: '10px',
+                    display: 'grid',
+                    gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                    overflow: 'hidden',
+                  }}
+                >
+                  {[
+                    { description: 'Anyone can find and join.', icon: PublicRoundedIcon, label: 'Open', value: '1' },
+                    { description: 'Members join by invitation.', icon: LockRoundedIcon, label: 'Closed', value: '0' },
+                  ].map((option, index) => {
+                    const selected = groupType === option.value;
+                    const Icon = option.icon;
+                    return (
+                      <Button
+                        aria-checked={selected}
+                        key={option.value}
+                        onClick={() => setGroupType(option.value)}
+                        role="radio"
                         sx={{
-                          color: theme.palette.text.primary,
-                          fontWeight: 600,
-                          letterSpacing: '0.02em',
-                        }}
-                      >
-                        {t('group:message.generic.group_approval_threshold', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                      </Typography>
-                      <FormControl
-                        fullWidth
-                        variant="outlined"
-                        sx={{
-                          '& .MuiOutlinedInput-root': {
-                            borderRadius: 2,
-                            bgcolor: theme.palette.background.default,
+                          backgroundColor: selected ? 'rgba(37, 99, 235, 0.12)' : 'transparent',
+                          borderColor: selected ? RETICULUM_ACTIVE_BLUE : 'rgba(0, 0, 0, 0.72)',
+                          borderLeft: { xs: 'none', sm: index === 0 ? 'none' : '1px solid rgba(0, 0, 0, 0.72)' },
+                          borderRadius: {
+                            xs: index === 0 ? '9px 9px 0 0' : '0 0 9px 9px',
+                            sm: index === 0 ? '9px 0 0 9px' : '0 9px 9px 0',
                           },
+                          borderTop: { xs: index === 0 ? 'none' : '1px solid rgba(0, 0, 0, 0.72)', sm: 'none' },
+                          boxShadow: selected ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}` : 'none',
+                          color: selected ? 'common.white' : 'text.primary',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 0.5,
+                          minHeight: 126,
+                          p: 1.5,
+                          position: 'relative',
+                          textTransform: 'none',
+                          zIndex: selected ? 1 : 0,
+                          '&:hover': { backgroundColor: selected ? 'rgba(37, 99, 235, 0.16)' : 'action.hover' },
                         }}
                       >
-                        <Select
-                          value={approvalThreshold}
-                          onChange={handleChangeApprovalThreshold}
-                          fullWidth
-                          displayEmpty
-                        >
-                          <MenuItem value="0">
-                            {t('core:count.none', {
-                              postProcess: 'capitalizeFirstChar',
-                            })}
-                          </MenuItem>
-                          <MenuItem value="1">
-                            {t('core:count.one', {
-                              postProcess: 'capitalizeFirstChar',
-                            })}
-                          </MenuItem>
+                        {selected && <CheckCircleRoundedIcon sx={{ color: RETICULUM_ACTIVE_BLUE, fontSize: 19, position: 'absolute', right: 9, top: 9 }} />}
+                        <Icon sx={{ color: selected ? 'common.white' : 'text.secondary', fontSize: 25 }} />
+                        <Typography sx={{ color: 'inherit', fontSize: 15, fontWeight: 800 }}>{option.label}</Typography>
+                        <Typography sx={{ color: 'text.secondary', fontSize: 13, lineHeight: '18px', textAlign: 'center' }}>{option.description}</Typography>
+                      </Button>
+                    );
+                  })}
+                </Box>
+              </Box>
+
+              <Box>
+                <Button
+                  aria-expanded={openAdvance}
+                  fullWidth
+                  onClick={() => setOpenAdvance((previous) => !previous)}
+                  startIcon={<TuneRoundedIcon sx={{ fontSize: 18 }} />}
+                  sx={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    borderRadius: '8px',
+                    color: 'text.primary',
+                    justifyContent: 'flex-start',
+                    minHeight: 42,
+                    px: 1.5,
+                    textTransform: 'none',
+                    '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.08)' },
+                  }}
+                >
+                  <Typography sx={{ flex: 1, fontSize: 14, fontWeight: 700, textAlign: 'left' }}>Advanced options</Typography>
+                  {openAdvance ? <ExpandLess /> : <ExpandMore />}
+                </Button>
+                <Collapse in={openAdvance} timeout="auto" unmountOnExit>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+                    <Box>
+                      <Typography component="label" sx={{ color: 'text.primary', display: 'block', fontSize: 13, fontWeight: 700, mb: 0.4 }}>
+                        Approval threshold
+                      </Typography>
+                      <Typography sx={{ color: 'text.secondary', fontSize: 12, lineHeight: '17px', mb: 0.85 }}>
+                        Percentage of admins required to approve group decisions.
+                      </Typography>
+                      <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
+                        <Select value={approvalThreshold} onChange={handleChangeApprovalThreshold}>
+                          <MenuItem value="0">None</MenuItem>
+                          <MenuItem value="1">One</MenuItem>
                           <MenuItem value="20">20%</MenuItem>
                           <MenuItem value="40">40%</MenuItem>
                           <MenuItem value="60">60%</MenuItem>
@@ -620,207 +528,109 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         </Select>
                       </FormControl>
                     </Box>
-
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                      <Typography
-                        component="label"
-                        variant="body2"
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontWeight: 600,
-                          letterSpacing: '0.02em',
-                        }}
-                      >
-                        {t('group:message.generic.block_delay_minimum', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                      </Typography>
-                      <FormControl
-                        fullWidth
-                        variant="outlined"
-                        sx={{
-                          '& .MuiOutlinedInput-root': {
-                            borderRadius: 2,
-                            bgcolor: theme.palette.background.default,
-                          },
-                        }}
-                      >
-                        <Select
-                          value={minBlock}
-                          onChange={handleChangeMinBlock}
-                          fullWidth
-                          displayEmpty
-                        >
-                          <MenuItem value="5">
-                            {t('core:time.minute', { count: 5 })}
-                          </MenuItem>
-                          <MenuItem value="10">
-                            {t('core:time.minute', { count: 10 })}
-                          </MenuItem>
-                          <MenuItem value="30">
-                            {t('core:time.minute', { count: 30 })}
-                          </MenuItem>
-                          <MenuItem value="60">
-                            {t('core:time.hour', { count: 1 })}
-                          </MenuItem>
-                          <MenuItem value="180">
-                            {t('core:time.hour', { count: 3 })}
-                          </MenuItem>
-                          <MenuItem value="300">
-                            {t('core:time.hour', { count: 5 })}
-                          </MenuItem>
-                          <MenuItem value="420">
-                            {t('core:time.hour', { count: 7 })}
-                          </MenuItem>
-                          <MenuItem value="720">
-                            {t('core:time.hour', { count: 12 })}
-                          </MenuItem>
-                          <MenuItem value="1440">
-                            {t('core:time.day', { count: 1 })}
-                          </MenuItem>
-                          <MenuItem value="4320">
-                            {t('core:time.day', { count: 3 })}
-                          </MenuItem>
-                          <MenuItem value="7200">
-                            {t('core:time.day', { count: 5 })}
-                          </MenuItem>
-                          <MenuItem value="10080">
-                            {t('core:time.day', { count: 7 })}
-                          </MenuItem>
-                        </Select>
-                      </FormControl>
+                    <Box sx={{ display: 'grid', gap: 1.75, gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' } }}>
+                      <Box>
+                        <Typography component="label" sx={{ color: 'text.primary', display: 'block', fontSize: 13, fontWeight: 700, mb: 0.85 }}>
+                          Minimum approval delay
+                        </Typography>
+                        <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
+                          <Select value={minBlock} onChange={handleChangeMinBlock}>
+                            <MenuItem value="5">5 minutes</MenuItem>
+                            <MenuItem value="10">10 minutes</MenuItem>
+                            <MenuItem value="30">30 minutes</MenuItem>
+                            <MenuItem value="60">1 hour</MenuItem>
+                            <MenuItem value="180">3 hours</MenuItem>
+                            <MenuItem value="300">5 hours</MenuItem>
+                            <MenuItem value="420">7 hours</MenuItem>
+                            <MenuItem value="720">12 hours</MenuItem>
+                            <MenuItem value="1440">1 day</MenuItem>
+                            <MenuItem value="4320">3 days</MenuItem>
+                            <MenuItem value="7200">5 days</MenuItem>
+                            <MenuItem value="10080">7 days</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Box>
+                      <Box>
+                        <Typography component="label" sx={{ color: 'text.primary', display: 'block', fontSize: 13, fontWeight: 700, mb: 0.85 }}>
+                          Maximum approval delay
+                        </Typography>
+                        <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
+                          <Select value={maxBlock} onChange={handleChangeMaxBlock}>
+                            <MenuItem value="60">1 hour</MenuItem>
+                            <MenuItem value="180">3 hours</MenuItem>
+                            <MenuItem value="300">5 hours</MenuItem>
+                            <MenuItem value="420">7 hours</MenuItem>
+                            <MenuItem value="720">12 hours</MenuItem>
+                            <MenuItem value="1440">1 day</MenuItem>
+                            <MenuItem value="4320">3 days</MenuItem>
+                            <MenuItem value="7200">5 days</MenuItem>
+                            <MenuItem value="10080">7 days</MenuItem>
+                            <MenuItem value="14400">10 days</MenuItem>
+                            <MenuItem value="21600">15 days</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Box>
                     </Box>
-
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                      <Typography
-                        component="label"
-                        variant="body2"
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontWeight: 600,
-                          letterSpacing: '0.02em',
-                        }}
-                      >
-                        {t('group:message.generic.block_delay_maximum', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
+                    <Box sx={{ alignItems: 'center', backgroundColor: '#0D0F14', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '8px', color: 'text.secondary', display: 'flex', gap: 1, p: 1.25 }}>
+                      <InfoOutlinedIcon sx={{ fontSize: 18 }} />
+                      <Typography sx={{ fontSize: 12, lineHeight: '17px' }}>
+                        These settings affect group transactions and cannot be changed after creation.
                       </Typography>
-                      <FormControl
-                        fullWidth
-                        variant="outlined"
-                        sx={{
-                          '& .MuiOutlinedInput-root': {
-                            borderRadius: 2,
-                            bgcolor: theme.palette.background.default,
-                          },
-                        }}
-                      >
-                        <Select
-                          value={maxBlock}
-                          onChange={handleChangeMaxBlock}
-                          fullWidth
-                          displayEmpty
-                        >
-                          <MenuItem value="60">
-                            {t('core:time.hour', { count: 1 })}
-                          </MenuItem>
-                          <MenuItem value="180">
-                            {t('core:time.hour', { count: 3 })}
-                          </MenuItem>
-                          <MenuItem value="300">
-                            {t('core:time.hour', { count: 5 })}
-                          </MenuItem>
-                          <MenuItem value="420">
-                            {t('core:time.hour', { count: 7 })}
-                          </MenuItem>
-                          <MenuItem value="720">
-                            {t('core:time.hour', { count: 12 })}
-                          </MenuItem>
-                          <MenuItem value="1440">
-                            {t('core:time.day', { count: 1 })}
-                          </MenuItem>
-                          <MenuItem value="4320">
-                            {t('core:time.day', { count: 3 })}
-                          </MenuItem>
-                          <MenuItem value="7200">
-                            {t('core:time.day', { count: 5 })}
-                          </MenuItem>
-                          <MenuItem value="10080">
-                            {t('core:time.day', { count: 7 })}
-                          </MenuItem>
-                          <MenuItem value="14400">
-                            {t('core:time.day', { count: 10 })}
-                          </MenuItem>
-                          <MenuItem value="21600">
-                            {t('core:time.day', { count: 15 })}
-                          </MenuItem>
-                        </Select>
-                      </FormControl>
                     </Box>
                   </Box>
                 </Collapse>
-
-                <Button
-                  variant="contained"
-                  onClick={handleCreateGroup}
-                  fullWidth
-                  sx={{
-                    backgroundColor: RETICULUM_ACTIVE_BLUE,
-                    color: theme.palette.common.white,
-                    py: 1.5,
-                    mt: 0.5,
-                    borderRadius: 2,
-                    textTransform: 'uppercase',
-                    fontWeight: 600,
-                    letterSpacing: '0.08em',
-                    boxShadow: theme.shadows[2],
-                    '&:hover': {
-                      backgroundColor: '#1e40af',
-                      boxShadow: theme.shadows[4],
-                    },
-                  }}
-                >
-                  {t('group:action.create_group', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                </Button>
               </Box>
             </Box>
           )}
 
           {value === 1 && (
-            <Box
-              sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                flexGrow: 1,
-                p: { xs: 2, sm: 3 },
-                width: '100%',
-              }}
-            >
-              <AddGroupList
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-              />
+            <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto', px: { xs: 2.5, sm: 4 }, py: 2.5 }}>
+              <AddGroupList setOpenSnack={setOpenSnack} setInfoSnack={setInfoSnack} />
             </Box>
           )}
 
           {value === 2 && (
-            <Box
+            <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto', px: { xs: 2.5, sm: 4 }, py: 2.5 }}>
+              <UserListOfInvites myAddress={address} setOpenSnack={setOpenSnack} setInfoSnack={setInfoSnack} />
+            </Box>
+          )}
+        </Box>
+
+        <Box
+          component="footer"
+          sx={{
+            alignItems: 'center',
+            borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+            display: 'flex',
+            gap: 1,
+            justifyContent: 'flex-end',
+            px: { xs: 2.5, sm: 4 },
+            py: 1.5,
+          }}
+        >
+          <Button disabled={isCreating} onClick={handleClose} sx={{ borderRadius: '8px', color: 'text.secondary', fontWeight: 700, minHeight: 40, px: 2, textTransform: 'none', '&:hover': { backgroundColor: 'action.hover', color: 'text.primary' } }}>
+            Cancel
+          </Button>
+          {value === 0 && (
+            <Button
+              disabled={!canCreateGroup}
+              onClick={() => void handleCreateGroup()}
+              variant="contained"
               sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                flexGrow: 1,
-                p: { xs: 2, sm: 3 },
-                width: '100%',
+                backgroundColor: RETICULUM_ACTIVE_BLUE,
+                borderRadius: '8px',
+                color: 'common.white',
+                fontWeight: 700,
+                minHeight: 40,
+                minWidth: 138,
+                px: 2.25,
+                textTransform: 'none',
+                '&:hover': { backgroundColor: '#1e40af' },
+                '&.Mui-disabled': { backgroundColor: 'action.disabledBackground', color: 'text.disabled' },
               }}
             >
-              <UserListOfInvites
-                myAddress={address}
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-              />
-            </Box>
+              {isCreating ? 'Creating...' : 'Create group'}
+            </Button>
           )}
         </Box>
 

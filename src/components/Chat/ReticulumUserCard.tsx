@@ -22,6 +22,7 @@ import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
 import { statusDotColor } from '../../hooks/usePresence';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
+import { AvatarPreviewModal } from './AvatarPreviewModal';
 
 export type ReticulumUserCardData = {
   address: string;
@@ -84,6 +85,8 @@ export const ReticulumUserCard = ({
     data.isMinterResolved ? data.minterLevel ?? null : null
   );
   const [isMinterResolved, setIsMinterResolved] = useState(data.isMinterResolved);
+  const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
+  const [avatarPreviewSrc, setAvatarPreviewSrc] = useState<string | null>(null);
   const cardContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -223,46 +226,61 @@ export const ReticulumUserCard = ({
     onClose();
   };
 
+  const handleAvatarPreview = (event: MouseEvent) => {
+    if (!avatarUrl) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (data.onAvatarPreview) {
+      data.onAvatarPreview(event, avatarUrl);
+      return;
+    }
+
+    setAvatarPreviewSrc(avatarUrl);
+    setIsAvatarPreviewOpen(true);
+  };
+
   return (
-    <Popover
-      open={open}
-      anchorEl={anchorEl}
-      onClose={onClose}
-      anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-      marginThreshold={12}
-      slotProps={{
-        paper: {
-          sx: {
-            background:
-              theme.palette.mode === 'dark'
-                ? 'radial-gradient(circle at 35% 0%, rgba(255, 255, 255, 0.035), transparent 48%), linear-gradient(180deg, #1B1E23 0%, #15181D 100%)'
-                : theme.palette.background.paper,
-            border: '1px solid #30353D',
-            borderRadius: '11px',
-            boxShadow:
-              'inset 0 0 0 1px rgba(255, 255, 255, 0.035), 0 12px 30px rgba(0, 0, 0, 0.38), 0 3px 8px rgba(0, 0, 0, 0.28)',
-            maxWidth: 'calc(100vw - 24px)',
-            mt: 1,
-            overflow: 'visible',
-            position: 'relative',
-            width: 'min(440px, calc(100vw - 24px))',
+    <>
+      <Popover
+        open={open}
+        anchorEl={anchorEl}
+        onClose={onClose}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        marginThreshold={12}
+        slotProps={{
+          paper: {
+            sx: {
+              background:
+                theme.palette.mode === 'dark'
+                  ? 'radial-gradient(circle at 35% 0%, rgba(255, 255, 255, 0.035), transparent 48%), linear-gradient(180deg, #1B1E23 0%, #15181D 100%)'
+                  : theme.palette.background.paper,
+              border: '1px solid #30353D',
+              borderRadius: '11px',
+              boxShadow:
+                'inset 0 0 0 1px rgba(255, 255, 255, 0.035), 0 12px 30px rgba(0, 0, 0, 0.38), 0 3px 8px rgba(0, 0, 0, 0.28)',
+              maxWidth: 'calc(100vw - 24px)',
+              mt: 1,
+              overflow: 'visible',
+              position: 'relative',
+              width: 'min(440px, calc(100vw - 24px))',
+            },
           },
-        },
-      }}
-    >
+        }}
+      >
       <Box aria-label={`${displayName} user card`} ref={cardContentRef} role="dialog" sx={{ pb: 1.75, pt: 2.5, px: 2 }}>
         <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: 2.25, minHeight: 112, position: 'relative' }}>
           <Box sx={{ minWidth: 98, ml: 1 }}>
             {isMinter ? (
               <MinterAvatarOrnament
-                accentColor={data.role === 'owner' ? data.roleColor : undefined}
+                accentColor={data.role ? data.roleColor : undefined}
                 level={resolvedMinterLevel}
                 size="card"
               >
                 <IconButton
                   aria-label={`Open ${displayName}'s avatar`}
-                  onClick={(event) => avatarUrl && data.onAvatarPreview?.(event, avatarUrl)}
+                  onClick={handleAvatarPreview}
                   sx={{ borderRadius: '50%', p: 0 }}
                 >
                   {cardAvatar}
@@ -271,7 +289,7 @@ export const ReticulumUserCard = ({
             ) : (
               <IconButton
                 aria-label={`Open ${displayName}'s avatar`}
-                onClick={(event) => avatarUrl && data.onAvatarPreview?.(event, avatarUrl)}
+                onClick={handleAvatarPreview}
                 sx={{ borderRadius: '50%', p: 0 }}
               >
                 {cardAvatar}
@@ -372,7 +390,14 @@ export const ReticulumUserCard = ({
           </>
         )}
       </Box>
-    </Popover>
+      </Popover>
+      <AvatarPreviewModal
+        alt={displayName}
+        open={isAvatarPreviewOpen}
+        src={avatarPreviewSrc}
+        onClose={() => setIsAvatarPreviewOpen(false)}
+      />
+    </>
   );
 };
 

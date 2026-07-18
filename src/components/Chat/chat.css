@@ -4,6 +4,34 @@
   width: 100%;
 }
 
+/* Reticulum-only accessibility sizes. Invitation cards deliberately do not
+   use these selectors so their fixed preview layout stays stable. */
+.reticulum-chat-text-scale--medium .message-item-row .tiptap:not(.isReply) p,
+.reticulum-chat-text-scale--medium .message-item-row .tiptap:not(.isReply) li {
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+.reticulum-chat-text-scale--high .message-item-row .tiptap:not(.isReply) p,
+.reticulum-chat-text-scale--high .message-item-row .tiptap:not(.isReply) li {
+  font-size: 18px;
+  line-height: 1.55;
+}
+
+.reticulum-chat-text-scale--medium
+  .tiptap-chat-composer--compact
+  .tiptap
+  p {
+  font-size: 16px;
+}
+
+.reticulum-chat-text-scale--high
+  .tiptap-chat-composer--compact
+  .tiptap
+  p {
+  font-size: 17px;
+}
+
 .tiptap ul,
 .tiptap ol {
   padding: 0 1rem;
@@ -308,6 +336,18 @@
   flex: 1;
   height: 1px;
   opacity: 0.4;
+}
+
+.reticulum-unread-divider {
+  color: #ef4444;
+  font-size: 10px;
+  margin: 6px 16px;
+  opacity: 0.9;
+}
+
+.reticulum-unread-divider::before,
+.reticulum-unread-divider::after {
+  opacity: 0.72;
 }
 
 /* Chat message composer – Discord-style: one bar, minimal border, no focus ring */

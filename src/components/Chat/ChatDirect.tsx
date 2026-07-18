@@ -3136,7 +3136,10 @@ export const ChatDirect = ({
                 width: '100%',
               }}
             >
-              <ReplyPreview message={replyMessage} />
+              <ReplyPreview
+                message={replyMessage}
+                reticulumOnlyContent={reticulumDirectUiEnabled}
+              />
 
               <ButtonBase
                 onClick={() => {
@@ -3157,7 +3160,11 @@ export const ChatDirect = ({
                 width: '100%',
               }}
             >
-              <ReplyPreview isEdit message={onEditMessage} />
+              <ReplyPreview
+                isEdit
+                message={onEditMessage}
+                reticulumOnlyContent={reticulumDirectUiEnabled}
+              />
 
               <ButtonBase
                 onClick={() => {
