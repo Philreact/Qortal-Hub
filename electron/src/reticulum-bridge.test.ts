@@ -1458,6 +1458,109 @@ describe('ReticulumBridge group audio support', () => {
 });
 
 describe('ReticulumBridge chat forwarding support', () => {
+  it('dedupes resource session preparation and waits for the matching ready link', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'prepare-session-1',
+      ok: true,
+      payload: {
+        status: 'pending',
+        linkId: 'resource-link-1',
+        lane: 'fast',
+      },
+    }));
+    const payload = {
+      peerPresenceHash: 'A'.repeat(32),
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+    };
+
+    let firstSettled = false;
+    const first = bridge
+      .ensureReticulumResourceSessionDetailed(payload)
+      .then((result) => {
+        firstSettled = true;
+        return result;
+      });
+    const second = bridge.ensureReticulumResourceSessionDetailed(payload);
+    await vi.waitFor(() => {
+      expect(internal.sendCommand).toHaveBeenCalledTimes(1);
+    });
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'reticulum_resource_session',
+      payload: {
+        status: 'ready',
+        peerPresenceHash: 'a'.repeat(32),
+        lane: 'fast',
+        linkId: 'different-resource-link',
+      },
+    });
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'reticulum_resource_session',
+      payload: {
+        status: 'ready',
+        peerPresenceHash: 'a'.repeat(32),
+        lane: 'fast',
+        linkId: 'resource-link-1',
+      },
+    });
+
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ ok: true });
+    expect(internal.sendCommand).toHaveBeenCalledWith(
+      'prepare_reticulum_resource_session',
+      {
+        peerPresenceHash: 'a'.repeat(32),
+        reticulumIdentityPublicKeyBase64: 'identity',
+        resourceType: 'reticulum_chat_event',
+      }
+    );
+  });
+
+  it('ends pending resource session preparation when the bridge stops', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'prepare-session-stop',
+      ok: true,
+      payload: {
+        status: 'pending',
+        linkId: 'resource-link-stop',
+        lane: 'fast',
+      },
+    }));
+
+    const preparation = bridge.ensureReticulumResourceSessionDetailed({
+      peerPresenceHash: 'b'.repeat(32),
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+    });
+    await vi.waitFor(() => {
+      expect(internal.sendCommand).toHaveBeenCalledTimes(1);
+    });
+
+    bridge.stop();
+
+    await expect(preparation).resolves.toEqual({
+      ok: false,
+      reason: 'bridge-not-ready',
+      error: 'Reticulum bridge stopped',
+    });
+  });
+
   it('emits the Land forwarding revision with a fast-forwarded state', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

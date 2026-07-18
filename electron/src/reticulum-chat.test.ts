@@ -6880,9 +6880,68 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('retries a linked history page request when the pending transfer is stale', async () => {
+  it('opens the reusable history session before signing and dispatching auth', async () => {
+    const providerHash = 'c'.repeat(32);
+    const order: string[] = [];
+    const sessionPayloads: Array<Record<string, unknown>> = [];
+    const baseSigner = createReticulumChatTestSigner();
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      ensureReticulumResourceSessionDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        order.push('session');
+        sessionPayloads.push(payload);
+        return { ok: true as const };
+      },
+      acceptReticulumChatResourceDetailed: async () => {
+        order.push('accept');
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: async (fields) => {
+        if ((fields as { type?: string }).type === 'RCHAT_HISTORY_PAGE_REQ') {
+          order.push('sign');
+        }
+        return baseSigner(fields);
+      },
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      { eventId: 'jit-auth-cursor', feedTimestamp: 99_000 },
+      'before',
+      false,
+      'test-jit-auth'
+    );
+
+    expect(order).toEqual(['session', 'sign', 'accept']);
+    expect(sessionPayloads).toEqual([
+      expect.objectContaining({
+        peerPresenceHash: providerHash,
+        resourceType: 'reticulum_chat_event',
+        logicalResourceType: 'reticulum_chat_history_page',
+      }),
+    ]);
+    manager.close();
+  });
+
+  it('backs off a failed linked history request instead of allocating new transfers', async () => {
     const providerHash = 'c'.repeat(32);
     const accepts: Array<Record<string, unknown>> = [];
+    const direct: Array<Record<string, unknown>> = [];
     let now = 100_000;
     const bridge = {
       on: () => undefined,
@@ -6892,6 +6951,131 @@ describe('reticulum chat manager', () => {
         payload: Record<string, unknown>
       ) => {
         accepts.push(payload);
+        return {
+          ok: false as const,
+          reason: 'bridge-overloaded' as const,
+          error: 'resource open queue full',
+        };
+      },
+      sendReticulumChatDetailed: async (
+        _peer: string,
+        wire: Record<string, unknown>
+      ) => {
+        direct.push(wire);
+        return { ok: true as const };
+      },
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    const cursor = { eventId: 'failed-cursor-event', feedTimestamp: 99_000 };
+
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-backoff'
+    );
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-backoff'
+    );
+
+    expect(accepts).toHaveLength(1);
+    expect(direct).toHaveLength(0);
+
+    now += 5_001;
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-backoff-expired'
+    );
+    expect(accepts).toHaveLength(2);
+    manager.close();
+  });
+
+  it('cooldowns latest-event page fallback across repeated digests', async () => {
+    vi.useFakeTimers();
+    const providerHash = 'c'.repeat(32);
+    const eventId = 'latest-fallback-event';
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    try {
+      (manager as any).pendingEventPulls.set(`69:${eventId}`, {
+        hint: { eventId, groupId: 69 },
+        peerHashes: new Set([providerHash]),
+        attempts: 1,
+        nextAttemptAt: 0,
+        inFlight: false,
+      });
+      (manager as any).shouldRequestMetadataRepair = () => true;
+      (manager as any).shouldRequestGroupRepair = () => true;
+      const requestPage = vi.fn(async () => undefined);
+      (manager as any).requestLinkedHistoryPage = requestPage;
+      const input = {
+        groupId: 69,
+        peerHash: providerHash,
+        providerPeerHash: providerHash,
+        latest: { eventId, feedTimestamp: 99_000 },
+        reason: 'test-latest-cooldown',
+      };
+
+      (manager as any).scheduleLatestEventPullFallback(input);
+      (manager as any).scheduleLatestEventPullFallback(input);
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(requestPage).toHaveBeenCalledTimes(2);
+
+      (manager as any).scheduleLatestEventPullFallback(input);
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(requestPage).toHaveBeenCalledTimes(2);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not duplicate a slow linked history request and cancels it before a stale retry', async () => {
+    const providerHash = 'c'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const cancels: Array<Record<string, unknown>> = [];
+    let now = 100_000;
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      cancelReticulumResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        cancels.push(payload);
         return { ok: true as const };
       },
       sendReticulumChatDetailed: async () => ({ ok: true as const }),
@@ -6937,9 +7121,22 @@ describe('reticulum chat manager', () => {
       false,
       'test-stale'
     );
+    expect(accepts).toHaveLength(1);
 
+    now += 60_000;
+    await (manager as any).requestLinkedHistoryPage(
+      providerHash,
+      69,
+      '*',
+      cursor,
+      'before',
+      false,
+      'test-stale'
+    );
     expect(accepts).toHaveLength(2);
     expect(accepts[1].transferId).not.toBe(accepts[0].transferId);
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0].transferId).toBe(accepts[0].transferId);
     manager.close();
   });
 
@@ -12163,6 +12360,7 @@ describe('reticulum chat manager', () => {
     const providerPeer = '6'.repeat(32);
     const direct: Array<{ peer: string; wire: ReticulumChatWire }> = [];
     const accepts: Array<Record<string, unknown>> = [];
+    const resourceOrder: string[] = [];
     const fanouts: Array<{
       messages: ReticulumChatWire[];
       exclude?: string[];
@@ -12181,7 +12379,20 @@ describe('reticulum chat manager', () => {
       acceptReticulumResourceDetailed: async (
         payload: Record<string, unknown>
       ) => {
+        resourceOrder.push('accept');
         accepts.push(payload);
+        return { ok: true as const };
+      },
+      ensureReticulumResourceSessionDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        resourceOrder.push('session');
+        expect(payload).toEqual(
+          expect.objectContaining({
+            peerPresenceHash: providerPeer,
+            resourceType: 'reticulum_group_resource_range',
+          })
+        );
         return { ok: true as const };
       },
       fanoutReticulumChatDetailed: async (
@@ -12192,12 +12403,18 @@ describe('reticulum chat manager', () => {
         return { ok: true as const };
       },
     };
+    const baseSigner = createReticulumChatTestSigner();
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: bridge as any,
       resourceStore,
       now: () => 100_000,
-      signLocalFields: createReticulumChatTestSigner(),
+      signLocalFields: async (fields) => {
+        if ((fields as { type?: string }).type === 'RCHAT_RESOURCE_REQ') {
+          resourceOrder.push('sign');
+        }
+        return baseSigner(fields);
+      },
       validateGroupMember: async () => true,
     });
     manager.setLocalGroupMemberships([78]);
@@ -12214,6 +12431,7 @@ describe('reticulum chat manager', () => {
           wire.k === 'rf'
       );
     expect(findWire).toBeTruthy();
+    resourceOrder.length = 0;
 
     manager.handleWire(
       {
@@ -12230,6 +12448,7 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
 
     expect(accepts).toHaveLength(1);
+    expect(resourceOrder).toEqual(['session', 'sign', 'accept']);
     expect(accepts[0]).toMatchObject({
       peerPresenceHash: providerPeer,
       resourceType: 'reticulum_group_resource_range',

@@ -59,7 +59,7 @@ _transport_monitor_thread: Optional[threading.Thread] = None
 _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
 _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.MDU))
 # Grep logs for this string to confirm the rebuilt script is running (sync with GC_RETICULUM_WIRE_BUILD_MARKER in group-call-wire-reticulum.ts).
-PRESENCE_BRIDGE_BUILD = "wire394-reticulum-binary-audio-v1"
+PRESENCE_BRIDGE_BUILD = "wire395-reticulum-resource-sessions-v1"
 
 # Peer cache: must match TS base58 in electron/src/presence.ts (Qortal alphabet).
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -158,9 +158,38 @@ _CALL_RELAY_DEDUP_MAX = 4096
 _call_relay_dedup: Dict[str, float] = {}
 _call_relay_dedup_last_log_at: float = 0.0
 _call_relay_dedup_suppressed_since_log: int = 0
-_QCHAT_FILE_LINK_OPEN_PATH_AWAIT_SECONDS = 8.0
+_QCHAT_FILE_LINK_OPEN_PATH_AWAIT_SECONDS = 0.0
+_QCHAT_FILE_LINK_PATH_WAIT_TIMEOUT_SECONDS = 45.0
+_QCHAT_FILE_LINK_PATH_POLL_SECONDS = 1.0
 _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS = 4
 _QCHAT_FILE_LINK_RETRY_DELAY_SECONDS = 2.0
+_QCHAT_FILE_OPEN_QUEUE_MAX_PER_PEER = 32
+_QCHAT_FILE_OPEN_QUEUE_MAX_TOTAL = 256
+_QCHAT_FILE_ACTIVE_OUTGOING_MAX_PER_PEER = 4
+_QCHAT_FILE_CHAT_RESERVED_ACTIVE_PER_PEER = 1
+_QCHAT_FILE_BULK_ACTIVE_MAX_PER_PEER = (
+    _QCHAT_FILE_ACTIVE_OUTGOING_MAX_PER_PEER
+    - _QCHAT_FILE_CHAT_RESERVED_ACTIVE_PER_PEER
+)
+_RESOURCE_SESSION_REQUEST_PATH = "/qortal/resource/v1"
+_RESOURCE_SESSION_HELLO_TYPE = "RETICULUM_RESOURCE_SESSION_HELLO"
+_RESOURCE_SESSION_READY_TYPE = "RETICULUM_RESOURCE_SESSION_READY"
+_RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
+_RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
+_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 30.0
+_RESOURCE_SESSION_IDLE_TIMEOUT_SECONDS = 5 * 60.0
+_RESOURCE_SESSION_PATH_WAIT_TIMEOUT_SECONDS = 30.0
+_RESOURCE_SESSION_PATH_POLL_SECONDS = 1.0
+_RESOURCE_SESSION_MAX_TOTAL = 16
+_RESOURCE_SESSION_MAX_QUEUE_PER_LANE = 64
+_RESOURCE_SESSION_MAX_QUEUE_TOTAL = 256
+_RESOURCE_SESSION_FAST_CONCURRENCY = 4
+_RESOURCE_SESSION_BULK_CONCURRENCY = 1
+_RESOURCE_SESSION_PROVIDER_CONCURRENCY = 8
+_RESOURCE_SESSION_AUTH_MAX_QUEUE_SECONDS = 90.0
+_RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS = 30 * 60.0
+_RESOURCE_SESSION_FAILURE_BACKOFF_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)
+_RESOURCE_SESSION_FAILURE_RECORD_MAX = 4096
 # Inbound RNS.Link: classify overlay vs audio by first JSON packet; if none, default to overlay.
 _INBOUND_LINK_CLASSIFY_TIMEOUT_SEC = 5.0
 _pending_inbound_classify_link_ids: Set[int] = set()
@@ -319,10 +348,22 @@ _overlay_close_diagnostics: "deque[Tuple[float, str, bool, bool]]" = deque(maxle
 _qchat_file_links_by_id: Dict[str, Dict[str, Any]] = {}
 _qchat_file_link_ids_by_object: Dict[int, str] = {}
 _outgoing_qchat_file_link_id_by_peer_hash: Dict[str, str] = {}
+_qchat_file_open_queue_by_peer: Dict[str, deque] = {}
+_qchat_file_open_queue_state_ids: Set[int] = set()
+_qchat_file_open_drain_pending_peers: Set[str] = set()
+_qchat_file_opening_state_by_peer: Dict[str, Dict[str, Any]] = {}
 _incoming_unified_peer_hash_by_object: Dict[int, str] = {}
 _qchat_file_accepts_by_peer: Dict[str, Dict[str, Any]] = {}
 _qchat_file_accepts_by_transfer: Dict[str, Dict[str, Any]] = {}
 _qchat_file_pending_sends_by_transfer: Dict[str, Dict[str, Any]] = {}
+_resource_sessions_by_key: Dict[str, str] = {}
+_resource_session_jobs_by_transfer: Dict[str, Dict[str, Any]] = {}
+_resource_session_jobs_by_semantic_key: Dict[str, Dict[str, Any]] = {}
+_resource_session_provider_waiters: Dict[str, Dict[str, Any]] = {}
+_resource_session_failures_by_key: Dict[str, Dict[str, Any]] = {}
+_resource_session_provider_slots = threading.BoundedSemaphore(
+    _RESOURCE_SESSION_PROVIDER_CONCURRENCY
+)
 _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _RETICULUM_RESOURCE_TYPE = "reticulum_resource"
 _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
@@ -458,6 +499,7 @@ _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
 _SCHEDULER_AUDIO_SHARDS = 4
 _SCHEDULER_PRESENCE_FANOUT_SHARDS = 8
 _SCHEDULER_LAND_STATE_SHARDS = 4
+_SCHEDULER_RESOURCE_OPEN_SHARDS = 4
 _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS = 80.0
 _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "control-send": 256,
@@ -467,7 +509,7 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "overlay-io-1": 32,
     "audio-control": 64,
     "path-management": 128,
-    "file-transfer": 64,
+    "resource-control": 128,
 }
 for _audio_shard in range(_SCHEDULER_AUDIO_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"audio-send-{_audio_shard}"] = 64
@@ -475,6 +517,8 @@ for _presence_shard in range(_SCHEDULER_PRESENCE_FANOUT_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"presence-fanout-{_presence_shard}"] = 64
 for _land_state_shard in range(_SCHEDULER_LAND_STATE_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"land-state-forward-{_land_state_shard}"] = 64
+for _resource_open_shard in range(_SCHEDULER_RESOURCE_OPEN_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"resource-open-{_resource_open_shard}"] = 32
 
 _shutdown = threading.Event()
 _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
@@ -1023,6 +1067,12 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
     lane_depths: Dict[str, int] = {}
     slow_counts: Dict[str, int] = {}
     now_wall = time.time()
+    (
+        resource_sessions,
+        resource_session_active,
+        resource_session_queued,
+        resource_session_oldest_age,
+    ) = _resource_session_queue_counts()
     overlay_destination_closes, overlay_replay_closes, overlay_announce_retry_closes = (
         _overlay_close_diagnostic_counts(now_wall)
     )
@@ -1072,6 +1122,8 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         or coalesced_event_q > 0
         or any(depth > 0 for depth in lane_depths.values())
         or file_links > 0
+        or resource_session_active > 0
+        or resource_session_queued > 0
         or rns_gap_pressure
         or overlay_destination_closes > 0
     )
@@ -1088,6 +1140,8 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         f"priority_event_q={priority_event_q} coalesced_event_q={coalesced_event_q} "
         f"lanes={lanes_text} "
         f"links=overlay:{overlay_links},audio:{audio_links},file:{file_links} "
+        f"resource_sessions={resource_sessions} resource_active={resource_session_active} "
+        f"resource_queued={resource_session_queued} resource_oldest_ms={int(resource_session_oldest_age * 1000)} "
         f"scheduler_slow={slow_text} scheduler_active={active_text} "
         f"rns_gap_ms_window={int(rns_gap_ms_window)} "
         f"rns_gap_ms_max={int(rns_gap_ms_max)} "
@@ -4766,6 +4820,15 @@ def _audio_scheduler_lane_for_route(route_key: str) -> str:
     return f"audio-send-{shard}"
 
 
+def _resource_open_scheduler_lane(peer_hash: str) -> str:
+    digest = hashlib.blake2s(
+        str(peer_hash or "unknown").strip().lower().encode("utf-8"),
+        digest_size=2,
+    ).digest()
+    shard = int.from_bytes(digest, "big") % max(1, _SCHEDULER_RESOURCE_OPEN_SHARDS)
+    return f"resource-open-{shard}"
+
+
 def _enqueue_audio_send_batch(route_key: str, batch: list) -> bool:
     if not batch:
         return False
@@ -4881,6 +4944,7 @@ def _scheduler_lane_for_command(action: Any) -> str:
     if action_name in {"warm_group_audio_path"}:
         return "path-management"
     if action_name in {
+        "prepare_reticulum_resource_session",
         "accept_qchat_file_resource",
         "send_qchat_file_resource",
         "authorize_qchat_file_resource",
@@ -4895,7 +4959,7 @@ def _scheduler_lane_for_command(action: Any) -> str:
         "reject_reticulum_resource",
         "cancel_reticulum_resource",
     }:
-        return "file-transfer"
+        return "resource-control"
     return "control-send"
 
 
@@ -10720,6 +10784,11 @@ def _handle_overlay_link_packet(message, packet) -> None:
         if audio_link_id:
             on_audio_link_packet(message, packet)
         return
+    if decoded.get("type") == _RESOURCE_SESSION_HELLO_TYPE:
+        peer_hash = str(decoded.get("r") or "").strip().lower()
+        lane = str(decoded.get("lane") or "").strip().lower()
+        _register_incoming_resource_session(link, peer_hash, lane)
+        return
     if _is_qchat_file_auth_packet(decoded):
         transfer_id = str(decoded.get("transferId") or decoded.get("x") or "").strip()
         if decoded.get("type") == "QCHAT_FILE_LINK_AUTH":
@@ -10988,9 +11057,17 @@ def _parse_qchat_file_peer_identity(peer_hash: str, pk_b64: Any):
     return identity
 
 
-def _request_qchat_file_path(destination_hash: bytes, peer_hash: str) -> bool:
+def _request_qchat_file_path(
+    destination_hash: bytes,
+    peer_hash: str,
+    *,
+    allow_failed_path_refresh: bool = True,
+) -> bool:
     if _reticulum_has_path(destination_hash):
-        if _peer_has_recent_unestablished_link_failure(peer_hash):
+        if (
+            allow_failed_path_refresh
+            and _peer_has_recent_unestablished_link_failure(peer_hash)
+        ):
             return _request_fresh_link_path(
                 destination_hash,
                 peer_hash,
@@ -11030,6 +11107,7 @@ def get_qchat_file_link_state(link_id: str) -> Optional[Dict[str, Any]]:
 
 
 def remove_qchat_file_link(link_id: str) -> Optional[Dict[str, Any]]:
+    wake_peer_hash = ""
     with _state_lock:
         state = _qchat_file_links_by_id.pop(link_id, None)
         if state is not None:
@@ -11042,17 +11120,349 @@ def remove_qchat_file_link(link_id: str) -> Optional[Dict[str, Any]]:
                 existing = _outgoing_qchat_file_link_id_by_peer_hash.get(peer_hash)
                 if existing == link_id:
                     _outgoing_qchat_file_link_id_by_peer_hash.pop(peer_hash, None)
+                if state.get("incoming") is not True:
+                    wake_peer_hash = peer_hash.strip().lower()
     if state is None:
         return None
+    if wake_peer_hash:
+        _schedule_qchat_file_peer_open_drain(wake_peer_hash)
     return state
+
+
+class _QChatFilePathPending(RuntimeError):
+    pass
+
+
+def _qchat_file_state_is_inactive(state: Dict[str, Any]) -> bool:
+    if state.get("cancelled") is True or state.get("completed") is True:
+        return True
+    receive_root = state.get("receive_root")
+    return isinstance(receive_root, dict) and receive_root.get("cancelled") is True
+
+
+def _qchat_file_state_is_chat_priority(state: Dict[str, Any]) -> bool:
+    return str(state.get("resourceType") or "").strip() == _RETICULUM_CHAT_RESOURCE_TYPE
+
+
+def _qchat_file_active_outgoing_counts(peer_hash: str) -> Tuple[int, int]:
+    peer_key = str(peer_hash or "").strip().lower()
+    total = 0
+    bulk = 0
+    for link_state in _qchat_file_links_by_id.values():
+        if (
+            link_state.get("manager_kind") == "resource_session"
+            or
+            link_state.get("incoming") is True
+            or _qchat_file_state_is_inactive(link_state)
+            or str(link_state.get("peerPresenceHash") or "").strip().lower()
+            != peer_key
+        ):
+            continue
+        total += 1
+        if not _qchat_file_state_is_chat_priority(link_state):
+            bulk += 1
+    return total, bulk
+
+
+def _qchat_file_transfer_has_viable_outgoing_state(
+    peer_hash: str,
+    transfer_id: str,
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    transfer_key = str(transfer_id or "").strip()
+    if not peer_key or not transfer_key:
+        return False
+
+    def matches(candidate: Any) -> bool:
+        return (
+            isinstance(candidate, dict)
+            and candidate.get("incoming") is not True
+            and not _qchat_file_state_is_inactive(candidate)
+            and str(candidate.get("peerPresenceHash") or "").strip().lower()
+            == peer_key
+            and str(candidate.get("transferId") or "").strip() == transfer_key
+        )
+
+    with _state_lock:
+        if any(matches(candidate) for candidate in _qchat_file_links_by_id.values()):
+            return True
+        if matches(_qchat_file_opening_state_by_peer.get(peer_key)):
+            return True
+        return any(
+            matches(candidate)
+            for candidate in _qchat_file_open_queue_by_peer.get(peer_key, ())
+        )
+
+
+def _qchat_file_transfer_has_active_outgoing_state(
+    peer_hash: str,
+    transfer_id: str,
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    transfer_key = str(transfer_id or "").strip()
+    if not peer_key or not transfer_key:
+        return False
+
+    def matches(candidate: Any) -> bool:
+        return (
+            isinstance(candidate, dict)
+            and candidate.get("incoming") is not True
+            and not _qchat_file_state_is_inactive(candidate)
+            and str(candidate.get("peerPresenceHash") or "").strip().lower()
+            == peer_key
+            and str(candidate.get("transferId") or "").strip() == transfer_key
+        )
+
+    with _state_lock:
+        if any(matches(candidate) for candidate in _qchat_file_links_by_id.values()):
+            return True
+        return matches(_qchat_file_opening_state_by_peer.get(peer_key))
+
+
+def _qchat_file_fail_open_state(
+    state: Dict[str, Any],
+    reason: str,
+    *,
+    error: str = "",
+    force_transfer_failure: bool = False,
+) -> bool:
+    state["completed"] = True
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    transfer_id = str(state.get("transferId") or "").strip()
+    if (
+        not force_transfer_failure
+        and _qchat_file_transfer_has_viable_outgoing_state(peer_hash, transfer_id)
+    ):
+        log(
+            "[presence_bridge] qchat resource link exhausted but transfer has sibling "
+            f"transfer={transfer_id} peer={peer_hash[:16]} reason={reason}"
+        )
+        _schedule_qchat_file_peer_open_drain(peer_hash)
+        return False
+
+    with _state_lock:
+        pending = _qchat_file_accepts_by_transfer.get(transfer_id)
+        root = state.get("receive_root")
+        if not isinstance(root, dict):
+            root = pending
+        if isinstance(root, dict):
+            if root.get("terminal_failure_emitted") is True:
+                return True
+            root["terminal_failure_emitted"] = True
+            root["cancelled"] = True
+        _qchat_file_remove_pending_receive(peer_hash, transfer_id)
+
+    _qchat_file_abort_receive_transfer(peer_hash, transfer_id)
+    payload = {
+        "transferId": transfer_id,
+        "peerPresenceHash": peer_hash,
+        "fileName": state.get("fileName") or "",
+        "resourceType": state.get("resourceType") or "qchat-dm-file",
+        "reason": reason,
+    }
+    if error:
+        payload["error"] = error
+    _qchat_file_emit("failed", payload)
+    _schedule_qchat_file_peer_open_drain(peer_hash)
+    return True
+
+
+def _release_qchat_file_open_slot(state: Dict[str, Any]) -> None:
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if not peer_hash:
+        return
+    with _state_lock:
+        if _qchat_file_opening_state_by_peer.get(peer_hash) is state:
+            _qchat_file_opening_state_by_peer.pop(peer_hash, None)
+
+
+def _schedule_qchat_file_peer_open_drain(
+    peer_hash: str,
+    *,
+    delay_seconds: float = 0.0,
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    with _state_lock:
+        if not _qchat_file_open_queue_by_peer.get(peer_key):
+            return True
+        if peer_key in _qchat_file_open_drain_pending_peers:
+            return True
+        _qchat_file_open_drain_pending_peers.add(peer_key)
+
+    def enqueue() -> None:
+        if _shutdown.is_set():
+            with _state_lock:
+                _qchat_file_open_drain_pending_peers.discard(peer_key)
+            return
+        queued = _enqueue_scheduler_task(
+            _resource_open_scheduler_lane(peer_key),
+            f"qchat-file-open:{peer_key[:12]}",
+            _run_qchat_file_peer_open_queue,
+            peer_key,
+        )
+        if queued:
+            return
+        with _state_lock:
+            _qchat_file_open_drain_pending_peers.discard(peer_key)
+            has_waiting = bool(_qchat_file_open_queue_by_peer.get(peer_key))
+        if has_waiting:
+            retry_timer = threading.Timer(
+                _QCHAT_FILE_LINK_PATH_POLL_SECONDS,
+                _schedule_qchat_file_peer_open_drain,
+                args=(peer_key,),
+            )
+            retry_timer.daemon = True
+            retry_timer.start()
+
+    if delay_seconds > 0:
+        timer = threading.Timer(delay_seconds, enqueue)
+        timer.daemon = True
+        timer.start()
+    else:
+        enqueue()
+    return True
+
+
+def _queue_qchat_file_open_state(
+    state: Dict[str, Any],
+    *,
+    delay_seconds: float = 0.0,
+) -> bool:
+    if _qchat_file_state_is_inactive(state):
+        return False
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if not peer_hash:
+        return False
+    state_id = id(state)
+    if delay_seconds > 0:
+        state["open_not_before"] = max(
+            float(state.get("open_not_before") or 0),
+            time.monotonic() + delay_seconds,
+        )
+    with _state_lock:
+        if state_id not in _qchat_file_open_queue_state_ids:
+            peer_queue = _qchat_file_open_queue_by_peer.setdefault(peer_hash, deque())
+            if (
+                len(peer_queue) >= _QCHAT_FILE_OPEN_QUEUE_MAX_PER_PEER
+                or len(_qchat_file_open_queue_state_ids) >= _QCHAT_FILE_OPEN_QUEUE_MAX_TOTAL
+            ):
+                return False
+            if state.get("blocks_peer_open_queue") is True:
+                peer_queue.appendleft(state)
+            elif _qchat_file_state_is_chat_priority(state):
+                insert_at = 0
+                while insert_at < len(peer_queue):
+                    queued_state = peer_queue[insert_at]
+                    if queued_state.get("blocks_peer_open_queue") is True:
+                        insert_at += 1
+                        continue
+                    if not _qchat_file_state_is_chat_priority(queued_state):
+                        break
+                    insert_at += 1
+                peer_queue.insert(insert_at, state)
+            else:
+                peer_queue.append(state)
+            _qchat_file_open_queue_state_ids.add(state_id)
+    return _schedule_qchat_file_peer_open_drain(peer_hash)
+
+
+def _run_qchat_file_peer_open_queue(peer_hash: str) -> None:
+    peer_key = str(peer_hash or "").strip().lower()
+    state: Optional[Dict[str, Any]] = None
+    next_ready_in = 0.0
+    with _state_lock:
+        _qchat_file_open_drain_pending_peers.discard(peer_key)
+        opening = _qchat_file_opening_state_by_peer.get(peer_key)
+        if opening is not None and not _qchat_file_state_is_inactive(opening):
+            return
+        _qchat_file_opening_state_by_peer.pop(peer_key, None)
+        active_total, active_bulk = _qchat_file_active_outgoing_counts(peer_key)
+        if active_total >= _QCHAT_FILE_ACTIVE_OUTGOING_MAX_PER_PEER:
+            return
+        peer_queue = _qchat_file_open_queue_by_peer.get(peer_key)
+        queue_items = len(peer_queue) if peer_queue else 0
+        now = time.monotonic()
+        for _ in range(queue_items):
+            candidate = peer_queue.popleft()
+            if _qchat_file_state_is_inactive(candidate):
+                _qchat_file_open_queue_state_ids.discard(id(candidate))
+                continue
+            not_before = float(candidate.get("open_not_before") or 0)
+            if not_before > now:
+                if candidate.get("blocks_peer_open_queue") is True:
+                    peer_queue.appendleft(candidate)
+                else:
+                    peer_queue.append(candidate)
+                wait_seconds = not_before - now
+                next_ready_in = (
+                    wait_seconds
+                    if next_ready_in <= 0
+                    else min(next_ready_in, wait_seconds)
+                )
+                if candidate.get("blocks_peer_open_queue") is True:
+                    break
+                continue
+            candidate.pop("open_not_before", None)
+            if (
+                not _qchat_file_state_is_chat_priority(candidate)
+                and active_bulk >= _QCHAT_FILE_BULK_ACTIVE_MAX_PER_PEER
+            ):
+                peer_queue.append(candidate)
+                continue
+            _qchat_file_open_queue_state_ids.discard(id(candidate))
+            state = candidate
+            break
+        if not peer_queue:
+            _qchat_file_open_queue_by_peer.pop(peer_key, None)
+        if state is not None:
+            _qchat_file_opening_state_by_peer[peer_key] = state
+    if state is not None:
+        _run_qchat_file_open_task(state)
+    elif next_ready_in > 0:
+        _schedule_qchat_file_peer_open_drain(
+            peer_key,
+            delay_seconds=next_ready_in,
+        )
 
 
 def on_qchat_file_link_closed(link) -> None:
     link_id = get_qchat_file_link_id(link)
     if link_id is None:
         return
+    existing_state = get_qchat_file_link_state(link_id)
+    if (
+        isinstance(existing_state, dict)
+        and existing_state.get("manager_kind") == "resource_session"
+    ):
+        with _state_lock:
+            _qchat_file_link_ids_by_object.pop(id(link), None)
+            _incoming_unified_peer_hash_by_object.pop(id(link), None)
+        existing_state["link"] = None
+        if existing_state.get("incoming") is True:
+            waiter_prefix = f"{link_id}:"
+            with _state_lock:
+                waiters = [
+                    waiter
+                    for key, waiter in _resource_session_provider_waiters.items()
+                    if key.startswith(waiter_prefix)
+                ]
+            for waiter in waiters:
+                waiter["authorized"] = False
+                waiter["reason"] = "resource_session_link_closed"
+                waiter["event"].set()
+        _resource_session_fail_state(
+            existing_state,
+            "resource_session_link_closed",
+            refresh_path=existing_state.get("incoming") is not True,
+        )
+        return
     state = remove_qchat_file_link(link_id)
     if state is not None:
+        _release_qchat_file_open_slot(state)
+        peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        _schedule_qchat_file_peer_open_drain(peer_hash)
         timer = state.pop("auth_timeout_timer", None)
         if timer is not None:
             try:
@@ -11071,54 +11481,35 @@ def on_qchat_file_link_closed(link) -> None:
             reason=reason,
         )
         transfer_id = str(state.get("transferId") or "")
-        peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         resource_type = str(state.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
+        outgoing_unestablished = (
+            state.get("incoming") is not True
+            and state.get("established") is not True
+        )
+        open_attempts = int(state.get("open_attempts") or 0)
+        if outgoing_unestablished and open_attempts < _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS:
+            if _schedule_qchat_file_open_retry(state, reason):
+                return
         with _state_lock:
             receive_pending = _qchat_file_get_pending_receive(peer_hash, transfer_id)
             send_pending = _qchat_file_pending_sends_by_transfer.get(transfer_id)
         if receive_pending is not None and str(receive_pending.get("transferId") or "") == transfer_id:
+            if outgoing_unestablished:
+                retry_queue_full = open_attempts < _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS
+                _qchat_file_fail_open_state(
+                    state,
+                    (
+                        "file_link_retry_queue_full"
+                        if retry_queue_full
+                        else "file_link_open_attempts_exhausted"
+                    ),
+                    error=reason,
+                )
             return
         if state.get("authMessage") is not None:
             state["completed"] = True
             return
         if send_pending is not None:
-            return
-        if state.get("incoming") is not True and int(state.get("open_attempts") or 0) < _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS:
-            transfer_id_retry = transfer_id
-            peer_hash_retry = peer_hash
-
-            def retry() -> None:
-                if not _enqueue_scheduler_task(
-                    "file-transfer",
-                    "qchat-file-closed-retry",
-                    _run_qchat_file_open_task,
-                    state,
-                ):
-                    _qchat_file_emit(
-                        "failed",
-                        {
-                            "transferId": transfer_id_retry,
-                            "peerPresenceHash": peer_hash_retry,
-                            "fileName": state.get("fileName") or "",
-                            "resourceType": resource_type,
-                            "reason": "file_link_retry_queue_full",
-                        },
-                    )
-
-            timer = threading.Timer(_QCHAT_FILE_LINK_RETRY_DELAY_SECONDS, retry)
-            timer.daemon = True
-            timer.start()
-            _qchat_file_emit(
-                "retrying",
-                {
-                    "transferId": transfer_id_retry,
-                    "peerPresenceHash": peer_hash_retry,
-                    "fileName": state.get("fileName") or "",
-                    "resourceType": resource_type,
-                    "attempt": int(state.get("open_attempts") or 0) + 1,
-                    "maxAttempts": _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS,
-                },
-            )
             return
         if transfer_id:
             _qchat_file_emit(
@@ -11143,6 +11534,30 @@ def _open_qchat_file_link_for_state(state: Dict[str, Any]) -> bool:
     outbound = build_outbound_destination(peer_identity)
     if destination_hash_hex(outbound.hash) != peer_hash:
         raise RuntimeError("Reticulum public key does not match destination hash")
+    allow_failed_path_refresh = state.get("failed_path_refresh_requested") is not True
+    if (
+        allow_failed_path_refresh
+        and _peer_has_recent_unestablished_link_failure(peer_hash)
+    ):
+        # A path request is asynchronous. Refresh a failed cached path only once
+        # for this queued open so polling cannot repeatedly discard the new path.
+        state["failed_path_refresh_requested"] = True
+    path_ready = _request_qchat_file_path(
+        outbound.hash,
+        peer_hash,
+        allow_failed_path_refresh=allow_failed_path_refresh,
+    )
+    if not path_ready:
+        now = time.monotonic()
+        path_wait_started_at = float(state.get("path_wait_started_at") or 0)
+        if path_wait_started_at <= 0:
+            path_wait_started_at = now
+            state["path_wait_started_at"] = path_wait_started_at
+        if now - path_wait_started_at >= _QCHAT_FILE_LINK_PATH_WAIT_TIMEOUT_SECONDS:
+            raise TimeoutError("Timed out waiting for Reticulum resource path")
+        raise _QChatFilePathPending("Waiting for Reticulum resource path")
+    state.pop("path_wait_started_at", None)
+    state.pop("blocks_peer_open_queue", None)
     state["open_attempts"] = int(state.get("open_attempts") or 0) + 1
     state["last_open_attempt_at"] = time.time()
     _qchat_file_emit(
@@ -11156,9 +11571,6 @@ def _open_qchat_file_link_for_state(state: Dict[str, Any]) -> bool:
             "maxAttempts": _QCHAT_FILE_LINK_MAX_OPEN_ATTEMPTS,
         },
     )
-    path_ready = _request_qchat_file_path(outbound.hash, peer_hash)
-    if not path_ready:
-        raise RuntimeError("No Reticulum path for file transfer link")
     previous_link = state.get("link")
     if previous_link is not None:
         previous_link_id = get_qchat_file_link_id(previous_link)
@@ -11182,9 +11594,10 @@ def _open_qchat_file_link_for_state(state: Dict[str, Any]) -> bool:
     state["peerDestinationHash"] = destination_hash_hex(outbound.hash)
     state["incoming"] = False
     state["established"] = False
-    _qchat_file_links_by_id[link_id] = state
-    _qchat_file_link_ids_by_object[id(link)] = link_id
-    _outgoing_qchat_file_link_id_by_peer_hash[peer_hash] = link_id
+    with _state_lock:
+        _qchat_file_links_by_id[link_id] = state
+        _qchat_file_link_ids_by_object[id(link)] = link_id
+        _outgoing_qchat_file_link_id_by_peer_hash[peer_hash] = link_id
     return True
 
 
@@ -11195,17 +11608,11 @@ def _schedule_qchat_file_open_retry(state: Dict[str, Any], reason: str) -> bool:
     transfer_id = str(state.get("transferId") or "")
     peer_hash = str(state.get("peerPresenceHash") or "")
 
-    def retry() -> None:
-        _enqueue_scheduler_task(
-            "file-transfer",
-            "qchat-file-open-retry",
-            _run_qchat_file_open_task,
-            state,
-        )
-
-    timer = threading.Timer(_QCHAT_FILE_LINK_RETRY_DELAY_SECONDS, retry)
-    timer.daemon = True
-    timer.start()
+    if not _queue_qchat_file_open_state(
+        state,
+        delay_seconds=_QCHAT_FILE_LINK_RETRY_DELAY_SECONDS,
+    ):
+        return False
     _qchat_file_emit(
         "retrying",
         {
@@ -11220,30 +11627,49 @@ def _schedule_qchat_file_open_retry(state: Dict[str, Any], reason: str) -> bool:
     return True
 
 
-def _open_qchat_file_link_async(state: Dict[str, Any]) -> None:
-    _enqueue_scheduler_task(
-        "file-transfer",
-        "qchat-file-open",
-        _run_qchat_file_open_task,
-        state,
-    )
+def _open_qchat_file_link_async(state: Dict[str, Any]) -> bool:
+    return _queue_qchat_file_open_state(state)
 
 
 def _run_qchat_file_open_task(state: Dict[str, Any]) -> None:
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if _qchat_file_state_is_inactive(state):
+        _release_qchat_file_open_slot(state)
+        _schedule_qchat_file_peer_open_drain(peer_hash)
+        return
     try:
         _open_qchat_file_link_for_state(state)
+    except _QChatFilePathPending:
+        _release_qchat_file_open_slot(state)
+        state["blocks_peer_open_queue"] = True
+        if not _queue_qchat_file_open_state(
+            state,
+            delay_seconds=_QCHAT_FILE_LINK_PATH_POLL_SECONDS,
+        ):
+            _qchat_file_fail_open_state(
+                state,
+                "file_link_open_queue_full",
+            )
+    except TimeoutError as exc:
+        _release_qchat_file_open_slot(state)
+        has_active_sibling = _qchat_file_transfer_has_active_outgoing_state(
+            peer_hash,
+            str(state.get("transferId") or ""),
+        )
+        _qchat_file_fail_open_state(
+            state,
+            "path_wait_timeout",
+            error=str(exc),
+            force_transfer_failure=not has_active_sibling,
+        )
     except Exception as exc:
+        _release_qchat_file_open_slot(state)
         if _schedule_qchat_file_open_retry(state, str(exc)):
             return
-        _qchat_file_emit(
-            "failed",
-            {
-                "transferId": state.get("transferId") or "",
-                "peerPresenceHash": state.get("peerPresenceHash") or "",
-                "fileName": state.get("fileName") or "",
-                "reason": "link_open_failed",
-                "error": str(exc),
-            },
+        _qchat_file_fail_open_state(
+            state,
+            "link_open_failed",
+            error=str(exc),
         )
 
 
@@ -11273,6 +11699,40 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
     if not isinstance(decoded, dict):
         return
     _note_presence_pressure("source:qchat_file")
+    if decoded.get("type") == _RESOURCE_SESSION_READY_TYPE:
+        if (
+            state.get("manager_kind") != "resource_session"
+            or state.get("incoming") is True
+        ):
+            return
+        peer_hash = str(decoded.get("r") or "").strip().lower()
+        expected_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        lane = str(decoded.get("lane") or "").strip().lower()
+        if (
+            not _valid_presence_destination_hash_hex(peer_hash)
+            or peer_hash != expected_peer_hash
+            or lane not in {"fast", "bulk"}
+            or lane != state.get("sessionLane")
+        ):
+            _resource_session_fail_state(
+                state,
+                "resource_session_ready_mismatch",
+                refresh_path=False,
+            )
+            return
+        with _state_lock:
+            if state.get("closing") is True or state.get("remote_ready") is True:
+                return
+            state["remote_ready"] = True
+            state["last_used_at"] = time.time()
+            state["activity_generation"] = int(
+                state.get("activity_generation") or 0
+            ) + 1
+        _resource_session_cancel_timer(state, "establish_timer")
+        _resource_session_emit_status(state, "ready")
+        _resource_session_dispatch_pending(state)
+        _resource_session_schedule_idle_close(state)
+        return
     if decoded.get("type") == "QCHAT_FILE_CHUNK_ACK":
         try:
             chunk_index = int(decoded.get("chunkIndex"))
@@ -11303,7 +11763,7 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             return
         state["resource_started"] = False
         _enqueue_scheduler_task(
-            "file-transfer",
+            "resource-control",
             "qchat-file-next-chunk-ack",
             _start_qchat_file_resource_for_state,
             state,
@@ -11381,8 +11841,29 @@ def on_qchat_file_link_remote_identified(link, identity) -> None:
     if link_id:
         state = get_qchat_file_link_state(link_id)
         if state is not None:
-            state["peerPresenceHash"] = peer_hash
-            state["peerDestinationHash"] = peer_hash
+            claimed_peer_hash = str(
+                state.get("claimedPeerPresenceHash") or ""
+            ).strip().lower()
+            if (
+                state.get("manager_kind") == "resource_session"
+                and state.get("incoming") is True
+                and claimed_peer_hash
+                and claimed_peer_hash != peer_hash
+            ):
+                _resource_session_fail_state(
+                    state,
+                    "resource_session_identity_mismatch",
+                )
+                return
+            with _state_lock:
+                state["remoteIdentity"] = identity
+                state["peerPresenceHash"] = peer_hash
+                state["peerDestinationHash"] = peer_hash
+            if (
+                state.get("manager_kind") == "resource_session"
+                and state.get("incoming") is True
+            ):
+                _resource_session_maybe_send_provider_ready(state)
 
 
 def _register_incoming_qchat_file_link(link, peer_hash: str, transfer_id: str) -> str:
@@ -11392,6 +11873,7 @@ def _register_incoming_qchat_file_link(link, peer_hash: str, transfer_id: str) -
     now = time.time()
     link_id = str(uuid.uuid4())
     state = {
+        "linkId": link_id,
         "link": link,
         "peerPresenceHash": peer_hash,
         "peerDestinationHash": peer_hash,
@@ -11405,6 +11887,135 @@ def _register_incoming_qchat_file_link(link, peer_hash: str, transfer_id: str) -
         _qchat_file_links_by_id[link_id] = state
     configure_qchat_file_link(link, link_id)
     link.set_remote_identified_callback(on_qchat_file_link_remote_identified)
+    return link_id
+
+
+def _resource_session_maybe_send_provider_ready(state: Dict[str, Any]) -> bool:
+    if (
+        state.get("manager_kind") != "resource_session"
+        or state.get("incoming") is not True
+        or state.get("hello_received") is not True
+        or state.get("closing") is True
+    ):
+        return False
+    link = state.get("link")
+    if link is None:
+        return False
+    remote_identity = state.get("remoteIdentity")
+    if remote_identity is None:
+        getter = getattr(link, "get_remote_identity", None)
+        if callable(getter):
+            try:
+                remote_identity = getter()
+            except Exception:
+                remote_identity = None
+    if remote_identity is None:
+        return False
+    try:
+        identified_peer_hash = _destination_hash_for_identity(remote_identity)
+    except Exception:
+        _resource_session_fail_state(state, "resource_session_identity_invalid")
+        return False
+    claimed_peer_hash = str(
+        state.get("claimedPeerPresenceHash") or ""
+    ).strip().lower()
+    if claimed_peer_hash and claimed_peer_hash != identified_peer_hash:
+        _resource_session_fail_state(state, "resource_session_identity_mismatch")
+        return False
+    with _state_lock:
+        if (
+            state.get("closing") is True
+            or state.get("provider_ready_sent") is True
+            or state.get("provider_ready_sending") is True
+        ):
+            return state.get("provider_ready_sent") is True
+        state["provider_ready_sending"] = True
+        state["remoteIdentity"] = remote_identity
+        state["peerPresenceHash"] = identified_peer_hash
+        state["peerDestinationHash"] = identified_peer_hash
+    ready = {
+        "type": _RESOURCE_SESSION_READY_TYPE,
+        "r": destination_hash_hex(_destination.hash) if _destination is not None else "",
+        "lane": state.get("sessionLane") or "fast",
+    }
+    sent = _send_packet_on_link(
+        link,
+        json.dumps(ready, separators=(",", ":")).encode("utf-8"),
+        f"target=qchat-file-reticulum resource_session_ready peer={identified_peer_hash[:16]}",
+    )
+    with _state_lock:
+        state["provider_ready_sending"] = False
+        if sent and state.get("closing") is not True:
+            state["provider_ready_sent"] = True
+            state["last_used_at"] = time.time()
+            state["activity_generation"] = int(
+                state.get("activity_generation") or 0
+            ) + 1
+    if not sent:
+        _resource_session_fail_state(state, "resource_session_ready_send_failed")
+        return False
+    _resource_session_schedule_idle_close(state)
+    return True
+
+
+def _register_incoming_resource_session(
+    link,
+    claimed_peer_hash: str,
+    lane: str,
+) -> str:
+    peer_hash = str(claimed_peer_hash or "").strip().lower()
+    session_lane = str(lane or "").strip().lower()
+    if (
+        not _valid_presence_destination_hash_hex(peer_hash)
+        or session_lane not in {"fast", "bulk"}
+    ):
+        log(
+            "[presence_bridge] resource_session_invalid_hello "
+            f"peer={peer_hash[:16] or 'unknown'} lane={session_lane or 'unknown'}"
+        )
+        _teardown_reticulum_link_bounded(
+            link,
+            "target=qchat-file-reticulum resource_session_invalid_hello",
+        )
+        return ""
+    overlay_link_id = get_overlay_link_id(link)
+    if overlay_link_id:
+        overlay_state = get_overlay_link_state(overlay_link_id)
+        overlay_peer_hash = str(
+            (overlay_state or {}).get("peerPresenceHash") or ""
+        ).strip().lower()
+        removed_overlay = remove_overlay_link(overlay_link_id)
+        if removed_overlay is not None:
+            if overlay_peer_hash and removed_overlay.get("_was_active_overlay") is True:
+                with _state_lock:
+                    _active_overlay_neighbors.pop(overlay_peer_hash, None)
+                    _inbound_overlay_neighbors.pop(overlay_peer_hash, None)
+            log(
+                "[presence_bridge] resource_session_removed_overlay_registration "
+                f"overlay_link={overlay_link_id} peer={peer_hash[:16] or 'unknown'}"
+            )
+    link_id = _register_incoming_qchat_file_link(link, peer_hash, "")
+    state = get_qchat_file_link_state(link_id)
+    if state is None:
+        return ""
+    with _state_lock:
+        state["linkId"] = link_id
+        state["manager_kind"] = "resource_session"
+        state["sessionLane"] = session_lane
+        state["claimedPeerPresenceHash"] = peer_hash
+        state["hello_received"] = True
+        state["last_used_at"] = time.time()
+        state["active_requests"] = {}
+        state["pending_jobs"] = []
+        state["provider_active"] = 0
+        state["activity_generation"] = int(
+            state.get("activity_generation") or 0
+        ) + 1
+    log(
+        "[presence_bridge] resource_session_incoming "
+        f"peer={peer_hash[:16] or 'unknown'} lane={state.get('sessionLane')} link={link_id}"
+    )
+    _resource_session_maybe_send_provider_ready(state)
     return link_id
 
 
@@ -11618,6 +12229,35 @@ def _qchat_file_cancel_transfer(transfer_id: str, peer_hash: str = "", reason: s
         return 0
     closed = 0
     with _state_lock:
+        session_job = _resource_session_jobs_by_transfer.pop(transfer_key, None)
+        cancel_session_job = (
+            isinstance(session_job, dict)
+            and session_job.get("completed") is not True
+        )
+        if cancel_session_job:
+            session_job["completed"] = True
+    if cancel_session_job:
+        semantic_key = str(session_job.get("semanticKey") or "")
+        session = session_job.get("session") if isinstance(session_job.get("session"), dict) else None
+        with _state_lock:
+            if semantic_key and _resource_session_jobs_by_semantic_key.get(semantic_key) is session_job:
+                _resource_session_jobs_by_semantic_key.pop(semantic_key, None)
+            if session is not None:
+                active = session.get("active_requests")
+                if isinstance(active, dict):
+                    active.pop(transfer_key, None)
+                pending_jobs = session.get("pending_jobs")
+                if isinstance(pending_jobs, list):
+                    session["pending_jobs"] = [job for job in pending_jobs if job is not session_job]
+        _resource_session_finish_followers(
+            session_job,
+            False,
+            reason="deduplicated_resource_cancelled",
+        )
+        if session is not None and session.get("closing") is not True:
+            _resource_session_dispatch_pending(session)
+            _resource_session_schedule_idle_close(session)
+    with _state_lock:
         receive_pending = _qchat_file_accepts_by_transfer.get(transfer_key)
         if receive_pending is not None:
             _qchat_file_remove_pending_receive(
@@ -11739,6 +12379,7 @@ def _qchat_file_retry_receive_chunk(
             "metadata": pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {},
             "peerIdentity": pending.get("peerIdentity"),
             "authMessage": retry_auth,
+            "receive_root": pending,
             "requestedChunkIndex": chunk_index,
             "created_at": time.time(),
             "open_attempts": 0,
@@ -11763,8 +12404,7 @@ def _qchat_file_retry_receive_chunk(
             "maxAttempts": _QCHAT_FILE_CHUNK_MAX_ATTEMPTS,
         },
     )
-    _open_qchat_file_link_async(retry_state)
-    return True
+    return _open_qchat_file_link_async(retry_state)
 
 
 def _qchat_file_retry_unknown_receive_chunk(
@@ -11804,6 +12444,7 @@ def _qchat_file_retry_unknown_receive_chunk(
             "metadata": pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {},
             "peerIdentity": pending.get("peerIdentity"),
             "authMessage": dict(auth_message),
+            "receive_root": pending,
             "created_at": time.time(),
             "open_attempts": 0,
         }
@@ -11826,8 +12467,7 @@ def _qchat_file_retry_unknown_receive_chunk(
             "maxAttempts": _QCHAT_FILE_UNKNOWN_CHUNK_MAX_FAILURES,
         },
     )
-    _open_qchat_file_link_async(retry_state)
-    return True
+    return _open_qchat_file_link_async(retry_state)
 
 
 def _qchat_file_mark_transfer_started(state: Optional[Dict[str, Any]]) -> None:
@@ -12591,6 +13231,10 @@ def on_outgoing_qchat_file_link_established(link) -> None:
     link.set_remote_identified_callback(on_qchat_file_link_remote_identified)
     state["established"] = True
     state["established_at"] = time.time()
+    _release_qchat_file_open_slot(state)
+    _schedule_qchat_file_peer_open_drain(
+        str(state.get("peerPresenceHash") or "").strip().lower()
+    )
     _qchat_file_emit(
         "link_established",
         {
@@ -15485,6 +16129,13 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         configure_audio_link(link, link_id)
         on_audio_link_packet(message, packet)
         return
+    if decoded.get("type") == _RESOURCE_SESSION_HELLO_TYPE:
+        _register_incoming_resource_session(
+            link,
+            str(decoded.get("r") or "").strip().lower(),
+            str(decoded.get("lane") or "").strip().lower(),
+        )
+        return
     if _is_qchat_file_auth_packet(decoded):
         link_id = _register_incoming_qchat_file_link(
             link,
@@ -15648,6 +16299,12 @@ def ensure_started(config_dir: str):
         _destination.set_proof_strategy(RNS.Destination.PROVE_NONE)
         _destination.set_packet_callback(on_hub_packet_received)
         _destination.set_link_established_callback(on_incoming_unified_link_established)
+        _destination.register_request_handler(
+            _RESOURCE_SESSION_REQUEST_PATH,
+            response_generator=_resource_session_response_generator,
+            allow=RNS.Destination.ALLOW_ALL,
+            auto_compress=False,
+        )
         _announce_handler = PresenceAnnounceHandler(_destination.hash)
         RNS.Transport.register_announce_handler(_announce_handler)
         ensure_transport_monitor_started()
@@ -15871,6 +16528,23 @@ def handle_stop(req_id: str) -> None:
         _land_state_forwarding_plans = {}
         _land_state_auth_sessions = {}
         _land_state_forward_pending = {}
+    with _state_lock:
+        resource_sessions = [
+            state
+            for state in _qchat_file_links_by_id.values()
+            if isinstance(state, dict)
+            and state.get("manager_kind") == "resource_session"
+        ]
+        resource_waiters = list(_resource_session_provider_waiters.values())
+    for waiter in resource_waiters:
+        if not isinstance(waiter, dict):
+            continue
+        waiter["reason"] = "resource_session_stopped"
+        event = waiter.get("event")
+        if event is not None:
+            event.set()
+    for state in resource_sessions:
+        _resource_session_fail_state(state, "resource_session_stopped")
     _flush_overlay_good_outbound_cache(force=True)
     _rns_announce_on_auth_session_end()
     emit_resp(req_id, True)
@@ -16058,6 +16732,1447 @@ def handle_send_call(req_id: str, payload: Dict[str, Any]) -> None:
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
 
+def _resource_session_lane(resource_type: str, logical_resource_type: str = "") -> str:
+    normalized = str(resource_type or "").strip().lower()
+    logical_type = str(logical_resource_type or "").strip().lower()
+    if logical_type in {
+        "reticulum_chat_history_page",
+        "reticulum_chat_dm_page",
+        "reticulum_chat_metadata_snapshot",
+        "reticulum_chat_event_page",
+    }:
+        return "bulk"
+    return "fast" if normalized == _RETICULUM_CHAT_RESOURCE_TYPE else "bulk"
+
+
+def _resource_session_key(peer_hash: str, lane: str) -> str:
+    return f"{str(peer_hash or '').strip().lower()}:{lane}"
+
+
+def _resource_session_waiter_key(link_id: str, transfer_id: str) -> str:
+    return f"{link_id}:{transfer_id}"
+
+
+def _resource_session_job_priority(job: Dict[str, Any]) -> int:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    auth = pending.get("authMessage") if isinstance(pending.get("authMessage"), dict) else {}
+    logical = str(
+        metadata.get("logicalResourceType")
+        or metadata.get("resourceType")
+        or pending.get("resourceType")
+        or ""
+    ).lower()
+    if metadata.get("eventId") or auth.get("eventId") or auth.get("id"):
+        return 0
+    if "metadata_snapshot" in logical or metadata.get("snapshotHash"):
+        return 1
+    if "history_page" in logical or "dm_page" in logical:
+        return 2
+    return 3
+
+
+def _resource_session_semantic_key(pending: Dict[str, Any]) -> str:
+    metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    auth = pending.get("authMessage") if isinstance(pending.get("authMessage"), dict) else {}
+    peer_hash = str(pending.get("peerPresenceHash") or "").strip().lower()
+    group_id = str(metadata.get("groupId") or auth.get("groupId") or auth.get("g") or "")
+    expected_hash = str(pending.get("sha256") or metadata.get("fileHash") or "").strip().lower()
+    event_id = str(metadata.get("eventId") or auth.get("eventId") or auth.get("id") or "").strip()
+    if event_id and expected_hash:
+        return f"event:{group_id}:{event_id}:{expected_hash}"
+    snapshot_hash = str(metadata.get("snapshotHash") or "").strip().lower()
+    if snapshot_hash and expected_hash:
+        return f"snapshot:{group_id}:{snapshot_hash}:{expected_hash}"
+    file_hash = str(metadata.get("fileHash") or auth.get("fileHash") or "").strip().lower()
+    byte_ranges = metadata.get("byteRanges") or auth.get("byteRanges")
+    if file_hash and isinstance(byte_ranges, list):
+        encoded_ranges = json.dumps(byte_ranges, separators=(",", ":"), sort_keys=True)
+        return f"range:{file_hash}:{encoded_ranges}"
+    logical = str(metadata.get("logicalResourceType") or "").strip().lower()
+    if "history_page" in logical:
+        cursor = auth.get("before") if auth.get("before") is not None else auth.get("after")
+        semantic = {
+            "peer": peer_hash,
+            "group": group_id,
+            "channel": metadata.get("channelId") or auth.get("c"),
+            "direction": metadata.get("direction") or ("before" if auth.get("before") is not None else "after"),
+            "cursor": cursor,
+            "include": auth.get("inc"),
+            "priority": metadata.get("p") or auth.get("p"),
+        }
+        digest = hashlib.sha256(
+            json.dumps(semantic, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        return f"history:{digest}"
+    if "dm_page" in logical:
+        return (
+            f"dm-page:{peer_hash}:"
+            f"{metadata.get('conversationId') or auth.get('conversationId') or auth.get('c') or ''}:"
+            f"{auth.get('a') if auth.get('a') is not None else auth.get('after') or 0}"
+        )
+    message_id = str(metadata.get("messageId") or auth.get("messageId") or "").strip()
+    if message_id and expected_hash:
+        return f"land-chat:{group_id}:{message_id}:{expected_hash}"
+    return f"transfer:{pending.get('transferId') or uuid.uuid4()}"
+
+
+def _resource_session_auth_timestamp_seconds(job: Dict[str, Any]) -> float:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    auth = pending.get("authMessage") if isinstance(pending.get("authMessage"), dict) else {}
+    for key in ("ts", "n", "timestamp"):
+        try:
+            value = float(auth.get(key) or 0)
+        except Exception:
+            continue
+        if value > 0:
+            return value / 1000.0 if value > 10_000_000_000 else value
+    return float(job.get("created_at") or time.time())
+
+
+def _resource_session_queue_counts() -> Tuple[int, int, int, float]:
+    sessions = 0
+    active = 0
+    queued = 0
+    oldest_age = 0.0
+    now = time.time()
+    with _state_lock:
+        for session_id in list(_resource_sessions_by_key.values()):
+            state = _qchat_file_links_by_id.get(session_id)
+            if not isinstance(state, dict) or state.get("manager_kind") != "resource_session":
+                continue
+            sessions += 1
+            active += len(state.get("active_requests") or {})
+            for job in list(state.get("pending_jobs") or []):
+                if not isinstance(job, dict) or job.get("completed") is True:
+                    continue
+                queued += 1
+                oldest_age = max(oldest_age, now - float(job.get("created_at") or now))
+    return sessions, active, queued, oldest_age
+
+
+def _resource_session_total_queue_depth() -> int:
+    return _resource_session_queue_counts()[2]
+
+
+def _resource_session_cancel_timer(state: Dict[str, Any], key: str) -> None:
+    with _state_lock:
+        timer = state.pop(key, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
+def _resource_session_remove_state(state: Dict[str, Any]) -> None:
+    link = state.get("link")
+    _resource_session_cancel_timer(state, "path_timer")
+    _resource_session_cancel_timer(state, "establish_timer")
+    _resource_session_cancel_timer(state, "idle_timer")
+    with _state_lock:
+        session_id = str(state.get("linkId") or "")
+        if not session_id and link is not None:
+            session_id = str(_qchat_file_link_ids_by_object.get(id(link)) or "")
+            if session_id:
+                state["linkId"] = session_id
+        session_key = str(state.get("sessionKey") or "")
+        if session_key and _resource_sessions_by_key.get(session_key) == session_id:
+            _resource_sessions_by_key.pop(session_key, None)
+        if session_id:
+            _qchat_file_links_by_id.pop(session_id, None)
+        if link is not None:
+            _qchat_file_link_ids_by_object.pop(id(link), None)
+            _incoming_unified_peer_hash_by_object.pop(id(link), None)
+
+
+def _resource_session_emit_status(
+    state: Dict[str, Any],
+    status: str,
+    reason: str = "",
+) -> None:
+    payload = {
+        "status": status,
+        "peerPresenceHash": str(state.get("peerPresenceHash") or "").strip().lower(),
+        "lane": str(state.get("sessionLane") or "fast"),
+        "linkId": str(state.get("linkId") or ""),
+    }
+    if reason:
+        payload["reason"] = reason
+    emit_event("reticulum_resource_session", payload)
+
+
+def _resource_session_emit_failure(job: Dict[str, Any], reason: str, error: str = "") -> None:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    transfer_id = str(pending.get("transferId") or job.get("transferId") or "")
+    peer_hash = str(pending.get("peerPresenceHash") or job.get("peerPresenceHash") or "").strip().lower()
+    with _state_lock:
+        _qchat_file_remove_pending_receive(peer_hash, transfer_id)
+    pending["cancelled"] = True
+    payload = {
+        "transferId": transfer_id,
+        "peerPresenceHash": peer_hash,
+        "fileName": pending.get("fileName") or "",
+        "size": int(pending.get("size") or 0),
+        "resourceType": pending.get("resourceType") or "",
+        "reason": reason,
+    }
+    if error:
+        payload["error"] = error
+    _qchat_file_emit("failed", payload)
+
+
+def _resource_session_finish_followers(
+    job: Dict[str, Any],
+    success: bool,
+    source_path: str = "",
+    actual_hash: str = "",
+    reason: str = "",
+) -> None:
+    followers = list(job.get("followers") or [])
+    job["followers"] = []
+    for follower in followers:
+        if not isinstance(follower, dict) or follower.get("completed") is True:
+            continue
+        follower["completed"] = True
+        pending = follower.get("pending") if isinstance(follower.get("pending"), dict) else {}
+        transfer_id = str(pending.get("transferId") or "")
+        peer_hash = str(pending.get("peerPresenceHash") or "").strip().lower()
+        _resource_session_jobs_by_transfer.pop(transfer_id, None)
+        if not success:
+            _resource_session_emit_failure(follower, reason or "deduplicated_resource_failed")
+            continue
+        save_path = str(pending.get("savePath") or "")
+        try:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            shutil.copyfile(source_path, save_path)
+            with _state_lock:
+                _qchat_file_remove_pending_receive(peer_hash, transfer_id)
+            _qchat_file_emit(
+                "received",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": pending.get("fileName") or "",
+                    "path": save_path,
+                    "sha256": actual_hash,
+                    "resourceType": pending.get("resourceType") or "",
+                    **(pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}),
+                },
+            )
+        except Exception as exc:
+            _resource_session_emit_failure(follower, "deduplicated_save_failed", str(exc))
+
+
+def _resource_session_schedule_idle_close(state: Dict[str, Any]) -> None:
+    with _state_lock:
+        _resource_session_cancel_timer(state, "idle_timer")
+        if (
+            state.get("closing") is True
+            or state.get("active_requests")
+            or state.get("pending_jobs")
+            or int(state.get("provider_active") or 0) > 0
+        ):
+            return
+        generation = int(state.get("activity_generation") or 0)
+        idle_age = max(0.0, time.time() - float(state.get("last_used_at") or 0))
+        delay = max(0.1, _RESOURCE_SESSION_IDLE_TIMEOUT_SECONDS - idle_age)
+
+    def close_idle() -> None:
+        reschedule = False
+        with _state_lock:
+            if state.get("closing") is True:
+                return
+            if int(state.get("activity_generation") or 0) != generation:
+                reschedule = True
+            elif (
+                state.get("active_requests")
+                or state.get("pending_jobs")
+                or int(state.get("provider_active") or 0) > 0
+            ):
+                return
+            elif time.time() - float(
+                state.get("last_used_at") or 0
+            ) < _RESOURCE_SESSION_IDLE_TIMEOUT_SECONDS:
+                reschedule = True
+            else:
+                state["closing"] = True
+        if reschedule:
+            _resource_session_schedule_idle_close(state)
+            return
+        log(
+            "[presence_bridge] resource_session_idle_close "
+            f"peer={str(state.get('peerPresenceHash') or '')[:16]} lane={state.get('sessionLane')}"
+        )
+        _resource_session_remove_state(state)
+        link = state.get("link")
+        if link is not None:
+            _teardown_reticulum_link_bounded(
+                link,
+                f"target=qchat-file-reticulum resource_session_idle lane={state.get('sessionLane')}",
+            )
+
+    timer = threading.Timer(delay, close_idle)
+    timer.daemon = True
+    with _state_lock:
+        if state.get("closing") is True:
+            return
+        state["idle_timer"] = timer
+    timer.start()
+
+
+def _resource_session_finish_job(
+    job: Dict[str, Any],
+    success: bool,
+    *,
+    source_path: str = "",
+    actual_hash: str = "",
+    reason: str = "",
+    error: str = "",
+) -> None:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    transfer_id = str(pending.get("transferId") or job.get("transferId") or "")
+    semantic_key = str(job.get("semanticKey") or "")
+    session = job.get("session") if isinstance(job.get("session"), dict) else None
+    with _state_lock:
+        if job.get("completed") is True:
+            return
+        job["completed"] = True
+        _resource_session_jobs_by_transfer.pop(transfer_id, None)
+        if semantic_key and _resource_session_jobs_by_semantic_key.get(semantic_key) is job:
+            _resource_session_jobs_by_semantic_key.pop(semantic_key, None)
+        if session is not None:
+            active = session.get("active_requests")
+            if isinstance(active, dict):
+                active.pop(transfer_id, None)
+            session["last_used_at"] = time.time()
+            session["activity_generation"] = int(
+                session.get("activity_generation") or 0
+            ) + 1
+    if not success:
+        _resource_session_emit_failure(job, reason or "resource_request_failed", error)
+    _resource_session_finish_followers(
+        job,
+        success,
+        source_path=source_path,
+        actual_hash=actual_hash,
+        reason=reason,
+    )
+    if session is not None and session.get("closing") is not True:
+        _resource_session_dispatch_pending(session)
+        _resource_session_schedule_idle_close(session)
+
+
+def _resource_session_response_progress(job: Dict[str, Any], receipt) -> None:
+    if job.get("completed") is True:
+        return
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    try:
+        progress = float(receipt.get_progress())
+    except Exception:
+        progress = 0.0
+    if not _should_emit_qchat_file_progress(pending, progress):
+        return
+    _qchat_file_emit(
+        "receiving",
+        {
+            "transferId": pending.get("transferId") or "",
+            "peerPresenceHash": pending.get("peerPresenceHash") or "",
+            "fileName": pending.get("fileName") or "",
+            "size": int(pending.get("size") or 0),
+            "resourceType": pending.get("resourceType") or "",
+            **_qchat_file_progress_payload(pending, progress, int(pending.get("size") or 0)),
+        },
+    )
+
+
+def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
+    if job.get("completed") is True:
+        try:
+            abandoned_response = receipt.get_response()
+            if hasattr(abandoned_response, "close"):
+                abandoned_response.close()
+        except Exception:
+            pass
+        return
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    response = receipt.get_response()
+    metadata = receipt.metadata if isinstance(getattr(receipt, "metadata", None), dict) else {}
+    if not hasattr(response, "read"):
+        reason = "resource_request_rejected"
+        error = "Provider returned no resource"
+        if isinstance(response, dict):
+            reason = str(response.get("reason") or response.get("error") or reason)
+            error = str(response.get("message") or response.get("error") or error)
+        _resource_session_finish_job(job, False, reason=reason, error=error)
+        return
+    source_path = str(getattr(response, "name", "") or "")
+    try:
+        response.close()
+    except Exception:
+        pass
+    transfer_id = str(pending.get("transferId") or "")
+    expected_hash = str(pending.get("sha256") or "").strip().lower()
+    expected_size = int(pending.get("size") or 0)
+    pending_metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    variable_size = metadata.get("variableSize") is True or pending_metadata.get("variableSize") is True
+    try:
+        if not source_path or not os.path.isfile(source_path):
+            raise RuntimeError("Reticulum response resource file is missing")
+        metadata_transfer_id = str(metadata.get("transferId") or "")
+        if metadata_transfer_id and metadata_transfer_id != transfer_id:
+            raise RuntimeError("Reticulum response transfer id mismatch")
+        actual_size = os.path.getsize(source_path)
+        if expected_size > 0 and actual_size != expected_size and not variable_size:
+            raise RuntimeError(
+                f"Reticulum response size mismatch expected={expected_size} actual={actual_size}"
+            )
+        actual_hash = _sha256_file_hex(source_path)
+        metadata_hash = str(metadata.get("sha256") or "").strip().lower()
+        if metadata_hash and actual_hash.lower() != metadata_hash:
+            raise RuntimeError("Reticulum response metadata hash mismatch")
+        if expected_hash and actual_hash.lower() != expected_hash:
+            raise RuntimeError("Reticulum response hash mismatch")
+        save_path = str(pending.get("savePath") or "")
+        _move_file_to_save_path(source_path, save_path)
+        peer_hash = str(pending.get("peerPresenceHash") or "").strip().lower()
+        with _state_lock:
+            _qchat_file_remove_pending_receive(peer_hash, transfer_id)
+        _qchat_file_emit(
+            "received",
+            {
+                "transferId": transfer_id,
+                "peerPresenceHash": peer_hash,
+                "fileName": pending.get("fileName") or "",
+                "path": save_path,
+                "sha256": actual_hash,
+                "resourceType": pending.get("resourceType") or "",
+                **pending_metadata,
+            },
+        )
+        _resource_session_finish_job(
+            job,
+            True,
+            source_path=save_path,
+            actual_hash=actual_hash,
+        )
+    except Exception as exc:
+        _resource_session_finish_job(job, False, reason="resource_response_invalid", error=str(exc))
+
+
+def _resource_session_request_failed(job: Dict[str, Any], _receipt=None) -> None:
+    _resource_session_finish_job(job, False, reason="resource_request_timeout")
+
+
+def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -> bool:
+    if job.get("completed") is True:
+        return False
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    transfer_id = str(pending.get("transferId") or "")
+    link = state.get("link")
+    if (
+        link is None
+        or state.get("established") is not True
+        or state.get("remote_ready") is not True
+        or state.get("closing") is True
+    ):
+        return False
+    auth_age = max(0.0, time.time() - _resource_session_auth_timestamp_seconds(job))
+    if auth_age > _RESOURCE_SESSION_AUTH_MAX_QUEUE_SECONDS:
+        _resource_session_finish_job(
+            job,
+            False,
+            reason="resource_auth_refresh_required",
+            error=f"Authorization waited {int(auth_age)} seconds before dispatch",
+        )
+        return False
+    request_data = {
+        "version": 1,
+        "transferId": transfer_id,
+        "resourceType": pending.get("resourceType") or "",
+        "metadata": pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {},
+        "authMessage": pending.get("authMessage") if isinstance(pending.get("authMessage"), dict) else {},
+    }
+    job["session"] = state
+    job["dispatched_at"] = time.time()
+    with _state_lock:
+        if (
+            state.get("closing") is True
+            or state.get("remote_ready") is not True
+        ):
+            return False
+        active_requests = state.setdefault("active_requests", {})
+        if transfer_id not in active_requests:
+            active_requests[transfer_id] = job
+        state["last_used_at"] = time.time()
+        state["activity_generation"] = int(
+            state.get("activity_generation") or 0
+        ) + 1
+    try:
+        receipt = link.request(
+            _RESOURCE_SESSION_REQUEST_PATH,
+            data=request_data,
+            response_callback=lambda value: _resource_session_response_received(job, value),
+            failed_callback=lambda value: _resource_session_request_failed(job, value),
+            progress_callback=lambda value: _resource_session_response_progress(job, value),
+            timeout=_RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _resource_session_finish_job(
+            job,
+            False,
+            reason="resource_request_send_failed",
+            error=str(exc),
+        )
+        return False
+    if receipt is False:
+        _resource_session_finish_job(job, False, reason="resource_request_send_failed")
+        return False
+    job["receipt"] = receipt
+    _qchat_file_emit(
+        "auth_sent",
+        {
+            "transferId": transfer_id,
+            "peerPresenceHash": pending.get("peerPresenceHash") or "",
+            "fileName": pending.get("fileName") or "",
+            "size": int(pending.get("size") or 0),
+            "resourceType": pending.get("resourceType") or "",
+            "sessionLane": state.get("sessionLane") or "",
+            "authAgeMs": int(auth_age * 1000),
+        },
+    )
+    return True
+
+
+def _resource_session_dispatch_pending(state: Dict[str, Any]) -> None:
+    limit = (
+        _RESOURCE_SESSION_FAST_CONCURRENCY
+        if state.get("sessionLane") == "fast"
+        else _RESOURCE_SESSION_BULK_CONCURRENCY
+    )
+    while True:
+        with _state_lock:
+            if (
+                state.get("established") is not True
+                or state.get("remote_ready") is not True
+                or state.get("closing") is True
+            ):
+                return
+            active_requests = state.setdefault("active_requests", {})
+            if len(active_requests) >= limit:
+                return
+            pending_jobs = state.get("pending_jobs")
+            if not isinstance(pending_jobs, list) or not pending_jobs:
+                break
+            job = pending_jobs.pop(0)
+            if not isinstance(job, dict) or job.get("completed") is True:
+                continue
+            pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+            transfer_id = str(pending.get("transferId") or "")
+            if not transfer_id:
+                job["completed"] = True
+                continue
+            job["session"] = state
+            active_requests[transfer_id] = job
+        dispatched = _resource_session_dispatch_job(state, job)
+        if not dispatched and job.get("completed") is not True:
+            _resource_session_finish_job(
+                job,
+                False,
+                reason="resource_session_unavailable",
+            )
+
+
+def _resource_session_note_failure(state: Dict[str, Any], reason: str) -> None:
+    if state.get("incoming") is True:
+        return
+    session_key = str(state.get("sessionKey") or "")
+    if not session_key:
+        return
+    with _state_lock:
+        record = _resource_session_failures_by_key.setdefault(
+            session_key,
+            {"failures": 0, "backoff_until": 0.0},
+        )
+        failures = int(record.get("failures") or 0) + 1
+        delay = _RESOURCE_SESSION_FAILURE_BACKOFF_SECONDS[
+            min(failures - 1, len(_RESOURCE_SESSION_FAILURE_BACKOFF_SECONDS) - 1)
+        ]
+        record.update(
+            {
+                "failures": failures,
+                "backoff_until": time.time() + delay,
+                "last_reason": reason,
+                "updated_at": time.time(),
+            }
+        )
+        while len(_resource_session_failures_by_key) > _RESOURCE_SESSION_FAILURE_RECORD_MAX:
+            oldest_key = min(
+                _resource_session_failures_by_key,
+                key=lambda key: float(
+                    _resource_session_failures_by_key[key].get("updated_at") or 0
+                ),
+            )
+            _resource_session_failures_by_key.pop(oldest_key, None)
+    log(
+        "[presence_bridge] resource_session_backoff "
+        f"peer={str(state.get('peerPresenceHash') or '')[:16]} lane={state.get('sessionLane')} "
+        f"failures={failures} retry_in_ms={int(delay * 1000)} reason={reason}"
+    )
+
+
+def _resource_session_fail_state(
+    state: Dict[str, Any],
+    reason: str,
+    *,
+    refresh_path: bool = False,
+) -> None:
+    with _state_lock:
+        if state.get("closing") is True:
+            return
+        state["closing"] = True
+        peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        pending_jobs = list(state.get("pending_jobs") or [])
+        active_jobs = list((state.get("active_requests") or {}).values())
+        state["pending_jobs"] = []
+        state["active_requests"] = {}
+    _resource_session_note_failure(state, reason)
+    _resource_session_emit_status(state, "failed", reason)
+    _resource_session_remove_state(state)
+    for job in active_jobs + pending_jobs:
+        if isinstance(job, dict):
+            _resource_session_finish_job(job, False, reason=reason)
+    if refresh_path and peer_hash:
+        try:
+            _force_overlay_peer_path_refresh(
+                peer_hash,
+                target="qchat-file-reticulum",
+                reason=reason,
+                cooldown_seconds=15.0,
+                await_seconds=0.0,
+            )
+        except Exception as exc:
+            log(
+                "[presence_bridge] resource_session_path_refresh_failed "
+                f"peer={peer_hash[:16]} reason={reason} err={exc}"
+            )
+    link = state.get("link")
+    if link is not None:
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=qchat-file-reticulum resource_session_fail reason={reason}",
+        )
+
+
+def _resource_session_open_timeout(state: Dict[str, Any]) -> None:
+    if state.get("remote_ready") is True or state.get("closing") is True:
+        return
+    log(
+        "[presence_bridge] resource_session_establish_timeout "
+        f"peer={str(state.get('peerPresenceHash') or '')[:16]} lane={state.get('sessionLane')} "
+        f"age_ms={int((time.time() - float(state.get('link_created_at') or time.time())) * 1000)}"
+    )
+    _resource_session_fail_state(
+        state,
+        "resource_session_establish_timeout",
+        refresh_path=True,
+    )
+
+
+def _resource_session_create_link(state: Dict[str, Any], outbound) -> None:
+    if state.get("closing") is True or state.get("link") is not None:
+        return
+    try:
+        link = RNS.Link(
+            outbound,
+            established_callback=on_outgoing_resource_session_established,
+            closed_callback=on_qchat_file_link_closed,
+        )
+        state["link"] = link
+        state["link_created_at"] = time.time()
+        state["peerDestinationHash"] = destination_hash_hex(outbound.hash)
+        with _state_lock:
+            _qchat_file_link_ids_by_object[id(link)] = str(state.get("linkId") or "")
+        remaining_establish_seconds = max(
+            1.0,
+            _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS
+            - (time.time() - float(state.get("created_at") or time.time())),
+        )
+        timer = threading.Timer(
+            remaining_establish_seconds,
+            _resource_session_open_timeout,
+            args=(state,),
+        )
+        timer.daemon = True
+        state["establish_timer"] = timer
+        timer.start()
+        log(
+            "[presence_bridge] resource_session_connecting "
+            f"peer={str(state.get('peerPresenceHash') or '')[:16]} lane={state.get('sessionLane')}"
+        )
+    except Exception as exc:
+        _resource_session_fail_state(state, "resource_session_open_failed")
+        log(
+            "[presence_bridge] resource_session_open_failed "
+            f"peer={str(state.get('peerPresenceHash') or '')[:16]} err={exc}"
+        )
+
+
+def _resource_session_poll_path(state: Dict[str, Any]) -> None:
+    if state.get("closing") is True or state.get("link") is not None:
+        return
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    peer_identity = state.get("peerIdentity")
+    try:
+        outbound = build_outbound_destination(peer_identity)
+        if destination_hash_hex(outbound.hash) != peer_hash:
+            raise RuntimeError("Reticulum public key does not match destination hash")
+        allow_refresh = state.get("failed_path_refresh_requested") is not True
+        if allow_refresh and _peer_has_recent_unestablished_link_failure(peer_hash):
+            state["failed_path_refresh_requested"] = True
+        if _request_qchat_file_path(
+            outbound.hash,
+            peer_hash,
+            allow_failed_path_refresh=allow_refresh,
+        ):
+            state.pop("path_timer", None)
+            _resource_session_create_link(state, outbound)
+            return
+        if time.time() - float(state.get("path_wait_started_at") or time.time()) >= _RESOURCE_SESSION_PATH_WAIT_TIMEOUT_SECONDS:
+            _resource_session_fail_state(
+                state,
+                "resource_session_path_timeout",
+                refresh_path=True,
+            )
+            return
+    except Exception as exc:
+        _resource_session_fail_state(state, "resource_session_path_failed")
+        log(
+            "[presence_bridge] resource_session_path_failed "
+            f"peer={peer_hash[:16]} err={exc}"
+        )
+        return
+    timer = threading.Timer(
+        _RESOURCE_SESSION_PATH_POLL_SECONDS,
+        _resource_session_poll_path,
+        args=(state,),
+    )
+    timer.daemon = True
+    state["path_timer"] = timer
+    timer.start()
+
+
+def _resource_session_evict_idle_for_capacity() -> bool:
+    oldest: Optional[Dict[str, Any]] = None
+    with _state_lock:
+        session_count = len(_resource_sessions_by_key)
+        if session_count < _RESOURCE_SESSION_MAX_TOTAL:
+            return True
+        candidates: List[Dict[str, Any]] = []
+        for session_id in list(_resource_sessions_by_key.values()):
+            state = _qchat_file_links_by_id.get(session_id)
+            if (
+                isinstance(state, dict)
+                and state.get("manager_kind") == "resource_session"
+                and state.get("established") is True
+                and state.get("closing") is not True
+                and not state.get("active_requests")
+                and not state.get("pending_jobs")
+                and int(state.get("provider_active") or 0) <= 0
+            ):
+                candidates.append(state)
+        if not candidates:
+            return False
+        oldest = min(
+            candidates,
+            key=lambda item: float(
+                item.get("last_used_at") or item.get("created_at") or 0
+            ),
+        )
+        oldest["closing"] = True
+        _resource_session_remove_state(oldest)
+    link = oldest.get("link")
+    if link is not None:
+        _teardown_reticulum_link_bounded(
+            link,
+            "target=qchat-file-reticulum resource_session_lru_evict",
+        )
+    return True
+
+
+def _resource_session_get_or_create(
+    peer_hash: str,
+    peer_identity,
+    lane: str,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    peer_key = str(peer_hash or "").strip().lower()
+    session_lane = "bulk" if lane == "bulk" else "fast"
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return None, "unknown_peer_presence_hash"
+    session_key = _resource_session_key(peer_key, session_lane)
+    now = time.time()
+    with _state_lock:
+        failure = _resource_session_failures_by_key.get(session_key)
+        backoff_until = float((failure or {}).get("backoff_until") or 0)
+        session_id = _resource_sessions_by_key.get(session_key)
+        state = _qchat_file_links_by_id.get(session_id) if session_id else None
+        if isinstance(state, dict) and state.get("closing") is not True:
+            if not state.get("peerIdentity") and peer_identity:
+                state["peerIdentity"] = peer_identity
+            state["last_used_at"] = now
+            state["activity_generation"] = int(
+                state.get("activity_generation") or 0
+            ) + 1
+            return state, ""
+    if backoff_until > now:
+        return None, "resource_session_backoff"
+    if not _resource_session_evict_idle_for_capacity():
+        return None, "resource_session_capacity"
+    session_id = str(uuid.uuid4())
+    state = {
+        "linkId": session_id,
+        "manager_kind": "resource_session",
+        "sessionKey": session_key,
+        "sessionLane": session_lane,
+        "peerPresenceHash": peer_key,
+        "peerDestinationHash": peer_key,
+        "peerIdentity": peer_identity,
+        "incoming": False,
+        "established": False,
+        "remote_ready": False,
+        "created_at": now,
+        "last_used_at": now,
+        "path_wait_started_at": now,
+        "pending_jobs": [],
+        "active_requests": {},
+        "provider_active": 0,
+        "generation": 1,
+        "activity_generation": 1,
+    }
+    with _state_lock:
+        existing_id = _resource_sessions_by_key.get(session_key)
+        existing = _qchat_file_links_by_id.get(existing_id) if existing_id else None
+        if isinstance(existing, dict) and existing.get("closing") is not True:
+            return existing, ""
+        if len(_resource_sessions_by_key) >= _RESOURCE_SESSION_MAX_TOTAL:
+            return None, "resource_session_capacity"
+        _qchat_file_links_by_id[session_id] = state
+        _resource_sessions_by_key[session_key] = session_id
+    _resource_session_poll_path(state)
+    return state, ""
+
+
+def _resource_session_enqueue_job(job: Dict[str, Any]) -> Tuple[bool, str]:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    peer_hash = str(pending.get("peerPresenceHash") or "").strip().lower()
+    metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    lane = _resource_session_lane(
+        str(pending.get("resourceType") or ""),
+        str(metadata.get("logicalResourceType") or ""),
+    )
+    state, reason = _resource_session_get_or_create(
+        peer_hash,
+        pending.get("peerIdentity"),
+        lane,
+    )
+    if not isinstance(state, dict):
+        return False, reason or "resource_session_open_failed"
+    with _state_lock:
+        if state.get("closing") is True:
+            return False, "resource_session_unavailable"
+        session_key = str(state.get("sessionKey") or "")
+        session_id = str(state.get("linkId") or "")
+        if (
+            not session_key
+            or _resource_sessions_by_key.get(session_key) != session_id
+            or _qchat_file_links_by_id.get(session_id) is not state
+        ):
+            return False, "resource_session_unavailable"
+        pending_jobs = state.setdefault("pending_jobs", [])
+        if (
+            len(pending_jobs) >= _RESOURCE_SESSION_MAX_QUEUE_PER_LANE
+            or _resource_session_total_queue_depth() >= _RESOURCE_SESSION_MAX_QUEUE_TOTAL
+        ):
+            return False, "resource_session_queue_full"
+        job["session"] = state
+        pending_jobs.append(job)
+        state["last_used_at"] = time.time()
+        state["activity_generation"] = int(
+            state.get("activity_generation") or 0
+        ) + 1
+        _resource_session_cancel_timer(state, "idle_timer")
+        pending_jobs.sort(
+            key=lambda item: (
+                _resource_session_job_priority(item),
+                float(item.get("created_at") or 0),
+            )
+        )
+    if state.get("remote_ready") is True:
+        _resource_session_dispatch_pending(state)
+    return True, ""
+
+
+def _resource_session_accept(
+    req_id: str,
+    pending_receive: Dict[str, Any],
+) -> None:
+    transfer_id = str(pending_receive.get("transferId") or "")
+    semantic_key = _resource_session_semantic_key(pending_receive)
+    job = {
+        "transferId": transfer_id,
+        "peerPresenceHash": pending_receive.get("peerPresenceHash") or "",
+        "pending": pending_receive,
+        "semanticKey": semantic_key,
+        "created_at": time.time(),
+        "followers": [],
+    }
+    with _state_lock:
+        if len(_resource_session_jobs_by_transfer) >= _RESOURCE_SESSION_MAX_QUEUE_TOTAL:
+            _qchat_file_remove_pending_receive(
+                str(pending_receive.get("peerPresenceHash") or "").strip().lower(),
+                transfer_id,
+            )
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "resource_session_queue_full"},
+                error="Reticulum resource session queue is full",
+            )
+            return
+        existing = _resource_session_jobs_by_semantic_key.get(semantic_key)
+        if isinstance(existing, dict) and existing.get("completed") is not True:
+            if len(existing.get("followers") or []) >= 32:
+                _qchat_file_remove_pending_receive(
+                    str(pending_receive.get("peerPresenceHash") or "").strip().lower(),
+                    transfer_id,
+                )
+                emit_resp(
+                    req_id,
+                    False,
+                    payload={"code": "resource_session_queue_full"},
+                    error="Too many duplicate Reticulum resource requests",
+                )
+                return
+            existing.setdefault("followers", []).append(job)
+            _resource_session_jobs_by_transfer[transfer_id] = job
+            _qchat_file_store_pending_receive(
+                str(pending_receive.get("peerPresenceHash") or "").strip().lower(),
+                pending_receive,
+            )
+            _qchat_file_emit(
+                "accepted",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": pending_receive.get("peerPresenceHash") or "",
+                    "fileName": pending_receive.get("fileName") or "",
+                    "size": int(pending_receive.get("size") or 0),
+                    "resourceType": pending_receive.get("resourceType") or "",
+                    "deduplicated": True,
+                },
+            )
+            emit_resp(req_id, True, payload={"queuedLinks": 0, "deduplicated": True})
+            return
+        _resource_session_jobs_by_semantic_key[semantic_key] = job
+        _resource_session_jobs_by_transfer[transfer_id] = job
+    queued, reason = _resource_session_enqueue_job(job)
+    if not queued:
+        with _state_lock:
+            _resource_session_jobs_by_transfer.pop(transfer_id, None)
+            if _resource_session_jobs_by_semantic_key.get(semantic_key) is job:
+                _resource_session_jobs_by_semantic_key.pop(semantic_key, None)
+            _qchat_file_remove_pending_receive(
+                str(pending_receive.get("peerPresenceHash") or "").strip().lower(),
+                transfer_id,
+            )
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": reason},
+            error=reason.replace("_", " "),
+        )
+        return
+    _qchat_file_emit(
+        "accepted",
+        {
+            "transferId": transfer_id,
+            "peerPresenceHash": pending_receive.get("peerPresenceHash") or "",
+            "fileName": pending_receive.get("fileName") or "",
+            "size": int(pending_receive.get("size") or 0),
+            "resourceType": pending_receive.get("resourceType") or "",
+            "sessionLane": _resource_session_lane(
+                str(pending_receive.get("resourceType") or ""),
+                str(
+                    (
+                        pending_receive.get("metadata")
+                        if isinstance(pending_receive.get("metadata"), dict)
+                        else {}
+                    ).get("logicalResourceType")
+                    or ""
+                ),
+            ),
+            "queuedLinks": 1,
+        },
+    )
+    emit_resp(req_id, True, payload={"queuedLinks": 1, "session": True})
+
+
+def on_outgoing_resource_session_established(link) -> None:
+    link_id = get_qchat_file_link_id(link)
+    state = get_qchat_file_link_state(link_id) if link_id else None
+    if not isinstance(state, dict) or state.get("manager_kind") != "resource_session":
+        return
+    configure_qchat_file_link(link, str(link_id))
+    link.set_remote_identified_callback(on_qchat_file_link_remote_identified)
+    with _state_lock:
+        state["established"] = True
+        state["remote_ready"] = False
+        state["established_at"] = time.time()
+        state["last_used_at"] = time.time()
+        state["generation"] = int(state.get("generation") or 0) + 1
+        state["activity_generation"] = int(
+            state.get("activity_generation") or 0
+        ) + 1
+    session_key = str(state.get("sessionKey") or "")
+    with _state_lock:
+        _resource_session_failures_by_key.pop(session_key, None)
+    try:
+        if _identity is not None:
+            link.identify(_identity)
+    except Exception as exc:
+        log(f"[presence_bridge] resource session identify failed link={link_id}: {exc}")
+    hello = {
+        "type": _RESOURCE_SESSION_HELLO_TYPE,
+        "r": destination_hash_hex(_destination.hash) if _destination is not None else "",
+        "lane": state.get("sessionLane") or "fast",
+    }
+    if not _send_packet_on_link(
+        link,
+        json.dumps(hello, separators=(",", ":")).encode("utf-8"),
+        f"target=qchat-file-reticulum resource_session_hello peer={str(state.get('peerPresenceHash') or '')[:16]}",
+    ):
+        _resource_session_fail_state(state, "resource_session_hello_failed")
+        return
+    log(
+        "[presence_bridge] resource_session_established "
+        f"peer={str(state.get('peerPresenceHash') or '')[:16]} lane={state.get('sessionLane')} link={link_id}"
+    )
+
+
+def _resource_session_state_for_rns_link_id(rns_link_id: Any) -> Optional[Dict[str, Any]]:
+    with _state_lock:
+        for state in _qchat_file_links_by_id.values():
+            if not isinstance(state, dict) or state.get("manager_kind") != "resource_session":
+                continue
+            link = state.get("link")
+            if link is not None and getattr(link, "link_id", None) == rns_link_id:
+                return state
+    return None
+
+
+def _resource_session_response_metadata(pending: Dict[str, Any]) -> Dict[str, Any]:
+    resource_type = str(pending.get("resourceType") or "")
+    metadata: Dict[str, Any] = {
+        "kind": resource_type,
+        "resourceType": resource_type,
+        "transferId": pending.get("transferId") or "",
+        "fileName": pending.get("fileName") or "",
+        "size": int(pending.get("size") or 0),
+        "sha256": pending.get("sha256") or "",
+    }
+    extra = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    for key, value in extra.items():
+        metadata_key = str(key)
+        if metadata_key in _QCHAT_FILE_RESERVED_METADATA_KEYS:
+            metadata[f"app_{metadata_key}"] = value
+        else:
+            metadata[metadata_key] = value
+    return metadata
+
+
+def _resource_session_watch_provider_file(
+    file_handle,
+    pending: Dict[str, Any],
+    state: Dict[str, Any],
+    request_id: Any,
+) -> None:
+    transfer_id = str(pending.get("transferId") or "")
+    link = state.get("link")
+
+    def watch() -> None:
+        completed = False
+        failure_reason = "resource_response_stalled"
+        tracked_resource = None
+        last_progress = -1.0
+        last_progress_at = time.monotonic()
+        try:
+            while True:
+                if pending.get("cancelled") is True:
+                    failure_reason = "resource_response_cancelled"
+                    break
+                if _shutdown.is_set() or state.get("closing") is True:
+                    failure_reason = "resource_session_closed"
+                    break
+                if tracked_resource is None and link is not None:
+                    try:
+                        outgoing_resources = list(
+                            getattr(link, "outgoing_resources", None) or []
+                        )
+                    except Exception:
+                        outgoing_resources = []
+                    tracked_resource = next(
+                        (
+                            resource
+                            for resource in outgoing_resources
+                            if getattr(resource, "request_id", None) == request_id
+                        ),
+                        None,
+                    )
+                if tracked_resource is not None:
+                    status = getattr(tracked_resource, "status", None)
+                    if status == getattr(RNS.Resource, "COMPLETE", object()):
+                        try:
+                            segment_index = int(
+                                getattr(tracked_resource, "segment_index", 1) or 1
+                            )
+                            total_segments = int(
+                                getattr(tracked_resource, "total_segments", 1) or 1
+                            )
+                        except Exception:
+                            segment_index = 1
+                            total_segments = 1
+                        if segment_index >= total_segments:
+                            completed = True
+                            break
+                        next_segment = getattr(
+                            tracked_resource,
+                            "next_segment",
+                            None,
+                        )
+                        if next_segment is not None:
+                            tracked_resource = next_segment
+                            last_progress_at = time.monotonic()
+                            continue
+                    if status in {
+                        getattr(RNS.Resource, "FAILED", object()),
+                        getattr(RNS.Resource, "CORRUPT", object()),
+                        getattr(RNS.Resource, "REJECTED", object()),
+                    }:
+                        failure_reason = "resource_response_failed"
+                        break
+                    try:
+                        progress = float(tracked_resource.get_progress())
+                    except Exception:
+                        progress = last_progress
+                    if progress > last_progress:
+                        last_progress = progress
+                        last_progress_at = time.monotonic()
+                        with _state_lock:
+                            state["last_used_at"] = time.time()
+                            state["activity_generation"] = int(
+                                state.get("activity_generation") or 0
+                            ) + 1
+                if (
+                    time.monotonic() - last_progress_at
+                    >= _RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS
+                ):
+                    break
+                time.sleep(0.1)
+        finally:
+            cancelled = pending.get("cancelled") is True
+            if not completed and tracked_resource is not None:
+                try:
+                    tracked_resource.cancel()
+                except Exception:
+                    pass
+            if not completed and not getattr(file_handle, "closed", True):
+                try:
+                    file_handle.close()
+                except Exception:
+                    pass
+            with _state_lock:
+                current = _qchat_file_pending_sends_by_transfer.get(transfer_id)
+                if current is pending:
+                    _qchat_file_pending_sends_by_transfer.pop(transfer_id, None)
+                state["provider_active"] = max(
+                    0,
+                    int(state.get("provider_active") or 0) - 1,
+                )
+                state["last_used_at"] = time.time()
+                state["activity_generation"] = int(
+                    state.get("activity_generation") or 0
+                ) + 1
+            _resource_session_provider_slots.release()
+            _resource_session_schedule_idle_close(state)
+            if not cancelled:
+                _qchat_file_emit(
+                    "sent" if completed else "failed",
+                    {
+                        "transferId": transfer_id,
+                        "peerPresenceHash": pending.get("allowedRecipientAddress") or "",
+                        "fileName": pending.get("fileName") or "",
+                        "size": int(pending.get("size") or 0),
+                        "resourceType": pending.get("resourceType") or "",
+                        **({} if completed else {"reason": failure_reason}),
+                    },
+                )
+
+    thread = threading.Thread(
+        target=watch,
+        name=f"resource-response-{transfer_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _resource_session_response_generator(
+    _path,
+    request_data,
+    request_id,
+    rns_link_id,
+    remote_identity,
+    _requested_at,
+):
+    if not _resource_session_provider_slots.acquire(blocking=False):
+        return {"ok": False, "reason": "resource_provider_busy"}
+    provider_slot_transferred = False
+    waiter: Optional[Dict[str, Any]] = None
+    waiter_key = ""
+    try:
+        if not isinstance(request_data, dict):
+            return {"ok": False, "reason": "invalid_resource_request"}
+        if request_data.get("version") != 1:
+            return {"ok": False, "reason": "unsupported_resource_request_version"}
+        transfer_id = str(request_data.get("transferId") or "").strip()
+        auth = request_data.get("authMessage")
+        metadata = request_data.get("metadata") if isinstance(request_data.get("metadata"), dict) else {}
+        resource_type = str(request_data.get("resourceType") or "").strip()
+        if not transfer_id or not isinstance(auth, dict) or not _qchat_file_is_managed_resource_type(resource_type):
+            return {"ok": False, "reason": "invalid_resource_request"}
+        try:
+            encoded_size = len(json.dumps(request_data, separators=(",", ":")).encode("utf-8"))
+        except Exception:
+            return {"ok": False, "reason": "invalid_resource_request"}
+        if encoded_size > 64 * 1024:
+            return {"ok": False, "reason": "resource_request_too_large"}
+        state = _resource_session_state_for_rns_link_id(rns_link_id)
+        if state is None:
+            return {"ok": False, "reason": "unknown_resource_session"}
+        expected_lane = _resource_session_lane(
+            resource_type,
+            str(metadata.get("logicalResourceType") or ""),
+        )
+        if state.get("sessionLane") != expected_lane:
+            return {"ok": False, "reason": "resource_session_lane_mismatch"}
+        if remote_identity is None:
+            return {"ok": False, "reason": "resource_peer_unidentified"}
+        try:
+            identified_peer_hash = _destination_hash_for_identity(remote_identity)
+        except Exception:
+            return {"ok": False, "reason": "resource_peer_identity_invalid"}
+        claimed_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        if claimed_peer_hash and claimed_peer_hash != identified_peer_hash:
+            return {"ok": False, "reason": "resource_peer_identity_mismatch"}
+        with _state_lock:
+            link_id = str(state.get("linkId") or "")
+            if (
+                state.get("incoming") is not True
+                or state.get("closing") is True
+                or state.get("provider_ready_sent") is not True
+                or _qchat_file_links_by_id.get(link_id) is not state
+            ):
+                return {"ok": False, "reason": "resource_session_unavailable"}
+            state["peerPresenceHash"] = identified_peer_hash
+            state["peerDestinationHash"] = identified_peer_hash
+            state["provider_active"] = int(state.get("provider_active") or 0) + 1
+            state["last_used_at"] = time.time()
+            state["activity_generation"] = int(
+                state.get("activity_generation") or 0
+            ) + 1
+        _resource_session_cancel_timer(state, "idle_timer")
+        waiter_key = _resource_session_waiter_key(link_id, transfer_id)
+        waiter = {
+            "event": threading.Event(),
+            "authorized": False,
+            "reason": "resource_authorization_timeout",
+            "linkId": link_id,
+            "transferId": transfer_id,
+        }
+        with _state_lock:
+            if waiter_key in _resource_session_provider_waiters:
+                return {"ok": False, "reason": "duplicate_resource_request"}
+            _resource_session_provider_waiters[waiter_key] = waiter
+        _qchat_file_emit(
+            "auth",
+            {
+                "linkId": link_id,
+                "transferId": transfer_id,
+                "peerPresenceHash": state.get("peerPresenceHash") or "",
+                "auth": auth,
+                "resourceType": resource_type,
+                "eventId": auth.get("eventId") or auth.get("id") or metadata.get("eventId"),
+                "groupId": auth.get("groupId") or auth.get("g") or metadata.get("groupId"),
+                "metadata": metadata,
+                "sessionLane": state.get("sessionLane") or "",
+            },
+        )
+        if not waiter["event"].wait(_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS):
+            return {"ok": False, "reason": "resource_authorization_timeout"}
+        if waiter.get("authorized") is not True:
+            return {"ok": False, "reason": str(waiter.get("reason") or "resource_request_rejected")}
+        with _state_lock:
+            pending = _qchat_file_pending_sends_by_transfer.get(transfer_id)
+        if not isinstance(pending, dict):
+            return {"ok": False, "reason": "resource_not_registered"}
+        allowed_recipient = str(pending.get("allowedRecipientAddress") or "").strip().lower()
+        peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        if allowed_recipient and peer_hash and allowed_recipient != peer_hash:
+            return {"ok": False, "reason": "resource_recipient_mismatch"}
+        if float(pending.get("expires_at") or 0) < time.time():
+            return {"ok": False, "reason": "resource_transfer_expired"}
+        file_path = str(pending.get("filePath") or "")
+        if not os.path.isfile(file_path):
+            return {"ok": False, "reason": "resource_file_missing"}
+        file_handle = open(file_path, "rb")
+        try:
+            _resource_session_watch_provider_file(
+                file_handle,
+                pending,
+                state,
+                request_id,
+            )
+        except Exception:
+            file_handle.close()
+            raise
+        provider_slot_transferred = True
+        waiter["response_started"] = True
+        _qchat_file_emit(
+            "sending",
+            {
+                "transferId": transfer_id,
+                "peerPresenceHash": peer_hash,
+                "fileName": pending.get("fileName") or "",
+                "size": int(pending.get("size") or 0),
+                "resourceType": pending.get("resourceType") or "",
+                "sessionLane": state.get("sessionLane") or "",
+            },
+        )
+        return (file_handle, _resource_session_response_metadata(pending))
+    except Exception as exc:
+        log(f"[presence_bridge] resource_session_provider_error err={exc}")
+        return {"ok": False, "reason": "resource_provider_error"}
+    finally:
+        if (
+            isinstance(waiter, dict)
+            and waiter.get("authorized") is True
+            and waiter.get("response_started") is not True
+        ):
+            transfer_id = str(waiter.get("transferId") or "")
+            with _state_lock:
+                abandoned = _qchat_file_pending_sends_by_transfer.pop(
+                    transfer_id,
+                    None,
+                )
+            if isinstance(abandoned, dict):
+                _qchat_file_emit(
+                    "failed",
+                    {
+                        "transferId": transfer_id,
+                        "peerPresenceHash": abandoned.get("allowedRecipientAddress") or "",
+                        "fileName": abandoned.get("fileName") or "",
+                        "size": int(abandoned.get("size") or 0),
+                        "resourceType": abandoned.get("resourceType") or "",
+                        "reason": "resource_response_not_started",
+                    },
+                )
+        if waiter_key:
+            with _state_lock:
+                _resource_session_provider_waiters.pop(waiter_key, None)
+        if (
+            "state" in locals()
+            and isinstance(state, dict)
+            and not (
+                isinstance(waiter, dict)
+                and waiter.get("response_started") is True
+            )
+        ):
+            with _state_lock:
+                state["provider_active"] = max(
+                    0,
+                    int(state.get("provider_active") or 0) - 1,
+                )
+                state["last_used_at"] = time.time()
+                state["activity_generation"] = int(
+                    state.get("activity_generation") or 0
+                ) + 1
+            _resource_session_schedule_idle_close(state)
+        if not provider_slot_transferred:
+            _resource_session_provider_slots.release()
+
+
+def handle_prepare_reticulum_resource_session(
+    req_id: str,
+    payload: Dict[str, Any],
+) -> None:
+    peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
+    peer_identity_public_key = payload.get("reticulumIdentityPublicKeyBase64")
+    resource_type = str(payload.get("resourceType") or "").strip()
+    logical_resource_type = str(payload.get("logicalResourceType") or "").strip()
+    if not _qchat_file_is_managed_resource_type(resource_type):
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "unsupported_resource_type"},
+            error="Unsupported Reticulum resource session type",
+        )
+        return
+    try:
+        if (
+            not isinstance(peer_identity_public_key, str)
+            or not peer_identity_public_key.strip()
+        ):
+            ensure_known_peer_from_recall(peer_hash, "ts_seed")
+            peer_identity = _known_peers.get(peer_hash)
+            if peer_identity is None:
+                raise ValueError("Missing Reticulum identity for resource session peer")
+        else:
+            peer_identity = _parse_qchat_file_peer_identity(
+                peer_hash,
+                peer_identity_public_key,
+            )
+    except Exception as exc:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "bad_reticulum_identity"},
+            error=str(exc),
+        )
+        return
+    lane = _resource_session_lane(resource_type, logical_resource_type)
+    state, reason = _resource_session_get_or_create(
+        peer_hash,
+        peer_identity,
+        lane,
+    )
+    if not isinstance(state, dict):
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": reason or "resource_session_open_failed"},
+            error="Unable to prepare Reticulum resource session",
+        )
+        return
+    emit_resp(
+        req_id,
+        True,
+        payload={
+            "status": "ready" if state.get("remote_ready") is True else "pending",
+            "peerPresenceHash": peer_hash,
+            "lane": lane,
+            "linkId": str(state.get("linkId") or ""),
+        },
+    )
+
+
 def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> None:
     peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
     pk_b64 = payload.get("reticulumIdentityPublicKeyBase64")
@@ -16081,7 +18196,12 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
     if not isinstance(auth_message, dict):
         emit_resp(req_id, False, error="Missing Reticulum link auth message")
         return
-    bridge_chunked = _qchat_file_should_bridge_chunk_resource(resource_type, stream_mode)
+    use_resource_session = _qchat_file_is_managed_resource_type(resource_type)
+    bridge_chunked = (
+        False
+        if use_resource_session
+        else _qchat_file_should_bridge_chunk_resource(resource_type, stream_mode)
+    )
     try:
         if (
             (
@@ -16126,17 +18246,11 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "expires_at": time.time() + 15 * 60,
         }
         _qchat_file_store_pending_receive(peer_hash, pending_receive)
-    _qchat_file_emit(
-        "accepted",
-        {
-            "transferId": transfer_id,
-            "peerPresenceHash": peer_hash,
-            "fileName": file_name,
-            "size": size,
-            "resourceType": resource_type,
-        },
-    )
+    if use_resource_session:
+        _resource_session_accept(req_id, pending_receive)
+        return
     links_to_open = 1 if not bridge_chunked else min(_QCHAT_FILE_PARALLEL_LINKS, max(1, _qchat_file_chunk_count(size)))
+    queued_links = 0
     for _ in range(links_to_open):
         state = {
             "peerPresenceHash": peer_hash,
@@ -16153,10 +18267,33 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
+            "receive_root": pending_receive,
             "created_at": time.time(),
         }
-        _open_qchat_file_link_async(state)
-    emit_resp(req_id, True)
+        if _open_qchat_file_link_async(state):
+            queued_links += 1
+    if queued_links <= 0:
+        with _state_lock:
+            _qchat_file_remove_pending_receive(peer_hash, transfer_id)
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "resource_open_queue_full"},
+            error="Reticulum resource open queue is full",
+        )
+        return
+    _qchat_file_emit(
+        "accepted",
+        {
+            "transferId": transfer_id,
+            "peerPresenceHash": peer_hash,
+            "fileName": file_name,
+            "size": size,
+            "resourceType": resource_type,
+            "queuedLinks": queued_links,
+        },
+    )
+    emit_resp(req_id, True, payload={"queuedLinks": queued_links})
 
 
 def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> None:
@@ -16241,6 +18378,34 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
     if float(pending.get("expires_at") or 0) < time.time():
         emit_resp(req_id, False, payload={"code": "transfer_expired"}, error="Transfer expired")
         return
+    if state.get("manager_kind") == "resource_session":
+        waiter_key = _resource_session_waiter_key(link_id, transfer_id)
+        with _state_lock:
+            waiter = _resource_session_provider_waiters.get(waiter_key)
+        if not isinstance(waiter, dict):
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "unknown_resource_request"},
+                error="Unknown resource session request",
+            )
+            return
+        waiter["authorized"] = True
+        waiter["reason"] = ""
+        waiter["event"].set()
+        _qchat_file_emit(
+            "authorized",
+            {
+                "transferId": transfer_id,
+                "peerPresenceHash": link_peer_hash,
+                "fileName": pending.get("fileName") or "",
+                "size": int(pending.get("size") or 0),
+                "resourceType": pending.get("resourceType") or "",
+                "sessionLane": state.get("sessionLane") or "",
+            },
+        )
+        emit_resp(req_id, True)
+        return
     state.update(
         {
             "filePath": pending.get("filePath") or "",
@@ -16285,6 +18450,23 @@ def handle_reject_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
     state = get_qchat_file_link_state(link_id)
     if state is None:
         emit_resp(req_id, False, payload={"code": "unknown_link_id"}, error="Unknown link id")
+        return
+    if state.get("manager_kind") == "resource_session":
+        waiter_key = _resource_session_waiter_key(link_id, transfer_id)
+        with _state_lock:
+            waiter = _resource_session_provider_waiters.get(waiter_key)
+        if not isinstance(waiter, dict):
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "unknown_resource_request"},
+                error="Unknown resource session request",
+            )
+            return
+        waiter["authorized"] = False
+        waiter["reason"] = reason
+        waiter["event"].set()
+        emit_resp(req_id, True)
         return
     link = state.get("link")
     try:
@@ -17497,6 +19679,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_stop(req_id)
     elif action == "send_call":
         handle_send_call(req_id, payload)
+    elif action == "prepare_reticulum_resource_session":
+        handle_prepare_reticulum_resource_session(req_id, payload)
     elif action == "accept_qchat_file_resource":
         handle_accept_qchat_file_resource(req_id, payload)
     elif action == "send_qchat_file_resource":

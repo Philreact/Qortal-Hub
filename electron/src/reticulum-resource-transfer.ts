@@ -854,6 +854,21 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         throttledPeerCount += 1;
         continue;
       }
+      const preparedSession = await this.preparePeerResourceSession(
+        peerKey,
+        state
+      );
+      if (!preparedSession.result.ok) {
+        const failed = preparedSession.result as Exclude<
+          ReticulumSendResult,
+          { ok: true }
+        >;
+        loggerWarn(
+          `[${this.loggerPrefix}] resource_session_prepare_failed fileHash=${state.fileHash} ` +
+            `peer=${peerKey.slice(0, 16)} reason=${failed.error ?? failed.reason}`
+        );
+        continue;
+      }
       while (
         this.activeAccepts.size < RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY &&
         !this.resourceHasMaxActiveAccepts(state.fileHash) &&
@@ -892,7 +907,13 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
             `[${this.loggerPrefix}] resource_range_link_requested fileHash=${state.fileHash} ` +
               `peer=${peerKey.slice(0, 16)} range=${rangeKey(requestRange)}`
           );
-          const result = await this.openRangeLink(peerKey, state, requestRange, request);
+          const result = await this.openRangeLink(
+            peerKey,
+            state,
+            requestRange,
+            request,
+            preparedSession.reticulumIdentityPublicKeyBase64
+          );
           if (result.ok) {
             delivered = true;
             requestedRanges.push(requestRange);
@@ -940,7 +961,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     peerHash: string,
     state: ReticulumResourceDownloadState<TRequestWire>,
     range: ReticulumResourceByteRange,
-    request: TRequestWire
+    request: TRequestWire,
+    reticulumIdentityPublicKeyBase64: string
   ): Promise<ReticulumSendResult> {
     if (!this.bridge || typeof this.bridge.acceptReticulumResourceDetailed !== 'function') {
       return { ok: false, reason: 'bridge-unavailable', error: 'Reticulum bridge unavailable' };
@@ -948,22 +970,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) {
       return { ok: false, reason: 'unknown-peer-presence-hash', error: 'Missing peer hash' };
-    }
-    let reticulumIdentityPublicKeyBase64 = '';
-    if (this.resolvePeerIdentity) {
-      try {
-        const resolvedIdentity = await this.resolvePeerIdentity(peerKey, 'resource-range');
-        if (resolvedIdentity == null) {
-          return { ok: false, reason: 'unknown-peer-presence-hash', error: 'Unable to resolve peer identity' };
-        }
-        reticulumIdentityPublicKeyBase64 = resolvedIdentity.trim();
-      } catch (err) {
-        loggerWarn(
-          `[${this.loggerPrefix}] resource_peer_identity_resolve_failed fileHash=${state.fileHash} ` +
-            `peer=${peerKey.slice(0, 16)} reason=${err instanceof Error ? err.message : String(err)}`
-        );
-        return { ok: false, reason: 'unknown-peer-presence-hash', error: 'Unable to resolve peer identity' };
-      }
     }
     const transferId = nodeCrypto.randomBytes(8).toString('hex');
     const fileName = `${state.fileHash}.range-${range.startByte}-${range.endByteExclusive}.bin`;
@@ -1039,6 +1045,70 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.finishTransfer(transferId, false);
     }
     return result;
+  }
+
+  private async preparePeerResourceSession(
+    peerHash: string,
+    state: ReticulumResourceDownloadState<TRequestWire>
+  ): Promise<{
+    result: ReticulumSendResult;
+    reticulumIdentityPublicKeyBase64: string;
+  }> {
+    if (!this.bridge) {
+      return {
+        result: { ok: false, reason: 'bridge-unavailable' },
+        reticulumIdentityPublicKeyBase64: '',
+      };
+    }
+    let reticulumIdentityPublicKeyBase64 = '';
+    if (this.resolvePeerIdentity) {
+      try {
+        const resolvedIdentity = await this.resolvePeerIdentity(
+          peerHash,
+          'resource-range'
+        );
+        if (resolvedIdentity == null) {
+          return {
+            result: {
+              ok: false,
+              reason: 'unknown-peer-presence-hash',
+              error: 'Unable to resolve peer identity',
+            },
+            reticulumIdentityPublicKeyBase64: '',
+          };
+        }
+        reticulumIdentityPublicKeyBase64 = resolvedIdentity.trim();
+      } catch (err) {
+        loggerWarn(
+          `[${this.loggerPrefix}] resource_peer_identity_resolve_failed fileHash=${state.fileHash} ` +
+            `peer=${peerHash.slice(0, 16)} reason=${err instanceof Error ? err.message : String(err)}`
+        );
+        return {
+          result: {
+            ok: false,
+            reason: 'unknown-peer-presence-hash',
+            error: 'Unable to resolve peer identity',
+          },
+          reticulumIdentityPublicKeyBase64: '',
+        };
+      }
+    }
+    if (
+      typeof this.bridge.ensureReticulumResourceSessionDetailed !== 'function'
+    ) {
+      return {
+        result: { ok: true },
+        reticulumIdentityPublicKeyBase64,
+      };
+    }
+    return {
+      result: await this.bridge.ensureReticulumResourceSessionDetailed({
+        peerPresenceHash: peerHash,
+        reticulumIdentityPublicKeyBase64,
+        resourceType: this.rangeResourceType,
+      }),
+      reticulumIdentityPublicKeyBase64,
+    };
   }
 
   private overlayPeerLastRxAgeMs(peerHash: string): number | null {

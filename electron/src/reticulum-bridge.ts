@@ -196,6 +196,7 @@ type BridgeCmdFrame = {
     | 'overlay_note_candidate_failure'
     | 'stop'
     | 'send_call'
+    | 'prepare_reticulum_resource_session'
     | 'accept_qchat_file_resource'
     | 'send_qchat_file_resource'
     | 'authorize_qchat_file_resource'
@@ -816,6 +817,17 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'reticulum_resource_session';
+      payload?: {
+        status?: 'ready' | 'failed';
+        peerPresenceHash?: string;
+        lane?: 'fast' | 'bulk';
+        linkId?: string;
+        reason?: string;
+      };
+    }
+  | {
+      type: 'event';
       event: 'error';
       payload?: { code?: string; message?: string; detail?: string };
     }
@@ -1311,6 +1323,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   /** First JSON `group_audio_send_failed` per `code` (RNS path). */
   private audioIpcSendFailedCodesLogged = new Set<string>();
   private pending = new Map<string, PendingRequest>();
+  private resourceSessionPreparations = new Map<
+    string,
+    Promise<ReticulumSendResult>
+  >();
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private overlayStalePruneTimer: ReturnType<typeof setInterval> | null = null;
   private statePromise: Promise<void> | null = null;
@@ -1469,6 +1485,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     this.child = null;
     this.localPresenceDestinationHash = undefined;
     this.launchConfigDir = null;
+    this.emit('stopped');
     return child && child.exitCode === null ? child : null;
   }
 
@@ -1588,6 +1605,186 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     metadata?: Record<string, unknown>;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('accept_reticulum_chat_resource', payload);
+  }
+
+  async ensureReticulumResourceSessionDetailed(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    resourceType: string;
+    logicalResourceType?: string;
+  }): Promise<ReticulumSendResult> {
+    const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
+    const lane =
+      ![
+        'reticulum_chat_history_page',
+        'reticulum_chat_dm_page',
+        'reticulum_chat_metadata_snapshot',
+        'reticulum_chat_event_page',
+      ].includes(payload.logicalResourceType ?? '') &&
+      payload.resourceType === 'reticulum_chat_event'
+        ? 'fast'
+        : 'bulk';
+    if (!peerPresenceHash) {
+      return {
+        ok: false,
+        reason: 'unknown-peer-presence-hash',
+        error: 'Missing peer presence hash',
+      };
+    }
+    const key = `${peerPresenceHash}:${lane}`;
+    const existing = this.resourceSessionPreparations.get(key);
+    if (existing) return existing;
+    const preparation = this.prepareReticulumResourceSession({
+      ...payload,
+      peerPresenceHash,
+      lane,
+    });
+    this.resourceSessionPreparations.set(key, preparation);
+    void preparation.finally(() => {
+      if (this.resourceSessionPreparations.get(key) === preparation) {
+        this.resourceSessionPreparations.delete(key);
+      }
+    });
+    return preparation;
+  }
+
+  private async prepareReticulumResourceSession(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    resourceType: string;
+    logicalResourceType?: string;
+    lane: 'fast' | 'bulk';
+  }): Promise<ReticulumSendResult> {
+    try {
+      await this.start();
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'bridge-exception',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    return new Promise<ReticulumSendResult>((resolve) => {
+      let settled = false;
+      let expectedLinkId = '';
+      const pendingSessionStates: Array<{
+        status?: string;
+        peerPresenceHash?: string;
+        lane?: string;
+        linkId?: string;
+        reason?: string;
+      }> = [];
+      const finish = (result: ReticulumSendResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.off('reticulum-resource-session', onSessionState);
+        this.off('degraded', onDegraded);
+        this.off('stopped', onStopped);
+        resolve(result);
+      };
+      const onSessionState = (state: {
+        status?: string;
+        peerPresenceHash?: string;
+        lane?: string;
+        linkId?: string;
+        reason?: string;
+      }) => {
+        if (
+          state.peerPresenceHash?.trim().toLowerCase() !==
+            payload.peerPresenceHash ||
+          state.lane !== payload.lane
+        ) {
+          return;
+        }
+        if (!expectedLinkId) {
+          pendingSessionStates.push(state);
+          return;
+        }
+        if (state.linkId && state.linkId !== expectedLinkId) return;
+        if (state.status === 'ready') {
+          finish({ ok: true });
+        } else if (state.status === 'failed') {
+          finish({
+            ok: false,
+            reason:
+              state.reason === 'resource_session_backoff'
+                ? 'no-route'
+                : 'send-command-failed',
+            ...(state.reason ? { error: state.reason } : {}),
+          });
+        }
+      };
+      const onDegraded = (reason?: string) => {
+        finish({
+          ok: false,
+          reason: 'bridge-not-ready',
+          ...(reason ? { error: reason } : {}),
+        });
+      };
+      const onStopped = () => {
+        finish({
+          ok: false,
+          reason: 'bridge-not-ready',
+          error: 'Reticulum bridge stopped',
+        });
+      };
+      const timer = setTimeout(() => {
+        finish({
+          ok: false,
+          reason: 'bridge-timeout',
+          error: 'Reticulum resource session preparation timed out',
+        });
+      }, 32_000);
+      timer.unref?.();
+      this.on('reticulum-resource-session', onSessionState);
+      this.on('degraded', onDegraded);
+      this.on('stopped', onStopped);
+      void this.sendCommand('prepare_reticulum_resource_session', {
+        peerPresenceHash: payload.peerPresenceHash,
+        reticulumIdentityPublicKeyBase64:
+          payload.reticulumIdentityPublicKeyBase64,
+        resourceType: payload.resourceType,
+        ...(payload.logicalResourceType
+          ? { logicalResourceType: payload.logicalResourceType }
+          : {}),
+      })
+        .then((resp) => {
+          if (!resp.ok) {
+            finish({
+              ok: false,
+              reason: this.mapSendFailureReason(resp),
+              ...(resp.error ? { error: resp.error } : {}),
+            });
+            return;
+          }
+          expectedLinkId = String(resp.payload?.linkId ?? '');
+          if (resp.payload?.status === 'ready') {
+            finish({ ok: true });
+            return;
+          }
+          for (const state of pendingSessionStates) {
+            if (!state.linkId || state.linkId === expectedLinkId) {
+              onSessionState(state);
+              if (settled) break;
+            }
+          }
+          pendingSessionStates.length = 0;
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          finish({
+            ok: false,
+            reason: message.includes('timed out')
+              ? 'bridge-timeout'
+              : 'bridge-exception',
+            error: message,
+          });
+        });
+    });
   }
 
   async sendReticulumChatResourceDetailed(payload: {
@@ -4679,6 +4876,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         this.emitBridgeFrameEvent('reticulum-resource', frame.payload ?? {});
         return;
       }
+      case 'reticulum_resource_session': {
+        this.emitBridgeFrameEvent(
+          'reticulum-resource-session',
+          frame.payload ?? {}
+        );
+        return;
+      }
       case 'error': {
         const message =
           frame.payload?.message ??
@@ -4962,13 +5166,25 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     frame: BridgeRespFrame
   ): ReticulumSendFailureReason {
     const code = frame.payload?.code;
-    if (code === 'bridge_overloaded') return 'bridge-overloaded';
+    if (
+      code === 'bridge_overloaded' ||
+      code === 'bridge_command_queue_full' ||
+      code === 'scheduler_queue_full' ||
+      code === 'resource_open_queue_full' ||
+      code === 'resource_session_capacity' ||
+      code === 'resource_session_queue_full'
+    )
+      return 'bridge-overloaded';
     if (code === 'bridge_not_started') return 'bridge-not-started';
     if (code === 'unknown_peer_presence_hash')
       return 'unknown-peer-presence-hash';
     if (code === 'wire_too_large') return 'wire-too-large';
     if (code === 'packet_send_false') return 'packet-send-false';
-    if (code === 'no_route' || code === 'no_established_route')
+    if (
+      code === 'no_route' ||
+      code === 'no_established_route' ||
+      code === 'resource_session_backoff'
+    )
       return 'no-route';
     if (code === 'unknown_link_id') return 'unknown-link-id';
     if (code === 'audio_link_not_ready') return 'audio-link-not-ready';
