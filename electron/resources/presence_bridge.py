@@ -12,6 +12,7 @@ import queue
 import secrets
 import shutil
 import socket
+import statistics
 import sys
 import threading
 import time
@@ -148,11 +149,31 @@ _OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 5.0
 _OVERLAY_HELLO_WIRE_TYPE = "OVERLAY_HELLO"
 _OVERLAY_PING_WIRE_TYPE = "OVERLAY_PING"
 _OVERLAY_PONG_WIRE_TYPE = "OVERLAY_PONG"
+_OVERLAY_MIGRATION_COMMIT_WIRE_TYPE = "OVERLAY_MIGRATION_COMMIT"
+_OVERLAY_MIGRATION_ACK_WIRE_TYPE = "OVERLAY_MIGRATION_ACK"
+_OVERLAY_MIGRATION_FINALIZE_WIRE_TYPE = "OVERLAY_MIGRATION_FINALIZE"
+_OVERLAY_ROUTE_MIGRATION_CAPABILITY = "route-rtt-v1"
+_OVERLAY_ROUTE_MIGRATION_MARKER = "route-probe-v1"
 _OVERLAY_TRANSPORT_WIRE_TYPES = {
     _OVERLAY_HELLO_WIRE_TYPE,
     _OVERLAY_PING_WIRE_TYPE,
     _OVERLAY_PONG_WIRE_TYPE,
+    _OVERLAY_MIGRATION_COMMIT_WIRE_TYPE,
+    _OVERLAY_MIGRATION_ACK_WIRE_TYPE,
+    _OVERLAY_MIGRATION_FINALIZE_WIRE_TYPE,
 }
+_OVERLAY_ROUTE_MIGRATION_MIN_ACTIVE_SECONDS = 60.0
+_OVERLAY_ROUTE_MIGRATION_COOLDOWN_SECONDS = 30 * 60.0
+_OVERLAY_ROUTE_MIGRATION_ESTABLISH_TIMEOUT_SECONDS = 30.0
+_OVERLAY_ROUTE_MIGRATION_PROBE_SAMPLES = 5
+_OVERLAY_ROUTE_MIGRATION_MIN_SAMPLES = 4
+_OVERLAY_ROUTE_MIGRATION_PROBE_TIMEOUT_SECONDS = 5.0
+_OVERLAY_ROUTE_MIGRATION_RTT_RATIO = 0.80
+_OVERLAY_ROUTE_MIGRATION_RTT_MIN_GAIN_MS = 20.0
+_OVERLAY_ROUTE_MIGRATION_COMMIT_TIMEOUT_SECONDS = 3.0
+_OVERLAY_ROUTE_MIGRATION_COMMIT_ATTEMPTS = 3
+_OVERLAY_ROUTE_MIGRATION_MAX_CONCURRENT = 2
+_OVERLAY_ROUTE_MIGRATION_CANDIDATE_MAX_AGE_SECONDS = 90.0
 _CALL_RELAY_DEDUP_TTL_SECONDS = 90.0
 _CALL_RELAY_DEDUP_MAX = 4096
 _call_relay_dedup: Dict[str, float] = {}
@@ -344,6 +365,8 @@ _overlay_close_pending_link_ids: Set[str] = set()
 _overlay_dedup_pending_by_peer_hash: Set[str] = set()
 _overlay_delayed_duplicate_close_pending: Set[str] = set()
 _overlay_announce_retry_last_at_by_peer_hash: Dict[str, float] = {}
+_overlay_route_migration_pending_by_peer_hash: Set[str] = set()
+_overlay_route_migration_last_attempt_at_by_peer_hash: Dict[str, float] = {}
 _overlay_close_diagnostics: "deque[Tuple[float, str, bool, bool]]" = deque(maxlen=512)
 _qchat_file_links_by_id: Dict[str, Dict[str, Any]] = {}
 _qchat_file_link_ids_by_object: Dict[int, str] = {}
@@ -500,6 +523,7 @@ _SCHEDULER_AUDIO_SHARDS = 4
 _SCHEDULER_PRESENCE_FANOUT_SHARDS = 8
 _SCHEDULER_LAND_STATE_SHARDS = 4
 _SCHEDULER_RESOURCE_OPEN_SHARDS = 4
+_SCHEDULER_OVERLAY_MIGRATION_SHARDS = 2
 _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS = 80.0
 _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "control-send": 256,
@@ -519,6 +543,8 @@ for _land_state_shard in range(_SCHEDULER_LAND_STATE_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"land-state-forward-{_land_state_shard}"] = 64
 for _resource_open_shard in range(_SCHEDULER_RESOURCE_OPEN_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"resource-open-{_resource_open_shard}"] = 32
+for _overlay_migration_shard in range(_SCHEDULER_OVERLAY_MIGRATION_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"overlay-migration-{_overlay_migration_shard}"] = 2
 
 _shutdown = threading.Event()
 _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
@@ -6561,6 +6587,27 @@ def _reticulum_path_snapshot(destination_hash: bytes) -> Dict[str, Any]:
         "packet": "",
     }
     try:
+        if _reticulum is not None and hasattr(_reticulum, "get_path_snapshot"):
+            snapshot = _reticulum.get_path_snapshot(destination_hash)
+            if isinstance(snapshot, dict):
+                info["has_path"] = True
+                hops = snapshot.get("hops")
+                info["hops"] = int(hops) if isinstance(hops, int) else None
+                next_hop = snapshot.get("via")
+                if isinstance(next_hop, (bytes, bytearray)):
+                    info["next_hop"] = bytes(next_hop).hex()
+                info["interface"] = str(snapshot.get("interface") or "")
+                info["timestamp"] = snapshot.get("timestamp")
+                info["expires"] = snapshot.get("expires")
+                packet_hash = snapshot.get("packet")
+                if isinstance(packet_hash, (bytes, bytearray)):
+                    info["packet"] = bytes(packet_hash).hex()
+                elif packet_hash is not None:
+                    info["packet"] = str(packet_hash)
+                return info
+    except Exception:
+        pass
+    try:
         info["has_path"] = bool(RNS.Transport.has_path(destination_hash))
     except Exception:
         info["has_path"] = False
@@ -6601,6 +6648,31 @@ def _reticulum_path_snapshot(destination_hash: bytes) -> Dict[str, Any]:
     except Exception:
         pass
     return info
+
+
+def _rns_link_id_bytes(link: Any) -> Optional[bytes]:
+    value = getattr(link, "link_id", None) if link is not None else None
+    if not isinstance(value, (bytes, bytearray)):
+        return None
+    value = bytes(value)
+    return value if value else None
+
+
+def _reticulum_link_route_snapshot(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    link = state.get("link")
+    rns_link_id = _rns_link_id_bytes(link)
+    if rns_link_id is None:
+        return None
+    try:
+        if _reticulum is not None and hasattr(_reticulum, "get_link_route_snapshot"):
+            snapshot = _reticulum.get_link_route_snapshot(rns_link_id)
+        elif hasattr(RNS.Transport, "link_route_snapshot"):
+            snapshot = RNS.Transport.link_route_snapshot(rns_link_id)
+        else:
+            snapshot = None
+    except Exception:
+        snapshot = None
+    return snapshot if isinstance(snapshot, dict) else None
 
 
 def _format_reticulum_path_snapshot(info: Dict[str, Any]) -> str:
@@ -7613,6 +7685,7 @@ class PresenceAnnounceHandler:
         _mark_candidate_peer(peer_hash, "announce")
         _retry_pending_overlay_connect_on_announce(peer_hash)
         _retry_pending_audio_connect_on_announce(peer_hash)
+        _maybe_schedule_overlay_route_migration(peer_hash, "announce")
 
 
 def build_outbound_destination(peer_identity):
@@ -7958,6 +8031,8 @@ def _run_delayed_overlay_duplicate_close(
             else:
                 _active_overlay_link_id_by_peer_hash.pop(peer_key, None)
             if promote_loser:
+                lose_state.pop("migration_draining", None)
+                lose_state.pop("migration_successor_link_id", None)
                 _active_overlay_link_id_by_peer_hash[peer_key] = lose_id
         if promote_loser:
             log(
@@ -8062,6 +8137,7 @@ def _promote_overlay_fallback_locked(peer_key: str, exclude_link_id: str = "") -
         (candidate_id, candidate_state)
         for candidate_id, candidate_state in _overlay_links_by_id.items()
         if candidate_id != exclude_link_id
+        and candidate_state.get("migration_candidate") is not True
         and str(candidate_state.get("peerPresenceHash") or "").strip().lower() == peer_key
     ]
     if not fallback_candidates:
@@ -8077,6 +8153,8 @@ def _promote_overlay_fallback_locked(peer_key: str, exclude_link_id: str = "") -
         )
         keep_state = _overlay_links_by_id.get(keep_id, keep_state)
     if keep_state is not None and _overlay_link_is_fanout_usable(keep_state):
+        keep_state.pop("migration_draining", None)
+        keep_state.pop("migration_successor_link_id", None)
         _active_overlay_link_id_by_peer_hash[peer_key] = keep_id
         return keep_id
     return ""
@@ -8103,6 +8181,18 @@ def remove_overlay_link(link_id: str) -> Optional[Dict[str, Any]]:
             _overlay_close_pending_link_ids.discard(link_id)
             return None
         _ensure_managed_link_fields(state, kind="overlay")
+        for event_key in (
+            "migration_established_event",
+            "migration_ready_event",
+            "migration_commit_event",
+        ):
+            event = state.get(event_key)
+            if isinstance(event, threading.Event):
+                event.set()
+        for pending in list((state.get("rtt_pending") or {}).values()):
+            event = pending.get("event") if isinstance(pending, dict) else None
+            if isinstance(event, threading.Event):
+                event.set()
         state["manager_state"] = _LINK_STATE_DEAD
         state["generation"] = int(state.get("generation") or 0) + 1
         _overlay_close_pending_link_ids.discard(link_id)
@@ -8595,6 +8685,9 @@ def _overlay_teardown_should_demote(reason: str) -> bool:
         "link_pressure",
         "link_pressure_inbound",
         "link_pressure_outbound",
+        "route_migrated",
+        "migration_candidate_failed",
+        "migration_candidate_rejected",
     }:
         return False
     return True
@@ -8628,6 +8721,8 @@ def _overlay_link_is_good_outbound_rx(state: Dict[str, Any], now: float) -> bool
 
 
 def _overlay_link_is_fanout_usable(state: Dict[str, Any]) -> bool:
+    if state.get("migration_candidate") is True:
+        return False
     if state.get("established") is not True:
         return False
     if state.get("link") is None:
@@ -8693,7 +8788,51 @@ def _overlay_inbound_full_hint() -> bool:
         return len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
 
 
-def _make_overlay_transport_wire(message_type: str) -> bytes:
+def _valid_overlay_correlation_id(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    if not candidate or len(candidate) > 32:
+        return ""
+    try:
+        bytes.fromhex(candidate)
+    except ValueError:
+        return ""
+    return candidate
+
+
+def _overlay_peer_supports_route_migration(state: Dict[str, Any]) -> bool:
+    capabilities = state.get("peer_capabilities")
+    return (
+        isinstance(capabilities, set)
+        and _OVERLAY_ROUTE_MIGRATION_CAPABILITY in capabilities
+    )
+
+
+def _overlay_link_remote_identity(link: Any) -> Any:
+    getter = getattr(link, "get_remote_identity", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _overlay_identity_matches_peer(identity: Any, peer_key: str) -> bool:
+    if identity is None:
+        return False
+    derived_peer_hash = derive_presence_destination_hash_for_identity(identity)
+    return bool(
+        derived_peer_hash
+        and derived_peer_hash == str(peer_key or "").strip().lower()
+    )
+
+
+def _make_overlay_transport_wire(
+    message_type: str,
+    *,
+    correlation_id: str = "",
+    migration_candidate: bool = False,
+) -> bytes:
     if _destination is None:
         raise RuntimeError("Bridge not started")
     wire = {
@@ -8703,6 +8842,13 @@ def _make_overlay_transport_wire(message_type: str) -> bytes:
         "b": PRESENCE_BRIDGE_BUILD,
         "f": _overlay_inbound_full_hint(),
     }
+    if message_type == _OVERLAY_HELLO_WIRE_TYPE:
+        wire["c"] = [_OVERLAY_ROUTE_MIGRATION_CAPABILITY]
+        if migration_candidate:
+            wire["m"] = _OVERLAY_ROUTE_MIGRATION_MARKER
+    correlation_key = _valid_overlay_correlation_id(correlation_id)
+    if correlation_key:
+        wire["q"] = correlation_key
     return json.dumps(wire, separators=(",", ":")).encode("utf-8")
 
 
@@ -8711,10 +8857,16 @@ def _send_overlay_transport_control(
     state: Dict[str, Any],
     message_type: str,
     reason: str,
+    *,
+    correlation_id: str = "",
 ) -> bool:
     peer_key = _overlay_link_peer_hash(state) or "unknown"
     try:
-        wire_bytes = _make_overlay_transport_wire(message_type)
+        wire_bytes = _make_overlay_transport_wire(
+            message_type,
+            correlation_id=correlation_id,
+            migration_candidate=state.get("migration_candidate") is True,
+        )
     except Exception as exc:
         log(
             "[presence_bridge] target=presence-reticulum overlay_transport_send_failed "
@@ -8757,12 +8909,601 @@ def _send_overlay_transport_control(
                 link_id = _overlay_link_ids_by_object.get(id(link)) or ""
         if link_id:
             _overlay_enqueue_close(link_id, "overlay_transport_packet_send_false")
+        if state.get("migration_candidate") is True:
+            return False
         _force_overlay_peer_path_refresh(
             peer_key,
             target="presence-reticulum",
             reason=f"overlay_transport_send:{message_type}:{reason}:packet_send_false",
         )
     return ok
+
+
+def _send_overlay_rtt_probe(
+    link_id: str,
+    purpose: str,
+) -> Optional[Dict[str, Any]]:
+    state = get_overlay_link_state(link_id)
+    if state is None or state.get("established") is not True:
+        return None
+    link = state.get("link")
+    if link is None or not _overlay_link_is_current(link_id, link):
+        return None
+    probe_id = secrets.token_hex(8)
+    pending = {
+        "id": probe_id,
+        "purpose": str(purpose or "liveness"),
+        "sent_ns": time.monotonic_ns(),
+        "event": threading.Event(),
+        "rtt_ms": None,
+    }
+    with _state_lock:
+        probes = state.setdefault("rtt_pending", {})
+        cutoff_ns = time.monotonic_ns() - int(
+            _OVERLAY_ROUTE_MIGRATION_PROBE_TIMEOUT_SECONDS * 2 * 1_000_000_000
+        )
+        for stale_id, stale in list(probes.items()):
+            if int(stale.get("sent_ns") or 0) < cutoff_ns:
+                probes.pop(stale_id, None)
+                stale_event = stale.get("event")
+                if isinstance(stale_event, threading.Event):
+                    stale_event.set()
+        probes[probe_id] = pending
+    if _send_overlay_transport_control(
+        link,
+        state,
+        _OVERLAY_PING_WIRE_TYPE,
+        purpose,
+        correlation_id=probe_id,
+    ):
+        return pending
+    with _state_lock:
+        state.get("rtt_pending", {}).pop(probe_id, None)
+    pending["event"].set()
+    return pending
+
+
+def _resolve_overlay_rtt_probe(state: Dict[str, Any], probe_id: str) -> Optional[float]:
+    probe_key = _valid_overlay_correlation_id(probe_id)
+    if not probe_key:
+        return None
+    with _state_lock:
+        pending = state.get("rtt_pending", {}).pop(probe_key, None)
+    if not isinstance(pending, dict):
+        return None
+    sent_ns = pending.get("sent_ns")
+    if not isinstance(sent_ns, int) or sent_ns <= 0:
+        return None
+    rtt_ms = max(0.0, (time.monotonic_ns() - sent_ns) / 1_000_000.0)
+    pending["rtt_ms"] = rtt_ms
+    with _state_lock:
+        samples = state.get("rtt_samples_ms")
+        if not isinstance(samples, deque):
+            samples = deque(maxlen=16)
+            state["rtt_samples_ms"] = samples
+        samples.append(rtt_ms)
+    event = pending.get("event")
+    if isinstance(event, threading.Event):
+        event.set()
+    return rtt_ms
+
+
+def _overlay_migration_quality_acceptable(
+    active_samples: List[float],
+    candidate_samples: List[float],
+    active_hops: int,
+    candidate_hops: int,
+) -> Tuple[bool, Dict[str, Any]]:
+    active_clean = [float(value) for value in active_samples if isinstance(value, (int, float))]
+    candidate_clean = [float(value) for value in candidate_samples if isinstance(value, (int, float))]
+    result: Dict[str, Any] = {
+        "active_samples": len(active_clean),
+        "candidate_samples": len(candidate_clean),
+        "active_median_ms": None,
+        "candidate_median_ms": None,
+        "active_hops": active_hops,
+        "candidate_hops": candidate_hops,
+    }
+    if (
+        len(active_clean) < _OVERLAY_ROUTE_MIGRATION_MIN_SAMPLES
+        or len(candidate_clean) < _OVERLAY_ROUTE_MIGRATION_MIN_SAMPLES
+        or len(candidate_clean) < len(active_clean)
+        or candidate_hops >= active_hops
+    ):
+        return False, result
+    active_median = statistics.median(active_clean)
+    candidate_median = statistics.median(candidate_clean)
+    result["active_median_ms"] = active_median
+    result["candidate_median_ms"] = candidate_median
+    ratio_ok = candidate_median <= active_median * _OVERLAY_ROUTE_MIGRATION_RTT_RATIO
+    absolute_ok = (
+        active_median - candidate_median
+        >= _OVERLAY_ROUTE_MIGRATION_RTT_MIN_GAIN_MS
+    )
+    return bool(ratio_ok and absolute_ok), result
+
+
+def _promote_overlay_migration_candidate(
+    peer_key: str,
+    candidate_link_id: str,
+    reason: str,
+) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    candidate_link_id = str(candidate_link_id or "").strip()
+    if not peer_key or not candidate_link_id:
+        return False
+    previous_link_id = ""
+    candidate_state: Optional[Dict[str, Any]] = None
+    with _state_lock:
+        candidate_state = _overlay_links_by_id.get(candidate_link_id)
+        if candidate_state is None:
+            return False
+        if candidate_state.get("migration_candidate") is not True:
+            return _active_overlay_link_id_by_peer_hash.get(peer_key) == candidate_link_id
+        if (
+            candidate_state.get("established") is not True
+            or candidate_state.get("overlay_transport_admitted") is not True
+            or _overlay_link_peer_hash(candidate_state) != peer_key
+        ):
+            return False
+        if (
+            candidate_state.get("incoming") is True
+            and candidate_state.get("migration_peer_authenticated") is not True
+        ):
+            return False
+        previous_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        source_link_id = str(candidate_state.get("migration_source_link_id") or "")
+        if not source_link_id or previous_link_id != source_link_id:
+            return False
+        previous_state = (
+            _overlay_links_by_id.get(previous_link_id) if previous_link_id else None
+        )
+        if (
+            candidate_state.get("incoming") is True
+            and (previous_state is None or previous_state.get("incoming") is not True)
+        ):
+            return False
+        if previous_state is not None and previous_link_id != candidate_link_id:
+            previous_state["migration_draining"] = True
+            previous_state["migration_successor_link_id"] = candidate_link_id
+        candidate_state["migration_candidate"] = False
+        candidate_state["migration_committed"] = True
+        candidate_state["migration_committed_at"] = time.time()
+        candidate_state["manager_state"] = _LINK_STATE_ESTABLISHED
+        _active_overlay_link_id_by_peer_hash[peer_key] = candidate_link_id
+        if candidate_state.get("incoming") is True:
+            _active_overlay_neighbors.pop(peer_key, None)
+            _inbound_overlay_neighbors[peer_key] = time.time()
+        else:
+            _inbound_overlay_neighbors.pop(peer_key, None)
+            _active_overlay_neighbors[peer_key] = time.time()
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_route_migration_promoted "
+        f"peer={peer_key} previous={previous_link_id or 'none'} "
+        f"candidate={candidate_link_id} reason={reason}"
+    )
+    emit_overlay_link_state(candidate_link_id, candidate_state, "route_migrated")
+    _schedule_delayed_presence_announce_replay(
+        peer_key,
+        candidate_link_id,
+        "route_migrated",
+    )
+    _flush_overlay_link_pending(candidate_link_id)
+    return True
+
+
+def _finalize_overlay_migration(
+    peer_key: str,
+    candidate_link_id: str,
+    transaction_id: str,
+    reason: str,
+) -> bool:
+    peer_key = str(peer_key or "").strip().lower()
+    candidate_link_id = str(candidate_link_id or "").strip()
+    transaction_id = _valid_overlay_correlation_id(transaction_id)
+    if not peer_key or not candidate_link_id or not transaction_id:
+        return False
+    with _state_lock:
+        state = _overlay_links_by_id.get(candidate_link_id)
+        if (
+            state is None
+            or _active_overlay_link_id_by_peer_hash.get(peer_key) != candidate_link_id
+            or state.get("migration_committed") is not True
+            or state.get("migration_transaction_id") != transaction_id
+        ):
+            return False
+        if state.get("migration_finalized") is True:
+            return True
+        previous_link_id = str(state.get("migration_source_link_id") or "")
+        state["migration_finalized"] = True
+        state["migration_finalized_at"] = time.time()
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_route_migration_finalized "
+        f"peer={peer_key} previous={previous_link_id or 'none'} "
+        f"candidate={candidate_link_id} reason={reason}"
+    )
+    if previous_link_id and previous_link_id != candidate_link_id:
+        _schedule_overlay_duplicate_close(
+            peer_key,
+            candidate_link_id,
+            previous_link_id,
+            "route_migrated",
+        )
+    return True
+
+
+def _create_overlay_migration_candidate(
+    peer_key: str,
+    active_link_id: str,
+    target_path: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    peer_key = str(peer_key or "").strip().lower()
+    with _state_lock:
+        if _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id:
+            return None
+        peer_identity = _known_peers.get(peer_key)
+        if peer_identity is None or len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS:
+            return None
+    outbound = build_outbound_destination(peer_identity)
+    if destination_hash_hex(outbound.hash) != peer_key:
+        return None
+    link_id = str(uuid.uuid4())
+    link = RNS.Link(
+        outbound,
+        established_callback=on_outgoing_overlay_link_established,
+        closed_callback=on_overlay_link_closed,
+    )
+    now = time.time()
+    state: Dict[str, Any] = {
+        "linkId": link_id,
+        "link": link,
+        "rnsLinkId": (_rns_link_id_bytes(link) or b"").hex(),
+        "peerPresenceHash": peer_key,
+        "incoming": False,
+        "established": False,
+        "created_at": now,
+        "pending_packets": deque(maxlen=_OVERLAY_PENDING_PACKET_LIMIT),
+        "open_reason": "route_migration_candidate",
+        "announce_retry_created": False,
+        "manager_kind": "overlay",
+        "manager_state": _LINK_STATE_CONNECTING,
+        "generation": 0,
+        "last_failure_reason": "",
+        "backoff_until": 0.0,
+        "migration_candidate": True,
+        "migration_source_link_id": active_link_id,
+        "migration_target_path": dict(target_path),
+        # Link establishment authenticates the destination identity for the
+        # initiator. Incoming candidates must separately identify themselves.
+        "migration_peer_authenticated": True,
+        "migration_established_event": threading.Event(),
+        "migration_ready_event": threading.Event(),
+        "migration_commit_event": threading.Event(),
+        "migration_acknowledged": False,
+    }
+    rejected = False
+    with _state_lock:
+        if (
+            _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id
+            or len(_overlay_links_by_id) >= _OVERLAY_MAX_TOTAL_LINKS
+        ):
+            rejected = True
+        else:
+            _overlay_links_by_id[link_id] = state
+            _overlay_link_ids_by_object[id(link)] = link_id
+            _set_link_manager_generation(link, state)
+    if rejected:
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=presence-reticulum route_migration_candidate_raced peer={peer_key}",
+        )
+        return None
+    emit_overlay_link_state(link_id, state, "route_migration_connecting")
+    log(
+        "[presence_bridge] target=presence-reticulum overlay_route_migration_candidate_opened "
+        f"peer={peer_key} active={active_link_id} candidate={link_id} "
+        f"target_hops={target_path.get('hops')}"
+    )
+    return state
+
+
+def _collect_overlay_migration_rtt_samples(
+    active_link_id: str,
+    candidate_link_id: str,
+) -> Tuple[List[float], List[float]]:
+    active_samples: List[float] = []
+    candidate_samples: List[float] = []
+    for sample_index in range(_OVERLAY_ROUTE_MIGRATION_PROBE_SAMPLES):
+        probe_specs = [
+            (
+                "active",
+                active_link_id,
+                f"route_migration_active_{sample_index}",
+            ),
+            (
+                "candidate",
+                candidate_link_id,
+                f"route_migration_candidate_{sample_index}",
+            ),
+        ]
+        if sample_index % 2:
+            probe_specs.reverse()
+        probes = {
+            label: _send_overlay_rtt_probe(link_id, purpose)
+            for label, link_id, purpose in probe_specs
+        }
+        deadline = time.monotonic() + _OVERLAY_ROUTE_MIGRATION_PROBE_TIMEOUT_SECONDS
+        for pending, output in (
+            (probes.get("active"), active_samples),
+            (probes.get("candidate"), candidate_samples),
+        ):
+            if not isinstance(pending, dict):
+                continue
+            event = pending.get("event")
+            if isinstance(event, threading.Event):
+                event.wait(max(0.0, deadline - time.monotonic()))
+            rtt_ms = pending.get("rtt_ms")
+            if isinstance(rtt_ms, (int, float)):
+                output.append(float(rtt_ms))
+    return active_samples, candidate_samples
+
+
+def _overlay_route_migration_job(
+    peer_key: str,
+    active_link_id: str,
+    target_path: Dict[str, Any],
+    active_route: Dict[str, Any],
+) -> None:
+    candidate_link_id = ""
+    promoted = False
+    try:
+        with _state_lock:
+            active_state = _overlay_links_by_id.get(active_link_id)
+        if (
+            active_state is None
+            or not _overlay_link_is_fanout_usable(active_state)
+            or not _overlay_peer_supports_route_migration(active_state)
+        ):
+            return
+        candidate_state = _create_overlay_migration_candidate(
+            peer_key,
+            active_link_id,
+            target_path,
+        )
+        if candidate_state is None:
+            return
+        candidate_link_id = str(candidate_state.get("linkId") or "")
+        ready_event = candidate_state.get("migration_ready_event")
+        if not isinstance(ready_event, threading.Event) or not ready_event.wait(
+            _OVERLAY_ROUTE_MIGRATION_ESTABLISH_TIMEOUT_SECONDS
+        ):
+            return
+        candidate_state = get_overlay_link_state(candidate_link_id)
+        if (
+            candidate_state is None
+            or candidate_state.get("established") is not True
+            or candidate_state.get("overlay_transport_admitted") is not True
+            or not _overlay_peer_supports_route_migration(candidate_state)
+        ):
+            return
+        active_samples, candidate_samples = _collect_overlay_migration_rtt_samples(
+            active_link_id,
+            candidate_link_id,
+        )
+        with _state_lock:
+            current_active_state = _overlay_links_by_id.get(active_link_id)
+            if _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id:
+                return
+        current_active_route = (
+            _reticulum_link_route_snapshot(current_active_state)
+            if current_active_state is not None
+            else None
+        )
+        candidate_route = _reticulum_link_route_snapshot(candidate_state)
+        active_hops = (
+            current_active_route.get("remote_hops")
+            if current_active_route
+            else active_route.get("remote_hops")
+        )
+        candidate_hops = candidate_route.get("remote_hops") if candidate_route else None
+        if not isinstance(active_hops, int) or not isinstance(candidate_hops, int):
+            return
+        acceptable, result = _overlay_migration_quality_acceptable(
+            active_samples,
+            candidate_samples,
+            active_hops,
+            candidate_hops,
+        )
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_route_migration_measured "
+            f"peer={peer_key} active={active_link_id} candidate={candidate_link_id} "
+            f"accepted={str(acceptable).lower()} result={json.dumps(result, separators=(',', ':'))}"
+        )
+        if not acceptable:
+            return
+        with _state_lock:
+            if _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id:
+                return
+            transaction_id = secrets.token_hex(8)
+            candidate_state["migration_transaction_id"] = transaction_id
+            candidate_state["migration_acknowledged"] = False
+            commit_event = candidate_state.get("migration_commit_event")
+            if not isinstance(commit_event, threading.Event):
+                commit_event = threading.Event()
+                candidate_state["migration_commit_event"] = commit_event
+            else:
+                commit_event.clear()
+        commit_wait_seconds = (
+            _OVERLAY_ROUTE_MIGRATION_COMMIT_TIMEOUT_SECONDS
+            / _OVERLAY_ROUTE_MIGRATION_COMMIT_ATTEMPTS
+        )
+        acknowledged = False
+        for attempt in range(_OVERLAY_ROUTE_MIGRATION_COMMIT_ATTEMPTS):
+            if not _send_overlay_transport_control(
+                candidate_state.get("link"),
+                candidate_state,
+                _OVERLAY_MIGRATION_COMMIT_WIRE_TYPE,
+                f"route_migration_commit_{attempt + 1}",
+                correlation_id=transaction_id,
+            ):
+                return
+            if commit_event.wait(commit_wait_seconds):
+                acknowledged = True
+                break
+        if not acknowledged:
+            return
+        candidate_state = get_overlay_link_state(candidate_link_id)
+        if candidate_state is None or candidate_state.get("migration_acknowledged") is not True:
+            return
+        promoted = _promote_overlay_migration_candidate(
+            peer_key,
+            candidate_link_id,
+            "local_commit_ack",
+        )
+        if not promoted:
+            return
+        if not _send_overlay_transport_control(
+            candidate_state.get("link"),
+            candidate_state,
+            _OVERLAY_MIGRATION_FINALIZE_WIRE_TYPE,
+            "route_migration_finalize",
+            correlation_id=transaction_id,
+        ):
+            _overlay_enqueue_close(
+                candidate_link_id,
+                "migration_finalize_send_failed",
+            )
+            return
+        _finalize_overlay_migration(
+            peer_key,
+            candidate_link_id,
+            transaction_id,
+            "local_finalize_sent",
+        )
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_route_migration_failed "
+            f"peer={peer_key} candidate={candidate_link_id or 'none'} err={exc}"
+        )
+    finally:
+        if candidate_link_id and not promoted:
+            state = get_overlay_link_state(candidate_link_id)
+            if state is not None and state.get("migration_candidate") is True:
+                _overlay_enqueue_close(candidate_link_id, "migration_candidate_rejected")
+        with _state_lock:
+            _overlay_route_migration_pending_by_peer_hash.discard(peer_key)
+
+
+def _overlay_route_migration_inspection_job(
+    peer_key: str,
+    active_link_id: str,
+    reason: str,
+) -> None:
+    peer_key = str(peer_key or "").strip().lower()
+    try:
+        with _state_lock:
+            active_state = _overlay_links_by_id.get(active_link_id)
+            if (
+                _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id
+                or active_state is None
+                or active_state.get("incoming") is True
+                or not _overlay_link_is_fanout_usable(active_state)
+                or not _overlay_peer_supports_route_migration(active_state)
+            ):
+                return
+        try:
+            destination_hash = bytes.fromhex(peer_key)
+        except ValueError:
+            return
+        target_path = _reticulum_path_snapshot(destination_hash)
+        active_route = _reticulum_link_route_snapshot(active_state)
+        target_hops = target_path.get("hops")
+        active_hops = active_route.get("remote_hops") if active_route else None
+        if (
+            target_path.get("has_path") is not True
+            or not isinstance(target_hops, int)
+            or not isinstance(active_hops, int)
+            or target_hops >= active_hops
+        ):
+            return
+        with _state_lock:
+            if _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id:
+                return
+            _overlay_route_migration_last_attempt_at_by_peer_hash[peer_key] = time.time()
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            "overlay_route_migration_scheduled "
+            f"peer={peer_key} active={active_link_id} old_hops={active_hops} "
+            f"new_hops={target_hops} reason={reason}"
+        )
+        _overlay_route_migration_job(
+            peer_key,
+            active_link_id,
+            target_path,
+            active_route,
+        )
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            "overlay_route_migration_inspection_failed "
+            f"peer={peer_key or 'unknown'} err={exc}"
+        )
+    finally:
+        with _state_lock:
+            _overlay_route_migration_pending_by_peer_hash.discard(peer_key)
+
+
+def _maybe_schedule_overlay_route_migration(peer_hash: str, reason: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return False
+    now = time.time()
+    with _state_lock:
+        if (
+            peer_key in _overlay_route_migration_pending_by_peer_hash
+            or len(_overlay_route_migration_pending_by_peer_hash)
+            >= _OVERLAY_ROUTE_MIGRATION_MAX_CONCURRENT
+        ):
+            return False
+        last_attempt = float(
+            _overlay_route_migration_last_attempt_at_by_peer_hash.get(peer_key) or 0.0
+        )
+        if now - last_attempt < _OVERLAY_ROUTE_MIGRATION_COOLDOWN_SECONDS:
+            return False
+        active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+        active_state = _overlay_links_by_id.get(active_link_id) if active_link_id else None
+        if active_state is None or not _overlay_link_is_fanout_usable(active_state):
+            return False
+        # The initiator of the active Link owns replacement attempts. The remote
+        # side sees the replacement as incoming, which prevents competing probes.
+        if active_state.get("incoming") is True:
+            return False
+        if not _overlay_peer_supports_route_migration(active_state):
+            return False
+        established_at = active_state.get("established_at")
+        if (
+            not isinstance(established_at, (int, float))
+            or now - float(established_at) < _OVERLAY_ROUTE_MIGRATION_MIN_ACTIVE_SECONDS
+        ):
+            return False
+    with _state_lock:
+        if _active_overlay_link_id_by_peer_hash.get(peer_key) != active_link_id:
+            return False
+        _overlay_route_migration_pending_by_peer_hash.add(peer_key)
+    queued = _enqueue_scheduler_task(
+        f"overlay-migration-{int(peer_key[:8], 16) % _SCHEDULER_OVERLAY_MIGRATION_SHARDS}",
+        f"overlay-route-inspection:{peer_key[:8]}",
+        _overlay_route_migration_inspection_job,
+        peer_key,
+        active_link_id,
+        reason,
+        drop_oldest=False,
+    )
+    if not queued:
+        with _state_lock:
+            _overlay_route_migration_pending_by_peer_hash.discard(peer_key)
+        return False
+    return True
 
 
 def _admit_overlay_peer_from_transport(
@@ -8783,8 +9524,24 @@ def _admit_overlay_peer_from_transport(
         _overlay_enqueue_close(link_id, "overlay_transport_peer_mismatch")
         return False
     state["peerPresenceHash"] = peer_key
-    state["overlay_transport_admitted"] = True
     now = time.time()
+    if state.get("migration_candidate") is True:
+        authenticated = (
+            state.get("incoming") is not True
+            or state.get("migration_peer_authenticated") is True
+        )
+        state["overlay_transport_admitted"] = authenticated
+        if authenticated:
+            state["overlay_transport_admitted_at"] = now
+            _note_overlay_peer_alive(peer_key, reason)
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_migration_candidate_admitted "
+            f"peer={peer_key} link={link_id} "
+            f"incoming={str(state.get('incoming') is True).lower()} "
+            f"authenticated={str(authenticated).lower()}"
+        )
+        return authenticated
+    state["overlay_transport_admitted"] = True
     state["overlay_transport_admitted_at"] = now
     _note_overlay_peer_alive(peer_key, reason)
     admitted_state = _register_active_overlay_for_peer(peer_key, link_id)
@@ -8825,12 +9582,19 @@ def _handle_overlay_transport_control(
     state["manager_state"] = _LINK_STATE_ESTABLISHED
     state["last_failure_reason"] = ""
     state["backoff_until"] = 0.0
+    if not _admit_overlay_peer_from_transport(peer_key, link_id, state, message_type.lower()):
+        return True
     _note_peer_inbound_capacity_hint(peer_key, {
         "inboundFull": decoded.get("f") is True,
     })
-    if not _admit_overlay_peer_from_transport(peer_key, link_id, state, message_type.lower()):
-        return True
     if message_type == _OVERLAY_HELLO_WIRE_TYPE:
+        raw_capabilities = decoded.get("c")
+        capabilities = {
+            str(capability).strip()
+            for capability in raw_capabilities
+            if isinstance(capability, str) and 0 < len(capability.strip()) <= 48
+        } if isinstance(raw_capabilities, list) else set()
+        state["peer_capabilities"] = capabilities
         log(
             "[presence_bridge] target=presence-reticulum overlay_hello_received "
             f"peer={peer_key} link={link_id} inbound_full={str(decoded.get('f') is True).lower()} "
@@ -8838,22 +9602,95 @@ def _handle_overlay_transport_control(
         )
         if not isinstance(state.get("hello_sent_at"), (int, float)):
             _send_overlay_transport_control(link, state, _OVERLAY_HELLO_WIRE_TYPE, "hello_reply")
+        if (
+            state.get("migration_candidate") is True
+            and decoded.get("m") == _OVERLAY_ROUTE_MIGRATION_MARKER
+            and _OVERLAY_ROUTE_MIGRATION_CAPABILITY in capabilities
+            and (
+                state.get("incoming") is not True
+                or state.get("migration_peer_authenticated") is True
+            )
+        ):
+            ready_event = state.get("migration_ready_event")
+            if isinstance(ready_event, threading.Event):
+                ready_event.set()
         emit_overlay_link_state(link_id, state, "overlay_hello")
     elif message_type == _OVERLAY_PING_WIRE_TYPE:
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_ping "
             f"peer={peer_key} direction=rx"
         )
-        _send_overlay_transport_control(link, state, _OVERLAY_PONG_WIRE_TYPE, "ping")
+        _send_overlay_transport_control(
+            link,
+            state,
+            _OVERLAY_PONG_WIRE_TYPE,
+            "ping",
+            correlation_id=_valid_overlay_correlation_id(decoded.get("q")),
+        )
         emit_overlay_link_state(link_id, state, "overlay_ping")
     elif message_type == _OVERLAY_PONG_WIRE_TYPE:
         state["last_pong_rx_at"] = now
+        rtt_ms = _resolve_overlay_rtt_probe(state, decoded.get("q"))
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_pong "
-            f"peer={peer_key} direction=rx"
+            f"peer={peer_key} direction=rx rtt_ms={rtt_ms if rtt_ms is not None else 'na'}"
         )
         emit_overlay_link_state(link_id, state, "overlay_pong")
-    _overlay_enqueue_dedup(peer_key, reason="dedup_same_peer")
+    elif message_type == _OVERLAY_MIGRATION_COMMIT_WIRE_TYPE:
+        transaction_id = _valid_overlay_correlation_id(decoded.get("q"))
+        existing_transaction_id = str(state.get("migration_transaction_id") or "")
+        transaction_matches = (
+            not existing_transaction_id or existing_transaction_id == transaction_id
+        )
+        commit_eligible = (
+            state.get("migration_candidate") is True
+            or state.get("migration_committed") is True
+        )
+        if (
+            transaction_id
+            and transaction_matches
+            and commit_eligible
+            and (
+                state.get("incoming") is not True
+                or state.get("migration_peer_authenticated") is True
+            )
+        ):
+            state["migration_transaction_id"] = transaction_id
+        if (
+            transaction_id
+            and transaction_matches
+            and commit_eligible
+            and _promote_overlay_migration_candidate(
+                peer_key,
+                link_id,
+                "remote_commit",
+            )
+        ):
+            _send_overlay_transport_control(
+                link,
+                state,
+                _OVERLAY_MIGRATION_ACK_WIRE_TYPE,
+                "migration_commit",
+                correlation_id=transaction_id,
+            )
+    elif message_type == _OVERLAY_MIGRATION_ACK_WIRE_TYPE:
+        transaction_id = _valid_overlay_correlation_id(decoded.get("q"))
+        if transaction_id and transaction_id == state.get("migration_transaction_id"):
+            state["migration_acknowledged"] = True
+            commit_event = state.get("migration_commit_event")
+            if isinstance(commit_event, threading.Event):
+                commit_event.set()
+    elif message_type == _OVERLAY_MIGRATION_FINALIZE_WIRE_TYPE:
+        transaction_id = _valid_overlay_correlation_id(decoded.get("q"))
+        if transaction_id:
+            _finalize_overlay_migration(
+                peer_key,
+                link_id,
+                transaction_id,
+                "remote_finalize",
+            )
+    if state.get("migration_candidate") is not True:
+        _overlay_enqueue_dedup(peer_key, reason="dedup_same_peer")
     return True
 
 
@@ -8875,13 +9712,23 @@ def _ping_established_overlay_links(reason: str) -> int:
     for link_id, state in link_items:
         if state.get("established") is not True:
             continue
+        if state.get("migration_candidate") is True:
+            continue
         link = state.get("link")
         if link is None or not _overlay_link_is_current(link_id, link):
             continue
         last_ping = state.get("last_ping_sent_at")
         if isinstance(last_ping, (int, float)) and now - float(last_ping) < _OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS:
             continue
-        if _send_overlay_transport_control(link, state, _OVERLAY_PING_WIRE_TYPE, reason):
+        if _overlay_peer_supports_route_migration(state):
+            if _send_overlay_rtt_probe(link_id, reason) is not None:
+                sent += 1
+        elif _send_overlay_transport_control(
+            link,
+            state,
+            _OVERLAY_PING_WIRE_TYPE,
+            reason,
+        ):
             sent += 1
     return sent
 
@@ -8973,6 +9820,7 @@ def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
     state = remove_overlay_link(link_id)
     if state is None:
         return
+    migration_candidate = state.get("migration_candidate") is True
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     last_replay_at = state.get("last_replay_at")
     replay_associated = (
@@ -9011,9 +9859,19 @@ def _teardown_overlay_link_id(link_id: str, reason: str) -> None:
             "[presence_bridge] target=presence-reticulum overlay_link_backup_promoted "
             f"peer={peer_hash} closed={link_id} promoted={promoted_link_id} reason={reason}"
         )
-    if peer_hash and _overlay_teardown_should_demote(reason):
+    if (
+        peer_hash
+        and not migration_candidate
+        and not promoted_link_id
+        and _overlay_teardown_should_demote(reason)
+    ):
         _demote_overlay_fanout_peer(peer_hash, f"link_teardown:{reason}")
-    if peer_hash and reason in {"rx_idle_timeout", "unestablished_timeout"}:
+    if (
+        peer_hash
+        and not migration_candidate
+        and not promoted_link_id
+        and reason in {"rx_idle_timeout", "unestablished_timeout"}
+    ):
         _clear_overlay_peer_failure_for_recovery(peer_hash, f"link_teardown:{reason}")
         if _overlay_enqueue_peer_recovery(
             peer_hash,
@@ -9103,6 +9961,8 @@ def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[D
     if not peer_key or not _valid_presence_destination_hash_hex(peer_key):
         return None
     state_for_direction = get_overlay_link_state(link_id)
+    if state_for_direction is not None and state_for_direction.get("migration_candidate") is True:
+        return state_for_direction
     incoming = bool(state_for_direction and state_for_direction.get("incoming") is True)
     if not _admit_overlay_peer_if_allowed(peer_key, "register_active", incoming=incoming):
         _overlay_enqueue_close(link_id, "admission_rejected")
@@ -9125,6 +9985,11 @@ def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[D
         if st_old is None:
             _active_overlay_link_id_by_peer_hash[peer_key] = link_id
             return st_new
+        if (
+            st_new.get("migration_draining") is True
+            and st_new.get("migration_successor_link_id") == existing_link_id
+        ):
+            return st_old
         keep_id, lose_id = _dedup_pick_keep_link(
             peer_key,
             existing_link_id, st_old, link_id, st_new
@@ -9164,6 +10029,8 @@ def _dedup_overlay_links_for_peer(
             (link_id, state)
             for link_id, state in _overlay_links_by_id.items()
             if str(state.get("peerPresenceHash") or "").strip().lower() == peer_key
+            and state.get("migration_candidate") is not True
+            and state.get("migration_draining") is not True
         ]
         if not candidates:
             if _active_overlay_link_id_by_peer_hash.get(peer_key):
@@ -9373,6 +10240,7 @@ def _ensure_overlay_link(
                 state = {
                     "linkId": link_id,
                     "link": link,
+                    "rnsLinkId": (_rns_link_id_bytes(link) or b"").hex(),
                     "peerPresenceHash": peer_key,
                     "incoming": False,
                     "established": False,
@@ -9620,25 +10488,46 @@ def _sync_overlay_links() -> None:
     with _state_lock:
         for link_id, state in list(_overlay_links_by_id.items()):
             _ensure_managed_link_fields(state, kind="overlay")
+            migration_candidate = state.get("migration_candidate") is True
+            created_at = state.get("created_at")
+            if (
+                migration_candidate
+                and isinstance(created_at, (int, float))
+                and now - float(created_at)
+                > _OVERLAY_ROUTE_MIGRATION_CANDIDATE_MAX_AGE_SECONDS
+            ):
+                state["manager_state"] = _LINK_STATE_BACKOFF
+                state["last_failure_reason"] = "migration_candidate_expired"
+                stale_ids.append((link_id, "migration_candidate_rejected"))
+                continue
             if state.get("established") is not True:
-                created_at = state.get("created_at")
                 if (
                     isinstance(created_at, (int, float))
                     and now - float(created_at) > _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS
                 ):
                     state["manager_state"] = _LINK_STATE_BACKOFF
-                    state["last_failure_reason"] = "unestablished_timeout"
-                    stale_ids.append((link_id, "unestablished_timeout"))
+                    stale_reason = (
+                        "migration_candidate_rejected"
+                        if migration_candidate
+                        else "unestablished_timeout"
+                    )
+                    state["last_failure_reason"] = stale_reason
+                    stale_ids.append((link_id, stale_reason))
                 continue
             last_rx = state.get("last_rx_at")
             if not isinstance(last_rx, (int, float)):
                 last_rx = state.get("established_at") or state.get("created_at")
             if isinstance(last_rx, (int, float)) and now - float(last_rx) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
                 state["manager_state"] = _LINK_STATE_DEGRADED
-                state["last_failure_reason"] = "rx_idle_timeout"
-                stale_ids.append((link_id, "rx_idle_timeout"))
+                stale_reason = (
+                    "migration_candidate_rejected"
+                    if migration_candidate
+                    else "rx_idle_timeout"
+                )
+                state["last_failure_reason"] = stale_reason
+                stale_ids.append((link_id, stale_reason))
                 peer_hash = _overlay_link_peer_hash(state)
-                if peer_hash:
+                if peer_hash and not migration_candidate:
                     hard_refresh_peers.append((peer_hash, "rx_idle_timeout"))
         excess = len(_overlay_links_by_id) - _OVERLAY_MAX_TOTAL_LINKS
         if excess > 0:
@@ -9730,6 +10619,10 @@ def _sync_overlay_links() -> None:
     for link_id, state in list(_overlay_links_by_id.items()):
         if closes >= _OVERLAY_RECONCILE_MAX_CLOSES or not budget_available():
             break
+        if state.get("migration_candidate") is True:
+            continue
+        if state.get("migration_draining") is True:
+            continue
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if not peer_hash:
             if (
@@ -10084,6 +10977,8 @@ def on_overlay_link_closed(link) -> None:
     state = remove_overlay_link(link_id)
     if state is None:
         return
+    migration_candidate = state.get("migration_candidate") is True
+    promoted_link_id = str(state.get("_promoted_overlay_link_id") or "")
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     last_replay_at = state.get("last_replay_at")
     replay_associated = (
@@ -10096,12 +10991,13 @@ def on_overlay_link_closed(link) -> None:
             (now, reason, bool(replay_associated), bool(announce_retry_associated))
         )
     verbose_presence_log(_overlay_close_debug_line(link_id, state, reason))
-    _maybe_request_path_after_unestablished_link_close(
-        state,
-        link,
-        target="presence-reticulum",
-        reason=reason,
-    )
+    if not migration_candidate and not promoted_link_id:
+        _maybe_request_path_after_unestablished_link_close(
+            state,
+            link,
+            target="presence-reticulum",
+            reason=reason,
+        )
     state["established"] = False
     emit_overlay_link_state(
         link_id,
@@ -10109,6 +11005,15 @@ def on_overlay_link_closed(link) -> None:
         reason,
         closed_by_reticulum=True,
     )
+    if migration_candidate or promoted_link_id:
+        if peer_hash and promoted_link_id:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                "overlay_link_backup_promoted "
+                f"peer={peer_hash} closed={link_id} promoted={promoted_link_id} "
+                f"reason={reason}"
+            )
+        return
     if peer_hash and _overlay_recent_activity_close_should_keep_peer(state, reason, now):
         age = _overlay_link_recent_activity_age_seconds(state, now)
         _note_overlay_peer_alive(peer_hash, "recent_close_activity")
@@ -10132,8 +11037,26 @@ def on_overlay_link_remote_identified(link, identity) -> None:
         return
     derived_peer_hash = derive_presence_destination_hash_for_identity(identity)
     local_hex = _local_presence_hash_hex()
+    migration_candidate = state.get("migration_candidate") is True
+    expected = str(state.get("peerPresenceHash") or "").strip().lower()
+    if (
+        migration_candidate
+        and state.get("incoming") is True
+        and (
+            not expected
+            or not derived_peer_hash
+            or derived_peer_hash != expected
+        )
+    ):
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            "overlay_migration_candidate_identity_rejected "
+            f"link={link_id} expected={expected or 'unknown'} "
+            f"derived={derived_peer_hash or 'unknown'}"
+        )
+        _overlay_enqueue_close(link_id, "remote_identified_mismatch")
+        return
     if derived_peer_hash:
-        expected = str(state.get("peerPresenceHash") or "").strip().lower()
         if local_hex and derived_peer_hash == local_hex:
             log(
                 "[presence_bridge] target=presence-reticulum overlay_remote_identified_self "
@@ -10148,7 +11071,25 @@ def on_overlay_link_remote_identified(link, identity) -> None:
             )
             _overlay_enqueue_close(link_id, "remote_identified_mismatch")
             return
+    if migration_candidate and state.get("incoming") is True:
+        state["migration_peer_authenticated"] = True
+        state["overlay_transport_admitted"] = True
+        state["overlay_transport_admitted_at"] = time.time()
+        _note_overlay_peer_alive(expected, "migration_remote_identified")
     peer_hash = find_peer_hash_for_identity(identity)
+    if (
+        migration_candidate
+        and state.get("incoming") is True
+        and peer_hash
+        and peer_hash != expected
+    ):
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            "overlay_migration_candidate_identity_rejected "
+            f"link={link_id} expected={expected} resolved={peer_hash}"
+        )
+        _overlay_enqueue_close(link_id, "remote_identified_mismatch")
+        return
     if peer_hash:
         state["peerPresenceHash"] = peer_hash
         log(
@@ -10174,6 +11115,8 @@ def on_overlay_link_remote_identified(link, identity) -> None:
         _note_overlay_peer_alive(ph_reg, "remote_identified")
         _register_active_overlay_for_peer(ph_reg, link_id)
         _overlay_enqueue_dedup(ph_reg, reason="dedup_same_peer")
+        if migration_candidate and state.get("incoming") is True:
+            _send_overlay_hello_for_link(link_id, "migration_identity_verified")
 
 
 def _audio_overlay_promotion_allowed(peer_key: str) -> bool:
@@ -13863,6 +14806,7 @@ def on_outgoing_overlay_link_established(link) -> None:
     state["established"] = True
     state["established_at"] = now
     state["manager_state"] = _LINK_STATE_ESTABLISHED
+    state["rnsLinkId"] = (_rns_link_id_bytes(link) or b"").hex()
     try:
         if _identity is not None:
             link.identify(_identity)
@@ -13872,6 +14816,12 @@ def on_outgoing_overlay_link_established(link) -> None:
         return
     emit_overlay_link_state(link_id, state, "established")
     ph_out = str(state.get("peerPresenceHash") or "").strip().lower()
+    if state.get("migration_candidate") is True:
+        _send_overlay_hello_for_link(link_id, "migration_candidate_established")
+        established_event = state.get("migration_established_event")
+        if isinstance(established_event, threading.Event):
+            established_event.set()
+        return
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _register_active_overlay_for_peer(ph_out, link_id)
     _send_overlay_hello_for_link(link_id, "link_established")
@@ -15948,9 +16898,80 @@ def _cancel_inbound_classify_timer(link_key: int) -> None:
             pass
 
 
-def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "incoming") -> str:
+def _register_incoming_overlay_link(
+    link,
+    peer_hash: str = "",
+    reason: str = "incoming",
+    *,
+    migration_candidate: bool = False,
+) -> str:
     peer_key = str(peer_hash or "").strip().lower()
-    _prune_overlay_link_pressure("link_pressure_inbound", reserve_slots=1)
+    migration_source_link_id = ""
+    migration_peer_authenticated = False
+    if migration_candidate:
+        remote_identity = _overlay_link_remote_identity(link)
+        if remote_identity is not None:
+            migration_peer_authenticated = _overlay_identity_matches_peer(
+                remote_identity,
+                peer_key,
+            )
+            if not migration_peer_authenticated:
+                log(
+                    "[presence_bridge] target=presence-reticulum "
+                    "overlay_migration_candidate_rejected "
+                    f"peer={peer_key or 'unknown'} reason=remote_identity_mismatch"
+                )
+                _enqueue_scheduler_task(
+                    _overlay_io_lane_for_peer(peer_key or "unknown"),
+                    f"overlay-migration-reject:{peer_key[:8] or 'unknown'}",
+                    _teardown_reticulum_link_bounded,
+                    link,
+                    "target=presence-reticulum route_migration_identity_mismatch "
+                    f"peer={peer_key or 'unknown'}",
+                )
+                return ""
+        with _state_lock:
+            active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
+            active_state = (
+                _overlay_links_by_id.get(active_link_id) if active_link_id else None
+            )
+            has_existing_candidate = any(
+                state.get("migration_candidate") is True
+                and _overlay_link_peer_hash(state) == peer_key
+                for state in _overlay_links_by_id.values()
+            )
+            migration_allowed = (
+                _valid_presence_destination_hash_hex(peer_key)
+                and active_state is not None
+                and _overlay_link_is_fanout_usable(active_state)
+                and active_state.get("incoming") is True
+                and _overlay_peer_supports_route_migration(active_state)
+                and not has_existing_candidate
+            )
+            has_capacity = len(_overlay_links_by_id) < _OVERLAY_MAX_TOTAL_LINKS
+            if migration_allowed:
+                migration_source_link_id = active_link_id
+        if not migration_allowed or not has_capacity:
+            reject_reason = (
+                "route_migration_no_active_capable_link"
+                if not migration_allowed
+                else "route_migration_link_pressure"
+            )
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                "overlay_migration_candidate_rejected "
+                f"peer={peer_key or 'unknown'} reason={reject_reason}"
+            )
+            _enqueue_scheduler_task(
+                _overlay_io_lane_for_peer(peer_key or "unknown"),
+                f"overlay-migration-reject:{peer_key[:8] or 'unknown'}",
+                _teardown_reticulum_link_bounded,
+                link,
+                f"target=presence-reticulum {reject_reason} peer={peer_key or 'unknown'}",
+            )
+            return ""
+    else:
+        _prune_overlay_link_pressure("link_pressure_inbound", reserve_slots=1)
     with _state_lock:
         pressure_links = len(_overlay_links_by_id)
     if pressure_links >= _OVERLAY_MAX_TOTAL_LINKS:
@@ -15991,6 +17012,7 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
     state = {
         "linkId": link_id,
         "link": link,
+        "rnsLinkId": (_rns_link_id_bytes(link) or b"").hex(),
         "peerPresenceHash": peer_key,
         "incoming": True,
         "established": True,
@@ -16006,14 +17028,25 @@ def _register_incoming_overlay_link(link, peer_hash: str = "", reason: str = "in
         "generation": 0,
         "last_failure_reason": "",
         "backoff_until": 0.0,
+        "migration_candidate": bool(migration_candidate),
+        "migration_source_link_id": migration_source_link_id,
+        "migration_peer_authenticated": bool(migration_peer_authenticated),
+        "migration_ready_event": threading.Event() if migration_candidate else None,
     }
     with _state_lock:
         _overlay_links_by_id[link_id] = state
     configure_overlay_link(link, link_id)
-    if peer_key:
+    if peer_key and not migration_candidate:
         _register_active_overlay_for_peer(peer_key, link_id)
     emit_overlay_link_state(link_id, state, "incoming")
-    _send_overlay_hello_for_link(link_id, f"incoming:{reason}")
+    if not migration_candidate or migration_peer_authenticated:
+        _send_overlay_hello_for_link(link_id, f"incoming:{reason}")
+    else:
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            "overlay_migration_candidate_waiting_identity "
+            f"peer={peer_key} link={link_id}"
+        )
     return link_id
 
 
@@ -16149,10 +17182,17 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         peer_hash = str(decoded.get("r") or "").strip().lower()
     elif decoded.get("t") in _OVERLAY_TRANSPORT_WIRE_TYPES:
         peer_hash = str(decoded.get("r") or "").strip().lower()
+    migration_candidate = (
+        decoded.get("t") == _OVERLAY_HELLO_WIRE_TYPE
+        and decoded.get("m") == _OVERLAY_ROUTE_MIGRATION_MARKER
+        and isinstance(decoded.get("c"), list)
+        and _OVERLAY_ROUTE_MIGRATION_CAPABILITY in decoded.get("c")
+    )
     link_id = _register_incoming_overlay_link(
         link,
         peer_hash if _valid_presence_destination_hash_hex(peer_hash) else "",
         "first_packet",
+        migration_candidate=migration_candidate,
     )
     if link_id:
         on_overlay_link_packet(message, packet)

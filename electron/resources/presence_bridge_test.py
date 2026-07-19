@@ -44,6 +44,7 @@ class FakeLink:
         self.resource_started_callback = None
         self.resource_concluded_callback = None
         self.teardown_called = False
+        self.remote_identity = None
 
     def get_mdu(self):
         return 4096
@@ -56,6 +57,9 @@ class FakeLink:
 
     def set_remote_identified_callback(self, callback):
         self.remote_identified_callback = callback
+
+    def get_remote_identity(self):
+        return self.remote_identity
 
     def set_resource_strategy(self, strategy):
         self.resource_strategy = strategy
@@ -1066,6 +1070,728 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
         self.assertIn(overlay_link_id, self.bridge._overlay_links_by_id)
         self.assertIsNone(self.bridge.get_qchat_file_link_id(link))
         self.assertFalse(link.teardown_called)
+
+
+class PresenceBridgeOverlayRouteMigrationTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.bridge._destination = FakeDestination()
+        self.peer_hash = "ab" * 16
+        self.active_link = FakeLink()
+        self.active_link_id = "active-overlay"
+        self.active_state = {
+            "linkId": self.active_link_id,
+            "link": self.active_link,
+            "peerPresenceHash": self.peer_hash,
+            "incoming": False,
+            "established": True,
+            "established_at": time.time() - 120,
+            "created_at": time.time() - 120,
+            "overlay_transport_admitted": True,
+            "manager_kind": "overlay",
+            "manager_state": self.bridge._LINK_STATE_ESTABLISHED,
+            "generation": 0,
+            "peer_capabilities": {
+                self.bridge._OVERLAY_ROUTE_MIGRATION_CAPABILITY,
+            },
+        }
+        self.bridge._overlay_links_by_id[self.active_link_id] = self.active_state
+        self.bridge._overlay_link_ids_by_object[id(self.active_link)] = self.active_link_id
+        self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash] = self.active_link_id
+
+    def test_migration_uses_real_bounded_scheduler_lanes(self):
+        for shard in range(self.bridge._SCHEDULER_OVERLAY_MIGRATION_SHARDS):
+            lane = f"overlay-migration-{shard}"
+            self.assertIn(lane, self.bridge._SCHEDULER_QUEUE_MAX_BY_LANE)
+            self.assertGreater(self.bridge._SCHEDULER_QUEUE_MAX_BY_LANE[lane], 0)
+
+    def test_hello_advertises_route_migration_and_marks_only_candidates(self):
+        regular = json.loads(
+            self.bridge._make_overlay_transport_wire(
+                self.bridge._OVERLAY_HELLO_WIRE_TYPE,
+            ).decode("utf-8")
+        )
+        candidate = json.loads(
+            self.bridge._make_overlay_transport_wire(
+                self.bridge._OVERLAY_HELLO_WIRE_TYPE,
+                migration_candidate=True,
+            ).decode("utf-8")
+        )
+
+        self.assertIn(
+            self.bridge._OVERLAY_ROUTE_MIGRATION_CAPABILITY,
+            regular["c"],
+        )
+        self.assertNotIn("m", regular)
+        self.assertEqual(
+            candidate["m"],
+            self.bridge._OVERLAY_ROUTE_MIGRATION_MARKER,
+        )
+
+    def test_rtt_probe_resolution_requires_the_exact_nonce(self):
+        event = threading.Event()
+        state = {
+            "rtt_pending": {
+                "11" * 8: {
+                    "sent_ns": 1_000_000_000,
+                    "event": event,
+                    "rtt_ms": None,
+                }
+            }
+        }
+
+        with mock.patch.object(
+            self.bridge.time,
+            "monotonic_ns",
+            return_value=1_025_000_000,
+        ):
+            self.assertIsNone(
+                self.bridge._resolve_overlay_rtt_probe(state, "22" * 8)
+            )
+            self.assertEqual(
+                self.bridge._resolve_overlay_rtt_probe(state, "11" * 8),
+                25.0,
+            )
+
+        self.assertTrue(event.is_set())
+        self.assertEqual(list(state["rtt_samples_ms"]), [25.0])
+
+    def test_ping_echoes_the_same_rtt_nonce(self):
+        nonce = "33" * 8
+        wire = {
+            "t": self.bridge._OVERLAY_PING_WIRE_TYPE,
+            "r": self.peer_hash,
+            "q": nonce,
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_admit_overlay_peer_from_transport",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ) as send, mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_dedup",
+        ):
+            handled = self.bridge._handle_overlay_transport_control(
+                wire,
+                self.active_link,
+                self.active_link_id,
+                self.active_state,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            send.call_args.kwargs["correlation_id"],
+            nonce,
+        )
+
+    def test_quality_gate_requires_lower_hops_and_clear_rtt_gain(self):
+        accepted, result = self.bridge._overlay_migration_quality_acceptable(
+            [120, 125, 130, 135, 140],
+            [55, 60, 65, 70, 75],
+            8,
+            3,
+        )
+        self.assertTrue(accepted)
+        self.assertEqual(result["active_median_ms"], 130.0)
+        self.assertEqual(result["candidate_median_ms"], 65.0)
+
+        cases = (
+            ([120] * 5, [60] * 5, 4, 4),
+            ([100] * 5, [85] * 5, 4, 2),
+            ([120] * 5, [60] * 3, 4, 2),
+        )
+        for active, candidate, active_hops, candidate_hops in cases:
+            with self.subTest(
+                active_hops=active_hops,
+                candidate_hops=candidate_hops,
+                candidate_samples=len(candidate),
+            ):
+                accepted, _result = self.bridge._overlay_migration_quality_acceptable(
+                    active,
+                    candidate,
+                    active_hops,
+                    candidate_hops,
+                )
+                self.assertFalse(accepted)
+
+    def test_rtt_rounds_alternate_probe_order(self):
+        calls = []
+
+        def probe(link_id, purpose):
+            calls.append((link_id, purpose))
+            event = threading.Event()
+            event.set()
+            return {
+                "event": event,
+                "rtt_ms": 100.0 if link_id == self.active_link_id else 40.0,
+            }
+
+        with mock.patch.object(
+            self.bridge,
+            "_send_overlay_rtt_probe",
+            side_effect=probe,
+        ):
+            active, candidate = self.bridge._collect_overlay_migration_rtt_samples(
+                self.active_link_id,
+                "candidate-overlay",
+            )
+
+        self.assertEqual(
+            [link_id for link_id, _purpose in calls[:4]],
+            [
+                self.active_link_id,
+                "candidate-overlay",
+                "candidate-overlay",
+                self.active_link_id,
+            ],
+        )
+        self.assertEqual(
+            len(active),
+            self.bridge._OVERLAY_ROUTE_MIGRATION_PROBE_SAMPLES,
+        )
+        self.assertEqual(
+            len(candidate),
+            self.bridge._OVERLAY_ROUTE_MIGRATION_PROBE_SAMPLES,
+        )
+
+    def test_only_active_link_initiator_schedules_a_better_route_probe(self):
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            return_value={"has_path": True, "hops": 2},
+        ) as path_snapshot, mock.patch.object(
+            self.bridge,
+            "_reticulum_link_route_snapshot",
+            return_value={"remote_hops": 7},
+        ) as route_snapshot, mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue:
+            self.assertTrue(
+                self.bridge._maybe_schedule_overlay_route_migration(
+                    self.peer_hash,
+                    "test_announce",
+                )
+            )
+
+        self.assertEqual(enqueue.call_count, 1)
+        self.assertIs(
+            enqueue.call_args.args[2],
+            self.bridge._overlay_route_migration_inspection_job,
+        )
+        path_snapshot.assert_not_called()
+        route_snapshot.assert_not_called()
+        self.assertIn(
+            self.peer_hash,
+            self.bridge._overlay_route_migration_pending_by_peer_hash,
+        )
+
+        self.bridge._overlay_route_migration_pending_by_peer_hash.clear()
+        self.bridge._overlay_route_migration_last_attempt_at_by_peer_hash.clear()
+        self.active_state["incoming"] = True
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue:
+            self.assertFalse(
+                self.bridge._maybe_schedule_overlay_route_migration(
+                    self.peer_hash,
+                    "test_announce",
+                )
+            )
+        enqueue.assert_not_called()
+
+    def test_route_inspection_starts_migration_only_for_a_better_path(self):
+        self.bridge._overlay_route_migration_pending_by_peer_hash.add(self.peer_hash)
+        target_path = {"has_path": True, "hops": 2}
+        active_route = {"remote_hops": 7}
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            return_value=target_path,
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_link_route_snapshot",
+            return_value=active_route,
+        ), mock.patch.object(
+            self.bridge,
+            "_overlay_route_migration_job",
+        ) as migrate:
+            self.bridge._overlay_route_migration_inspection_job(
+                self.peer_hash,
+                self.active_link_id,
+                "test_announce",
+            )
+
+        migrate.assert_called_once_with(
+            self.peer_hash,
+            self.active_link_id,
+            target_path,
+            active_route,
+        )
+        self.assertIn(
+            self.peer_hash,
+            self.bridge._overlay_route_migration_last_attempt_at_by_peer_hash,
+        )
+        self.assertNotIn(
+            self.peer_hash,
+            self.bridge._overlay_route_migration_pending_by_peer_hash,
+        )
+
+    def test_dedup_does_not_select_or_close_a_migration_candidate(self):
+        candidate_link_id = "candidate-overlay"
+        candidate_state = dict(self.active_state)
+        candidate_state.update(
+            {
+                "linkId": candidate_link_id,
+                "link": FakeLink(),
+                "migration_candidate": True,
+            }
+        )
+        self.bridge._overlay_links_by_id[candidate_link_id] = candidate_state
+
+        with mock.patch.object(
+            self.bridge,
+            "_schedule_overlay_duplicate_close",
+        ) as close:
+            kept = self.bridge._dedup_overlay_links_for_peer(self.peer_hash)
+
+        self.assertIs(kept, self.active_state)
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+            self.active_link_id,
+        )
+        close.assert_not_called()
+
+    def test_promoted_candidate_keeps_old_link_as_non_reclaiming_backup(self):
+        candidate_link_id = "candidate-overlay"
+        transaction_id = "44" * 8
+        candidate_state = dict(self.active_state)
+        candidate_state.update(
+            {
+                "linkId": candidate_link_id,
+                "link": FakeLink(),
+                "migration_candidate": True,
+                "migration_source_link_id": self.active_link_id,
+                "overlay_transport_admitted": True,
+                "migration_transaction_id": transaction_id,
+            }
+        )
+        self.bridge._overlay_links_by_id[candidate_link_id] = candidate_state
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_overlay_link_state",
+        ), mock.patch.object(
+            self.bridge,
+            "_schedule_delayed_presence_announce_replay",
+        ), mock.patch.object(
+            self.bridge,
+            "_flush_overlay_link_pending",
+        ), mock.patch.object(
+            self.bridge,
+            "_schedule_overlay_duplicate_close",
+        ) as delayed_close:
+            self.assertTrue(
+                self.bridge._promote_overlay_migration_candidate(
+                    self.peer_hash,
+                    candidate_link_id,
+                    "test_commit",
+                )
+            )
+
+            self.assertEqual(
+                self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+                candidate_link_id,
+            )
+            self.assertTrue(self.active_state["migration_draining"])
+            delayed_close.assert_not_called()
+            self.assertIs(
+                self.bridge._dedup_overlay_links_for_peer(self.peer_hash),
+                candidate_state,
+            )
+            delayed_close.assert_not_called()
+
+            self.assertTrue(
+                self.bridge._finalize_overlay_migration(
+                    self.peer_hash,
+                    candidate_link_id,
+                    transaction_id,
+                    "test_finalize",
+                )
+            )
+            delayed_close.assert_called_once_with(
+                self.peer_hash,
+                candidate_link_id,
+                self.active_link_id,
+                "route_migrated",
+            )
+
+        kept = self.bridge._register_active_overlay_for_peer(
+            self.peer_hash,
+            self.active_link_id,
+        )
+        self.assertIs(kept, candidate_state)
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+            candidate_link_id,
+        )
+
+        removed = self.bridge.remove_overlay_link(candidate_link_id)
+        self.assertIs(removed, candidate_state)
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+            self.active_link_id,
+        )
+        self.assertNotIn("migration_draining", self.active_state)
+
+    def test_candidate_send_failure_does_not_refresh_active_peer_path(self):
+        state = {
+            "linkId": "candidate-overlay",
+            "link": FakeLink(),
+            "peerPresenceHash": self.peer_hash,
+            "migration_candidate": True,
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_send_packet_on_link",
+            return_value=False,
+        ), mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_close",
+            return_value=True,
+        ) as close, mock.patch.object(
+            self.bridge,
+            "_force_overlay_peer_path_refresh",
+        ) as refresh:
+            self.assertFalse(
+                self.bridge._send_overlay_transport_control(
+                    state["link"],
+                    state,
+                    self.bridge._OVERLAY_PING_WIRE_TYPE,
+                    "candidate_test",
+                )
+            )
+
+        close.assert_called_once_with(
+            "candidate-overlay",
+            "overlay_transport_packet_send_false",
+        )
+        refresh.assert_not_called()
+
+    def test_candidate_teardown_leaves_active_link_and_peer_state_untouched(self):
+        candidate_link = FakeLink()
+        candidate_link_id = "candidate-overlay"
+        self.bridge._overlay_links_by_id[candidate_link_id] = {
+            "linkId": candidate_link_id,
+            "link": candidate_link,
+            "peerPresenceHash": self.peer_hash,
+            "migration_candidate": True,
+            "manager_kind": "overlay",
+            "manager_state": self.bridge._LINK_STATE_CONNECTING,
+            "generation": 0,
+        }
+        self.bridge._overlay_link_ids_by_object[id(candidate_link)] = candidate_link_id
+
+        with mock.patch.object(
+            self.bridge,
+            "_run_with_timeout",
+            return_value=(True, None, None),
+        ), mock.patch.object(
+            self.bridge,
+            "emit_overlay_link_state",
+        ), mock.patch.object(
+            self.bridge,
+            "_demote_overlay_fanout_peer",
+        ) as demote, mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_peer_recovery",
+        ) as recovery:
+            self.bridge._teardown_overlay_link_id(
+                candidate_link_id,
+                "overlay_transport_packet_send_false",
+            )
+
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+            self.active_link_id,
+        )
+        self.assertIn(self.active_link_id, self.bridge._overlay_links_by_id)
+        demote.assert_not_called()
+        recovery.assert_not_called()
+
+    def test_unsolicited_incoming_candidate_is_rejected(self):
+        self.bridge._overlay_links_by_id.clear()
+        self.bridge._active_overlay_link_id_by_peer_hash.clear()
+        incoming = FakeLink()
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue:
+            link_id = self.bridge._register_incoming_overlay_link(
+                incoming,
+                self.peer_hash,
+                "test_candidate",
+                migration_candidate=True,
+            )
+
+        self.assertEqual(link_id, "")
+        self.assertEqual(self.bridge._overlay_links_by_id, {})
+        self.assertEqual(enqueue.call_count, 1)
+
+    def test_capable_active_peer_can_register_protected_incoming_candidate(self):
+        self.active_state["incoming"] = True
+        self.bridge._inbound_overlay_neighbors[self.peer_hash] = time.time()
+        incoming = FakeLink()
+        incoming.remote_identity = object()
+        with mock.patch.object(
+            self.bridge,
+            "_send_overlay_hello_for_link",
+        ) as send_hello, mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ):
+            link_id = self.bridge._register_incoming_overlay_link(
+                incoming,
+                self.peer_hash,
+                "test_candidate",
+                migration_candidate=True,
+            )
+
+        self.assertTrue(link_id)
+        self.assertTrue(
+            self.bridge._overlay_links_by_id[link_id]["migration_candidate"]
+        )
+        self.assertTrue(
+            self.bridge._overlay_links_by_id[link_id]["migration_peer_authenticated"]
+        )
+        send_hello.assert_called_once_with(link_id, "incoming:test_candidate")
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+            self.active_link_id,
+        )
+
+    def test_unidentified_incoming_candidate_cannot_replace_active_link(self):
+        self.active_state["incoming"] = True
+        self.bridge._inbound_overlay_neighbors[self.peer_hash] = time.time()
+        incoming = FakeLink()
+        with mock.patch.object(
+            self.bridge,
+            "_send_overlay_hello_for_link",
+        ) as send_hello, mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ) as send_control:
+            link_id = self.bridge._register_incoming_overlay_link(
+                incoming,
+                self.peer_hash,
+                "test_candidate",
+                migration_candidate=True,
+            )
+
+        self.assertTrue(link_id)
+        candidate = self.bridge._overlay_links_by_id[link_id]
+        self.assertFalse(candidate["migration_peer_authenticated"])
+        self.assertFalse(candidate.get("overlay_transport_admitted") is True)
+        send_hello.assert_not_called()
+        self.assertTrue(
+            self.bridge._handle_overlay_transport_control(
+                {
+                    "t": self.bridge._OVERLAY_HELLO_WIRE_TYPE,
+                    "r": self.peer_hash,
+                    "c": [self.bridge._OVERLAY_ROUTE_MIGRATION_CAPABILITY],
+                    "m": self.bridge._OVERLAY_ROUTE_MIGRATION_MARKER,
+                },
+                incoming,
+                link_id,
+                candidate,
+            )
+        )
+        send_control.assert_not_called()
+        self.assertFalse(candidate["migration_ready_event"].is_set())
+        self.assertFalse(
+            self.bridge._promote_overlay_migration_candidate(
+                self.peer_hash,
+                link_id,
+                "unauthenticated_commit",
+            )
+        )
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+            self.active_link_id,
+        )
+
+    def test_mismatched_incoming_candidate_identity_is_rejected(self):
+        self.active_state["incoming"] = True
+        self.bridge._inbound_overlay_neighbors[self.peer_hash] = time.time()
+        incoming = FakeLink()
+        incoming.remote_identity = object()
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value="cd" * 16,
+        ), mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue:
+            link_id = self.bridge._register_incoming_overlay_link(
+                incoming,
+                self.peer_hash,
+                "test_candidate",
+                migration_candidate=True,
+            )
+
+        self.assertEqual(link_id, "")
+        self.assertNotIn(id(incoming), self.bridge._overlay_link_ids_by_object)
+        enqueue.assert_called_once()
+
+    def test_remote_commit_retains_old_link_until_finalize(self):
+        self.active_state["incoming"] = True
+        self.bridge._inbound_overlay_neighbors[self.peer_hash] = time.time()
+        candidate_link_id = "candidate-overlay"
+        transaction_id = "55" * 8
+        candidate = dict(self.active_state)
+        candidate.update(
+            {
+                "linkId": candidate_link_id,
+                "link": FakeLink(),
+                "incoming": True,
+                "migration_candidate": True,
+                "migration_source_link_id": self.active_link_id,
+                "migration_peer_authenticated": True,
+                "overlay_transport_admitted": True,
+            }
+        )
+        self.bridge._overlay_links_by_id[candidate_link_id] = candidate
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_overlay_link_state",
+        ), mock.patch.object(
+            self.bridge,
+            "_schedule_delayed_presence_announce_replay",
+        ), mock.patch.object(
+            self.bridge,
+            "_flush_overlay_link_pending",
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ) as send, mock.patch.object(
+            self.bridge,
+            "_schedule_overlay_duplicate_close",
+        ) as delayed_close, mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_dedup",
+        ):
+            commit = {
+                "t": self.bridge._OVERLAY_MIGRATION_COMMIT_WIRE_TYPE,
+                "r": self.peer_hash,
+                "q": transaction_id,
+            }
+            self.assertTrue(
+                self.bridge._handle_overlay_transport_control(
+                    commit,
+                    candidate["link"],
+                    candidate_link_id,
+                    candidate,
+                )
+            )
+            self.assertEqual(
+                self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash],
+                candidate_link_id,
+            )
+            delayed_close.assert_not_called()
+            self.assertEqual(
+                send.call_args.args[2],
+                self.bridge._OVERLAY_MIGRATION_ACK_WIRE_TYPE,
+            )
+            self.assertTrue(
+                self.bridge._handle_overlay_transport_control(
+                    commit,
+                    candidate["link"],
+                    candidate_link_id,
+                    candidate,
+                )
+            )
+            self.assertEqual(send.call_count, 2)
+            delayed_close.assert_not_called()
+
+            finalize = {
+                "t": self.bridge._OVERLAY_MIGRATION_FINALIZE_WIRE_TYPE,
+                "r": self.peer_hash,
+                "q": transaction_id,
+            }
+            self.assertTrue(
+                self.bridge._handle_overlay_transport_control(
+                    finalize,
+                    candidate["link"],
+                    candidate_link_id,
+                    candidate,
+                )
+            )
+            delayed_close.assert_called_once_with(
+                self.peer_hash,
+                candidate_link_id,
+                self.active_link_id,
+                "route_migrated",
+            )
+
+    def test_delayed_remote_identity_unlocks_incoming_candidate(self):
+        self.active_state["incoming"] = True
+        self.bridge._inbound_overlay_neighbors[self.peer_hash] = time.time()
+        incoming = FakeLink()
+        with mock.patch.object(
+            self.bridge,
+            "_send_overlay_hello_for_link",
+        ) as send_hello:
+            link_id = self.bridge._register_incoming_overlay_link(
+                incoming,
+                self.peer_hash,
+                "test_candidate",
+                migration_candidate=True,
+            )
+            send_hello.assert_not_called()
+
+            identity = object()
+            incoming.remote_identity = identity
+            with mock.patch.object(
+                self.bridge,
+                "derive_presence_destination_hash_for_identity",
+                return_value=self.peer_hash,
+            ), mock.patch.object(
+                self.bridge,
+                "find_peer_hash_for_identity",
+                return_value=self.peer_hash,
+            ), mock.patch.object(
+                self.bridge,
+                "emit_overlay_link_state",
+            ), mock.patch.object(
+                self.bridge,
+                "_note_overlay_peer_alive",
+            ), mock.patch.object(
+                self.bridge,
+                "_register_active_overlay_for_peer",
+            ), mock.patch.object(
+                self.bridge,
+                "_overlay_enqueue_dedup",
+            ):
+                self.bridge.on_overlay_link_remote_identified(incoming, identity)
+
+        candidate = self.bridge._overlay_links_by_id[link_id]
+        self.assertTrue(candidate["migration_peer_authenticated"])
+        self.assertTrue(candidate["overlay_transport_admitted"])
+        send_hello.assert_called_once_with(link_id, "migration_identity_verified")
 
 
 class PresenceBridgeResourceSchedulingTest(unittest.TestCase):
