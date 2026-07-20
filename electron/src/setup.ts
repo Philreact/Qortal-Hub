@@ -3453,6 +3453,23 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'reticulumChat:setPublicGroupDirectory',
+  async (_event, groupIds: number[]) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    manager.setPublicGroupDirectory(Array.isArray(groupIds) ? groupIds : []);
+    return { success: true };
+  }
+);
+
+ipcMain.handle('reticulumChat:getPublicGroupActivity', async () => {
+  const manager = getReticulumChatManager();
+  return manager?.getPublicGroupActivitySummaries() ?? [];
+});
+
+ipcMain.handle(
   'reticulumChat:setLocalDmAddresses',
   async (_event, addresses: string[]) => {
     const settings = await readAppSettings();

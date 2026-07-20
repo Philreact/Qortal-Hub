@@ -125,6 +125,20 @@ export type ReticulumGroupCategory = {
   updatedAt: number;
 };
 
+export type ReticulumPublicGroupActivitySummary = {
+  groupId: number;
+  messages24h: number;
+  messages7d: number;
+  activeAuthors7d: number;
+  observedAt: number;
+  confidence: number;
+};
+
+export type ReticulumPublicGroupActivityRecord =
+  ReticulumPublicGroupActivitySummary & {
+    localStateJson: string | null;
+  };
+
 export type ReticulumChatMetadataEntityRevision = {
   entityType: 'channel' | 'category';
   entityId: string;
@@ -8286,6 +8300,165 @@ export class ReticulumChatDatabase {
     return [...groupIds].sort((a, b) => a - b);
   }
 
+  getPublicGroupActivityRecords(
+    limit = 200
+  ): ReticulumPublicGroupActivityRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT group_id, local_state_json, messages_24h, messages_7d,
+                 active_authors_7d, observed_at, confidence
+          FROM rchat_public_group_activity
+          WHERE local_state_json IS NOT NULL OR observed_at > 0
+          ORDER BY active_authors_7d DESC, messages_24h DESC,
+                   messages_7d DESC, observed_at DESC, group_id ASC
+          LIMIT ?
+        `
+      )
+      .all(Math.max(1, Math.min(1000, Math.floor(limit)))) as Array<{
+      group_id?: number;
+      local_state_json?: string | null;
+      messages_24h?: number;
+      messages_7d?: number;
+      active_authors_7d?: number;
+      observed_at?: number;
+      confidence?: number;
+    }>;
+    return rows
+      .map((row) => ({
+        groupId: Number(row.group_id),
+        localStateJson:
+          typeof row.local_state_json === 'string'
+            ? row.local_state_json
+            : null,
+        messages24h: Math.max(0, Number(row.messages_24h) || 0),
+        messages7d: Math.max(0, Number(row.messages_7d) || 0),
+        activeAuthors7d: Math.max(0, Number(row.active_authors_7d) || 0),
+        observedAt: Math.max(0, Number(row.observed_at) || 0),
+        confidence: Math.max(0, Number(row.confidence) || 0),
+      }))
+      .filter(
+        (row) => Number.isInteger(row.groupId) && row.groupId > 0
+      );
+  }
+
+  upsertPublicGroupActivityLocalState(
+    groupId: number,
+    localStateJson: string,
+    summary: ReticulumPublicGroupActivitySummary,
+    updatedAt: number
+  ): void {
+    this.db
+      .prepare(
+        `
+          INSERT INTO rchat_public_group_activity
+            (group_id, local_state_json, messages_24h, messages_7d,
+             active_authors_7d, observed_at, confidence, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(group_id) DO UPDATE SET
+            local_state_json = excluded.local_state_json,
+            messages_24h = excluded.messages_24h,
+            messages_7d = excluded.messages_7d,
+            active_authors_7d = excluded.active_authors_7d,
+            observed_at = excluded.observed_at,
+            confidence = excluded.confidence,
+            updated_at = excluded.updated_at
+        `
+      )
+      .run(
+        groupId,
+        localStateJson,
+        summary.messages24h,
+        summary.messages7d,
+        summary.activeAuthors7d,
+        summary.observedAt,
+        summary.confidence,
+        updatedAt
+      );
+  }
+
+  upsertPublicGroupActivityCache(
+    summaries: ReticulumPublicGroupActivitySummary[],
+    maxRows = 200,
+    updatedAt = Date.now()
+  ): void {
+    if (summaries.length === 0) return;
+    const upsert = this.db.prepare(`
+      INSERT INTO rchat_public_group_activity
+        (group_id, local_state_json, messages_24h, messages_7d,
+         active_authors_7d, observed_at, confidence, updated_at)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET
+        messages_24h = excluded.messages_24h,
+        messages_7d = excluded.messages_7d,
+        active_authors_7d = excluded.active_authors_7d,
+        observed_at = excluded.observed_at,
+        confidence = excluded.confidence,
+        updated_at = excluded.updated_at
+    `);
+    const tx = this.db.transaction(() => {
+      for (const summary of summaries) {
+        upsert.run(
+          summary.groupId,
+          summary.messages24h,
+          summary.messages7d,
+          summary.activeAuthors7d,
+          summary.observedAt,
+          summary.confidence,
+          updatedAt
+        );
+      }
+      this.db
+        .prepare(
+          `
+            DELETE FROM rchat_public_group_activity
+            WHERE local_state_json IS NULL
+              AND group_id NOT IN (
+                SELECT group_id
+                FROM rchat_public_group_activity
+                WHERE local_state_json IS NULL
+                ORDER BY active_authors_7d DESC, messages_24h DESC,
+                         messages_7d DESC, observed_at DESC, group_id ASC
+                LIMIT ?
+              )
+          `
+        )
+        .run(Math.max(1, Math.min(1000, Math.floor(maxRows))));
+    });
+    tx();
+  }
+
+  deletePublicGroupActivity(groupId: number): void {
+    this.db
+      .prepare('DELETE FROM rchat_public_group_activity WHERE group_id = ?')
+      .run(groupId);
+  }
+
+  prunePublicGroupActivityCache(staleBefore: number, maxRows = 200): void {
+    this.db
+      .prepare(
+        `DELETE FROM rchat_public_group_activity
+         WHERE local_state_json IS NULL AND observed_at < ?`
+      )
+      .run(staleBefore);
+    this.db
+      .prepare(
+        `
+          DELETE FROM rchat_public_group_activity
+          WHERE local_state_json IS NULL
+            AND group_id NOT IN (
+              SELECT group_id
+              FROM rchat_public_group_activity
+              WHERE local_state_json IS NULL
+              ORDER BY active_authors_7d DESC, messages_24h DESC,
+                       messages_7d DESC, observed_at DESC, group_id ASC
+              LIMIT ?
+            )
+        `
+      )
+      .run(Math.max(1, Math.min(1000, Math.floor(maxRows))));
+  }
+
   private getSummaryChannelIds(groupId: number): string[] {
     const channels = new Set<string>([RETICULUM_CHAT_DEFAULT_CHANNEL_ID]);
     const archivedChannels = new Set(
@@ -9514,6 +9687,20 @@ export class ReticulumChatDatabase {
         ON rchat_dm_events (conversation_id, sender_address, sender_seq);
       CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_unread
         ON rchat_dm_events (conversation_id, recipient_address, read_at, timestamp);
+      CREATE TABLE IF NOT EXISTS rchat_public_group_activity (
+        group_id INTEGER PRIMARY KEY,
+        local_state_json TEXT,
+        messages_24h INTEGER NOT NULL DEFAULT 0,
+        messages_7d INTEGER NOT NULL DEFAULT 0,
+        active_authors_7d INTEGER NOT NULL DEFAULT 0,
+        observed_at INTEGER NOT NULL DEFAULT 0,
+        confidence INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_public_group_activity_rank
+        ON rchat_public_group_activity
+          (active_authors_7d DESC, messages_24h DESC, messages_7d DESC,
+           observed_at DESC);
     `);
   }
 
@@ -9934,6 +10121,18 @@ export class ReticulumChatDatabase {
           'expires_at',
           'ignored_through',
           'updated_at',
+        ],
+      },
+      {
+        table: 'rchat_public_group_activity',
+        columns: [
+          'group_id',
+          'local_state_json',
+          'messages_24h',
+          'messages_7d',
+          'active_authors_7d',
+          'observed_at',
+          'confidence',
         ],
       },
     ];

@@ -7,6 +7,7 @@ import * as nodeCrypto from 'crypto';
 import nacl from 'tweetnacl';
 import {
   buildReticulumChatAuthorTreeSnapshot,
+  createReticulumPublicGroupActivityState,
   buildReticulumChatSignedFields,
   buildReticulumChatEventRequestSignedFields,
   buildReticulumChatGroupKeyDigestSignedFields,
@@ -29,7 +30,9 @@ import {
   isDisabledRelayCache,
   metadataSnapshotHasConsistentRevisions,
   ReticulumChatManager,
+  recordReticulumPublicGroupActivity,
   serializeReticulumChatEvent,
+  summarizeReticulumPublicGroupActivity,
   type ReticulumChatEvent,
   type ReticulumChatWire,
   type ReticulumDmEvent,
@@ -999,6 +1002,65 @@ async function flushQueuedWork(ticks = 8): Promise<void> {
 }
 
 describe('reticulum chat protocol', () => {
+  it('keeps public group activity in bounded rolling counters', () => {
+    const now = 20 * 24 * 60 * 60_000;
+    const state = createReticulumPublicGroupActivityState();
+
+    expect(
+      recordReticulumPublicGroupActivity(state, now - 1_000, 'Qauthor-a', now)
+    ).toBe(true);
+    expect(
+      recordReticulumPublicGroupActivity(state, now - 2_000, 'Qauthor-a', now)
+    ).toBe(true);
+    expect(
+      recordReticulumPublicGroupActivity(state, now - 3_000, 'Qauthor-b', now)
+    ).toBe(true);
+    expect(
+      recordReticulumPublicGroupActivity(
+        state,
+        now - 8 * 24 * 60 * 60_000,
+        'Qauthor-old',
+        now
+      )
+    ).toBe(false);
+
+    expect(summarizeReticulumPublicGroupActivity(716, state, now)).toMatchObject(
+      {
+        groupId: 716,
+        messages24h: 3,
+        messages7d: 3,
+        activeAuthors7d: 2,
+      }
+    );
+    expect(
+      summarizeReticulumPublicGroupActivity(
+        716,
+        state,
+        now + 25 * 60 * 60_000
+      )
+    ).toMatchObject({ messages24h: 0, messages7d: 3 });
+  });
+
+  it('keeps a full public activity top page within the control wire limit', () => {
+    const wire: Extract<
+      ReticulumChatWire,
+      { k: 'public_activity_top_v1' }
+    > = {
+      t: 'RCHAT',
+      k: 'public_activity_top_v1',
+      q: 'a'.repeat(16),
+      e: Array.from({ length: 4 }, (_, index) => [
+        2_147_483_647 - index,
+        1_000_000,
+        10_000_000,
+        1_000_000,
+        Date.now(),
+      ]),
+    };
+
+    expect(wireFitsReticulum(wire)).toBe(true);
+  });
+
   it('builds deterministic uncapped author trees and detects changes past ten thousand streams', () => {
     const heads = Array.from({ length: 20_001 }, (_, index) => ({
       authorAddress: `Qauthor-${String(index).padStart(6, '0')}`,
@@ -1471,6 +1533,61 @@ describe('reticulum chat database', () => {
   const dbs: ReticulumChatDatabase[] = [];
   afterEach(() => {
     while (dbs.length) dbs.pop()?.close();
+  });
+
+  it('persists local and cached public activity in one bounded table', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const localStateJson = JSON.stringify(
+      createReticulumPublicGroupActivityState()
+    );
+    db.upsertPublicGroupActivityLocalState(
+      716,
+      localStateJson,
+      {
+        groupId: 716,
+        messages24h: 4,
+        messages7d: 9,
+        activeAuthors7d: 3,
+        observedAt: 10_000,
+        confidence: 1,
+      },
+      10_000
+    );
+    db.upsertPublicGroupActivityCache(
+      [
+        {
+          groupId: 716,
+          messages24h: 5,
+          messages7d: 10,
+          activeAuthors7d: 4,
+          observedAt: 11_000,
+          confidence: 2,
+        },
+        {
+          groupId: 717,
+          messages24h: 2,
+          messages7d: 3,
+          activeAuthors7d: 2,
+          observedAt: 11_000,
+          confidence: 1,
+        },
+      ],
+      1,
+      11_000
+    );
+
+    const records = db.getPublicGroupActivityRecords(10);
+    expect(records.find((record) => record.groupId === 716)).toMatchObject({
+      localStateJson,
+      messages24h: 5,
+      messages7d: 10,
+      activeAuthors7d: 4,
+      confidence: 2,
+    });
+    expect(records.filter((record) => record.localStateJson === null)).toHaveLength(
+      1
+    );
   });
 
   it('dedupes events by eventId and builds sync state', () => {
@@ -3874,6 +3991,106 @@ describe('reticulum chat manager', () => {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   }
+
+  it('exchanges bounded public activity directly and excludes admin-only channels', async () => {
+    const providerPeer = 'a'.repeat(32);
+    const requesterPeer = 'b'.repeat(32);
+    const sent: Array<{ from: string; to: string; wire: ReticulumChatWire }> =
+      [];
+    let provider!: ReticulumChatManager;
+    let requester!: ReticulumChatManager;
+    provider = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async (
+          target: string,
+          wire: ReticulumChatWire
+        ) => {
+          sent.push({ from: providerPeer, to: target, wire });
+          requester.handleWire(wire as any, providerPeer);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    requester = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: providerPeer,
+          address: 'Qprovider',
+          lastSeen: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async (
+          target: string,
+          wire: ReticulumChatWire
+        ) => {
+          sent.push({ from: requesterPeer, to: target, wire });
+          provider.handleWire(wire as any, requesterPeer);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    provider.setLocalGroupMemberships([{ groupId: 716, isOpen: true }]);
+    upsertTestChannel(provider, {
+      groupId: 716,
+      channelId: 'staff',
+      readMode: 'admins',
+    });
+    (provider as any).acceptValidatedEvent(
+      signedEvent({ groupId: 716, channelId: 'general', timestamp: Date.now() }),
+      false
+    );
+    (provider as any).acceptValidatedEvent(
+      signedEvent({ groupId: 716, channelId: 'staff', timestamp: Date.now() }),
+      false
+    );
+    (provider as any).db.upsertPublicGroupActivityCache(
+      [
+        {
+          groupId: 717,
+          messages24h: 100,
+          messages7d: 200,
+          activeAuthors7d: 50,
+          observedAt: Date.now(),
+          confidence: 3,
+        },
+      ],
+      200,
+      Date.now()
+    );
+    requester.setPublicGroupDirectory([716, 717]);
+    const scheduled = (requester as any).publicGroupActivityRefreshTimer;
+    if (scheduled) clearTimeout(scheduled);
+    (requester as any).publicGroupActivityRefreshTimer = null;
+    (requester as any).publicGroupActivityRefreshDueAt = 0;
+
+    await (requester as any).runPublicActivityRefresh();
+
+    expect(sent.map((item) => item.wire.k)).toEqual([
+      'public_activity_req_v1',
+      'public_activity_top_v1',
+    ]);
+    expect(requester.getPublicGroupActivitySummaries()).toMatchObject([
+      {
+        groupId: 716,
+        messages24h: 1,
+        messages7d: 1,
+        activeAuthors7d: 1,
+      },
+    ]);
+    const response = sent.find(
+      (item) => item.wire.k === 'public_activity_top_v1'
+    )?.wire as Extract<ReticulumChatWire, { k: 'public_activity_top_v1' }>;
+    expect(response.e.map(([groupId]) => groupId)).toEqual([716]);
+    requester.close();
+    provider.close();
+  });
 
   it('marks replies whose parent message was deleted in renderer history', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
@@ -6588,6 +6805,39 @@ describe('reticulum chat manager', () => {
           item.peer === 'peer-a' && item.wire.k === 'group_state_digest_v3'
       )
     ).toBeDefined();
+    manager.close();
+  });
+
+  it('does not queue a group-state digest from cached history without current membership', async () => {
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+    });
+    const cachedEvent = signedEvent({
+      eventId: 'cached-history-without-membership',
+      groupId: 69,
+      timestamp: 99_000,
+    });
+    expect((manager as any).db.insertEvent(cachedEvent, false)).toBe(true);
+    const buildDigest = vi.spyOn(
+      manager as any,
+      'buildGroupStateDigestWire'
+    );
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
+      'peer-a'
+    );
+    await flushQueuedWork();
+
+    expect(buildDigest).not.toHaveBeenCalled();
     manager.close();
   });
 
@@ -13306,6 +13556,9 @@ describe('reticulum chat manager', () => {
     expect(sent).toContainEqual(
       expect.objectContaining({ t: 'RCHAT', k: 'hello_v3', v: 3 })
     );
+    expect(
+      (sent.find((wire) => wire.k === 'hello_v3')?.f as string[]) ?? []
+    ).not.toContain('public_activity_v1');
     expect(sent).toContainEqual({
       t: 'RCHAT',
       k: 'group_sub',

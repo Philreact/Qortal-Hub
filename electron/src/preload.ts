@@ -1410,6 +1410,22 @@ try {
           'reticulumChat:setLocalGroupMemberships',
           groupIds
         ) as Promise<{ success: boolean; error?: string }>,
+      setPublicGroupDirectory: async (groupIds: number[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setPublicGroupDirectory',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      getPublicGroupActivity: async () =>
+        ipcRenderer.invoke('reticulumChat:getPublicGroupActivity') as Promise<
+          Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>
+        >,
       setLocalDmAddresses: async (addresses: string[]) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalDmAddresses',
@@ -2107,6 +2123,22 @@ try {
           'reticulumChat:setLocalGroupMemberships',
           groupIds
         ) as Promise<{ success: boolean; error?: string }>,
+      setPublicGroupDirectory: async (groupIds: number[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setPublicGroupDirectory',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      getPublicGroupActivity: async () =>
+        ipcRenderer.invoke('reticulumChat:getPublicGroupActivity') as Promise<
+          Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>
+        >,
       setLocalDmAddresses: async (addresses: string[]) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalDmAddresses',

@@ -16,6 +16,7 @@ type MockStore = {
   reticulumChatAuthorStreams: Map<string, string>;
   reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
   reticulumChatSilences: ReticulumChatRow[];
+  reticulumPublicGroupActivity: ReticulumChatRow[];
   reticulumDmEvents: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
@@ -70,6 +71,23 @@ class Statement {
             Number(b.updated_at) - Number(a.updated_at) ||
             String(a.target_address).localeCompare(String(b.target_address))
         );
+    }
+    if (this.sql.includes('FROM rchat_public_group_activity')) {
+      const limit = Math.max(1, Number(args[0]) || 200);
+      return this.store.reticulumPublicGroupActivity
+        .filter(
+          (row) =>
+            row.local_state_json != null || Number(row.observed_at) > 0
+        )
+        .sort(
+          (a, b) =>
+            Number(b.active_authors_7d) - Number(a.active_authors_7d) ||
+            Number(b.messages_24h) - Number(a.messages_24h) ||
+            Number(b.messages_7d) - Number(a.messages_7d) ||
+            Number(b.observed_at) - Number(a.observed_at) ||
+            Number(a.group_id) - Number(b.group_id)
+        )
+        .slice(0, limit);
     }
     if (this.sql.includes('FROM rchat_dm_events')) {
       if (this.sql.includes('SELECT e.*')) {
@@ -1018,6 +1036,86 @@ class Statement {
       const [name, appliedAt] = args;
       this.store.reticulumChatSchemaMigrations.set(String(name), Number(appliedAt));
       return { changes: 1, lastInsertRowid: 1 };
+    }
+    if (this.sql.includes('INSERT INTO rchat_public_group_activity')) {
+      const isLocalStateUpsert = !this.sql.includes('VALUES (?, NULL,');
+      const row = isLocalStateUpsert
+        ? {
+            group_id: args[0],
+            local_state_json: args[1],
+            messages_24h: args[2],
+            messages_7d: args[3],
+            active_authors_7d: args[4],
+            observed_at: args[5],
+            confidence: args[6],
+            updated_at: args[7],
+          }
+        : {
+            group_id: args[0],
+            local_state_json: null,
+            messages_24h: args[1],
+            messages_7d: args[2],
+            active_authors_7d: args[3],
+            observed_at: args[4],
+            confidence: args[5],
+            updated_at: args[6],
+          };
+      const index = this.store.reticulumPublicGroupActivity.findIndex(
+        (existing) => existing.group_id === row.group_id
+      );
+      if (index >= 0) {
+        this.store.reticulumPublicGroupActivity[index] = {
+          ...this.store.reticulumPublicGroupActivity[index],
+          ...row,
+          local_state_json: isLocalStateUpsert
+            ? row.local_state_json
+            : this.store.reticulumPublicGroupActivity[index].local_state_json,
+        };
+      } else {
+        this.store.reticulumPublicGroupActivity.push(row);
+      }
+      return { changes: 1, lastInsertRowid: index + 1 };
+    }
+    if (this.sql.includes('DELETE FROM rchat_public_group_activity')) {
+      const before = this.store.reticulumPublicGroupActivity.length;
+      if (this.sql.includes('group_id = ?')) {
+        this.store.reticulumPublicGroupActivity =
+          this.store.reticulumPublicGroupActivity.filter(
+            (row) => row.group_id !== args[0]
+          );
+      } else if (this.sql.includes('observed_at < ?')) {
+        this.store.reticulumPublicGroupActivity =
+          this.store.reticulumPublicGroupActivity.filter(
+            (row) =>
+              row.local_state_json != null ||
+              Number(row.observed_at) >= Number(args[0])
+          );
+      } else if (this.sql.includes('group_id NOT IN')) {
+        const limit = Math.max(1, Number(args[0]) || 200);
+        const retainedRemoteIds = new Set(
+          this.store.reticulumPublicGroupActivity
+            .filter((row) => row.local_state_json == null)
+            .sort(
+              (a, b) =>
+                Number(b.active_authors_7d) - Number(a.active_authors_7d) ||
+                Number(b.messages_24h) - Number(a.messages_24h) ||
+                Number(b.messages_7d) - Number(a.messages_7d) ||
+                Number(b.observed_at) - Number(a.observed_at) ||
+                Number(a.group_id) - Number(b.group_id)
+            )
+            .slice(0, limit)
+            .map((row) => row.group_id)
+        );
+        this.store.reticulumPublicGroupActivity =
+          this.store.reticulumPublicGroupActivity.filter(
+            (row) =>
+              row.local_state_json != null || retainedRemoteIds.has(row.group_id)
+          );
+      }
+      return {
+        changes: before - this.store.reticulumPublicGroupActivity.length,
+        lastInsertRowid: 0,
+      };
     }
     if (this.sql.includes('INSERT INTO rchat_silences')) {
       const [
@@ -1994,6 +2092,7 @@ class MockDatabase {
       reticulumChatAuthorStreams: new Map(),
       reticulumChatAuthorSequenceLeases: [],
       reticulumChatSilences: [],
+      reticulumPublicGroupActivity: [],
       reticulumDmEvents: [],
       reticulumResources: [],
       reticulumResourceChunks: [],

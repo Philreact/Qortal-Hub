@@ -53,6 +53,7 @@ import {
   type ReticulumChatSearchResult,
   type ReticulumChatSilenceRecord,
   type ReticulumChatSilenceScope,
+  type ReticulumPublicGroupActivitySummary,
 } from './reticulum-chat-db';
 import {
   RETICULUM_CHAT_AUTHOR_TREE_DEPTH,
@@ -577,6 +578,14 @@ export type ReticulumChatRelayAckWire = {
   bid?: string;
 };
 
+export type ReticulumPublicGroupActivityEntryWire = [
+  groupId: number,
+  messages24h: number,
+  messages7d: number,
+  activeAuthors7d: number,
+  observedAt: number,
+];
+
 export type ReticulumChatRelayDigestEntryWire = {
   id: string;
   ts: number;
@@ -681,6 +690,16 @@ type ReticulumChatLocalSignature = {
   authorAddress: string;
   authorPublicKey: string;
   signature: string;
+};
+
+type ReticulumPublicGroupActivitySample = {
+  summary: ReticulumPublicGroupActivitySummary;
+  expiresAt: number;
+};
+
+type ReticulumPublicGroupActivityPendingRequest = {
+  expiresAt: number;
+  peers: Set<string>;
 };
 
 type ReticulumChatControlRetryItem = {
@@ -1026,6 +1045,13 @@ export type ReticulumChatWire =
       h?: number;
     }
   | { t: 'RCHAT'; k: 'unsub'; g: number }
+  | { t: 'RCHAT'; k: 'public_activity_req_v1'; q: string }
+  | {
+      t: 'RCHAT';
+      k: 'public_activity_top_v1';
+      q: string;
+      e: ReticulumPublicGroupActivityEntryWire[];
+    }
   | {
       t: 'RCHAT';
       k: 'event_req';
@@ -1418,6 +1444,215 @@ const RETICULUM_CHAT_PULL_RETRY_MS = 5_000;
 const RETICULUM_CHAT_PULL_MAX_ATTEMPTS = 8;
 const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
+const RETICULUM_PUBLIC_ACTIVITY_REFRESH_MS = 15 * 60_000;
+const RETICULUM_PUBLIC_ACTIVITY_REFRESH_JITTER_MS = 60_000;
+const RETICULUM_PUBLIC_ACTIVITY_RETRY_MS = 60_000;
+const RETICULUM_PUBLIC_ACTIVITY_FLUSH_MS = 5 * 60_000;
+const RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS = 60 * 60_000;
+const RETICULUM_PUBLIC_ACTIVITY_REQUEST_TTL_MS = 30_000;
+const RETICULUM_PUBLIC_ACTIVITY_SERVE_THROTTLE_MS = 30_000;
+const RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX = 200;
+const RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT = 4;
+const RETICULUM_PUBLIC_ACTIVITY_REQUEST_PEERS = 3;
+const RETICULUM_PUBLIC_ACTIVITY_SAMPLE_PEERS = 5;
+const RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS = 128;
+const RETICULUM_PUBLIC_ACTIVITY_MAX_COUNTER = 10_000_000;
+const RETICULUM_PUBLIC_ACTIVITY_HOUR_MS = 60 * 60_000;
+const RETICULUM_PUBLIC_ACTIVITY_DAY_MS = 24 * RETICULUM_PUBLIC_ACTIVITY_HOUR_MS;
+
+export type ReticulumPublicGroupActivityLocalState = {
+  v: 1;
+  hours: Array<{ bucket: number; count: number }>;
+  days: Array<{ bucket: number; count: number; authors: string }>;
+};
+
+function emptyPublicActivityAuthorSketch(): Uint8Array {
+  return new Uint8Array(RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS);
+}
+
+function decodePublicActivityAuthorSketch(value: unknown): Uint8Array {
+  if (typeof value !== 'string' || !value) {
+    return emptyPublicActivityAuthorSketch();
+  }
+  try {
+    const decoded = Buffer.from(value, 'base64');
+    if (decoded.length !== RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS) {
+      return emptyPublicActivityAuthorSketch();
+    }
+    return Uint8Array.from(decoded);
+  } catch {
+    return emptyPublicActivityAuthorSketch();
+  }
+}
+
+function encodePublicActivityAuthorSketch(sketch: Uint8Array): string {
+  return Buffer.from(sketch).toString('base64');
+}
+
+function publicActivityAuthorRank(hash: Buffer): number {
+  let rank = 1;
+  for (let index = 1; index < hash.length; index += 1) {
+    const value = hash[index];
+    if (value === 0) {
+      rank += 8;
+      continue;
+    }
+    rank += Math.clz32(value) - 24;
+    break;
+  }
+  return Math.min(63, rank);
+}
+
+function addPublicActivityAuthor(sketch: Uint8Array, address: string): void {
+  const hash = nodeCrypto.createHash('sha256').update(address, 'utf8').digest();
+  const register = hash[0] & (RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS - 1);
+  sketch[register] = Math.max(
+    sketch[register],
+    publicActivityAuthorRank(hash)
+  );
+}
+
+function estimatePublicActivityAuthors(sketch: Uint8Array): number {
+  const registers = RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS;
+  let inverseSum = 0;
+  let zeroes = 0;
+  for (const value of sketch) {
+    inverseSum += 2 ** -value;
+    if (value === 0) zeroes += 1;
+  }
+  const alpha = 0.7213 / (1 + 1.079 / registers);
+  let estimate = (alpha * registers * registers) / inverseSum;
+  if (estimate <= 2.5 * registers && zeroes > 0) {
+    estimate = registers * Math.log(registers / zeroes);
+  }
+  return Math.max(0, Math.round(estimate));
+}
+
+export function createReticulumPublicGroupActivityState(): ReticulumPublicGroupActivityLocalState {
+  return { v: 1, hours: [], days: [] };
+}
+
+export function parseReticulumPublicGroupActivityState(
+  value: unknown
+): ReticulumPublicGroupActivityLocalState {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (!parsed || typeof parsed !== 'object' || parsed.v !== 1) {
+      return createReticulumPublicGroupActivityState();
+    }
+    const hours = (Array.isArray(parsed.hours) ? parsed.hours : [])
+      .map((slot: any) => ({
+        bucket: Math.floor(Number(slot?.bucket)),
+        count: Math.max(0, Math.floor(Number(slot?.count) || 0)),
+      }))
+      .filter(
+        (slot) => Number.isFinite(slot.bucket) && slot.count > 0
+      );
+    const days = (Array.isArray(parsed.days) ? parsed.days : [])
+      .map((slot: any) => ({
+        bucket: Math.floor(Number(slot?.bucket)),
+        count: Math.max(0, Math.floor(Number(slot?.count) || 0)),
+        authors: encodePublicActivityAuthorSketch(
+          decodePublicActivityAuthorSketch(slot?.authors)
+        ),
+      }))
+      .filter(
+        (slot) => Number.isFinite(slot.bucket) && slot.count > 0
+      );
+    return { v: 1, hours, days };
+  } catch {
+    return createReticulumPublicGroupActivityState();
+  }
+}
+
+function pruneReticulumPublicGroupActivityState(
+  state: ReticulumPublicGroupActivityLocalState,
+  now: number
+): void {
+  const currentHour = Math.floor(now / RETICULUM_PUBLIC_ACTIVITY_HOUR_MS);
+  const currentDay = Math.floor(now / RETICULUM_PUBLIC_ACTIVITY_DAY_MS);
+  state.hours = state.hours.filter(
+    (slot) => slot.bucket >= currentHour - 23 && slot.bucket <= currentHour
+  );
+  state.days = state.days.filter(
+    (slot) => slot.bucket >= currentDay - 6 && slot.bucket <= currentDay
+  );
+}
+
+export function recordReticulumPublicGroupActivity(
+  state: ReticulumPublicGroupActivityLocalState,
+  timestamp: number,
+  authorAddress: string,
+  now = Date.now()
+): boolean {
+  if (
+    !Number.isFinite(timestamp) ||
+    !authorAddress ||
+    timestamp > now + RETICULUM_CHAT_MAX_FUTURE_SKEW_MS ||
+    timestamp < now - 7 * RETICULUM_PUBLIC_ACTIVITY_DAY_MS
+  ) {
+    return false;
+  }
+  pruneReticulumPublicGroupActivityState(state, now);
+  const hourBucket = Math.floor(timestamp / RETICULUM_PUBLIC_ACTIVITY_HOUR_MS);
+  const dayBucket = Math.floor(timestamp / RETICULUM_PUBLIC_ACTIVITY_DAY_MS);
+  let hour = state.hours.find((slot) => slot.bucket === hourBucket);
+  if (!hour) {
+    hour = { bucket: hourBucket, count: 0 };
+    state.hours.push(hour);
+  }
+  hour.count = Math.min(RETICULUM_PUBLIC_ACTIVITY_MAX_COUNTER, hour.count + 1);
+  let day = state.days.find((slot) => slot.bucket === dayBucket);
+  if (!day) {
+    day = {
+      bucket: dayBucket,
+      count: 0,
+      authors: encodePublicActivityAuthorSketch(
+        emptyPublicActivityAuthorSketch()
+      ),
+    };
+    state.days.push(day);
+  }
+  day.count = Math.min(RETICULUM_PUBLIC_ACTIVITY_MAX_COUNTER, day.count + 1);
+  const authors = decodePublicActivityAuthorSketch(day.authors);
+  addPublicActivityAuthor(authors, authorAddress);
+  day.authors = encodePublicActivityAuthorSketch(authors);
+  return true;
+}
+
+export function summarizeReticulumPublicGroupActivity(
+  groupId: number,
+  state: ReticulumPublicGroupActivityLocalState,
+  now = Date.now()
+): ReticulumPublicGroupActivitySummary {
+  pruneReticulumPublicGroupActivityState(state, now);
+  const messages24h = state.hours.reduce(
+    (total, slot) => total + slot.count,
+    0
+  );
+  const messages7d = state.days.reduce(
+    (total, slot) => total + slot.count,
+    0
+  );
+  const authors = emptyPublicActivityAuthorSketch();
+  for (const day of state.days) {
+    const sketch = decodePublicActivityAuthorSketch(day.authors);
+    for (let index = 0; index < authors.length; index += 1) {
+      authors[index] = Math.max(authors[index], sketch[index]);
+    }
+  }
+  return {
+    groupId,
+    messages24h,
+    messages7d,
+    activeAuthors7d: Math.min(
+      messages7d,
+      estimatePublicActivityAuthors(authors)
+    ),
+    observedAt: now,
+    confidence: 1,
+  };
+}
 const RETICULUM_CHAT_PULL_QUEUE_MAX = 500;
 const RETICULUM_CHAT_PULL_QUEUE_MAX_PER_PEER = 64;
 const RETICULUM_CHAT_LIVE_OFFER_CONCURRENCY = 4;
@@ -4666,6 +4901,29 @@ export class ReticulumChatManager extends EventEmitter {
   private localPrivateGroupIds = new Set<number>();
   private localGroupAdminIds = new Set<number>();
   private localGroupAddresses = new Map<number, string>();
+  private publicGroupDirectoryIds = new Set<number>();
+  private publicGroupActivityStates = new Map<
+    number,
+    ReticulumPublicGroupActivityLocalState
+  >();
+  private publicGroupActivityDirty = new Set<number>();
+  private publicGroupActivitySamples = new Map<
+    number,
+    Map<string, ReticulumPublicGroupActivitySample>
+  >();
+  private publicGroupActivityPendingRequests = new Map<
+    string,
+    ReticulumPublicGroupActivityPendingRequest
+  >();
+  private publicGroupActivityServedAt = new Map<string, number>();
+  private publicGroupActivityRefreshTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  private publicGroupActivityRefreshDueAt = 0;
+  private publicGroupActivityFlushTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  private publicGroupActivityRefreshInFlight = false;
+  private publicGroupActivityLastRequestedAt = 0;
+  private publicGroupActivityPeerOffset = 0;
   private localDmAddresses = new Set<string>();
   private silenceCache = new Map<string, ReticulumChatSilenceRecord | null>();
   private silenceExpiryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -5107,6 +5365,17 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceStore = options.resourceStore ?? null;
     this.bridge = options.bridge ?? null;
     this.db = new ReticulumChatDatabase(this.dbPath);
+    for (const record of this.db.getPublicGroupActivityRecords(1000)) {
+      if (!record.localStateJson) continue;
+      this.publicGroupActivityStates.set(
+        record.groupId,
+        parseReticulumPublicGroupActivityState(record.localStateJson)
+      );
+    }
+    this.db.prunePublicGroupActivityCache(
+      this.now() - RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS,
+      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
+    );
     this.resourceTransfer = this.createResourceTransfer();
     this.directResourceTransfer = this.createDirectResourceTransfer();
     fs.mkdirSync(this.localNotifyDir, { recursive: true });
@@ -5770,6 +6039,19 @@ export class ReticulumChatManager extends EventEmitter {
 
   close(): void {
     this.isClosed = true;
+    this.flushPublicGroupActivityStates();
+    if (this.publicGroupActivityRefreshTimer) {
+      clearTimeout(this.publicGroupActivityRefreshTimer);
+      this.publicGroupActivityRefreshTimer = null;
+    }
+    if (this.publicGroupActivityFlushTimer) {
+      clearTimeout(this.publicGroupActivityFlushTimer);
+      this.publicGroupActivityFlushTimer = null;
+    }
+    this.publicGroupActivityRefreshDueAt = 0;
+    this.publicGroupActivityPendingRequests.clear();
+    this.publicGroupActivitySamples.clear();
+    this.publicGroupActivityServedAt.clear();
     this.stopDmDigestTimer();
     this.detachBridge();
     this.stopLocalNotificationWatcher();
@@ -5957,6 +6239,11 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     const previousGroupIds = this.localGroupIds;
     const previousGroupAddresses = this.localGroupAddresses;
+    const previousPublicGroupIds = new Set(
+      [...this.localGroupIds].filter(
+        (groupId) => !this.localPrivateGroupIds.has(groupId)
+      )
+    );
     const normalizedMemberships =
       this.normalizeLocalGroupMemberships(memberships);
     const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
@@ -5980,6 +6267,15 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    const nextPublicGroupIds = new Set(
+      nextGroupIds.filter((groupId) => !this.localPrivateGroupIds.has(groupId))
+    );
+    for (const groupId of previousPublicGroupIds) {
+      if (nextPublicGroupIds.has(groupId)) continue;
+      this.publicGroupActivityStates.delete(groupId);
+      this.publicGroupActivityDirty.delete(groupId);
+      this.db.deletePublicGroupActivity(groupId);
+    }
     const authMembershipGroups = new Set([
       ...previousGroupIds,
       ...this.localGroupIds,
@@ -6020,6 +6316,496 @@ export class ReticulumChatManager extends EventEmitter {
       }
       void this.ensureGroupKeyState(groupId);
     }
+    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+  }
+
+  setPublicGroupDirectory(groupIds: number[]): void {
+    this.publicGroupDirectoryIds = new Set(
+      (Array.isArray(groupIds) ? groupIds : [])
+        .map((groupId) => Number(groupId))
+        .filter(
+          (groupId) => Number.isInteger(groupId) && groupId > 0
+        )
+    );
+    for (const groupId of this.publicGroupActivitySamples.keys()) {
+      if (!this.isKnownPublicGroup(groupId)) {
+        this.publicGroupActivitySamples.delete(groupId);
+      }
+    }
+    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(0);
+  }
+
+  getPublicGroupActivitySummaries(): ReticulumPublicGroupActivitySummary[] {
+    if (
+      this.hasKnownPublicGroups() &&
+      this.now() - this.publicGroupActivityLastRequestedAt >=
+        RETICULUM_PUBLIC_ACTIVITY_REFRESH_MS
+    ) {
+      this.schedulePublicActivityRefresh(0);
+    }
+    return this.buildPublicGroupActivityTop(
+      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
+    );
+  }
+
+  private isLocalPublicGroup(groupId: number): boolean {
+    return (
+      this.localGroupMembershipsInitialized &&
+      this.localGroupIds.has(groupId) &&
+      !this.localPrivateGroupIds.has(groupId)
+    );
+  }
+
+  private isKnownPublicGroup(groupId: number): boolean {
+    if (
+      this.localGroupMembershipsInitialized &&
+      this.localPrivateGroupIds.has(groupId)
+    ) {
+      return false;
+    }
+    return (
+      this.publicGroupDirectoryIds.has(groupId) ||
+      this.isLocalPublicGroup(groupId)
+    );
+  }
+
+  private hasKnownPublicGroups(): boolean {
+    if (this.publicGroupDirectoryIds.size > 0) return true;
+    for (const groupId of this.localGroupIds) {
+      if (this.isLocalPublicGroup(groupId)) return true;
+    }
+    return false;
+  }
+
+  private recordPublicGroupActivity(event: ReticulumChatEvent): void {
+    if (!this.isLocalPublicGroup(event.groupId)) return;
+    if (
+      event.eventType !== 'message' &&
+      event.eventType !== 'attachment_manifest'
+    ) {
+      return;
+    }
+    const channel = this.db.getChannel(event.groupId, event.channelId);
+    if (
+      !channel ||
+      channel.archived ||
+      channel.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
+    ) {
+      return;
+    }
+    const state =
+      this.publicGroupActivityStates.get(event.groupId) ??
+      createReticulumPublicGroupActivityState();
+    if (
+      !recordReticulumPublicGroupActivity(
+        state,
+        event.timestamp,
+        event.authorAddress,
+        this.now()
+      )
+    ) {
+      return;
+    }
+    this.publicGroupActivityStates.set(event.groupId, state);
+    this.publicGroupActivityDirty.add(event.groupId);
+    this.schedulePublicGroupActivityFlush();
+  }
+
+  private schedulePublicGroupActivityFlush(): void {
+    if (this.publicGroupActivityFlushTimer || this.isClosed) return;
+    this.publicGroupActivityFlushTimer = setTimeout(() => {
+      this.publicGroupActivityFlushTimer = null;
+      this.flushPublicGroupActivityStates();
+    }, RETICULUM_PUBLIC_ACTIVITY_FLUSH_MS);
+    this.publicGroupActivityFlushTimer.unref?.();
+  }
+
+  private flushPublicGroupActivityStates(): void {
+    if (this.publicGroupActivityDirty.size === 0) return;
+    const now = this.now();
+    for (const groupId of this.publicGroupActivityDirty) {
+      const state = this.publicGroupActivityStates.get(groupId);
+      if (!state || !this.isLocalPublicGroup(groupId)) continue;
+      this.db.upsertPublicGroupActivityLocalState(
+        groupId,
+        JSON.stringify(state),
+        summarizeReticulumPublicGroupActivity(groupId, state, now),
+        now
+      );
+    }
+    this.publicGroupActivityDirty.clear();
+  }
+
+  private buildPublicGroupActivityTop(
+    limit: number
+  ): ReticulumPublicGroupActivitySummary[] {
+    const now = this.now();
+    const byGroup = new Map<number, ReticulumPublicGroupActivitySummary>();
+    for (const record of this.db.getPublicGroupActivityRecords(
+      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
+    )) {
+      if (
+        record.localStateJson ||
+        !this.isKnownPublicGroup(record.groupId) ||
+        record.observedAt < now - RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS
+      ) {
+        continue;
+      }
+      byGroup.set(record.groupId, {
+        groupId: record.groupId,
+        messages24h: record.messages24h,
+        messages7d: record.messages7d,
+        activeAuthors7d: record.activeAuthors7d,
+        observedAt: record.observedAt,
+        confidence: record.confidence,
+      });
+    }
+    for (const [groupId, state] of this.publicGroupActivityStates) {
+      if (!this.isLocalPublicGroup(groupId)) continue;
+      byGroup.set(
+        groupId,
+        summarizeReticulumPublicGroupActivity(groupId, state, now)
+      );
+    }
+    return [...byGroup.values()]
+      .filter(
+        (summary) =>
+          summary.messages7d > 0 || summary.activeAuthors7d > 0
+      )
+      .sort(
+        (a, b) =>
+          b.activeAuthors7d - a.activeAuthors7d ||
+          b.messages24h - a.messages24h ||
+          b.messages7d - a.messages7d ||
+          b.observedAt - a.observedAt ||
+          a.groupId - b.groupId
+      )
+      .slice(0, Math.max(1, Math.min(RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX, limit)));
+  }
+
+  private buildLocalPublicGroupActivityTop(
+    limit: number
+  ): ReticulumPublicGroupActivitySummary[] {
+    const now = this.now();
+    return [...this.publicGroupActivityStates]
+      .filter(([groupId]) => this.isLocalPublicGroup(groupId))
+      .map(([groupId, state]) =>
+        summarizeReticulumPublicGroupActivity(groupId, state, now)
+      )
+      .filter(
+        (summary) =>
+          summary.messages7d > 0 || summary.activeAuthors7d > 0
+      )
+      .sort(
+        (a, b) =>
+          b.activeAuthors7d - a.activeAuthors7d ||
+          b.messages24h - a.messages24h ||
+          b.messages7d - a.messages7d ||
+          a.groupId - b.groupId
+      )
+      .slice(0, Math.max(1, Math.min(RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT, limit)));
+  }
+
+  private schedulePublicActivityRefresh(delayMs: number): void {
+    if (this.isClosed || !this.hasKnownPublicGroups()) return;
+    const delay = Math.max(0, Math.floor(delayMs));
+    const dueAt = this.now() + delay;
+    if (
+      this.publicGroupActivityRefreshTimer &&
+      this.publicGroupActivityRefreshDueAt <= dueAt
+    ) {
+      return;
+    }
+    if (this.publicGroupActivityRefreshTimer) {
+      clearTimeout(this.publicGroupActivityRefreshTimer);
+    }
+    this.publicGroupActivityRefreshDueAt = dueAt;
+    this.publicGroupActivityRefreshTimer = setTimeout(() => {
+      this.publicGroupActivityRefreshTimer = null;
+      this.publicGroupActivityRefreshDueAt = 0;
+      void this.runPublicActivityRefresh();
+    }, delay);
+    this.publicGroupActivityRefreshTimer.unref?.();
+  }
+
+  private prunePublicGroupActivityRuntime(now = this.now()): void {
+    for (const [requestId, request] of this.publicGroupActivityPendingRequests) {
+      if (request.expiresAt <= now) {
+        this.publicGroupActivityPendingRequests.delete(requestId);
+      }
+    }
+    for (const [peer, servedAt] of this.publicGroupActivityServedAt) {
+      if (now - servedAt > RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS) {
+        this.publicGroupActivityServedAt.delete(peer);
+      }
+    }
+    for (const [groupId, samples] of this.publicGroupActivitySamples) {
+      for (const [peer, sample] of samples) {
+        if (sample.expiresAt <= now) samples.delete(peer);
+      }
+      if (samples.size === 0) this.publicGroupActivitySamples.delete(groupId);
+    }
+    while (
+      this.publicGroupActivitySamples.size >
+      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
+    ) {
+      const oldest = [...this.publicGroupActivitySamples.entries()].sort(
+        (a, b) =>
+          Math.max(...[...a[1].values()].map((sample) => sample.expiresAt)) -
+          Math.max(...[...b[1].values()].map((sample) => sample.expiresAt))
+      )[0];
+      if (!oldest) break;
+      this.publicGroupActivitySamples.delete(oldest[0]);
+    }
+  }
+
+  private async runPublicActivityRefresh(): Promise<void> {
+    if (
+      this.isClosed ||
+      this.publicGroupActivityRefreshInFlight ||
+      !this.hasKnownPublicGroups()
+    ) {
+      return;
+    }
+    this.publicGroupActivityRefreshInFlight = true;
+    const now = this.now();
+    this.prunePublicGroupActivityRuntime(now);
+    this.db.prunePublicGroupActivityCache(
+      now - RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS,
+      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
+    );
+    try {
+      const seen = new Set<string>();
+      const peers = (this.getVerifiedReticulumPeers?.() ?? [])
+        .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0))
+        .map((peer) => peer.destinationHash.trim().toLowerCase())
+        .filter((peer) => peer && !seen.has(peer) && seen.add(peer));
+      if (peers.length === 0) {
+        this.schedulePublicActivityRefresh(
+          RETICULUM_PUBLIC_ACTIVITY_RETRY_MS
+        );
+        return;
+      }
+      const selected: string[] = [];
+      const count = Math.min(
+        RETICULUM_PUBLIC_ACTIVITY_REQUEST_PEERS,
+        peers.length
+      );
+      for (let index = 0; index < count; index += 1) {
+        selected.push(
+          peers[(this.publicGroupActivityPeerOffset + index) % peers.length]
+        );
+      }
+      this.publicGroupActivityPeerOffset =
+        (this.publicGroupActivityPeerOffset + count) % peers.length;
+      const requestId = nodeCrypto.randomBytes(8).toString('hex');
+      const pending: ReticulumPublicGroupActivityPendingRequest = {
+        expiresAt: now + RETICULUM_PUBLIC_ACTIVITY_REQUEST_TTL_MS,
+        peers: new Set(selected),
+      };
+      this.publicGroupActivityPendingRequests.set(requestId, pending);
+      this.publicGroupActivityLastRequestedAt = now;
+      const wire: Extract<
+        ReticulumChatWire,
+        { k: 'public_activity_req_v1' }
+      > = {
+        t: 'RCHAT',
+        k: 'public_activity_req_v1',
+        q: requestId,
+      };
+      const results = await Promise.all(
+        selected.map(async (peer) => ({
+          peer,
+          result: await this.sendToPeerOnce(peer, wire),
+        }))
+      );
+      for (const { peer, result } of results) {
+        if (!result.ok) pending.peers.delete(peer);
+      }
+      if (pending.peers.size === 0) {
+        this.publicGroupActivityPendingRequests.delete(requestId);
+      }
+    } finally {
+      this.publicGroupActivityRefreshInFlight = false;
+      const jitter = Math.floor(
+        Math.random() * RETICULUM_PUBLIC_ACTIVITY_REFRESH_JITTER_MS
+      );
+      this.schedulePublicActivityRefresh(
+        RETICULUM_PUBLIC_ACTIVITY_REFRESH_MS + jitter
+      );
+    }
+  }
+
+  private async handlePublicActivityRequest(
+    wire: Record<string, unknown>,
+    peerHash: string
+  ): Promise<void> {
+    const requestId = typeof wire.q === 'string' ? wire.q : '';
+    if (!/^[0-9a-f]{16}$/.test(requestId) || !peerHash) return;
+    const now = this.now();
+    const lastServedAt = this.publicGroupActivityServedAt.get(peerHash) ?? 0;
+    if (
+      now - lastServedAt < RETICULUM_PUBLIC_ACTIVITY_SERVE_THROTTLE_MS
+    ) {
+      return;
+    }
+    this.publicGroupActivityServedAt.set(peerHash, now);
+    const entries: ReticulumPublicGroupActivityEntryWire[] =
+      this.buildLocalPublicGroupActivityTop(
+        RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT
+      ).map(
+        (summary) => [
+          summary.groupId,
+          summary.messages24h,
+          summary.messages7d,
+          summary.activeAuthors7d,
+          summary.observedAt,
+        ]
+      );
+    const response: Extract<
+      ReticulumChatWire,
+      { k: 'public_activity_top_v1' }
+    > = {
+      t: 'RCHAT',
+      k: 'public_activity_top_v1',
+      q: requestId,
+      e: entries,
+    };
+    while (response.e.length > 0 && !wireFitsReticulum(response)) {
+      response.e.pop();
+    }
+    if (wireFitsReticulum(response)) {
+      await this.sendToPeerOnce(peerHash, response);
+    }
+  }
+
+  private handlePublicActivityResponse(
+    wire: Record<string, unknown>,
+    peerHash: string
+  ): void {
+    const requestId = typeof wire.q === 'string' ? wire.q : '';
+    const pending = this.publicGroupActivityPendingRequests.get(requestId);
+    const normalizedPeer = peerHash.trim().toLowerCase();
+    const now = this.now();
+    if (
+      !pending ||
+      pending.expiresAt <= now ||
+      !pending.peers.has(normalizedPeer) ||
+      !Array.isArray(wire.e) ||
+      wire.e.length > RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT
+    ) {
+      return;
+    }
+    pending.peers.delete(normalizedPeer);
+    if (pending.peers.size === 0) {
+      this.publicGroupActivityPendingRequests.delete(requestId);
+    }
+    const affected = new Set<number>();
+    for (const value of wire.e) {
+      if (!Array.isArray(value) || value.length !== 5) continue;
+      const [groupId, messages24h, messages7d, activeAuthors7d, observedAt] =
+        value.map(Number);
+      if (
+        !Number.isInteger(groupId) ||
+        groupId <= 0 ||
+        !this.isKnownPublicGroup(groupId) ||
+        ![messages24h, messages7d, activeAuthors7d, observedAt].every(
+          Number.isFinite
+        ) ||
+        !Number.isInteger(messages24h) ||
+        !Number.isInteger(messages7d) ||
+        !Number.isInteger(activeAuthors7d) ||
+        messages24h < 0 ||
+        messages7d < messages24h ||
+        activeAuthors7d < 0 ||
+        activeAuthors7d > messages7d ||
+        messages7d > RETICULUM_PUBLIC_ACTIVITY_MAX_COUNTER ||
+        observedAt < now - RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS ||
+        observedAt > now + RETICULUM_CHAT_MAX_FUTURE_SKEW_MS
+      ) {
+        continue;
+      }
+      const samples =
+        this.publicGroupActivitySamples.get(groupId) ??
+        new Map<string, ReticulumPublicGroupActivitySample>();
+      samples.set(normalizedPeer, {
+        summary: {
+          groupId,
+          messages24h,
+          messages7d,
+          activeAuthors7d,
+          observedAt,
+          confidence: 1,
+        },
+        expiresAt: observedAt + RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS,
+      });
+      while (samples.size > RETICULUM_PUBLIC_ACTIVITY_SAMPLE_PEERS) {
+        const oldestPeer = [...samples.entries()].sort(
+          (a, b) => a[1].expiresAt - b[1].expiresAt
+        )[0]?.[0];
+        if (!oldestPeer) break;
+        samples.delete(oldestPeer);
+      }
+      this.publicGroupActivitySamples.set(groupId, samples);
+      affected.add(groupId);
+    }
+    const aggregates = [...affected]
+      .map((groupId) => this.aggregatePublicGroupActivity(groupId, now))
+      .filter(
+        (summary): summary is ReticulumPublicGroupActivitySummary => !!summary
+      );
+    this.db.upsertPublicGroupActivityCache(
+      aggregates,
+      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX,
+      now
+    );
+    this.prunePublicGroupActivityRuntime(now);
+  }
+
+  private aggregatePublicGroupActivity(
+    groupId: number,
+    now: number
+  ): ReticulumPublicGroupActivitySummary | null {
+    const summaries = [
+      ...(
+        this.publicGroupActivitySamples.get(groupId)?.values() ?? []
+      ),
+    ]
+      .filter((sample) => sample.expiresAt > now)
+      .map((sample) => sample.summary);
+    const localState = this.publicGroupActivityStates.get(groupId);
+    if (localState && this.isLocalPublicGroup(groupId)) {
+      summaries.push(
+        summarizeReticulumPublicGroupActivity(groupId, localState, now)
+      );
+    }
+    if (summaries.length === 0) return null;
+    const median = (values: number[]) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      return sorted[Math.floor((sorted.length - 1) / 2)];
+    };
+    const messages7d = median(
+      summaries.map((summary) => summary.messages7d)
+    );
+    return {
+      groupId,
+      messages24h: Math.min(
+        messages7d,
+        median(summaries.map((summary) => summary.messages24h))
+      ),
+      messages7d,
+      activeAuthors7d: Math.min(
+        messages7d,
+        median(summaries.map((summary) => summary.activeAuthors7d))
+      ),
+      observedAt: Math.max(
+        ...summaries.map((summary) => summary.observedAt)
+      ),
+      confidence: Math.min(
+        RETICULUM_PUBLIC_ACTIVITY_SAMPLE_PEERS,
+        summaries.length
+      ),
+    };
   }
 
   setLocalDmAddresses(addresses: string[]): void {
@@ -6446,6 +7232,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   notifyOverlayHealthChanged(isHealthy: boolean): void {
     if (!isHealthy) return;
+    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
     this.flushPendingDmDiscoveryIfHealthy('overlay-health');
     for (const [conversationId, pref] of this.activeDmLinkPreferences) {
       if (pref.active && pref.expiresAt > this.now()) {
@@ -6642,6 +7429,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   reannounceSubscriptions(): void {
+    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
     if (this.subscribedGroups.size === 0) return;
     this.enqueueSubscriptionFanouts([this.buildHelloWire()]);
     this.refreshSubscriptions();
@@ -9042,7 +9830,7 @@ export class ReticulumChatManager extends EventEmitter {
         false,
         { immediate: false }
       );
-      if (localMemberSubscription || this.hasLocalGroupHistory(item.groupId)) {
+      if (localMemberSubscription) {
         this.enqueueDigestSend({
           mode: 'peer',
           peerHash: item.peerHash,
@@ -10018,6 +10806,12 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       case 'group_sub':
         this.handleGroupSub(wire, peerHash);
+        return;
+      case 'public_activity_req_v1':
+        void this.handlePublicActivityRequest(wire, peerHash);
+        return;
+      case 'public_activity_top_v1':
+        this.handlePublicActivityResponse(wire, peerHash);
         return;
       case 'unsub': {
         const groupId = Number(wire.g);
@@ -15497,6 +16291,7 @@ export class ReticulumChatManager extends EventEmitter {
       }
       this.queueChannelMetadataProjection(event);
       this.observedDbEventIds.add(event.eventId);
+      this.recordPublicGroupActivity(event);
       this.writeLocalEventNotification(event);
       if (options.emitSummary !== false) {
         this.emitSummaryChanged(event.groupId, event);
@@ -26737,6 +27532,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.landStateForwardingAppliedKey = '';
     this.landStateForwardingAppliedRevision = -1;
     this.scheduleLandStateForwardingSync(0);
+    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
   };
 
   private onBridgeChatMessage = (

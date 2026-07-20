@@ -83,6 +83,18 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const [showPrivate, setShowPrivate] = useState(false);
   const [visibleCount, setVisibleCount] = useState(FIND_GROUPS_PAGE_SIZE);
   const [topGroupOwnerNames, setTopGroupOwnerNames] = useState({});
+  const [publicActivityByGroup, setPublicActivityByGroup] = useState<
+    Record<
+      string,
+      {
+        messages24h: number;
+        messages7d: number;
+        activeAuthors7d: number;
+        observedAt: number;
+        confidence: number;
+      }
+    >
+  >({});
   const [isLoading, setIsLoading] = useState(false);
   const theme = useTheme();
 
@@ -136,6 +148,21 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
         if (sortMode === 'newest') {
           return Number(b?.created || 0) - Number(a?.created || 0);
         }
+        const aActivity = isOpenGroup(a)
+          ? publicActivityByGroup[String(a?.groupId)]
+          : undefined;
+        const bActivity = isOpenGroup(b)
+          ? publicActivityByGroup[String(b?.groupId)]
+          : undefined;
+        if (aActivity || bActivity) {
+          if (!aActivity) return 1;
+          if (!bActivity) return -1;
+          const activityOrder =
+            bActivity.activeAuthors7d - aActivity.activeAuthors7d ||
+            bActivity.messages24h - aActivity.messages24h ||
+            bActivity.messages7d - aActivity.messages7d;
+          if (activityOrder !== 0) return activityOrder;
+        }
         const aLevel = getGroupLevel(
           getLegacyLevel(a?.created ?? a?.creationTimestamp ?? a?.createdAt),
           getCommunityLevel(Number(a?.memberCount) || 0)
@@ -146,7 +173,14 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
         ) ?? -1;
         return bLevel - aLevel || Number(b?.memberCount || 0) - Number(a?.memberCount || 0);
       });
-  }, [groups, inputValue, showOpen, showPrivate, sortMode]);
+  }, [
+    groups,
+    inputValue,
+    publicActivityByGroup,
+    showOpen,
+    showPrivate,
+    sortMode,
+  ]);
 
   const avatarEligibleGroupIds = useMemo(
     () => new Set(
@@ -205,6 +239,19 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     try {
       const response = await fetch(`${getBaseApiReact()}/groups/?limit=0`);
       const groupData = await response.json();
+      const publicGroupIds = groupData
+        .filter(isOpenGroup)
+        .map((group) => Number(group?.groupId))
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+      await window.reticulumChat?.setPublicGroupDirectory?.(publicGroupIds);
+      const activity = await window.reticulumChat?.getPublicGroupActivity?.();
+      if (Array.isArray(activity)) {
+        setPublicActivityByGroup(
+          Object.fromEntries(
+            activity.map((summary) => [String(summary.groupId), summary])
+          )
+        );
+      }
       const filteredGroup = groupData.filter(
         (item) => !memberGroups.find((group) => group.groupId === item.groupId)
       );
@@ -219,6 +266,26 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   useEffect(() => {
     getGroups();
   }, [memberGroups]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      const activity = await window.reticulumChat?.getPublicGroupActivity?.();
+      if (cancelled || !Array.isArray(activity)) return;
+      setPublicActivityByGroup(
+        Object.fromEntries(
+          activity.map((summary) => [String(summary.groupId), summary])
+        )
+      );
+    };
+    const initialTimer = window.setTimeout(() => void refresh(), 2_000);
+    const interval = window.setInterval(() => void refresh(), 60_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const handleOpenDialog = (group) => {
     setSelectedGroup(group);
@@ -368,6 +435,9 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     const group = visibleItems[index];
     const memberCount = group?.memberCount ?? 0;
     const openGroup = isOpenGroup(group);
+    const publicActivity = openGroup
+      ? publicActivityByGroup[String(group?.groupId)]
+      : undefined;
     const ownerName = topGroupOwnerNames[String(group?.groupId)];
     const showRemoteAvatar = avatarEligibleGroupIds.has(String(group?.groupId)) && Boolean(ownerName);
     const avatarUrl = showRemoteAvatar
@@ -489,9 +559,22 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
                 })}
               </Typography>
             </Box>
-            <Typography noWrap sx={{ color: 'text.secondary', display: { xs: 'none', sm: 'block' }, flex: '0 0 112px', fontSize: 13, lineHeight: '18px', textAlign: 'right' }}>
-              {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
-            </Typography>
+            <Box sx={{ color: 'text.secondary', display: { xs: 'none', sm: 'block' }, flex: '0 0 112px', textAlign: 'right' }}>
+              {publicActivity ? (
+                <>
+                  <Typography noWrap sx={{ fontSize: 13, lineHeight: '18px' }}>
+                    {formatMemberCount(publicActivity.activeAuthors7d)} active
+                  </Typography>
+                  <Typography noWrap sx={{ fontSize: 12, lineHeight: '17px', opacity: 0.8 }}>
+                    {formatMemberCount(publicActivity.messages7d)} messages
+                  </Typography>
+                </>
+              ) : (
+                <Typography noWrap sx={{ fontSize: 13, lineHeight: '18px' }}>
+                  {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
+                </Typography>
+              )}
+            </Box>
             <ButtonBase
               aria-label={`${openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
               onClick={(event) => { event.stopPropagation(); handleJoinGroup(group, openGroup); }}
