@@ -846,6 +846,108 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
             "current-audio-link",
         )
 
+    def test_audio_rtt_probe_uses_established_audio_link(self):
+        self.install_fake_rns_packet()
+        current_link = self.install_audio_state("current-audio-link")
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+
+        self.bridge._process_audio_rtt_probe("current-audio-link", 0)
+
+        self.assertEqual(FakeRnsPacket.sent_links, [current_link])
+        wire = json.loads(FakeRnsPacket.sent_payloads[0].decode("utf-8"))
+        self.assertEqual(wire.get("t"), self.bridge._GROUP_AUDIO_RTT_WIRE_TYPE)
+        self.assertEqual(wire.get("c"), self.bridge._GROUP_AUDIO_RTT_PROBE_COMMAND)
+        self.assertRegex(str(wire.get("q") or ""), r"^[0-9a-f]{16}$")
+        self.assertIn(wire["q"], state["rtt_pending"])
+
+    def test_audio_rtt_ack_resolves_probe_with_monotonic_clock(self):
+        self.install_audio_state("current-audio-link")
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        probe_id = "a1" * 8
+        state["rtt_pending"][probe_id] = {"sent_ns": 1_000_000_000}
+
+        with mock.patch.object(
+            self.bridge.time,
+            "monotonic_ns",
+            return_value=1_025_000_000,
+        ):
+            rtt_ms = self.bridge._resolve_audio_rtt_probe(
+                "current-audio-link",
+                state,
+                probe_id,
+            )
+
+        self.assertEqual(rtt_ms, 25.0)
+        self.assertEqual(state.get("rtt_latest_ms"), 25.0)
+        self.assertEqual(state.get("rtt_median_ms"), 25.0)
+        self.assertNotIn(probe_id, state["rtt_pending"])
+
+    def test_audio_rtt_probe_is_acknowledged_inside_bridge(self):
+        self.install_fake_rns_packet()
+        current_link = self.install_audio_state("current-audio-link")
+        probe_id = "b2" * 8
+        wire = json.dumps(
+            {
+                "t": self.bridge._GROUP_AUDIO_RTT_WIRE_TYPE,
+                "c": self.bridge._GROUP_AUDIO_RTT_PROBE_COMMAND,
+                "q": probe_id,
+                "r": self.sender_peer_hash,
+            }
+        ).encode("utf-8")
+
+        def run_immediately(_lane, _name, func, *args, **kwargs):
+            func(*args, **kwargs)
+            return True
+
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            side_effect=run_immediately,
+        ):
+            self.bridge.on_audio_link_packet(wire, FakePacket(current_link))
+
+        self.assertEqual(FakeRnsPacket.sent_links, [current_link])
+        ack = json.loads(FakeRnsPacket.sent_payloads[0].decode("utf-8"))
+        self.assertEqual(ack.get("t"), self.bridge._GROUP_AUDIO_RTT_WIRE_TYPE)
+        self.assertEqual(ack.get("c"), self.bridge._GROUP_AUDIO_RTT_ACK_COMMAND)
+        self.assertEqual(ack.get("q"), probe_id)
+
+    def test_audio_rtt_commands_do_not_intercept_call_heartbeat(self):
+        current_link = self.install_audio_state("current-audio-link")
+        heartbeat = json.dumps(
+            {
+                "t": self.bridge._GROUP_AUDIO_HEARTBEAT_WIRE_TYPE,
+                "R": "gcall-qortal-1",
+                "c": "PING",
+                "m": int(time.time() * 1000),
+                "r": self.sender_peer_hash,
+            }
+        ).encode("utf-8")
+
+        with mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+            return_value=True,
+        ) as emit_call_message:
+            self.bridge.on_audio_link_packet(heartbeat, FakePacket(current_link))
+
+        emit_call_message.assert_called_once()
+
+    def test_removing_audio_link_discards_pending_rtt_probe(self):
+        self.install_audio_state("current-audio-link")
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["rtt_probe_queued"] = True
+        state["rtt_pending"]["c3" * 8] = {"sent_ns": time.monotonic_ns()}
+
+        removed = self.bridge.remove_audio_link("current-audio-link")
+
+        self.assertIsNotNone(removed)
+        self.assertFalse(removed.get("rtt_probe_queued"))
+        self.assertEqual(removed.get("rtt_pending"), {})
+
     def test_audio_open_stops_after_max_establish_attempts(self):
         self.bridge._destination = FakeDestination()
         self.bridge._audio_link_desired_by_peer_hash[self.sender_peer_hash] = {

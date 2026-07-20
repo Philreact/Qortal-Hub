@@ -58,6 +58,7 @@ _last_transport_state: Optional[Dict[str, Any]] = None
 _last_overlay_zero_fanout_recovery_at: float = 0.0
 _transport_monitor_thread: Optional[threading.Thread] = None
 _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
+_audio_rtt_monitor_thread: Optional[threading.Thread] = None
 _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.MDU))
 # Grep logs for this string to confirm the rebuilt script is running (sync with GC_RETICULUM_WIRE_BUILD_MARKER in group-call-wire-reticulum.ts).
 PRESENCE_BRIDGE_BUILD = "wire395-reticulum-resource-sessions-v1"
@@ -348,6 +349,16 @@ def _reticulum_chat_prune_digest_fanout_recent(now: float) -> None:
 
 _GROUP_AUDIO_WIRE_TYPE = "GCA"
 _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE = "GAC"
+# Keep RTT controls under the established audio-control type so an older peer
+# still classifies the first packet on this dedicated link as audio.
+_GROUP_AUDIO_RTT_WIRE_TYPE = _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE
+_GROUP_AUDIO_RTT_PROBE_COMMAND = "P"
+_GROUP_AUDIO_RTT_ACK_COMMAND = "A"
+_AUDIO_RTT_PROBE_INTERVAL_SECONDS = 5.0
+_AUDIO_RTT_PROBE_TIMEOUT_SECONDS = 4.0
+_AUDIO_RTT_MONITOR_INTERVAL_SECONDS = 0.5
+_AUDIO_RTT_SAMPLE_LIMIT = 16
+_AUDIO_RTT_ACK_MIN_INTERVAL_SECONDS = 0.25
 _GROUP_AUDIO_BINARY_MAGIC = b"QGAU"
 _GROUP_AUDIO_BINARY_VERSION = 1
 _GROUP_AUDIO_BINARY_HEADER_BYTES = 9
@@ -532,6 +543,7 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "overlay-io-0": 32,
     "overlay-io-1": 32,
     "audio-control": 64,
+    "audio-rtt": 256,
     "path-management": 128,
     "resource-control": 128,
 }
@@ -11717,7 +11729,7 @@ def _handle_overlay_link_packet(message, packet) -> None:
         return
     if not isinstance(decoded, dict):
         return
-    if decoded.get("t") == _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE:
+    if decoded.get("t") in _AUDIO_LINK_WIRE_TYPES:
         sender_destination_hash = str(decoded.get("r") or "").strip().lower()
         audio_link_id = _promote_overlay_audio_sender_if_allowed(
             link,
@@ -15328,6 +15340,18 @@ def _ensure_audio_link_lifecycle_fields(state: Dict[str, Any]) -> Dict[str, Any]
         state["last_media_send_trace_at"] = 0.0
     if "last_media_rx_trace_at" not in state:
         state["last_media_rx_trace_at"] = 0.0
+    if "rtt_next_probe_at" not in state:
+        state["rtt_next_probe_at"] = 0.0
+    if "rtt_probe_queued" not in state:
+        state["rtt_probe_queued"] = False
+    if not isinstance(state.get("rtt_pending"), dict):
+        state["rtt_pending"] = {}
+    if not isinstance(state.get("rtt_samples_ms"), deque):
+        state["rtt_samples_ms"] = deque(maxlen=_AUDIO_RTT_SAMPLE_LIMIT)
+    if "rtt_consecutive_timeouts" not in state:
+        state["rtt_consecutive_timeouts"] = 0
+    if "rtt_last_ack_at" not in state:
+        state["rtt_last_ack_at"] = 0.0
     return state
 
 
@@ -15963,6 +15987,211 @@ def _send_packet_on_audio_link_bounded(
     return bool(result is not False), send_duration_ms
 
 
+def _send_audio_rtt_control(
+    link_id: str,
+    generation: int,
+    command: str,
+    correlation_id: str,
+) -> bool:
+    probe_id = _valid_overlay_correlation_id(correlation_id)
+    if command not in (_GROUP_AUDIO_RTT_PROBE_COMMAND, _GROUP_AUDIO_RTT_ACK_COMMAND) or not probe_id:
+        return False
+    with _state_lock:
+        state = _audio_links_by_id.get(link_id)
+        if state is None:
+            return False
+        _ensure_audio_link_lifecycle_fields(state)
+        if (
+            state.get("established") is not True
+            or state.get("closing") is True
+            or int(state.get("generation") or 0) != generation
+        ):
+            return False
+        link = state.get("link")
+        send_lock = state.get("send_lock")
+    if link is None or send_lock is None or _destination is None:
+        return False
+    encoded = _encode_group_signal_wire(
+        {
+            "t": _GROUP_AUDIO_RTT_WIRE_TYPE,
+            "c": command,
+            "q": probe_id,
+        }
+    )
+    if not encoded.get("ok"):
+        return False
+    with send_lock:
+        if not _audio_link_generation_matches(link_id, generation):
+            return False
+        result, _send_duration_ms = _send_packet_to_destination_bounded(
+            link,
+            encoded["wire_bytes"],
+            "target=reticulum-audio-link audio_rtt_control",
+            timeout_seconds=_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
+        )
+    if result is True:
+        with _state_lock:
+            current = _audio_links_by_id.get(link_id)
+            if current is not None and int(current.get("generation") or 0) == generation:
+                current["last_activity_at"] = time.time()
+        return True
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_rtt_send_failed "
+        f"link={link_id} command={command} peer={_short_route(state.get('peerPresenceHash'))}"
+    )
+    return False
+
+
+def _process_audio_rtt_probe(link_id: str, generation: int) -> None:
+    now_ns = time.monotonic_ns()
+    expired_probe_ids: List[Tuple[str, int]] = []
+    with _state_lock:
+        state = _audio_links_by_id.get(link_id)
+        if state is None:
+            return
+        _ensure_audio_link_lifecycle_fields(state)
+        state["rtt_probe_queued"] = False
+        if (
+            state.get("established") is not True
+            or state.get("closing") is True
+            or int(state.get("generation") or 0) != generation
+        ):
+            return
+        pending = state.get("rtt_pending")
+        timeout_ns = int(_AUDIO_RTT_PROBE_TIMEOUT_SECONDS * 1_000_000_000)
+        for pending_id, pending_state in list(pending.items()):
+            sent_ns = int(pending_state.get("sent_ns") or 0)
+            if sent_ns <= 0 or now_ns - sent_ns >= timeout_ns:
+                pending.pop(pending_id, None)
+                state["rtt_consecutive_timeouts"] = int(
+                    state.get("rtt_consecutive_timeouts") or 0
+                ) + 1
+                expired_probe_ids.append(
+                    (pending_id, int(state["rtt_consecutive_timeouts"]))
+                )
+        if pending:
+            state["rtt_next_probe_at"] = time.monotonic() + 1.0
+            return
+        probe_id = secrets.token_hex(8)
+        pending[probe_id] = {"sent_ns": now_ns}
+        state["rtt_next_probe_at"] = time.monotonic() + _AUDIO_RTT_PROBE_INTERVAL_SECONDS
+        peer_key = str(state.get("peerPresenceHash") or "")
+    for expired_probe_id, timeout_count in expired_probe_ids:
+        if timeout_count <= 3 or timeout_count % 12 == 0:
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_link_rtt_timeout "
+                f"link={link_id} peer={_short_route(peer_key)} probe={expired_probe_id} "
+                f"consecutive={timeout_count}"
+            )
+    if _send_audio_rtt_control(
+        link_id,
+        generation,
+        _GROUP_AUDIO_RTT_PROBE_COMMAND,
+        probe_id,
+    ):
+        return
+    with _state_lock:
+        current = _audio_links_by_id.get(link_id)
+        if current is not None and int(current.get("generation") or 0) == generation:
+            current.get("rtt_pending", {}).pop(probe_id, None)
+
+
+def _resolve_audio_rtt_probe(
+    link_id: str,
+    state: Dict[str, Any],
+    correlation_id: Any,
+) -> Optional[float]:
+    probe_id = _valid_overlay_correlation_id(correlation_id)
+    if not probe_id:
+        return None
+    with _state_lock:
+        pending = state.get("rtt_pending", {}).pop(probe_id, None)
+        if not isinstance(pending, dict):
+            return None
+        sent_ns = int(pending.get("sent_ns") or 0)
+        if sent_ns <= 0:
+            return None
+        rtt_ms = max(0.0, (time.monotonic_ns() - sent_ns) / 1_000_000.0)
+        samples = state.get("rtt_samples_ms")
+        if not isinstance(samples, deque):
+            samples = deque(maxlen=_AUDIO_RTT_SAMPLE_LIMIT)
+            state["rtt_samples_ms"] = samples
+        samples.append(rtt_ms)
+        sample_values = list(samples)
+        state["rtt_latest_ms"] = rtt_ms
+        state["rtt_median_ms"] = float(statistics.median(sample_values))
+        state["rtt_consecutive_timeouts"] = 0
+        peer_key = str(state.get("peerPresenceHash") or "")
+        handshake_ms = state.get("rtt_handshake_ms")
+    log(
+        "[presence_bridge] target=reticulum-audio-link audio_link_rtt "
+        f"link={link_id} peer={_short_route(peer_key)} rtt_ms={rtt_ms:.3f} "
+        f"median_ms={statistics.median(sample_values):.3f} samples={len(sample_values)} "
+        f"handshake_ms={f'{float(handshake_ms):.3f}' if isinstance(handshake_ms, (int, float)) else 'na'}"
+    )
+    return rtt_ms
+
+
+def _activate_audio_rtt_sampling(link_id: str) -> None:
+    with _state_lock:
+        state = _audio_links_by_id.get(link_id)
+        if state is None or state.get("established") is not True or state.get("closing") is True:
+            return
+        _ensure_audio_link_lifecycle_fields(state)
+        if float(state.get("rtt_next_probe_at") or 0.0) <= 0.0:
+            state["rtt_next_probe_at"] = time.monotonic() + _AUDIO_RTT_PROBE_INTERVAL_SECONDS
+        link = state.get("link")
+        link_rtt = getattr(link, "rtt", None) if link is not None else None
+        if isinstance(link_rtt, (int, float)) and link_rtt >= 0:
+            state["rtt_handshake_ms"] = float(link_rtt) * 1000.0
+
+
+def audio_rtt_monitor_loop() -> None:
+    while not _shutdown.is_set():
+        now = time.monotonic()
+        due: List[Tuple[str, int]] = []
+        with _state_lock:
+            for link_id, state in list(_audio_links_by_id.items()):
+                _ensure_audio_link_lifecycle_fields(state)
+                if state.get("established") is not True or state.get("closing") is True:
+                    continue
+                next_probe_at = float(state.get("rtt_next_probe_at") or 0.0)
+                if next_probe_at <= 0.0:
+                    state["rtt_next_probe_at"] = now + _AUDIO_RTT_PROBE_INTERVAL_SECONDS
+                    continue
+                if now < next_probe_at or state.get("rtt_probe_queued") is True:
+                    continue
+                state["rtt_probe_queued"] = True
+                due.append((link_id, int(state.get("generation") or 0)))
+        for link_id, generation in due:
+            if _enqueue_scheduler_task(
+                "audio-rtt",
+                f"audio-rtt-probe:{link_id[:8]}",
+                _process_audio_rtt_probe,
+                link_id,
+                generation,
+            ):
+                continue
+            with _state_lock:
+                state = _audio_links_by_id.get(link_id)
+                if state is not None and int(state.get("generation") or 0) == generation:
+                    state["rtt_probe_queued"] = False
+                    state["rtt_next_probe_at"] = now + 1.0
+        _shutdown.wait(_AUDIO_RTT_MONITOR_INTERVAL_SECONDS)
+
+
+def ensure_audio_rtt_monitor_started() -> None:
+    global _audio_rtt_monitor_thread
+    if _audio_rtt_monitor_thread is not None and _audio_rtt_monitor_thread.is_alive():
+        return
+    _audio_rtt_monitor_thread = threading.Thread(
+        target=audio_rtt_monitor_loop,
+        daemon=True,
+        name="reticulum-audio-rtt-monitor",
+    )
+    _audio_rtt_monitor_thread.start()
+
+
 def remove_audio_link(link_id: str) -> Optional[Dict[str, Any]]:
     with _state_lock:
         state = _audio_links_by_id.pop(link_id, None)
@@ -15971,6 +16200,8 @@ def remove_audio_link(link_id: str) -> Optional[Dict[str, Any]]:
             state["closing"] = True
             state["manager_state"] = _LINK_STATE_DEAD
             state["generation"] = int(state.get("generation") or 0) + 1
+            state["rtt_probe_queued"] = False
+            state.get("rtt_pending", {}).clear()
             link = state.get("link")
             if link is not None:
                 _audio_link_ids_by_object.pop(id(link), None)
@@ -16800,6 +17031,49 @@ def _handle_audio_link_packet(message, packet) -> None:
         return
     if not isinstance(decoded, dict):
         return
+    command = str(decoded.get("c") or "")
+    if (
+        decoded.get("t") == _GROUP_AUDIO_RTT_WIRE_TYPE
+        and command in (_GROUP_AUDIO_RTT_PROBE_COMMAND, _GROUP_AUDIO_RTT_ACK_COMMAND)
+    ):
+        probe_id = _valid_overlay_correlation_id(decoded.get("q"))
+        if not probe_id:
+            return
+        sender_call_hash = str(decoded.get("r") or "").strip().lower()
+        peer_presence_hash = _resolve_sender_peer_destination_hash(sender_call_hash)
+        with _state_lock:
+            if sender_call_hash:
+                state["peerDestinationHash"] = sender_call_hash
+            if peer_presence_hash:
+                state["peerPresenceHash"] = peer_presence_hash
+            state["last_rx_at"] = time.time()
+            state["last_activity_at"] = state["last_rx_at"]
+            generation = int(state.get("generation") or 0)
+            if command == _GROUP_AUDIO_RTT_PROBE_COMMAND:
+                now_monotonic = time.monotonic()
+                last_ack_at = float(state.get("rtt_last_ack_at") or 0.0)
+                if now_monotonic - last_ack_at < _AUDIO_RTT_ACK_MIN_INTERVAL_SECONDS:
+                    return
+                state["rtt_last_ack_at"] = now_monotonic
+        if peer_presence_hash:
+            _register_active_audio_for_peer(peer_presence_hash, link_id)
+        if command == _GROUP_AUDIO_RTT_ACK_COMMAND:
+            _resolve_audio_rtt_probe(link_id, state, probe_id)
+            return
+        if not _enqueue_scheduler_task(
+            "audio-rtt",
+            f"audio-rtt-ack:{link_id[:8]}",
+            _send_audio_rtt_control,
+            link_id,
+            generation,
+            _GROUP_AUDIO_RTT_ACK_COMMAND,
+            probe_id,
+        ):
+            log(
+                "[presence_bridge] target=reticulum-audio-link audio_link_rtt_ack_queue_full "
+                f"link={link_id} peer={_short_route(state.get('peerPresenceHash'))}"
+            )
+        return
     if decoded.get("t") == _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE:
         sender_call_hash = decoded.get("r")
         if isinstance(sender_call_hash, str) and sender_call_hash:
@@ -16842,6 +17116,7 @@ def configure_audio_link(link, link_id: str) -> None:
             _ensure_audio_link_lifecycle_fields(state)
             _set_link_manager_generation(link, state)
         _audio_link_ids_by_object[id(link)] = link_id
+    _activate_audio_rtt_sampling(link_id)
 
 
 def on_outgoing_audio_link_established(link) -> None:
@@ -16886,6 +17161,7 @@ def on_outgoing_audio_link_established(link) -> None:
         "[presence_bridge] target=reticulum-audio-link audio_link_established "
         f"peer={peer_key} link={link_id}"
     )
+    _activate_audio_rtt_sampling(link_id)
     emit_audio_link_established(link_id)
 
 
@@ -17349,6 +17625,7 @@ def ensure_started(config_dir: str):
         RNS.Transport.register_announce_handler(_announce_handler)
         ensure_transport_monitor_started()
         ensure_rns_callback_scheduler_monitor_started()
+        ensure_audio_rtt_monitor_started()
         ensure_overlay_transport_maintenance_started()
         if _RNS_INTERNAL_TIMING_PROBES_ENABLED:
             install_rns_shared_frame_probe()
