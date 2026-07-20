@@ -78,7 +78,9 @@ const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
 const DM_ROOM_KEY_REPLAY_MAX_ATTEMPTS = 6;
 const DM_ROOM_KEY_REQUEST_RETRY_MS = 1_000;
 const DM_ROOM_KEY_REQUEST_MAX_ATTEMPTS = 30;
-const DM_MEDIA_READINESS_TIMEOUT_MS = 12_000;
+// The callee-owned Reticulum link can use four 12-second establish attempts
+// plus retry backoff. Do not let the renderer abandon the call first.
+const DM_MEDIA_READINESS_TIMEOUT_MS = 60_000;
 const DM_MEDIA_READINESS_POLL_MS = 500;
 const DM_MEDIA_READINESS_WARMUP_MS = 1_000;
 const CALL_LOCAL_ADDRESS_REASSERT_MS = 2_500;
@@ -664,9 +666,27 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
       let lastWarmupAt = 0;
       let lastLogAt = 0;
 
-      while (Date.now() < deadline) {
+      let deadlineReached = false;
+      do {
+        if (
+          callStateRef.current !== 'connected' ||
+          !reticulumSessionActiveRef.current ||
+          dmRoomIdRef.current !== roomId ||
+          peerAddressRef.current !== peer
+        ) {
+          pushDirectVoiceUiLog('log', 'DM media readiness cancelled', {
+            reason,
+            peerTrunc: peer.slice(0, 8),
+          });
+          return false;
+        }
+
         const now = Date.now();
-        if (now - lastWarmupAt >= DM_MEDIA_READINESS_WARMUP_MS) {
+        deadlineReached = now >= deadline;
+        if (
+          !deadlineReached &&
+          now - lastWarmupAt >= DM_MEDIA_READINESS_WARMUP_MS
+        ) {
           lastWarmupAt = now;
           if (typeof gc?.requestPeerMediaRecovery === 'function') {
             void gc
@@ -724,7 +744,9 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
           return true;
         }
 
-        if (now - lastLogAt >= 2_000) {
+        // The query above is the final readiness check at the deadline. This
+        // avoids rejecting a link that became active during the last poll.
+        if (!deadlineReached && now - lastLogAt >= 2_000) {
           lastLogAt = now;
           pushDirectVoiceUiLog('log', 'waiting for DM media readiness', {
             reason,
@@ -735,10 +757,18 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
           });
         }
 
-        await new Promise((resolve) =>
-          setTimeout(resolve, DM_MEDIA_READINESS_POLL_MS)
-        );
-      }
+        if (!deadlineReached) {
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              Math.max(
+                0,
+                Math.min(DM_MEDIA_READINESS_POLL_MS, deadline - Date.now())
+              )
+            )
+          );
+        }
+      } while (!deadlineReached);
 
       pushDirectVoiceUiLog('warn', 'DM media readiness timed out', {
         reason,
@@ -1673,6 +1703,14 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
         peer,
         'caller-start'
       );
+      if (
+        callStateRef.current !== 'connected' ||
+        !reticulumSessionActiveRef.current ||
+        dmRoomIdRef.current !== roomId ||
+        peerAddressRef.current !== peer
+      ) {
+        return;
+      }
       if (!ready) {
         showGlobalCallSnack(
           'info',
