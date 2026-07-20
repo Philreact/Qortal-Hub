@@ -1140,6 +1140,8 @@ export const Group = ({
   ] = useState('');
   const [reticulumMembershipsAppliedKey, setReticulumMembershipsAppliedKey] =
     useState('');
+  const [reticulumTransportReadyRevision, setReticulumTransportReadyRevision] =
+    useState(0);
   const reticulumAdminGroupIds = useMemo(
     () => new Set(getGroupIdsFromGroupLikeList(myGroupsWhereIAmAdmin)),
     [myGroupsWhereIAmAdmin]
@@ -1637,6 +1639,12 @@ export const Group = ({
   );
 
   useEffect(() => {
+    return window.presence?.onStarted?.(() => {
+      setReticulumTransportReadyRevision((revision) => revision + 1);
+    });
+  }, []);
+
+  useEffect(() => {
     if (!myAddress) return;
     if (memberGroupsLoadedAddress !== myAddress) {
       return;
@@ -1702,6 +1710,7 @@ export const Group = ({
     reticulumAdminGroupsLoadedAddress,
     reticulumMemberships,
     reticulumMembershipsKey,
+    reticulumTransportReadyRevision,
     refreshReticulumChatSummaries,
     scheduleReticulumChatSummariesRefresh,
     setReticulumChatSummaries,
