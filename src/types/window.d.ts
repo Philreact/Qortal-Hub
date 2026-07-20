@@ -720,7 +720,14 @@ declare global {
       getHistory: (
         groupId: number,
         channelId?: string,
-        limit?: number
+        limit?: number,
+        options?: {
+          beforeTimestamp?: number;
+          beforeEventId?: string;
+          afterTimestamp?: number;
+          afterEventId?: string;
+          repairNetwork?: boolean;
+        }
       ) => Promise<unknown[]>;
       getMessageHistory: (
         groupId: number,

@@ -14311,6 +14311,10 @@ def on_qchat_file_resource_started(resource) -> None:
     transfer_id = str(pending.get("transferId") or "")
     file_name = str(pending.get("fileName") or "")
     size = int(pending.get("size") or 0)
+    try:
+        resource_size = int(resource.get_data_size())
+    except Exception:
+        resource_size = int(getattr(resource, "total_size", 0) or 0)
     resource_type = str(pending.get("resourceType") or "qchat-dm-file").strip() or "qchat-dm-file"
     metadata = getattr(resource, "metadata", None)
     chunk_index = int(metadata.get("chunkIndex") or 0) if isinstance(metadata, dict) else -1
@@ -14342,9 +14346,18 @@ def on_qchat_file_resource_started(resource) -> None:
             f"chunk={chunk_index}/{chunk_count} chunk_size={chunk_size}"
         )
     else:
+        size_label = (
+            f"max_size={size} resource_size={resource_size}"
+            if pending.get("variableSize") is True
+            or (
+                isinstance(pending.get("metadata"), dict)
+                and pending["metadata"].get("variableSize") is True
+            )
+            else f"size={size} resource_size={resource_size}"
+        )
         log(
             "[presence_bridge] qchat file resource started "
-            f"transfer={transfer_id} peer={peer_hash[:16]} size={size} "
+            f"transfer={transfer_id} peer={peer_hash[:16]} {size_label} "
             f"resource_type={resource_type} bridge_chunked={is_chunked_pending}"
         )
 

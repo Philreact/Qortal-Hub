@@ -2515,7 +2515,8 @@ export const Group = ({
         const history = await window.reticulumChat?.getHistory?.(
           groupId,
           'general',
-          50
+          50,
+          { repairNetwork: false }
         );
         if (cancelled || !Array.isArray(history)) continue;
         for (const event of history as ReticulumBackgroundEvent[]) {
