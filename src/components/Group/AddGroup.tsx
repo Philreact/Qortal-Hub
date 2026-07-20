@@ -28,11 +28,11 @@ import {
   TextField,
   Tooltip,
 } from '@mui/material';
-import { AddGroupList } from './AddGroupList';
+import { AddGroupList, isOpenGroup } from './AddGroupList';
 import { UserListOfInvites } from './UserListOfInvites';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { getFee } from '../../background/background.ts';
-import { QORTAL_APP_CONTEXT } from '../../App';
+import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
@@ -233,6 +233,35 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
       setValue(initialTab);
     }
   }, [initialTab, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const primePublicGroupActivity = async () => {
+      try {
+        const response = await fetch(`${getBaseApiReact()}/groups/?limit=0`);
+        const groupData = await response.json();
+        if (cancelled || !Array.isArray(groupData)) return;
+        const publicGroupIds = groupData
+          .filter(isOpenGroup)
+          .map((group) => Number(group?.groupId))
+          .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
+        await window.reticulumChat?.setPublicGroupDirectory?.(publicGroupIds);
+        if (!cancelled) {
+          await window.reticulumChat?.getPublicGroupActivity?.();
+        }
+      } catch (error) {
+        console.warn(
+          '[ReticulumChat] Failed to initialize public group activity:',
+          error
+        );
+      }
+    };
+    void primePublicGroupActivity();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     subscribeToEvent('openGroupInvitesRequest', openGroupInvitesRequestFunc);

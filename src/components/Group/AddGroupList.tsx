@@ -52,7 +52,7 @@ const GROUP_ROW_HEIGHT = 88;
 const FIND_GROUPS_PAGE_SIZE = 10;
 const FIND_GROUPS_AVATAR_LIMIT = 20;
 
-const isOpenGroup = (group) =>
+export const isOpenGroup = (group) =>
   group?.isOpen === true || group?.groupType === 0 || group?.groupType === 'OPEN';
 const formatMemberCount = (count) =>
   new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(
