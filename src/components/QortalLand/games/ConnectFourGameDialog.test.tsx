@@ -5,12 +5,14 @@ import {
   ConnectFourGameDialog,
   type ConnectFourGameView,
 } from './ConnectFourGameDialog';
+import { canSignQortalLandGameHandshake } from './useQortalLandGame';
 
 const address = 'Qlocal1111111111111111111111111111111';
 const opponent = 'Qremote111111111111111111111111111111';
 
 const match = (state: ConnectFourState = createConnectFourState(1)): ConnectFourGameView => ({
   matchId: '00112233-4455-6677-8899-aabbccddeeff',
+  roundId: '00112233-4455-6677-8899-aabbccddeeff',
   requesterAddress: address,
   recipientAddress: opponent,
   requesterNonce: '11'.repeat(16),
@@ -23,6 +25,7 @@ const match = (state: ConnectFourState = createConnectFourState(1)): ConnectFour
   state,
   stateHash: 'aa'.repeat(32),
   moves: [],
+  chatMessages: [],
 });
 
 const renderGame = (
@@ -40,6 +43,8 @@ const renderGame = (
     onRematch: vi.fn(),
     onResign: vi.fn(),
     onRespond: vi.fn(),
+    onSendChat: vi.fn(() => true),
+    onTyping: vi.fn(),
     ...overrides,
   };
   render(<ConnectFourGameDialog {...props} />);
@@ -47,6 +52,20 @@ const renderGame = (
 };
 
 describe('Connect Four game dialog', () => {
+  it('only signs reconnect handshakes for the current round', () => {
+    const current = match();
+    const publicKey = 'public-key';
+    const fields = {
+      type: 'QORTAL_LAND_GAME_RESUME_REQUEST',
+      matchId: current.matchId,
+      roundId: current.roundId,
+      requesterAddress: address,
+      signerPublicKey: publicKey,
+    };
+    expect(canSignQortalLandGameHandshake(fields, current, address, publicKey)).toBe(true);
+    expect(canSignQortalLandGameHandshake({ ...fields, roundId: crypto.randomUUID() }, current, address, publicKey)).toBe(false);
+  });
+
   it('offers keyboard-accessible columns and submits the selected column', async () => {
     const { onPlayColumn } = renderGame(match());
     const column = screen.getByRole('button', { name: 'Play column 4, 6 spaces available' });
@@ -57,6 +76,21 @@ describe('Connect Four game dialog', () => {
     await waitFor(() => expect(onPlayColumn).toHaveBeenCalledWith(3));
     expect(screen.getByText('Your turn')).toBeTruthy();
     expect(screen.getByRole('grid', { name: 'Connect Four board' })).toBeTruthy();
+  });
+
+  it('moves the active column with arrows even when the board was not focused', async () => {
+    const { onPlayColumn } = renderGame(match());
+
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Play column 4, 6 spaces available'
+    ));
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Play column 5, 6 spaces available'
+    );
+    fireEvent.keyDown(window, { key: 'Enter' });
+
+    await waitFor(() => expect(onPlayColumn).toHaveBeenCalledWith(4));
   });
 
   it('does not submit a full column', () => {
@@ -81,7 +115,7 @@ describe('Connect Four game dialog', () => {
     expect(screen.getByRole('grid', { name: 'Connect Four board' })).toBeTruthy();
   });
 
-  it('shows the final summary and requires a fresh accepted rematch', () => {
+  it('shows the final summary and offers a rematch', () => {
     const onRematch = vi.fn();
     const finished = match({
       ...createConnectFourState(2),
@@ -94,5 +128,28 @@ describe('Connect Four game dialog', () => {
     expect(screen.getByText(/7 moves against Rival/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Play again/i }));
     expect(onRematch).toHaveBeenCalledOnce();
+  });
+
+  it('disables chat and rematch after the reusable session has closed', () => {
+    const finished = match({ ...createConnectFourState(2), outcome: { type: 'draw' } });
+    renderGame({ ...finished, phase: 'finished', outcome: { type: 'draw' }, sessionClosed: true });
+
+    expect(screen.getByRole('button', { name: /Play again/i })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Game chat message' })).toBeDisabled();
+  });
+
+  it('sends temporary chat and reports typing without triggering a move', async () => {
+    const onSendChat = vi.fn(() => true);
+    const onTyping = vi.fn();
+    const { onPlayColumn } = renderGame(match(), { onSendChat, onTyping });
+    const input = screen.getByRole('textbox', { name: 'Game chat message' });
+
+    fireEvent.change(input, { target: { value: 'Good luck 🙂' } });
+    expect(onTyping).toHaveBeenCalledWith(true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onSendChat).toHaveBeenCalledWith('Good luck 🙂');
+    expect(onTyping).toHaveBeenCalledWith(false);
+    expect(onPlayColumn).not.toHaveBeenCalled();
   });
 });

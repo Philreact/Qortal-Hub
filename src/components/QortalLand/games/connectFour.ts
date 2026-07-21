@@ -166,7 +166,7 @@ const canonicalConnectFourState = (state: ConnectFourState): string =>
     nextSeat: state.nextSeat,
     outcome: state.outcome,
     ply: state.ply,
-    protocolVersion: 1,
+    protocolVersion: 2,
     rulesVersion: CONNECT_FOUR_RULES_VERSION,
   });
 
@@ -198,7 +198,7 @@ export const deriveConnectFourStartingSeat = async (
   requesterNonceHex: string,
   recipientNonceHex: string
 ): Promise<ConnectFourSeat> => {
-  const prefix = new TextEncoder().encode('qortalland-game:v1:connect-four:');
+  const prefix = new TextEncoder().encode('qortalland-game:v2:connect-four:');
   const match = decodeHex(matchId);
   const requester = decodeHex(requesterNonceHex);
   const recipient = decodeHex(recipientNonceHex);

@@ -31,16 +31,16 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
     'linkId', 'createdAt',
   ]),
   QORTAL_LAND_GAME_RESUME_REQUEST: schema([
-    'type', 'matchId', 'requesterAddress', 'signerPublicKey', 'linkId',
+    'type', 'matchId', 'roundId', 'requesterAddress', 'signerPublicKey', 'linkId',
     'requesterNonce', 'lastAcknowledgedPly', 'stateHash', 'transcriptHash', 'createdAt',
   ]),
   QORTAL_LAND_GAME_RESUME_ACCEPT: schema([
-    'type', 'matchId', 'responderAddress', 'signerPublicKey', 'linkId',
+    'type', 'matchId', 'roundId', 'responderAddress', 'signerPublicKey', 'linkId',
     'requesterNonce', 'recipientNonce', 'lastAcknowledgedPly', 'stateHash',
     'transcriptHash', 'createdAt',
   ]),
   QORTAL_LAND_GAME_RESUME_CONFIRM: schema([
-    'type', 'matchId', 'requesterAddress', 'signerPublicKey', 'linkId',
+    'type', 'matchId', 'roundId', 'requesterAddress', 'signerPublicKey', 'linkId',
     'requesterNonce', 'recipientNonce', 'lastAcknowledgedPly', 'stateHash',
     'transcriptHash', 'createdAt',
   ]),
@@ -486,7 +486,7 @@ function assertSafeGameHandshake(payload: Record<string, unknown>): void {
   }
   if (payload.type === 'QORTAL_LAND_GAME_INVITE') {
     if (
-      payload.protocolVersion !== 1 ||
+      payload.protocolVersion !== 2 ||
       payload.game !== 'connect-four' ||
       payload.gameVersion !== 1 ||
       payload.rulesVersion !== 1 ||

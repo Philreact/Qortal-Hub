@@ -36,8 +36,7 @@ INVITE_TTL = 60
 LINK_TIMEOUT = 45
 RECOVERY_WINDOW = 30
 HEARTBEAT_INTERVAL = 10
-PAIR_COOLDOWN = 10
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 GAME_ID = "connect-four"
 GAME_VERSION = 1
 RULES_VERSION = 1
@@ -87,15 +86,15 @@ HANDSHAKE_FIELD_ORDER = {
         "linkId", "createdAt",
     ),
     "QORTAL_LAND_GAME_RESUME_REQUEST": (
-        "type", "matchId", "requesterAddress", "signerPublicKey", "linkId",
+        "type", "matchId", "roundId", "requesterAddress", "signerPublicKey", "linkId",
         "requesterNonce", "lastAcknowledgedPly", "stateHash", "transcriptHash", "createdAt",
     ),
     "QORTAL_LAND_GAME_RESUME_ACCEPT": (
-        "type", "matchId", "responderAddress", "signerPublicKey", "linkId",
+        "type", "matchId", "roundId", "responderAddress", "signerPublicKey", "linkId",
         "requesterNonce", "recipientNonce", "lastAcknowledgedPly", "stateHash", "transcriptHash", "createdAt",
     ),
     "QORTAL_LAND_GAME_RESUME_CONFIRM": (
-        "type", "matchId", "requesterAddress", "signerPublicKey", "linkId",
+        "type", "matchId", "roundId", "requesterAddress", "signerPublicKey", "linkId",
         "requesterNonce", "recipientNonce", "lastAcknowledgedPly", "stateHash", "transcriptHash", "createdAt",
     ),
 }
@@ -126,7 +125,23 @@ ACTIVE_TYPES = {
     "SYNC_MOVE",
     "START_ACK",
     "PROTOCOL_ERROR",
+    "ROUND_REQUEST",
+    "ROUND_RESPONSE",
+    "ROUND_CANCEL",
+    "CHAT_MESSAGE",
+    "CHAT_CHUNK",
+    "CHAT_ACK",
+    "CHAT_TYPING",
 }
+
+ROUND_PHASES = {"session_idle", "round_waiting", "round_incoming"}
+ROUND_BOUND_TYPES = {"MOVE", "MOVE_ACK", "RESIGN", "RESIGN_ACK", "GAME_OVER", "GAME_OVER_ACK", "SYNC_REQUEST", "SYNC_MOVE"}
+CHAT_MAX_CHARS = 500
+CHAT_MAX_BYTES = 2000
+CHAT_CHUNK_BYTES = 180
+CHAT_HISTORY_LIMIT = 100
+CHAT_RATE_WINDOW = 10
+CHAT_RATE_LIMIT = 8
 
 
 def _b58decode(value: str) -> bytes:
@@ -231,7 +246,6 @@ class QortalLandGameManager:
         self.land_context: Optional[Dict[str, Any]] = None
         self.matches: Dict[str, Dict[str, Any]] = {}
         self.links_by_object: Dict[int, str] = {}
-        self.cooldowns: Dict[str, float] = {}
         self.used_nonces: Dict[str, float] = {}
         self.signature_challenges: Dict[str, Dict[str, Any]] = {}
         self.socket = None
@@ -362,6 +376,8 @@ class QortalLandGameManager:
         snapshot = self._active_snapshot()
         if snapshot:
             self._send_direct(websocket, {"type": "GAME_SNAPSHOT", **snapshot})
+            for history in self._chat_history_batches(snapshot["matchId"]):
+                self._send_direct(websocket, history)
             state = self.matches.get(str(snapshot.get("matchId") or ""))
             if state:
                 for pending_move in list(state.get("pendingInboundMoves", {}).values()):
@@ -413,7 +429,7 @@ class QortalLandGameManager:
                 now = time.time()
                 with self.lock:
                     for state in self.matches.values():
-                        if state.get("phase") == "active":
+                        if state.get("phase") in {"active", "ending", "session_idle", "round_waiting", "round_incoming"}:
                             state["renderer_lost_at"] = now
 
     def _send_direct(self, websocket, event: Dict[str, Any]) -> bool:
@@ -488,6 +504,8 @@ class QortalLandGameManager:
                 snapshot = self._active_snapshot()
                 if snapshot:
                     self.send_event("GAME_SNAPSHOT", snapshot)
+                    for history in self._chat_history_batches(snapshot["matchId"]):
+                        self.send_event("GAME_CHAT_HISTORY", {key: value for key, value in history.items() if key != "type"})
             self._command_result(request_id, True)
         except Exception as exc:
             self._command_result(request_id, False, str(exc)[:160])
@@ -537,13 +555,12 @@ class QortalLandGameManager:
         peer_hash = self.resolve_peer(recipient)
         if not peer_hash:
             raise ValueError("recipient_not_verified")
-        if self.cooldowns.get(recipient, 0) > time.time():
-            raise ValueError("pair_cooldown")
         identity = self.resolve_identity(peer_hash)
         if identity is None:
             raise ValueError("recipient_identity_unavailable")
         state = {
             "matchId": match_id,
+            "roundId": match_id,
             "requester": context["address"],
             "recipient": recipient,
             "requesterPublicKey": context["publicKey"],
@@ -732,9 +749,11 @@ class QortalLandGameManager:
                 )
                 close_timer.daemon = True
                 close_timer.start()
-            elif kind.endswith("ACCEPT"):
+            elif kind == "QORTAL_LAND_GAME_ACCEPT":
                 state["acceptEnvelope"] = envelope
                 state["phase"] = "awaiting_confirm"
+            elif kind == "QORTAL_LAND_GAME_RESUME_ACCEPT":
+                state["phase"] = "awaiting_resume_confirm"
             elif kind.endswith("CONFIRM"):
                 state["phase"] = "awaiting_start_ack"
 
@@ -750,7 +769,7 @@ class QortalLandGameManager:
             if key in {"type", "signerPublicKey"}:
                 continue
             value = fields[key]
-            if key == "matchId":
+            if key in {"matchId", "roundId"}:
                 value = uuid.UUID(str(value)).bytes
             elif key in HEX_FIELD_LENGTHS:
                 value = bytes.fromhex(str(value))
@@ -772,7 +791,7 @@ class QortalLandGameManager:
         public_key = _b58encode(bytes(packed.get("p") or b""))
         fields: Dict[str, Any] = {"type": kind, "signerPublicKey": public_key}
         for key, value in zip(wire_order, values):
-            if key == "matchId":
+            if key in {"matchId", "roundId"}:
                 value = str(uuid.UUID(bytes=bytes(value)))
             elif key in HEX_FIELD_LENGTHS:
                 value = bytes(value).hex()
@@ -813,6 +832,7 @@ class QortalLandGameManager:
                     return True
             state = {
                 "matchId": match_id,
+                "roundId": match_id,
                 "requester": fields["requesterAddress"],
                 "recipient": fields["recipientAddress"],
                 "requesterPublicKey": fields["signerPublicKey"],
@@ -859,6 +879,7 @@ class QortalLandGameManager:
         match_id = fields["matchId"]
         state = {
             "matchId": match_id,
+            "roundId": match_id,
             "requester": fields["requesterAddress"],
             "recipient": fields["recipientAddress"],
             "requesterPublicKey": fields["signerPublicKey"],
@@ -920,6 +941,7 @@ class QortalLandGameManager:
             raise ValueError("resume_match_unavailable")
         if (
             fields.get("requesterAddress") != state["requester"]
+            or fields.get("roundId") != (state.get("roundId") or state["matchId"])
             or context.get("address") != state["recipient"]
             or fields.get("signerPublicKey") != envelope["publicKey"]
             or derive_qortal_address(envelope["publicKey"]) != state["requester"]
@@ -972,6 +994,7 @@ class QortalLandGameManager:
         accept_fields = {
             "type": "QORTAL_LAND_GAME_RESUME_ACCEPT",
             "matchId": match_id,
+            "roundId": state.get("roundId") or match_id,
             "responderAddress": state["recipient"],
             "signerPublicKey": context.get("publicKey"),
             "linkId": state["linkId"],
@@ -1112,8 +1135,141 @@ class QortalLandGameManager:
 
     @staticmethod
     def _same_move(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-        keys = ("messageId", "ply", "column", "previousStateHash", "resultingStateHash")
+        keys = ("roundId", "messageId", "ply", "column", "previousStateHash", "resultingStateHash")
         return all(left.get(key) == right.get(key) for key in keys)
+
+    def _reset_round(self, state: Dict[str, Any], round_id: str, requester_nonce: str, recipient_nonce: str) -> None:
+        uuid.UUID(round_id)
+        if not valid_hex(requester_nonce, 16) or not valid_hex(recipient_nonce, 16):
+            raise ValueError("invalid_round_nonce")
+        state.update({
+            "roundId": round_id,
+            "roundRequesterNonce": requester_nonce,
+            "roundRecipientNonce": recipient_nonce,
+            "phase": "active",
+            "transcript": [],
+            "pendingOutboundMoves": {},
+            "pendingInboundMoves": {},
+            "moveAcks": {},
+            "seen": set(),
+            "lastRx": time.time(),
+        })
+        state.pop("pendingRound", None)
+
+    def _finish_round(self, state: Dict[str, Any]) -> None:
+        state["phase"] = "session_idle"
+        state.pop("pendingRound", None)
+        state.setdefault("pendingInboundMoves", {}).clear()
+        state.setdefault("pendingOutboundMoves", {}).clear()
+        self.send_event("GAME_LINK_STATE", {
+            "matchId": state["matchId"], "roundId": state.get("roundId"), "state": "session_idle"
+        })
+
+    @staticmethod
+    def _validate_chat_message(message: Dict[str, Any]) -> tuple[str, str, int]:
+        message_id = str(message.get("messageId") or "")
+        uuid.UUID(message_id)
+        text = message.get("text")
+        created_at = message.get("createdAt")
+        if not isinstance(text, str) or not text.strip() or len(text) > CHAT_MAX_CHARS:
+            raise ValueError("invalid_chat_text")
+        raw = text.encode("utf-8")
+        if len(raw) > CHAT_MAX_BYTES:
+            raise ValueError("chat_message_too_large")
+        now_ms = int(time.time() * 1000)
+        if (
+            not isinstance(created_at, int) or isinstance(created_at, bool) or
+            created_at <= 0 or abs(created_at - now_ms) > 24 * 60 * 60 * 1000
+        ):
+            raise ValueError("invalid_chat_timestamp")
+        return message_id, text, created_at
+
+    @staticmethod
+    def _check_chat_rate(state: Dict[str, Any], key: str) -> None:
+        now = time.time()
+        recent = [stamp for stamp in state.get(key, []) if now - stamp < CHAT_RATE_WINDOW]
+        if len(recent) >= CHAT_RATE_LIMIT:
+            raise ValueError("chat_rate_limited")
+        recent.append(now)
+        state[key] = recent
+
+    @staticmethod
+    def _remember_chat(state: Dict[str, Any], record: Dict[str, Any]) -> None:
+        history = state.setdefault("chatMessages", [])
+        existing = next((item for item in history if item.get("messageId") == record.get("messageId")), None)
+        if existing:
+            existing.update(record)
+            return
+        history.append(record)
+        if len(history) > CHAT_HISTORY_LIMIT:
+            del history[:-CHAT_HISTORY_LIMIT]
+
+    def _send_chat_chunks(self, state: Dict[str, Any], message_id: str, text_value: str, created_at: int) -> None:
+        raw = text_value.encode("utf-8")
+        chunks = [raw[index:index + CHAT_CHUNK_BYTES] for index in range(0, len(raw), CHAT_CHUNK_BYTES)]
+        for index, chunk in enumerate(chunks):
+            self._send_channel(state, {"k": "game", "m": {
+                "type": "CHAT_CHUNK", "matchId": state["matchId"], "messageId": message_id,
+                "createdAt": created_at, "index": index, "total": len(chunks), "data": chunk,
+            }})
+
+    def _receive_chat_chunk(self, state: Dict[str, Any], message: Dict[str, Any]) -> None:
+        message_id = str(message.get("messageId") or "")
+        uuid.UUID(message_id)
+        index = message.get("index")
+        total = message.get("total")
+        created_at = message.get("createdAt")
+        data = message.get("data")
+        max_chunks = (CHAT_MAX_BYTES + CHAT_CHUNK_BYTES - 1) // CHAT_CHUNK_BYTES
+        if (
+            not isinstance(index, int) or isinstance(index, bool) or
+            not isinstance(total, int) or isinstance(total, bool) or
+            index < 0 or total < 1 or total > max_chunks or index >= total or
+            not isinstance(created_at, int) or isinstance(created_at, bool) or
+            not isinstance(data, bytes) or len(data) > CHAT_CHUNK_BYTES
+        ):
+            raise ValueError("invalid_chat_chunk")
+        if any(item.get("messageId") == message_id for item in state.get("chatMessages", [])):
+            self._send_channel(state, {"k": "game", "m": {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id}})
+            return
+        assemblies = state.setdefault("inboundChatChunks", {})
+        if message_id not in assemblies and len(assemblies) >= 16:
+            raise ValueError("too_many_partial_chat_messages")
+        assembly = assemblies.setdefault(message_id, {"total": total, "createdAt": created_at, "chunks": {}, "started": time.time()})
+        if assembly["total"] != total or assembly["createdAt"] != created_at:
+            raise ValueError("conflicting_chat_chunk")
+        if index in assembly["chunks"] and assembly["chunks"][index] != data:
+            raise ValueError("conflicting_chat_chunk")
+        assembly["chunks"][index] = data
+        if len(assembly["chunks"]) != total:
+            return
+        raw = b"".join(assembly["chunks"][part] for part in range(total))
+        assemblies.pop(message_id, None)
+        try:
+            text_value = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("invalid_chat_encoding") from exc
+        self._validate_chat_message({"messageId": message_id, "text": text_value, "createdAt": created_at})
+        self._check_chat_rate(state, "remoteChatTimes")
+        author = state["recipient"] if state.get("outbound") else state["requester"]
+        record = {"messageId": message_id, "text": text_value, "createdAt": created_at, "authorAddress": author, "delivered": True}
+        self._remember_chat(state, record)
+        self.send_event("GAME_MESSAGE", {"matchId": state["matchId"], "message": {"type": "CHAT_MESSAGE", **record}})
+        self._send_channel(state, {"k": "game", "m": {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id}})
+
+    def _validate_round_control(self, state: Dict[str, Any], message: Dict[str, Any]) -> None:
+        round_id = str(message.get("roundId") or "")
+        uuid.UUID(round_id)
+        if round_id == state.get("roundId"):
+            raise ValueError("round_already_used")
+        if message.get("game") not in {None, GAME_ID} or message.get("gameVersion") not in {None, GAME_VERSION} or message.get("rulesVersion") not in {None, RULES_VERSION}:
+            raise ValueError("unsupported_round")
+
+    def _chat_error(self, state: Dict[str, Any], reason: str) -> None:
+        self.log(f"[qortalland-game] chat rejected match={state['matchId'][:8]} code={reason[:48]}")
+        self.send_event("GAME_ERROR", {
+            "matchId": state["matchId"], "code": "chat_error", "message": reason[:120]
+        })
 
     def _append_accepted_move(self, state: Dict[str, Any], move: Dict[str, Any]) -> None:
         self._validate_move_shape(state, move)
@@ -1141,7 +1297,7 @@ class QortalLandGameManager:
             else:
                 self._close_match(match_id, "cancelled")
             return True
-        if payload.get("k") != "game" or state.get("phase") not in {"active", "ending", "awaiting_start_ack"}:
+        if payload.get("k") != "game" or state.get("phase") not in {"active", "ending", "awaiting_start_ack", *ROUND_PHASES}:
             self._protocol_error(state, "unexpected_message")
             return True
         game_message = payload.get("m")
@@ -1150,6 +1306,91 @@ class QortalLandGameManager:
             return True
         message_type = str(game_message.get("type") or "")
         message_id = str(game_message.get("messageId") or "")
+        if message_type == "CHAT_CHUNK":
+            try:
+                self._receive_chat_chunk(state, game_message)
+            except Exception as exc:
+                state.setdefault("inboundChatChunks", {}).pop(message_id, None)
+                self._chat_error(state, str(exc))
+            return True
+        if message_type == "CHAT_MESSAGE":
+            self._chat_error(state, "unexpected_chat_message")
+            return True
+        if message_type == "CHAT_ACK":
+            record = next((item for item in state.get("chatMessages", []) if item.get("messageId") == message_id), None)
+            local_author = state["requester"] if state.get("outbound") else state["recipient"]
+            if record and record.get("authorAddress") == local_author:
+                record["delivered"] = True
+                self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
+            return True
+        if message_type == "CHAT_TYPING":
+            if not isinstance(game_message.get("active"), bool):
+                self._chat_error(state, "invalid_chat_typing")
+            else:
+                now = time.time()
+                if game_message["active"] and now - float(state.get("lastRemoteTyping") or 0) < 0.2:
+                    return True
+                state["lastRemoteTyping"] = now
+                self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
+            return True
+        if message_type == "ROUND_REQUEST":
+            try:
+                self._validate_round_control(state, game_message)
+                if not valid_hex(game_message.get("requesterNonce"), 16):
+                    raise ValueError("round_not_available")
+                if state.get("phase") == "ending":
+                    self._finish_round(state)
+                if state.get("phase") == "round_waiting":
+                    pending = state.get("pendingRound") or {}
+                    incoming_id = str(game_message["roundId"])
+                    pending_id = str(pending.get("roundId") or "")
+                    if uuid.UUID(incoming_id).bytes > uuid.UUID(pending_id).bytes:
+                        self._send_channel(state, {"k": "game", "m": {
+                            "type": "ROUND_RESPONSE", "matchId": match_id,
+                            "messageId": str(uuid.uuid4()), "roundId": incoming_id,
+                            "accepted": False, "reason": "superseded",
+                        }})
+                        return True
+                    if incoming_id == pending_id:
+                        return True
+                elif state.get("phase") != "session_idle":
+                    raise ValueError("round_not_available")
+                state["pendingRound"] = {
+                    "roundId": game_message["roundId"],
+                    "requesterNonce": game_message["requesterNonce"],
+                    "requestedByRemote": True,
+                }
+                state["phase"] = "round_incoming"
+                self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
+            except Exception as exc:
+                self._protocol_error(state, str(exc))
+            return True
+        if message_type == "ROUND_RESPONSE":
+            pending = state.get("pendingRound") or {}
+            if state.get("phase") != "round_waiting" or game_message.get("roundId") != pending.get("roundId"):
+                # This may be the response to the losing request in a crossed-rematch race.
+                return True
+            if game_message.get("accepted") is True:
+                try:
+                    self._reset_round(state, pending["roundId"], pending["requesterNonce"], str(game_message.get("recipientNonce") or ""))
+                except Exception as exc:
+                    self._protocol_error(state, str(exc))
+                    return True
+            else:
+                state["phase"] = "session_idle"
+                state.pop("pendingRound", None)
+            self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
+            return True
+        if message_type == "ROUND_CANCEL":
+            pending = state.get("pendingRound") or {}
+            if state.get("phase") == "round_incoming" and game_message.get("roundId") == pending.get("roundId"):
+                state["phase"] = "session_idle"
+                state.pop("pendingRound", None)
+                self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
+            return True
+        if message_type in ROUND_BOUND_TYPES and game_message.get("roundId") != state.get("roundId"):
+            # A delayed packet from a completed round must not poison the reusable session.
+            return True
         if message_type in {"MOVE", "SYNC_MOVE"}:
             normalized_move = {**game_message, "type": "MOVE"}
             pending_inbound = state.setdefault("pendingInboundMoves", {})
@@ -1216,21 +1457,29 @@ class QortalLandGameManager:
         if game_message.get("type") == "MATCH_PING":
             self._send_channel(state, {"k": "game", "m": {"type": "MATCH_PONG", "matchId": match_id, "messageId": message_id}})
         elif game_message.get("type") == "START_ACK":
-            state["phase"] = "active"
+            resume_phase = str(state.pop("resumeReturnPhase", "active"))
+            state["phase"] = resume_phase if resume_phase in {"active", "ending", "round_waiting", "round_incoming"} else "active"
             state.pop("disconnectedAt", None)
-            self._send_missing_sync_moves(state)
+            if state["phase"] in {"active", "ending"}:
+                self._send_missing_sync_moves(state)
             self.send_event("GAME_STARTED", self._public_state(state))
         else:
             self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
             if message_type in {"RESIGN_ACK", "GAME_OVER_ACK"}:
-                state["phase"] = "ending"
-                self._schedule_terminal_close(state["matchId"])
+                self._finish_round(state)
         return True
 
     def _schedule_terminal_close(self, match_id: str, delay: float = 2.0) -> None:
-        timer = threading.Timer(delay, self._close_match, args=(match_id, "completed"))
+        state = self.matches.get(match_id)
+        round_id = state.get("roundId") if state else None
+        timer = threading.Timer(delay, self._finish_round_by_id, args=(match_id, round_id))
         timer.daemon = True
         timer.start()
+
+    def _finish_round_by_id(self, match_id: str, round_id: Optional[str]) -> None:
+        state = self.matches.get(match_id)
+        if state and state.get("phase") == "ending" and state.get("roundId") == round_id:
+            self._finish_round(state)
 
     def _send_missing_sync_moves(self, state: Dict[str, Any]) -> None:
         transcript = list(state.get("transcript") or [])
@@ -1342,6 +1591,7 @@ class QortalLandGameManager:
                 or not state.get("outbound")
                 or signer != state["recipient"]
                 or fields.get("responderAddress") != state["recipient"]
+                or fields.get("roundId") != (state.get("roundId") or state["matchId"])
                 or fields.get("requesterNonce") != state.get("resumeRequesterNonce")
                 or not valid_hex(fields.get("recipientNonce"), 16)
                 or not valid_hex(fields.get("stateHash"), 32)
@@ -1355,6 +1605,7 @@ class QortalLandGameManager:
             confirm_fields = {
                 "type": "QORTAL_LAND_GAME_RESUME_CONFIRM",
                 "matchId": state["matchId"],
+                "roundId": state.get("roundId") or state["matchId"],
                 "requesterAddress": state["requester"],
                 "signerPublicKey": context.get("publicKey"),
                 "linkId": state["linkId"],
@@ -1384,6 +1635,7 @@ class QortalLandGameManager:
                 or state.get("outbound")
                 or signer != state["requester"]
                 or fields.get("requesterAddress") != state["requester"]
+                or fields.get("roundId") != (state.get("roundId") or state["matchId"])
                 or fields.get("requesterNonce") != state.get("resumeRequesterNonce")
                 or fields.get("recipientNonce") != state.get("resumeRecipientNonce")
                 or not valid_hex(fields.get("stateHash"), 32)
@@ -1392,14 +1644,19 @@ class QortalLandGameManager:
             ):
                 raise ValueError("invalid_resume_confirm")
             state["peerResumePly"] = remote_ply
-            state["phase"] = "active"
+            resume_phase = str(state.pop("resumeReturnPhase", "active"))
+            state["phase"] = resume_phase if resume_phase in {"active", "ending", "round_waiting", "round_incoming"} else "active"
             state.pop("disconnectedAt", None)
             self._send_channel(state, {"k": "game", "m": {"type": "START_ACK", "matchId": state["matchId"], "messageId": str(uuid.uuid4())}})
-            self._send_missing_sync_moves(state)
+            if state["phase"] in {"active", "ending"}:
+                self._send_missing_sync_moves(state)
             self.send_event("GAME_STARTED", self._public_state(state))
 
     def _starter(self, state: Dict[str, Any]) -> str:
-        digest = hashlib.sha256(b"qortalland-game:v1:connect-four:" + uuid.UUID(state["matchId"]).bytes + bytes.fromhex(state["requesterNonce"]) + bytes.fromhex(state["recipientNonce"])).digest()
+        round_id = state.get("roundId") or state["matchId"]
+        requester_nonce = state.get("roundRequesterNonce") or state["requesterNonce"]
+        recipient_nonce = state.get("roundRecipientNonce") or state["recipientNonce"]
+        digest = hashlib.sha256(b"qortalland-game:v2:connect-four:" + uuid.UUID(round_id).bytes + bytes.fromhex(requester_nonce) + bytes.fromhex(recipient_nonce)).digest()
         return "requester" if digest[-1] & 1 == 0 else "recipient"
 
     def _initial_state_hash(self, state: Dict[str, Any]) -> str:
@@ -1422,11 +1679,78 @@ class QortalLandGameManager:
         match_id = str(message.get("matchId") or "")
         state = self.matches.get(match_id)
         game_message = message.get("message")
-        if not state or state.get("phase") not in {"active", "ending"} or not isinstance(game_message, dict) or game_message.get("type") not in ACTIVE_TYPES:
+        if not state or state.get("phase") not in {"active", "ending", *ROUND_PHASES} or not isinstance(game_message, dict) or game_message.get("type") not in ACTIVE_TYPES:
             raise ValueError("match_not_active")
         game_message = {**game_message, "matchId": match_id}
         message_type = str(game_message.get("type") or "")
         message_id = str(game_message.get("messageId") or "")
+        if message_type == "CHAT_MESSAGE":
+            message_id, text_value, created_at = self._validate_chat_message(game_message)
+            if any(item.get("messageId") == message_id for item in state.get("chatMessages", [])):
+                raise ValueError("duplicate_chat_message")
+            self._check_chat_rate(state, "localChatTimes")
+            author = state["requester"] if state.get("outbound") else state["recipient"]
+            record = {
+                "messageId": message_id, "text": text_value, "createdAt": created_at,
+                "authorAddress": author, "delivered": False,
+            }
+            self._remember_chat(state, record)
+            try:
+                self._send_chat_chunks(state, message_id, text_value, created_at)
+            except Exception:
+                state["chatMessages"] = [item for item in state.get("chatMessages", []) if item.get("messageId") != message_id]
+                raise
+            return
+        if message_type in {"CHAT_CHUNK", "CHAT_ACK"}:
+            raise ValueError("internal_chat_message")
+        if message_type == "CHAT_TYPING":
+            if not isinstance(game_message.get("active"), bool):
+                raise ValueError("invalid_chat_typing")
+            now = time.time()
+            if game_message["active"] and now - float(state.get("lastLocalTyping") or 0) < 0.2:
+                return
+            state["lastLocalTyping"] = now
+            self._send_channel(state, {"k": "game", "m": {
+                "type": "CHAT_TYPING", "matchId": match_id, "active": game_message["active"]
+            }})
+            return
+        if message_type == "ROUND_REQUEST":
+            self._validate_round_control(state, game_message)
+            if state.get("phase") == "ending":
+                self._finish_round(state)
+            if state.get("phase") != "session_idle" or not valid_hex(game_message.get("requesterNonce"), 16):
+                raise ValueError("round_not_available")
+            state["pendingRound"] = {
+                "roundId": game_message["roundId"],
+                "requesterNonce": game_message["requesterNonce"],
+                "requestedByRemote": False,
+            }
+            state["phase"] = "round_waiting"
+            self._send_channel(state, {"k": "game", "m": game_message})
+            return
+        if message_type == "ROUND_RESPONSE":
+            pending = state.get("pendingRound") or {}
+            if state.get("phase") != "round_incoming" or game_message.get("roundId") != pending.get("roundId"):
+                raise ValueError("unexpected_round_response")
+            if game_message.get("accepted") is True:
+                if not valid_hex(game_message.get("recipientNonce"), 16):
+                    raise ValueError("invalid_round_nonce")
+            self._send_channel(state, {"k": "game", "m": game_message})
+            if game_message.get("accepted") is True:
+                self._reset_round(state, pending["roundId"], pending["requesterNonce"], str(game_message.get("recipientNonce") or ""))
+            else:
+                state["phase"] = "session_idle"
+                state.pop("pendingRound", None)
+            return
+        if message_type == "ROUND_CANCEL":
+            pending = state.get("pendingRound") or {}
+            if state.get("phase") != "round_waiting" or game_message.get("roundId") != pending.get("roundId"):
+                raise ValueError("unexpected_round_cancel")
+            self._send_channel(state, {"k": "game", "m": game_message})
+            state["phase"] = "session_idle"
+            state.pop("pendingRound", None)
+            return
+        game_message = {**game_message, "roundId": state.get("roundId")}
         if message_type in {"MOVE", "SYNC_MOVE"}:
             normalized_move = {**game_message, "type": "MOVE"}
             self._validate_move_shape(state, normalized_move)
@@ -1458,8 +1782,7 @@ class QortalLandGameManager:
             state["phase"] = "ending"
             self._schedule_terminal_close(match_id, 5.0)
         elif message_type in {"RESIGN_ACK", "GAME_OVER_ACK"}:
-            state["phase"] = "ending"
-            self._schedule_terminal_close(match_id)
+            self._finish_round(state)
 
     def _protocol_error(self, state: Dict[str, Any], reason: str) -> None:
         self.send_event("GAME_ERROR", {"matchId": state["matchId"], "code": "protocol_error", "message": reason[:120]})
@@ -1492,27 +1815,28 @@ class QortalLandGameManager:
             for nonce_key, expiry in list(self.used_nonces.items()):
                 if expiry <= now:
                     self.used_nonces.pop(nonce_key, None)
-            for peer, expiry in list(self.cooldowns.items()):
-                if expiry <= now:
-                    self.cooldowns.pop(peer, None)
             for challenge_id, challenge in list(self.signature_challenges.items()):
                 if now - float(challenge.get("created") or 0) >= INVITE_TTL:
                     self.signature_challenges.pop(challenge_id, None)
             with self.lock:
                 states = list(self.matches.values())
             for state in states:
+                assemblies = state.get("inboundChatChunks") or {}
+                for message_id, assembly in list(assemblies.items()):
+                    if now - float(assembly.get("started") or now) >= RECOVERY_WINDOW:
+                        assemblies.pop(message_id, None)
                 if (
                     state.get("phase") not in {
                         "active",
                         "recovering",
                         "awaiting_resume_accept",
-                        "awaiting_resume_confirm",
+                        "awaiting_resume_confirm", "session_idle", "round_waiting", "round_incoming", "ending",
                     }
                     and now * 1000 >= state.get("expiresAt", 0)
                 ):
                     self._close_match(state["matchId"], "expired")
                     continue
-                if state.get("phase") == "active":
+                if state.get("phase") in {"active", "session_idle", "round_waiting", "round_incoming", "ending"}:
                     last_rx = float(state.get("lastRx") or now)
                     if now - last_rx >= HEARTBEAT_INTERVAL and now - float(state.get("lastPing") or 0) >= HEARTBEAT_INTERVAL:
                         try:
@@ -1562,10 +1886,11 @@ class QortalLandGameManager:
             else:
                 self._close_match(state["matchId"], "establishment_timeout", teardown=False)
             return
-        if state.get("phase") == "ending":
-            self._close_match(state["matchId"], "completed", teardown=False)
+        if state.get("phase") == "session_idle":
+            self._close_match(state["matchId"], "link_closed", teardown=False)
             return
-        if state.get("phase") in {"active", "awaiting_resume_accept", "awaiting_resume_confirm", "awaiting_start_ack"}:
+        if state.get("phase") in {"active", "ending", "round_waiting", "round_incoming", "awaiting_resume_accept", "awaiting_resume_confirm", "awaiting_start_ack"}:
+            state["resumeReturnPhase"] = state.get("resumeReturnPhase") or state.get("phase")
             state["phase"] = "recovering"
             state.setdefault("disconnectedAt", time.time())
             state.setdefault("pendingInboundMoves", {}).clear()
@@ -1612,6 +1937,7 @@ class QortalLandGameManager:
         fields = {
             "type": "QORTAL_LAND_GAME_RESUME_REQUEST",
             "matchId": state["matchId"],
+            "roundId": state.get("roundId") or state["matchId"],
             "requesterAddress": state["requester"],
             "signerPublicKey": context.get("publicKey"),
             "linkId": state["linkId"],
@@ -1632,13 +1958,23 @@ class QortalLandGameManager:
             "matchId": state["matchId"],
             "requesterAddress": state["requester"],
             "recipientAddress": state["recipient"],
-            "requesterNonce": state["requesterNonce"],
-            "recipientNonce": state.get("recipientNonce"),
+            "requesterNonce": state.get("roundRequesterNonce") or state["requesterNonce"],
+            "recipientNonce": state.get("roundRecipientNonce") or state.get("recipientNonce"),
             "starter": self._starter(state) if state.get("recipientNonce") else None,
             "phase": state.get("phase"),
+            "expiresAt": state.get("expiresAt"),
             "transcript": list(state.get("transcript") or []),
             "pendingOutboundMove": pending_outbound[0] if pending_outbound else None,
+            "pendingRound": dict(state.get("pendingRound") or {}),
         }
+
+    def _chat_history_batches(self, match_id: str) -> list[Dict[str, Any]]:
+        state = self.matches.get(match_id)
+        history = [dict(item) for item in (state or {}).get("chatMessages", [])]
+        return [
+            {"type": "GAME_CHAT_HISTORY", "matchId": match_id, "messages": history[index:index + 2]}
+            for index in range(0, len(history), 2)
+        ]
 
     def _active_snapshot(self) -> Optional[Dict[str, Any]]:
         with self.lock:
@@ -1655,17 +1991,6 @@ class QortalLandGameManager:
             link = state.get("link")
             if link is not None:
                 self.links_by_object.pop(id(link), None)
-            peer = state.get("recipient") if state.get("outbound") else state.get("requester")
-            if peer and reason in {
-                "declined",
-                "busy",
-                "superseded",
-                "expired",
-                "cancelled",
-                "establishment_timeout",
-                "link_establishment_failed",
-            }:
-                self.cooldowns[str(peer)] = time.time() + PAIR_COOLDOWN
             for challenge_id, challenge in list(self.signature_challenges.items()):
                 if challenge.get("matchId") == match_id:
                     self.signature_challenges.pop(challenge_id, None)

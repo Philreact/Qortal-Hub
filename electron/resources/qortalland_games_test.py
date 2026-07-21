@@ -60,13 +60,13 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(self.manager._starter(state), "requester")
         self.assertEqual(
             self.manager._initial_state_hash(state),
-            "8ab8939dc9b20b1b6607882d575f86f922b6538deb7eff06298063a829a54fff",
+            "c095c107701a8a8137e036b8e917173b93663115cde740dd29500c600ca77aaf",
         )
 
     def test_compact_invite_round_trip_fits_classifier_packet(self):
         fields = {
             "type": "QORTAL_LAND_GAME_INVITE",
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "game": "connect-four",
             "gameVersion": 1,
             "rulesVersion": 1,
@@ -89,6 +89,74 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         raw = MAGIC + umsgpack.packb(packed)
         self.assertLessEqual(len(raw), MAX_CHANNEL_PAYLOAD)
         self.assertEqual(self.manager._decode_handshake(umsgpack.unpackb(raw[4:])), envelope)
+
+    def test_compact_resume_request_binds_round_and_fits_classifier_packet(self):
+        fields = {
+            "type": "QORTAL_LAND_GAME_RESUME_REQUEST",
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "roundId": "11112233-4455-4677-8899-aabbccddeeff",
+            "requesterAddress": self.address,
+            "signerPublicKey": self.public_key,
+            "linkId": "22" * 16,
+            "requesterNonce": "33" * 16,
+            "lastAcknowledgedPly": 4,
+            "stateHash": "44" * 32,
+            "transcriptHash": "55" * 32,
+            "createdAt": int(time.time() * 1000),
+        }
+        envelope = {
+            "fields": fields,
+            "publicKey": self.public_key,
+            "signature": _b58encode(self.private_key.sign(canonical_bytes(fields))),
+        }
+        raw = MAGIC + umsgpack.packb(self.manager._encode_handshake(envelope))
+        self.assertLessEqual(len(raw), MAX_CHANNEL_PAYLOAD)
+        self.assertEqual(self.manager._decode_handshake(umsgpack.unpackb(raw[4:])), envelope)
+
+    def test_signed_resume_accept_keeps_resume_confirmation_phase(self):
+        manager, _events = self.make_manager()
+
+        class Channel:
+            def send(self, message):
+                message.pack()
+                return object()
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        round_id = "11112233-4455-4677-8899-aabbccddeeff"
+        fields = {
+            "type": "QORTAL_LAND_GAME_RESUME_ACCEPT",
+            "matchId": match_id,
+            "roundId": round_id,
+            "responderAddress": self.address,
+            "signerPublicKey": self.public_key,
+            "linkId": "22" * 16,
+            "requesterNonce": "33" * 16,
+            "recipientNonce": "44" * 16,
+            "lastAcknowledgedPly": 0,
+            "stateHash": "55" * 32,
+            "transcriptHash": "66" * 32,
+            "createdAt": int(time.time() * 1000),
+        }
+        challenge_id = "resume-challenge"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "roundId": round_id,
+            "phase": "awaiting_resume_confirm",
+            "channel": Channel(),
+            "lastActivity": time.time(),
+        }
+        manager.signature_challenges[challenge_id] = {
+            "matchId": match_id,
+            "kind": fields["type"],
+            "fields": fields,
+            "created": time.time(),
+        }
+        manager._submit_signature({
+            "challengeId": challenge_id,
+            "publicKey": self.public_key,
+            "signature": _b58encode(self.private_key.sign(canonical_bytes(fields))),
+        })
+        self.assertEqual(manager.matches[match_id]["phase"], "awaiting_resume_confirm")
 
     def test_outgoing_move_enters_transcript_only_after_remote_ack(self):
         manager, events = self.make_manager()
@@ -250,7 +318,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         }
         self.assertEqual(manager._public_state(state)["pendingOutboundMove"], pending)
 
-    def test_completed_match_closes_without_blocking_an_immediate_rematch(self):
+    def test_explicit_completed_close_releases_match(self):
         manager, events = self.make_manager()
         match_id = "00112233-4455-6677-8899-aabbccddeeff"
         manager.matches[match_id] = {
@@ -264,11 +332,195 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         manager._cancel_or_close_match(match_id, completed=True)
 
         self.assertNotIn(match_id, manager.matches)
-        self.assertEqual(manager.cooldowns, {})
         self.assertEqual(events[-1], ("GAME_ENDED", {"matchId": match_id, "outcome": "completed"}))
 
-    def test_cancelled_invitation_keeps_the_pair_cooldown(self):
+    def test_round_completion_keeps_authenticated_channel(self):
+        manager, events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, message):
+                self.sent.append(message.payload)
+                return object()
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        channel = Channel()
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "roundId": match_id,
+            "phase": "ending",
+            "channel": channel,
+            "outbound": True,
+            "requester": self.address,
+            "recipient": "Qopponent1111111111111111111111111111",
+            "transcript": [],
+        }
+
+        manager._send_active({
+            "matchId": match_id,
+            "message": {"type": "GAME_OVER_ACK", "messageId": "10000000-0000-4000-8000-000000000010", "ply": 0, "stateHash": "aa" * 32},
+        })
+
+        self.assertIn(match_id, manager.matches)
+        self.assertIs(manager.matches[match_id]["channel"], channel)
+        self.assertEqual(manager.matches[match_id]["phase"], "session_idle")
+        self.assertEqual(events[-1][0], "GAME_LINK_STATE")
+
+    def test_rematch_reuses_channel_and_resets_round_state(self):
         manager, _events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, message):
+                self.sent.append(message.payload)
+                return object()
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        round_id = "11112233-4455-4677-8899-aabbccddeeff"
+        channel = Channel()
+        state = {
+            "matchId": match_id,
+            "roundId": match_id,
+            "phase": "session_idle",
+            "channel": channel,
+            "outbound": True,
+            "requester": self.address,
+            "recipient": "Qopponent1111111111111111111111111111",
+            "requesterNonce": "11" * 16,
+            "recipientNonce": "22" * 16,
+            "transcript": [{"ply": 1}],
+        }
+        manager.matches[match_id] = state
+        manager._send_active({
+            "matchId": match_id,
+            "message": {
+                "type": "ROUND_REQUEST", "messageId": "10000000-0000-4000-8000-000000000011",
+                "roundId": round_id, "requesterNonce": "33" * 16,
+                "game": "connect-four", "gameVersion": 1, "rulesVersion": 1,
+            },
+        })
+        manager._on_channel(match_id, GameMessage({"k": "game", "m": {
+            "type": "ROUND_RESPONSE", "matchId": match_id,
+            "messageId": "10000000-0000-4000-8000-000000000012",
+            "roundId": round_id, "accepted": True, "recipientNonce": "44" * 16,
+        }}))
+
+        self.assertIs(state["channel"], channel)
+        self.assertEqual(state["phase"], "active")
+        self.assertEqual(state["roundId"], round_id)
+        self.assertEqual(state["transcript"], [])
+
+    def test_delayed_move_from_previous_round_is_ignored(self):
+        manager, events = self.make_manager()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        state = {
+            "matchId": match_id,
+            "roundId": "11112233-4455-4677-8899-aabbccddeeff",
+            "phase": "active", "transcript": [], "lastRx": time.time(),
+        }
+        manager.matches[match_id] = state
+        manager._on_channel(match_id, GameMessage({"k": "game", "m": {
+            "type": "MOVE", "matchId": match_id,
+            "roundId": "22222233-4455-4677-8899-aabbccddeeff",
+            "messageId": "10000000-0000-4000-8000-000000000013", "ply": 1, "column": 3,
+            "previousStateHash": "aa" * 32, "resultingStateHash": "bb" * 32,
+        }}))
+        self.assertEqual(state["transcript"], [])
+        self.assertFalse(any(event == "GAME_ERROR" for event, _payload in events))
+
+    def test_chat_chunks_reassemble_and_fit_channel_limit(self):
+        sender, _sender_events = self.make_manager()
+        receiver, receiver_events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, message):
+                self.assert_payload_fits(message)
+                self.messages.append(message.payload)
+                return object()
+
+            @staticmethod
+            def assert_payload_fits(message):
+                if len(message.pack()) > MAX_CHANNEL_PAYLOAD:
+                    raise AssertionError("chat chunk exceeded channel payload")
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        sender_channel = Channel()
+        receiver_channel = Channel()
+        sender_state = {
+            "matchId": match_id, "roundId": match_id, "phase": "active",
+            "channel": sender_channel, "outbound": True,
+            "requester": self.address, "recipient": "Qremote111111111111111111111111111111",
+            "chatMessages": [],
+        }
+        receiver_state = {
+            "matchId": match_id, "roundId": match_id, "phase": "active",
+            "channel": receiver_channel, "outbound": False,
+            "requester": self.address, "recipient": "Qremote111111111111111111111111111111",
+            "chatMessages": [], "lastRx": time.time(),
+        }
+        sender.matches[match_id] = sender_state
+        receiver.matches[match_id] = receiver_state
+        text_value = "🙂" * 500
+        message_id = "10000000-0000-4000-8000-000000000014"
+
+        sender._send_active({"matchId": match_id, "message": {
+            "type": "CHAT_MESSAGE", "messageId": message_id,
+            "text": text_value, "createdAt": int(time.time() * 1000),
+        }})
+        for payload in sender_channel.messages:
+            receiver._on_channel(match_id, GameMessage(payload))
+
+        self.assertGreater(len(sender_channel.messages), 1)
+        self.assertEqual(receiver_state["chatMessages"][0]["text"], text_value)
+        self.assertEqual(receiver_events[-1][0], "GAME_MESSAGE")
+        self.assertEqual(receiver_channel.messages[-1]["m"]["type"], "CHAT_ACK")
+
+    def test_chat_snapshot_history_is_batched_below_local_frame_limit(self):
+        manager, _events = self.make_manager()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {"chatMessages": [
+            {
+                "messageId": str(index).zfill(36), "authorAddress": self.address,
+                "text": "🙂" * 500, "createdAt": index + 1, "delivered": True,
+            }
+            for index in range(100)
+        ]}
+        batches = manager._chat_history_batches(match_id)
+        self.assertEqual(sum(len(batch["messages"]) for batch in batches), 100)
+        self.assertTrue(all(len(json.dumps(batch).encode("utf-8")) <= 16 * 1024 for batch in batches))
+
+    def test_typing_signal_never_tears_down_the_game(self):
+        manager, events = self.make_manager()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        state = {
+            "matchId": match_id, "roundId": match_id, "phase": "active",
+            "requester": self.address, "recipient": "Qremote111111111111111111111111111111",
+            "outbound": False, "lastRx": time.time(),
+        }
+        manager.matches[match_id] = state
+
+        manager._on_channel(match_id, GameMessage({"k": "game", "m": {
+            "type": "CHAT_TYPING", "matchId": match_id, "active": True,
+        }}))
+        self.assertEqual(state["phase"], "active")
+        self.assertEqual(events[-1][0], "GAME_MESSAGE")
+
+        manager._on_channel(match_id, GameMessage({"k": "game", "m": {
+            "type": "CHAT_TYPING", "matchId": match_id, "active": "yes",
+        }}))
+        self.assertIn(match_id, manager.matches)
+        self.assertEqual(state["phase"], "active")
+        self.assertEqual(events[-1][1]["code"], "chat_error")
+
+    def test_cancelled_invitation_releases_match_immediately(self):
+        manager, events = self.make_manager()
         match_id = "00112233-4455-6677-8899-aabbccddeeff"
         opponent = "Qopponent1111111111111111111111111111"
         manager.matches[match_id] = {
@@ -282,7 +534,8 @@ class QortalLandGameProtocolTest(unittest.TestCase):
 
         manager._cancel_or_close_match(match_id)
 
-        self.assertGreater(manager.cooldowns[opponent], time.time())
+        self.assertNotIn(match_id, manager.matches)
+        self.assertEqual(events[-1], ("GAME_ENDED", {"matchId": match_id, "outcome": "cancelled"}))
 
     def test_signed_accept_cannot_change_the_responder_identity(self):
         manager, _events = self.make_manager()

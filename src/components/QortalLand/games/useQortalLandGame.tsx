@@ -12,6 +12,7 @@ import {
   ConnectFourGameDialog,
   type ConnectFourGameView,
 } from './ConnectFourGameDialog';
+import type { GameChatMessage } from './GameSessionChat';
 
 type Target = { address: string; name?: string };
 type Match = ConnectFourGameView;
@@ -33,6 +34,28 @@ const randomHex = (bytes: number): string => {
   crypto.getRandomValues(value);
   return Array.from(value, (part) => part.toString(16).padStart(2, '0')).join('');
 };
+
+const parseChatMessages = (value: unknown): GameChatMessage[] => (
+  Array.isArray(value)
+    ? value.flatMap((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+        const candidate = item as Record<string, unknown>;
+        if (
+          typeof candidate.messageId !== 'string' ||
+          typeof candidate.authorAddress !== 'string' ||
+          typeof candidate.text !== 'string' ||
+          typeof candidate.createdAt !== 'number'
+        ) return [];
+        return [{
+          messageId: candidate.messageId,
+          authorAddress: candidate.authorAddress,
+          text: candidate.text,
+          createdAt: candidate.createdAt,
+          delivered: candidate.delivered === true,
+        }];
+      }).slice(-100)
+    : []
+);
 
 export const canSignQortalLandGameHandshake = (
   fields: Record<string, unknown>,
@@ -59,14 +82,14 @@ export const canSignQortalLandGameHandshake = (
     if (!identityMatches) return false;
     if (type === 'QORTAL_LAND_GAME_INVITE') {
       return (
-        fields.protocolVersion === 1 &&
+        fields.protocolVersion === 2 &&
         fields.game === 'connect-four' &&
         fields.gameVersion === 1 &&
         fields.rulesVersion === 1 &&
         fields.requesterNonce === current.requesterNonce
       );
     }
-    return true;
+    return fields.roundId === current.roundId;
   }
   if (type === 'QORTAL_LAND_GAME_CONFIRM') {
     return (
@@ -89,6 +112,9 @@ export const canSignQortalLandGameHandshake = (
         fields.requesterNonce === current.requesterNonce &&
         fields.recipientNonce === current.recipientNonce
       );
+    }
+    if (type === 'QORTAL_LAND_GAME_RESUME_ACCEPT') {
+      return fields.roundId === current.roundId;
     }
     return true;
   }
@@ -114,8 +140,10 @@ export function useQortalLandGame(options: Options) {
   const matchRef = useRef<Match | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const eventChainRef = useRef<Promise<void>>(Promise.resolve());
-  const pendingCommandsRef = useRef(new Map<string, { type: string; matchId?: string }>());
+  const pendingCommandsRef = useRef(new Map<string, { type: string; matchId?: string; messageId?: string }>());
   const moveInFlightRef = useRef(false);
+  const typingSentRef = useRef(false);
+  const typingTimerRef = useRef<number | null>(null);
 
   useEffect(() => { matchRef.current = match; }, [match]);
   const replaceMatch = useCallback((next: Match | null) => {
@@ -127,13 +155,47 @@ export function useQortalLandGame(options: Options) {
     matchRef.current = next;
     setMatch(next);
   }, []);
+  const beginRound = useCallback(async (
+    current: Match,
+    roundId: string,
+    requesterNonce: string,
+    recipientNonce: string
+  ) => {
+    const startingSeat = await deriveConnectFourStartingSeat(roundId, requesterNonce, recipientNonce);
+    const state = createConnectFourState(startingSeat);
+    const stateHash = await hashConnectFourState(state);
+    updateMatch((value) => value?.matchId === current.matchId ? {
+      ...value,
+      roundId,
+      requesterNonce,
+      recipientNonce,
+      startingSeat,
+      localSeat: address === value.requesterAddress ? 1 : 2,
+      phase: 'active',
+      state,
+      stateHash,
+      moves: [],
+      pendingMoveId: undefined,
+      pendingSince: undefined,
+      reconnectDeadline: undefined,
+      outcome: undefined,
+      error: undefined,
+      sessionClosed: false,
+    } : value);
+  }, [address, updateMatch]);
   const send = useCallback((type: string, payload: Record<string, unknown> = {}) => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Game transport is unavailable');
     const requestId = crypto.randomUUID();
+    const nestedType = payload.message && typeof payload.message === 'object' && !Array.isArray(payload.message)
+      ? String((payload.message as Record<string, unknown>).type || '')
+      : '';
     pendingCommandsRef.current.set(requestId, {
-      type,
+      type: nestedType ? `${type}:${nestedType}` : type,
       ...(typeof payload.matchId === 'string' ? { matchId: payload.matchId } : {}),
+      ...(payload.message && typeof payload.message === 'object' && !Array.isArray(payload.message) && typeof (payload.message as Record<string, unknown>).messageId === 'string'
+        ? { messageId: String((payload.message as Record<string, unknown>).messageId) }
+        : {}),
     });
     socket.send(JSON.stringify({ type, requestId, ...payload }));
     return requestId;
@@ -157,7 +219,56 @@ export function useQortalLandGame(options: Options) {
 
   const handleGameMessage = useCallback(async (message: Record<string, unknown>) => {
     const current = matchRef.current;
-    if (!current || message.matchId !== current.matchId || !current.state || !current.localSeat) return;
+    if (!current || message.matchId !== current.matchId) return;
+    if (message.type === 'CHAT_MESSAGE') {
+      const parsed = parseChatMessages([message]);
+      if (parsed.length !== 1) return;
+      updateMatch((value) => {
+        if (!value || value.matchId !== current.matchId || value.chatMessages.some((item) => item.messageId === parsed[0].messageId)) return value;
+        return { ...value, chatMessages: [...value.chatMessages, parsed[0]].slice(-100) };
+      });
+      return;
+    }
+    if (message.type === 'CHAT_ACK') {
+      const messageId = String(message.messageId || '');
+      updateMatch((value) => value ? {
+        ...value,
+        chatMessages: value.chatMessages.map((item) => item.messageId === messageId ? { ...item, delivered: true } : item),
+      } : value);
+      return;
+    }
+    if (message.type === 'CHAT_TYPING') {
+      updateMatch((value) => value ? { ...value, remoteTypingUntil: message.active === true ? Date.now() + 3_000 : undefined } : value);
+      return;
+    }
+    if (message.type === 'ROUND_REQUEST') {
+      const roundId = String(message.roundId || '');
+      const requesterNonce = String(message.requesterNonce || '');
+      if (!['session-idle', 'finished'].includes(current.phase) || !roundId || !/^[0-9a-f]{32}$/i.test(requesterNonce)) return;
+      replaceMatch({ ...current, roundId, requesterNonce, recipientNonce: undefined, phase: 'round-incoming', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+      return;
+    }
+    if (message.type === 'ROUND_RESPONSE') {
+      if (current.phase !== 'round-waiting' || message.roundId !== current.roundId) return;
+      if (message.accepted !== true) {
+        replaceMatch({ ...current, phase: 'finished', state: undefined, error: `Rematch ${String(message.reason || 'declined')}` });
+        return;
+      }
+      const recipientNonce = String(message.recipientNonce || '');
+      if (!/^[0-9a-f]{32}$/i.test(recipientNonce)) {
+        failProtocol('Rematch response contained an invalid nonce');
+        return;
+      }
+      await beginRound(current, current.roundId, current.requesterNonce, recipientNonce);
+      return;
+    }
+    if (message.type === 'ROUND_CANCEL') {
+      if (current.phase === 'round-incoming' && message.roundId === current.roundId) {
+        replaceMatch({ ...current, phase: 'session-idle', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+      }
+      return;
+    }
+    if (message.roundId !== current.roundId || !current.state || !current.localSeat) return;
     if (message.type === 'MOVE_ACK') {
       if (message.messageId !== current.pendingMoveId || message.stateHash !== current.stateHash) {
         failProtocol('Move acknowledgement did not match local state');
@@ -271,7 +382,7 @@ export function useQortalLandGame(options: Options) {
     } catch (error) {
       failProtocol(error instanceof Error ? error.message : 'Illegal remote move');
     }
-  }, [failProtocol, replaceMatch, send]);
+  }, [beginRound, failProtocol, replaceMatch, send]);
 
   const handleEvent = useCallback(async (event: Record<string, unknown>) => {
     if (event.type === 'TRANSPORT_STATE') {
@@ -306,6 +417,15 @@ export function useQortalLandGame(options: Options) {
         return;
       }
       const error = String(event.error || 'Game command failed');
+      if (pending.type.endsWith(':CHAT_TYPING')) return;
+      if (pending.type.endsWith(':CHAT_MESSAGE')) {
+        updateMatch((value) => value && ({
+          ...value,
+          chatMessages: value.chatMessages.map((item) => item.messageId === pending.messageId ? { ...item, failed: true } : item),
+          error,
+        }));
+        return;
+      }
       updateMatch((value) => value && ({ ...value, phase: 'finished', error }));
       return;
     }
@@ -323,16 +443,29 @@ export function useQortalLandGame(options: Options) {
       }));
       return;
     }
+    if (event.type === 'GAME_CHAT_HISTORY') {
+      if (event.matchId !== matchRef.current?.matchId) return;
+      const messages = parseChatMessages(event.messages);
+      updateMatch((value) => {
+        if (!value || messages.length === 0) return value;
+        const merged = new Map(value.chatMessages.map((item) => [item.messageId, item]));
+        messages.forEach((item) => merged.set(item.messageId, item));
+        return { ...value, chatMessages: Array.from(merged.values()).sort((left, right) => left.createdAt - right.createdAt).slice(-100) };
+      });
+      return;
+    }
     if (event.type === 'GAME_INVITE_RECEIVED') {
       if (matchRef.current && event.matchId !== matchRef.current.matchId) return;
       onPlayerSeen?.(String(event.requesterAddress));
       replaceMatch({
         matchId: String(event.matchId), requesterAddress: String(event.requesterAddress),
+        roundId: String(event.matchId),
         recipientAddress: String(event.recipientAddress || address),
         requesterNonce: String(event.requesterNonce || ''), phase: 'incoming',
         requesterName: resolvePlayerName?.(String(event.requesterAddress)),
         recipientName: 'You',
         moves: [],
+        chatMessages: [],
         expiresAt: Number(event.expiresAt),
       });
       return;
@@ -343,8 +476,50 @@ export function useQortalLandGame(options: Options) {
       const recipientAddress = String(event.recipientAddress);
       const requesterNonce = String(event.requesterNonce);
       const recipientNonce = String(event.recipientNonce);
+      const roundId = String(event.roundId || event.matchId);
+      const transportPhase = String(event.phase || '');
+      const chatMessages = parseChatMessages(event.chatMessages);
+      if (['establishing', 'awaiting_response', 'invited'].includes(transportPhase)) {
+        replaceMatch({
+          matchId: String(event.matchId),
+          roundId,
+          requesterAddress,
+          recipientAddress,
+          requesterNonce,
+          recipientNonce: /^[0-9a-f]{32}$/i.test(recipientNonce) ? recipientNonce : undefined,
+          requesterName: requesterAddress === address ? 'You' : resolvePlayerName?.(requesterAddress),
+          recipientName: recipientAddress === address ? 'You' : resolvePlayerName?.(recipientAddress),
+          phase: transportPhase === 'establishing' ? 'opening' : transportPhase === 'awaiting_response' ? 'waiting' : 'incoming',
+          moves: [],
+          chatMessages,
+          expiresAt: typeof event.expiresAt === 'number' ? event.expiresAt : undefined,
+          sessionClosed: false,
+        });
+        return;
+      }
+      if (transportPhase === 'session_idle' || transportPhase === 'round_waiting' || transportPhase === 'round_incoming') {
+        const pending = event.pendingRound && typeof event.pendingRound === 'object' && !Array.isArray(event.pendingRound)
+          ? event.pendingRound as Record<string, unknown>
+          : {};
+        replaceMatch({
+          matchId: String(event.matchId),
+          roundId: String(pending.roundId || roundId),
+          requesterAddress,
+          recipientAddress,
+          requesterNonce: String(pending.requesterNonce || requesterNonce),
+          recipientNonce: undefined,
+          requesterName: requesterAddress === address ? 'You' : resolvePlayerName?.(requesterAddress),
+          recipientName: recipientAddress === address ? 'You' : resolvePlayerName?.(recipientAddress),
+          phase: transportPhase === 'round_waiting' ? 'round-waiting' : transportPhase === 'round_incoming' ? 'round-incoming' : 'session-idle',
+          moves: [],
+          chatMessages,
+          sessionClosed: false,
+          reconnectDeadline: undefined,
+        });
+        return;
+      }
       const startingSeat = await deriveConnectFourStartingSeat(
-        String(event.matchId), requesterNonce, recipientNonce
+        roundId, requesterNonce, recipientNonce
       );
       const localSeat: ConnectFourSeat = address === requesterAddress ? 1 : 2;
       let state = createConnectFourState(startingSeat);
@@ -390,14 +565,29 @@ export function useQortalLandGame(options: Options) {
         moves.push(pending);
       }
       updateMatch((previous) => ({
-        ...(previous || {} as Match), matchId: String(event.matchId), requesterAddress,
+        ...(previous || {} as Match), matchId: String(event.matchId), roundId, requesterAddress,
         recipientAddress, requesterNonce, recipientNonce, startingSeat,
         localSeat,
-        phase: pendingMoveId ? 'active' : state.outcome ? 'finished' : 'active', state, stateHash,
+        phase: ['recovering', 'awaiting_resume_accept', 'awaiting_resume_confirm'].includes(transportPhase)
+          ? 'reconnecting'
+          : ['awaiting_confirm', 'awaiting_start_ack'].includes(transportPhase)
+            ? 'starting'
+            : transportPhase === 'ending'
+              ? 'finishing'
+              : pendingMoveId
+                ? 'active'
+                : state.outcome
+                  ? 'finished'
+                  : 'active',
+        state,
+        stateHash,
         pendingMoveId,
         pendingSince: pendingMoveId ? Date.now() : undefined,
         moves,
+        chatMessages: chatMessages.length ? chatMessages : previous?.chatMessages || [],
         outcome: state.outcome || undefined,
+        sessionClosed: false,
+        reconnectDeadline: ['recovering', 'awaiting_resume_accept', 'awaiting_resume_confirm'].includes(transportPhase) ? Date.now() + 30_000 : undefined,
       }));
       return;
     }
@@ -423,6 +613,7 @@ export function useQortalLandGame(options: Options) {
       updateMatch((value) => value && ({
         ...value,
         phase: 'finished',
+        sessionClosed: true,
         error: `Invitation ${String(event.reason || 'declined')}`,
       }));
       return;
@@ -433,6 +624,7 @@ export function useQortalLandGame(options: Options) {
       updateMatch((value) => value && ({
         ...value,
         phase: 'finished',
+        sessionClosed: true,
         outcome: result === 'protocol_error' ? { type: 'protocol-error' } : result === 'abandoned' || result === 'link_closed' || result === 'land_context_cleared' ? { type: 'abandoned' } : value.outcome,
         error: result === 'declined' || result === 'expired' ? result : value.error,
       }));
@@ -498,14 +690,28 @@ export function useQortalLandGame(options: Options) {
         socketRef.current = null;
         pendingCommandsRef.current.clear();
         setTransportReady(false);
-        updateMatch((value) => value?.phase === 'active'
-          ? { ...value, phase: 'reconnecting', reconnectDeadline: Date.now() + 30_000 }
-          : value);
+        updateMatch((value) => {
+          if (!value) return value;
+          const phase = ['active', 'finishing', 'round-waiting', 'round-incoming'].includes(value.phase)
+            ? 'reconnecting'
+            : value.phase;
+          return { ...value, phase, reconnectDeadline: Date.now() + 30_000, remoteTypingUntil: undefined };
+        });
         if (!cancelled) reconnectTimerRef.current = window.setTimeout(connect, 1000);
       });
     };
     void connect();
     const disposeRestart = window.qortalLandGames?.onTransportRestarted(() => {
+      setTransportReady(false);
+      updateMatch((value) => value ? {
+        ...value,
+        phase: 'finished',
+        sessionClosed: true,
+        reconnectDeadline: undefined,
+        remoteTypingUntil: undefined,
+        outcome: { type: 'abandoned' },
+        error: 'The game service restarted; the temporary session was cleared',
+      } : value);
       const oldSocket = socketRef.current;
       socketRef.current = null;
       oldSocket?.close();
@@ -522,19 +728,59 @@ export function useQortalLandGame(options: Options) {
   }, [address, enabled, failProtocol, groupId, handleEvent, publicKey, roomId, send, sessionId, updateMatch]);
 
   useEffect(() => {
-    const active = Boolean(match && match.phase !== 'idle' && match.phase !== 'finished');
+    const active = Boolean(match && !['idle', 'finished', 'session-idle'].includes(match.phase));
     onActiveChange?.(active);
-    if (!active) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
   }, [match, onActiveChange]);
 
+  useEffect(() => {
+    if (!match || match.phase === 'session-idle') return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [match?.matchId, match?.phase]);
+
+  useEffect(() => {
+    if (!match?.reconnectDeadline || match.sessionClosed) return;
+    const deadline = match.reconnectDeadline;
+    const timer = window.setTimeout(() => {
+      updateMatch((value) => value?.reconnectDeadline === deadline ? {
+        ...value,
+        phase: 'finished',
+        sessionClosed: true,
+        reconnectDeadline: undefined,
+        remoteTypingUntil: undefined,
+        outcome: { type: 'abandoned' },
+        error: 'Private game session could not be recovered',
+      } : value);
+    }, Math.max(0, deadline - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [match?.reconnectDeadline, match?.sessionClosed, updateMatch]);
+
+  useEffect(() => () => {
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
+  }, []);
+
   const challenge = useCallback(async (target: Target) => {
-    if (!transportReady || matchRef.current || target.address === address) return;
+    if (!transportReady || target.address === address) return;
+    const existing = matchRef.current;
+    if (existing?.phase === 'session-idle') {
+      const peer = existing.requesterAddress === address ? existing.recipientAddress : existing.requesterAddress;
+      if (peer === target.address) {
+        const roundId = crypto.randomUUID();
+        const requesterNonce = randomHex(16);
+        replaceMatch({ ...existing, roundId, requesterNonce, recipientNonce: undefined, phase: 'round-waiting', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+        send('SEND_GAME_MESSAGE', { matchId: existing.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, game: 'connect-four', gameVersion: 1, rulesVersion: 1 } });
+        return;
+      }
+      send('CLOSE_GAME_LINK', { matchId: existing.matchId });
+      replaceMatch(null);
+    } else if (existing) {
+      return;
+    }
     const matchId = crypto.randomUUID();
     const requesterNonce = randomHex(16);
     replaceMatch({
       matchId,
+      roundId: matchId,
       requesterAddress: address,
       recipientAddress: target.address,
       requesterNonce,
@@ -542,6 +788,7 @@ export function useQortalLandGame(options: Options) {
       recipientName: target.name || resolvePlayerName?.(target.address),
       phase: 'opening',
       moves: [],
+      chatMessages: [],
     });
     send('OPEN_GAME_LINK', { matchId, recipientAddress: target.address, requesterNonce });
   }, [address, replaceMatch, resolvePlayerName, send, transportReady]);
@@ -550,6 +797,21 @@ export function useQortalLandGame(options: Options) {
     const current = matchRef.current;
     if (!current) return;
     const recipientNonce = accepted ? randomHex(16) : undefined;
+    if (current.phase === 'round-incoming') {
+      send('SEND_GAME_MESSAGE', {
+        matchId: current.matchId,
+        message: {
+          type: 'ROUND_RESPONSE', messageId: crypto.randomUUID(), roundId: current.roundId,
+          accepted, ...(accepted ? { recipientNonce } : { reason: 'declined' }),
+        },
+      });
+      if (accepted && recipientNonce) {
+        void beginRound(current, current.roundId, current.requesterNonce, recipientNonce);
+      } else {
+        replaceMatch({ ...current, phase: 'finished', state: undefined, error: 'Rematch declined' });
+      }
+      return;
+    }
     send('RESPOND_TO_INVITE', {
       matchId: current.matchId,
       decision: accepted ? 'accept' : 'decline',
@@ -561,7 +823,7 @@ export function useQortalLandGame(options: Options) {
       phase: accepted ? 'starting' : 'finished',
       error: accepted ? undefined : 'declined',
     });
-  }, [replaceMatch, send]);
+  }, [beginRound, replaceMatch, send]);
 
   const playColumn = useCallback(async (column: number): Promise<boolean> => {
     const current = matchRef.current;
@@ -581,7 +843,7 @@ export function useQortalLandGame(options: Options) {
         pendingSince: Date.now(),
         moves: [...current.moves, move],
       });
-      send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'MOVE', ...move } });
+      send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'MOVE', roundId: current.roundId, ...move } });
       return true;
     } catch (error) {
       failProtocol(error instanceof Error ? error.message : 'Move failed');
@@ -599,47 +861,107 @@ export function useQortalLandGame(options: Options) {
     replaceMatch({ ...current, phase: 'finishing', outcome: { type: 'resigned', winner: current.localSeat === 1 ? 2 : 1 } });
   }, [replaceMatch, send]);
 
+  const sendChat = useCallback((text: string): boolean => {
+    const current = matchRef.current;
+    const normalized = text.trim();
+    if (
+      !current || current.sessionClosed ||
+      ['opening', 'waiting', 'incoming', 'starting', 'reconnecting', 'session-idle'].includes(current.phase) ||
+      !normalized ||
+      normalized.length > 500 ||
+      new TextEncoder().encode(normalized).length > 2_000
+    ) return false;
+    const record: GameChatMessage = {
+      messageId: crypto.randomUUID(),
+      authorAddress: address,
+      text: normalized,
+      createdAt: Date.now(),
+      delivered: false,
+    };
+    replaceMatch({ ...current, chatMessages: [...current.chatMessages, record].slice(-100) });
+    try {
+      send('SEND_GAME_MESSAGE', {
+        matchId: current.matchId,
+        message: { type: 'CHAT_MESSAGE', messageId: record.messageId, text: record.text, createdAt: record.createdAt },
+      });
+      return true;
+    } catch {
+      updateMatch((value) => value ? {
+        ...value,
+        chatMessages: value.chatMessages.filter((item) => item.messageId !== record.messageId),
+        error: 'Chat message could not be sent',
+      } : value);
+      return false;
+    }
+  }, [address, replaceMatch, send, updateMatch]);
+
+  const sendTyping = useCallback((active: boolean) => {
+    if (typingTimerRef.current) {
+      window.clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    const current = matchRef.current;
+    const available = current && !current.sessionClosed && !['opening', 'waiting', 'incoming', 'starting', 'reconnecting', 'session-idle'].includes(current.phase);
+    if (!available) return;
+    if (active && !typingSentRef.current) {
+      try {
+        send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'CHAT_TYPING', active: true } });
+        typingSentRef.current = true;
+      } catch { /* ephemeral signal */ }
+    }
+    if (!active && typingSentRef.current) {
+      try { send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'CHAT_TYPING', active: false } }); } catch { /* ephemeral signal */ }
+      typingSentRef.current = false;
+      return;
+    }
+    if (active) {
+      typingTimerRef.current = window.setTimeout(() => {
+        typingTimerRef.current = null;
+        const latest = matchRef.current;
+        if (latest && typingSentRef.current) {
+          try { send('SEND_GAME_MESSAGE', { matchId: latest.matchId, message: { type: 'CHAT_TYPING', active: false } }); } catch { /* ephemeral signal */ }
+          typingSentRef.current = false;
+        }
+      }, 2_000);
+    }
+  }, [send]);
+
   const close = useCallback(() => {
     const current = matchRef.current;
-    if (current) {
+    if (current?.phase === 'round-waiting') {
       try {
-        send('CLOSE_GAME_LINK', {
-          matchId: current.matchId,
-          completed: current.phase === 'finished' && Boolean(current.state),
-        });
-      } catch { /* done */ }
+        send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'ROUND_CANCEL', messageId: crypto.randomUUID(), roundId: current.roundId } });
+      } catch { /* connection may have ended */ }
+      replaceMatch({ ...current, phase: 'session-idle', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+      return;
     }
+    if (current?.phase === 'finished' && !current.sessionClosed && (Boolean(current.state) || current.roundId !== current.matchId)) {
+      replaceMatch({ ...current, phase: 'session-idle', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+      return;
+    }
+    if (current) try { send('CLOSE_GAME_LINK', { matchId: current.matchId }); } catch { /* done */ }
     replaceMatch(null);
   }, [replaceMatch, send]);
 
   const rematch = useCallback(() => {
     const current = matchRef.current;
     if (!current || current.phase !== 'finished' || !current.state || !transportReady) return;
-    const peerAddress = current.requesterAddress === address
-      ? current.recipientAddress
-      : current.requesterAddress;
-    const peerName = current.requesterAddress === address
-      ? current.recipientName
-      : current.requesterName;
-    try {
-      send('CLOSE_GAME_LINK', { matchId: current.matchId, completed: true });
-    } catch {
-      // The Python manager may already have released the completed match.
-    }
-    const matchId = crypto.randomUUID();
+    const roundId = crypto.randomUUID();
     const requesterNonce = randomHex(16);
     replaceMatch({
-      matchId,
-      requesterAddress: address,
-      recipientAddress: peerAddress,
+      ...current,
+      roundId,
       requesterNonce,
-      requesterName: 'You',
-      recipientName: peerName || resolvePlayerName?.(peerAddress),
-      phase: 'opening',
+      recipientNonce: undefined,
+      phase: 'round-waiting',
+      state: undefined,
+      stateHash: undefined,
       moves: [],
+      outcome: undefined,
+      error: undefined,
     });
-    send('OPEN_GAME_LINK', { matchId, recipientAddress: peerAddress, requesterNonce });
-  }, [address, replaceMatch, resolvePlayerName, send, transportReady]);
+    send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, game: 'connect-four', gameVersion: 1, rulesVersion: 1 } });
+  }, [replaceMatch, send, transportReady]);
 
   const modal = (
     <ConnectFourGameDialog
@@ -651,6 +973,8 @@ export function useQortalLandGame(options: Options) {
       onRematch={rematch}
       onResign={resign}
       onRespond={respond}
+      onSendChat={sendChat}
+      onTyping={sendTyping}
       resolvePlayerName={resolvePlayerName}
       transportReady={transportReady}
     />
@@ -670,7 +994,7 @@ export function useQortalLandGame(options: Options) {
 
   return {
     transportReady,
-    busy: Boolean(match),
+    busy: Boolean(match && match.phase !== 'session-idle'),
     presence,
     challenge,
     modal,

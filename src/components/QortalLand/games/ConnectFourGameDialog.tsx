@@ -29,6 +29,7 @@ import {
   type ConnectFourSeat,
   type ConnectFourState,
 } from './connectFour';
+import { GameSessionChat, type GameChatMessage } from './GameSessionChat';
 
 export type ConnectFourGamePhase =
   | 'idle'
@@ -39,10 +40,14 @@ export type ConnectFourGamePhase =
   | 'active'
   | 'finishing'
   | 'reconnecting'
-  | 'finished';
+  | 'finished'
+  | 'session-idle'
+  | 'round-waiting'
+  | 'round-incoming';
 
 export type ConnectFourGameView = {
   matchId: string;
+  roundId: string;
   requesterAddress: string;
   recipientAddress: string;
   requesterNonce: string;
@@ -62,6 +67,9 @@ export type ConnectFourGameView = {
   reconnectDeadline?: number;
   outcome?: ConnectFourOutcome;
   error?: string;
+  chatMessages: GameChatMessage[];
+  remoteTypingUntil?: number;
+  sessionClosed?: boolean;
 };
 
 type Props = {
@@ -74,6 +82,8 @@ type Props = {
   onRematch: () => void;
   onResign: () => void;
   onRespond: (accepted: boolean) => void;
+  onSendChat: (text: string) => boolean;
+  onTyping: (active: boolean) => void;
   resolvePlayerName?: (address: string) => string;
 };
 
@@ -141,6 +151,8 @@ export function ConnectFourGameDialog({
   onRematch,
   onResign,
   onRespond,
+  onSendChat,
+  onTyping,
   resolvePlayerName,
 }: Props) {
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
@@ -148,6 +160,7 @@ export function ConnectFourGameDialog({
   const [shakeNonce, setShakeNonce] = useState(0);
   const [muted, setMuted] = useState(readMuted);
   const columnRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const focusedColumnRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const previousPlyRef = useRef(0);
   const previousTurnRef = useRef(false);
@@ -287,9 +300,14 @@ export function ConnectFourGameDialog({
 
   useEffect(() => {
     setFocusedColumn(null);
+    focusedColumnRef.current = null;
     previousPlyRef.current = match?.state?.ply || 0;
     previousTurnRef.current = false;
   }, [match?.matchId]);
+
+  useEffect(() => {
+    focusedColumnRef.current = focusedColumn;
+  }, [focusedColumn]);
 
   const toggleMuted = useCallback(() => {
     setMuted((value) => {
@@ -317,34 +335,60 @@ export function ConnectFourGameDialog({
     }
   }, [localTurn, onPlayColumn, playSound, state]);
 
-  const handleColumnKeyDown = useCallback((event: React.KeyboardEvent, column: number) => {
-    let nextColumn: number | null = null;
-    if (event.key === 'ArrowLeft') nextColumn = Math.max(0, column - 1);
-    if (event.key === 'ArrowRight') nextColumn = Math.min(CONNECT_FOUR_COLUMNS - 1, column + 1);
-    if (event.key === 'Home') nextColumn = 0;
-    if (event.key === 'End') nextColumn = CONNECT_FOUR_COLUMNS - 1;
-    if (/^[1-7]$/.test(event.key)) nextColumn = Number(event.key) - 1;
-    if (nextColumn !== null) {
-      event.preventDefault();
-      columnRefs.current[nextColumn]?.focus();
-      setFocusedColumn(nextColumn);
-    }
-  }, []);
-
   useEffect(() => {
     if (!localTurn) return;
-    const handleNumberKey = (event: KeyboardEvent) => {
-      if (!/^[1-7]$/.test(event.key)) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.matches('input,textarea,[contenteditable="true"]')) return;
-      event.preventDefault();
-      const column = Number(event.key) - 1;
-      columnRefs.current[column]?.focus();
-      setFocusedColumn(column);
-      void attemptColumn(column);
+    const initialColumn = focusedColumnRef.current ?? 3;
+    const focusColumn = (column: number) => {
+      const bounded = Math.max(0, Math.min(CONNECT_FOUR_COLUMNS - 1, column));
+      focusedColumnRef.current = bounded;
+      setFocusedColumn(bounded);
+      columnRefs.current[bounded]?.focus();
     };
-    window.addEventListener('keydown', handleNumberKey);
-    return () => window.removeEventListener('keydown', handleNumberKey);
+    const focusFrame = window.requestAnimationFrame(() => focusColumn(initialColumn));
+    const handleGameKey = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.matches('input,textarea,[contenteditable="true"]')) return;
+      const current = focusedColumnRef.current ?? 3;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        focusColumn(current - 1);
+        return;
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        focusColumn(current + 1);
+        return;
+      }
+      if (event.key === 'Home') {
+        event.preventDefault();
+        focusColumn(0);
+        return;
+      }
+      if (event.key === 'End') {
+        event.preventDefault();
+        focusColumn(CONNECT_FOUR_COLUMNS - 1);
+        return;
+      }
+      if (/^[1-7]$/.test(event.key)) {
+        event.preventDefault();
+        const column = Number(event.key) - 1;
+        focusColumn(column);
+        void attemptColumn(column);
+        return;
+      }
+      if (
+        (event.key === 'Enter' || event.key === ' ') &&
+        !target?.getAttribute('aria-label')?.startsWith('Play column')
+      ) {
+        event.preventDefault();
+        void attemptColumn(current);
+      }
+    };
+    window.addEventListener('keydown', handleGameKey);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener('keydown', handleGameKey);
+    };
   }, [attemptColumn, localTurn]);
 
   const connection = (() => {
@@ -381,16 +425,19 @@ export function ConnectFourGameDialog({
     state &&
     ['active', 'finishing', 'reconnecting', 'finished'].includes(match.phase)
   );
+  const canShowChat = Boolean(
+    match && (state || ['round-waiting', 'round-incoming'].includes(match.phase) || (match.phase === 'finished' && match.roundId !== match.matchId))
+  );
 
   return (
     <Dialog
-      open={Boolean(match)}
+      open={Boolean(match && match.phase !== 'session-idle')}
       disableEscapeKeyDown={Boolean(match && match.phase !== 'finished')}
       onClose={(_event, reason) => {
         if (!match || reason === 'backdropClick' || match.phase !== 'finished') return;
         onClose();
       }}
-      maxWidth="sm"
+      maxWidth={canShowChat ? 'lg' : 'sm'}
       fullWidth
       PaperProps={{
         sx: {
@@ -421,8 +468,9 @@ export function ConnectFourGameDialog({
             </Tooltip>
           </DialogTitle>
 
-          <DialogContent>
+          <DialogContent sx={{ display: 'grid', gap: 2, gridTemplateColumns: canShowChat ? { xs: '1fr', md: 'minmax(420px, 1fr) 310px' } : '1fr' }}>
             <Box aria-live="polite" sx={{ height: 0, overflow: 'hidden', position: 'absolute', width: 0 }}>{liveMessage}</Box>
+            <Box sx={{ minWidth: 0 }}>
 
             {match.phase === 'opening' && (
               <Stack spacing={2} sx={{ py: 1 }}>
@@ -443,7 +491,16 @@ export function ConnectFourGameDialog({
               </Stack>
             )}
 
-            {match.phase === 'incoming' && (
+            {match.phase === 'round-waiting' && (
+              <Stack spacing={2} sx={{ py: 1 }}>
+                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Rematch requested</Typography>
+                <Typography sx={{ color: alpha('#fff', 0.7) }}>Waiting for {opponentName} to accept another game…</Typography>
+                <Typography variant="caption">Reusing your authenticated private connection.</Typography>
+                <LinearProgress />
+              </Stack>
+            )}
+
+            {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
               <Stack spacing={2} sx={{ py: 1 }}>
                 <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.5 }}>
                   <Box sx={{ alignItems: 'center', background: `linear-gradient(135deg,${alpha('#2cf8ff', 0.42)},${alpha('#9d6cff', 0.5)})`, border: `1px solid ${alpha('#fff', 0.28)}`, borderRadius: '50%', display: 'flex', fontSize: 20, fontWeight: 900, height: 52, justifyContent: 'center', width: 52 }}>
@@ -454,10 +511,12 @@ export function ConnectFourGameDialog({
                     <Typography sx={{ color: alpha('#fff', 0.62), fontSize: 12 }}>{shortAddress(match.requesterAddress)}</Typography>
                   </Box>
                 </Box>
-                <Typography>Invited you to a private Connect Four game.</Typography>
+                <Typography>{match.phase === 'round-incoming' ? 'Would like to play another Connect Four game.' : 'Invited you to a private Connect Four game.'}</Typography>
                 <Box sx={{ backgroundColor: alpha('#2cf8ff', 0.07), border: `1px solid ${alpha('#2cf8ff', 0.18)}`, borderRadius: 2, p: 1.5 }}>
                   <Typography sx={{ color: '#9ffcff', fontSize: 13, fontWeight: 750 }}>
-                    Expires in {Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000))} seconds
+                    {match.phase === 'round-incoming'
+                      ? 'Private game session already authenticated'
+                      : `Expires in ${Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000))} seconds`}
                   </Typography>
                   <Typography sx={{ color: alpha('#fff', 0.56), fontSize: 11, mt: 0.5 }}>
                     Moves are encrypted through a dedicated Reticulum Link.
@@ -598,9 +657,12 @@ export function ConnectFourGameDialog({
                               onBlur={() => setFocusedColumn((value) => value === column ? null : value)}
                               onClick={() => void attemptColumn(column)}
                               onFocus={() => setFocusedColumn(column)}
-                              onKeyDown={(event) => handleColumnKeyDown(event, column)}
                               onMouseEnter={() => setFocusedColumn(column)}
-                              onMouseLeave={() => setFocusedColumn((value) => value === column ? null : value)}
+                              onMouseLeave={() => setFocusedColumn((value) => (
+                                value === column && document.activeElement !== columnRefs.current[column]
+                                  ? null
+                                  : value
+                              ))}
                               ref={(element: HTMLButtonElement | null) => { columnRefs.current[column] = element; }}
                               sx={{
                                 background: 'transparent',
@@ -628,7 +690,7 @@ export function ConnectFourGameDialog({
                 </Box>
 
                 <Typography sx={{ color: alpha('#fff', 0.48), fontSize: 10, textAlign: 'center' }}>
-                  Select a column or use ← → and Enter · Number keys 1–7 jump to a column
+                  Use ← → to select and Enter to drop · Number keys 1–7 play a column
                 </Typography>
                 {state.ply === 0 && (
                   <Typography sx={{ color: alpha('#9ffcff', 0.68), fontSize: 10, textAlign: 'center' }}>
@@ -658,21 +720,33 @@ export function ConnectFourGameDialog({
                   : match.error || 'Game ended'}
               </Alert>
             )}
+            </Box>
+            {canShowChat && (
+              <GameSessionChat
+                address={address}
+                disabled={!transportReady || match.phase === 'reconnecting' || match.sessionClosed === true}
+                messages={match.chatMessages}
+                onSend={onSendChat}
+                onTyping={onTyping}
+                opponentName={opponentName}
+                remoteTyping={Boolean(match.remoteTypingUntil && match.remoteTypingUntil > now)}
+              />
+            )}
           </DialogContent>
 
           <DialogActions sx={{ px: 3, pb: 2.5 }}>
-            {match.phase === 'incoming' && (
+            {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
               <>
                 <Button onClick={() => onRespond(false)}>Decline</Button>
                 <Button variant="contained" onClick={() => onRespond(true)}>Accept</Button>
               </>
             )}
-            {(match.phase === 'opening' || match.phase === 'waiting') && <Button onClick={onClose}>Cancel</Button>}
+            {(match.phase === 'opening' || match.phase === 'waiting' || match.phase === 'round-waiting') && <Button onClick={onClose}>Cancel</Button>}
             {match.phase === 'active' && <Button color="error" onClick={onResign}>Resign</Button>}
             {match.phase === 'finished' && (
               <>
                 {state && opponentAddress && (
-                  <Button disabled={!transportReady} startIcon={<ReplayRoundedIcon />} onClick={onRematch} variant="contained">
+                  <Button disabled={!transportReady || match.sessionClosed === true} startIcon={<ReplayRoundedIcon />} onClick={onRematch} variant="contained">
                     Play again
                   </Button>
                 )}

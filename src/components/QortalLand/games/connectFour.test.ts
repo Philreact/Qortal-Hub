@@ -71,7 +71,7 @@ describe('Connect Four rules', () => {
 
   it('matches the Python initial-state hash fixture', async () => {
     await expect(hashConnectFourState(createConnectFourState(1))).resolves.toBe(
-      '8ab8939dc9b20b1b6607882d575f86f922b6538deb7eff06298063a829a54fff'
+      'c095c107701a8a8137e036b8e917173b93663115cde740dd29500c600ca77aaf'
     );
   });
 

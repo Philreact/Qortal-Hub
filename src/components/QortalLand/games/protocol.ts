@@ -6,7 +6,7 @@ import type {
 } from './connectFour';
 
 export const QORTAL_LAND_GAME_PROTOCOL = 'qortalland-game' as const;
-export const QORTAL_LAND_GAME_PROTOCOL_VERSION = 1 as const;
+export const QORTAL_LAND_GAME_PROTOCOL_VERSION = 2 as const;
 
 export type QortalLandGameBootstrap = {
   url: string;
