@@ -32,6 +32,9 @@ release-builds/
 scripts/i18n_report*
 *wallet-storage.json
 
+# Generated screenshots, CPU profiles, and call-test outputs
+/.artifacts/
+
 # Local dev/preview console captures
 devserver*.err
 devserver*.out
