@@ -649,6 +649,7 @@ export const MessageItemComponent = ({
     : null;
   const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
   const [isReticulumImageViewerOpen, setIsReticulumImageViewerOpen] = useState(false);
+  const [reticulumImageViewerSrc, setReticulumImageViewerSrc] = useState<string | null>(null);
   const [reticulumImageViewerContainer, setReticulumImageViewerContainer] =
     useState<HTMLElement | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
@@ -670,6 +671,31 @@ export const MessageItemComponent = ({
         (localResourceImageUrl || displayImageUrl.startsWith('data:image/'))
     );
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
+  const openReticulumImageViewer = useCallback(
+    async (containerElement: HTMLElement | null) => {
+      let viewerSrc = displayImageUrl;
+      if (
+        imageResourceId &&
+        localResourceImageUrl?.startsWith('qortal-reticulum-resource:')
+      ) {
+        const refreshed = await window.reticulumResources
+          ?.getUrl?.(imageResourceId)
+          .catch(() => null);
+        if (!refreshed?.success || !refreshed.url) {
+          setLocalResourceImageUrl(null);
+          setResourceReloadNonce((value) => value + 1);
+          return;
+        }
+        viewerSrc = refreshed.url;
+        setLocalResourceImageUrl(refreshed.url);
+      }
+      if (!viewerSrc) return;
+      setReticulumImageViewerContainer(containerElement);
+      setReticulumImageViewerSrc(viewerSrc);
+      setIsReticulumImageViewerOpen(true);
+    },
+    [displayImageUrl, imageResourceId, localResourceImageUrl]
+  );
   const [fileResourceStatus, setFileResourceStatus] = useState<
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
   >('idle');
@@ -2288,12 +2314,11 @@ export const MessageItemComponent = ({
                     decoding="async"
                     onClick={(event) => {
                       if (canOpenReticulumImage) {
-                        setReticulumImageViewerContainer(
+                        void openReticulumImageViewer(
                           event.currentTarget.closest(
                             '[data-reticulum-chat-root="true"]'
                           ) as HTMLElement | null
                         );
-                        setIsReticulumImageViewerOpen(true);
                       }
                     }}
                     onError={() => {
@@ -2738,15 +2763,18 @@ export const MessageItemComponent = ({
           alt={message?.senderName}
           onClose={closeAvatarPreview}
         />
-        {canOpenReticulumImage && displayImageUrl && (
+        {canOpenReticulumImage && reticulumImageViewerSrc && (
           <ReticulumImageViewer
             alt={reticulumImageFileName}
             containerElement={reticulumImageViewerContainer}
             fileName={reticulumImageFileName}
             mimeType={reticulumImageMimeType}
             open={isReticulumImageViewerOpen}
-            src={displayImageUrl}
-            onClose={() => setIsReticulumImageViewerOpen(false)}
+            src={reticulumImageViewerSrc}
+            onClose={() => {
+              setIsReticulumImageViewerOpen(false);
+              setReticulumImageViewerSrc(null);
+            }}
           />
         )}
       </MessageWragger>
