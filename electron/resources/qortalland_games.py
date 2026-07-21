@@ -234,6 +234,7 @@ class QortalLandGameManager:
         build_destination: Callable[[Any], Any],
         link_id_bytes: Callable[[Any], bytes],
         enqueue: Callable[[Callable[..., Any], tuple], bool],
+        refresh_path: Optional[Callable[[str, str], bool]] = None,
     ):
         self.emit = emit
         self.log = log
@@ -242,6 +243,7 @@ class QortalLandGameManager:
         self.build_destination = build_destination
         self.link_id_bytes = link_id_bytes
         self.enqueue = enqueue
+        self.refresh_path = refresh_path
         self.lock = threading.RLock()
         self.land_context: Optional[Dict[str, Any]] = None
         self.matches: Dict[str, Dict[str, Any]] = {}
@@ -627,9 +629,23 @@ class QortalLandGameManager:
             if destination_hash.hex() != str(state["peerHash"]).lower():
                 raise ValueError("recipient_destination_mismatch")
             if not RNS.Transport.has_path(destination_hash):
-                RNS.Transport.request_path(destination_hash)
+                refreshed = False
+                if self.refresh_path is not None:
+                    try:
+                        refreshed = self.refresh_path(
+                            state["peerHash"],
+                            "game_link_no_path",
+                        ) is True
+                    except Exception as exc:
+                        self.log(
+                            f"[qortalland-game] path refresh failed match={match_id[:8]} "
+                            f"peer={str(state['peerHash'])[:8]} code={str(exc)[:80]}"
+                        )
+                if not refreshed:
+                    RNS.Transport.request_path(destination_hash)
                 self.log(
-                    f"[qortalland-game] path requested match={match_id[:8]} peer={str(state['peerHash'])[:8]}"
+                    f"[qortalland-game] path refresh requested match={match_id[:8]} "
+                    f"peer={str(state['peerHash'])[:8]} hard={str(self.refresh_path is not None).lower()}"
                 )
                 self._schedule_open_retry(match_id)
                 return
@@ -1254,7 +1270,10 @@ class QortalLandGameManager:
         author = state["recipient"] if state.get("outbound") else state["requester"]
         record = {"messageId": message_id, "text": text_value, "createdAt": created_at, "authorAddress": author, "delivered": True}
         self._remember_chat(state, record)
-        self.send_event("GAME_MESSAGE", {"matchId": state["matchId"], "message": {"type": "CHAT_MESSAGE", **record}})
+        self.send_event("GAME_MESSAGE", {
+            "matchId": state["matchId"],
+            "message": {"type": "CHAT_MESSAGE", "matchId": state["matchId"], **record},
+        })
         self._send_channel(state, {"k": "game", "m": {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id}})
 
     def _validate_round_control(self, state: Dict[str, Any], message: Dict[str, Any]) -> None:
@@ -1879,7 +1898,14 @@ class QortalLandGameManager:
             )
             if time.time() < float(state.get("establishDeadline") or 0):
                 try:
-                    RNS.Transport.request_path(bytes.fromhex(str(state["peerHash"])))
+                    refreshed = False
+                    if self.refresh_path is not None:
+                        refreshed = self.refresh_path(
+                            state["peerHash"],
+                            "game_link_attempt_closed",
+                        ) is True
+                    if not refreshed:
+                        RNS.Transport.request_path(bytes.fromhex(str(state["peerHash"])))
                 except Exception:
                     pass
                 self._schedule_open_retry(state["matchId"])

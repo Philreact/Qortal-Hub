@@ -1,6 +1,7 @@
 import json
 import time
 import unittest
+from unittest import mock
 
 import RNS
 
@@ -37,6 +38,58 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         )
         manager.send_event = lambda event, payload=None: events.append((event, payload or {}))
         return manager, events
+
+    def test_missing_path_uses_bridge_hard_refresh(self):
+        refreshes = []
+
+        class Destination:
+            hash = bytes.fromhex("11" * 16)
+
+        manager, _events = self.make_manager()
+        manager.build_destination = lambda _identity: Destination()
+        manager.refresh_path = lambda peer, reason: refreshes.append((peer, reason)) or False
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "establishing",
+            "establishDeadline": time.time() + 30,
+            "openAttempts": 0,
+        }
+        manager._schedule_open_retry = mock.Mock()
+
+        with mock.patch.object(RNS.Transport, "has_path", return_value=False), mock.patch.object(
+            RNS.Transport, "request_path"
+        ) as request_path:
+            manager._attempt_open(match_id)
+
+        self.assertEqual(refreshes, [("11" * 16, "game_link_no_path")])
+        request_path.assert_called_once_with(bytes.fromhex("11" * 16))
+        manager._schedule_open_retry.assert_called_once_with(match_id)
+
+    def test_failed_link_attempt_hard_refreshes_before_retry(self):
+        refreshes = []
+        manager, _events = self.make_manager()
+        manager.refresh_path = lambda peer, reason: refreshes.append((peer, reason)) or True
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        link = object()
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "establishing",
+            "establishDeadline": time.time() + 30,
+            "openAttempts": 1,
+            "link": link,
+        }
+        manager.links_by_object[id(link)] = match_id
+        manager._schedule_open_retry = mock.Mock()
+
+        with mock.patch.object(RNS.Transport, "request_path") as request_path:
+            manager._link_closed(link)
+
+        self.assertEqual(refreshes, [("11" * 16, "game_link_attempt_closed")])
+        request_path.assert_not_called()
+        manager._schedule_open_retry.assert_called_once_with(match_id)
 
     def test_qortal_address_cross_language_fixture(self):
         self.assertEqual(
@@ -480,6 +533,8 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertGreater(len(sender_channel.messages), 1)
         self.assertEqual(receiver_state["chatMessages"][0]["text"], text_value)
         self.assertEqual(receiver_events[-1][0], "GAME_MESSAGE")
+        self.assertEqual(receiver_events[-1][1]["matchId"], match_id)
+        self.assertEqual(receiver_events[-1][1]["message"]["matchId"], match_id)
         self.assertEqual(receiver_channel.messages[-1]["m"]["type"], "CHAT_ACK")
 
     def test_chat_snapshot_history_is_batched_below_local_frame_limit(self):

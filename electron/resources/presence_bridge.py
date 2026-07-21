@@ -7749,6 +7749,12 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
             build_destination=build_outbound_destination,
             link_id_bytes=lambda link: _rns_link_id_bytes(link) or b"",
             enqueue=_enqueue_game_control,
+            refresh_path=lambda peer_hash, reason: _force_overlay_peer_path_refresh(
+                peer_hash,
+                target="qortalland-game",
+                reason=reason,
+                await_seconds=0.0,
+            ),
         )
     return _qortalland_game_manager
 
