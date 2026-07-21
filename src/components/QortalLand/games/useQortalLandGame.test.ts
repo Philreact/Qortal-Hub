@@ -38,6 +38,44 @@ describe('Qortal Land game handshake signing guard', () => {
     expect(canSignQortalLandGameHandshake({ ...fields, game: 'connect-four' }, checkersMatch, match.requesterAddress, 'public-key')).toBe(false);
   });
 
+  it('binds a Chess signature request to a Chess challenge', () => {
+    const chessMatch = { ...match, game: 'chess' as const };
+    const fields = {
+      type: 'QORTAL_LAND_GAME_INVITE', matchId: match.matchId,
+      requesterAddress: match.requesterAddress, recipientAddress: match.recipientAddress,
+      signerPublicKey: 'public-key', requesterNonce: match.requesterNonce,
+      protocolVersion: 2, game: 'chess', gameVersion: 1, rulesVersion: 1,
+    };
+    expect(canSignQortalLandGameHandshake(fields, chessMatch, match.requesterAddress, 'public-key')).toBe(true);
+    expect(canSignQortalLandGameHandshake({ ...fields, game: 'checkers' }, chessMatch, match.requesterAddress, 'public-key')).toBe(false);
+  });
+
+  it('enforces the current game\'s move limit on resume signatures', () => {
+    const fields = {
+      type: 'QORTAL_LAND_GAME_RESUME_REQUEST', matchId: match.matchId,
+      roundId: match.matchId, requesterAddress: match.requesterAddress,
+      signerPublicKey: 'public-key', lastAcknowledgedPly: 43,
+    };
+    expect(canSignQortalLandGameHandshake(
+      fields,
+      { ...match, game: 'connect-four' as const, roundId: match.matchId },
+      match.requesterAddress,
+      'public-key'
+    )).toBe(false);
+    expect(canSignQortalLandGameHandshake(
+      { ...fields, lastAcknowledgedPly: 600 },
+      { ...match, game: 'chess' as const, roundId: match.matchId },
+      match.requesterAddress,
+      'public-key'
+    )).toBe(true);
+    expect(canSignQortalLandGameHandshake(
+      { ...fields, lastAcknowledgedPly: 601 },
+      { ...match, game: 'chess' as const, roundId: match.matchId },
+      match.requesterAddress,
+      'public-key'
+    )).toBe(false);
+  });
+
   it('rejects a changed match, recipient, or signer key', () => {
     const fields = {
       type: 'QORTAL_LAND_GAME_INVITE',

@@ -5,6 +5,7 @@ import type {
   ConnectFourState,
 } from './connectFour';
 import type { CheckersMove, CheckersOutcome, CheckersState } from './checkers';
+import type { ChessMove, ChessOutcome, ChessState } from './chess';
 
 export const QORTAL_LAND_GAME_PROTOCOL = 'qortalland-game' as const;
 export const QORTAL_LAND_GAME_PROTOCOL_VERSION = 2 as const;
@@ -35,7 +36,7 @@ export type QortalLandGameParticipant = {
 export type QortalLandGameMatch = {
   matchId: string;
   groupId: number;
-  gameType: 'connect-four' | 'checkers';
+  gameType: 'connect-four' | 'checkers' | 'chess';
   rulesVersion: 1;
   requester: QortalLandGameParticipant;
   recipient: QortalLandGameParticipant;
@@ -44,13 +45,13 @@ export type QortalLandGameMatch = {
   localSeat?: ConnectFourSeat;
   startingSeat?: ConnectFourSeat;
   phase: QortalLandGamePhase;
-  state?: ConnectFourState | CheckersState;
+  state?: ConnectFourState | CheckersState | ChessState;
   stateHash?: string;
-  moves: Array<ConnectFourMove | CheckersMove>;
+  moves: Array<ConnectFourMove | CheckersMove | ChessMove>;
   pendingMoveId?: string;
   expiresAt?: number;
   reconnectDeadline?: number;
-  outcome?: ConnectFourOutcome | CheckersOutcome;
+  outcome?: ConnectFourOutcome | CheckersOutcome | ChessOutcome;
   error?: string;
 };
 
@@ -75,8 +76,8 @@ export type GameSocketEvent = {
   [key: string]: unknown;
 };
 
-export type ConnectFourWireMessage =
-  | ({ type: 'MOVE' | 'SYNC_MOVE'; matchId: string } & ConnectFourMove)
+export type QortalLandGameWireMessage =
+  | ({ type: 'MOVE' | 'SYNC_MOVE'; matchId: string } & (ConnectFourMove | CheckersMove | ChessMove))
   | {
       type: 'MOVE_ACK';
       matchId: string;
@@ -95,7 +96,7 @@ export type ConnectFourWireMessage =
       messageId: string;
       ply: number;
       stateHash: string;
-      outcome: ConnectFourOutcome;
+      outcome: ConnectFourOutcome | CheckersOutcome | ChessOutcome;
     }
   | {
       type: 'GAME_OVER_ACK';
@@ -106,3 +107,6 @@ export type ConnectFourWireMessage =
     }
   | { type: 'SYNC_REQUEST'; matchId: string; messageId: string; fromPly: number }
   | { type: 'PROTOCOL_ERROR'; matchId: string; messageId: string; reason: string };
+
+/** @deprecated Use QortalLandGameWireMessage for all supported games. */
+export type ConnectFourWireMessage = QortalLandGameWireMessage;

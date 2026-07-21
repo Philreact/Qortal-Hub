@@ -131,6 +131,21 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "d8f380b461ea12fe5c662de0ba7c5707de3afdf36ec1f9d4222719b6b22cad7e",
         )
 
+    def test_chess_initial_state_hash_matches_typescript_fixture(self):
+        state = {
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "roundId": "00112233-4455-6677-8899-aabbccddeeff",
+            "requesterNonce": "11" * 16,
+            "recipientNonce": "22" * 15 + "00",
+            "game": "chess",
+            "rulesVersion": 1,
+        }
+        self.assertEqual(self.manager._starter(state), "recipient")
+        self.assertEqual(
+            self.manager._initial_state_hash(state),
+            "cc48133f2305d376d6d48e9e858239ae9ea6db7af7692c607d68b0af8a70a8bb",
+        )
+
     def test_checkers_move_shape_supports_paths_and_rejects_columns(self):
         state = {
             "game": "checkers", "roundId": "00112233-4455-6677-8899-aabbccddeeff",
@@ -147,6 +162,27 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.manager._validate_move_shape(state, move)
         with self.assertRaisesRegex(ValueError, "invalid_checkers_move"):
             self.manager._validate_move_shape(state, {**move, "path": []})
+
+    def test_chess_move_shape_supports_promotion(self):
+        state = {
+            "game": "chess", "roundId": "00112233-4455-6677-8899-aabbccddeeff",
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "requesterNonce": "11" * 16, "recipientNonce": "22" * 15 + "00",
+            "transcript": [],
+        }
+        move = {
+            "messageId": "11112233-4455-4677-8899-aabbccddeeff", "ply": 1,
+            "from": 8, "to": 0, "promotion": 5,
+            "previousStateHash": self.manager._initial_state_hash(state),
+            "resultingStateHash": "33" * 32,
+        }
+        self.manager._validate_move_shape(state, move)
+        with self.assertRaisesRegex(ValueError, "invalid_chess_move"):
+            self.manager._validate_move_shape(state, {**move, "promotion": 6})
+        with self.assertRaisesRegex(ValueError, "invalid_chess_move"):
+            self.manager._validate_move_shape(state, {**move, "promotion": []})
+        with self.assertRaisesRegex(ValueError, "invalid_chess_move"):
+            self.manager._validate_move_shape(state, {**move, "promotion": True})
 
     def test_compact_invite_round_trip_fits_classifier_packet(self):
         fields = {
@@ -512,6 +548,25 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "previousStateHash": "aa" * 32, "resultingStateHash": "bb" * 32,
         }})
         self.assertLessEqual(len(message.pack()), MAX_CHANNEL_PAYLOAD)
+
+    def test_chess_promotion_move_fits_channel_payload(self):
+        message = GameMessage({"k": "game", "m": {
+            "type": "MOVE", "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "roundId": "11112233-4455-4677-8899-aabbccddeeff",
+            "messageId": "22222233-4455-4677-8899-aabbccddeeff", "ply": 600,
+            "from": 8, "to": 0, "promotion": 5,
+            "previousStateHash": "aa" * 32, "resultingStateHash": "bb" * 32,
+        }})
+        self.assertLessEqual(len(message.pack()), MAX_CHANNEL_PAYLOAD)
+
+    def test_reusable_round_accepts_each_supported_game(self):
+        manager, _events = self.make_manager()
+        state = {"roundId": "00112233-4455-6677-8899-aabbccddeeff"}
+        for index, game in enumerate(("connect-four", "checkers", "chess"), start=1):
+            manager._validate_round_control(state, {
+                "roundId": f"{index:08d}-4455-4677-8899-aabbccddeeff",
+                "game": game, "gameVersion": 1, "rulesVersion": 1,
+            })
 
     def test_delayed_move_from_previous_round_is_ignored(self):
         manager, events = self.make_manager()

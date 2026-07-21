@@ -22,12 +22,22 @@ import {
   type CheckersState,
 } from './checkers';
 import { CheckersGameDialog } from './CheckersGameDialog';
+import {
+  applyChessMove,
+  createChessState,
+  deriveChessStartingSeat,
+  hashChessState,
+  type ChessMove,
+  type ChessPromotion,
+  type ChessState,
+} from './chess';
+import { ChessGameDialog } from './ChessGameDialog';
 import type { GameChatMessage } from './GameSessionChat';
 
 type Target = { address: string; name?: string };
-export type QortalLandGameId = 'connect-four' | 'checkers';
-export type QortalLandGameState = ConnectFourState | CheckersState;
-export type QortalLandGameMove = ConnectFourMove | CheckersMove;
+export type QortalLandGameId = 'connect-four' | 'checkers' | 'chess';
+export type QortalLandGameState = ConnectFourState | CheckersState | ChessState;
+export type QortalLandGameMove = ConnectFourMove | CheckersMove | ChessMove;
 export type QortalLandGameMatchView = Omit<ConnectFourGameView, 'state' | 'moves'> & {
   game: QortalLandGameId;
   state?: QortalLandGameState;
@@ -36,25 +46,39 @@ export type QortalLandGameMatchView = Omit<ConnectFourGameView, 'state' | 'moves
 type Match = QortalLandGameMatchView;
 
 const isGameId = (value: unknown): value is QortalLandGameId =>
-  value === 'connect-four' || value === 'checkers';
+  value === 'connect-four' || value === 'checkers' || value === 'chess';
+
+const gameMaxPly = (game: QortalLandGameId): number =>
+  game === 'connect-four' ? 42 : game === 'checkers' ? 200 : 600;
 
 const gameConfig = (game: QortalLandGameId) => ({ game, gameVersion: 1, rulesVersion: 1 });
 
 const deriveStartingSeat = (game: QortalLandGameId, roundId: string, requesterNonce: string, recipientNonce: string) =>
   game === 'checkers'
     ? deriveCheckersStartingSeat(roundId, requesterNonce, recipientNonce)
-    : deriveConnectFourStartingSeat(roundId, requesterNonce, recipientNonce);
+    : game === 'chess'
+      ? deriveChessStartingSeat(roundId, requesterNonce, recipientNonce)
+      : deriveConnectFourStartingSeat(roundId, requesterNonce, recipientNonce);
 
 const createGameState = (game: QortalLandGameId, seat: ConnectFourSeat) =>
-  game === 'checkers' ? createCheckersState(seat) : createConnectFourState(seat);
+  game === 'checkers' ? createCheckersState(seat) : game === 'chess' ? createChessState(seat) : createConnectFourState(seat);
 
 const hashGameState = (game: QortalLandGameId, state: QortalLandGameState) =>
-  game === 'checkers' ? hashCheckersState(state as CheckersState) : hashConnectFourState(state as ConnectFourState);
+  game === 'checkers'
+    ? hashCheckersState(state as CheckersState)
+    : game === 'chess'
+      ? hashChessState(state as ChessState)
+      : hashConnectFourState(state as ConnectFourState);
 
 const applyGameMove = (game: QortalLandGameId, state: QortalLandGameState, seat: ConnectFourSeat, move: Record<string, unknown>): QortalLandGameState => {
   if (game === 'checkers') {
     if (!Number.isInteger(move.from) || !Array.isArray(move.path)) throw new Error('Invalid Checkers move');
     return applyCheckersMove(state as CheckersState, seat, Number(move.from), move.path.map(Number));
+  }
+  if (game === 'chess') {
+    if (!Number.isInteger(move.from) || !Number.isInteger(move.to)) throw new Error('Invalid Chess move');
+    const promotion = move.promotion === undefined ? undefined : Number(move.promotion) as ChessPromotion;
+    return applyChessMove(state as ChessState, seat, Number(move.from), Number(move.to), promotion);
   }
   if (!Number.isInteger(move.column)) throw new Error('Invalid Connect Four move');
   return applyConnectFourMove(state as ConnectFourState, seat, Number(move.column));
@@ -112,6 +136,15 @@ export const canSignQortalLandGameHandshake = (
     return fields.responderAddress === address;
   }
   if (!current || fields.matchId !== current.matchId) return false;
+  if (type.startsWith('QORTAL_LAND_GAME_RESUME_')) {
+    const lastAcknowledgedPly = fields.lastAcknowledgedPly;
+    const currentGame = current.game || 'connect-four';
+    if (
+      !Number.isSafeInteger(lastAcknowledgedPly) ||
+      Number(lastAcknowledgedPly) < 0 ||
+      Number(lastAcknowledgedPly) > gameMaxPly(currentGame)
+    ) return false;
+  }
   if (
     type === 'QORTAL_LAND_GAME_INVITE' ||
     type === 'QORTAL_LAND_GAME_RESUME_REQUEST' ||
@@ -395,7 +428,7 @@ export function useQortalLandGame(options: Options) {
       return;
     }
     if (message.type !== 'MOVE' && message.type !== 'SYNC_MOVE') return;
-    const move = message as unknown as ConnectFourMove | CheckersMove;
+    const move = message as unknown as QortalLandGameMove;
     try {
       if (current.pendingMoveId || move.ply !== current.state.ply + 1 || move.previousStateHash !== current.stateHash) {
         throw new Error('Unexpected move sequence');
@@ -572,10 +605,10 @@ export function useQortalLandGame(options: Options) {
       let state = createGameState(eventGame, startingSeat);
       let stateHash = await hashGameState(eventGame, state);
       const transcript = Array.isArray(event.transcript) ? event.transcript : [];
-      const moves: Array<ConnectFourMove | CheckersMove> = [];
+      const moves: QortalLandGameMove[] = [];
       for (const raw of transcript) {
         if (!raw || typeof raw !== 'object') throw new Error('Invalid snapshot move');
-        const move = raw as ConnectFourMove | CheckersMove;
+        const move = raw as QortalLandGameMove;
         if (
           move.ply !== state.ply + 1 ||
           move.previousStateHash !== stateHash
@@ -591,7 +624,7 @@ export function useQortalLandGame(options: Options) {
       let pendingMoveId: string | undefined;
       const pendingRaw = event.pendingOutboundMove;
       if (pendingRaw && typeof pendingRaw === 'object' && !Array.isArray(pendingRaw)) {
-        const pending = pendingRaw as ConnectFourMove | CheckersMove;
+        const pending = pendingRaw as QortalLandGameMove;
         if (
           state.outcome ||
           state.nextSeat !== localSeat ||
@@ -921,10 +954,32 @@ export function useQortalLandGame(options: Options) {
     }
   }, [failProtocol, replaceMatch, send]);
 
+  const playChessMove = useCallback(async (from: number, to: number, promotion?: ChessPromotion): Promise<boolean> => {
+    const current = matchRef.current;
+    if (moveInFlightRef.current || current?.game !== 'chess' || !current.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat) return false;
+    moveInFlightRef.current = true;
+    try {
+      const previousStateHash = current.stateHash || await hashChessState(current.state as ChessState);
+      const next = applyChessMove(current.state as ChessState, current.localSeat, from, to, promotion);
+      const resultingStateHash = await hashChessState(next);
+      const messageId = crypto.randomUUID();
+      const move: ChessMove = { messageId, ply: next.ply, from, to, ...(promotion ? { promotion } : {}), previousStateHash, resultingStateHash };
+      replaceMatch({ ...current, state: next, stateHash: resultingStateHash, pendingMoveId: messageId, pendingSince: Date.now(), moves: [...current.moves, move] });
+      send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'MOVE', roundId: current.roundId, ...move } });
+      return true;
+    } catch (error) {
+      failProtocol(error instanceof Error ? error.message : 'Move failed');
+      return false;
+    } finally {
+      moveInFlightRef.current = false;
+    }
+  }, [failProtocol, replaceMatch, send]);
+
   const resign = useCallback(() => {
     const current = matchRef.current;
     if (!current?.localSeat) return;
-    if (!window.confirm(`Resign this ${current.game === 'checkers' ? 'Checkers' : 'Connect Four'} game?`)) return;
+    const gameLabel = current.game === 'checkers' ? 'Checkers' : current.game === 'chess' ? 'Chess' : 'Connect Four';
+    if (!window.confirm(`Resign this ${gameLabel} game?`)) return;
     send('RESIGN_GAME', { matchId: current.matchId });
     replaceMatch({ ...current, phase: 'finishing', outcome: { type: 'resigned', winner: current.localSeat === 1 ? 2 : 1 } });
   }, [replaceMatch, send]);
@@ -1038,6 +1093,21 @@ export function useQortalLandGame(options: Options) {
       now={now}
       onClose={close}
       onPlayMove={playCheckersMove}
+      onRematch={rematch}
+      onResign={resign}
+      onRespond={respond}
+      onSendChat={sendChat}
+      onTyping={sendTyping}
+      resolvePlayerName={resolvePlayerName}
+      transportReady={transportReady}
+    />
+  ) : match?.game === 'chess' ? (
+    <ChessGameDialog
+      address={address}
+      match={match}
+      now={now}
+      onClose={close}
+      onPlayMove={playChessMove}
       onRematch={rematch}
       onResign={resign}
       onRespond={respond}

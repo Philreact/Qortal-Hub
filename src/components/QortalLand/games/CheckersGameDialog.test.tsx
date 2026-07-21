@@ -25,6 +25,24 @@ describe('Checkers game dialog', () => {
     await waitFor(() => expect(play).toHaveBeenCalledWith(40, [33]));
   });
 
+  it('switches to another legal piece before choosing a destination', async () => {
+    const play = renderGame();
+    fireEvent.click(screen.getByRole('gridcell', { name: /Row 6, column 1, your piece/i }));
+    fireEvent.click(screen.getByRole('gridcell', { name: /Row 6, column 3, your piece/i }));
+    fireEvent.click(screen.getByRole('gridcell', { name: /Row 5, column 4, empty/i }));
+    await waitFor(() => expect(play).toHaveBeenCalledWith(42, [35]));
+  });
+
+  it('explains why a different piece cannot move during a mandatory capture', () => {
+    const state: CheckersState = { board: Array(64).fill(0), nextSeat: 1, ply: 0, quietPly: 0, outcome: null };
+    state.board[42] = 1;
+    state.board[33] = 2;
+    state.board[46] = 1;
+    renderGame(state);
+    fireEvent.click(screen.getByRole('gridcell', { name: /Row 6, column 7, your piece/i }));
+    expect(screen.getByText('A highlighted piece must make the available capture.')).toBeInTheDocument();
+  });
+
   it('announces when a capture is mandatory', () => {
     const state: CheckersState = { board: Array(64).fill(0), nextSeat: 1, ply: 0, quietPly: 0, outcome: null };
     state.board[42] = 1;

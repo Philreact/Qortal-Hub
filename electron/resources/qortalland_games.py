@@ -40,6 +40,7 @@ PROTOCOL_VERSION = 2
 GAME_CONFIGS = {
     "connect-four": {"gameVersion": 1, "rulesVersion": 1, "maxPly": 42},
     "checkers": {"gameVersion": 1, "rulesVersion": 1, "maxPly": 200},
+    "chess": {"gameVersion": 1, "rulesVersion": 1, "maxPly": 600},
 }
 ADDRESS_VERSION = 58
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -1173,6 +1174,23 @@ class QortalLandGameManager:
                 or any(not isinstance(square, int) or isinstance(square, bool) or square < 0 or square > 63 for square in path)
             ):
                 raise ValueError("invalid_checkers_move")
+        elif game == "chess":
+            origin = move.get("from")
+            destination = move.get("to")
+            promotion = move.get("promotion")
+            if (
+                not isinstance(origin, int) or isinstance(origin, bool) or origin < 0 or origin > 63
+                or not isinstance(destination, int) or isinstance(destination, bool) or destination < 0 or destination > 63
+                or (
+                    promotion is not None
+                    and (
+                        not isinstance(promotion, int)
+                        or isinstance(promotion, bool)
+                        or promotion not in {2, 3, 4, 5}
+                    )
+                )
+            ):
+                raise ValueError("invalid_chess_move")
         else:
             raise ValueError("unsupported_game")
         if ply != len(state.get("transcript") or []) + 1:
@@ -1188,7 +1206,7 @@ class QortalLandGameManager:
 
     @staticmethod
     def _same_move(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-        keys = ("roundId", "messageId", "ply", "column", "from", "path", "previousStateHash", "resultingStateHash")
+        keys = ("roundId", "messageId", "ply", "column", "from", "to", "path", "promotion", "previousStateHash", "resultingStateHash")
         return all(left.get(key) == right.get(key) for key in keys)
 
     def _reset_round(
@@ -1750,6 +1768,30 @@ class QortalLandGameManager:
                 "protocolVersion": PROTOCOL_VERSION,
                 "quietPly": 0,
                 "rulesVersion": state.get("rulesVersion") or 1,
+            }
+        elif state.get("game") == "chess":
+            white_seat = 1 if self._starter(state) == "requester" else 2
+            black_seat = 2 if white_seat == 1 else 1
+            signed = lambda seat, kind: kind if seat == 1 else -kind
+            back_rank = [4, 2, 3, 5, 6, 3, 2, 4]
+            board = [0] * 64
+            for column, kind in enumerate(back_rank):
+                board[column] = signed(black_seat, kind)
+                board[8 + column] = signed(black_seat, 1)
+                board[48 + column] = signed(white_seat, 1)
+                board[56 + column] = signed(white_seat, kind)
+            value = {
+                "board": board,
+                "castlingRights": [True, True, True, True],
+                "enPassant": None,
+                "game": "chess",
+                "halfmoveClock": 0,
+                "nextSeat": white_seat,
+                "outcome": None,
+                "ply": 0,
+                "protocolVersion": PROTOCOL_VERSION,
+                "rulesVersion": state.get("rulesVersion") or 1,
+                "whiteSeat": white_seat,
             }
         else:
             value = {

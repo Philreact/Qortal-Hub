@@ -56,6 +56,7 @@ export function CheckersGameDialog({
 }: Props) {
   const [selectedFrom, setSelectedFrom] = useState<number | null>(null);
   const [selectedPath, setSelectedPath] = useState<number[]>([]);
+  const [selectionHint, setSelectionHint] = useState('');
   const state = match?.state as CheckersState | undefined;
   const localSeat = match?.localSeat;
   const opponentAddress = match
@@ -96,6 +97,7 @@ export function CheckersGameDialog({
   useEffect(() => {
     setSelectedFrom(null);
     setSelectedPath([]);
+    setSelectionHint('');
   }, [state?.ply, localTurn]);
 
   if (!match) return null;
@@ -109,14 +111,24 @@ export function CheckersGameDialog({
     : Array.from({ length: 64 }, (_, index) => index);
 
   const selectSquare = async (index: number) => {
-    if (!localTurn) return;
-    if (selectedFrom === null || (movablePieces.has(index) && selectedPath.length === 0)) {
-      if (movablePieces.has(index)) setSelectedFrom(index);
+    if (!localTurn || !state || !localSeat) return;
+    const ownPiece = checkersPieceSeat(state.board[index]) === localSeat;
+    if (selectedPath.length === 0 && ownPiece) {
+      if (index === selectedFrom) {
+        setSelectedFrom(null);
+        setSelectionHint('');
+      } else if (movablePieces.has(index)) {
+        setSelectedFrom(index);
+        setSelectionHint('');
+      } else {
+        setSelectionHint(hasCapture ? 'A highlighted piece must make the available capture.' : 'That piece has no legal move right now.');
+      }
       return;
     }
     if (!nextSquares.has(index)) {
       setSelectedFrom(movablePieces.has(index) ? index : null);
       setSelectedPath([]);
+      setSelectionHint('');
       return;
     }
     const path = [...selectedPath, index];
@@ -126,6 +138,7 @@ export function CheckersGameDialog({
     if (complete && !continues) {
       setSelectedFrom(null);
       setSelectedPath([]);
+      setSelectionHint('');
       await onPlayMove(selectedFrom, path);
     } else {
       setSelectedPath(path);
@@ -174,7 +187,9 @@ export function CheckersGameDialog({
                 <Typography sx={{ fontWeight: 850 }}>
                   {match.phase === 'finished' ? outcomeText(match.outcome as CheckersOutcome, localSeat) : match.phase === 'reconnecting' ? `Reconnecting (${reconnectIn}s)` : localTurn ? 'Your turn' : `${opponentName}'s turn`}
                 </Typography>
-                <Typography sx={{ color: hasCapture ? '#ffd24f' : alpha('#fff', 0.55), fontSize: 12 }}>{hasCapture ? 'Capture required' : match.pendingMoveId ? 'Confirming move…' : 'Select a piece'}</Typography>
+                <Typography aria-live="polite" sx={{ color: selectionHint || hasCapture ? '#ffd24f' : alpha('#fff', 0.55), fontSize: 12 }}>
+                  {selectionHint || (hasCapture ? 'Capture required' : match.pendingMoveId ? 'Confirming move…' : selectedFrom !== null ? 'Choose a highlighted square or another piece' : 'Select a piece')}
+                </Typography>
               </Stack>
               <Box sx={{ mb: 0.75, minHeight: 42 }}>
                 {match.phase === 'reconnecting' ? (
@@ -206,13 +221,15 @@ export function CheckersGameDialog({
                   const destination = nextSquares.has(index);
                   const movable = movablePieces.has(index);
                   const seat = checkersPieceSeat(piece);
+                  const ownPiece = seat === localSeat;
                   return (
                     <Box
                       component="button"
                       type="button"
                       role="gridcell"
+                      aria-selected={selected}
                       aria-label={`Row ${Math.floor(displayIndex / 8) + 1}, column ${displayIndex % 8 + 1}${piece ? `, ${seat === localSeat ? 'your' : 'opponent'} ${isCheckersKing(piece) ? 'king' : 'piece'}` : ', empty'}`}
-                      disabled={!dark || !localTurn || (!movable && !destination)}
+                      disabled={!dark || !localTurn || (!ownPiece && !destination)}
                       key={index}
                       onClick={() => void selectSquare(index)}
                       sx={{

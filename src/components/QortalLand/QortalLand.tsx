@@ -8968,7 +8968,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             </Button>
             {showGamePicker && (
               <Box sx={{ mt: 0.5 }}>
-                {(['connect-four', 'checkers'] as const).map((game) => (
+                {(['connect-four', 'checkers', 'chess'] as const).map((game) => (
                   <Button
                     disabled={!canStartLandGame}
                     fullWidth
@@ -8984,7 +8984,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                     }}
                     sx={{ color: '#f8fbff', fontSize: 12, justifyContent: 'flex-start', textTransform: 'none' }}
                   >
-                    {game === 'connect-four' ? 'Connect Four' : 'Checkers'}
+                    {game === 'connect-four' ? 'Connect Four' : game === 'checkers' ? 'Checkers' : 'Chess'}
                   </Button>
                 ))}
               </Box>
