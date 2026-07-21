@@ -549,6 +549,8 @@ class QortalLandGameManager:
             "peerHash": peer_hash,
             "phase": "establishing",
             "outbound": True,
+            "establishDeadline": time.time() + LINK_TIMEOUT,
+            "openAttempts": 0,
             "createdAt": int(time.time() * 1000),
             "expiresAt": int((time.time() + INVITE_TTL) * 1000),
             "transcript": [],
@@ -556,16 +558,78 @@ class QortalLandGameManager:
             "lastRx": time.time(),
             "initialStateHash": str(message.get("initialStateHash") or ""),
         }
-        link = RNS.Link(self.build_destination(identity), established_callback=self._outbound_established, closed_callback=self._link_closed)
-        state["link"] = link
         with self.lock:
             self.matches[match_id] = state
-            self.links_by_object[id(link)] = match_id
-        timer = threading.Timer(LINK_TIMEOUT, self._establish_timeout, args=(match_id, link))
+        timer = threading.Timer(LINK_TIMEOUT, self._queue_establish_timeout, args=(match_id,))
         timer.daemon = True
         state["establishTimer"] = timer
         timer.start()
         self.send_event("GAME_LINK_STATE", {"matchId": match_id, "state": "establishing"})
+        self.log(
+            f"[qortalland-game] link opening match={match_id[:8]} peer={str(peer_hash)[:8]}"
+        )
+        self._attempt_open(match_id)
+
+    def _queue_establish_timeout(self, match_id: str) -> None:
+        self.enqueue(self._establish_timeout, (match_id,))
+
+    def _schedule_open_retry(self, match_id: str, delay: float = 1.0) -> None:
+        state = self.matches.get(match_id)
+        if not state or state.get("phase") != "establishing" or state.get("openRetryTimer"):
+            return
+
+        def fire() -> None:
+            current = self.matches.get(match_id)
+            if current:
+                current.pop("openRetryTimer", None)
+            self.enqueue(self._attempt_open, (match_id,))
+
+        timer = threading.Timer(delay, fire)
+        timer.daemon = True
+        state["openRetryTimer"] = timer
+        timer.start()
+
+    def _attempt_open(self, match_id: str) -> None:
+        state = self.matches.get(match_id)
+        if (
+            not state
+            or state.get("phase") != "establishing"
+            or state.get("link") is not None
+            or time.time() >= float(state.get("establishDeadline") or 0)
+        ):
+            return
+        try:
+            identity = self.resolve_identity(state["peerHash"])
+            if identity is None:
+                raise ValueError("recipient_identity_unavailable")
+            destination = self.build_destination(identity)
+            destination_hash = bytes(destination.hash)
+            if destination_hash.hex() != str(state["peerHash"]).lower():
+                raise ValueError("recipient_destination_mismatch")
+            if not RNS.Transport.has_path(destination_hash):
+                RNS.Transport.request_path(destination_hash)
+                self.log(
+                    f"[qortalland-game] path requested match={match_id[:8]} peer={str(state['peerHash'])[:8]}"
+                )
+                self._schedule_open_retry(match_id)
+                return
+            state["openAttempts"] = int(state.get("openAttempts") or 0) + 1
+            link = RNS.Link(
+                destination,
+                established_callback=self._outbound_established,
+                closed_callback=self._link_closed,
+            )
+            state["link"] = link
+            with self.lock:
+                self.links_by_object[id(link)] = match_id
+            self.log(
+                f"[qortalland-game] link attempt match={match_id[:8]} peer={str(state['peerHash'])[:8]} attempt={state['openAttempts']}"
+            )
+        except Exception as exc:
+            self.log(
+                f"[qortalland-game] link attempt failed match={match_id[:8]} code={str(exc)[:80]}"
+            )
+            self._schedule_open_retry(match_id)
 
     def _outbound_established(self, link) -> None:
         state = self._state_for_link(link)
@@ -574,6 +638,12 @@ class QortalLandGameManager:
         timer = state.pop("establishTimer", None)
         if timer:
             timer.cancel()
+        retry_timer = state.pop("openRetryTimer", None)
+        if retry_timer:
+            retry_timer.cancel()
+        self.log(
+            f"[qortalland-game] link established match={state['matchId'][:8]} peer={str(state.get('peerHash') or '')[:8]} attempt={int(state.get('openAttempts') or 0)}"
+        )
         self._configure_channel(state)
         state["phase"] = "awaiting_invite_signature"
         state["linkId"] = self.link_id_bytes(link).hex()
@@ -1458,14 +1528,33 @@ class QortalLandGameManager:
                     if now - float(state.get("disconnectedAt") or now) >= RECOVERY_WINDOW:
                         self._close_match(state["matchId"], "abandoned")
 
-    def _establish_timeout(self, match_id: str, link) -> None:
+    def _establish_timeout(self, match_id: str) -> None:
         state = self.matches.get(match_id)
-        if state and state.get("link") is link and state.get("phase") == "establishing":
+        if state and state.get("phase") == "establishing":
+            self.log(
+                f"[qortalland-game] link timeout match={match_id[:8]} peer={str(state.get('peerHash') or '')[:8]} attempts={int(state.get('openAttempts') or 0)}"
+            )
             self._close_match(match_id, "establishment_timeout")
 
     def _link_closed(self, link) -> None:
         state = self._state_for_link(link)
         if not state:
+            return
+        if state.get("phase") == "establishing" and state.get("link") is link:
+            with self.lock:
+                self.links_by_object.pop(id(link), None)
+            state["link"] = None
+            self.log(
+                f"[qortalland-game] link attempt closed match={state['matchId'][:8]} peer={str(state.get('peerHash') or '')[:8]} attempt={int(state.get('openAttempts') or 0)}"
+            )
+            if time.time() < float(state.get("establishDeadline") or 0):
+                try:
+                    RNS.Transport.request_path(bytes.fromhex(str(state["peerHash"])))
+                except Exception:
+                    pass
+                self._schedule_open_retry(state["matchId"])
+            else:
+                self._close_match(state["matchId"], "establishment_timeout", teardown=False)
             return
         if state.get("phase") == "ending":
             self._close_match(state["matchId"], "completed", teardown=False)
@@ -1569,6 +1658,9 @@ class QortalLandGameManager:
         timer = state.get("establishTimer")
         if timer:
             timer.cancel()
+        retry_timer = state.get("openRetryTimer")
+        if retry_timer:
+            retry_timer.cancel()
         if teardown:
             self._teardown(link)
         self.send_event("GAME_ENDED", {"matchId": match_id, "outcome": reason})
