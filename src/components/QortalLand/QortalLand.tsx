@@ -124,6 +124,13 @@ type LandCallPresence = {
   expiresAt: number;
 };
 
+type LandGamePresence = {
+  matchId: string;
+  peerAddress: string;
+  roomId: LandRoomId;
+  expiresAt: number;
+};
+
 type QortalLandProps = {
   groupId: number;
   groupName: string;
@@ -2562,6 +2569,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const chatMessagesViewportRef = useRef<HTMLDivElement | null>(null);
   const landActionAnimationsRef = useRef<Map<string, LandActionAnimation>>(new Map());
   const landCallPresenceRef = useRef<Map<string, LandCallPresence>>(new Map());
+  const landGamePresenceRef = useRef<Map<string, LandGamePresence>>(new Map());
   const landCallPeerPublicKeysRef = useRef<Map<string, string>>(new Map());
   const landCallPeersRef = useRef<Map<string, { peerAddress: string; chatId: string }>>(new Map());
   const landCallListenersRef = useRef<Set<(event: string, payload: unknown) => void>>(new Set());
@@ -2570,6 +2578,10 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     callId: string;
     peerAddress: string;
     chatId: string;
+  } | null>(null);
+  const lastAnnouncedLandGameRef = useRef<{
+    matchId: string;
+    peerAddress: string;
   } | null>(null);
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
@@ -2608,6 +2620,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [isSendingQort, setIsSendingQort] = useState(false);
   const [activeLandCallPeerAddress, setActiveLandCallPeerAddress] = useState<string | null>(null);
   const [landCallPresenceVersion, setLandCallPresenceVersion] = useState(0);
+  const [landGamePresenceVersion, setLandGamePresenceVersion] = useState(0);
   const [isAssetDevPanelOpen, setIsAssetDevPanelOpen] = useState(false);
   const [selectedDevRoomId, setSelectedDevRoomId] = useState<LandRoomId>(
     QORTAL_LAND_PARK_ROOM_ID
@@ -2835,6 +2848,42 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
   const isAddressInLandCall = useCallback((address: string): boolean => {
     const presence = landCallPresenceRef.current.get(address);
+    return Boolean(presence && presence.expiresAt > Date.now());
+  }, []);
+
+  const touchLandGamePresence = useCallback((
+    address: string,
+    peerAddress: string,
+    matchId: string,
+    roomId: LandRoomId,
+    ttlMs = LAND_CALL_STATUS_TTL_MS
+  ) => {
+    const normalized = address.trim();
+    if (!normalized || !matchId) return;
+    landGamePresenceRef.current.set(normalized, {
+      matchId,
+      peerAddress,
+      roomId,
+      expiresAt: Date.now() + ttlMs,
+    });
+    setLandGamePresenceVersion((value) => value + 1);
+  }, []);
+
+  const clearLandGamePresence = useCallback((addresses: string[], matchId?: string) => {
+    let changed = false;
+    for (const address of addresses) {
+      if (!address) continue;
+      const presence = landGamePresenceRef.current.get(address);
+      if (presence && (!matchId || presence.matchId === matchId)) {
+        landGamePresenceRef.current.delete(address);
+        changed = true;
+      }
+    }
+    if (changed) setLandGamePresenceVersion((value) => value + 1);
+  }, []);
+
+  const isAddressInLandGame = useCallback((address: string): boolean => {
+    const presence = landGamePresenceRef.current.get(address);
     return Boolean(presence && presence.expiresAt > Date.now());
   }, []);
 
@@ -3951,6 +4000,16 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         landCallPeerPublicKeysRef.current.set(fromAddress, payload.fromPublicKey);
       }
 
+      if (callType === 'game_status') {
+        touchLandGamePresence(fromAddress, toAddress, callId, roomId);
+        return;
+      }
+
+      if (callType === 'game_ended') {
+        clearLandGamePresence([fromAddress], callId);
+        return;
+      }
+
       if (callType === 'request') {
         if (toAddress !== myAddress || fromAddress === myAddress) return;
         const existingCallPeer = landCallPeersRef.current.get(callId);
@@ -3960,7 +4019,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           existingCallPeer.chatId === chatId;
         if (duplicateActiveRequest) return;
         const localBusy =
-          landVoiceCallStateRef.current !== 'idle' || Boolean(activeLandCallIdRef.current);
+          landVoiceCallStateRef.current !== 'idle' ||
+          Boolean(activeLandCallIdRef.current) ||
+          landGameActiveRef.current;
         if (localBusy) {
           void (async () => {
             const timestamp = Date.now();
@@ -4052,6 +4113,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     };
   }, [
     clearLandCallPresence,
+    clearLandGamePresence,
     emitLandCallEvent,
     groupId,
     isAddressInLandCall,
@@ -4060,6 +4122,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     sendLandCallSignal,
     signLandCallFields,
     touchLandCallPresence,
+    touchLandGamePresence,
   ]);
 
   useEffect(() => {
@@ -4174,6 +4237,62 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   ]);
 
   useEffect(() => {
+    const current = landGame.presence;
+    if (
+      !current ||
+      !myAddress ||
+      reticulumReady !== true ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0
+    ) {
+      return;
+    }
+
+    lastAnnouncedLandGameRef.current = current;
+    const sendStatus = () => {
+      touchLandGamePresence(
+        myAddress,
+        current.peerAddress,
+        current.matchId,
+        currentRoomRef.current
+      );
+      void sendLandCallSignal({
+        callType: 'game_status',
+        callId: current.matchId,
+        fromAddress: myAddress,
+        toAddress: current.peerAddress,
+        roomId: currentRoomRef.current,
+        timestamp: Date.now(),
+      });
+    };
+    sendStatus();
+    const interval = window.setInterval(sendStatus, LAND_CALL_STATUS_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(interval);
+      if (lastAnnouncedLandGameRef.current?.matchId !== current.matchId) return;
+      lastAnnouncedLandGameRef.current = null;
+      clearLandGamePresence([myAddress], current.matchId);
+      void sendLandCallSignal({
+        callType: 'game_ended',
+        callId: current.matchId,
+        fromAddress: myAddress,
+        toAddress: current.peerAddress,
+        roomId: currentRoomRef.current,
+        timestamp: Date.now(),
+      });
+    };
+  }, [
+    clearLandGamePresence,
+    groupId,
+    landGame.presence,
+    myAddress,
+    reticulumReady,
+    sendLandCallSignal,
+    touchLandGamePresence,
+  ]);
+
+  useEffect(() => {
     if (!containerRef.current || !myAddress) return;
     let destroyed = false;
     let resizeObserver: ResizeObserver | null = null;
@@ -4203,6 +4322,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         }>();
         private actionAnimations = new Map<string, { container: any; coins: any[]; text: any }>();
         private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
+        private gameIndicators = new Map<string, { container: any; badge: any; gamepad: any }>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
@@ -4407,6 +4527,14 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             console.warn('[QortalLand] Call indicator update failed', error);
             for (const [indicatorKey, indicatorObjects] of this.callIndicators.entries()) {
               this.removeCallIndicator(indicatorKey, indicatorObjects);
+            }
+          }
+          try {
+            this.updateGameIndicators();
+          } catch (error) {
+            console.warn('[QortalLand] Game indicator update failed', error);
+            for (const [indicatorKey, indicatorObjects] of this.gameIndicators.entries()) {
+              this.removeGameIndicator(indicatorKey, indicatorObjects);
             }
           }
         }
@@ -7056,6 +7184,102 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
         }
 
+        private createGameIndicator() {
+          const container = this.add.container(0, 0);
+          const badge = this.add.graphics();
+          badge.fillStyle(0x020714, 0.82);
+          badge.fillCircle(0, 0, 20);
+          badge.fillStyle(0x9d6cff, 0.95);
+          badge.fillCircle(0, 0, 15);
+          badge.lineStyle(2, 0xf8fbff, 0.86);
+          badge.strokeCircle(0, 0, 15);
+          badge.lineStyle(2, 0x9d6cff, 0.3);
+          badge.strokeCircle(0, 0, 22);
+          const gamepad = this.add.text(0, -1, '🎮', {
+            align: 'center',
+            color: '#ffffff',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '17px',
+          }).setOrigin(0.5);
+          container.add([badge, gamepad]);
+          container.setDepth(13000);
+          return { container, badge, gamepad };
+        }
+
+        private removeGameIndicator(
+          indicatorKey: string,
+          indicatorObjects = this.gameIndicators.get(indicatorKey)
+        ) {
+          if (!indicatorObjects) return;
+          this.gameIndicators.delete(indicatorKey);
+          try {
+            if (typeof indicatorObjects.container?.removeAll === 'function') {
+              indicatorObjects.container.removeAll(true);
+            }
+            if (indicatorObjects.container?.scene) {
+              indicatorObjects.container.destroy();
+            }
+          } catch (error) {
+            console.warn('[QortalLand] Failed to remove game indicator', error);
+          }
+        }
+
+        private updateGameIndicators() {
+          const now = Date.now();
+          for (const [address, presence] of landGamePresenceRef.current.entries()) {
+            if (presence.expiresAt > now) continue;
+            landGamePresenceRef.current.delete(address);
+          }
+
+          const activeIndicators = new Map<string, { avatar: any }>();
+          const localPresence = landGamePresenceRef.current.get(myAddress);
+          if (
+            this.localAvatar &&
+            localPresence &&
+            localPresence.expiresAt > now &&
+            localPresence.roomId === currentRoomRef.current
+          ) {
+            activeIndicators.set(`local:${myAddress}`, { avatar: this.localAvatar });
+          }
+
+          for (const [key, player] of remotePlayersRef.current.entries()) {
+            const presence = landGamePresenceRef.current.get(player.authorAddress);
+            const avatar = this.remotes.get(key);
+            if (
+              !presence ||
+              presence.expiresAt <= now ||
+              presence.roomId !== currentRoomRef.current ||
+              player.roomId !== currentRoomRef.current ||
+              !avatar
+            ) {
+              continue;
+            }
+            activeIndicators.set(`remote:${key}`, { avatar });
+          }
+
+          for (const [indicatorKey, indicatorObjects] of this.gameIndicators.entries()) {
+            if (activeIndicators.has(indicatorKey)) continue;
+            this.removeGameIndicator(indicatorKey, indicatorObjects);
+          }
+
+          for (const [indicatorKey, { avatar }] of activeIndicators.entries()) {
+            let indicatorObjects = this.gameIndicators.get(indicatorKey);
+            if (!indicatorObjects) {
+              indicatorObjects = this.createGameIndicator();
+              this.gameIndicators.set(indicatorKey, indicatorObjects);
+            }
+            const scale = Math.abs(avatar.scaleY || 1);
+            indicatorObjects.container.setVisible(true);
+            indicatorObjects.container.setPosition(
+              avatar.x + 36 * scale,
+              avatar.y - (LAND_CHARACTER_LABEL_OFFSET + 28) * scale
+            );
+            indicatorObjects.container.setScale(Math.max(0.78, Math.min(1.04, scale * 0.9)));
+            indicatorObjects.container.setAlpha(0.9 + Math.sin(this.time.now / 260) * 0.08);
+            indicatorObjects.container.setDepth(avatar.depth + 220);
+          }
+        }
+
         private updateLocalPlayer(delta: number) {
           if (!this.localAvatar) return;
           const step = (190 * delta) / 1000;
@@ -7465,6 +7689,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       landChatBubblesRef.current.clear();
       landActionAnimationsRef.current.clear();
       landCallPresenceRef.current.clear();
+      landGamePresenceRef.current.clear();
     };
   }, [myAddress]);
 
@@ -7483,13 +7708,26 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     reticulumReady === true &&
     !isSendingQort;
   void landCallPresenceVersion;
+  void landGamePresenceVersion;
   const actionTargetInCall = actionTarget ? isAddressInLandCall(actionTarget.authorAddress) : false;
+  const actionTargetInGame = actionTarget ? isAddressInLandGame(actionTarget.authorAddress) : false;
   const localLandCallActive = ['calling', 'ringing', 'connected'].includes(landVoiceCall.callState);
   const canStartLandCall =
     Boolean(actionTarget) &&
     reticulumReady === true &&
     landVoiceCall.callState === 'idle' &&
-    !actionTargetInCall;
+    !landGame.busy &&
+    !actionTargetInCall &&
+    !actionTargetInGame;
+  const canStartLandGame =
+    Boolean(actionTarget) &&
+    landGame.transportReady &&
+    !landGame.busy &&
+    reticulumReady === true &&
+    !localLandCallActive &&
+    !actionTargetInCall &&
+    !actionTargetInGame &&
+    actionTarget?.authorAddress !== myAddress;
   const activeLandCallPeerName = activeLandCallPeerAddress
     ? displayNameForAddress(activeLandCallPeerAddress, primaryNameCacheRef.current)
     : '';
@@ -8681,10 +8919,10 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               startIcon={<CallRoundedIcon fontSize="small" />}
               onClick={() => startLandCall(actionTarget)}
               sx={{
-                backgroundColor: actionTargetInCall ? alpha('#fff', 0.05) : alpha('#2cf8ff', 0.12),
-                border: `1px solid ${actionTargetInCall ? alpha('#fff', 0.1) : alpha('#2cf8ff', 0.3)}`,
+                backgroundColor: actionTargetInCall || actionTargetInGame ? alpha('#fff', 0.05) : alpha('#2cf8ff', 0.12),
+                border: `1px solid ${actionTargetInCall || actionTargetInGame ? alpha('#fff', 0.1) : alpha('#2cf8ff', 0.3)}`,
                 borderRadius: '8px',
-                color: actionTargetInCall ? alpha(theme.palette.text.secondary, 0.9) : '#9ffcff',
+                color: actionTargetInCall || actionTargetInGame ? alpha(theme.palette.text.secondary, 0.9) : '#9ffcff',
                 fontSize: 12,
                 fontWeight: 800,
                 justifyContent: 'flex-start',
@@ -8694,19 +8932,14 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                   backgroundColor: alpha('#2cf8ff', 0.2),
                 },
                 '&.Mui-disabled': {
-                  color: actionTargetInCall ? alpha('#ffcf5a', 0.72) : alpha('#fff', 0.32),
+                  color: actionTargetInCall || actionTargetInGame ? alpha('#ffcf5a', 0.72) : alpha('#fff', 0.32),
                 },
               }}
             >
-              {actionTargetInCall ? 'In a call' : 'Call'}
+              {actionTargetInCall ? 'In a call' : actionTargetInGame ? 'In a game' : 'Call'}
             </Button>
             <Button
-              disabled={
-                !landGame.transportReady ||
-                landGame.busy ||
-                reticulumReady !== true ||
-                actionTarget.authorAddress === myAddress
-              }
+              disabled={!canStartLandGame}
               fullWidth
               onClick={() => setShowGamePicker((value) => !value)}
               sx={{
@@ -8721,10 +8954,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                 textTransform: 'none',
               }}
             >
-              Play game
+              {actionTargetInGame ? 'In a game' : actionTargetInCall ? 'In a call' : 'Play game'}
             </Button>
             {showGamePicker && (
               <Button
+                disabled={!canStartLandGame}
                 fullWidth
                 onClick={() => {
                   const target = actionTarget;

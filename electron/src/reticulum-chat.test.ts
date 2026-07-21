@@ -9200,6 +9200,98 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('accepts compact QortalLand game presence and ended signals', async () => {
+    const player = createDmIdentity();
+    const opponent = createDmIdentity();
+    const emitted: Array<Record<string, unknown>> = [];
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (
+          messages: Array<Record<string, unknown>>
+        ) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) =>
+        address === player.address || address === opponent.address,
+    });
+
+    manager.setLocalGroupMemberships([{ groupId: 73, localAddress: player.address }]);
+    manager.subscribeGroup(73);
+    const sendResult = await manager.sendLandCall(73, {
+      callType: 'game_status',
+      callId: 'game-match-id',
+      fromAddress: player.address,
+      toAddress: opponent.address,
+      roomId: 'park',
+      timestamp: 100_000,
+    });
+    expect(sendResult.ok).toBe(true);
+    expect(sent).toContainEqual(expect.objectContaining({
+      k: 'lc',
+      y: 'g',
+      c: 'game-match-id',
+      a: player.address,
+      b: opponent.address,
+      u: 'park',
+    }));
+    manager.on('landCall', (payload) => {
+      emitted.push(payload as Record<string, unknown>);
+    });
+
+    manager.handleWire({
+      t: 'RCHAT',
+      k: 'lc',
+      g: 73,
+      y: 'g',
+      c: 'game-match-id',
+      a: player.address,
+      b: opponent.address,
+      u: 'park',
+      s: 100_000,
+    }, 'bbbbbbbbbbbbbbbb');
+    manager.handleWire({
+      t: 'RCHAT',
+      k: 'lc',
+      g: 73,
+      y: 'x',
+      c: 'game-match-id',
+      a: player.address,
+      b: opponent.address,
+      u: 'park',
+      s: 100_000,
+    }, 'bbbbbbbbbbbbbbbb');
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(emitted).toEqual([
+      expect.objectContaining({
+        callType: 'game_status',
+        callId: 'game-match-id',
+        fromAddress: player.address,
+        toAddress: opponent.address,
+        roomId: 'park',
+      }),
+      expect.objectContaining({
+        callType: 'game_ended',
+        callId: 'game-match-id',
+        fromAddress: player.address,
+        toAddress: opponent.address,
+        roomId: 'park',
+      }),
+    ]);
+    manager.close();
+  });
+
   it('requests missing QortalLand auth directly from the inbound relay peer without fanout', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const fanout: Array<Record<string, unknown>> = [];

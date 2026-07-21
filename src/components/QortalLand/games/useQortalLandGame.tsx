@@ -652,9 +652,22 @@ export function useQortalLandGame(options: Options) {
     </Dialog>
   ), [close, match, now, playColumn, resign, respond]);
 
+  const presence = useMemo(() => (
+    match && ['starting', 'active', 'finishing', 'reconnecting'].includes(match.phase)
+      ? {
+          matchId: match.matchId,
+          peerAddress:
+            match.requester.address === address
+              ? match.recipient.address
+              : match.requester.address,
+        }
+      : null
+  ), [address, match?.matchId, match?.phase, match?.recipient.address, match?.requester.address]);
+
   return {
     transportReady,
     busy: Boolean(match),
+    presence,
     challenge,
     modal,
   };

@@ -2074,6 +2074,10 @@ function encodeLandCallType(callType: string): string {
       return 's';
     case 'ended':
       return 'e';
+    case 'game_status':
+      return 'g';
+    case 'game_ended':
+      return 'x';
     default:
       return '';
   }
@@ -2095,6 +2099,10 @@ function decodeLandCallType(callType: unknown): string {
       return 'status';
     case 'e':
       return 'ended';
+    case 'g':
+      return 'game_status';
+    case 'x':
+      return 'game_ended';
     default:
       return value;
   }
@@ -8241,9 +8249,16 @@ export class ReticulumChatManager extends EventEmitter {
       !callId ||
       !fromAddress ||
       !toAddress ||
-      !['request', 'accept', 'reject', 'hangup', 'status', 'ended'].includes(
-        callType
-      )
+      ![
+        'request',
+        'accept',
+        'reject',
+        'hangup',
+        'status',
+        'ended',
+        'game_status',
+        'game_ended',
+      ].includes(callType)
     ) {
       return {
         ok: false,
@@ -13284,9 +13299,16 @@ export class ReticulumChatManager extends EventEmitter {
       !callId ||
       !fromAddress ||
       !toAddress ||
-      !['request', 'accept', 'reject', 'hangup', 'status', 'ended'].includes(
-        callType
-      ) ||
+      ![
+        'request',
+        'accept',
+        'reject',
+        'hangup',
+        'status',
+        'ended',
+        'game_status',
+        'game_ended',
+      ].includes(callType) ||
       !Number.isFinite(timestamp) ||
       timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS ||
       timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS
