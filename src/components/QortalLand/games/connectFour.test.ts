@@ -4,6 +4,7 @@ import {
   connectFourDropRow,
   createConnectFourState,
   deriveConnectFourStartingSeat,
+  getConnectFourWinningCells,
   hashConnectFourState,
   type ConnectFourSeat,
   type ConnectFourState,
@@ -34,6 +35,11 @@ describe('Connect Four rules', () => {
   ])('detects a %s win', (_name, columns) => {
     const state = play(columns as number[]);
     expect(state.outcome).toEqual({ type: 'win', winner: 1 });
+    expect(getConnectFourWinningCells(state)).toHaveLength(4);
+  });
+
+  it('returns no winning cells before a win', () => {
+    expect(getConnectFourWinningCells(play([0, 1, 2]))).toEqual([]);
   });
 
   it('rejects moves from the wrong seat', () => {

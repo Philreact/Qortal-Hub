@@ -1,16 +1,3 @@
-import SportsEsportsRoundedIcon from '@mui/icons-material/SportsEsportsRounded';
-import {
-  Alert,
-  Box,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  LinearProgress,
-  Typography,
-  alpha,
-} from '@mui/material';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyConnectFourMove,
@@ -19,33 +6,15 @@ import {
   deriveConnectFourStartingSeat,
   hashConnectFourState,
   type ConnectFourMove,
-  type ConnectFourOutcome,
   type ConnectFourSeat,
-  type ConnectFourState,
 } from './connectFour';
+import {
+  ConnectFourGameDialog,
+  type ConnectFourGameView,
+} from './ConnectFourGameDialog';
 
 type Target = { address: string; name?: string };
-type Phase = 'idle' | 'opening' | 'waiting' | 'incoming' | 'starting' | 'active' | 'finishing' | 'reconnecting' | 'finished';
-
-type Match = {
-  matchId: string;
-  requesterAddress: string;
-  recipientAddress: string;
-  requesterNonce: string;
-  recipientNonce?: string;
-  requesterName?: string;
-  recipientName?: string;
-  phase: Phase;
-  localSeat?: ConnectFourSeat;
-  startingSeat?: ConnectFourSeat;
-  state?: ConnectFourState;
-  stateHash?: string;
-  pendingMoveId?: string;
-  expiresAt?: number;
-  reconnectDeadline?: number;
-  outcome?: ConnectFourOutcome;
-  error?: string;
-};
+type Match = ConnectFourGameView;
 
 type Options = {
   address: string;
@@ -55,20 +24,14 @@ type Options = {
   roomId: string;
   enabled: boolean;
   onActiveChange?: (active: boolean) => void;
+  onPlayerSeen?: (address: string) => void;
+  resolvePlayerName?: (address: string) => string;
 };
 
 const randomHex = (bytes: number): string => {
   const value = new Uint8Array(bytes);
   crypto.getRandomValues(value);
   return Array.from(value, (part) => part.toString(16).padStart(2, '0')).join('');
-};
-
-const outcomeText = (outcome: ConnectFourOutcome | undefined, localSeat?: ConnectFourSeat): string => {
-  if (!outcome) return 'Game ended';
-  if (outcome.type === 'draw') return 'Draw';
-  if (outcome.type === 'abandoned') return 'Match abandoned';
-  if (outcome.type === 'protocol-error') return 'Match ended because the peers disagreed';
-  return outcome.winner === localSeat ? 'You won!' : 'You lost';
 };
 
 export const canSignQortalLandGameHandshake = (
@@ -133,7 +96,17 @@ export const canSignQortalLandGameHandshake = (
 };
 
 export function useQortalLandGame(options: Options) {
-  const { address, publicKey, groupId, sessionId, roomId, enabled, onActiveChange } = options;
+  const {
+    address,
+    publicKey,
+    groupId,
+    sessionId,
+    roomId,
+    enabled,
+    onActiveChange,
+    onPlayerSeen,
+    resolvePlayerName,
+  } = options;
   const [transportReady, setTransportReady] = useState(false);
   const [match, setMatch] = useState<Match | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -142,6 +115,7 @@ export function useQortalLandGame(options: Options) {
   const reconnectTimerRef = useRef<number | null>(null);
   const eventChainRef = useRef<Promise<void>>(Promise.resolve());
   const pendingCommandsRef = useRef(new Map<string, { type: string; matchId?: string }>());
+  const moveInFlightRef = useRef(false);
 
   useEffect(() => { matchRef.current = match; }, [match]);
   const replaceMatch = useCallback((next: Match | null) => {
@@ -189,7 +163,14 @@ export function useQortalLandGame(options: Options) {
         failProtocol('Move acknowledgement did not match local state');
         return;
       }
-      const acknowledged = { ...current, pendingMoveId: undefined };
+      const acknowledged = {
+        ...current,
+        pendingMoveId: undefined,
+        pendingSince: undefined,
+        lastRoundTripMs: current.pendingSince
+          ? Math.max(1, Date.now() - current.pendingSince)
+          : current.lastRoundTripMs,
+      };
       if (current.state.outcome) {
         send('SEND_GAME_MESSAGE', {
           matchId: current.matchId,
@@ -272,7 +253,12 @@ export function useQortalLandGame(options: Options) {
         matchId: current.matchId,
         message: { type: 'MOVE_ACK', messageId: move.messageId, ply: move.ply, stateHash: resultingHash },
       });
-      const nextMatch: Match = { ...current, state: next, stateHash: resultingHash };
+      const nextMatch: Match = {
+        ...current,
+        state: next,
+        stateHash: resultingHash,
+        moves: [...current.moves, move],
+      };
       if (next.outcome) {
         nextMatch.phase = 'finishing';
         nextMatch.outcome = next.outcome;
@@ -328,6 +314,7 @@ export function useQortalLandGame(options: Options) {
       return;
     }
     if (event.type === 'GAME_LINK_STATE') {
+      if (event.matchId && event.matchId !== matchRef.current?.matchId) return;
       const state = String(event.state || '');
       updateMatch((value) => value && ({
         ...value,
@@ -337,15 +324,21 @@ export function useQortalLandGame(options: Options) {
       return;
     }
     if (event.type === 'GAME_INVITE_RECEIVED') {
+      if (matchRef.current && event.matchId !== matchRef.current.matchId) return;
+      onPlayerSeen?.(String(event.requesterAddress));
       replaceMatch({
         matchId: String(event.matchId), requesterAddress: String(event.requesterAddress),
         recipientAddress: String(event.recipientAddress || address),
         requesterNonce: String(event.requesterNonce || ''), phase: 'incoming',
+        requesterName: resolvePlayerName?.(String(event.requesterAddress)),
+        recipientName: 'You',
+        moves: [],
         expiresAt: Number(event.expiresAt),
       });
       return;
     }
     if (event.type === 'GAME_STARTED' || event.type === 'GAME_SNAPSHOT') {
+      if (matchRef.current && event.matchId !== matchRef.current.matchId) return;
       const requesterAddress = String(event.requesterAddress);
       const recipientAddress = String(event.recipientAddress);
       const requesterNonce = String(event.requesterNonce);
@@ -357,6 +350,7 @@ export function useQortalLandGame(options: Options) {
       let state = createConnectFourState(startingSeat);
       let stateHash = await hashConnectFourState(state);
       const transcript = Array.isArray(event.transcript) ? event.transcript : [];
+      const moves: ConnectFourMove[] = [];
       for (const raw of transcript) {
         if (!raw || typeof raw !== 'object') throw new Error('Invalid snapshot move');
         const move = raw as ConnectFourMove;
@@ -371,6 +365,7 @@ export function useQortalLandGame(options: Options) {
         state = applyConnectFourMove(state, seat, move.column);
         stateHash = await hashConnectFourState(state);
         if (stateHash !== move.resultingStateHash) throw new Error('Snapshot transcript mismatch');
+        moves.push(move);
       }
       let pendingMoveId: string | undefined;
       const pendingRaw = event.pendingOutboundMove;
@@ -392,6 +387,7 @@ export function useQortalLandGame(options: Options) {
           throw new Error('Snapshot pending move hash mismatch');
         }
         pendingMoveId = pending.messageId;
+        moves.push(pending);
       }
       updateMatch((previous) => ({
         ...(previous || {} as Match), matchId: String(event.matchId), requesterAddress,
@@ -399,6 +395,8 @@ export function useQortalLandGame(options: Options) {
         localSeat,
         phase: pendingMoveId ? 'active' : state.outcome ? 'finished' : 'active', state, stateHash,
         pendingMoveId,
+        pendingSince: pendingMoveId ? Date.now() : undefined,
+        moves,
         outcome: state.outcome || undefined,
       }));
       return;
@@ -408,6 +406,7 @@ export function useQortalLandGame(options: Options) {
       return;
     }
     if (event.type === 'GAME_INVITE_RESPONSE') {
+      if (event.matchId !== matchRef.current?.matchId) return;
       if (event.accepted === true) {
         const recipientNonce = String(event.recipientNonce || '');
         if (!/^[0-9a-f]{32}$/i.test(recipientNonce)) {
@@ -429,6 +428,7 @@ export function useQortalLandGame(options: Options) {
       return;
     }
     if (event.type === 'GAME_ENDED') {
+      if (event.matchId !== matchRef.current?.matchId) return;
       const result = String(event.outcome || 'abandoned');
       updateMatch((value) => value && ({
         ...value,
@@ -437,7 +437,7 @@ export function useQortalLandGame(options: Options) {
         error: result === 'declined' || result === 'expired' ? result : value.error,
       }));
     }
-  }, [address, failProtocol, handleGameMessage, publicKey, replaceMatch, send, updateMatch]);
+  }, [address, failProtocol, handleGameMessage, onPlayerSeen, publicKey, replaceMatch, resolvePlayerName, send, updateMatch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -533,9 +533,18 @@ export function useQortalLandGame(options: Options) {
     if (!transportReady || matchRef.current || target.address === address) return;
     const matchId = crypto.randomUUID();
     const requesterNonce = randomHex(16);
-    replaceMatch({ matchId, requesterAddress: address, recipientAddress: target.address, requesterNonce, requesterName: 'You', recipientName: target.name, phase: 'opening' });
+    replaceMatch({
+      matchId,
+      requesterAddress: address,
+      recipientAddress: target.address,
+      requesterNonce,
+      requesterName: 'You',
+      recipientName: target.name || resolvePlayerName?.(target.address),
+      phase: 'opening',
+      moves: [],
+    });
     send('OPEN_GAME_LINK', { matchId, recipientAddress: target.address, requesterNonce });
-  }, [address, replaceMatch, send, transportReady]);
+  }, [address, replaceMatch, resolvePlayerName, send, transportReady]);
 
   const respond = useCallback((accepted: boolean) => {
     const current = matchRef.current;
@@ -554,9 +563,10 @@ export function useQortalLandGame(options: Options) {
     });
   }, [replaceMatch, send]);
 
-  const playColumn = useCallback(async (column: number) => {
+  const playColumn = useCallback(async (column: number): Promise<boolean> => {
     const current = matchRef.current;
-    if (!current?.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat || connectFourDropRow(current.state, column) === null) return;
+    if (moveInFlightRef.current || !current?.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat || connectFourDropRow(current.state, column) === null) return false;
+    moveInFlightRef.current = true;
     try {
       const previousStateHash = current.stateHash || await hashConnectFourState(current.state);
       const next = applyConnectFourMove(current.state, current.localSeat, column);
@@ -568,10 +578,16 @@ export function useQortalLandGame(options: Options) {
         state: next,
         stateHash: resultingStateHash,
         pendingMoveId: messageId,
+        pendingSince: Date.now(),
+        moves: [...current.moves, move],
       });
       send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'MOVE', ...move } });
+      return true;
     } catch (error) {
       failProtocol(error instanceof Error ? error.message : 'Move failed');
+      return false;
+    } finally {
+      moveInFlightRef.current = false;
     }
   }, [failProtocol, replaceMatch, send]);
 
@@ -586,83 +602,71 @@ export function useQortalLandGame(options: Options) {
   const close = useCallback(() => {
     const current = matchRef.current;
     if (current) {
-      try { send('CLOSE_GAME_LINK', { matchId: current.matchId }); } catch { /* done */ }
+      try {
+        send('CLOSE_GAME_LINK', {
+          matchId: current.matchId,
+          completed: current.phase === 'finished' && Boolean(current.state),
+        });
+      } catch { /* done */ }
     }
     replaceMatch(null);
   }, [replaceMatch, send]);
 
-  const modal = useMemo(() => (
-    <Dialog
-      open={Boolean(match)}
-      disableEscapeKeyDown={match?.phase === 'active' || match?.phase === 'finishing' || match?.phase === 'reconnecting'}
-      onClose={(_event, reason) => {
-        if (reason === 'backdropClick' || match?.phase === 'active' || match?.phase === 'finishing' || match?.phase === 'reconnecting') return;
-        close();
-      }}
-      maxWidth="sm"
-      fullWidth
-      PaperProps={{ sx: { background: 'linear-gradient(160deg,#10182a,#070914)', color: '#f8fbff', border: `1px solid ${alpha('#2cf8ff', 0.32)}` } }}
-    >
-      {match && (
-        <>
-          <DialogTitle sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-            <SportsEsportsRoundedIcon sx={{ color: '#2cf8ff' }} /> Connect Four
-          </DialogTitle>
-          <DialogContent>
-            {match.phase === 'opening' && <><Typography>Establishing private link…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
-            {match.phase === 'waiting' && <><Typography>Waiting for {match.recipientName || 'the other player'}…</Typography><Typography variant="caption">The invitation expires automatically.</Typography><LinearProgress sx={{ mt: 2 }} /></>}
-            {match.phase === 'incoming' && <>
-              <Typography variant="h6">Game invitation</Typography>
-              <Typography>{match.requesterName || match.requesterAddress} invited you to a private Connect Four game.</Typography>
-              <Typography variant="caption">Expires in {Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000))} seconds</Typography>
-            </>}
-            {match.phase === 'starting' && <><Typography>Authenticating the private match…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
-            {match.phase === 'reconnecting' && <Alert severity="warning">Connection interrupted. Reconnecting… {Math.max(0, Math.ceil(((match.reconnectDeadline || now) - now) / 1000))}s</Alert>}
-            {(match.phase === 'active' || match.phase === 'finishing' || match.phase === 'finished') && match.state && <>
-              <Typography sx={{ mb: 1.5, fontWeight: 700 }}>
-                {match.phase === 'finished' ? outcomeText(match.outcome, match.localSeat) : match.phase === 'finishing' ? 'Confirming final result…' : match.state.nextSeat === match.localSeat ? 'Your turn' : "Opponent's turn"}
-              </Typography>
-              <Box role="grid" aria-label="Connect Four board" sx={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 0.75, p: 1, bgcolor: '#1454a0', borderRadius: 2 }}>
-                {Array.from({ length: 42 }, (_, displayIndex) => {
-                  const displayRow = Math.floor(displayIndex / 7);
-                  const column = displayIndex % 7;
-                  const internalRow = 5 - displayRow;
-                  const cell = match.state?.board[internalRow * 7 + column] || 0;
-                  return <Button
-                    role="gridcell" aria-label={`Column ${column + 1}, row ${displayRow + 1}${cell ? `, ${cell === match.localSeat ? 'your piece' : 'opponent piece'}` : ', empty'}`}
-                    key={displayIndex} onClick={() => void playColumn(column)}
-                    disabled={match.phase !== 'active' || match.state?.nextSeat !== match.localSeat || Boolean(match.pendingMoveId) || cell !== 0}
-                    sx={{ minWidth: 0, aspectRatio: '1', p: 0, borderRadius: '50%', bgcolor: cell === 1 ? '#ffcf45' : cell === 2 ? '#ff4f6d' : '#091425', border: '2px solid rgba(255,255,255,.14)', '&.Mui-disabled': { bgcolor: cell === 1 ? '#ffcf45' : cell === 2 ? '#ff4f6d' : '#091425' } }}
-                  />;
-                })}
-              </Box>
-              {match.pendingMoveId && <Typography variant="caption">Confirming move…</Typography>}
-              {match.error && <Alert severity="error" sx={{ mt: 2 }}>{match.error}</Alert>}
-            </>}
-            {match.phase === 'finished' && !match.state && <Alert severity={match.error === 'declined' ? 'info' : 'warning'}>{match.error || 'Game ended'}</Alert>}
-          </DialogContent>
-          <DialogActions>
-            {match.phase === 'incoming' && <><Button onClick={() => respond(false)}>Decline</Button><Button variant="contained" onClick={() => respond(true)}>Accept</Button></>}
-            {(match.phase === 'opening' || match.phase === 'waiting') && <Button onClick={close}>Cancel</Button>}
-            {match.phase === 'active' && <Button color="error" onClick={resign}>Resign</Button>}
-            {match.phase === 'finished' && <Button onClick={close}>Close</Button>}
-          </DialogActions>
-        </>
-      )}
-    </Dialog>
-  ), [close, match, now, playColumn, resign, respond]);
+  const rematch = useCallback(() => {
+    const current = matchRef.current;
+    if (!current || current.phase !== 'finished' || !current.state || !transportReady) return;
+    const peerAddress = current.requesterAddress === address
+      ? current.recipientAddress
+      : current.requesterAddress;
+    const peerName = current.requesterAddress === address
+      ? current.recipientName
+      : current.requesterName;
+    try {
+      send('CLOSE_GAME_LINK', { matchId: current.matchId, completed: true });
+    } catch {
+      // The Python manager may already have released the completed match.
+    }
+    const matchId = crypto.randomUUID();
+    const requesterNonce = randomHex(16);
+    replaceMatch({
+      matchId,
+      requesterAddress: address,
+      recipientAddress: peerAddress,
+      requesterNonce,
+      requesterName: 'You',
+      recipientName: peerName || resolvePlayerName?.(peerAddress),
+      phase: 'opening',
+      moves: [],
+    });
+    send('OPEN_GAME_LINK', { matchId, recipientAddress: peerAddress, requesterNonce });
+  }, [address, replaceMatch, resolvePlayerName, send, transportReady]);
+
+  const modal = (
+    <ConnectFourGameDialog
+      address={address}
+      match={match}
+      now={now}
+      onClose={close}
+      onPlayColumn={playColumn}
+      onRematch={rematch}
+      onResign={resign}
+      onRespond={respond}
+      resolvePlayerName={resolvePlayerName}
+      transportReady={transportReady}
+    />
+  );
 
   const presence = useMemo(() => (
     match && ['starting', 'active', 'finishing', 'reconnecting'].includes(match.phase)
       ? {
           matchId: match.matchId,
           peerAddress:
-            match.requester.address === address
-              ? match.recipient.address
-              : match.requester.address,
+            match.requesterAddress === address
+              ? match.recipientAddress
+              : match.requesterAddress,
         }
       : null
-  ), [address, match?.matchId, match?.phase, match?.recipient.address, match?.requester.address]);
+  ), [address, match?.matchId, match?.phase, match?.recipientAddress, match?.requesterAddress]);
 
   return {
     transportReady,

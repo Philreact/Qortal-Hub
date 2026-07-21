@@ -250,6 +250,40 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         }
         self.assertEqual(manager._public_state(state)["pendingOutboundMove"], pending)
 
+    def test_completed_match_closes_without_blocking_an_immediate_rematch(self):
+        manager, events = self.make_manager()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "phase": "ending",
+            "outbound": True,
+            "requester": self.address,
+            "recipient": "Qopponent1111111111111111111111111111",
+        }
+
+        manager._cancel_or_close_match(match_id, completed=True)
+
+        self.assertNotIn(match_id, manager.matches)
+        self.assertEqual(manager.cooldowns, {})
+        self.assertEqual(events[-1], ("GAME_ENDED", {"matchId": match_id, "outcome": "completed"}))
+
+    def test_cancelled_invitation_keeps_the_pair_cooldown(self):
+        manager, _events = self.make_manager()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        opponent = "Qopponent1111111111111111111111111111"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "phase": "awaiting_response",
+            "outbound": True,
+            "requester": self.address,
+            "recipient": opponent,
+            "channel": None,
+        }
+
+        manager._cancel_or_close_match(match_id)
+
+        self.assertGreater(manager.cooldowns[opponent], time.time())
+
     def test_signed_accept_cannot_change_the_responder_identity(self):
         manager, _events = self.make_manager()
         match_id = "00112233-4455-6677-8899-aabbccddeeff"

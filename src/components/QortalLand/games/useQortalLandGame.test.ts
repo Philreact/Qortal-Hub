@@ -7,6 +7,7 @@ const match = {
   recipientAddress: 'Q-recipient',
   requesterNonce: '11'.repeat(16),
   phase: 'opening' as const,
+  moves: [],
 };
 
 describe('Qortal Land game handshake signing guard', () => {

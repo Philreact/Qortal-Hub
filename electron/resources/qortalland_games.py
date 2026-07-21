@@ -480,7 +480,10 @@ class QortalLandGameManager:
             elif command == "RESIGN_GAME":
                 self._send_active({**message, "message": {"type": "RESIGN", "messageId": str(uuid.uuid4())}})
             elif command == "CLOSE_GAME_LINK":
-                self._cancel_or_close_match(str(message.get("matchId") or ""))
+                self._cancel_or_close_match(
+                    str(message.get("matchId") or ""),
+                    completed=message.get("completed") is True,
+                )
             elif command == "GET_ACTIVE_MATCH":
                 snapshot = self._active_snapshot()
                 if snapshot:
@@ -1466,9 +1469,12 @@ class QortalLandGameManager:
             pass
         self._close_match(state["matchId"], "protocol_error")
 
-    def _cancel_or_close_match(self, match_id: str) -> None:
+    def _cancel_or_close_match(self, match_id: str, completed: bool = False) -> None:
         state = self.matches.get(match_id)
         if not state:
+            return
+        if completed and state.get("phase") == "ending":
+            self._close_match(match_id, "completed")
             return
         if state.get("phase") == "awaiting_response" and state.get("channel") is not None:
             try:
@@ -1650,7 +1656,15 @@ class QortalLandGameManager:
             if link is not None:
                 self.links_by_object.pop(id(link), None)
             peer = state.get("recipient") if state.get("outbound") else state.get("requester")
-            if peer:
+            if peer and reason in {
+                "declined",
+                "busy",
+                "superseded",
+                "expired",
+                "cancelled",
+                "establishment_timeout",
+                "link_establishment_failed",
+            }:
                 self.cooldowns[str(peer)] = time.time() + PAIR_COOLDOWN
             for challenge_id, challenge in list(self.signature_challenges.items()):
                 if challenge.get("matchId") == match_id:

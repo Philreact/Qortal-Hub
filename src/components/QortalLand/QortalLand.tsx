@@ -2671,16 +2671,6 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       localStateRef.current = { ...localStateRef.current, movement: 'idle' };
     }
   }, []);
-  const landGame = useQortalLandGame({
-    address: myAddress,
-    publicKey: userInfo?.publicKey,
-    groupId,
-    sessionId,
-    roomId: landGameRoomId,
-    enabled: reticulumReady === true,
-    onActiveChange: handleLandGameActiveChange,
-  });
-
   useEffect(() => {
     if (!actionTarget) setShowGamePicker(false);
   }, [actionTarget]);
@@ -3314,6 +3304,26 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         });
     }, 120);
   }, []);
+
+  const resolveLandPlayerName = useCallback((playerAddress: string): string => {
+    return displayNameForAddress(playerAddress, primaryNameCacheRef.current);
+  }, []);
+
+  const handleLandGamePlayerSeen = useCallback((playerAddress: string) => {
+    queuePrimaryNameLookups([playerAddress]);
+  }, [queuePrimaryNameLookups]);
+
+  const landGame = useQortalLandGame({
+    address: myAddress,
+    publicKey: userInfo?.publicKey,
+    groupId,
+    sessionId,
+    roomId: landGameRoomId,
+    enabled: reticulumReady === true,
+    onActiveChange: handleLandGameActiveChange,
+    onPlayerSeen: handleLandGamePlayerSeen,
+    resolvePlayerName: resolveLandPlayerName,
+  });
 
   const wakeLandChatPanel = useCallback(() => {
     setIsChatDimmed(false);

@@ -95,6 +95,37 @@ const hasConnectFourLine = (
   return count >= 4;
 };
 
+export const getConnectFourWinningCells = (
+  state: ConnectFourState
+): number[] => {
+  const directions = [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [1, -1],
+  ] as const;
+  for (let row = 0; row < CONNECT_FOUR_ROWS; row += 1) {
+    for (let column = 0; column < CONNECT_FOUR_COLUMNS; column += 1) {
+      const seat = getConnectFourCell(state, column, row);
+      if (!seat) continue;
+      for (const [dx, dy] of directions) {
+        const cells: number[] = [];
+        for (let offset = 0; offset < 4; offset += 1) {
+          const x = column + dx * offset;
+          const y = row + dy * offset;
+          if (!isBoardCoordinate(x, y) || getConnectFourCell(state, x, y) !== seat) {
+            cells.length = 0;
+            break;
+          }
+          cells.push(connectFourCellIndex(x, y));
+        }
+        if (cells.length === 4) return cells;
+      }
+    }
+  }
+  return [];
+};
+
 export const applyConnectFourMove = (
   state: ConnectFourState,
   seat: ConnectFourSeat,
