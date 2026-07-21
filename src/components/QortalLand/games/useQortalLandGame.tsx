@@ -169,10 +169,14 @@ export function useQortalLandGame(options: Options) {
     const current = matchRef.current;
     if (!current) return;
     try {
-      send('SEND_GAME_MESSAGE', {
-        matchId: current.matchId,
-        message: { type: 'PROTOCOL_ERROR', messageId: crypto.randomUUID(), reason },
-      });
+      if (['active', 'finishing', 'reconnecting'].includes(current.phase)) {
+        send('SEND_GAME_MESSAGE', {
+          matchId: current.matchId,
+          message: { type: 'PROTOCOL_ERROR', messageId: crypto.randomUUID(), reason },
+        });
+      } else {
+        send('CLOSE_GAME_LINK', { matchId: current.matchId });
+      }
     } catch { /* link may already be gone */ }
     updateMatch((value) => value && ({ ...value, phase: 'finished', outcome: { type: 'protocol-error' }, error: reason }));
   }, [send, updateMatch]);
@@ -403,8 +407,25 @@ export function useQortalLandGame(options: Options) {
       await handleGameMessage(event.message as Record<string, unknown>);
       return;
     }
-    if (event.type === 'GAME_INVITE_RESPONSE' && event.accepted === false) {
-      updateMatch((value) => value && ({ ...value, phase: 'finished', error: `Invitation ${String(event.reason || 'declined')}` }));
+    if (event.type === 'GAME_INVITE_RESPONSE') {
+      if (event.accepted === true) {
+        const recipientNonce = String(event.recipientNonce || '');
+        if (!/^[0-9a-f]{32}$/i.test(recipientNonce)) {
+          failProtocol('Accepted invitation did not include a valid recipient nonce');
+          return;
+        }
+        updateMatch((value) => value && ({
+          ...value,
+          recipientNonce,
+          phase: 'starting',
+        }));
+        return;
+      }
+      updateMatch((value) => value && ({
+        ...value,
+        phase: 'finished',
+        error: `Invitation ${String(event.reason || 'declined')}`,
+      }));
       return;
     }
     if (event.type === 'GAME_ENDED') {

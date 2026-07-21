@@ -1210,7 +1210,14 @@ class QortalLandGameManager:
                 "linkId": state["linkId"],
                 "createdAt": int(time.time() * 1000),
             }
-            self.send_event("GAME_INVITE_RESPONSE", {"matchId": state["matchId"], "accepted": True})
+            self.send_event(
+                "GAME_INVITE_RESPONSE",
+                {
+                    "matchId": state["matchId"],
+                    "accepted": True,
+                    "recipientNonce": state["recipientNonce"],
+                },
+            )
             self._require_signature(state, fields_out["type"], fields_out)
         elif kind == "QORTAL_LAND_GAME_DECLINE":
             if (

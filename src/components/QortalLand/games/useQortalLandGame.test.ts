@@ -59,4 +59,27 @@ describe('Qortal Land game handshake signing guard', () => {
       reason: 'busy',
     }, match, match.requesterAddress, 'public-key')).toBe(false);
   });
+
+  it('signs confirmation only after the verified recipient nonce is known', () => {
+    const fields = {
+      type: 'QORTAL_LAND_GAME_CONFIRM',
+      matchId: match.matchId,
+      requesterAddress: match.requesterAddress,
+      requesterNonce: match.requesterNonce,
+      recipientNonce: '22'.repeat(16),
+      signerPublicKey: 'public-key',
+    };
+    expect(canSignQortalLandGameHandshake(
+      fields,
+      match,
+      match.requesterAddress,
+      'public-key'
+    )).toBe(false);
+    expect(canSignQortalLandGameHandshake(
+      fields,
+      { ...match, recipientNonce: fields.recipientNonce },
+      match.requesterAddress,
+      'public-key'
+    )).toBe(true);
+  });
 });
