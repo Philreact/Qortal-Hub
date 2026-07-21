@@ -1565,7 +1565,7 @@ export const MessageItemComponent = ({
               }}
             >
               <WrapperUserAction
-                disabled={myAddress === message?.sender}
+                disabled={!reticulumChatEnabled && myAddress === message?.sender}
                 address={message?.sender}
                 name={message?.senderName}
                 reticulumMenu={reticulumChatEnabled}
