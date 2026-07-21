@@ -1313,6 +1313,22 @@ export type ReticulumChatWire =
     }
   | {
       t: 'RCHAT';
+      k: 'la';
+      g: number;
+      id: string;
+      y: string;
+      a: string;
+      s: string;
+      f: string;
+      q: number;
+      amt?: number;
+      ts: number;
+      z: string;
+      o?: string;
+      h?: number;
+    }
+  | {
+      t: 'RCHAT';
       k: 'land_action';
       g: number;
       id: string;
@@ -1394,6 +1410,12 @@ const RETICULUM_CHAT_CONTROL_MAX_AGE_MS = 2 * 60_000;
 const RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS = 30_000;
 const RETICULUM_CHAT_TYPING_TTL_MS = 8_000;
 const RETICULUM_CHAT_TYPING_REFRESH_MS = 3_000;
+const RETICULUM_LAND_SOCIAL_ACTION_MIN_INTERVAL_MS = 1_200;
+const RETICULUM_LAND_SOCIAL_ACTION_RATE_WINDOW_MS = 10_000;
+const RETICULUM_LAND_SOCIAL_ACTION_RATE_MAX = 5;
+const RETICULUM_LAND_SOCIAL_ACTION_RATE_KEYS_MAX = 2_048;
+const RETICULUM_LAND_ACTION_PENDING_TTL_MS = 5_000;
+const RETICULUM_LAND_ACTION_PENDING_MAX = 128;
 const isDisabledTyping = false;
 export const isDisabledRelayCache = true;
 const RETICULUM_CHAT_PROTOCOL_VERSION = 3;
@@ -2051,6 +2073,147 @@ export function buildReticulumLandStateSignedFields(input: {
     x: input.x,
     y: input.y,
   };
+}
+
+export const RETICULUM_LAND_SOCIAL_ACTIONS = [
+  'buzz',
+  'love',
+  'devil',
+  'angel',
+  'rain',
+  'sunshine',
+] as const;
+
+export type ReticulumLandSocialAction =
+  (typeof RETICULUM_LAND_SOCIAL_ACTIONS)[number];
+
+function isReticulumLandSocialAction(
+  value: string
+): value is ReticulumLandSocialAction {
+  return (RETICULUM_LAND_SOCIAL_ACTIONS as readonly string[]).includes(value);
+}
+
+export function buildReticulumLandActionSignedFields(input: {
+  groupId: number;
+  actionId: string;
+  actionType: string;
+  fromAddress: string;
+  sourceSessionId: string;
+  sequence: number;
+  toAddress: string;
+  targetSessionId: string;
+  amount?: number;
+  roomId?: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    actionId: input.actionId,
+    actionType: input.actionType,
+    amount: input.amount ?? 0,
+    fromAddress: input.fromAddress,
+    groupId: input.groupId,
+    roomId: input.roomId ?? '',
+    sequence: input.sequence,
+    sourceSessionId: input.sourceSessionId,
+    targetSessionId: input.targetSessionId,
+    timestamp: input.timestamp,
+    toAddress: input.toAddress,
+    type: 'QORTAL_LAND_ACTION',
+  };
+}
+
+function encodeLandActionType(actionType: string): string {
+  switch (actionType) {
+    case 'qort_received':
+      return 'q';
+    case 'buzz':
+      return 'b';
+    case 'love':
+      return 'l';
+    case 'devil':
+      return 'd';
+    case 'angel':
+      return 'a';
+    case 'rain':
+      return 'r';
+    case 'sunshine':
+      return 's';
+    default:
+      return '';
+  }
+}
+
+function decodeLandActionType(actionType: unknown): string {
+  const value =
+    typeof actionType === 'string' ? actionType.trim().toLowerCase() : '';
+  switch (value) {
+    case 'q':
+      return 'qort_received';
+    case 'b':
+      return 'buzz';
+    case 'l':
+      return 'love';
+    case 'd':
+      return 'devil';
+    case 'a':
+      return 'angel';
+    case 'r':
+      return 'rain';
+    case 's':
+      return 'sunshine';
+    default:
+      return '';
+  }
+}
+
+function compactLandSessionIdForWire(sessionId: string): string {
+  const normalized = sessionId.trim().toLowerCase();
+  if (!/^[0-9a-f]{24}$/.test(normalized)) return sessionId;
+  return Buffer.from(normalized, 'hex')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function expandLandSessionIdFromWire(sessionId: unknown): string {
+  const value = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!/^[A-Za-z0-9_-]{16}$/.test(value)) return value;
+  try {
+    const bytes = Buffer.from(
+      `${value.replace(/-/g, '+').replace(/_/g, '/')}${'='.repeat((4 - (value.length % 4)) % 4)}`,
+      'base64'
+    );
+    return bytes.length === 12 ? bytes.toString('hex') : value;
+  } catch {
+    return value;
+  }
+}
+
+function compactLandActionIdForWire(actionId: string): string {
+  const hex = actionId.replace(/-/g, '').toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(hex)) return actionId;
+  return Buffer.from(hex, 'hex')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function expandLandActionIdFromWire(actionId: unknown): string {
+  const value = typeof actionId === 'string' ? actionId.trim() : '';
+  if (!/^[A-Za-z0-9_-]{22}$/.test(value)) return value;
+  try {
+    const bytes = Buffer.from(
+      `${value.replace(/-/g, '+').replace(/_/g, '/')}${'='.repeat((4 - (value.length % 4)) % 4)}`,
+      'base64'
+    );
+    if (bytes.length !== 16) return value;
+    const hex = bytes.toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  } catch {
+    return value;
+  }
 }
 
 function buildLandDirectCallChatId(addressA: string, addressB: string): string {
@@ -5248,6 +5411,18 @@ export class ReticulumChatManager extends EventEmitter {
   private localLandAuthGroupGenerations = new Map<number, number>();
   private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
   private latestVerifiedLandStateSequences = new Map<string, number>();
+  private latestVerifiedLandActionSequences = new Map<string, number>();
+  private localLandSocialActionTimes = new Map<string, number[]>();
+  private remoteLandSocialActionTimes = new Map<string, number[]>();
+  private pendingLandActions = new Map<
+    string,
+    {
+      groupId: number;
+      wire: Extract<ReticulumChatWire, { k: 'la' }>;
+      peerHash: string;
+      expiresAt: number;
+    }
+  >();
   private lastLandAuthSessionPruneAt = 0;
   private recentLandAuthRequests = new Map<string, number>();
   private recentLandAuthRequestResponses = new Map<string, number>();
@@ -6134,6 +6309,10 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearLocalLandAuthSessions();
     this.landAuthSessions.clear();
     this.latestVerifiedLandStateSequences.clear();
+    this.latestVerifiedLandActionSequences.clear();
+    this.localLandSocialActionTimes.clear();
+    this.remoteLandSocialActionTimes.clear();
+    this.pendingLandActions.clear();
     this.lastLandAuthSessionPruneAt = 0;
     this.recentLandAuthRequests.clear();
     this.recentLandAuthRequestResponses.clear();
@@ -7482,6 +7661,9 @@ export class ReticulumChatManager extends EventEmitter {
       (session) => session.groupId === groupId,
       groupId
     );
+    for (const [key, pending] of this.pendingLandActions) {
+      if (pending.groupId === groupId) this.pendingLandActions.delete(key);
+    }
     if (this.subscribedGroups.size === 0) {
       this.stopLocalNotificationWatcher();
       this.stopSubscriptionRefreshTimer();
@@ -7784,6 +7966,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (session.expiresAt <= now) {
         this.landAuthSessions.delete(key);
         this.latestVerifiedLandStateSequences.delete(key);
+        this.latestVerifiedLandActionSequences.delete(key);
         sessionsChanged = true;
       }
     }
@@ -7796,6 +7979,7 @@ export class ReticulumChatManager extends EventEmitter {
       for (const [key] of oldest) {
         this.landAuthSessions.delete(key);
         this.latestVerifiedLandStateSequences.delete(key);
+        this.latestVerifiedLandActionSequences.delete(key);
         sessionsChanged = true;
       }
     }
@@ -7852,6 +8036,7 @@ export class ReticulumChatManager extends EventEmitter {
     const existing = this.landAuthSessions.get(sessionKey);
     if (existing && existing.ephemeralPublicKey !== ephemeralPublicKey) {
       this.latestVerifiedLandStateSequences.delete(sessionKey);
+      this.latestVerifiedLandActionSequences.delete(sessionKey);
     }
     this.landAuthSessions.set(sessionKey, {
       groupId,
@@ -8115,12 +8300,41 @@ export class ReticulumChatManager extends EventEmitter {
     void this.sendLocalGroupLiveControl(wire);
   }
 
+  private consumeLandSocialActionRate(
+    map: Map<string, number[]>,
+    key: string
+  ): boolean {
+    const now = this.now();
+    const recent = (map.get(key) ?? []).filter(
+      (timestamp) => timestamp > now - RETICULUM_LAND_SOCIAL_ACTION_RATE_WINDOW_MS
+    );
+    if (
+      recent.length >= RETICULUM_LAND_SOCIAL_ACTION_RATE_MAX ||
+      (recent.length > 0 &&
+        now - recent[recent.length - 1] <
+          RETICULUM_LAND_SOCIAL_ACTION_MIN_INTERVAL_MS)
+    ) {
+      map.set(key, recent);
+      return false;
+    }
+    recent.push(now);
+    map.set(key, recent);
+    while (map.size > RETICULUM_LAND_SOCIAL_ACTION_RATE_KEYS_MAX) {
+      const oldest = map.keys().next().value as string | undefined;
+      if (!oldest) break;
+      map.delete(oldest);
+    }
+    return true;
+  }
+
   async sendLandAction(
     groupId: number,
     action: {
       actionId?: unknown;
       actionType?: unknown;
       fromAddress?: unknown;
+      sourceSessionId?: unknown;
+      sequence?: unknown;
       toAddress?: unknown;
       targetSessionId?: unknown;
       amount?: unknown;
@@ -8128,45 +8342,64 @@ export class ReticulumChatManager extends EventEmitter {
     }
   ): Promise<ReticulumSendResult> {
     this.assertLocalGroupMember(groupId);
-    if (!this.subscribedGroups.has(groupId)) {
-      this.subscribeGroup(groupId);
-    }
+    if (!this.subscribedGroups.has(groupId)) this.subscribeGroup(groupId);
     const actionId =
-      typeof action.actionId === 'string'
-        ? action.actionId.trim().slice(0, 64)
-        : '';
+      typeof action.actionId === 'string' ? action.actionId.trim() : '';
     const actionType =
-      typeof action.actionType === 'string'
-        ? action.actionType.trim().slice(0, 32)
-        : '';
+      typeof action.actionType === 'string' ? action.actionType.trim() : '';
     const fromAddress =
       typeof action.fromAddress === 'string' ? action.fromAddress.trim() : '';
+    const sourceSessionId =
+      typeof action.sourceSessionId === 'string'
+        ? action.sourceSessionId.trim().slice(0, 24)
+        : '';
+    const sequence = Math.floor(Number(action.sequence) || 0);
     const toAddress =
       typeof action.toAddress === 'string' ? action.toAddress.trim() : '';
     const targetSessionId =
       typeof action.targetSessionId === 'string'
         ? action.targetSessionId.trim().slice(0, 24)
         : '';
-    const amount = Math.max(
-      0,
-      Math.min(1_000_000_000, Number(action.amount) || 0)
-    );
+    const numericAmount = Number(action.amount) || 0;
+    const amount = Math.max(0, Math.min(1_000_000_000, numericAmount));
     const roomId =
       typeof action.roomId === 'string'
         ? action.roomId.trim().toLowerCase().slice(0, 16)
         : '';
+    const social = isReticulumLandSocialAction(actionType);
+    const expectedAddress = this.localGroupAddresses.get(groupId);
     if (
-      !actionId ||
-      actionType !== 'qort_received' ||
+      !/^[a-zA-Z0-9_-]{8,64}$/.test(actionId) ||
+      (!social && actionType !== 'qort_received') ||
       !fromAddress ||
+      (expectedAddress && expectedAddress !== fromAddress) ||
+      !sourceSessionId ||
+      !Number.isSafeInteger(sequence) ||
+      sequence <= 0 ||
       !toAddress ||
+      toAddress === fromAddress ||
       !targetSessionId ||
-      amount <= 0
+      (actionType === 'qort_received'
+        ? !Number.isFinite(numericAmount) || amount <= 0
+        : numericAmount !== 0)
     ) {
       return {
         ok: false,
         reason: 'send-command-failed',
         error: 'Invalid QortalLand action',
+      };
+    }
+    if (
+      social &&
+      !this.consumeLandSocialActionRate(
+        this.localLandSocialActionTimes,
+        `${groupId}:${fromAddress}`
+      )
+    ) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Please wait before sending another effect',
       };
     }
     const [fromIsMember, toIsMember] = await Promise.all([
@@ -8180,18 +8413,79 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'QortalLand action participant is not a group member',
       };
     }
-    const wire: Extract<ReticulumChatWire, { k: 'land_action' }> = {
+    if (actionType === 'qort_received') {
+      const wire: Extract<ReticulumChatWire, { k: 'land_action' }> = {
+        t: 'RCHAT',
+        k: 'land_action',
+        g: groupId,
+        id: actionId,
+        at: actionType,
+        a: fromAddress,
+        to: toAddress,
+        s: targetSessionId,
+        amt: Number(amount.toFixed(8)),
+        ...(roomId ? { u: roomId } : {}),
+        ts: this.now(),
+      };
+      if (!wireFitsReticulum(wire)) {
+        return {
+          ok: false,
+          reason: 'send-command-failed',
+          error: 'QortalLand action exceeds Reticulum wire size',
+        };
+      }
+      const result = await this.sendLocalGroupLiveControl(wire);
+      if (result.ok === true) this.applyLegacyLandAction(groupId, wire);
+      return result;
+    }
+    await this.ensureLocalLandAuth(groupId, fromAddress, sourceSessionId);
+    const authKey = this.landAuthSessionKey(
+      groupId,
+      fromAddress,
+      sourceSessionId
+    );
+    const localSession = this.localLandAuthSessions.get(authKey);
+    if (!localSession) {
+      throw new Error('QortalLand action signing unavailable');
+    }
+    const timestamp = this.now();
+    const normalizedAmount =
+      0;
+    const compactActionId = compactLandActionIdForWire(actionId);
+    const signature = signEd25519Detached(
+      new Uint8Array(
+        canonicalizeForSigning(
+          buildReticulumLandActionSignedFields({
+            groupId,
+            actionId: compactActionId,
+            actionType,
+            fromAddress,
+            sourceSessionId,
+            sequence,
+            toAddress,
+            targetSessionId,
+            amount: normalizedAmount,
+            roomId: '',
+            timestamp,
+          })
+        )
+      ),
+      localSession.privateKey
+    );
+    localSession.lastUsedAt = timestamp;
+    this.scheduleLocalLandAuthSessionExpiry(authKey);
+    const wire: Extract<ReticulumChatWire, { k: 'la' }> = {
       t: 'RCHAT',
-      k: 'land_action',
+      k: 'la',
       g: groupId,
-      id: actionId,
-      at: actionType,
+      id: compactActionId,
+      y: encodeLandActionType(actionType),
       a: fromAddress,
-      to: toAddress,
-      s: targetSessionId,
-      amt: Number(amount.toFixed(8)),
-      ...(roomId ? { u: roomId } : {}),
-      ts: this.now(),
+      f: compactLandSessionIdForWire(sourceSessionId),
+      q: sequence,
+      s: compactLandSessionIdForWire(targetSessionId),
+      ts: timestamp,
+      z: base58Encode(signature),
     };
     if (!wireFitsReticulum(wire)) {
       return {
@@ -8201,9 +8495,7 @@ export class ReticulumChatManager extends EventEmitter {
       };
     }
     const result = await this.sendLocalGroupLiveControl(wire);
-    if (result.ok === true) {
-      this.applyLandAction(groupId, wire);
-    }
+    if (result.ok === true) this.applyLandAction(groupId, wire);
     return result;
   }
 
@@ -9455,6 +9747,7 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'event_batch' &&
       kind !== 'land_chat_hint' &&
       kind !== 'land_auth' &&
+      kind !== 'la' &&
       kind !== 'land_action' &&
       kind !== 'land_call' &&
       kind !== 'lc'
@@ -11117,6 +11410,28 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
+      case 'la': {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        void this.forwardLandActionToInterestRoutes(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'la' }>,
+          peerHash
+        );
+        if (
+          !this.localGroupIds.has(groupId) ||
+          !this.subscribedGroups.has(groupId)
+        )
+          return;
+        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
+          return;
+        void this.handleLandActionWire(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'la' }>,
+          peerHash
+        );
+        return;
+      }
       case 'land_action': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
@@ -11132,7 +11447,7 @@ export class ReticulumChatManager extends EventEmitter {
           return;
         if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
           return;
-        void this.handleLandActionWire(
+        void this.handleLegacyLandActionWire(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_action' }>
         );
@@ -12871,6 +13186,7 @@ export class ReticulumChatManager extends EventEmitter {
       | Extract<ReticulumChatWire, { k: 'land_auth_req' }>
       | Extract<ReticulumChatWire, { k: 'land_state' }>
       | Extract<ReticulumChatWire, { k: 'land_chat_hint' }>
+      | Extract<ReticulumChatWire, { k: 'la' }>
       | Extract<ReticulumChatWire, { k: 'land_action' }>
       | Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>
   ): Promise<ReticulumSendResult> {
@@ -12967,6 +13283,7 @@ export class ReticulumChatManager extends EventEmitter {
     loggerLog(
       `[ReticulumChat] land_auth_cached group=${groupId} author=${authorAddress} session=${sessionId} ttlMs=${RETICULUM_LAND_AUTH_SESSION_TTL_MS}`
     );
+    this.replayPendingLandActions(groupId, authorAddress, sessionId);
     await this.forwardLandAuthToInterestRoutes(groupId, wire, peerHash);
   }
 
@@ -13231,6 +13548,177 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async handleLandActionWire(
     groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'la' }>,
+    peerHash = ''
+  ): Promise<void> {
+    const actionId = typeof wire.id === 'string' ? wire.id.trim() : '';
+    const actionType = decodeLandActionType(wire.y);
+    const fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const sourceSessionId = expandLandSessionIdFromWire(wire.f);
+    const sequence = Math.floor(Number(wire.q) || 0);
+    const targetSessionId = expandLandSessionIdFromWire(wire.s);
+    const toAddress = this.resolveLandActionTargetAddress(
+      groupId,
+      targetSessionId
+    );
+    const amount = Number(wire.amt) || 0;
+    const timestamp = Number(wire.ts);
+    const social = isReticulumLandSocialAction(actionType);
+    if (
+      !/^[a-zA-Z0-9_-]{8,64}$/.test(actionId) ||
+      (!social && actionType !== 'qort_received') ||
+      !fromAddress ||
+      !sourceSessionId ||
+      sourceSessionId.length > 24 ||
+      !Number.isSafeInteger(sequence) ||
+      sequence <= 0 ||
+      !toAddress ||
+      toAddress === fromAddress ||
+      !targetSessionId ||
+      targetSessionId.length > 24 ||
+      (actionType === 'qort_received'
+        ? !Number.isFinite(amount) || amount <= 0
+        : amount !== 0) ||
+      !Number.isFinite(timestamp) ||
+      timestamp > this.now() + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS ||
+      timestamp < this.now() - RETICULUM_CHAT_CONTROL_MAX_AGE_MS
+    ) {
+      return;
+    }
+    const session = this.getValidLandAuthSession(
+      groupId,
+      fromAddress,
+      sourceSessionId
+    );
+    if (!session) {
+      this.queuePendingLandAction(
+        groupId,
+        fromAddress,
+        sourceSessionId,
+        wire,
+        peerHash
+      );
+      this.requestLandAuthForState(
+        groupId,
+        fromAddress,
+        sourceSessionId,
+        peerHash
+      );
+      return;
+    }
+    let signatureValid = false;
+    try {
+      const signature = new Uint8Array(base58Decode(wire.z));
+      signatureValid =
+        signature.length === ED25519_SIGNATURE_BYTES &&
+        verifyEd25519Detached(
+          new Uint8Array(
+            canonicalizeForSigning(
+              buildReticulumLandActionSignedFields({
+                groupId,
+                actionId,
+                actionType,
+                fromAddress,
+                sourceSessionId,
+                sequence,
+                toAddress,
+                targetSessionId,
+                amount,
+                roomId: '',
+                timestamp,
+              })
+            )
+          ),
+          signature,
+          session.ephemeralPublicKeyBytes
+        );
+    } catch {
+      signatureValid = false;
+    }
+    if (!signatureValid) {
+      loggerWarn(
+        `[ReticulumChat] land_action_rejected group=${groupId} action=${actionType} reason=bad_signature`
+      );
+      return;
+    }
+    const sequenceKey = this.landAuthSessionKey(
+      groupId,
+      fromAddress,
+      sourceSessionId
+    );
+    const latestSequence =
+      this.latestVerifiedLandActionSequences.get(sequenceKey);
+    if (typeof latestSequence === 'number' && sequence <= latestSequence)
+      return;
+    this.latestVerifiedLandActionSequences.set(sequenceKey, sequence);
+    if (
+      social &&
+      !this.consumeLandSocialActionRate(
+        this.remoteLandSocialActionTimes,
+        `${groupId}:${fromAddress}`
+      )
+    ) {
+      return;
+    }
+    const toIsMember = await this.isValidatedGroupMember(groupId, toAddress);
+    if (!toIsMember) {
+      loggerWarn(
+        `[ReticulumChat] land_action_rejected group=${groupId} action=${actionType} reason=participant_not_group_member`
+      );
+      return;
+    }
+    this.applyLandAction(groupId, wire);
+  }
+
+  private queuePendingLandAction(
+    groupId: number,
+    fromAddress: string,
+    sourceSessionId: string,
+    wire: Extract<ReticulumChatWire, { k: 'la' }>,
+    peerHash: string
+  ): void {
+    const now = this.now();
+    for (const [key, pending] of this.pendingLandActions) {
+      if (pending.expiresAt > now) continue;
+      this.pendingLandActions.delete(key);
+    }
+    const key = `${groupId}:${fromAddress}:${sourceSessionId}:${wire.id}`;
+    this.pendingLandActions.set(key, {
+      groupId,
+      wire,
+      peerHash,
+      expiresAt: now + RETICULUM_LAND_ACTION_PENDING_TTL_MS,
+    });
+    while (this.pendingLandActions.size > RETICULUM_LAND_ACTION_PENDING_MAX) {
+      const oldest = this.pendingLandActions.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.pendingLandActions.delete(oldest);
+    }
+  }
+
+  private replayPendingLandActions(
+    groupId: number,
+    fromAddress: string,
+    sourceSessionId: string
+  ): void {
+    const prefix = `${groupId}:${fromAddress}:${sourceSessionId}:`;
+    const now = this.now();
+    const pending = [...this.pendingLandActions.entries()]
+      .filter(([key, item]) => key.startsWith(prefix) && item.expiresAt > now)
+      .sort(
+        (left, right) =>
+          Number(left[1].wire.q || 0) - Number(right[1].wire.q || 0)
+      );
+    for (const [key, item] of pending) {
+      this.pendingLandActions.delete(key);
+      void this.handleLandActionWire(item.groupId, item.wire, item.peerHash);
+    }
+  }
+
+  private async handleLegacyLandActionWire(
+    groupId: number,
     wire: Extract<ReticulumChatWire, { k: 'land_action' }>
   ): Promise<void> {
     const actionId = typeof wire.id === 'string' ? wire.id.trim() : '';
@@ -13258,13 +13746,34 @@ export class ReticulumChatManager extends EventEmitter {
       this.isValidatedGroupMember(groupId, fromAddress),
       this.isValidatedGroupMember(groupId, toAddress),
     ]);
-    if (!fromIsMember || !toIsMember) {
-      loggerWarn(
-        `[ReticulumChat] land_action_rejected group=${groupId} action=${actionType} reason=participant_not_group_member`
-      );
-      return;
+    if (!fromIsMember || !toIsMember) return;
+    this.applyLegacyLandAction(groupId, wire);
+  }
+
+  private resolveLandActionTargetAddress(
+    groupId: number,
+    targetSessionId: string
+  ): string {
+    if (!targetSessionId) return '';
+    const addresses = new Set<string>();
+    for (const session of this.localLandAuthSessions.values()) {
+      if (
+        session.groupId === groupId &&
+        session.sessionId === targetSessionId
+      ) {
+        addresses.add(session.authorAddress);
+      }
     }
-    this.applyLandAction(groupId, wire);
+    for (const session of this.landAuthSessions.values()) {
+      if (
+        session.groupId === groupId &&
+        session.sessionId === targetSessionId &&
+        session.expiresAt > this.now()
+      ) {
+        addresses.add(session.authorAddress);
+      }
+    }
+    return addresses.size === 1 ? [...addresses][0] : '';
   }
 
   private async handleLandCallWire(
@@ -13670,7 +14179,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async forwardLandActionToInterestRoutes(
     groupId: number,
-    wire: Extract<ReticulumChatWire, { k: 'land_action' }>,
+    wire:
+      | Extract<ReticulumChatWire, { k: 'la' }>
+      | Extract<ReticulumChatWire, { k: 'land_action' }>,
     inboundPeerHash: string
   ): Promise<void> {
     const inbound = this.routePeerHash(inboundPeerHash);
@@ -13688,11 +14199,11 @@ export class ReticulumChatManager extends EventEmitter {
     this.pruneGroupControlRoutes();
     this.noteGroupInterestRoute(groupId, origin, inbound, hops);
     const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_action' }> = {
+    const forwarded = {
       ...wire,
       o: this.compactRoutePeerHash(origin),
       h: hops + 1,
-    };
+    } as typeof wire;
     const payloadKey = this.hashControlPayload(forwarded);
     for (const route of this.groupInterestRoutes.values()) {
       if (route.groupId !== groupId) continue;
@@ -26834,17 +27345,63 @@ export class ReticulumChatManager extends EventEmitter {
 
   private applyLandAction(
     groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'la' }>
+  ): void {
+    const actionId = expandLandActionIdFromWire(wire.id);
+    const actionType = decodeLandActionType(wire.y);
+    const fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
+    const sourceSessionId = expandLandSessionIdFromWire(wire.f);
+    const sequence = Math.floor(Number(wire.q) || 0);
+    const targetSessionId = expandLandSessionIdFromWire(wire.s);
+    const toAddress = this.resolveLandActionTargetAddress(
+      groupId,
+      targetSessionId
+    );
+    const amount = Number(wire.amt) || 0;
+    const social = isReticulumLandSocialAction(actionType);
+    if (
+      !actionId ||
+      (!social && actionType !== 'qort_received') ||
+      !fromAddress ||
+      !sourceSessionId ||
+      sequence <= 0 ||
+      !toAddress ||
+      !targetSessionId ||
+      (actionType === 'qort_received'
+        ? !Number.isFinite(amount) || amount <= 0
+        : amount !== 0)
+    ) {
+      return;
+    }
+    this.emit('landAction', {
+      groupId,
+      actionId,
+      actionType,
+      fromAddress,
+      sourceSessionId,
+      sequence,
+      toAddress,
+      targetSessionId,
+      amount,
+      roomId: '',
+      timestamp: Number.isFinite(Number(wire.ts))
+        ? Number(wire.ts)
+        : this.now(),
+    });
+  }
+
+  private applyLegacyLandAction(
+    groupId: number,
     wire: Extract<ReticulumChatWire, { k: 'land_action' }>
   ): void {
     const actionId = typeof wire.id === 'string' ? wire.id.trim() : '';
-    const actionType = typeof wire.at === 'string' ? wire.at.trim() : '';
     const fromAddress = typeof wire.a === 'string' ? wire.a.trim() : '';
     const toAddress = typeof wire.to === 'string' ? wire.to.trim() : '';
     const targetSessionId = typeof wire.s === 'string' ? wire.s.trim() : '';
     const amount = Number(wire.amt);
     if (
       !actionId ||
-      actionType !== 'qort_received' ||
+      wire.at !== 'qort_received' ||
       !fromAddress ||
       !toAddress ||
       !targetSessionId ||
@@ -26856,8 +27413,12 @@ export class ReticulumChatManager extends EventEmitter {
     this.emit('landAction', {
       groupId,
       actionId,
-      actionType,
+      actionType: 'qort_received',
       fromAddress,
+      sourceSessionId: 'legacy',
+      sequence: Number.isFinite(Number(wire.ts))
+        ? Math.max(1, Math.floor(Number(wire.ts)))
+        : 1,
       toAddress,
       targetSessionId,
       amount,

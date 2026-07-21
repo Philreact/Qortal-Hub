@@ -4037,6 +4037,8 @@ ipcMain.handle(
       actionId?: unknown;
       actionType?: unknown;
       fromAddress?: unknown;
+      sourceSessionId?: unknown;
+      sequence?: unknown;
       toAddress?: unknown;
       targetSessionId?: unknown;
       amount?: unknown;

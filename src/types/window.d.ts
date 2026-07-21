@@ -891,6 +891,8 @@ declare global {
           actionId: string;
           actionType: string;
           fromAddress: string;
+          sourceSessionId: string;
+          sequence: number;
           toAddress: string;
           targetSessionId: string;
           amount: number;

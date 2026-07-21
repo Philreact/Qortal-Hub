@@ -105,17 +105,46 @@ type LandActionTarget = {
   menuY: number;
 };
 
+type LandSocialActionType =
+  | 'buzz'
+  | 'love'
+  | 'devil'
+  | 'angel'
+  | 'rain'
+  | 'sunshine';
+
+type LandActionType = 'qort_received' | LandSocialActionType;
+
 type LandActionAnimation = {
   actionId: string;
-  type: 'qort_received';
+  type: LandActionType;
   fromAddress: string;
+  sourceSessionId: string;
+  sequence: number;
   toAddress: string;
   targetSessionId: string;
   amount: number;
-  roomId: LandRoomId;
+  roomId: LandRoomId | '';
   createdAt: number;
   expiresAt: number;
 };
+
+const LAND_SOCIAL_ACTIONS: ReadonlyArray<{
+  type: LandSocialActionType;
+  label: string;
+  symbol: string;
+  color: string;
+}> = [
+  { type: 'buzz', label: 'Buzz', symbol: '⚡', color: '#67e8f9' },
+  { type: 'love', label: 'Love', symbol: '♥', color: '#ff6f9f' },
+  { type: 'devil', label: 'Devil', symbol: '😈', color: '#ff695e' },
+  { type: 'angel', label: 'Angel', symbol: '😇', color: '#ffe48a' },
+  { type: 'rain', label: 'Rain', symbol: '☂', color: '#74b9ff' },
+  { type: 'sunshine', label: 'Sunshine', symbol: '☀', color: '#ffd45a' },
+];
+
+const isLandSocialActionType = (value: string): value is LandSocialActionType =>
+  LAND_SOCIAL_ACTIONS.some((action) => action.type === value);
 
 type LandCallPresence = {
   callId: string;
@@ -196,7 +225,9 @@ const LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const LAND_CHAT_MAX_INPUT_CHARS = 420;
 const LAND_CHAT_TRANSCRIPT_LIMIT = 80;
 const LAND_CHAT_VISIBLE_IDLE_MS = 5000;
-const LAND_ACTION_ANIMATION_TTL_MS = 3200;
+const LAND_ACTION_ANIMATION_TTL_MS = 4200;
+const LAND_SOCIAL_ACTION_COOLDOWN_MS = 1200;
+const LAND_ACTIONS_PER_AVATAR_MAX = 2;
 const LAND_CALL_STATUS_INTERVAL_MS = 10000;
 const LAND_CALL_STATUS_TTL_MS = 26000;
 const QORTAL_LAND_CHANNEL_ID = 'qortal-land';
@@ -2598,6 +2629,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   });
   const sequenceRef = useRef(0);
   const landChatSequenceRef = useRef(0);
+  const landActionSequenceRef = useRef(0);
+  const landActionCooldownTimerRef = useRef<number | null>(null);
   const [reticulumReady, setReticulumReady] = useState<boolean | null>(null);
   const [landGameRoomId, setLandGameRoomId] = useState<LandRoomId>(
     QORTAL_LAND_START_ROOM_ID
@@ -2613,6 +2646,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [lastChatActivityAt, setLastChatActivityAt] = useState(() => Date.now());
   const [, setPrimaryNameLookupVersion] = useState(0);
   const [actionTarget, setActionTarget] = useState<LandActionTarget | null>(null);
+  const [sendingSocialAction, setSendingSocialAction] = useState<LandSocialActionType | null>(null);
+  const [socialActionError, setSocialActionError] = useState('');
+  const [socialActionCooldownUntil, setSocialActionCooldownUntil] = useState(0);
   const [showGamePicker, setShowGamePicker] = useState(false);
   const [sendQortTarget, setSendQortTarget] = useState<LandActionTarget | null>(null);
   const [sendQortAmount, setSendQortAmount] = useState('1');
@@ -2672,8 +2708,17 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     }
   }, []);
   useEffect(() => {
-    if (!actionTarget) setShowGamePicker(false);
+    if (!actionTarget) {
+      setShowGamePicker(false);
+      setSocialActionError('');
+    }
   }, [actionTarget]);
+
+  useEffect(() => () => {
+    if (landActionCooldownTimerRef.current !== null) {
+      window.clearTimeout(landActionCooldownTimerRef.current);
+    }
+  }, []);
 
   const emitLandCallEvent = useCallback((event: string, payload: unknown) => {
     for (const listener of landCallListenersRef.current) {
@@ -3636,27 +3681,85 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     void sendLandChat();
   }, [activeChatTab, cancelLandChatTyping, chatText, sendLandChat]);
 
-  const addQortReceivedAnimation = useCallback((
-    actionId: string,
-    fromAddress: string,
-    toAddress: string,
-    targetSessionId: string,
-    amount: number,
-    roomId: LandRoomId
-  ) => {
+  const addLandActionAnimation = useCallback((animation: Omit<LandActionAnimation, 'createdAt' | 'expiresAt'> & { timestamp?: number }) => {
     const now = Date.now();
-    landActionAnimationsRef.current.set(actionId, {
-      actionId,
-      type: 'qort_received',
-      fromAddress,
-      toAddress,
-      targetSessionId,
-      amount,
-      roomId,
-      createdAt: now,
-      expiresAt: now + LAND_ACTION_ANIMATION_TTL_MS,
+    const packetTimestamp = Number(animation.timestamp);
+    const createdAt = Number.isFinite(packetTimestamp)
+      ? Math.min(now, packetTimestamp)
+      : now;
+    if (createdAt <= now - LAND_ACTION_ANIMATION_TTL_MS) return;
+    const existingForTarget = [...landActionAnimationsRef.current.values()]
+      .filter((item) => (
+        item.toAddress === animation.toAddress &&
+        item.targetSessionId === animation.targetSessionId
+      ))
+      .sort((left, right) => left.createdAt - right.createdAt);
+    while (existingForTarget.length >= LAND_ACTIONS_PER_AVATAR_MAX) {
+      const oldest = existingForTarget.shift();
+      if (oldest) landActionAnimationsRef.current.delete(oldest.actionId);
+    }
+    landActionAnimationsRef.current.set(animation.actionId, {
+      ...animation,
+      createdAt,
+      expiresAt: createdAt + LAND_ACTION_ANIMATION_TTL_MS,
     });
   }, []);
+
+  const sendSocialAction = useCallback(async (actionType: LandSocialActionType) => {
+    const target = actionTarget;
+    const now = Date.now();
+    if (
+      !target ||
+      target.authorAddress === myAddress ||
+      reticulumReady !== true ||
+      sendingSocialAction ||
+      socialActionCooldownUntil > now
+    ) return;
+    setSendingSocialAction(actionType);
+    setSocialActionError('');
+    const actionId = createLandChatMessageId();
+    const actionSequence = landActionSequenceRef.current + 1;
+    landActionSequenceRef.current = actionSequence;
+    try {
+      const result = await window.reticulumChat?.sendLandAction?.(groupId, {
+        actionId,
+        actionType,
+        fromAddress: myAddress,
+        sourceSessionId: sessionId,
+        sequence: actionSequence,
+        toAddress: target.authorAddress,
+        targetSessionId: target.sessionId,
+        roomId: target.roomId,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'The effect could not be sent');
+      }
+      const cooldownUntil = Date.now() + LAND_SOCIAL_ACTION_COOLDOWN_MS;
+      setSocialActionCooldownUntil(cooldownUntil);
+      if (landActionCooldownTimerRef.current !== null) {
+        window.clearTimeout(landActionCooldownTimerRef.current);
+      }
+      landActionCooldownTimerRef.current = window.setTimeout(() => {
+        landActionCooldownTimerRef.current = null;
+        setSocialActionCooldownUntil(0);
+      }, LAND_SOCIAL_ACTION_COOLDOWN_MS);
+      setActionTarget(null);
+    } catch (error) {
+      setSocialActionError(
+        error instanceof Error ? error.message : 'The effect could not be sent'
+      );
+    } finally {
+      setSendingSocialAction(null);
+    }
+  }, [
+    actionTarget,
+    groupId,
+    myAddress,
+    reticulumReady,
+    sendingSocialAction,
+    sessionId,
+    socialActionCooldownUntil,
+  ]);
 
   const openSendQortDialog = useCallback((target: LandActionTarget) => {
     setActionTarget(null);
@@ -3696,6 +3799,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       }
 
       const actionId = createLandChatMessageId();
+      const actionSequence = landActionSequenceRef.current + 1;
+      landActionSequenceRef.current = actionSequence;
       let actionResult: { success: boolean; error?: string } | null = null;
       try {
         actionResult = await window.reticulumChat?.sendLandAction?.(
@@ -3704,6 +3809,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             actionId,
             actionType: 'qort_received',
             fromAddress: myAddress,
+            sourceSessionId: sessionId,
+            sequence: actionSequence,
             toAddress: sendQortTarget.authorAddress,
             targetSessionId: sendQortTarget.sessionId,
             amount,
@@ -3716,14 +3823,17 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       if (actionResult && actionResult.success !== true) {
         console.warn('Failed to send QortalLand QORT action:', actionResult.error);
       }
-      addQortReceivedAnimation(
+      addLandActionAnimation({
         actionId,
-        myAddress,
-        sendQortTarget.authorAddress,
-        sendQortTarget.sessionId,
+        type: 'qort_received',
+        fromAddress: myAddress,
+        sourceSessionId: sessionId,
+        sequence: actionSequence,
+        toAddress: sendQortTarget.authorAddress,
+        targetSessionId: sendQortTarget.sessionId,
         amount,
-        sendQortTarget.roomId
-      );
+        roomId: sendQortTarget.roomId,
+      });
       setSendQortTarget(null);
       setSendQortAmount('1');
     } catch (error) {
@@ -3732,13 +3842,14 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       setIsSendingQort(false);
     }
   }, [
-    addQortReceivedAnimation,
+    addLandActionAnimation,
     groupId,
     isSendingQort,
     myAddress,
     qortBalance,
     sendQortAmount,
     sendQortTarget,
+    sessionId,
   ]);
 
   const signLandCallFields = useCallback(
@@ -3967,28 +4078,48 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     const unsubscribe = window.reticulumChat?.onLandAction?.((payload) => {
       if (payload.groupId !== groupId) return;
-      if (payload.actionType !== 'qort_received') return;
+      const actionType = typeof payload.actionType === 'string' ? payload.actionType : '';
+      if (actionType !== 'qort_received' && !isLandSocialActionType(actionType)) return;
       const actionId = typeof payload.actionId === 'string' ? payload.actionId : '';
       const fromAddress = typeof payload.fromAddress === 'string' ? payload.fromAddress : '';
+      const sourceSessionId = typeof payload.sourceSessionId === 'string' ? payload.sourceSessionId : '';
+      const actionSequence = finiteNumber(payload.sequence);
       const toAddress = typeof payload.toAddress === 'string' ? payload.toAddress : '';
       const targetSessionId = typeof payload.targetSessionId === 'string' ? payload.targetSessionId : '';
       const amount = finiteNumber(payload.amount);
-      if (!actionId || !fromAddress || !toAddress || !targetSessionId || amount === null || amount <= 0) return;
+      if (
+        !actionId ||
+        !fromAddress ||
+        !sourceSessionId ||
+        actionSequence === null ||
+        actionSequence <= 0 ||
+        !toAddress ||
+        !targetSessionId ||
+        amount === null ||
+        (actionType === 'qort_received' ? amount <= 0 : amount !== 0)
+      ) return;
       if (landActionAnimationsRef.current.has(actionId)) return;
       queuePrimaryNameLookups([fromAddress, toAddress]);
-      addQortReceivedAnimation(
+      addLandActionAnimation({
         actionId,
+        type: actionType,
         fromAddress,
+        sourceSessionId,
+        sequence: actionSequence,
         toAddress,
         targetSessionId,
         amount,
-        normalizeLandRoomId(payload.roomId)
-      );
+        roomId:
+          typeof payload.roomId === 'string' && payload.roomId.trim()
+            ? normalizeLandRoomId(payload.roomId)
+            : '',
+        timestamp: payload.timestamp,
+      });
     });
     return () => {
       unsubscribe?.();
     };
-  }, [addQortReceivedAnimation, groupId, myAddress, queuePrimaryNameLookups]);
+  }, [addLandActionAnimation, groupId, myAddress, queuePrimaryNameLookups]);
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -4330,7 +4461,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           lineCount: number;
           popStarted: boolean;
         }>();
-        private actionAnimations = new Map<string, { container: any; coins: any[]; text: any }>();
+        private actionAnimations = new Map<string, {
+          container: any;
+          aura: any;
+          particles: any[];
+          symbol: any;
+          text: any;
+        }>();
         private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
         private gameIndicators = new Map<string, { container: any; badge: any; gamepad: any }>();
         private background?: any;
@@ -6998,34 +7135,65 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           }
         }
 
-        private createQortActionAnimation(animation: LandActionAnimation) {
+        private createLandActionAnimation(animation: LandActionAnimation) {
           const container = this.add.container(0, 0);
-          const glow = this.add.graphics();
-          glow.fillStyle(0xffd65c, 0.2);
-          glow.fillCircle(0, 0, 34);
-          glow.lineStyle(2, 0xffd65c, 0.5);
-          glow.strokeCircle(0, 0, 24);
-          const text = this.add.text(0, -4, `+${formatQortAmount(animation.amount)} QORT`, {
+          const visual = animation.type === 'qort_received'
+            ? { color: 0xffd65c, symbol: '◈', particle: '●', label: `+${formatQortAmount(animation.amount)} QORT` }
+            : animation.type === 'buzz'
+              ? { color: 0x67e8f9, symbol: '⚡', particle: 'ϟ', label: 'BUZZ!' }
+              : animation.type === 'love'
+                ? { color: 0xff6f9f, symbol: '♥', particle: '♥', label: 'LOVE' }
+                : animation.type === 'devil'
+                  ? { color: 0xff695e, symbol: '😈', particle: '▲', label: 'DEVIL' }
+                  : animation.type === 'angel'
+                    ? { color: 0xffe48a, symbol: '😇', particle: '✦', label: 'ANGEL' }
+                    : animation.type === 'rain'
+                      ? { color: 0x74b9ff, symbol: '☁', particle: '│', label: 'RAIN' }
+                      : { color: 0xffd45a, symbol: '☀', particle: '✦', label: 'SUNSHINE' };
+          const aura = this.add.graphics();
+          aura.fillStyle(visual.color, 0.15);
+          aura.fillCircle(0, 0, animation.type === 'sunshine' ? 42 : 34);
+          aura.lineStyle(2, visual.color, 0.55);
+          aura.strokeCircle(0, 0, animation.type === 'angel' ? 29 : 25);
+          if (animation.type === 'angel') {
+            aura.lineStyle(3, 0xfff4bd, 0.82);
+            aura.strokeEllipse(0, -25, 44, 12);
+          }
+          const symbol = this.add.text(0, -2, visual.symbol, {
             align: 'center',
-            color: '#fff4c7',
-            fontFamily: 'Inter, Arial, sans-serif',
-            fontSize: '16px',
-            fontWeight: '700',
-            stroke: '#2a1600',
-            strokeThickness: 5,
+            color: `#${visual.color.toString(16).padStart(6, '0')}`,
+            fontFamily: 'Arial, sans-serif',
+            fontSize: animation.type === 'qort_received' ? '28px' : '34px',
+            fontStyle: 'bold',
+            stroke: '#07101f',
+            strokeThickness: 4,
           }).setOrigin(0.5);
-          const coins = Array.from({ length: 7 }, (_, index) => {
-            const coin = this.add.graphics();
-            coin.fillStyle(0xffc84a, 1);
-            coin.fillCircle(0, 0, 5 + (index % 2));
-            coin.lineStyle(1, 0xfff2a8, 0.86);
-            coin.strokeCircle(0, 0, 5 + (index % 2));
-            container.add(coin);
-            return coin;
+          const text = this.add.text(0, 35, visual.label, {
+            align: 'center',
+            backgroundColor: 'rgba(4, 10, 23, 0.78)',
+            color: '#ffffff',
+            fontFamily: 'Inter, Arial, sans-serif',
+            fontSize: animation.type === 'qort_received' ? '15px' : '12px',
+            fontStyle: 'bold',
+            padding: { x: 7, y: 3 },
+            stroke: '#07101f',
+            strokeThickness: 2,
+          }).setOrigin(0.5);
+          const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+          const particles = Array.from({ length: reducedMotion ? 4 : 8 }, (_, index) => {
+            const particle = this.add.text(0, 0, visual.particle, {
+              color: `#${visual.color.toString(16).padStart(6, '0')}`,
+              fontFamily: 'Arial, sans-serif',
+              fontSize: `${10 + (index % 3) * 2}px`,
+              fontStyle: 'bold',
+              stroke: '#07101f',
+              strokeThickness: 2,
+            }).setOrigin(0.5);
+            return particle;
           });
-          container.add([glow, text]);
+          container.add([aura, ...particles, symbol, text]);
           container.setDepth(12000);
-          return { container, coins, text };
+          return { container, aura, particles, symbol, text };
         }
 
         private removeActionAnimation(
@@ -7065,28 +7233,49 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             }
             let animationObjects = this.actionAnimations.get(actionId);
             if (!animationObjects) {
-              animationObjects = this.createQortActionAnimation(animation);
+              animationObjects = this.createLandActionAnimation(animation);
               this.actionAnimations.set(actionId, animationObjects);
             }
-            if (!avatar || animation.roomId !== currentRoomRef.current) {
+            if (
+              !avatar ||
+              (animation.roomId && animation.roomId !== currentRoomRef.current)
+            ) {
               animationObjects.container.setVisible(false);
               continue;
             }
             const ageMs = now - animation.createdAt;
             const progress = Phaser.Math.Clamp(ageMs / LAND_ACTION_ANIMATION_TTL_MS, 0, 1);
-            const fadeAlpha = progress > 0.72 ? Phaser.Math.Clamp((1 - progress) / 0.28, 0, 1) : 1;
+            const fadeAlpha = progress > 0.76 ? Phaser.Math.Clamp((1 - progress) / 0.24, 0, 1) : 1;
             const scale = Math.abs(avatar.scaleY || 1);
-            const rise = 12 + progress * 46;
+            const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+            const rise = reducedMotion ? 16 : 12 + Math.sin(progress * Math.PI) * 12;
+            const seed = [...animation.actionId].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
             animationObjects.container.setVisible(true);
             animationObjects.container.setAlpha(fadeAlpha);
             animationObjects.container.setPosition(avatar.x, avatar.y - LAND_CHARACTER_CHAT_BUBBLE_OFFSET * scale - rise);
             animationObjects.container.setDepth(avatar.depth + 180);
-            animationObjects.text.setScale(1 + Math.sin(progress * Math.PI) * 0.08);
-            animationObjects.coins.forEach((coin, index) => {
-              const angle = progress * Math.PI * 2.5 + index * 0.9;
-              const radius = 14 + progress * (28 + index * 2);
-              coin.setPosition(Math.cos(angle) * radius, 10 + Math.sin(angle) * radius * 0.55);
-              coin.setAlpha(fadeAlpha * (0.95 - progress * 0.25));
+            const pulse = reducedMotion ? 1 : 1 + Math.sin(progress * Math.PI * 5) * 0.08;
+            animationObjects.symbol.setScale(pulse);
+            animationObjects.aura.setScale(1 + Math.sin(progress * Math.PI) * 0.24);
+            animationObjects.aura.setRotation(animation.type === 'sunshine' ? progress * Math.PI : 0);
+            if (animation.type === 'buzz' && !reducedMotion) {
+              animationObjects.container.x += Math.sin(progress * Math.PI * 34) * 4;
+            }
+            animationObjects.particles.forEach((particle, index) => {
+              const offset = (seed + index * 47) * (Math.PI / 180);
+              if (animation.type === 'rain') {
+                particle.setPosition(-30 + index * 9, -20 + ((progress * 150 + index * 17) % 82));
+              } else if (animation.type === 'love' || animation.type === 'devil') {
+                particle.setPosition(
+                  Math.sin(offset + progress * Math.PI * 4) * (18 + index * 3),
+                  24 - ((progress * 100 + index * 13) % 78)
+                );
+              } else {
+                const angle = offset + progress * Math.PI * (animation.type === 'buzz' ? 5 : 2.4);
+                const radius = 24 + index * 3 + Math.sin(progress * Math.PI) * 14;
+                particle.setPosition(Math.cos(angle) * radius, Math.sin(angle) * radius * 0.68);
+              }
+              particle.setAlpha(fadeAlpha * (0.62 + (index % 3) * 0.16));
             });
           }
         }
@@ -7539,12 +7728,12 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                 const menuX = clampNumber(
                   (pointerEvent?.clientX ?? bounds.left + bounds.width / 2) - bounds.left,
                   12,
-                  Math.max(12, bounds.width - 236)
+                  Math.max(12, bounds.width - 290)
                 );
                 const menuY = clampNumber(
                   (pointerEvent?.clientY ?? bounds.top + bounds.height / 2) - bounds.top,
                   54,
-                  Math.max(54, bounds.height - 148)
+                  Math.max(54, bounds.height - 390)
                 );
                 setActionTarget({
                   key,
@@ -8853,8 +9042,10 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               borderRadius: '10px',
               boxShadow: `0 18px 38px ${alpha('#000', 0.44)}, 0 0 24px ${alpha('#2cf8ff', 0.1)}`,
               left: actionTarget.menuX,
-              minWidth: 220,
-              overflow: 'hidden',
+              maxHeight: 'calc(100% - 66px)',
+              minWidth: 270,
+              overflowX: 'hidden',
+              overflowY: 'auto',
               padding: '10px',
               position: 'absolute',
               top: actionTarget.menuY,
@@ -8903,6 +9094,62 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
                 <CloseRoundedIcon sx={{ fontSize: 16 }} />
               </IconButton>
             </Box>
+            <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.72), fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', mb: 0.75, textTransform: 'uppercase' }}>
+              Send an effect
+            </Typography>
+            <Box sx={{ display: 'grid', gap: 0.65, gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', mb: 1 }}>
+              {LAND_SOCIAL_ACTIONS.map((socialAction) => {
+                const busy = Boolean(sendingSocialAction);
+                const coolingDown = socialActionCooldownUntil > Date.now();
+                const disabled =
+                  reticulumReady !== true ||
+                  actionTarget.authorAddress === myAddress ||
+                  busy ||
+                  coolingDown;
+                return (
+                  <Button
+                    aria-label={`Send ${socialAction.label} effect`}
+                    disabled={disabled}
+                    key={socialAction.type}
+                    onClick={() => void sendSocialAction(socialAction.type)}
+                    sx={{
+                      background: `linear-gradient(145deg, ${alpha(socialAction.color, 0.18)}, ${alpha('#fff', 0.035)})`,
+                      border: `1px solid ${alpha(socialAction.color, 0.32)}`,
+                      borderRadius: '9px',
+                      color: '#f8fbff',
+                      flexDirection: 'column',
+                      fontSize: 10,
+                      fontWeight: 750,
+                      gap: 0.15,
+                      minHeight: 58,
+                      minWidth: 0,
+                      padding: '6px 3px',
+                      textTransform: 'none',
+                      '&:hover': {
+                        backgroundColor: alpha(socialAction.color, 0.24),
+                        borderColor: alpha(socialAction.color, 0.58),
+                        boxShadow: `0 0 14px ${alpha(socialAction.color, 0.16)}`,
+                        transform: 'translateY(-1px)',
+                      },
+                      '&.Mui-disabled': {
+                        borderColor: alpha('#fff', 0.08),
+                        color: alpha('#fff', 0.3),
+                      },
+                    }}
+                  >
+                    <Box component="span" sx={{ color: socialAction.color, fontSize: 22, lineHeight: 1 }}>
+                      {sendingSocialAction === socialAction.type ? '· · ·' : socialAction.symbol}
+                    </Box>
+                    {socialAction.label}
+                  </Button>
+                );
+              })}
+            </Box>
+            {socialActionError && (
+              <Typography role="alert" sx={{ color: theme.palette.error.light, fontSize: 10, mb: 1 }}>
+                {socialActionError}
+              </Typography>
+            )}
             <Button
               fullWidth
               startIcon={<PaidRoundedIcon fontSize="small" />}
