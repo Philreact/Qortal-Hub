@@ -34,6 +34,32 @@ import type { PresenceEnvelope } from './presence';
 import { ReticulumBridge } from './reticulum-bridge';
 
 describe('ReticulumBridge presence subscriptions', () => {
+  it('publishes a game bootstrap only for the current Python instance', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.gameTransportToken = 'secret-token';
+    internal.gameTransportInstanceId = 'instance-current';
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'qortalland_game_ws_ready',
+      payload: { port: 32123, instanceId: 'instance-stale' },
+    });
+    expect(bridge.getQortalLandGameTransportBootstrap()).toBeNull();
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'qortalland_game_ws_ready',
+      payload: { port: 32123, instanceId: 'instance-current' },
+    });
+    expect(bridge.getQortalLandGameTransportBootstrap()).toEqual({
+      url: 'ws://127.0.0.1:32123',
+      token: 'secret-token',
+      instanceId: 'instance-current',
+    });
+  });
+
   it('does not spawn a second child while startup is waiting for ready', async () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

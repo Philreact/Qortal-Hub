@@ -27,6 +27,7 @@ import { balanceAtom, userInfoAtom } from '../../atoms/global';
 import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.png';
 import { useVoiceCall, type VoiceCallApi } from '../../hooks/useVoiceCall';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
+import { useQortalLandGame } from './games/useQortalLandGame';
 
 type LandPlayerState = {
   authorAddress: string;
@@ -2554,6 +2555,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
   const movementKeysRef = useRef<Set<string>>(new Set());
+  const landGameActiveRef = useRef(false);
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
   const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
   const chatInputRef = useRef<HTMLInputElement | null>(null);
@@ -2585,6 +2587,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const sequenceRef = useRef(0);
   const landChatSequenceRef = useRef(0);
   const [reticulumReady, setReticulumReady] = useState<boolean | null>(null);
+  const [landGameRoomId, setLandGameRoomId] = useState<LandRoomId>(
+    QORTAL_LAND_START_ROOM_ID
+  );
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -2596,6 +2601,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [lastChatActivityAt, setLastChatActivityAt] = useState(() => Date.now());
   const [, setPrimaryNameLookupVersion] = useState(0);
   const [actionTarget, setActionTarget] = useState<LandActionTarget | null>(null);
+  const [showGamePicker, setShowGamePicker] = useState(false);
   const [sendQortTarget, setSendQortTarget] = useState<LandActionTarget | null>(null);
   const [sendQortAmount, setSendQortAmount] = useState('1');
   const [sendQortError, setSendQortError] = useState('');
@@ -2645,6 +2651,26 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   );
   const sessionId = useMemo(() => createSessionId(), []);
   const qortBalance = useMemo(() => normalizeQortBalance(balance), [balance]);
+  const handleLandGameActiveChange = useCallback((active: boolean) => {
+    landGameActiveRef.current = active;
+    if (active) {
+      movementKeysRef.current.clear();
+      localStateRef.current = { ...localStateRef.current, movement: 'idle' };
+    }
+  }, []);
+  const landGame = useQortalLandGame({
+    address: myAddress,
+    publicKey: userInfo?.publicKey,
+    groupId,
+    sessionId,
+    roomId: landGameRoomId,
+    enabled: reticulumReady === true,
+    onActiveChange: handleLandGameActiveChange,
+  });
+
+  useEffect(() => {
+    if (!actionTarget) setShowGamePicker(false);
+  }, [actionTarget]);
 
   const emitLandCallEvent = useCallback((event: string, payload: unknown) => {
     for (const listener of landCallListenersRef.current) {
@@ -3446,6 +3472,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     const normalizeMovementKey = (key: string): string => key.trim().toLowerCase();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
+      if (landGameActiveRef.current) {
+        const blocked = normalizeMovementKey(event.key);
+        if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'a', 'd', 'w', 's'].includes(blocked)) {
+          event.preventDefault();
+        }
+        return;
+      }
       const key = normalizeMovementKey(event.key);
       if (key === 'e' && isNearClubDjBooth(localStateRef.current.roomId, localStateRef.current.x, localStateRef.current.y)) {
         event.preventDefault();
@@ -4296,6 +4329,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
         create() {
           currentRoomRef.current = localStateRef.current.roomId;
+          setLandGameRoomId(currentRoomRef.current);
           const startRoomSize = roomSizeForRoom(currentRoomRef.current);
           this.cameras.main.setBounds(0, 0, startRoomSize.width, startRoomSize.height);
           this.ensureCharacterAnimations();
@@ -7076,6 +7110,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           if (transition) {
             roomId = transition.roomId;
             currentRoomRef.current = roomId;
+            setLandGameRoomId(roomId);
             x = transition.x;
             y = transition.y;
             direction = transition.direction;
@@ -8665,9 +8700,50 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             >
               {actionTargetInCall ? 'In a call' : 'Call'}
             </Button>
+            <Button
+              disabled={
+                !landGame.transportReady ||
+                landGame.busy ||
+                reticulumReady !== true ||
+                actionTarget.authorAddress === myAddress
+              }
+              fullWidth
+              onClick={() => setShowGamePicker((value) => !value)}
+              sx={{
+                backgroundColor: alpha('#9d6cff', 0.13),
+                border: `1px solid ${alpha('#9d6cff', 0.32)}`,
+                borderRadius: '8px',
+                color: '#d8c7ff',
+                fontSize: 12,
+                fontWeight: 800,
+                justifyContent: 'flex-start',
+                marginTop: 1,
+                textTransform: 'none',
+              }}
+            >
+              Play game
+            </Button>
+            {showGamePicker && (
+              <Button
+                fullWidth
+                onClick={() => {
+                  const target = actionTarget;
+                  setActionTarget(null);
+                  setShowGamePicker(false);
+                  void landGame.challenge({
+                    address: target.authorAddress,
+                    name: displayNameForAddress(target.authorAddress, primaryNameCacheRef.current),
+                  });
+                }}
+                sx={{ color: '#f8fbff', fontSize: 12, justifyContent: 'flex-start', textTransform: 'none' }}
+              >
+                Connect Four
+              </Button>
+            )}
           </Box>
         </ClickAwayListener>
       )}
+      {landGame.modal}
       {localLandCallActive && (
         <Box
           sx={{

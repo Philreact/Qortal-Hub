@@ -23,6 +23,11 @@ from typing import IO, Any, Callable, Dict, List, Optional, Set, Tuple
 
 import RNS
 
+_BRIDGE_RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BRIDGE_RESOURCE_DIR not in sys.path:
+    sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
+from qortalland_games import QortalLandGameManager
+
 APP_NAMESPACE = "qortal-hub-test2"
 PRESENCE_ASPECT = "presence"
 PRESENCE_VERSION = "v1-test2"
@@ -546,6 +551,7 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "audio-rtt": 256,
     "path-management": 128,
     "resource-control": 128,
+    "game-control": 128,
 }
 for _audio_shard in range(_SCHEDULER_AUDIO_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"audio-send-{_audio_shard}"] = 64
@@ -559,6 +565,7 @@ for _overlay_migration_shard in range(_SCHEDULER_OVERLAY_MIGRATION_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"overlay-migration-{_overlay_migration_shard}"] = 2
 
 _shutdown = threading.Event()
+_qortalland_game_manager: Optional[QortalLandGameManager] = None
 _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
     maxsize=_JSON_RESP_OUT_QUEUE_MAX
 )
@@ -7709,6 +7716,41 @@ def build_outbound_destination(peer_identity):
         PRESENCE_ASPECT,
         PRESENCE_VERSION,
     )
+
+
+def _resolve_verified_game_peer(address: str) -> Optional[str]:
+    target = str(address or "").strip()
+    if not target:
+        return None
+    with _state_lock:
+        for peer_hash, details in _verified_overlay_peers.items():
+            if isinstance(details, dict) and str(details.get("address") or "") == target:
+                return peer_hash
+    return None
+
+
+def _enqueue_game_control(fn: Callable[..., Any], args: tuple) -> bool:
+    return _enqueue_scheduler_task(
+        "game-control",
+        f"qortalland-game:{getattr(fn, '__name__', 'command')}",
+        fn,
+        *args,
+    )
+
+
+def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
+    global _qortalland_game_manager
+    if _qortalland_game_manager is None:
+        _qortalland_game_manager = QortalLandGameManager(
+            emit=lambda _event, _payload: None,
+            log=log,
+            resolve_peer=_resolve_verified_game_peer,
+            resolve_identity=_get_group_audio_peer_identity,
+            build_destination=build_outbound_destination,
+            link_id_bytes=lambda link: _rns_link_id_bytes(link) or b"",
+            enqueue=_enqueue_game_control,
+        )
+    return _qortalland_game_manager
 
 
 def get_overlay_link_id(link) -> Optional[str]:
@@ -17382,7 +17424,9 @@ def on_inbound_unified_link_closed(link) -> None:
     _cancel_inbound_classify_timer(link_key)
     with _state_lock:
         _pending_inbound_classify_link_ids.discard(link_key)
-    if get_overlay_link_id(link):
+    if _qortalland_game_manager is not None and _qortalland_game_manager.owns_link(link):
+        _qortalland_game_manager._link_closed(link)
+    elif get_overlay_link_id(link):
         on_overlay_link_closed(link)
     elif get_audio_link_id(link):
         on_audio_link_closed(link)
@@ -17402,6 +17446,8 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
             return
         _pending_inbound_classify_link_ids.discard(link_key)
     _cancel_inbound_classify_timer(link_key)
+    if _ensure_qortalland_game_manager().handle_classifier(link, message):
+        return
     if _decode_group_audio_wire(message) is not None:
         link_id = str(uuid.uuid4())
         now = time.time()
@@ -17668,6 +17714,16 @@ def handle_start(req_id: str, payload: Dict[str, Any]) -> None:
         )
         log(f"[presence_bridge] build={PRESENCE_BRIDGE_BUILD}")
         _seed_overlay_good_outbound_cache_candidates()
+        game_manager = _ensure_qortalland_game_manager()
+        game_port = game_manager.start_server() if game_manager is not None else None
+        if game_port is not None:
+            emit_event(
+                "qortalland_game_ws_ready",
+                {
+                    "port": game_port,
+                    "instanceId": os.environ.get("QORTAL_LAND_GAMES_INSTANCE_ID", ""),
+                },
+            )
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
 
@@ -17877,6 +17933,8 @@ def handle_stop(req_id: str) -> None:
         _resource_session_fail_state(state, "resource_session_stopped")
     _flush_overlay_good_outbound_cache(force=True)
     _rns_announce_on_auth_session_end()
+    if _qortalland_game_manager is not None:
+        _qortalland_game_manager.stop()
     emit_resp(req_id, True)
 
 
@@ -21175,6 +21233,8 @@ def main() -> None:
     stdin_thread.start()
     stdin_thread.join()
     _shutdown.set()
+    if _qortalland_game_manager is not None:
+        _qortalland_game_manager.stop()
     _cmd_queue_bounded.put(None)
     _notify_rns_work_available()
     rns_thread.join(timeout=60.0)

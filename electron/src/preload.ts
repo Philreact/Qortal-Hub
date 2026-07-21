@@ -18,6 +18,20 @@ contextBridge.exposeInMainWorld('CapacitorCustomPlatform', {
   plugins: {},
 });
 
+contextBridge.exposeInMainWorld('qortalLandGames', {
+  getTransportBootstrap: () =>
+    ipcRenderer.invoke('qortalLandGames:getTransportBootstrap') as Promise<{
+      url: string;
+      token: string;
+      instanceId: string;
+    } | null>,
+  onTransportRestarted: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('qortalLandGames:transportRestarted', handler);
+    return () => ipcRenderer.removeListener('qortalLandGames:transportRestarted', handler);
+  },
+});
+
 function parseHubBootstrapSeedsFromArgv(): string[] {
   const prefix = '--hub-p2p-seeds=';
   for (const arg of process.argv) {

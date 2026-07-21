@@ -7,6 +7,14 @@ import type {
 
 declare global {
   interface Window {
+    qortalLandGames?: {
+      getTransportBootstrap: () => Promise<{
+        url: string;
+        token: string;
+        instanceId: string;
+      } | null>;
+      onTransportRestarted: (callback: () => void) => () => void;
+    };
     sendMessage?: (
       action: string,
       data?: unknown,

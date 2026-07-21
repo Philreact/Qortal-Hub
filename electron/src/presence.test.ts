@@ -29,6 +29,11 @@ function promoteVerifiedPeers(
 }
 
 describe('PresenceManager Reticulum overlay mesh slots', () => {
+  it('matches the Python Qortal game-handshake address derivation fixture', () => {
+    expect(
+      deriveAddressFromPublicKey('1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE')
+    ).toBe('QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q');
+  });
   it('skips exact duplicate envelopes before signature verification', async () => {
     const manager = new PresenceManager();
     const verify = vi.fn(async () => true);

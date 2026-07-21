@@ -1383,6 +1383,28 @@ ipcMain.handle('window:isMaximized', () => {
 
 ipcMain.handle('window:getPlatform', () => process.platform);
 
+let qortalLandGameRestartBridge: ReturnType<typeof getReticulumBridge> = null;
+const attachQortalLandGameRestartListener = () => {
+  const bridge = getReticulumBridge();
+  if (!bridge || bridge === qortalLandGameRestartBridge) return;
+  qortalLandGameRestartBridge = bridge;
+  bridge.on('qortalland-game-transport-restarted', () => {
+    const mainWindow = myCapacitorApp.getMainWindow();
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('qortalLandGames:transportRestarted');
+    }
+  });
+};
+
+ipcMain.handle('qortalLandGames:getTransportBootstrap', (event) => {
+  const mainWindow = myCapacitorApp.getMainWindow();
+  if (mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
+    throw new Error('Qortal Land game transport is restricted to the main window');
+  }
+  attachQortalLandGameRestartListener();
+  return getReticulumBridge()?.getQortalLandGameTransportBootstrap() ?? null;
+});
+
 startSystemCallReadinessMonitor();
 
 ipcMain.handle('systemCallReadiness:getSnapshot', () =>

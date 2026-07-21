@@ -3,6 +3,7 @@ import { app } from 'electron';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
+import { randomBytes, randomUUID } from 'crypto';
 import type {
   PresenceEnvelope,
   PresenceRoute,
@@ -605,6 +606,11 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'qortalland_game_ws_ready';
+      payload?: { port?: number; instanceId?: string };
+    }
+  | {
+      type: 'event';
       event: 'presence_message';
       payload?: {
         envelope?: PresenceEnvelope;
@@ -1159,6 +1165,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   readonly kind = 'reticulum' as const;
 
   private child: ChildProcess | null = null;
+  private gameTransportToken: string | null = null;
+  private gameTransportInstanceId: string | null = null;
+  private gameTransportUrl: string | null = null;
   private desiredRunning = false;
   private state: BridgeState = 'stopped';
   private stdoutBuffer = '';
@@ -3373,6 +3382,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
     const identityPath = getReticulumBridgeIdentityPath();
     fs.mkdirSync(path.dirname(identityPath), { recursive: true });
+    this.gameTransportToken = randomBytes(32).toString('hex');
+    this.gameTransportInstanceId = randomUUID();
+    this.gameTransportUrl = null;
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...getReticulumSourceEnvExtra(),
@@ -3381,6 +3393,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
       QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
+      QORTAL_LAND_GAMES_TOKEN: this.gameTransportToken,
+      QORTAL_LAND_GAMES_INSTANCE_ID: this.gameTransportInstanceId,
+      QORTAL_LAND_GAMES_DEV: app.isPackaged ? '0' : '1',
     };
     loggerLog(
       `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
@@ -4222,6 +4237,20 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         );
         this.emitBridgeFrameEvent('ready');
         return;
+      case 'qortalland_game_ws_ready': {
+        const port = Number(frame.payload?.port);
+        const instanceId = String(frame.payload?.instanceId ?? '');
+        if (
+          Number.isInteger(port) &&
+          port > 0 &&
+          port <= 65535 &&
+          instanceId === this.gameTransportInstanceId
+        ) {
+          this.gameTransportUrl = `ws://127.0.0.1:${port}`;
+          this.emitBridgeFrameEvent('qortalland-game-transport-restarted');
+        }
+        return;
+      }
       case 'presence_message': {
         const envelope = frame.payload?.envelope;
         const route = toPresenceRoute(frame.payload?.route);
@@ -4955,6 +4984,26 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         return;
       }
     }
+  }
+
+  getQortalLandGameTransportBootstrap(): {
+    url: string;
+    token: string;
+    instanceId: string;
+  } | null {
+    if (
+      !this.gameTransportUrl ||
+      !this.gameTransportToken ||
+      !this.gameTransportInstanceId ||
+      this.state !== 'ready'
+    ) {
+      return null;
+    }
+    return {
+      url: this.gameTransportUrl,
+      token: this.gameTransportToken,
+      instanceId: this.gameTransportInstanceId,
+    };
   }
 
   private describeStdoutFrame(

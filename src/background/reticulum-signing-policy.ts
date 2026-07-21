@@ -12,6 +12,38 @@ const schema = (
 ): SigningSchema => ({ required, optional });
 
 const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
+  QORTAL_LAND_GAME_INVITE: schema([
+    'type', 'protocolVersion', 'game', 'gameVersion', 'rulesVersion',
+    'matchId', 'groupId', 'requesterAddress', 'recipientAddress',
+    'signerPublicKey', 'requesterNonce', 'linkId', 'createdAt', 'expiresAt',
+  ]),
+  QORTAL_LAND_GAME_ACCEPT: schema([
+    'type', 'inviteHash', 'matchId', 'requesterNonce', 'recipientNonce',
+    'responderAddress', 'signerPublicKey', 'linkId', 'createdAt',
+  ]),
+  QORTAL_LAND_GAME_DECLINE: schema([
+    'type', 'inviteHash', 'matchId', 'responderAddress', 'signerPublicKey',
+    'reason', 'linkId', 'createdAt',
+  ]),
+  QORTAL_LAND_GAME_CONFIRM: schema([
+    'type', 'acceptHash', 'matchId', 'requesterNonce', 'recipientNonce',
+    'starter', 'initialStateHash', 'requesterAddress', 'signerPublicKey',
+    'linkId', 'createdAt',
+  ]),
+  QORTAL_LAND_GAME_RESUME_REQUEST: schema([
+    'type', 'matchId', 'requesterAddress', 'signerPublicKey', 'linkId',
+    'requesterNonce', 'lastAcknowledgedPly', 'stateHash', 'transcriptHash', 'createdAt',
+  ]),
+  QORTAL_LAND_GAME_RESUME_ACCEPT: schema([
+    'type', 'matchId', 'responderAddress', 'signerPublicKey', 'linkId',
+    'requesterNonce', 'recipientNonce', 'lastAcknowledgedPly', 'stateHash',
+    'transcriptHash', 'createdAt',
+  ]),
+  QORTAL_LAND_GAME_RESUME_CONFIRM: schema([
+    'type', 'matchId', 'requesterAddress', 'signerPublicKey', 'linkId',
+    'requesterNonce', 'recipientNonce', 'lastAcknowledgedPly', 'stateHash',
+    'transcriptHash', 'createdAt',
+  ]),
   PRESENCE_ANNOUNCE: schema([
     'type',
     'address',
@@ -374,6 +406,111 @@ function assertSafeObjectGraph(value: unknown, depth = 0): void {
   }
 }
 
+const GAME_HANDSHAKE_PREFIX = 'QORTAL_LAND_GAME_';
+const GAME_HEX_BYTES: Readonly<Record<string, number>> = {
+  acceptHash: 32,
+  initialStateHash: 32,
+  inviteHash: 32,
+  linkId: 16,
+  recipientNonce: 16,
+  requesterNonce: 16,
+  stateHash: 32,
+  transcriptHash: 32,
+};
+
+function assertSafeGameHandshake(payload: Record<string, unknown>): void {
+  if (serializedSize(payload) > 4 * 1024) {
+    throw new Error('Game handshake payload is too large');
+  }
+  for (const [key, value] of Object.entries(payload)) {
+    if (
+      (typeof value !== 'string' && typeof value !== 'number') ||
+      typeof value === 'boolean'
+    ) {
+      throw new Error(`Game handshake field is not scalar: ${key}`);
+    }
+    if (typeof value === 'string' && value.length > 256) {
+      throw new Error(`Game handshake field is too long: ${key}`);
+    }
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+      throw new Error(`Game handshake field is not an integer: ${key}`);
+    }
+  }
+  if (
+    typeof payload.matchId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.matchId
+    )
+  ) {
+    throw new Error('Game handshake matchId is invalid');
+  }
+  for (const [key, byteLength] of Object.entries(GAME_HEX_BYTES)) {
+    if (!(key in payload)) continue;
+    const value = payload[key];
+    if (
+      typeof value !== 'string' ||
+      !new RegExp(`^[0-9a-f]{${byteLength * 2}}$`, 'i').test(value)
+    ) {
+      throw new Error(`Game handshake binary field is invalid: ${key}`);
+    }
+  }
+  for (const key of [
+    'requesterAddress',
+    'recipientAddress',
+    'responderAddress',
+    'signerPublicKey',
+  ]) {
+    if (!(key in payload)) continue;
+    const value = payload[key];
+    if (
+      typeof value !== 'string' ||
+      value.length < 20 ||
+      value.length > 64 ||
+      !/^[1-9A-HJ-NP-Za-km-z]+$/.test(value)
+    ) {
+      throw new Error(`Game handshake identity field is invalid: ${key}`);
+    }
+  }
+  for (const key of ['createdAt', 'expiresAt']) {
+    if (!(key in payload)) continue;
+    const value = payload[key];
+    if (typeof value !== 'number' || value < 0) {
+      throw new Error(`Game handshake timestamp is invalid: ${key}`);
+    }
+  }
+  if ('lastAcknowledgedPly' in payload) {
+    const ply = payload.lastAcknowledgedPly;
+    if (typeof ply !== 'number' || ply < 0 || ply > 42) {
+      throw new Error('Game handshake ply is invalid');
+    }
+  }
+  if (payload.type === 'QORTAL_LAND_GAME_INVITE') {
+    if (
+      payload.protocolVersion !== 1 ||
+      payload.game !== 'connect-four' ||
+      payload.gameVersion !== 1 ||
+      payload.rulesVersion !== 1 ||
+      typeof payload.groupId !== 'string' ||
+      payload.groupId.length === 0 ||
+      payload.groupId.length > 64
+    ) {
+      throw new Error('Game invitation version or group is invalid');
+    }
+  }
+  if (
+    'reason' in payload &&
+    !['declined', 'busy', 'superseded'].includes(String(payload.reason))
+  ) {
+    throw new Error('Game decline reason is invalid');
+  }
+  if (
+    'starter' in payload &&
+    !['requester', 'recipient'].includes(String(payload.starter))
+  ) {
+    throw new Error('Game starter is invalid');
+  }
+}
+
 function assertPayload(
   payload: unknown,
   schemas: Readonly<Record<string, SigningSchema>>,
@@ -391,6 +528,9 @@ function assertPayload(
     if (!candidate || !matchesSchema(payload, candidate)) {
       throw new Error(`Signing payload type is not allowed: ${type}`);
     }
+    if (type.startsWith(GAME_HANDSHAKE_PREFIX)) {
+      assertSafeGameHandshake(payload);
+    }
     return;
   }
   if (!untypedSchemas.some((candidate) => matchesSchema(payload, candidate))) {
@@ -407,6 +547,13 @@ export function assertAllowedPresenceSigningPayload(
     [p2pChatSchema],
     PRESENCE_SIGNING_MAX_BYTES
   );
+  if (
+    typeof payload.type === 'string' &&
+    payload.type.startsWith('QORTAL_LAND_GAME_') &&
+    serializedSize(payload) > 4 * 1024
+  ) {
+    throw new Error('Game handshake signing payload is too large');
+  }
 }
 
 export function assertAllowedReticulumSigningPayload(

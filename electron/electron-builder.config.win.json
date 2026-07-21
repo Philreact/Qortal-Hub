@@ -10,6 +10,10 @@
       "to": "reticulum/presence_bridge.py"
     },
     {
+      "from": "resources/qortalland_games.py",
+      "to": "reticulum/qortalland_games.py"
+    },
+    {
       "from": "resources/mesh-network.identity",
       "to": "reticulum/mesh-network.identity"
     },
@@ -23,6 +27,7 @@
       "filter": [
         "**/*",
         "!presence_bridge.py",
+        "!qortalland_games.py",
         "!mesh-network.identity",
         "!mesh-network.passphrase",
         "!__pycache__/**",

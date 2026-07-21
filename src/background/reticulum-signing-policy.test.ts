@@ -12,6 +12,31 @@ function expectAllowed(
 }
 
 describe('Reticulum wallet signing policy', () => {
+  it('allows only the exact Qortal Land game handshake schemas', () => {
+    const invite = {
+      type: 'QORTAL_LAND_GAME_INVITE', protocolVersion: 1,
+      game: 'connect-four', gameVersion: 1, rulesVersion: 1,
+      matchId: '00112233-4455-4677-8899-aabbccddeeff', groupId: '123',
+      requesterAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
+      recipientAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
+      signerPublicKey: '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE',
+      requesterNonce: '11'.repeat(16), linkId: '22'.repeat(16),
+      createdAt: 1, expiresAt: 2,
+    };
+    expectAllowed(assertAllowedPresenceSigningPayload, invite);
+    expect(() => assertAllowedPresenceSigningPayload({ ...invite, move: 3 })).toThrow();
+    const { linkId: _linkId, ...missing } = invite;
+    expect(() => assertAllowedPresenceSigningPayload(missing)).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({
+      type: 'QORTAL_LAND_GAME_MOVE', matchId: 'm', column: 3,
+    })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({
+      ...invite, signerPublicKey: { value: invite.signerPublicKey },
+    })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({
+      ...invite, groupId: 'x'.repeat(5_000),
+    })).toThrow();
+  });
   it('allows every current presence, call, and file-auth control type', () => {
     const payloads: Record<string, unknown>[] = [
       {
