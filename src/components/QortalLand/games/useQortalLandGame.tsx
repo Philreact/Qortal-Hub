@@ -7,15 +7,58 @@ import {
   hashConnectFourState,
   type ConnectFourMove,
   type ConnectFourSeat,
+  type ConnectFourState,
 } from './connectFour';
 import {
   ConnectFourGameDialog,
   type ConnectFourGameView,
 } from './ConnectFourGameDialog';
+import {
+  applyCheckersMove,
+  createCheckersState,
+  deriveCheckersStartingSeat,
+  hashCheckersState,
+  type CheckersMove,
+  type CheckersState,
+} from './checkers';
+import { CheckersGameDialog } from './CheckersGameDialog';
 import type { GameChatMessage } from './GameSessionChat';
 
 type Target = { address: string; name?: string };
-type Match = ConnectFourGameView;
+export type QortalLandGameId = 'connect-four' | 'checkers';
+export type QortalLandGameState = ConnectFourState | CheckersState;
+export type QortalLandGameMove = ConnectFourMove | CheckersMove;
+export type QortalLandGameMatchView = Omit<ConnectFourGameView, 'state' | 'moves'> & {
+  game: QortalLandGameId;
+  state?: QortalLandGameState;
+  moves: QortalLandGameMove[];
+};
+type Match = QortalLandGameMatchView;
+
+const isGameId = (value: unknown): value is QortalLandGameId =>
+  value === 'connect-four' || value === 'checkers';
+
+const gameConfig = (game: QortalLandGameId) => ({ game, gameVersion: 1, rulesVersion: 1 });
+
+const deriveStartingSeat = (game: QortalLandGameId, roundId: string, requesterNonce: string, recipientNonce: string) =>
+  game === 'checkers'
+    ? deriveCheckersStartingSeat(roundId, requesterNonce, recipientNonce)
+    : deriveConnectFourStartingSeat(roundId, requesterNonce, recipientNonce);
+
+const createGameState = (game: QortalLandGameId, seat: ConnectFourSeat) =>
+  game === 'checkers' ? createCheckersState(seat) : createConnectFourState(seat);
+
+const hashGameState = (game: QortalLandGameId, state: QortalLandGameState) =>
+  game === 'checkers' ? hashCheckersState(state as CheckersState) : hashConnectFourState(state as ConnectFourState);
+
+const applyGameMove = (game: QortalLandGameId, state: QortalLandGameState, seat: ConnectFourSeat, move: Record<string, unknown>): QortalLandGameState => {
+  if (game === 'checkers') {
+    if (!Number.isInteger(move.from) || !Array.isArray(move.path)) throw new Error('Invalid Checkers move');
+    return applyCheckersMove(state as CheckersState, seat, Number(move.from), move.path.map(Number));
+  }
+  if (!Number.isInteger(move.column)) throw new Error('Invalid Connect Four move');
+  return applyConnectFourMove(state as ConnectFourState, seat, Number(move.column));
+};
 
 type Options = {
   address: string;
@@ -59,7 +102,7 @@ const parseChatMessages = (value: unknown): GameChatMessage[] => (
 
 export const canSignQortalLandGameHandshake = (
   fields: Record<string, unknown>,
-  current: Match | null,
+  current: (Pick<Match, 'matchId' | 'requesterAddress' | 'recipientAddress' | 'requesterNonce'> & Partial<Pick<Match, 'recipientNonce' | 'roundId' | 'game'>>) | null,
   address: string,
   publicKey: string
 ): boolean => {
@@ -83,7 +126,7 @@ export const canSignQortalLandGameHandshake = (
     if (type === 'QORTAL_LAND_GAME_INVITE') {
       return (
         fields.protocolVersion === 2 &&
-        fields.game === 'connect-four' &&
+        fields.game === (current.game || 'connect-four') &&
         fields.gameVersion === 1 &&
         fields.rulesVersion === 1 &&
         fields.requesterNonce === current.requesterNonce
@@ -161,9 +204,9 @@ export function useQortalLandGame(options: Options) {
     requesterNonce: string,
     recipientNonce: string
   ) => {
-    const startingSeat = await deriveConnectFourStartingSeat(roundId, requesterNonce, recipientNonce);
-    const state = createConnectFourState(startingSeat);
-    const stateHash = await hashConnectFourState(state);
+    const startingSeat = await deriveStartingSeat(current.game, roundId, requesterNonce, recipientNonce);
+    const state = createGameState(current.game, startingSeat);
+    const stateHash = await hashGameState(current.game, state);
     updateMatch((value) => value?.matchId === current.matchId ? {
       ...value,
       roundId,
@@ -244,8 +287,9 @@ export function useQortalLandGame(options: Options) {
     if (message.type === 'ROUND_REQUEST') {
       const roundId = String(message.roundId || '');
       const requesterNonce = String(message.requesterNonce || '');
-      if (!['session-idle', 'finished'].includes(current.phase) || !roundId || !/^[0-9a-f]{32}$/i.test(requesterNonce)) return;
-      replaceMatch({ ...current, roundId, requesterNonce, recipientNonce: undefined, phase: 'round-incoming', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+      const game = message.game;
+      if (!isGameId(game) || !['session-idle', 'finished'].includes(current.phase) || !roundId || !/^[0-9a-f]{32}$/i.test(requesterNonce)) return;
+      replaceMatch({ ...current, game, roundId, requesterNonce, recipientNonce: undefined, phase: 'round-incoming', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
       return;
     }
     if (message.type === 'ROUND_RESPONSE') {
@@ -351,14 +395,14 @@ export function useQortalLandGame(options: Options) {
       return;
     }
     if (message.type !== 'MOVE' && message.type !== 'SYNC_MOVE') return;
-    const move = message as unknown as ConnectFourMove;
+    const move = message as unknown as ConnectFourMove | CheckersMove;
     try {
       if (current.pendingMoveId || move.ply !== current.state.ply + 1 || move.previousStateHash !== current.stateHash) {
         throw new Error('Unexpected move sequence');
       }
       const remoteSeat = current.localSeat === 1 ? 2 : 1;
-      const next = applyConnectFourMove(current.state, remoteSeat, move.column);
-      const resultingHash = await hashConnectFourState(next);
+      const next = applyGameMove(current.game, current.state, remoteSeat, message);
+      const resultingHash = await hashGameState(current.game, next);
       if (resultingHash !== move.resultingStateHash) throw new Error('Move state hash mismatch');
       send('SEND_GAME_MESSAGE', {
         matchId: current.matchId,
@@ -456,9 +500,11 @@ export function useQortalLandGame(options: Options) {
     }
     if (event.type === 'GAME_INVITE_RECEIVED') {
       if (matchRef.current && event.matchId !== matchRef.current.matchId) return;
+      if (!isGameId(event.game)) return;
       onPlayerSeen?.(String(event.requesterAddress));
       replaceMatch({
         matchId: String(event.matchId), requesterAddress: String(event.requesterAddress),
+        game: event.game,
         roundId: String(event.matchId),
         recipientAddress: String(event.recipientAddress || address),
         requesterNonce: String(event.requesterNonce || ''), phase: 'incoming',
@@ -478,10 +524,12 @@ export function useQortalLandGame(options: Options) {
       const recipientNonce = String(event.recipientNonce);
       const roundId = String(event.roundId || event.matchId);
       const transportPhase = String(event.phase || '');
+      const eventGame = isGameId(event.game) ? event.game : matchRef.current?.game || 'connect-four';
       const chatMessages = parseChatMessages(event.chatMessages);
       if (['establishing', 'awaiting_response', 'invited'].includes(transportPhase)) {
         replaceMatch({
           matchId: String(event.matchId),
+          game: eventGame,
           roundId,
           requesterAddress,
           recipientAddress,
@@ -503,6 +551,7 @@ export function useQortalLandGame(options: Options) {
           : {};
         replaceMatch({
           matchId: String(event.matchId),
+          game: isGameId(pending.game) ? pending.game : eventGame,
           roundId: String(pending.roundId || roundId),
           requesterAddress,
           recipientAddress,
@@ -518,46 +567,42 @@ export function useQortalLandGame(options: Options) {
         });
         return;
       }
-      const startingSeat = await deriveConnectFourStartingSeat(
-        roundId, requesterNonce, recipientNonce
-      );
+      const startingSeat = await deriveStartingSeat(eventGame, roundId, requesterNonce, recipientNonce);
       const localSeat: ConnectFourSeat = address === requesterAddress ? 1 : 2;
-      let state = createConnectFourState(startingSeat);
-      let stateHash = await hashConnectFourState(state);
+      let state = createGameState(eventGame, startingSeat);
+      let stateHash = await hashGameState(eventGame, state);
       const transcript = Array.isArray(event.transcript) ? event.transcript : [];
-      const moves: ConnectFourMove[] = [];
+      const moves: Array<ConnectFourMove | CheckersMove> = [];
       for (const raw of transcript) {
         if (!raw || typeof raw !== 'object') throw new Error('Invalid snapshot move');
-        const move = raw as ConnectFourMove;
+        const move = raw as ConnectFourMove | CheckersMove;
         if (
           move.ply !== state.ply + 1 ||
-          move.previousStateHash !== stateHash ||
-          !Number.isInteger(move.column)
+          move.previousStateHash !== stateHash
         ) {
           throw new Error('Snapshot move sequence mismatch');
         }
         const seat = state.nextSeat;
-        state = applyConnectFourMove(state, seat, move.column);
-        stateHash = await hashConnectFourState(state);
+        state = applyGameMove(eventGame, state, seat, raw as Record<string, unknown>);
+        stateHash = await hashGameState(eventGame, state);
         if (stateHash !== move.resultingStateHash) throw new Error('Snapshot transcript mismatch');
         moves.push(move);
       }
       let pendingMoveId: string | undefined;
       const pendingRaw = event.pendingOutboundMove;
       if (pendingRaw && typeof pendingRaw === 'object' && !Array.isArray(pendingRaw)) {
-        const pending = pendingRaw as ConnectFourMove;
+        const pending = pendingRaw as ConnectFourMove | CheckersMove;
         if (
           state.outcome ||
           state.nextSeat !== localSeat ||
           pending.ply !== state.ply + 1 ||
           pending.previousStateHash !== stateHash ||
-          typeof pending.messageId !== 'string' ||
-          !Number.isInteger(pending.column)
+          typeof pending.messageId !== 'string'
         ) {
           throw new Error('Snapshot pending move mismatch');
         }
-        state = applyConnectFourMove(state, localSeat, pending.column);
-        stateHash = await hashConnectFourState(state);
+        state = applyGameMove(eventGame, state, localSeat, pendingRaw as Record<string, unknown>);
+        stateHash = await hashGameState(eventGame, state);
         if (stateHash !== pending.resultingStateHash) {
           throw new Error('Snapshot pending move hash mismatch');
         }
@@ -566,6 +611,7 @@ export function useQortalLandGame(options: Options) {
       }
       updateMatch((previous) => ({
         ...(previous || {} as Match), matchId: String(event.matchId), roundId, requesterAddress,
+        game: eventGame,
         recipientAddress, requesterNonce, recipientNonce, startingSeat,
         localSeat,
         phase: ['recovering', 'awaiting_resume_accept', 'awaiting_resume_confirm'].includes(transportPhase)
@@ -759,7 +805,7 @@ export function useQortalLandGame(options: Options) {
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
   }, []);
 
-  const challenge = useCallback(async (target: Target) => {
+  const challenge = useCallback(async (target: Target, game: QortalLandGameId = 'connect-four') => {
     if (!transportReady || target.address === address) return;
     const existing = matchRef.current;
     if (existing?.phase === 'session-idle') {
@@ -767,8 +813,8 @@ export function useQortalLandGame(options: Options) {
       if (peer === target.address) {
         const roundId = crypto.randomUUID();
         const requesterNonce = randomHex(16);
-        replaceMatch({ ...existing, roundId, requesterNonce, recipientNonce: undefined, phase: 'round-waiting', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
-        send('SEND_GAME_MESSAGE', { matchId: existing.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, game: 'connect-four', gameVersion: 1, rulesVersion: 1 } });
+        replaceMatch({ ...existing, game, roundId, requesterNonce, recipientNonce: undefined, phase: 'round-waiting', state: undefined, stateHash: undefined, moves: [], outcome: undefined, error: undefined });
+        send('SEND_GAME_MESSAGE', { matchId: existing.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, ...gameConfig(game) } });
         return;
       }
       send('CLOSE_GAME_LINK', { matchId: existing.matchId });
@@ -780,6 +826,7 @@ export function useQortalLandGame(options: Options) {
     const requesterNonce = randomHex(16);
     replaceMatch({
       matchId,
+      game,
       roundId: matchId,
       requesterAddress: address,
       recipientAddress: target.address,
@@ -790,7 +837,7 @@ export function useQortalLandGame(options: Options) {
       moves: [],
       chatMessages: [],
     });
-    send('OPEN_GAME_LINK', { matchId, recipientAddress: target.address, requesterNonce });
+    send('OPEN_GAME_LINK', { matchId, recipientAddress: target.address, requesterNonce, game });
   }, [address, replaceMatch, resolvePlayerName, send, transportReady]);
 
   const respond = useCallback((accepted: boolean) => {
@@ -827,7 +874,7 @@ export function useQortalLandGame(options: Options) {
 
   const playColumn = useCallback(async (column: number): Promise<boolean> => {
     const current = matchRef.current;
-    if (moveInFlightRef.current || !current?.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat || connectFourDropRow(current.state, column) === null) return false;
+    if (moveInFlightRef.current || current?.game !== 'connect-four' || !current.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat || connectFourDropRow(current.state, column) === null) return false;
     moveInFlightRef.current = true;
     try {
       const previousStateHash = current.stateHash || await hashConnectFourState(current.state);
@@ -853,10 +900,31 @@ export function useQortalLandGame(options: Options) {
     }
   }, [failProtocol, replaceMatch, send]);
 
+  const playCheckersMove = useCallback(async (from: number, path: number[]): Promise<boolean> => {
+    const current = matchRef.current;
+    if (moveInFlightRef.current || current?.game !== 'checkers' || !current.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat) return false;
+    moveInFlightRef.current = true;
+    try {
+      const previousStateHash = current.stateHash || await hashCheckersState(current.state);
+      const next = applyCheckersMove(current.state, current.localSeat, from, path);
+      const resultingStateHash = await hashCheckersState(next);
+      const messageId = crypto.randomUUID();
+      const move: CheckersMove = { messageId, ply: next.ply, from, path, previousStateHash, resultingStateHash };
+      replaceMatch({ ...current, state: next, stateHash: resultingStateHash, pendingMoveId: messageId, pendingSince: Date.now(), moves: [...current.moves, move] });
+      send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'MOVE', roundId: current.roundId, ...move } });
+      return true;
+    } catch (error) {
+      failProtocol(error instanceof Error ? error.message : 'Move failed');
+      return false;
+    } finally {
+      moveInFlightRef.current = false;
+    }
+  }, [failProtocol, replaceMatch, send]);
+
   const resign = useCallback(() => {
     const current = matchRef.current;
     if (!current?.localSeat) return;
-    if (!window.confirm('Resign this Connect Four game?')) return;
+    if (!window.confirm(`Resign this ${current.game === 'checkers' ? 'Checkers' : 'Connect Four'} game?`)) return;
     send('RESIGN_GAME', { matchId: current.matchId });
     replaceMatch({ ...current, phase: 'finishing', outcome: { type: 'resigned', winner: current.localSeat === 1 ? 2 : 1 } });
   }, [replaceMatch, send]);
@@ -960,13 +1028,28 @@ export function useQortalLandGame(options: Options) {
       outcome: undefined,
       error: undefined,
     });
-    send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, game: 'connect-four', gameVersion: 1, rulesVersion: 1 } });
+    send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, ...gameConfig(current.game) } });
   }, [replaceMatch, send, transportReady]);
 
-  const modal = (
-    <ConnectFourGameDialog
+  const modal = match?.game === 'checkers' ? (
+    <CheckersGameDialog
       address={address}
       match={match}
+      now={now}
+      onClose={close}
+      onPlayMove={playCheckersMove}
+      onRematch={rematch}
+      onResign={resign}
+      onRespond={respond}
+      onSendChat={sendChat}
+      onTyping={sendTyping}
+      resolvePlayerName={resolvePlayerName}
+      transportReady={transportReady}
+    />
+  ) : (
+    <ConnectFourGameDialog
+      address={address}
+      match={match as ConnectFourGameView | null}
       now={now}
       onClose={close}
       onPlayColumn={playColumn}

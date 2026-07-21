@@ -26,6 +26,18 @@ describe('Qortal Land game handshake signing guard', () => {
     }, match, match.requesterAddress, 'public-key')).toBe(true);
   });
 
+  it('binds a Checkers signature request to a Checkers challenge', () => {
+    const checkersMatch = { ...match, game: 'checkers' as const };
+    const fields = {
+      type: 'QORTAL_LAND_GAME_INVITE', matchId: match.matchId,
+      requesterAddress: match.requesterAddress, recipientAddress: match.recipientAddress,
+      signerPublicKey: 'public-key', requesterNonce: match.requesterNonce,
+      protocolVersion: 2, game: 'checkers', gameVersion: 1, rulesVersion: 1,
+    };
+    expect(canSignQortalLandGameHandshake(fields, checkersMatch, match.requesterAddress, 'public-key')).toBe(true);
+    expect(canSignQortalLandGameHandshake({ ...fields, game: 'connect-four' }, checkersMatch, match.requesterAddress, 'public-key')).toBe(false);
+  });
+
   it('rejects a changed match, recipient, or signer key', () => {
     const fields = {
       type: 'QORTAL_LAND_GAME_INVITE',

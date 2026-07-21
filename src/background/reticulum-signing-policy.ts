@@ -480,14 +480,14 @@ function assertSafeGameHandshake(payload: Record<string, unknown>): void {
   }
   if ('lastAcknowledgedPly' in payload) {
     const ply = payload.lastAcknowledgedPly;
-    if (typeof ply !== 'number' || ply < 0 || ply > 42) {
+    if (typeof ply !== 'number' || ply < 0 || ply > 200) {
       throw new Error('Game handshake ply is invalid');
     }
   }
   if (payload.type === 'QORTAL_LAND_GAME_INVITE') {
     if (
       payload.protocolVersion !== 2 ||
-      payload.game !== 'connect-four' ||
+      !['connect-four', 'checkers'].includes(String(payload.game)) ||
       payload.gameVersion !== 1 ||
       payload.rulesVersion !== 1 ||
       typeof payload.groupId !== 'string' ||

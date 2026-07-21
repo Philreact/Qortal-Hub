@@ -4,6 +4,7 @@ import type {
   ConnectFourSeat,
   ConnectFourState,
 } from './connectFour';
+import type { CheckersMove, CheckersOutcome, CheckersState } from './checkers';
 
 export const QORTAL_LAND_GAME_PROTOCOL = 'qortalland-game' as const;
 export const QORTAL_LAND_GAME_PROTOCOL_VERSION = 2 as const;
@@ -34,7 +35,7 @@ export type QortalLandGameParticipant = {
 export type QortalLandGameMatch = {
   matchId: string;
   groupId: number;
-  gameType: 'connect-four';
+  gameType: 'connect-four' | 'checkers';
   rulesVersion: 1;
   requester: QortalLandGameParticipant;
   recipient: QortalLandGameParticipant;
@@ -43,13 +44,13 @@ export type QortalLandGameMatch = {
   localSeat?: ConnectFourSeat;
   startingSeat?: ConnectFourSeat;
   phase: QortalLandGamePhase;
-  state?: ConnectFourState;
+  state?: ConnectFourState | CheckersState;
   stateHash?: string;
-  moves: ConnectFourMove[];
+  moves: Array<ConnectFourMove | CheckersMove>;
   pendingMoveId?: string;
   expiresAt?: number;
   reconnectDeadline?: number;
-  outcome?: ConnectFourOutcome;
+  outcome?: ConnectFourOutcome | CheckersOutcome;
   error?: string;
 };
 

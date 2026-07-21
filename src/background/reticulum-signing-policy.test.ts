@@ -24,6 +24,8 @@ describe('Reticulum wallet signing policy', () => {
       createdAt: 1, expiresAt: 2,
     };
     expectAllowed(assertAllowedPresenceSigningPayload, invite);
+    expectAllowed(assertAllowedPresenceSigningPayload, { ...invite, game: 'checkers' });
+    expect(() => assertAllowedPresenceSigningPayload({ ...invite, game: 'chess' })).toThrow();
     expect(() => assertAllowedPresenceSigningPayload({ ...invite, move: 3 })).toThrow();
     const { linkId: _linkId, ...missing } = invite;
     expect(() => assertAllowedPresenceSigningPayload(missing)).toThrow();

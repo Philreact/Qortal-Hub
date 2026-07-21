@@ -37,9 +37,10 @@ LINK_TIMEOUT = 45
 RECOVERY_WINDOW = 30
 HEARTBEAT_INTERVAL = 10
 PROTOCOL_VERSION = 2
-GAME_ID = "connect-four"
-GAME_VERSION = 1
-RULES_VERSION = 1
+GAME_CONFIGS = {
+    "connect-four": {"gameVersion": 1, "rulesVersion": 1, "maxPly": 42},
+    "checkers": {"gameVersion": 1, "rulesVersion": 1, "maxPly": 200},
+}
 ADDRESS_VERSION = 58
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BASE58_MAP = {c: i for i, c in enumerate(BASE58_ALPHABET)}
@@ -551,6 +552,10 @@ class QortalLandGameManager:
         match_id = str(message.get("matchId") or "")
         recipient = str(message.get("recipientAddress") or "").strip()
         nonce = str(message.get("requesterNonce") or "").strip().lower()
+        game = str(message.get("game") or "connect-four")
+        config = GAME_CONFIGS.get(game)
+        if not config:
+            raise ValueError("unsupported_game")
         uuid.UUID(match_id)
         if len(bytes.fromhex(nonce)) != 16 or not recipient or recipient == context["address"]:
             raise ValueError("invalid_game_invitation")
@@ -568,6 +573,9 @@ class QortalLandGameManager:
             "requesterPublicKey": context["publicKey"],
             "requesterNonce": nonce,
             "groupId": context["groupId"],
+            "game": game,
+            "gameVersion": config["gameVersion"],
+            "rulesVersion": config["rulesVersion"],
             "peerHash": peer_hash,
             "phase": "establishing",
             "outbound": True,
@@ -691,9 +699,9 @@ class QortalLandGameManager:
         return {
             "type": "QORTAL_LAND_GAME_INVITE",
             "protocolVersion": PROTOCOL_VERSION,
-            "game": GAME_ID,
-            "gameVersion": GAME_VERSION,
-            "rulesVersion": RULES_VERSION,
+            "game": state["game"],
+            "gameVersion": state["gameVersion"],
+            "rulesVersion": state["rulesVersion"],
             "matchId": state["matchId"],
             "groupId": state["groupId"],
             "requesterAddress": state["requester"],
@@ -854,6 +862,9 @@ class QortalLandGameManager:
                 "requesterPublicKey": fields["signerPublicKey"],
                 "requesterNonce": fields["requesterNonce"],
                 "groupId": fields["groupId"],
+                "game": fields["game"],
+                "gameVersion": fields["gameVersion"],
+                "rulesVersion": fields["rulesVersion"],
                 "linkId": fields["linkId"],
                 "link": link,
                 "outbound": False,
@@ -877,7 +888,9 @@ class QortalLandGameManager:
                     "requesterAddress": state["requester"],
                     "recipientAddress": state["recipient"],
                     "requesterNonce": state["requesterNonce"],
-                    "game": GAME_ID,
+                    "game": state["game"],
+                    "gameVersion": state["gameVersion"],
+                    "rulesVersion": state["rulesVersion"],
                     "expiresAt": state["expiresAt"],
                 },
             )
@@ -901,6 +914,9 @@ class QortalLandGameManager:
             "requesterPublicKey": fields["signerPublicKey"],
             "requesterNonce": fields["requesterNonce"],
             "groupId": fields["groupId"],
+            "game": fields["game"],
+            "gameVersion": fields["gameVersion"],
+            "rulesVersion": fields["rulesVersion"],
             "linkId": fields["linkId"],
             "link": link,
             "outbound": False,
@@ -986,7 +1002,7 @@ class QortalLandGameManager:
         local = self._resume_state_fields(state)
         remote_ply = int(fields.get("lastAcknowledgedPly") or 0)
         local_ply = int(local["lastAcknowledgedPly"])
-        if remote_ply < 0 or remote_ply > 42:
+        if remote_ply < 0 or remote_ply > int(GAME_CONFIGS[state["game"]]["maxPly"]):
             raise ValueError("invalid_resume_ply")
         if remote_ply <= local_ply:
             expected = self._transcript_summary(state, remote_ply)
@@ -1030,7 +1046,14 @@ class QortalLandGameManager:
         context = self.land_context
         if not context:
             raise ValueError("unavailable")
-        if fields.get("type") != "QORTAL_LAND_GAME_INVITE" or fields.get("protocolVersion") != PROTOCOL_VERSION or fields.get("game") != GAME_ID or fields.get("gameVersion") != GAME_VERSION or fields.get("rulesVersion") != RULES_VERSION:
+        config = GAME_CONFIGS.get(str(fields.get("game") or ""))
+        if (
+            fields.get("type") != "QORTAL_LAND_GAME_INVITE"
+            or fields.get("protocolVersion") != PROTOCOL_VERSION
+            or not config
+            or fields.get("gameVersion") != config["gameVersion"]
+            or fields.get("rulesVersion") != config["rulesVersion"]
+        ):
             raise ValueError("unsupported")
         if fields.get("recipientAddress") != context.get("address") or fields.get("groupId") != context.get("groupId"):
             raise ValueError("wrong_recipient")
@@ -1133,11 +1156,25 @@ class QortalLandGameManager:
         except Exception as exc:
             raise ValueError("invalid_move_message_id") from exc
         ply = move.get("ply")
-        column = move.get("column")
-        if not isinstance(ply, int) or isinstance(ply, bool) or ply < 1 or ply > 42:
+        game = str(state.get("game") or "connect-four")
+        max_ply = int(GAME_CONFIGS.get(game, {}).get("maxPly") or 0)
+        if not isinstance(ply, int) or isinstance(ply, bool) or ply < 1 or ply > max_ply:
             raise ValueError("invalid_move_ply")
-        if not isinstance(column, int) or isinstance(column, bool) or column < 0 or column > 6:
-            raise ValueError("invalid_move_column")
+        if game == "connect-four":
+            column = move.get("column")
+            if not isinstance(column, int) or isinstance(column, bool) or column < 0 or column > 6:
+                raise ValueError("invalid_move_column")
+        elif game == "checkers":
+            origin = move.get("from")
+            path = move.get("path")
+            if (
+                not isinstance(origin, int) or isinstance(origin, bool) or origin < 0 or origin > 63
+                or not isinstance(path, list) or not 1 <= len(path) <= 12
+                or any(not isinstance(square, int) or isinstance(square, bool) or square < 0 or square > 63 for square in path)
+            ):
+                raise ValueError("invalid_checkers_move")
+        else:
+            raise ValueError("unsupported_game")
         if ply != len(state.get("transcript") or []) + 1:
             raise ValueError("unexpected_move_ply")
         previous_hash = str(move.get("previousStateHash") or "")
@@ -1151,15 +1188,25 @@ class QortalLandGameManager:
 
     @staticmethod
     def _same_move(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-        keys = ("roundId", "messageId", "ply", "column", "previousStateHash", "resultingStateHash")
+        keys = ("roundId", "messageId", "ply", "column", "from", "path", "previousStateHash", "resultingStateHash")
         return all(left.get(key) == right.get(key) for key in keys)
 
-    def _reset_round(self, state: Dict[str, Any], round_id: str, requester_nonce: str, recipient_nonce: str) -> None:
+    def _reset_round(
+        self, state: Dict[str, Any], round_id: str, requester_nonce: str,
+        recipient_nonce: str, game: Optional[str] = None
+    ) -> None:
         uuid.UUID(round_id)
         if not valid_hex(requester_nonce, 16) or not valid_hex(recipient_nonce, 16):
             raise ValueError("invalid_round_nonce")
+        selected_game = game or str((state.get("pendingRound") or {}).get("game") or state.get("game") or "")
+        config = GAME_CONFIGS.get(selected_game)
+        if not config:
+            raise ValueError("unsupported_round")
         state.update({
             "roundId": round_id,
+            "game": selected_game,
+            "gameVersion": config["gameVersion"],
+            "rulesVersion": config["rulesVersion"],
             "roundRequesterNonce": requester_nonce,
             "roundRecipientNonce": recipient_nonce,
             "phase": "active",
@@ -1281,7 +1328,9 @@ class QortalLandGameManager:
         uuid.UUID(round_id)
         if round_id == state.get("roundId"):
             raise ValueError("round_already_used")
-        if message.get("game") not in {None, GAME_ID} or message.get("gameVersion") not in {None, GAME_VERSION} or message.get("rulesVersion") not in {None, RULES_VERSION}:
+        game = str(message.get("game") or "")
+        config = GAME_CONFIGS.get(game)
+        if not config or message.get("gameVersion") != config["gameVersion"] or message.get("rulesVersion") != config["rulesVersion"]:
             raise ValueError("unsupported_round")
 
     def _chat_error(self, state: Dict[str, Any], reason: str) -> None:
@@ -1377,6 +1426,7 @@ class QortalLandGameManager:
                 state["pendingRound"] = {
                     "roundId": game_message["roundId"],
                     "requesterNonce": game_message["requesterNonce"],
+                    "game": game_message["game"],
                     "requestedByRemote": True,
                 }
                 state["phase"] = "round_incoming"
@@ -1598,7 +1648,7 @@ class QortalLandGameManager:
                 else -1
             )
             local_ply = int(local["lastAcknowledgedPly"])
-            compatible = 0 <= remote_ply <= 42
+            compatible = 0 <= remote_ply <= int(GAME_CONFIGS[state["game"]]["maxPly"])
             if compatible and remote_ply <= local_ply:
                 expected = self._transcript_summary(state, remote_ply)
                 compatible = (
@@ -1645,7 +1695,7 @@ class QortalLandGameManager:
                 else -1
             )
             local_ply = int(local["lastAcknowledgedPly"])
-            compatible = 0 <= remote_ply <= 42
+            compatible = 0 <= remote_ply <= int(GAME_CONFIGS[state["game"]]["maxPly"])
             if compatible and remote_ply <= local_ply:
                 expected = self._transcript_summary(state, remote_ply)
                 compatible = fields.get("stateHash") == expected["stateHash"] and fields.get("transcriptHash") == expected["transcriptHash"]
@@ -1675,21 +1725,44 @@ class QortalLandGameManager:
         round_id = state.get("roundId") or state["matchId"]
         requester_nonce = state.get("roundRequesterNonce") or state["requesterNonce"]
         recipient_nonce = state.get("roundRecipientNonce") or state["recipientNonce"]
-        digest = hashlib.sha256(b"qortalland-game:v2:connect-four:" + uuid.UUID(round_id).bytes + bytes.fromhex(requester_nonce) + bytes.fromhex(recipient_nonce)).digest()
+        prefix = f"qortalland-game:v2:{state.get('game') or 'connect-four'}:".encode("utf-8")
+        digest = hashlib.sha256(prefix + uuid.UUID(round_id).bytes + bytes.fromhex(requester_nonce) + bytes.fromhex(recipient_nonce)).digest()
         return "requester" if digest[-1] & 1 == 0 else "recipient"
 
     def _initial_state_hash(self, state: Dict[str, Any]) -> str:
         next_seat = 1 if self._starter(state) == "requester" else 2
-        canonical = json.dumps(
-            {
-                "board": [0] * 42,
-                "game": GAME_ID,
+        if state.get("game") == "checkers":
+            board = [0] * 64
+            for row in range(3):
+                for column in range(8):
+                    if (row + column) % 2 == 1:
+                        board[row * 8 + column] = 2
+            for row in range(5, 8):
+                for column in range(8):
+                    if (row + column) % 2 == 1:
+                        board[row * 8 + column] = 1
+            value = {
+                "board": board,
+                "game": "checkers",
                 "nextSeat": next_seat,
                 "outcome": None,
                 "ply": 0,
                 "protocolVersion": PROTOCOL_VERSION,
-                "rulesVersion": RULES_VERSION,
-            },
+                "quietPly": 0,
+                "rulesVersion": state.get("rulesVersion") or 1,
+            }
+        else:
+            value = {
+                "board": [0] * 42,
+                "game": "connect-four",
+                "nextSeat": next_seat,
+                "outcome": None,
+                "ply": 0,
+                "protocolVersion": PROTOCOL_VERSION,
+                "rulesVersion": state.get("rulesVersion") or 1,
+            }
+        canonical = json.dumps(
+            value,
             separators=(",", ":"),
         ).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
@@ -1742,6 +1815,7 @@ class QortalLandGameManager:
             state["pendingRound"] = {
                 "roundId": game_message["roundId"],
                 "requesterNonce": game_message["requesterNonce"],
+                "game": game_message["game"],
                 "requestedByRemote": False,
             }
             state["phase"] = "round_waiting"
@@ -1982,6 +2056,9 @@ class QortalLandGameManager:
         pending_outbound = list(state.get("pendingOutboundMoves", {}).values())
         return {
             "matchId": state["matchId"],
+            "game": state.get("game") or "connect-four",
+            "gameVersion": state.get("gameVersion") or 1,
+            "rulesVersion": state.get("rulesVersion") or 1,
             "requesterAddress": state["requester"],
             "recipientAddress": state["recipient"],
             "requesterNonce": state.get("roundRequesterNonce") or state["requesterNonce"],

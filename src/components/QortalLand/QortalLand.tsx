@@ -8967,22 +8967,27 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               {actionTargetInGame ? 'In a game' : actionTargetInCall ? 'In a call' : 'Play game'}
             </Button>
             {showGamePicker && (
-              <Button
-                disabled={!canStartLandGame}
-                fullWidth
-                onClick={() => {
-                  const target = actionTarget;
-                  setActionTarget(null);
-                  setShowGamePicker(false);
-                  void landGame.challenge({
-                    address: target.authorAddress,
-                    name: displayNameForAddress(target.authorAddress, primaryNameCacheRef.current),
-                  });
-                }}
-                sx={{ color: '#f8fbff', fontSize: 12, justifyContent: 'flex-start', textTransform: 'none' }}
-              >
-                Connect Four
-              </Button>
+              <Box sx={{ mt: 0.5 }}>
+                {(['connect-four', 'checkers'] as const).map((game) => (
+                  <Button
+                    disabled={!canStartLandGame}
+                    fullWidth
+                    key={game}
+                    onClick={() => {
+                      const target = actionTarget;
+                      setActionTarget(null);
+                      setShowGamePicker(false);
+                      void landGame.challenge({
+                        address: target.authorAddress,
+                        name: displayNameForAddress(target.authorAddress, primaryNameCacheRef.current),
+                      }, game);
+                    }}
+                    sx={{ color: '#f8fbff', fontSize: 12, justifyContent: 'flex-start', textTransform: 'none' }}
+                  >
+                    {game === 'connect-four' ? 'Connect Four' : 'Checkers'}
+                  </Button>
+                ))}
+              </Box>
             )}
           </Box>
         </ClickAwayListener>

@@ -116,6 +116,38 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "c095c107701a8a8137e036b8e917173b93663115cde740dd29500c600ca77aaf",
         )
 
+    def test_checkers_initial_state_hash_matches_typescript_fixture(self):
+        state = {
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "roundId": "00112233-4455-6677-8899-aabbccddeeff",
+            "requesterNonce": "11" * 16,
+            "recipientNonce": "22" * 15 + "00",
+            "game": "checkers",
+            "rulesVersion": 1,
+        }
+        self.assertEqual(self.manager._starter(state), "requester")
+        self.assertEqual(
+            self.manager._initial_state_hash(state),
+            "d8f380b461ea12fe5c662de0ba7c5707de3afdf36ec1f9d4222719b6b22cad7e",
+        )
+
+    def test_checkers_move_shape_supports_paths_and_rejects_columns(self):
+        state = {
+            "game": "checkers", "roundId": "00112233-4455-6677-8899-aabbccddeeff",
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "requesterNonce": "11" * 16, "recipientNonce": "22" * 15 + "00",
+            "transcript": [],
+        }
+        move = {
+            "messageId": "11112233-4455-4677-8899-aabbccddeeff", "ply": 1,
+            "from": 42, "path": [24, 10],
+            "previousStateHash": self.manager._initial_state_hash(state),
+            "resultingStateHash": "33" * 32,
+        }
+        self.manager._validate_move_shape(state, move)
+        with self.assertRaisesRegex(ValueError, "invalid_checkers_move"):
+            self.manager._validate_move_shape(state, {**move, "path": []})
+
     def test_compact_invite_round_trip_fits_classifier_packet(self):
         fields = {
             "type": "QORTAL_LAND_GAME_INVITE",
@@ -421,7 +453,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(manager.matches[match_id]["phase"], "session_idle")
         self.assertEqual(events[-1][0], "GAME_LINK_STATE")
 
-    def test_rematch_reuses_channel_and_resets_round_state(self):
+    def test_next_game_reuses_channel_and_can_switch_game_type(self):
         manager, _events = self.make_manager()
 
         class Channel:
@@ -445,6 +477,9 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "recipient": "Qopponent1111111111111111111111111111",
             "requesterNonce": "11" * 16,
             "recipientNonce": "22" * 16,
+            "game": "connect-four",
+            "gameVersion": 1,
+            "rulesVersion": 1,
             "transcript": [{"ply": 1}],
         }
         manager.matches[match_id] = state
@@ -453,7 +488,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "message": {
                 "type": "ROUND_REQUEST", "messageId": "10000000-0000-4000-8000-000000000011",
                 "roundId": round_id, "requesterNonce": "33" * 16,
-                "game": "connect-four", "gameVersion": 1, "rulesVersion": 1,
+                "game": "checkers", "gameVersion": 1, "rulesVersion": 1,
             },
         })
         manager._on_channel(match_id, GameMessage({"k": "game", "m": {
@@ -465,7 +500,18 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertIs(state["channel"], channel)
         self.assertEqual(state["phase"], "active")
         self.assertEqual(state["roundId"], round_id)
+        self.assertEqual(state["game"], "checkers")
         self.assertEqual(state["transcript"], [])
+
+    def test_largest_checkers_move_fits_channel_payload(self):
+        message = GameMessage({"k": "game", "m": {
+            "type": "MOVE", "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "roundId": "11112233-4455-4677-8899-aabbccddeeff",
+            "messageId": "22222233-4455-4677-8899-aabbccddeeff", "ply": 200,
+            "from": 63, "path": list(range(12)),
+            "previousStateHash": "aa" * 32, "resultingStateHash": "bb" * 32,
+        }})
+        self.assertLessEqual(len(message.pack()), MAX_CHANNEL_PAYLOAD)
 
     def test_delayed_move_from_previous_round_is_ignored(self):
         manager, events = self.make_manager()

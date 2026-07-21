@@ -115,6 +115,15 @@ describe('Connect Four game dialog', () => {
     expect(screen.getByRole('grid', { name: 'Connect Four board' })).toBeTruthy();
   });
 
+  it('reserves a fixed status line while a move is awaiting acknowledgement', () => {
+    const current = match({ ...createConnectFourState(2), ply: 1 });
+    renderGame({ ...current, pendingMoveId: crypto.randomUUID() });
+
+    const status = screen.getByTestId('connect-four-board-status');
+    expect(status).toHaveTextContent('Move placed — waiting for encrypted acknowledgement…');
+    expect(status).toHaveStyle({ lineHeight: '15px', minHeight: '15px' });
+  });
+
   it('shows the final summary and offers a rematch', () => {
     const onRematch = vi.fn();
     const finished = match({

@@ -97,7 +97,7 @@ export function GameSessionChat({
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        minHeight: { xs: 230, md: 480 },
+        minHeight: { xs: 230, md: 0 },
         minWidth: 0,
         pl: { md: 2 },
         pt: { xs: 2, md: 0 },

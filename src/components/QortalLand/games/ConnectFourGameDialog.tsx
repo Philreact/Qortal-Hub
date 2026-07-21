@@ -159,6 +159,8 @@ export function ConnectFourGameDialog({
   const [focusedColumn, setFocusedColumn] = useState<number | null>(null);
   const [shakeNonce, setShakeNonce] = useState(0);
   const [muted, setMuted] = useState(readMuted);
+  const [boardWidth, setBoardWidth] = useState<number | null>(null);
+  const boardAreaRef = useRef<HTMLDivElement | null>(null);
   const columnRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const focusedColumnRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -198,6 +200,14 @@ export function ConnectFourGameDialog({
   const previewRow = state && focusedColumn !== null && localTurn
     ? connectFourDropRow(state, focusedColumn)
     : null;
+  const canShowBoard = Boolean(
+    match &&
+    state &&
+    ['active', 'finishing', 'reconnecting', 'finished'].includes(match.phase)
+  );
+  const canShowChat = Boolean(
+    match && (state || ['round-waiting', 'round-incoming'].includes(match.phase) || (match.phase === 'finished' && match.roundId !== match.matchId))
+  );
 
   const playSound = useCallback((kind: 'drop' | 'turn' | 'invalid' | 'win' | 'loss') => {
     if (muted) return;
@@ -308,6 +318,29 @@ export function ConnectFourGameDialog({
   useEffect(() => {
     focusedColumnRef.current = focusedColumn;
   }, [focusedColumn]);
+
+  useEffect(() => {
+    const boardArea = boardAreaRef.current;
+    if (!boardArea || !canShowBoard) {
+      setBoardWidth(null);
+      return;
+    }
+    const fitBoard = (width: number, height: number) => {
+      const next = Math.floor(Math.min(width, height * (CONNECT_FOUR_COLUMNS / CONNECT_FOUR_ROWS)));
+      setBoardWidth(next > 0 ? next : null);
+    };
+    const measure = () => {
+      const bounds = boardArea.getBoundingClientRect();
+      fitBoard(bounds.width, bounds.height);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) fitBoard(entry.contentRect.width, entry.contentRect.height);
+    });
+    observer.observe(boardArea);
+    return () => observer.disconnect();
+  }, [canShowBoard]);
 
   const toggleMuted = useCallback(() => {
     setMuted((value) => {
@@ -420,15 +453,6 @@ export function ConnectFourGameDialog({
             : ''
     : '';
 
-  const canShowBoard = Boolean(
-    match &&
-    state &&
-    ['active', 'finishing', 'reconnecting', 'finished'].includes(match.phase)
-  );
-  const canShowChat = Boolean(
-    match && (state || ['round-waiting', 'round-incoming'].includes(match.phase) || (match.phase === 'finished' && match.roundId !== match.matchId))
-  );
-
   return (
     <Dialog
       open={Boolean(match && match.phase !== 'session-idle')}
@@ -445,6 +469,7 @@ export function ConnectFourGameDialog({
           border: `1px solid ${alpha('#2cf8ff', 0.32)}`,
           boxShadow: `0 28px 90px ${alpha('#000', 0.68)},0 0 44px ${alpha('#2cf8ff', 0.08)}`,
           color: '#f8fbff',
+          height: canShowBoard ? 'calc(100% - 64px)' : 'auto',
           overflow: 'hidden',
         },
       }}
@@ -468,9 +493,9 @@ export function ConnectFourGameDialog({
             </Tooltip>
           </DialogTitle>
 
-          <DialogContent sx={{ display: 'grid', gap: 2, gridTemplateColumns: canShowChat ? { xs: '1fr', md: 'minmax(420px, 1fr) 310px' } : '1fr' }}>
+          <DialogContent sx={{ display: 'grid', flex: '1 1 auto', gap: 2, gridTemplateColumns: canShowChat ? { xs: '1fr', md: 'minmax(420px, 1fr) 310px' } : '1fr', gridTemplateRows: { xs: 'auto', md: 'minmax(0, 1fr)' }, minHeight: 0, overflowX: 'hidden', overflowY: { xs: 'auto', md: 'hidden' } }}>
             <Box aria-live="polite" sx={{ height: 0, overflow: 'hidden', position: 'absolute', width: 0 }}>{liveMessage}</Box>
-            <Box sx={{ minWidth: 0 }}>
+            <Box sx={{ height: '100%', minHeight: 0, minWidth: 0 }}>
 
             {match.phase === 'opening' && (
               <Stack spacing={2} sx={{ py: 1 }}>
@@ -534,7 +559,7 @@ export function ConnectFourGameDialog({
             )}
 
             {canShowBoard && state && localSeat && (
-              <Stack spacing={1.5}>
+              <Stack spacing={1.5} sx={{ height: '100%', minHeight: 0 }}>
                 <Box sx={{ alignItems: 'center', display: 'grid', gap: 1, gridTemplateColumns: '1fr auto 1fr' }}>
                   {([localSeat, localSeat === 1 ? 2 : 1] as ConnectFourSeat[]).map((seat, index) => {
                     const isLocal = index === 0;
@@ -587,21 +612,26 @@ export function ConnectFourGameDialog({
                   </Alert>
                 )}
 
-                <Box
-                  key={shakeNonce}
-                  sx={{
-                    '@keyframes qlBoardShake': { '0%,100%': { transform: 'translateX(0)' }, '25%': { transform: 'translateX(-5px)' }, '75%': { transform: 'translateX(5px)' } },
-                    '@keyframes qlPieceDrop': { from: { opacity: 0.2, transform: 'translateY(-280%) scale(.88)' }, to: { opacity: 1, transform: 'translateY(0) scale(1)' } },
-                    '@keyframes qlWinPulse': { '0%,100%': { boxShadow: '0 0 0 2px rgba(255,255,255,.6),0 0 12px rgba(255,255,255,.25)' }, '50%': { boxShadow: '0 0 0 4px #fff,0 0 26px rgba(255,255,255,.85)' } },
-                    animation: shakeNonce && !reducedMotion ? 'qlBoardShake 220ms ease-out' : 'none',
-                    background: 'linear-gradient(150deg,#1670ca,#0d3f89)',
-                    border: `1px solid ${alpha('#75c9ff', 0.46)}`,
-                    borderRadius: 2.5,
-                    boxShadow: `inset 0 3px 14px ${alpha('#fff', 0.09)},0 12px 30px ${alpha('#000', 0.35)}`,
-                    p: 1,
-                    position: 'relative',
-                  }}
-                >
+                <Box ref={boardAreaRef} sx={{ alignItems: 'center', display: 'flex', flex: '1 1 0', justifyContent: 'center', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
+                  <Box
+                    key={shakeNonce}
+                    sx={{
+                      '@keyframes qlBoardShake': { '0%,100%': { transform: 'translateX(0)' }, '25%': { transform: 'translateX(-5px)' }, '75%': { transform: 'translateX(5px)' } },
+                      '@keyframes qlPieceDrop': { from: { opacity: 0.2, transform: 'translateY(-280%) scale(.88)' }, to: { opacity: 1, transform: 'translateY(0) scale(1)' } },
+                      '@keyframes qlWinPulse': { '0%,100%': { boxShadow: '0 0 0 2px rgba(255,255,255,.6),0 0 12px rgba(255,255,255,.25)' }, '50%': { boxShadow: '0 0 0 4px #fff,0 0 26px rgba(255,255,255,.85)' } },
+                      animation: shakeNonce && !reducedMotion ? 'qlBoardShake 220ms ease-out' : 'none',
+                      aspectRatio: `${CONNECT_FOUR_COLUMNS} / ${CONNECT_FOUR_ROWS}`,
+                      background: 'linear-gradient(150deg,#1670ca,#0d3f89)',
+                      border: `1px solid ${alpha('#75c9ff', 0.46)}`,
+                      borderRadius: 2.5,
+                      boxShadow: `inset 0 3px 14px ${alpha('#fff', 0.09)},0 12px 30px ${alpha('#000', 0.35)}`,
+                      boxSizing: 'border-box',
+                      maxWidth: '100%',
+                      p: 1,
+                      position: 'relative',
+                      width: boardWidth ? `${boardWidth}px` : '100%',
+                    }}
+                  >
                   <Box role="grid" aria-label="Connect Four board" sx={{ display: 'grid', gap: { xs: 0.45, sm: 0.7 }, gridTemplateColumns: 'repeat(7,1fr)' }}>
                     {Array.from({ length: CONNECT_FOUR_COLUMNS * CONNECT_FOUR_ROWS }, (_, displayIndex) => {
                       const displayRow = Math.floor(displayIndex / CONNECT_FOUR_COLUMNS);
@@ -688,17 +718,31 @@ export function ConnectFourGameDialog({
                     })}
                   </Box>
                 </Box>
+                </Box>
 
                 <Typography sx={{ color: alpha('#fff', 0.48), fontSize: 10, textAlign: 'center' }}>
                   Use ← → to select and Enter to drop · Number keys 1–7 play a column
                 </Typography>
-                {state.ply === 0 && (
-                  <Typography sx={{ color: alpha('#9ffcff', 0.68), fontSize: 10, textAlign: 'center' }}>
-                    The starting player was selected fairly from both players’ private nonces.
-                  </Typography>
-                )}
-
-                {match.pendingMoveId && <Typography sx={{ color: '#9ffcff', fontSize: 11 }}>Move placed — waiting for encrypted acknowledgement…</Typography>}
+                <Typography
+                  aria-live="polite"
+                  data-testid="connect-four-board-status"
+                  noWrap
+                  sx={{
+                    color: match.pendingMoveId ? '#9ffcff' : alpha('#9ffcff', 0.68),
+                    fontSize: 10,
+                    lineHeight: '15px',
+                    minHeight: 15,
+                    overflow: 'hidden',
+                    textAlign: 'center',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {match.pendingMoveId
+                    ? 'Move placed — waiting for encrypted acknowledgement…'
+                    : state.ply === 0
+                      ? 'The starting player was selected fairly from both players’ private nonces.'
+                      : '\u00a0'}
+                </Typography>
                 {match.phase === 'finished' && (
                   <Box sx={{ backgroundColor: alpha('#fff', 0.045), border: `1px solid ${alpha('#fff', 0.09)}`, borderRadius: 2, p: 1.5, position: 'relative', textAlign: 'center' }}>
                     <Typography sx={{ fontSize: 20, fontWeight: 900 }}>{outcomeText(match.outcome, localSeat)}</Typography>
