@@ -33,6 +33,7 @@ import {
 } from './chess';
 import { ChessGameDialog } from './ChessGameDialog';
 import type { GameChatMessage } from './GameSessionChat';
+import { qortalLandRealtime } from '../realtime/qortalLandRealtime';
 
 type Target = { address: string; name?: string };
 export type QortalLandGameId = 'connect-four' | 'checkers' | 'chess';
@@ -212,9 +213,7 @@ export function useQortalLandGame(options: Options) {
   const [transportReady, setTransportReady] = useState(false);
   const [match, setMatch] = useState<Match | null>(null);
   const [now, setNow] = useState(Date.now());
-  const socketRef = useRef<WebSocket | null>(null);
   const matchRef = useRef<Match | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
   const eventChainRef = useRef<Promise<void>>(Promise.resolve());
   const pendingCommandsRef = useRef(new Map<string, { type: string; matchId?: string; messageId?: string }>());
   const moveInFlightRef = useRef(false);
@@ -260,8 +259,7 @@ export function useQortalLandGame(options: Options) {
     } : value);
   }, [address, updateMatch]);
   const send = useCallback((type: string, payload: Record<string, unknown> = {}) => {
-    const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Game transport is unavailable');
+    if (!qortalLandRealtime.isReady()) throw new Error('Game transport is unavailable');
     const requestId = crypto.randomUUID();
     const nestedType = payload.message && typeof payload.message === 'object' && !Array.isArray(payload.message)
       ? String((payload.message as Record<string, unknown>).type || '')
@@ -273,7 +271,7 @@ export function useQortalLandGame(options: Options) {
         ? { messageId: String((payload.message as Record<string, unknown>).messageId) }
         : {}),
     });
-    socket.send(JSON.stringify({ type, requestId, ...payload }));
+    qortalLandRealtime.send({ type, requestId, ...payload });
     return requestId;
   }, []);
 
@@ -711,100 +709,56 @@ export function useQortalLandGame(options: Options) {
   }, [address, failProtocol, handleGameMessage, onPlayerSeen, publicKey, replaceMatch, resolvePlayerName, send, updateMatch]);
 
   useEffect(() => {
-    let cancelled = false;
-    let connecting = false;
-    const connect = async () => {
-      if (
-        cancelled ||
-        connecting ||
-        socketRef.current ||
-        !enabled ||
-        !publicKey ||
-        !window.qortalLandGames
-      ) return;
-      connecting = true;
-      let bootstrap: Awaited<ReturnType<NonNullable<typeof window.qortalLandGames>['getTransportBootstrap']>>;
-      try {
-        bootstrap = await window.qortalLandGames.getTransportBootstrap();
-      } catch {
-        bootstrap = null;
-      }
-      connecting = false;
-      if (cancelled || !bootstrap) {
-        if (!cancelled) reconnectTimerRef.current = window.setTimeout(connect, 1500);
+    if (!enabled || !publicKey || !(window.qortalLandRealtime || window.qortalLandGames)) return;
+    const disposeEvent = qortalLandRealtime.onEvent((event) => {
+      if (event.type === 'TRANSPORT_RESTARTED') {
+        updateMatch((value) => value ? {
+          ...value,
+          phase: 'finished',
+          sessionClosed: true,
+          reconnectDeadline: undefined,
+          remoteTypingUntil: undefined,
+          outcome: { type: 'abandoned' },
+          error: 'The game service restarted; the temporary session was cleared',
+        } : value);
         return;
       }
-      const socket = new WebSocket(bootstrap.url);
-      socketRef.current = socket;
-      socket.addEventListener('open', () => {
-        if (cancelled || socketRef.current !== socket) {
-          socket.close();
-          return;
-        }
-        socket.send(JSON.stringify({ type: 'AUTH', token: bootstrap.token, instanceId: bootstrap.instanceId }));
-        socket.send(JSON.stringify({
+      eventChainRef.current = eventChainRef.current
+        .then(() => handleEvent(event))
+        .catch((error) => failProtocol(error instanceof Error ? error.message : 'Invalid game event'));
+    });
+    const disposeState = qortalLandRealtime.onState((ready) => {
+      setTransportReady(ready);
+      if (ready) {
+        qortalLandRealtime.send({
           type: 'SET_LAND_CONTEXT', requestId: crypto.randomUUID(), address, publicKey,
           groupId: String(groupId), landSessionId: sessionId, roomId,
-        }));
-        socket.send(JSON.stringify({ type: 'GET_ACTIVE_MATCH', requestId: crypto.randomUUID() }));
-      });
-      socket.addEventListener('message', (message) => {
-        if (socketRef.current !== socket) return;
-        let parsed: Record<string, unknown>;
-        try {
-          const value = JSON.parse(String(message.data));
-          if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-          parsed = value as Record<string, unknown>;
-        } catch {
-          return;
-        }
-        eventChainRef.current = eventChainRef.current
-          .then(() => handleEvent(parsed))
-          .catch((error) => {
-            failProtocol(error instanceof Error ? error.message : 'Invalid game event');
-          });
-      });
-      socket.addEventListener('close', () => {
-        if (socketRef.current !== socket) return;
-        socketRef.current = null;
-        pendingCommandsRef.current.clear();
-        setTransportReady(false);
-        updateMatch((value) => {
-          if (!value) return value;
-          const phase = ['active', 'finishing', 'round-waiting', 'round-incoming'].includes(value.phase)
-            ? 'reconnecting'
-            : value.phase;
-          return { ...value, phase, reconnectDeadline: Date.now() + 30_000, remoteTypingUntil: undefined };
         });
-        if (!cancelled) reconnectTimerRef.current = window.setTimeout(connect, 1000);
+        qortalLandRealtime.send({ type: 'GET_ACTIVE_MATCH', requestId: crypto.randomUUID() });
+        return;
+      }
+      pendingCommandsRef.current.clear();
+      updateMatch((value) => {
+        if (!value) return value;
+        const phase = ['active', 'finishing', 'round-waiting', 'round-incoming'].includes(value.phase)
+          ? 'reconnecting'
+          : value.phase;
+        return { ...value, phase, reconnectDeadline: Date.now() + 30_000, remoteTypingUntil: undefined };
       });
-    };
-    void connect();
-    const disposeRestart = window.qortalLandGames?.onTransportRestarted(() => {
-      setTransportReady(false);
-      updateMatch((value) => value ? {
-        ...value,
-        phase: 'finished',
-        sessionClosed: true,
-        reconnectDeadline: undefined,
-        remoteTypingUntil: undefined,
-        outcome: { type: 'abandoned' },
-        error: 'The game service restarted; the temporary session was cleared',
-      } : value);
-      const oldSocket = socketRef.current;
-      socketRef.current = null;
-      oldSocket?.close();
-      void connect();
     });
+    const release = qortalLandRealtime.acquire();
     return () => {
-      cancelled = true;
-      disposeRestart?.();
-      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
-      try { send('CLEAR_LAND_CONTEXT'); } catch { /* already disconnected */ }
-      socketRef.current?.close();
-      socketRef.current = null;
+      disposeEvent();
+      disposeState();
+      release();
     };
   }, [address, enabled, failProtocol, groupId, handleEvent, publicKey, roomId, send, sessionId, updateMatch]);
+
+  useEffect(() => () => {
+    try {
+      qortalLandRealtime.send({ type: 'CLEAR_LAND_CONTEXT', requestId: crypto.randomUUID() });
+    } catch { /* transport already stopped */ }
+  }, []);
 
   useEffect(() => {
     const active = Boolean(match && !['idle', 'finished', 'session-idle'].includes(match.phase));

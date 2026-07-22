@@ -15,11 +15,13 @@ import threading
 import time
 import urllib.parse
 import uuid
+from collections import deque
 from typing import Any, Callable, Dict, Optional
 
 import RNS
 from RNS.Channel import MessageBase
 from RNS.vendor import umsgpack
+from qortalland_proximity import PROXIMITY_COMMANDS, QortalLandProximityVoiceManager
 
 try:
     from websockets.sync.server import serve
@@ -56,7 +58,7 @@ COMMANDS = {
     "RESIGN_GAME",
     "CLOSE_GAME_LINK",
     "GET_ACTIVE_MATCH",
-}
+} | PROXIMITY_COMMANDS
 
 HANDSHAKE_TYPES = {
     "QORTAL_LAND_GAME_INVITE",
@@ -237,6 +239,7 @@ class QortalLandGameManager:
         link_id_bytes: Callable[[Any], bytes],
         enqueue: Callable[[Callable[..., Any], tuple], bool],
         refresh_path: Optional[Callable[[str, str], bool]] = None,
+        broadcast_proximity: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         self.emit = emit
         self.log = log
@@ -254,14 +257,31 @@ class QortalLandGameManager:
         self.signature_challenges: Dict[str, Dict[str, Any]] = {}
         self.socket = None
         self.socket_lock = threading.Lock()
+        self.socket_send_lock = threading.Lock()
         self.socket_out: "queue.Queue[Optional[tuple[Any, Dict[str, Any]]]]" = queue.Queue(maxsize=256)
+        self.socket_media_out: "deque[tuple[Any, bytes, int, float]]" = deque()
+        self.socket_media_lock = threading.Lock()
         self.server = None
         self.server_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
-        self.token = os.environ.get("QORTAL_LAND_GAMES_TOKEN", "")
-        self.instance_id = os.environ.get("QORTAL_LAND_GAMES_INSTANCE_ID", "")
-        self.development = os.environ.get("QORTAL_LAND_GAMES_DEV", "0") == "1"
+        self.token = os.environ.get("QORTAL_LAND_REALTIME_TOKEN") or os.environ.get("QORTAL_LAND_GAMES_TOKEN", "")
+        self.instance_id = os.environ.get("QORTAL_LAND_REALTIME_INSTANCE_ID") or os.environ.get("QORTAL_LAND_GAMES_INSTANCE_ID", "")
+        self.development = (os.environ.get("QORTAL_LAND_REALTIME_DEV") or os.environ.get("QORTAL_LAND_GAMES_DEV", "0")) == "1"
+        self.proximity = QortalLandProximityVoiceManager(
+            emit=self.send_event,
+            send_binary=self.send_binary,
+            log=log,
+            resolve_peer=resolve_peer,
+            resolve_identity=resolve_identity,
+            build_destination=build_destination,
+            link_id_bytes=link_id_bytes,
+            enqueue=enqueue,
+            broadcast_discovery=broadcast_proximity or (lambda _wire: None),
+            verify_wallet=verify_signature,
+            derive_address=derive_qortal_address,
+            decode_base58=_b58decode,
+        )
 
     def start_server(self) -> Optional[int]:
         if self.server_thread and self.server_thread.is_alive():
@@ -322,6 +342,7 @@ class QortalLandGameManager:
             self.links_by_object.clear()
         for state in states:
             self._teardown(state.get("link"))
+        self.proximity.disable("bridge_stopping")
 
     def _origin_allowed(self, origin: Optional[str]) -> bool:
         if origin == "capacitor-electron://-":
@@ -359,6 +380,7 @@ class QortalLandGameManager:
             return
         if (
             not isinstance(auth, dict)
+            or set(auth.keys()) != {"type", "token", "instanceId"}
             or auth.get("type") != "AUTH"
             or auth.get("instanceId") != self.instance_id
             or not secrets.compare_digest(str(auth.get("token") or ""), self.token)
@@ -373,7 +395,11 @@ class QortalLandGameManager:
                 previous.close(1008, "application socket replaced")
             except Exception:
                 pass
+        with self.socket_media_lock:
+            self.socket_media_out.clear()
         self._send_direct(websocket, {"type": "TRANSPORT_STATE", "state": "ready", "instanceId": self.instance_id})
+        if not self.enqueue(self._proximity_renderer_connected, ()):
+            self.send_event("PROXIMITY_ERROR", {"code": "control_queue_full"})
         with self.lock:
             for state in self.matches.values():
                 state.pop("renderer_lost_at", None)
@@ -408,6 +434,11 @@ class QortalLandGameManager:
             )
         try:
             for raw in websocket:
+                if isinstance(raw, bytes):
+                    if len(raw) > 2 * 1024 or not self.proximity.queue_local_audio(raw):
+                        websocket.close(1009, "invalid media frame")
+                        break
+                    continue
                 if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_LOCAL_FRAME:
                     websocket.close(1009, "frame too large")
                     break
@@ -418,6 +449,9 @@ class QortalLandGameManager:
                     break
                 if not isinstance(message, dict) or message.get("type") not in COMMANDS:
                     self._command_result(message.get("requestId") if isinstance(message, dict) else None, False, "invalid_command")
+                    continue
+                if message.get("type") == "UPDATE_PROXIMITY_POSITION":
+                    self.proximity.queue_position_command(message, self._command_result)
                     continue
                 if not self.enqueue(self.handle_command, (message,)):
                     self._command_result(message.get("requestId"), False, "command_queue_full")
@@ -431,6 +465,9 @@ class QortalLandGameManager:
                     lost_current_socket = True
             if lost_current_socket:
                 now = time.time()
+                if not self.enqueue(self.proximity.renderer_lost, ()):
+                    self.proximity.renderer_lost_at = now
+                    self.proximity.transmitting = False
                 with self.lock:
                     for state in self.matches.values():
                         if state.get("phase") in {"active", "ending", "session_idle", "round_waiting", "round_incoming"}:
@@ -438,7 +475,8 @@ class QortalLandGameManager:
 
     def _send_direct(self, websocket, event: Dict[str, Any]) -> bool:
         try:
-            websocket.send(json.dumps(event, separators=(",", ":")))
+            with self.socket_send_lock:
+                websocket.send(json.dumps(event, separators=(",", ":")))
             return True
         except Exception:
             return False
@@ -456,22 +494,72 @@ class QortalLandGameManager:
                 except Exception:
                     pass
 
+    def send_binary(self, frame: bytes, source_id: int) -> bool:
+        with self.socket_lock:
+            socket_client = self.socket
+        if socket_client is None:
+            return False
+        with self.socket_media_lock:
+            source_count = sum(
+                1 for _socket, _frame, queued_source, _queued_at in self.socket_media_out
+                if queued_source == source_id
+            )
+            if source_count >= 8 or (len(self.socket_media_out) >= 128 and source_count > 0):
+                for index, (_socket, _frame, queued_source, _queued_at) in enumerate(self.socket_media_out):
+                    if queued_source == source_id:
+                        del self.socket_media_out[index]
+                        self.proximity.stats["queueDrops"] += 1
+                        break
+            elif len(self.socket_media_out) >= 128:
+                self.socket_media_out.popleft()
+                self.proximity.stats["queueDrops"] += 1
+            self.socket_media_out.append((socket_client, bytes(frame), source_id, time.monotonic()))
+        return True
+
     def _socket_writer(self) -> None:
+        control_burst = 0
         while not self.stop_event.is_set():
-            try:
-                item = self.socket_out.get(timeout=0.5)
-            except queue.Empty:
+            item = None
+            if control_burst < 8:
+                try:
+                    item = self.socket_out.get(timeout=0.02)
+                except queue.Empty:
+                    pass
+            if item is not None:
+                socket_client, event = item
+                with self.socket_lock:
+                    current = self.socket
+                if socket_client is current and not self._send_direct(socket_client, event):
+                    try:
+                        socket_client.close(1011, "event delivery failed")
+                    except Exception:
+                        pass
+                control_burst += 1
                 continue
-            if item is None:
-                return
-            socket_client, event = item
+            with self.socket_media_lock:
+                media_item = self.socket_media_out.popleft() if self.socket_media_out else None
+            if media_item is None:
+                control_burst = 0
+                continue
+            socket_client, frame, _source_id, queued_at = media_item
+            control_burst = 0
+            if time.monotonic() - queued_at > 0.2:
+                continue
             with self.socket_lock:
                 current = self.socket
-            if socket_client is current and not self._send_direct(socket_client, event):
+            if socket_client is current:
                 try:
-                    socket_client.close(1011, "event delivery failed")
+                    with self.socket_send_lock:
+                        socket_client.send(frame)
                 except Exception:
-                    pass
+                    try:
+                        socket_client.close(1011, "media delivery failed")
+                    except Exception:
+                        pass
+
+    def _proximity_renderer_connected(self) -> None:
+        self.proximity.renderer_connected()
+        self.proximity._emit_snapshot()
 
     def _command_result(self, request_id: Any, ok: bool, error: str = "", payload: Optional[Dict[str, Any]] = None) -> None:
         event: Dict[str, Any] = {"requestId": str(request_id or ""), "ok": ok}
@@ -485,6 +573,9 @@ class QortalLandGameManager:
         command = message.get("type")
         request_id = message.get("requestId")
         try:
+            if command in PROXIMITY_COMMANDS:
+                self.proximity.handle_command(message, self._command_result)
+                return
             if command == "SET_LAND_CONTEXT":
                 self._set_context(message)
             elif command == "CLEAR_LAND_CONTEXT":
@@ -532,6 +623,7 @@ class QortalLandGameManager:
             self._close_match(match_id, "land_context_changed")
         with self.lock:
             self.land_context = context
+        self.proximity.set_context({**context, "instanceId": self.instance_id})
 
     def _clear_context(self, reason: str) -> None:
         with self.lock:
@@ -539,6 +631,7 @@ class QortalLandGameManager:
             match_ids = list(self.matches)
         for match_id in match_ids:
             self._close_match(match_id, reason)
+        self.proximity.clear_context()
 
     def _busy(self, except_match: str = "") -> bool:
         return any(mid != except_match and state.get("phase") not in {"ended", "closed"} for mid, state in self.matches.items())
@@ -1946,6 +2039,7 @@ class QortalLandGameManager:
 
     def _monitor(self) -> None:
         while not self.stop_event.wait(1):
+            self.enqueue(self.proximity.tick, ())
             now = time.time()
             for nonce_key, expiry in list(self.used_nonces.items()):
                 if expiry <= now:

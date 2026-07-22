@@ -3396,6 +3396,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       QORTAL_LAND_GAMES_TOKEN: this.gameTransportToken,
       QORTAL_LAND_GAMES_INSTANCE_ID: this.gameTransportInstanceId,
       QORTAL_LAND_GAMES_DEV: app.isPackaged ? '0' : '1',
+      QORTAL_LAND_REALTIME_TOKEN: this.gameTransportToken,
+      QORTAL_LAND_REALTIME_INSTANCE_ID: this.gameTransportInstanceId,
+      QORTAL_LAND_REALTIME_DEV: app.isPackaged ? '0' : '1',
     };
     loggerLog(
       `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`

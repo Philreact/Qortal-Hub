@@ -12,6 +12,29 @@ function expectAllowed(
 }
 
 describe('Reticulum wallet signing policy', () => {
+  it('allows only an exact, short-lived Qortal Land proximity capability', () => {
+    const now = Date.now();
+    const capability = {
+      type: 'QORTAL_LAND_PROXIMITY_VOICE_SESSION',
+      protocolVersion: 1,
+      address: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
+      signerPublicKey: '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE',
+      ephemeralPublicKey: '11'.repeat(32),
+      groupId: '123',
+      landSessionId: 'land-session',
+      instanceId: '00112233-4455-4677-8899-aabbccddeeff',
+      nonce: '22'.repeat(32),
+      createdAt: now,
+      expiresAt: now + 4 * 60 * 60 * 1000,
+    };
+    expectAllowed(assertAllowedPresenceSigningPayload, capability);
+    expect(() => assertAllowedPresenceSigningPayload({ ...capability, audio: 'bytes' })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({ ...capability, protocolVersion: 2 })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({ ...capability, nonce: 'short' })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({ ...capability, groupId: '2147483648' })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({ ...capability, expiresAt: now + 5 * 60 * 60 * 1000 })).toThrow();
+  });
+
   it('allows only the exact Qortal Land game handshake schemas', () => {
     const invite = {
       type: 'QORTAL_LAND_GAME_INVITE', protocolVersion: 2,

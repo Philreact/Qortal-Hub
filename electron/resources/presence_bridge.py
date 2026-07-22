@@ -22,11 +22,12 @@ import uuid
 from typing import IO, Any, Callable, Dict, List, Optional, Set, Tuple
 
 import RNS
+from RNS.vendor import umsgpack
 
 _BRIDGE_RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
-from qortalland_games import QortalLandGameManager
+from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
 APP_NAMESPACE = "qortal-hub-test2"
 PRESENCE_ASPECT = "presence"
@@ -66,7 +67,7 @@ _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
 _audio_rtt_monitor_thread: Optional[threading.Thread] = None
 _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.MDU))
 # Grep logs for this string to confirm the rebuilt script is running (sync with GC_RETICULUM_WIRE_BUILD_MARKER in group-call-wire-reticulum.ts).
-PRESENCE_BRIDGE_BUILD = "wire395-reticulum-resource-sessions-v1"
+PRESENCE_BRIDGE_BUILD = "wire396-qortalland-proximity-voice-v1"
 
 # Peer cache: must match TS base58 in electron/src/presence.ts (Qortal alphabet).
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -805,6 +806,8 @@ _land_state_forward_pending: Dict[
     Tuple[str, int, str, str, int, str], Dict[str, Any]
 ] = {}
 _land_state_forwarding_revision = 0
+_qortalland_proximity_discovery_seen: Dict[str, float] = {}
+_QORTAL_LAND_PROXIMITY_DISCOVERY_PREFIX = b"QLPV1"
 _LAND_STATE_FORWARDING_MAX_GROUPS = 1024
 _LAND_STATE_FORWARDING_MAX_TARGETS_PER_GROUP = 64
 _LAND_STATE_FORWARDING_MAX_SESSIONS = 4096
@@ -7738,6 +7741,148 @@ def _enqueue_game_control(fn: Callable[..., Any], args: tuple) -> bool:
     )
 
 
+def _encode_qortalland_proximity_discovery(wire: Dict[str, Any]) -> Optional[bytes]:
+    try:
+        capability = wire.get("c")
+        if not isinstance(capability, dict):
+            return None
+        compact = [
+            int(capability["protocolVersion"]),
+            _b58decode(str(capability["signerPublicKey"])),
+            bytes.fromhex(str(capability["ephemeralPublicKey"])),
+            int(capability["groupId"]),
+            str(capability["landSessionId"]),
+            uuid.UUID(str(capability["instanceId"])).bytes,
+            bytes.fromhex(str(capability["nonce"])),
+            int(capability["createdAt"]),
+            int(capability["expiresAt"]) - int(capability["createdAt"]),
+            _b58decode(str(wire["z"])),
+            wire.get("e") is True,
+            str(wire.get("u") or ""),
+            wire.get("b") is True,
+            int(wire["ts"]),
+            int(wire.get("p") or 0),
+            bytes.fromhex(str(wire["j"])),
+        ]
+        if (
+            len(compact[1]) != 32 or len(compact[2]) != 32
+            or len(compact[6]) != 32 or len(compact[9]) != 64
+            or len(compact[15]) != 64 or not 0 <= compact[14] <= 3
+            or not 0 < compact[8] <= 4 * 60 * 60 * 1000
+        ):
+            return None
+        raw = _QORTAL_LAND_PROXIMITY_DISCOVERY_PREFIX + umsgpack.packb(compact)
+        return raw if len(raw) <= _MAX_ENCRYPTED_WIRE_BYTES else None
+    except Exception:
+        return None
+
+
+def _decode_qortalland_proximity_discovery(raw: bytes) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, (bytes, bytearray)) or not raw.startswith(_QORTAL_LAND_PROXIMITY_DISCOVERY_PREFIX):
+        return None
+    try:
+        compact = umsgpack.unpackb(bytes(raw[len(_QORTAL_LAND_PROXIMITY_DISCOVERY_PREFIX):]))
+        if not isinstance(compact, list) or len(compact) != 16:
+            return None
+        public_key = bytes(compact[1])
+        ephemeral_key = bytes(compact[2])
+        nonce = bytes(compact[6])
+        wallet_signature = bytes(compact[9])
+        announcement_signature = bytes(compact[15])
+        instance_bytes = bytes(compact[5])
+        if (
+            len(public_key) != 32 or len(ephemeral_key) != 32 or len(nonce) != 32
+            or len(wallet_signature) != 64 or len(announcement_signature) != 64
+            or len(instance_bytes) != 16
+            or compact[0] != 1
+            or not isinstance(compact[3], int) or isinstance(compact[3], bool)
+            or not 0 < compact[3] <= 0x7FFFFFFF
+            or not isinstance(compact[4], str) or not 0 < len(compact[4]) <= 24
+            or not isinstance(compact[7], int) or isinstance(compact[7], bool)
+            or not isinstance(compact[8], int) or isinstance(compact[8], bool)
+            or not 0 < compact[8] <= 4 * 60 * 60 * 1000
+            or not isinstance(compact[10], bool) or not isinstance(compact[12], bool)
+            or not isinstance(compact[11], str) or not 0 < len(compact[11]) <= 64
+            or not isinstance(compact[13], int) or isinstance(compact[13], bool)
+            or not isinstance(compact[14], int) or isinstance(compact[14], bool)
+            or not 0 <= compact[14] <= 3
+        ):
+            return None
+        public_key_b58 = _b58encode(public_key)
+        address = derive_qortal_address(public_key_b58)
+        capability = {
+            "type": "QORTAL_LAND_PROXIMITY_VOICE_SESSION",
+            "protocolVersion": int(compact[0]),
+            "address": address,
+            "signerPublicKey": public_key_b58,
+            "ephemeralPublicKey": ephemeral_key.hex(),
+            "groupId": str(int(compact[3])),
+            "landSessionId": str(compact[4]),
+            "instanceId": str(uuid.UUID(bytes=instance_bytes)),
+            "nonce": nonce.hex(),
+            "createdAt": int(compact[7]),
+            "expiresAt": int(compact[7]) + int(compact[8]),
+        }
+        signature_b58 = _b58encode(wallet_signature)
+        capability_hash = hashlib.sha256(
+            json.dumps(capability, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            + wallet_signature
+        ).hexdigest()
+        return {
+            "t": "QLPV1", "v": int(compact[0]), "e": compact[10],
+            "a": address, "g": str(int(compact[3])), "s": str(compact[4]),
+            "u": str(compact[11]), "b": compact[12], "ts": int(compact[13]),
+            "p": compact[14], "c": capability, "z": signature_b58,
+            "h": capability_hash, "j": announcement_signature.hex(),
+        }
+    except Exception:
+        return None
+
+
+def _broadcast_qortalland_proximity(wire: Dict[str, Any]) -> None:
+    wire_bytes = _encode_qortalland_proximity_discovery(wire)
+    if wire_bytes is None:
+        return
+    group_id = str(wire.get("g") or "")
+    with _land_state_forwarding_lock:
+        targets = list((_land_state_forwarding_plans.get(int(group_id)) or {}).items()) if group_id.isdigit() else []
+    now = time.time()
+    for peer_hash, expires_at in targets:
+        if float(expires_at or 0) > now:
+            _send_wire_to_overlay_peer(peer_hash, wire_bytes, "qortalland_proximity", queue_if_pending=False)
+
+
+def _forward_qortalland_proximity(wire: Dict[str, Any], source_peer_hash: str) -> None:
+    now = time.time()
+    dedupe_key = hashlib.sha256(
+        f"{wire.get('a')}:{wire.get('h')}:{wire.get('ts')}:{wire.get('e')}".encode("utf-8")
+    ).hexdigest()[:24]
+    with _land_state_forwarding_lock:
+        for key, seen_at in list(_qortalland_proximity_discovery_seen.items()):
+            if now - seen_at > 30.0:
+                _qortalland_proximity_discovery_seen.pop(key, None)
+        if dedupe_key in _qortalland_proximity_discovery_seen:
+            return
+        _qortalland_proximity_discovery_seen[dedupe_key] = now
+        raw_group_id = wire.get("g")
+        try:
+            group_id = int(raw_group_id)
+        except (TypeError, ValueError):
+            group_id = 0
+        targets = dict(_land_state_forwarding_plans.get(group_id) or {}) if group_id > 0 else {}
+    hops = wire.get("p")
+    if not isinstance(hops, int) or isinstance(hops, bool) or hops >= 3:
+        return
+    forwarded = {**wire, "p": hops + 1}
+    wire_bytes = _encode_qortalland_proximity_discovery(forwarded)
+    if wire_bytes is None:
+        return
+    source = str(source_peer_hash or "").strip().lower()
+    for peer_hash, expires_at in targets.items():
+        if peer_hash != source and float(expires_at or 0) > now:
+            _send_wire_to_overlay_peer(peer_hash, wire_bytes, "qortalland_proximity", queue_if_pending=False)
+
+
 def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
     global _qortalland_game_manager
     if _qortalland_game_manager is None:
@@ -7755,6 +7900,7 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
                 reason=reason,
                 await_seconds=0.0,
             ),
+            broadcast_proximity=_broadcast_qortalland_proximity,
         )
     return _qortalland_game_manager
 
@@ -11615,6 +11761,10 @@ def _process_land_state_fast_path(
         forwarding_revision = _land_state_forwarding_revision
         targets = dict(_land_state_forwarding_plans.get(session_key[0]) or {})
 
+    manager = _qortalland_game_manager
+    if manager is not None:
+        _enqueue_game_control(manager.proximity.on_land_state, (dict(message), peer_hash))
+
     if not targets:
         _emit_call_bridge_message(message, peer_hash, link_id)
         return
@@ -11702,14 +11852,27 @@ def _queue_land_state_fast_path(
         return False
     session_key, _sequence, _signed_bytes = parsed
     now = time.time()
+    manager = _qortalland_game_manager
+    proximity_context = manager.proximity.context if manager is not None else None
+    proximity_needs_state = bool(
+        manager is not None
+        and manager.proximity.enabled
+        and proximity_context
+        and str(proximity_context.get("groupId") or "") == str(session_key[0])
+    )
     with _land_state_forwarding_lock:
         session = _land_state_auth_sessions.get(session_key)
         targets = _land_state_forwarding_plans.get(session_key[0])
         if (
             session is None
             or float(session.get("expiresAt") or 0.0) <= now
-            or not targets
-            or not any(float(expires_at or 0.0) > now for expires_at in targets.values())
+            or (
+                not proximity_needs_state
+                and (
+                    not targets
+                    or not any(float(expires_at or 0.0) > now for expires_at in targets.values())
+                )
+            )
         ):
             return False
         signature_key = hashlib.sha256(
@@ -11770,6 +11933,24 @@ def _handle_overlay_link_packet(message, packet) -> None:
         if audio_link_id:
             on_audio_link_packet(message, packet)
         return
+    compact_proximity = _decode_qortalland_proximity_discovery(message)
+    if compact_proximity is not None:
+        _note_presence_pressure("source:overlay")
+        state["last_activity_at"] = time.time()
+        state["last_rx_at"] = time.time()
+        _ensure_managed_link_fields(state, kind="overlay")
+        state["manager_state"] = _LINK_STATE_ESTABLISHED
+        state["last_failure_reason"] = ""
+        state["backoff_until"] = 0.0
+        source_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        _forward_qortalland_proximity(compact_proximity, source_peer_hash)
+        _ensure_qortalland_game_manager().proximity.on_discovery(
+            compact_proximity,
+            source_peer_hash,
+        )
+        return
+    if isinstance(message, (bytes, bytearray)) and message.startswith(_QORTAL_LAND_PROXIMITY_DISCOVERY_PREFIX):
+        return
     try:
         decoded = json.loads(message.decode("utf-8"))
     except Exception as exc:
@@ -11820,6 +12001,14 @@ def _handle_overlay_link_packet(message, packet) -> None:
     state["backoff_until"] = 0.0
     t = decoded.get("t")
     if _handle_overlay_transport_control(decoded, link, link_id, state):
+        return
+    if t == "QLPV1":
+        source_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        _forward_qortalland_proximity(decoded, source_peer_hash)
+        _ensure_qortalland_game_manager().proximity.on_discovery(
+            decoded,
+            source_peer_hash,
+        )
         return
     if isinstance(t, str) and t.startswith("PRESENCE_"):
         if _emit_presence_message(decoded, link_id):
@@ -17430,7 +17619,9 @@ def on_inbound_unified_link_closed(link) -> None:
     _cancel_inbound_classify_timer(link_key)
     with _state_lock:
         _pending_inbound_classify_link_ids.discard(link_key)
-    if _qortalland_game_manager is not None and _qortalland_game_manager.owns_link(link):
+    if _qortalland_game_manager is not None and _qortalland_game_manager.proximity.owns_link(link):
+        _qortalland_game_manager.proximity._link_closed(link)
+    elif _qortalland_game_manager is not None and _qortalland_game_manager.owns_link(link):
         _qortalland_game_manager._link_closed(link)
     elif get_overlay_link_id(link):
         on_overlay_link_closed(link)
@@ -17452,7 +17643,10 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
             return
         _pending_inbound_classify_link_ids.discard(link_key)
     _cancel_inbound_classify_timer(link_key)
-    if _ensure_qortalland_game_manager().handle_classifier(link, message):
+    manager = _ensure_qortalland_game_manager()
+    if manager.proximity.handle_classifier(link, message):
+        return
+    if manager.handle_classifier(link, message):
         return
     if _decode_group_audio_wire(message) is not None:
         link_id = str(uuid.uuid4())
@@ -17727,7 +17921,7 @@ def handle_start(req_id: str, payload: Dict[str, Any]) -> None:
                 "qortalland_game_ws_ready",
                 {
                     "port": game_port,
-                    "instanceId": os.environ.get("QORTAL_LAND_GAMES_INSTANCE_ID", ""),
+                    "instanceId": os.environ.get("QORTAL_LAND_REALTIME_INSTANCE_ID") or os.environ.get("QORTAL_LAND_GAMES_INSTANCE_ID", ""),
                 },
             )
     except Exception as exc:

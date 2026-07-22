@@ -18,9 +18,9 @@ contextBridge.exposeInMainWorld('CapacitorCustomPlatform', {
   plugins: {},
 });
 
-contextBridge.exposeInMainWorld('qortalLandGames', {
+const qortalLandRealtimeBridge = {
   getTransportBootstrap: () =>
-    ipcRenderer.invoke('qortalLandGames:getTransportBootstrap') as Promise<{
+    ipcRenderer.invoke('qortalLandRealtime:getTransportBootstrap') as Promise<{
       url: string;
       token: string;
       instanceId: string;
@@ -30,7 +30,11 @@ contextBridge.exposeInMainWorld('qortalLandGames', {
     ipcRenderer.on('qortalLandGames:transportRestarted', handler);
     return () => ipcRenderer.removeListener('qortalLandGames:transportRestarted', handler);
   },
-});
+};
+
+contextBridge.exposeInMainWorld('qortalLandRealtime', qortalLandRealtimeBridge);
+// Compatibility for older renderer bundles while the shared transport name rolls out.
+contextBridge.exposeInMainWorld('qortalLandGames', qortalLandRealtimeBridge);
 
 function parseHubBootstrapSeedsFromArgv(): string[] {
   const prefix = '--hub-p2p-seeds=';

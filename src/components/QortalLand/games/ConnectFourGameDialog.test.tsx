@@ -61,6 +61,7 @@ describe('Connect Four game dialog', () => {
       roundId: current.roundId,
       requesterAddress: address,
       signerPublicKey: publicKey,
+      lastAcknowledgedPly: 0,
     };
     expect(canSignQortalLandGameHandshake(fields, current, address, publicKey)).toBe(true);
     expect(canSignQortalLandGameHandshake({ ...fields, roundId: crypto.randomUUID() }, current, address, publicKey)).toBe(false);

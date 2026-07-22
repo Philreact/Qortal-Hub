@@ -25,9 +25,12 @@ import { useAtomValue } from 'jotai';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { balanceAtom, userInfoAtom } from '../../atoms/global';
 import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.png';
+import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useVoiceCall, type VoiceCallApi } from '../../hooks/useVoiceCall';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 import { useQortalLandGame } from './games/useQortalLandGame';
+import { ProximityVoiceControl } from './proximity/ProximityVoiceControl';
+import { useQortalLandProximityVoice } from './proximity/useQortalLandProximityVoice';
 
 type LandPlayerState = {
   authorAddress: string;
@@ -2588,6 +2591,7 @@ const isNearClubDjBooth = (roomId: LandRoomId, x: number, y: number): boolean =>
 
 export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const theme = useTheme();
+  const groupCall = useGroupCallContext();
   const balance = useAtomValue(balanceAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -2601,6 +2605,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const landActionAnimationsRef = useRef<Map<string, LandActionAnimation>>(new Map());
   const landCallPresenceRef = useRef<Map<string, LandCallPresence>>(new Map());
   const landGamePresenceRef = useRef<Map<string, LandGamePresence>>(new Map());
+  const proximitySpeakingAddressesRef = useRef<Set<string>>(new Set());
   const landCallPeerPublicKeysRef = useRef<Map<string, string>>(new Map());
   const landCallPeersRef = useRef<Map<string, { peerAddress: string; chatId: string }>>(new Map());
   const landCallListenersRef = useRef<Set<(event: string, payload: unknown) => void>>(new Set());
@@ -3357,6 +3362,33 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const handleLandGamePlayerSeen = useCallback((playerAddress: string) => {
     queuePrimaryNameLookups([playerAddress]);
   }, [queuePrimaryNameLookups]);
+
+  const getProximityPosition = useCallback(() => ({
+    roomId: localStateRef.current.roomId,
+    x: localStateRef.current.x,
+    y: localStateRef.current.y,
+  }), []);
+
+  const proximityVoice = useQortalLandProximityVoice({
+    address: myAddress,
+    publicKey: userInfo?.publicKey,
+    groupId,
+    sessionId,
+    enabled: reticulumReady === true,
+    suspended:
+      landVoiceCall.callState !== 'idle' ||
+      groupCall.roomState === 'joining' ||
+      groupCall.roomState === 'connected',
+    getPosition: getProximityPosition,
+  });
+
+  useEffect(() => {
+    const speaking = new Set(
+      proximityVoice.peers.filter((peer) => peer.speaking).map((peer) => peer.address)
+    );
+    if (proximityVoice.transmitting) speaking.add(myAddress);
+    proximitySpeakingAddressesRef.current = speaking;
+  }, [myAddress, proximityVoice.peers, proximityVoice.transmitting]);
 
   const landGame = useQortalLandGame({
     address: myAddress,
@@ -4470,6 +4502,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         }>();
         private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
         private gameIndicators = new Map<string, { container: any; badge: any; gamepad: any }>();
+        private proximityVoiceIndicators = new Map<string, { container: any; ring: any; mic: any }>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
@@ -4683,6 +4716,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             for (const [indicatorKey, indicatorObjects] of this.gameIndicators.entries()) {
               this.removeGameIndicator(indicatorKey, indicatorObjects);
             }
+          }
+          try {
+            this.updateProximityVoiceIndicators();
+          } catch (error) {
+            console.warn('[QortalLand] Proximity voice indicator update failed', error);
           }
         }
 
@@ -7303,6 +7341,55 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           return { container, badge, phone };
         }
 
+        private createProximityVoiceIndicator() {
+          const container = this.add.container(0, 0);
+          const ring = this.add.graphics();
+          ring.lineStyle(4, 0x4dffb8, 0.92);
+          ring.strokeCircle(0, 0, 28);
+          ring.lineStyle(2, 0x2cf8ff, 0.36);
+          ring.strokeCircle(0, 0, 34);
+          const mic = this.add.text(0, -40, '●', {
+            color: '#4dffb8',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '12px',
+            stroke: '#041019',
+            strokeThickness: 4,
+          }).setOrigin(0.5);
+          container.add([ring, mic]);
+          container.setDepth(12950);
+          return { container, ring, mic };
+        }
+
+        private updateProximityVoiceIndicators() {
+          const active = new Map<string, any>();
+          if (this.localAvatar && proximitySpeakingAddressesRef.current.has(myAddress)) {
+            active.set(`local:${myAddress}`, this.localAvatar);
+          }
+          for (const [key, player] of remotePlayersRef.current.entries()) {
+            const avatar = this.remotes.get(key);
+            if (avatar && player.roomId === currentRoomRef.current && proximitySpeakingAddressesRef.current.has(player.authorAddress)) {
+              active.set(`remote:${key}`, avatar);
+            }
+          }
+          for (const [key, indicator] of this.proximityVoiceIndicators.entries()) {
+            if (active.has(key)) continue;
+            this.proximityVoiceIndicators.delete(key);
+            indicator.container?.destroy(true);
+          }
+          for (const [key, avatar] of active.entries()) {
+            let indicator = this.proximityVoiceIndicators.get(key);
+            if (!indicator) {
+              indicator = this.createProximityVoiceIndicator();
+              this.proximityVoiceIndicators.set(key, indicator);
+            }
+            const scale = Math.abs(avatar.scaleY || 1);
+            indicator.container.setPosition(avatar.x, avatar.y - 24 * scale);
+            indicator.container.setScale(Math.max(0.7, Math.min(1.05, scale)));
+            const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+            indicator.container.setAlpha(reduceMotion ? 0.9 : 0.72 + Math.sin(this.time.now / 110) * 0.22);
+          }
+        }
+
         private removeCallIndicator(
           indicatorKey: string,
           indicatorObjects = this.callIndicators.get(indicatorKey)
@@ -7987,6 +8074,27 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           <Typography sx={{ color: theme.palette.text.secondary, fontSize: 12 }}>
             {groupName}
           </Typography>
+          {(window.qortalLandRealtime || window.qortalLandGames) && <ProximityVoiceControl
+            state={proximityVoice.state}
+            mode={proximityVoice.mode}
+            pttKey={proximityVoice.pttKey}
+            transmitting={proximityVoice.transmitting}
+            peers={proximityVoice.peers}
+            error={proximityVoice.error}
+            devices={proximityVoice.devices}
+            inputDeviceId={proximityVoice.inputDeviceId}
+            outputDeviceId={proximityVoice.outputDeviceId}
+            masterVolume={proximityVoice.masterVolume}
+            resolveName={resolveLandPlayerName}
+            onEnable={proximityVoice.enable}
+            onDisable={proximityVoice.disable}
+            onMode={proximityVoice.setMode}
+            onPttKey={proximityVoice.setPttKey}
+            onInputDevice={proximityVoice.setInputDeviceId}
+            onOutputDevice={proximityVoice.setOutputDeviceId}
+            onMasterVolume={proximityVoice.setMasterVolume}
+            onPeerPolicy={proximityVoice.setPeerPolicy}
+          />}
           <Button
             size="small"
             variant={isCharacterPanelOpen ? 'contained' : 'outlined'}

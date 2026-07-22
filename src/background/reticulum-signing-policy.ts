@@ -12,6 +12,19 @@ const schema = (
 ): SigningSchema => ({ required, optional });
 
 const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
+  QORTAL_LAND_PROXIMITY_VOICE_SESSION: schema([
+    'type',
+    'protocolVersion',
+    'address',
+    'signerPublicKey',
+    'ephemeralPublicKey',
+    'groupId',
+    'landSessionId',
+    'instanceId',
+    'nonce',
+    'createdAt',
+    'expiresAt',
+  ]),
   QORTAL_LAND_GAME_INVITE: schema([
     'type', 'protocolVersion', 'game', 'gameVersion', 'rulesVersion',
     'matchId', 'groupId', 'requesterAddress', 'recipientAddress',
@@ -511,6 +524,41 @@ function assertSafeGameHandshake(payload: Record<string, unknown>): void {
   }
 }
 
+function assertSafeProximityCapability(payload: Record<string, unknown>): void {
+  const now = Date.now();
+  if (
+    payload.protocolVersion !== 1 ||
+    typeof payload.address !== 'string' ||
+    payload.address.length < 20 ||
+    payload.address.length > 64 ||
+    typeof payload.signerPublicKey !== 'string' ||
+    payload.signerPublicKey.length < 20 ||
+    payload.signerPublicKey.length > 64 ||
+    typeof payload.ephemeralPublicKey !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(payload.ephemeralPublicKey) ||
+    typeof payload.nonce !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(payload.nonce) ||
+    typeof payload.groupId !== 'string' ||
+    !/^\d{1,10}$/.test(payload.groupId) ||
+    Number(payload.groupId) < 1 ||
+    Number(payload.groupId) > 0x7fffffff ||
+    typeof payload.landSessionId !== 'string' ||
+    payload.landSessionId.length < 1 ||
+    payload.landSessionId.length > 24 ||
+    typeof payload.instanceId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.instanceId) ||
+    typeof payload.createdAt !== 'number' ||
+    !Number.isSafeInteger(payload.createdAt) ||
+    typeof payload.expiresAt !== 'number' ||
+    !Number.isSafeInteger(payload.expiresAt) ||
+    Math.abs(payload.createdAt - now) > 2 * 60 * 1000 ||
+    payload.expiresAt <= payload.createdAt ||
+    payload.expiresAt - payload.createdAt > 4 * 60 * 60 * 1000
+  ) {
+    throw new Error('Proximity voice session capability is invalid');
+  }
+}
+
 function assertPayload(
   payload: unknown,
   schemas: Readonly<Record<string, SigningSchema>>,
@@ -530,6 +578,9 @@ function assertPayload(
     }
     if (type.startsWith(GAME_HANDSHAKE_PREFIX)) {
       assertSafeGameHandshake(payload);
+    }
+    if (type === 'QORTAL_LAND_PROXIMITY_VOICE_SESSION') {
+      assertSafeProximityCapability(payload);
     }
     return;
   }

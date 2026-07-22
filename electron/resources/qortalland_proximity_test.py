@@ -1,0 +1,186 @@
+import struct
+import time
+import unittest
+
+import RNS
+
+from presence_bridge import (
+    _MAX_ENCRYPTED_WIRE_BYTES,
+    _decode_qortalland_proximity_discovery,
+    _encode_qortalland_proximity_discovery,
+)
+from qortalland_games import _b58encode, canonical_bytes, derive_qortal_address, verify_signature, _b58decode
+from qortalland_proximity import (
+    LINK_MAGIC,
+    LOCAL_AUDIO_HEADER,
+    LOCAL_AUDIO_MAGIC,
+    QortalLandProximityVoiceManager,
+)
+
+
+class ProximityVoiceManagerTest(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        self.discovery = []
+        self.wallet = RNS.Cryptography.Ed25519PrivateKey.generate()
+        self.public_key = _b58encode(self.wallet.public_key().public_bytes())
+        self.address = derive_qortal_address(self.public_key)
+        self.manager = QortalLandProximityVoiceManager(
+            emit=lambda event, payload: self.events.append((event, payload)),
+            send_binary=lambda _frame, _source: True,
+            log=lambda _message: None,
+            resolve_peer=lambda _address: None,
+            resolve_identity=lambda _peer: None,
+            build_destination=lambda identity: identity,
+            link_id_bytes=lambda _link: b"\0" * 16,
+            enqueue=lambda fn, args: bool(fn(*args) is not False),
+            broadcast_discovery=self.discovery.append,
+            verify_wallet=verify_signature,
+            derive_address=derive_qortal_address,
+            decode_base58=_b58decode,
+        )
+        self.manager.set_context({
+            "address": self.address,
+            "publicKey": self.public_key,
+            "groupId": "7",
+            "landSessionId": "land-1",
+            "roomId": "club",
+            "instanceId": "00112233-4455-4677-8899-aabbccddeeff",
+        })
+
+    def authorize(self):
+        self.manager._enable({"mode": "push-to-talk"})
+        fields = self.manager.pending_fields
+        signature = _b58encode(self.wallet.sign(canonical_bytes(fields)))
+        self.manager._submit_signature({"signature": signature, "publicKey": self.public_key})
+
+    def test_enable_requires_wallet_signature_and_disable_clears_secrets(self):
+        self.authorize()
+        self.assertTrue(self.manager.enabled)
+        self.assertEqual(len(self.manager.capability_hash), 32)
+        self.manager.disable("test")
+        self.assertFalse(self.manager.enabled)
+        self.assertIsNone(self.manager.ephemeral_private)
+        self.assertEqual(self.manager.capability_signature, "")
+
+    def test_rejects_tampered_session_signature(self):
+        self.manager._enable({"mode": "push-to-talk"})
+        with self.assertRaisesRegex(ValueError, "invalid_proximity_signature"):
+            self.manager._submit_signature({
+                "signature": _b58encode(b"x" * 64),
+                "publicKey": self.public_key,
+            })
+
+    def test_local_binary_audio_is_unsigned_and_gated_by_transmit(self):
+        self.authorize()
+        self.manager._update_position({
+            "landSessionId": "land-1", "sequence": 1,
+            "roomId": "club", "x": 10, "y": 10,
+        })
+        payload = b"opus"
+        frame = LOCAL_AUDIO_HEADER.pack(
+            LOCAL_AUDIO_MAGIC, 1, 0, 0, self.manager.stream_generation,
+            1, int(time.time() * 1000), len(payload),
+        ) + payload
+        self.assertTrue(self.manager.handle_local_audio(frame))
+        self.assertEqual(self.manager.stats["localFrames"], 0)
+        self.manager._set_transmit(True)
+        frame = LOCAL_AUDIO_HEADER.pack(
+            LOCAL_AUDIO_MAGIC, 1, 0, 0, self.manager.stream_generation,
+            2, int(time.time() * 1000), len(payload),
+        ) + payload
+        self.assertTrue(self.manager.handle_local_audio(frame))
+        self.assertEqual(self.manager.stats["localFrames"], 1)
+
+    def test_distance_gain_has_full_fade_and_silence_boundaries(self):
+        self.assertEqual(self.manager._gain(50), 1.0)
+        self.assertGreater(self.manager._gain(250), 0.0)
+        self.assertLess(self.manager._gain(250), 1.0)
+        self.assertEqual(self.manager._gain(400), 0.0)
+
+    def test_command_schema_rejects_extra_fields(self):
+        results = []
+        self.manager.handle_command(
+            {"type": "GET_PROXIMITY_STATE", "requestId": "one", "unsafe": True},
+            lambda *args, **kwargs: results.append((args, kwargs)),
+        )
+        self.assertFalse(results[0][0][1])
+        self.assertIn("schema", results[0][0][2])
+
+    def test_renderer_replacement_rotates_media_generation_and_source_ids(self):
+        self.authorize()
+        first_generation = self.manager.stream_generation
+        self.manager.source_ids["peer"] = 41
+        self.manager.renderer_connected()
+        self.assertNotEqual(self.manager.stream_generation, first_generation)
+        self.assertEqual(self.manager.source_ids, {})
+
+    def test_malformed_proximity_classifier_is_consumed_and_closed(self):
+        class Link:
+            closed = False
+
+            def teardown(self):
+                self.closed = True
+
+        link = Link()
+        self.assertTrue(self.manager.handle_classifier(link, LINK_MAGIC + b"not-msgpack"))
+        self.assertTrue(link.closed)
+
+    def test_compact_discovery_fits_reticulum_and_round_trips_maximum_fields(self):
+        self.manager.set_context({
+            "address": self.address,
+            "publicKey": self.public_key,
+            "groupId": str(0x7FFFFFFF),
+            "landSessionId": "s" * 24,
+            "roomId": "r" * 64,
+            "instanceId": "00112233-4455-4677-8899-aabbccddeeff",
+        })
+        self.authorize()
+        wire = self.discovery[-1]
+        encoded = _encode_qortalland_proximity_discovery(wire)
+        self.assertIsNotNone(encoded)
+        self.assertLessEqual(len(encoded), _MAX_ENCRYPTED_WIRE_BYTES)
+        self.assertEqual(_decode_qortalland_proximity_discovery(encoded), wire)
+
+    def test_discovery_announcement_signature_rejects_changed_room(self):
+        remote_wallet = RNS.Cryptography.Ed25519PrivateKey.generate()
+        remote_public_key = _b58encode(remote_wallet.public_key().public_bytes())
+        remote_address = derive_qortal_address(remote_public_key)
+        remote_discovery = []
+        remote = QortalLandProximityVoiceManager(
+            emit=lambda *_args: None,
+            send_binary=lambda *_args: True,
+            log=lambda _message: None,
+            resolve_peer=lambda _address: None,
+            resolve_identity=lambda _peer: None,
+            build_destination=lambda identity: identity,
+            link_id_bytes=lambda _link: b"\0" * 16,
+            enqueue=lambda fn, args: bool(fn(*args) is not False),
+            broadcast_discovery=remote_discovery.append,
+            verify_wallet=verify_signature,
+            derive_address=derive_qortal_address,
+            decode_base58=_b58decode,
+        )
+        remote.set_context({
+            "address": remote_address,
+            "publicKey": remote_public_key,
+            "groupId": "7",
+            "landSessionId": "land-1",
+            "roomId": "club",
+            "instanceId": "11112233-4455-4677-8899-aabbccddeeff",
+        })
+        remote._enable({"mode": "push-to-talk"})
+        remote._submit_signature({
+            "signature": _b58encode(remote_wallet.sign(canonical_bytes(remote.pending_fields))),
+            "publicKey": remote_public_key,
+        })
+        self.manager.resolve_peer = lambda address: "ab" * 16 if address == remote_address else None
+        tampered = {**remote_discovery[-1], "u": "another-room"}
+        self.assertTrue(self.manager.on_discovery(tampered, "cd" * 16))
+        self.assertNotIn(remote_address, self.manager.remote_capabilities)
+        self.assertTrue(self.manager.on_discovery(remote_discovery[-1], "cd" * 16))
+        self.assertIn(remote_address, self.manager.remote_capabilities)
+
+
+if __name__ == "__main__":
+    unittest.main()

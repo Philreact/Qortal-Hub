@@ -14,6 +14,10 @@
       "to": "reticulum/qortalland_games.py"
     },
     {
+      "from": "resources/qortalland_proximity.py",
+      "to": "reticulum/qortalland_proximity.py"
+    },
+    {
       "from": "resources/mesh-network.identity",
       "to": "reticulum/mesh-network.identity"
     },
@@ -28,6 +32,7 @@
         "**/*",
         "!presence_bridge.py",
         "!qortalland_games.py",
+        "!qortalland_proximity.py",
         "!mesh-network.identity",
         "!mesh-network.passphrase",
         "!__pycache__/**",

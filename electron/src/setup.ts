@@ -1396,14 +1396,17 @@ const attachQortalLandGameRestartListener = () => {
   });
 };
 
-ipcMain.handle('qortalLandGames:getTransportBootstrap', (event) => {
+const getQortalLandRealtimeBootstrap = (event: Electron.IpcMainInvokeEvent) => {
   const mainWindow = myCapacitorApp.getMainWindow();
   if (mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
-    throw new Error('Qortal Land game transport is restricted to the main window');
+    throw new Error('Qortal Land realtime transport is restricted to the main window');
   }
   attachQortalLandGameRestartListener();
   return getReticulumBridge()?.getQortalLandGameTransportBootstrap() ?? null;
-});
+};
+
+ipcMain.handle('qortalLandRealtime:getTransportBootstrap', getQortalLandRealtimeBootstrap);
+ipcMain.handle('qortalLandGames:getTransportBootstrap', getQortalLandRealtimeBootstrap);
 
 startSystemCallReadinessMonitor();
 
