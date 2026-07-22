@@ -262,6 +262,7 @@ class QortalLandGameManager:
         self.socket_out: "queue.Queue[Optional[tuple[Any, Dict[str, Any]]]]" = queue.Queue(maxsize=256)
         self.socket_media_out: "deque[tuple[Any, bytes, int, float]]" = deque()
         self.socket_media_lock = threading.Lock()
+        self.socket_writer_wakeup = threading.Event()
         self.server = None
         self.server_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
@@ -292,6 +293,7 @@ class QortalLandGameManager:
             self.log("[qortalland-game] websocket unavailable: dependency or bootstrap missing")
             return None
         self.stop_event.clear()
+        self.socket_writer_wakeup.clear()
         ready: "queue.Queue[int]" = queue.Queue(maxsize=1)
 
         def run() -> None:
@@ -325,6 +327,7 @@ class QortalLandGameManager:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.socket_writer_wakeup.set()
         if self.server is not None:
             try:
                 self.server.shutdown()
@@ -490,6 +493,7 @@ class QortalLandGameManager:
         if socket_client is not None:
             try:
                 self.socket_out.put_nowait((socket_client, event))
+                self.socket_writer_wakeup.set()
             except queue.Full:
                 try:
                     socket_client.close(1013, "event queue stalled")
@@ -518,6 +522,7 @@ class QortalLandGameManager:
                 self.proximity.stats["queueDrops"] += 1
                 self.proximity.stats["rendererQueueDrops"] += 1
             self.socket_media_out.append((socket_client, bytes(frame), source_id, time.monotonic()))
+        self.socket_writer_wakeup.set()
         return True
 
     def _socket_writer(self) -> None:
@@ -526,7 +531,7 @@ class QortalLandGameManager:
             item = None
             if control_burst < 8:
                 try:
-                    item = self.socket_out.get(timeout=0.02)
+                    item = self.socket_out.get_nowait()
                 except queue.Empty:
                     pass
             if item is not None:
@@ -544,6 +549,10 @@ class QortalLandGameManager:
                 media_item = self.socket_media_out.popleft() if self.socket_media_out else None
             if media_item is None:
                 control_burst = 0
+                if not self.socket_out.empty():
+                    continue
+                self.socket_writer_wakeup.wait(0.02)
+                self.socket_writer_wakeup.clear()
                 continue
             socket_client, frame, _source_id, queued_at = media_item
             control_burst = 0

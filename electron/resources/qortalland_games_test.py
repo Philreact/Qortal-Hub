@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import unittest
 from unittest import mock
@@ -66,6 +67,36 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(refreshes, [("11" * 16, "game_link_no_path")])
         request_path.assert_called_once_with(bytes.fromhex("11" * 16))
         manager._schedule_open_retry.assert_called_once_with(match_id)
+
+    def test_socket_writer_drains_media_without_waiting_on_empty_control_queue(self):
+        manager, _events = self.make_manager()
+
+        class Socket:
+            def __init__(self):
+                self.frames = []
+
+            def send(self, frame):
+                self.frames.append(frame)
+
+            def close(self, *_args):
+                pass
+
+        socket = Socket()
+        manager.socket = socket
+        for index in range(8):
+            self.assertTrue(manager.send_binary(bytes([index]), source_id=1))
+
+        writer = threading.Thread(target=manager._socket_writer, daemon=True)
+        writer.start()
+        deadline = time.monotonic() + 0.1
+        while len(socket.frames) < 8 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        manager.stop_event.set()
+        manager.socket_writer_wakeup.set()
+        writer.join(timeout=0.2)
+
+        self.assertEqual(socket.frames, [bytes([index]) for index in range(8)])
+        self.assertEqual(manager.proximity.stats["rendererQueueDrops"], 0)
 
     def test_failed_link_attempt_hard_refreshes_before_retry(self):
         refreshes = []
