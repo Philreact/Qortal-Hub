@@ -4,6 +4,7 @@ import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
 import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import PaidRoundedIcon from '@mui/icons-material/PaidRounded';
+import SportsEsportsRoundedIcon from '@mui/icons-material/SportsEsportsRounded';
 import {
   Box,
   Button,
@@ -3840,10 +3841,14 @@ export function QortalLand({
   const sendSocialAction = useCallback(async (actionType: LandSocialActionType) => {
     const target = actionTarget;
     const now = Date.now();
+    const targetsLocalAvatar = Boolean(
+      target &&
+      target.authorAddress === myAddress &&
+      target.sessionId === sessionId
+    );
     if (
       !target ||
-      target.authorAddress === myAddress ||
-      reticulumReady !== true ||
+      (!targetsLocalAvatar && reticulumReady !== true) ||
       sendingSocialAction ||
       socialActionCooldownUntil > now
     ) return;
@@ -3853,19 +3858,32 @@ export function QortalLand({
     const actionSequence = landActionSequenceRef.current + 1;
     landActionSequenceRef.current = actionSequence;
     try {
-      const result = await window.reticulumChat?.sendLandAction?.(groupId, {
+      if (!targetsLocalAvatar) {
+        const result = await window.reticulumChat?.sendLandAction?.(groupId, {
+          actionId,
+          actionType,
+          fromAddress: myAddress,
+          sourceSessionId: sessionId,
+          sequence: actionSequence,
+          toAddress: target.authorAddress,
+          targetSessionId: target.sessionId,
+          roomId: target.roomId,
+        });
+        if (!result?.success) {
+          throw new Error(result?.error || 'The effect could not be sent');
+        }
+      }
+      addLandActionAnimation({
         actionId,
-        actionType,
+        type: actionType,
         fromAddress: myAddress,
         sourceSessionId: sessionId,
         sequence: actionSequence,
         toAddress: target.authorAddress,
         targetSessionId: target.sessionId,
+        amount: 0,
         roomId: target.roomId,
       });
-      if (!result?.success) {
-        throw new Error(result?.error || 'The effect could not be sent');
-      }
       const cooldownUntil = Date.now() + LAND_SOCIAL_ACTION_COOLDOWN_MS;
       setSocialActionCooldownUntil(cooldownUntil);
       if (landActionCooldownTimerRef.current !== null) {
@@ -3884,6 +3902,7 @@ export function QortalLand({
       setSendingSocialAction(null);
     }
   }, [
+    addLandActionAnimation,
     actionTarget,
     groupId,
     myAddress,
@@ -4833,6 +4852,25 @@ export function QortalLand({
           const start = localStateRef.current;
           const startScale = characterScaleForRoomY(start.roomId, start.y);
           this.localAvatar = this.createAvatar(start.x, start.y, localColor, true);
+          this.localAvatar.setInteractive({
+            alphaTolerance: 8,
+            pixelPerfect: true,
+            useHandCursor: true,
+          });
+          this.localAvatar.on('pointerdown', (pointer: any, _localX: number, _localY: number, event: any) => {
+            event?.stopPropagation?.();
+            const bounds = containerRef.current?.getBoundingClientRect();
+            if (!bounds) return;
+            const pointerEvent = pointer?.event as PointerEvent | undefined;
+            setActionTarget({
+              key: `${myAddress}:${sessionId}`,
+              authorAddress: myAddress,
+              sessionId,
+              roomId: currentRoomRef.current,
+              menuX: clampNumber((pointerEvent?.clientX ?? bounds.left + bounds.width / 2) - bounds.left, 12, Math.max(12, bounds.width - 290)),
+              menuY: clampNumber((pointerEvent?.clientY ?? bounds.top + bounds.height / 2) - bounds.top, 54, Math.max(54, bounds.height - 390)),
+            });
+          });
           this.localLabel = this.add
             .text(
               start.x,
@@ -7405,6 +7443,9 @@ export function QortalLand({
                     : animation.type === 'rain'
                       ? { color: 0x74b9ff, symbol: '☁', particle: '│', label: 'RAIN' }
                       : { color: 0xffd45a, symbol: '☀', particle: '✦', label: 'SUNSHINE' };
+          if (animation.type !== 'qort_received') {
+            visual.label = displayNameForAddress(animation.fromAddress, primaryNameCacheRef.current);
+          }
           const aura = this.add.graphics();
           aura.fillStyle(visual.color, 0.15);
           aura.fillCircle(0, 0, animation.type === 'sunshine' ? 42 : 34);
@@ -7423,7 +7464,7 @@ export function QortalLand({
             stroke: '#07101f',
             strokeThickness: 4,
           }).setOrigin(0.5);
-          const text = this.add.text(0, 35, visual.label, {
+          const text = this.add.text(0, animation.type === 'qort_received' ? 35 : -52, visual.label, {
             align: 'center',
             backgroundColor: 'rgba(4, 10, 23, 0.78)',
             color: '#ffffff',
@@ -9470,7 +9511,7 @@ export function QortalLand({
               </IconButton>
             </Box>
             <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.72), fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', mb: 0.75, textTransform: 'uppercase' }}>
-              Send an effect
+              Mood
             </Typography>
             <Box sx={{ display: 'grid', gap: 0.65, gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', mb: 1 }}>
               {LAND_SOCIAL_ACTIONS.map((socialAction) => {
@@ -9478,7 +9519,6 @@ export function QortalLand({
                 const coolingDown = socialActionCooldownUntil > Date.now();
                 const disabled =
                   reticulumReady !== true ||
-                  actionTarget.authorAddress === myAddress ||
                   busy ||
                   coolingDown;
                 return (
@@ -9538,6 +9578,7 @@ export function QortalLand({
                 fontWeight: 800,
                 justifyContent: 'flex-start',
                 textTransform: 'none',
+                display: actionTarget.authorAddress === myAddress ? 'none' : 'flex',
                 '&:hover': {
                   backgroundColor: alpha('#ffcf5a', 0.23),
                 },
@@ -9560,6 +9601,7 @@ export function QortalLand({
                 justifyContent: 'flex-start',
                 marginTop: 1,
                 textTransform: 'none',
+                display: actionTarget.authorAddress === myAddress ? 'none' : 'flex',
                 '&:hover': {
                   backgroundColor: alpha('#2cf8ff', 0.2),
                 },
@@ -9568,11 +9610,12 @@ export function QortalLand({
                 },
               }}
             >
-              {actionTargetInCall ? 'In a call' : actionTargetInGame ? 'In a game' : 'Call'}
+              {actionTargetInCall ? 'In a call' : actionTargetInGame ? 'In a game' : `Call ${actionTargetName}`}
             </Button>
             <Button
               disabled={!canStartLandGame}
               fullWidth
+              startIcon={<SportsEsportsRoundedIcon fontSize="small" />}
               onClick={() => setShowGamePicker((value) => !value)}
               sx={{
                 backgroundColor: alpha('#9d6cff', 0.13),
@@ -9584,11 +9627,12 @@ export function QortalLand({
                 justifyContent: 'flex-start',
                 marginTop: 1,
                 textTransform: 'none',
+                display: actionTarget.authorAddress === myAddress ? 'none' : 'flex',
               }}
             >
-              {actionTargetInGame ? 'In a game' : actionTargetInCall ? 'In a call' : 'Play game'}
+              {actionTargetInGame ? 'In a game' : actionTargetInCall ? 'In a call' : 'Play games'}
             </Button>
-            {showGamePicker && (
+            {showGamePicker && actionTarget.authorAddress !== myAddress && (
               <Box sx={{ mt: 0.5 }}>
                 {(['connect-four', 'checkers', 'chess'] as const).map((game) => (
                   <Button

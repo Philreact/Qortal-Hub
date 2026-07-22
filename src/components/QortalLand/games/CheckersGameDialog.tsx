@@ -23,6 +23,7 @@ import {
   type CheckersState,
 } from './checkers';
 import { GameSessionChat } from './GameSessionChat';
+import { friendlyGameStatus } from './gameDialogText';
 import type { QortalLandGameMatchView } from './useQortalLandGame';
 
 type Props = {
@@ -47,8 +48,20 @@ const outcomeText = (outcome: CheckersOutcome | undefined, localSeat?: 1 | 2) =>
   if (outcome.type === 'draw') return 'Draw game';
   if (outcome.type === 'abandoned') return 'Game abandoned';
   if (outcome.type === 'protocol-error') return 'Game ended safely';
-  return outcome.winner === localSeat ? 'You won!' : 'You lost';
+  return outcome.winner === localSeat ? 'You won!' : 'You lost!';
 };
+
+function CheckersPlayerRow({ color, name }: { color: string; name: string }) {
+  return (
+    <Stack alignItems="center" direction="row" spacing={1.25} sx={{ minWidth: 0 }}>
+      <Box sx={{ backgroundColor: color, border: `2px solid ${alpha('#fff', 0.72)}`, borderRadius: '50%', boxShadow: `0 1px 5px ${alpha('#000', 0.42)}`, flex: '0 0 auto', height: 19, width: 19 }} />
+      <Box sx={{ minWidth: 0 }}>
+        <Typography noWrap sx={{ fontSize: 15, fontWeight: 700, lineHeight: '19px' }}>{name}</Typography>
+        <Typography sx={{ color: '#8d99a8', fontSize: 12, lineHeight: '16px' }}>{color === '#eab72f' ? 'Gold' : 'Coral'}</Typography>
+      </Box>
+    </Stack>
+  );
+}
 
 export function CheckersGameDialog({
   address, match, now, transportReady, onClose, onPlayMove, onRematch,
@@ -57,6 +70,7 @@ export function CheckersGameDialog({
   const [selectedFrom, setSelectedFrom] = useState<number | null>(null);
   const [selectedPath, setSelectedPath] = useState<number[]>([]);
   const [selectionHint, setSelectionHint] = useState('');
+  const [resignConfirmationOpen, setResignConfirmationOpen] = useState(false);
   const state = match?.state as CheckersState | undefined;
   const localSeat = match?.localSeat;
   const opponentAddress = match
@@ -104,7 +118,7 @@ export function CheckersGameDialog({
   const expiresIn = Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000));
   const reconnectIn = Math.max(0, Math.ceil(((match.reconnectDeadline || now) - now) / 1000));
   const canShowBoard = Boolean(state && ['active', 'finishing', 'reconnecting', 'finished'].includes(match.phase));
-  const canShowChat = Boolean(state || ['round-waiting', 'round-incoming'].includes(match.phase) || (match.phase === 'finished' && match.roundId !== match.matchId));
+  const canShowChat = Boolean(state);
   const hasCapture = legalMoves.some((move) => move.captured.length > 0);
   const displayIndexes = localSeat === 2
     ? Array.from({ length: 64 }, (_, index) => 63 - index)
@@ -145,69 +159,93 @@ export function CheckersGameDialog({
     }
   };
 
+  const resolvedOutcome = (match.outcome || state?.outcome) as CheckersOutcome | undefined;
+  const turnStatus = resolvedOutcome
+    ? outcomeText(resolvedOutcome, localSeat)
+    : match.phase === 'reconnecting'
+      ? `Reconnecting (${reconnectIn}s)`
+      : match.phase === 'finishing'
+        ? 'Finishing game...'
+        : localTurn
+          ? 'Your turn'
+          : state
+            ? `${opponentName}'s turn`
+            : '';
+  const resultAnnouncement = resolvedOutcome
+    ? resolvedOutcome.type === 'draw'
+      ? 'Draw'
+      : 'winner' in resolvedOutcome
+        ? resolvedOutcome.winner === localSeat ? 'You won!' : 'You lost!'
+        : 'Game over'
+    : '';
+  const resultSubtitle = resolvedOutcome
+    ? resolvedOutcome.type === 'draw'
+      ? 'Want another round?'
+      : 'winner' in resolvedOutcome && resolvedOutcome.winner === localSeat
+        ? 'Best out of 3?'
+        : 'Better luck next time.'
+    : '';
+  const localColor = localSeat === 1 ? '#eab72f' : '#d93659';
+  const opponentColor = localSeat === 1 ? '#d93659' : '#eab72f';
+
   return (
+    <>
     <Dialog
       open={match.phase !== 'session-idle'}
       disableEscapeKeyDown={match.phase !== 'finished'}
       onClose={(_, reason) => { if (reason !== 'backdropClick' && match.phase === 'finished') onClose(); }}
       maxWidth={false}
+      sx={{ '& .MuiDialog-container': { alignItems: 'center', boxSizing: 'border-box', pb: '12px', pt: { xs: '72px', md: '92px' } } }}
       PaperProps={{ sx: {
-        background: 'linear-gradient(145deg, #0d1b30 0%, #070d1b 100%)',
-        border: `1px solid ${alpha('#2cf8ff', 0.32)}`,
-        color: '#f8fbff',
+        background: '#071421', border: `1px solid ${alpha('#1aced6', 0.48)}`, borderRadius: '7px', color: '#f4f6f8',
         display: 'flex',
-        height: canShowBoard ? 'min(900px, calc(100dvh - 28px))' : 'auto',
-        maxHeight: 'calc(100dvh - 28px)',
-        width: canShowBoard ? 'min(1180px, calc(100vw - 28px))' : 'min(600px, calc(100vw - 28px))',
+        height: canShowBoard ? { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' } : 'auto', m: 0,
+        maxHeight: { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' }, overflow: 'hidden',
+        width: canShowBoard ? 'min(1320px, calc(100vw - 28px))' : 'min(600px, calc(100vw - 28px))',
       } }}
     >
-      <DialogTitle sx={{ alignItems: 'center', display: 'flex', gap: 1, pb: 1 }}>
-        <SportsEsportsRoundedIcon sx={{ color: '#2cf8ff' }} />
-        <Box>
-          <Typography sx={{ fontSize: 18, fontWeight: 850 }}>Checkers</Typography>
-          {state && <Typography sx={{ color: alpha('#fff', 0.5), fontSize: 10 }}>Casual private match · {state.ply} moves</Typography>}
+      <DialogTitle sx={{ flex: '0 0 auto', px: { xs: 2.5, md: '34px' }, pb: '12px', pt: { xs: 2.5, md: '30px' } }}>
+        <Box sx={{ alignItems: 'center', display: 'flex' }}>
+          <SportsEsportsRoundedIcon sx={{ color: '#22d8e4', height: 18, mr: '10px', width: 18 }} />
+          <Typography sx={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Checkers</Typography>
         </Box>
+        {turnStatus && (canShowBoard || match.phase !== 'finished') && <Typography aria-live="polite" sx={{ color: ['active', 'reconnecting'].includes(match.phase) ? '#22d8e4' : '#f4f6f8', fontSize: 18, fontWeight: 700, lineHeight: '22px', mt: '9px' }}>{turnStatus}</Typography>}
       </DialogTitle>
-      <DialogContent sx={{ display: 'grid', flex: 1, gap: 2, gridTemplateColumns: canShowChat ? { xs: '1fr', md: 'minmax(430px, 1fr) 300px' } : '1fr', minHeight: 0, overflow: { xs: 'auto', md: 'hidden' } }}>
-        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {match.error && <Alert severity="warning" sx={{ mb: 1 }}>{match.error}</Alert>}
-          {match.phase === 'opening' && <><Typography>Establishing private link…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
+      <DialogContent sx={{ display: 'flex', flex: 1, flexDirection: 'column', justifyContent: canShowBoard ? undefined : 'center', minHeight: 0, overflow: 'hidden', px: { xs: 2.5, md: '34px' }, pb: '10px !important', pt: '0 !important' }}>
+        {match.error && canShowBoard && <Alert severity="warning" sx={{ flex: '0 0 auto', mb: 1 }}>{friendlyGameStatus(match.error)}</Alert>}
+        {!canShowBoard && <Box sx={{ alignSelf: 'center', minHeight: 0, overflowY: 'auto', py: 2, textAlign: 'center', width: 'min(100%, 440px)' }}>
+          {match.phase === 'opening' && <><Typography>Preparing the Checkers game…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
           {match.phase === 'waiting' && <><Typography>Waiting for {opponentName || 'the other player'} to respond…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
           {match.phase === 'round-waiting' && <><Typography>Waiting for {opponentName} to accept Checkers…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
           {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
-            <Stack spacing={1.5}>
+            <Stack alignItems="center" spacing={1.5}>
               <Typography sx={{ fontWeight: 800 }}>{match.phase === 'round-incoming' ? `${opponentName} would like to play Checkers.` : `${resolvePlayerName?.(match.requesterAddress) || match.requesterName || shortAddress(match.requesterAddress)} invited you to Checkers.`}</Typography>
               {match.phase === 'incoming' && <Typography sx={{ color: alpha('#fff', 0.6), fontSize: 13 }}>Invitation expires in {expiresIn}s</Typography>}
             </Stack>
           )}
           {match.phase === 'starting' && <><Typography>Starting Checkers…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
-          {canShowBoard && state && (
-            <Box sx={{ display: 'flex', flex: 1, flexDirection: 'column', minHeight: 0 }}>
-              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.75, minHeight: 24 }}>
-                <Typography sx={{ fontWeight: 850 }}>
-                  {match.phase === 'finished' ? outcomeText(match.outcome as CheckersOutcome, localSeat) : match.phase === 'reconnecting' ? `Reconnecting (${reconnectIn}s)` : localTurn ? 'Your turn' : `${opponentName}'s turn`}
-                </Typography>
-                <Typography aria-live="polite" sx={{ color: selectionHint || hasCapture ? '#ffd24f' : alpha('#fff', 0.55), fontSize: 12 }}>
-                  {selectionHint || (hasCapture ? 'Capture required' : match.pendingMoveId ? 'Confirming move…' : selectedFrom !== null ? 'Choose a highlighted square or another piece' : 'Select a piece')}
-                </Typography>
-              </Stack>
-              <Box sx={{ mb: 0.75, minHeight: 42 }}>
-                {match.phase === 'reconnecting' ? (
-                  <Alert severity="warning" sx={{ py: 0 }}>Connection interrupted. The board is paused while the private link recovers.</Alert>
-                ) : (
-                  <Stack direction="row" justifyContent="space-between" sx={{ color: alpha('#fff', 0.55), fontSize: 11, pt: 0.5 }}>
-                    <span>You · {localSeat === 1 ? 'Gold' : 'Coral'}</span>
-                    <span>{opponentName} · {localSeat === 1 ? 'Coral' : 'Gold'}</span>
-                  </Stack>
-                )}
-              </Box>
+          {match.phase === 'finished' && (
+            <Stack alignItems="center" spacing={0.75}>
+              <Typography sx={{ fontSize: 18, fontWeight: 700, textAlign: 'center' }}>Game ended</Typography>
+              {match.error && <Typography sx={{ color: '#8d99a8', fontSize: 14, fontWeight: 500, textAlign: 'center' }}>{friendlyGameStatus(match.error)}</Typography>}
+            </Stack>
+          )}
+        </Box>}
+        {canShowBoard && state && (
+          <Box sx={{ display: 'grid', flex: 1, gap: '24px', gridTemplateColumns: canShowChat ? { xs: '1fr', lg: 'minmax(0, 1fr) clamp(300px, 27%, 380px)' } : '1fr', minHeight: 0, overflowX: 'hidden', overflowY: { xs: 'auto', lg: 'hidden' }, pb: 0.5 }}>
+            <Box sx={{ backgroundColor: 'rgba(5, 18, 31, 0.38)', border: `1px solid ${alpha('#63869d', 0.28)}`, borderRadius: '8px', display: 'grid', gridTemplateRows: '54px minmax(0, 1fr) 54px', minHeight: 0, minWidth: 0, overflow: 'hidden', p: '20px 28px 18px', position: 'relative' }}>
+              <CheckersPlayerRow color={opponentColor} name={opponentName} />
+              <Typography aria-live="polite" sx={{ border: 0, clip: 'rect(0 0 0 0)', height: 1, margin: -1, overflow: 'hidden', padding: 0, position: 'absolute', whiteSpace: 'nowrap', width: 1 }}>
+                {selectionHint || (hasCapture ? 'Capture required' : match.pendingMoveId ? 'Confirming move…' : selectedFrom !== null ? 'Choose a highlighted square or another piece' : 'Select a piece')}
+              </Typography>
+              <Box sx={{ alignItems: 'center', containerType: 'size', display: 'flex', justifyContent: 'center', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
               <Box
                 aria-label="Checkers board"
                 role="grid"
                 sx={{
-                  alignSelf: 'center', aspectRatio: '1', display: 'grid', flex: '0 1 auto',
-                  gridTemplateColumns: 'repeat(8, 1fr)', maxWidth: 720,
-                  width: { xs: 'min(100%, calc(100dvh - 230px))', md: 'min(100%, calc(100dvh - 190px))' },
+                  aspectRatio: '1 / 1', contain: 'layout paint', display: 'grid', flex: '0 0 auto',
+                  gridTemplateColumns: 'repeat(8, minmax(0, 1fr))', gridTemplateRows: 'repeat(8, minmax(0, 1fr))',
+                  maxHeight: 640, maxWidth: 640, overflow: 'hidden', width: 'min(100%, 100cqh, 640px)',
                 }}
               >
                 {displayIndexes.map((index, displayIndex) => {
@@ -234,7 +272,7 @@ export function CheckersGameDialog({
                       onClick={() => void selectSquare(index)}
                       sx={{
                         alignItems: 'center', background: dark ? '#6e4429' : '#e6c495', border: 0, cursor: movable || destination ? 'pointer' : 'default',
-                        display: 'flex', justifyContent: 'center', minHeight: 0, padding: '7%', position: 'relative',
+                        display: 'flex', height: '100%', justifyContent: 'center', minHeight: 0, minWidth: 0, padding: '7%', position: 'relative', width: '100%',
                         ...(selected ? { boxShadow: 'inset 0 0 0 4px #2cf8ff' } : {}),
                         ...(destination ? { '&::after': { background: alpha('#2cf8ff', 0.7), borderRadius: '50%', content: '""', height: '24%', position: 'absolute', width: '24%' } } : {}),
                       }}
@@ -251,21 +289,28 @@ export function CheckersGameDialog({
                   );
                 })}
               </Box>
-              <Typography sx={{ color: alpha('#fff', 0.45), fontSize: 10, mt: 1, minHeight: 16, textAlign: 'center' }}>Captures are mandatory. Complete every available jump in the chain.</Typography>
+              </Box>
+              <CheckersPlayerRow color={localColor} name="You" />
+              {resolvedOutcome && <Box aria-live="assertive" role="status" sx={{ '@keyframes checkersResultReveal': { '0%': { opacity: 0, transform: 'translate(-50%, -44%) scale(0.86)' }, '65%': { opacity: 1, transform: 'translate(-50%, -50%) scale(1.04)' }, '100%': { opacity: 1, transform: 'translate(-50%, -50%) scale(1)' } }, animation: 'checkersResultReveal 620ms ease-out both', backgroundColor: alpha('#071421', 0.92), border: `1px solid ${alpha('#22d8e4', 0.58)}`, borderRadius: '10px', boxShadow: `0 0 24px ${alpha('#22d8e4', 0.2)}`, left: '50%', px: 3, py: 1.4, position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 4 }}>
+                <Typography sx={{ color: '#f4f6f8', fontSize: 24, fontWeight: 700, lineHeight: 1.2, textAlign: 'center', whiteSpace: 'nowrap' }}>{resultAnnouncement}</Typography>
+                <Typography sx={{ color: '#8d99a8', fontSize: 13, fontWeight: 500, mt: 0.5, textAlign: 'center', whiteSpace: 'nowrap' }}>{resultSubtitle}</Typography>
+              </Box>}
             </Box>
-          )}
-          {match.phase === 'finished' && !state && <Typography>{match.error || 'The Checkers invitation ended.'}</Typography>}
-        </Box>
-        {canShowChat && (
-          <GameSessionChat address={address} disabled={!transportReady || match.phase === 'reconnecting' || match.sessionClosed === true} messages={match.chatMessages} opponentName={opponentName} remoteTyping={Boolean(match.remoteTypingUntil && match.remoteTypingUntil > now)} onSend={onSendChat} onTyping={onTyping} />
+            {canShowChat && <GameSessionChat address={address} disabled={!transportReady || match.phase === 'reconnecting' || match.sessionClosed === true} messages={match.chatMessages} opponentName={opponentName} remoteTyping={Boolean(match.remoteTypingUntil && match.remoteTypingUntil > now)} onSend={onSendChat} onTyping={onTyping} variant="chess" />}
+          </Box>
         )}
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
+      <DialogActions sx={{ flex: '0 0 auto', minHeight: 42, px: { xs: 2.5, md: '34px' }, pb: '14px', pt: 0 }}>
         {(match.phase === 'incoming' || match.phase === 'round-incoming') && <><Button onClick={() => onRespond(false)}>Decline</Button><Button variant="contained" onClick={() => onRespond(true)}>Accept</Button></>}
         {['opening', 'waiting', 'round-waiting'].includes(match.phase) && <Button onClick={onClose}>Cancel</Button>}
-        {match.phase === 'active' && <Button color="error" onClick={onResign}>Resign</Button>}
-        {match.phase === 'finished' && <><Button onClick={onClose}>Close</Button>{state && !match.sessionClosed && <Button variant="contained" onClick={onRematch}>Play again</Button>}</>}
+        {match.phase === 'active' && <Button onClick={() => setResignConfirmationOpen(true)} sx={{ background: 'transparent', color: '#ff4e4e', fontSize: 13, fontWeight: 600, letterSpacing: '0.02em', p: 1 }}>RESIGN</Button>}
+        {match.phase === 'finished' && <><Button onClick={onClose}>Leave</Button>{state && !match.sessionClosed && <Button variant="contained" onClick={onRematch} sx={{ '@keyframes checkersRematchPulse': { '0%, 100%': { boxShadow: `0 0 0 0 ${alpha('#22d8e4', 0.08)}` }, '50%': { boxShadow: `0 0 14px 3px ${alpha('#22d8e4', 0.32)}` } }, animation: 'checkersRematchPulse 1.8s ease-in-out infinite' }}>Rematch</Button>}</>}
       </DialogActions>
     </Dialog>
+    <Dialog open={resignConfirmationOpen} onClose={() => setResignConfirmationOpen(false)} aria-labelledby="checkers-resign-title" PaperProps={{ sx: { backgroundColor: '#0b1927', border: `1px solid ${alpha('#63869d', 0.36)}`, borderRadius: '8px', color: '#f4f6f8', width: 'min(360px, calc(100vw - 32px))' } }}>
+      <DialogTitle id="checkers-resign-title" sx={{ fontSize: 18, fontWeight: 700, pb: 1 }}>Resign this game?</DialogTitle>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}><Button onClick={() => setResignConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" onClick={() => { setResignConfirmationOpen(false); onResign(); }}>Resign</Button></DialogActions>
+    </Dialog>
+    </>
   );
 }

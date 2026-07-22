@@ -121,7 +121,7 @@ describe('Connect Four game dialog', () => {
     renderGame({ ...current, pendingMoveId: crypto.randomUUID() });
 
     const status = screen.getByTestId('connect-four-board-status');
-    expect(status).toHaveTextContent('Move placed — waiting for encrypted acknowledgement…');
+    expect(status).toHaveTextContent('Move placed — waiting for confirmation…');
     expect(status).toHaveStyle({ lineHeight: '15px', minHeight: '15px' });
   });
 
@@ -136,6 +136,7 @@ describe('Connect Four game dialog', () => {
 
     expect(screen.getAllByText('You won!').length).toBeGreaterThan(0);
     expect(screen.getByText(/7 moves against Rival/)).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Game chat message' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: /Play again/i }));
     expect(onRematch).toHaveBeenCalledOnce();
   });
