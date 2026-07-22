@@ -11,8 +11,8 @@ const matchWith = (state: CheckersState): QortalLandGameMatchView => ({
   moves: [], chatMessages: [],
 });
 
-const renderGame = (state = createCheckersState(1), onPlayMove = vi.fn().mockResolvedValue(true)) => {
-  render(<CheckersGameDialog address="Q-local" match={matchWith(state)} now={Date.now()} transportReady onClose={vi.fn()} onPlayMove={onPlayMove} onRematch={vi.fn()} onResign={vi.fn()} onRespond={vi.fn()} onSendChat={() => true} onTyping={vi.fn()} resolvePlayerName={() => 'Opponent'} />);
+const renderGame = (state = createCheckersState(1), onPlayMove = vi.fn().mockResolvedValue(true), matchOverrides: Partial<QortalLandGameMatchView> = {}) => {
+  render(<CheckersGameDialog address="Q-local" match={{ ...matchWith(state), ...matchOverrides }} now={Date.now()} transportReady onClose={vi.fn()} onPlayMove={onPlayMove} onRematch={vi.fn()} onResign={vi.fn()} onRespond={vi.fn()} onSendChat={() => true} onTyping={vi.fn()} resolvePlayerName={() => 'Opponent'} />);
   return onPlayMove;
 };
 
@@ -63,5 +63,16 @@ describe('Checkers game dialog', () => {
     expect(screen.getByRole('gridcell', { name: /Row 4, column 1, your piece/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('gridcell', { name: /Row 2, column 3, empty/i }));
     await waitFor(() => expect(play).toHaveBeenCalledWith(42, [24, 10]));
+  });
+
+  it('keeps private chat available after the game ends', () => {
+    const state = createCheckersState(1);
+    state.outcome = { type: 'win', winner: 1 };
+    renderGame(state, vi.fn().mockResolvedValue(true), {
+      phase: 'finished',
+      outcome: state.outcome,
+    });
+
+    expect(screen.getByRole('textbox', { name: 'Game chat message' })).toBeEnabled();
   });
 });

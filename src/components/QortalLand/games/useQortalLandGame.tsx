@@ -929,11 +929,9 @@ export function useQortalLandGame(options: Options) {
     }
   }, [failProtocol, replaceMatch, send]);
 
-  const resign = useCallback(() => {
+  const performResign = useCallback(() => {
     const current = matchRef.current;
     if (!current?.localSeat) return;
-    const gameLabel = current.game === 'checkers' ? 'Checkers' : current.game === 'chess' ? 'Chess' : 'Connect Four';
-    if (!window.confirm(`Resign this ${gameLabel} game?`)) return;
     send('RESIGN_GAME', { matchId: current.matchId });
     replaceMatch({ ...current, phase: 'finishing', outcome: { type: 'resigned', winner: current.localSeat === 1 ? 2 : 1 } });
   }, [replaceMatch, send]);
@@ -1034,6 +1032,7 @@ export function useQortalLandGame(options: Options) {
       state: undefined,
       stateHash: undefined,
       moves: [],
+      chatMessages: [],
       outcome: undefined,
       error: undefined,
     });
@@ -1048,7 +1047,7 @@ export function useQortalLandGame(options: Options) {
       onClose={close}
       onPlayMove={playCheckersMove}
       onRematch={rematch}
-      onResign={resign}
+      onResign={performResign}
       onRespond={respond}
       onSendChat={sendChat}
       onTyping={sendTyping}
@@ -1063,7 +1062,7 @@ export function useQortalLandGame(options: Options) {
       onClose={close}
       onPlayMove={playChessMove}
       onRematch={rematch}
-      onResign={resign}
+      onResign={performResign}
       onRespond={respond}
       onSendChat={sendChat}
       onTyping={sendTyping}
@@ -1078,7 +1077,7 @@ export function useQortalLandGame(options: Options) {
       onClose={close}
       onPlayColumn={playColumn}
       onRematch={rematch}
-      onResign={resign}
+      onResign={performResign}
       onRespond={respond}
       onSendChat={sendChat}
       onTyping={sendTyping}

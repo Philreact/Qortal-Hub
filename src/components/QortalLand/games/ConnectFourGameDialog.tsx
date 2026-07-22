@@ -30,6 +30,7 @@ import {
   type ConnectFourState,
 } from './connectFour';
 import { GameSessionChat, type GameChatMessage } from './GameSessionChat';
+import { friendlyGameStatus } from './gameDialogText';
 
 export type ConnectFourGamePhase =
   | 'idle'
@@ -107,15 +108,6 @@ const outcomeText = (
   return outcome.winner === localSeat ? 'You won!' : 'You lost';
 };
 
-const outcomeDetail = (outcome: ConnectFourOutcome | undefined): string => {
-  if (!outcome) return '';
-  if (outcome.type === 'abandoned') return 'The private connection could not be recovered. No winner was recorded.';
-  if (outcome.type === 'protocol-error') return 'The peers disagreed about the game state. No winner was recorded.';
-  if (outcome.type === 'resigned') return 'The game ended by resignation.';
-  if (outcome.type === 'draw') return 'The board is full with no four-in-a-row.';
-  return 'Four connected pieces ended the game.';
-};
-
 const availableSpaces = (state: ConnectFourState, column: number): number => {
   let count = 0;
   for (let row = 0; row < CONNECT_FOUR_ROWS; row += 1) {
@@ -159,6 +151,7 @@ export function ConnectFourGameDialog({
   const [focusedColumn, setFocusedColumn] = useState<number | null>(null);
   const [shakeNonce, setShakeNonce] = useState(0);
   const [muted, setMuted] = useState(readMuted);
+  const [resignConfirmationOpen, setResignConfirmationOpen] = useState(false);
   const [boardWidth, setBoardWidth] = useState<number | null>(null);
   const boardAreaRef = useRef<HTMLDivElement | null>(null);
   const columnRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -205,9 +198,7 @@ export function ConnectFourGameDialog({
     state &&
     ['active', 'finishing', 'reconnecting', 'finished'].includes(match.phase)
   );
-  const canShowChat = Boolean(
-    match && (state || ['round-waiting', 'round-incoming'].includes(match.phase) || (match.phase === 'finished' && match.roundId !== match.matchId))
-  );
+  const canShowChat = Boolean(match && state);
 
   const playSound = useCallback((kind: 'drop' | 'turn' | 'invalid' | 'win' | 'loss') => {
     if (muted) return;
@@ -424,23 +415,6 @@ export function ConnectFourGameDialog({
     };
   }, [attemptColumn, localTurn]);
 
-  const connection = (() => {
-    if (match?.phase === 'reconnecting') return { color: '#ffb74d', label: 'Reconnecting' };
-    if (match?.phase === 'finished') return { color: '#9d8cff', label: 'Match complete' };
-    if (!transportReady) return { color: '#ff5876', label: 'Transport unavailable' };
-    if (match?.pendingSince) {
-      const pendingMs = now - match.pendingSince;
-      if (pendingMs > 2_000) return { color: '#ffcf5a', label: `Waiting for peer · ${(pendingMs / 1_000).toFixed(1)}s` };
-    }
-    if (match?.phase === 'finishing') return { color: '#9d8cff', label: 'Verifying result' };
-    if (match?.lastRoundTripMs) {
-      return match.lastRoundTripMs > 1_500
-        ? { color: '#ffcf5a', label: `Slow link · ${match.lastRoundTripMs}ms` }
-        : { color: '#55e6a5', label: `Connected · ${match.lastRoundTripMs}ms` };
-    }
-    return { color: '#55e6a5', label: 'Private link connected' };
-  })();
-
   const liveMessage = match
     ? match.phase === 'reconnecting'
       ? `Connection interrupted. Reconnecting for ${Math.max(0, Math.ceil(((match.reconnectDeadline || now) - now) / 1000))} seconds.`
@@ -452,8 +426,23 @@ export function ConnectFourGameDialog({
             ? `${opponentName}'s turn.`
             : ''
     : '';
+  const resultAnnouncement = match?.outcome
+    ? match.outcome.type === 'draw'
+      ? 'Draw'
+      : 'winner' in match.outcome
+        ? match.outcome.winner === localSeat ? 'You won!' : 'You lost!'
+        : 'Game over'
+    : '';
+  const resultSubtitle = match?.outcome
+    ? match.outcome.type === 'draw'
+      ? 'Want another round?'
+      : 'winner' in match.outcome && match.outcome.winner === localSeat
+        ? 'Best out of 3?'
+        : 'Better luck next time.'
+    : '';
 
   return (
+    <>
     <Dialog
       open={Boolean(match && match.phase !== 'session-idle')}
       disableEscapeKeyDown={Boolean(match && match.phase !== 'finished')}
@@ -461,54 +450,47 @@ export function ConnectFourGameDialog({
         if (!match || reason === 'backdropClick' || match.phase !== 'finished') return;
         onClose();
       }}
-      maxWidth={canShowChat ? 'lg' : 'sm'}
-      fullWidth
+      maxWidth={false}
+      sx={{ '& .MuiDialog-container': { alignItems: 'center', boxSizing: 'border-box', pb: '12px', pt: { xs: '72px', md: '92px' } } }}
       PaperProps={{
         sx: {
-          background: 'radial-gradient(circle at 50% -20%,#172a4d 0,#10182a 34%,#070914 100%)',
-          border: `1px solid ${alpha('#2cf8ff', 0.32)}`,
-          boxShadow: `0 28px 90px ${alpha('#000', 0.68)},0 0 44px ${alpha('#2cf8ff', 0.08)}`,
-          color: '#f8fbff',
-          height: canShowBoard ? 'calc(100% - 64px)' : 'auto',
-          overflow: 'hidden',
+          background: '#071421', border: `1px solid ${alpha('#1aced6', 0.48)}`, borderRadius: '7px', color: '#f4f6f8', display: 'flex',
+          height: canShowBoard ? { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' } : 'auto', m: 0,
+          maxHeight: { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' }, overflow: 'hidden',
+          width: canShowBoard ? 'min(1320px, calc(100vw - 28px))' : 'min(600px, calc(100vw - 28px))',
         },
       }}
     >
       {match && (
         <>
-          <DialogTitle sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
-            <SportsEsportsRoundedIcon sx={{ color: '#2cf8ff' }} />
-            <Box sx={{ flex: 1 }}>
-              <Typography component="div" sx={{ fontSize: 18, fontWeight: 850 }}>Connect Four</Typography>
-              {canShowBoard && (
-                <Typography component="div" sx={{ color: alpha('#fff', 0.58), fontSize: 11 }}>
-                  Casual private match · {state?.ply || 0} moves
-                </Typography>
-              )}
+          <DialogTitle sx={{ flex: '0 0 auto', px: { xs: 2.5, md: '34px' }, pb: '12px', pt: { xs: 2.5, md: '30px' } }}>
+            <Box sx={{ alignItems: 'center', display: 'flex' }}>
+              <SportsEsportsRoundedIcon sx={{ color: '#22d8e4', height: 18, mr: '10px', width: 18 }} />
+              <Typography component="div" sx={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Connect Four</Typography>
+              <Box sx={{ flex: 1 }} />
+              <Tooltip title={muted ? 'Turn game sounds on' : 'Mute game sounds'}>
+                <IconButton aria-label={muted ? 'Turn game sounds on' : 'Mute game sounds'} onClick={toggleMuted} size="small" sx={{ color: '#8d99a8' }}>
+                  {muted ? <VolumeOffRoundedIcon fontSize="small" /> : <VolumeUpRoundedIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
             </Box>
-            <Tooltip title={muted ? 'Turn game sounds on' : 'Mute game sounds'}>
-              <IconButton aria-label={muted ? 'Turn game sounds on' : 'Mute game sounds'} onClick={toggleMuted} sx={{ color: alpha('#fff', 0.72) }}>
-                {muted ? <VolumeOffRoundedIcon /> : <VolumeUpRoundedIcon />}
-              </IconButton>
-            </Tooltip>
+            {liveMessage && (canShowBoard || match.phase !== 'finished') && <Typography aria-live="polite" sx={{ color: ['active', 'reconnecting'].includes(match.phase) ? '#22d8e4' : '#f4f6f8', fontSize: 18, fontWeight: 700, lineHeight: '22px', mt: '9px' }}>{liveMessage.replace(/\.$/, '')}</Typography>}
           </DialogTitle>
 
-          <DialogContent sx={{ display: 'grid', flex: '1 1 auto', gap: 2, gridTemplateColumns: canShowChat ? { xs: '1fr', md: 'minmax(420px, 1fr) 310px' } : '1fr', gridTemplateRows: { xs: 'auto', md: 'minmax(0, 1fr)' }, minHeight: 0, overflowX: 'hidden', overflowY: { xs: 'auto', md: 'hidden' } }}>
+          <DialogContent sx={{ alignContent: canShowBoard ? undefined : 'center', alignItems: canShowBoard ? undefined : 'center', display: 'grid', flex: '1 1 auto', gap: '24px', gridTemplateColumns: canShowChat ? { xs: '1fr', lg: 'minmax(0, 1fr) clamp(300px, 27%, 380px)' } : '1fr', gridTemplateRows: { xs: 'auto', lg: canShowBoard ? 'minmax(0, 1fr)' : 'auto' }, justifyItems: canShowBoard ? undefined : 'center', minHeight: 0, overflowX: 'hidden', overflowY: { xs: 'auto', lg: 'hidden' }, px: { xs: 2.5, md: '34px' }, pb: '10px !important', pt: '0 !important' }}>
             <Box aria-live="polite" sx={{ height: 0, overflow: 'hidden', position: 'absolute', width: 0 }}>{liveMessage}</Box>
-            <Box sx={{ height: '100%', minHeight: 0, minWidth: 0 }}>
+            <Box sx={{ height: canShowBoard ? '100%' : 'auto', minHeight: 0, minWidth: 0, textAlign: canShowBoard ? undefined : 'center', width: canShowBoard ? '100%' : 'min(100%, 440px)' }}>
 
             {match.phase === 'opening' && (
-              <Stack spacing={2} sx={{ py: 1 }}>
-                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Establishing private link…</Typography>
-                <Typography sx={{ color: alpha('#fff', 0.62), fontSize: 13 }}>
-                  Finding a secure Reticulum route to {opponentName}.
-                </Typography>
+              <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
+                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Preparing the game...</Typography>
+                <Typography sx={{ color: alpha('#fff', 0.62), fontSize: 13 }}>Getting everything ready for {opponentName}.</Typography>
                 <LinearProgress />
               </Stack>
             )}
 
             {match.phase === 'waiting' && (
-              <Stack spacing={2} sx={{ py: 1 }}>
+              <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
                 <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Invitation sent</Typography>
                 <Typography sx={{ color: alpha('#fff', 0.7) }}>Waiting for {opponentName} to respond…</Typography>
                 <Typography variant="caption">The invitation expires automatically after 60 seconds.</Typography>
@@ -517,16 +499,15 @@ export function ConnectFourGameDialog({
             )}
 
             {match.phase === 'round-waiting' && (
-              <Stack spacing={2} sx={{ py: 1 }}>
+              <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
                 <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Rematch requested</Typography>
                 <Typography sx={{ color: alpha('#fff', 0.7) }}>Waiting for {opponentName} to accept another game…</Typography>
-                <Typography variant="caption">Reusing your authenticated private connection.</Typography>
                 <LinearProgress />
               </Stack>
             )}
 
             {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
-              <Stack spacing={2} sx={{ py: 1 }}>
+              <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
                 <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.5 }}>
                   <Box sx={{ alignItems: 'center', background: `linear-gradient(135deg,${alpha('#2cf8ff', 0.42)},${alpha('#9d6cff', 0.5)})`, border: `1px solid ${alpha('#fff', 0.28)}`, borderRadius: '50%', display: 'flex', fontSize: 20, fontWeight: 900, height: 52, justifyContent: 'center', width: 52 }}>
                     {playerInitial(requesterLabel)}
@@ -537,74 +518,27 @@ export function ConnectFourGameDialog({
                   </Box>
                 </Box>
                 <Typography>{match.phase === 'round-incoming' ? 'Would like to play another Connect Four game.' : 'Invited you to a private Connect Four game.'}</Typography>
-                <Box sx={{ backgroundColor: alpha('#2cf8ff', 0.07), border: `1px solid ${alpha('#2cf8ff', 0.18)}`, borderRadius: 2, p: 1.5 }}>
-                  <Typography sx={{ color: '#9ffcff', fontSize: 13, fontWeight: 750 }}>
-                    {match.phase === 'round-incoming'
-                      ? 'Private game session already authenticated'
-                      : `Expires in ${Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000))} seconds`}
-                  </Typography>
-                  <Typography sx={{ color: alpha('#fff', 0.56), fontSize: 11, mt: 0.5 }}>
-                    Moves are encrypted through a dedicated Reticulum Link.
-                  </Typography>
-                </Box>
+                {match.phase === 'incoming' && <Typography sx={{ color: '#9ffcff', fontSize: 13, fontWeight: 750 }}>Expires in {Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000))} seconds</Typography>}
               </Stack>
             )}
 
             {match.phase === 'starting' && (
-              <Stack spacing={2} sx={{ py: 1 }}>
-                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Challenge accepted</Typography>
-                <Typography sx={{ color: alpha('#fff', 0.65), fontSize: 13 }}>Authenticating both players and preparing the board…</Typography>
+              <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
+                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Starting Connect Four...</Typography>
                 <LinearProgress />
               </Stack>
             )}
 
             {canShowBoard && state && localSeat && (
-              <Stack spacing={1.5} sx={{ height: '100%', minHeight: 0 }}>
-                <Box sx={{ alignItems: 'center', display: 'grid', gap: 1, gridTemplateColumns: '1fr auto 1fr' }}>
-                  {([localSeat, localSeat === 1 ? 2 : 1] as ConnectFourSeat[]).map((seat, index) => {
-                    const isLocal = index === 0;
-                    const label = isLocal ? 'You' : opponentName;
-                    const hasTurn = match.phase === 'active' && state.nextSeat === seat;
-                    return (
-                      <Box key={seat} sx={{ alignItems: 'center', display: 'flex', flexDirection: index === 0 ? 'row' : 'row-reverse', gap: 1, minWidth: 0 }}>
-                        <Box sx={{ alignItems: 'center', backgroundColor: alpha(PLAYER_COLORS[seat], 0.2), border: `2px solid ${PLAYER_COLORS[seat]}`, borderRadius: '50%', display: 'flex', flexShrink: 0, fontSize: 14, fontWeight: 900, height: 38, justifyContent: 'center', width: 38 }}>
-                          {playerInitial(label)}
-                        </Box>
-                        <Box sx={{ minWidth: 0, textAlign: index === 0 ? 'left' : 'right' }}>
-                          <Typography noWrap sx={{ fontSize: 13, fontWeight: 800 }}>{label}</Typography>
-                          <Typography sx={{ color: hasTurn ? PLAYER_COLORS[seat] : alpha('#fff', 0.48), fontSize: 10, fontWeight: 700 }}>
-                            {hasTurn ? 'PLAYING' : seat === 1 ? 'GOLD' : 'CORAL'}
-                          </Typography>
-                        </Box>
-                      </Box>
-                    );
-                  }).reduce<React.ReactNode[]>((items, player, index) => {
-                    if (index === 1) items.push(<Typography key="versus" sx={{ color: alpha('#fff', 0.32), fontSize: 11, fontWeight: 900 }}>VS</Typography>);
-                    items.push(player);
-                    return items;
-                  }, [])}
-                </Box>
-
-                <Box sx={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between', minHeight: 30 }}>
-                  <Typography sx={{ color: match.phase === 'finished' ? '#fff' : localTurn ? '#9ffcff' : alpha('#fff', 0.72), fontSize: 16, fontWeight: 850 }}>
-                    {match.phase === 'finished'
-                      ? outcomeText(match.outcome, localSeat)
-                      : match.phase === 'reconnecting'
-                        ? 'Game paused'
-                        : match.phase === 'finishing'
-                          ? 'Confirming final result…'
-                          : localTurn
-                            ? 'Your turn'
-                            : `${opponentName}'s turn`}
-                  </Typography>
-                  <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.7 }}>
-                    <Box sx={{ backgroundColor: connection.color, borderRadius: '50%', boxShadow: `0 0 10px ${alpha(connection.color, 0.7)}`, height: 8, width: 8 }} />
-                    <Typography sx={{ color: alpha('#fff', 0.58), fontSize: 10 }}>{connection.label}</Typography>
-                  </Box>
-                </Box>
+              <Box sx={{ backgroundColor: 'rgba(5, 18, 31, 0.38)', border: `1px solid ${alpha('#63869d', 0.28)}`, borderRadius: '8px', display: 'grid', gridTemplateRows: '54px minmax(0, 1fr) 54px', height: '100%', minHeight: 0, minWidth: 0, overflow: 'hidden', p: '20px 28px 18px', position: 'relative' }}>
+                {match.phase === 'reconnecting' && <Typography sx={{ border: 0, clip: 'rect(0 0 0 0)', height: 1, margin: -1, overflow: 'hidden', padding: 0, position: 'absolute', whiteSpace: 'nowrap', width: 1 }}>Game paused</Typography>}
+                <Stack alignItems="center" direction="row" spacing={1.25} sx={{ minWidth: 0 }}>
+                  <Box sx={{ alignItems: 'center', backgroundColor: alpha(PLAYER_COLORS[localSeat === 1 ? 2 : 1], 0.2), border: `2px solid ${PLAYER_COLORS[localSeat === 1 ? 2 : 1]}`, borderRadius: '50%', display: 'flex', flex: '0 0 auto', fontSize: 12, fontWeight: 800, height: 30, justifyContent: 'center', width: 30 }}>{playerInitial(opponentName)}</Box>
+                  <Box sx={{ minWidth: 0 }}><Typography noWrap sx={{ fontSize: 15, fontWeight: 700, lineHeight: '19px' }}>{opponentName}</Typography><Typography sx={{ color: '#8d99a8', fontSize: 12, lineHeight: '16px' }}>{localSeat === 1 ? 'Coral' : 'Gold'}</Typography></Box>
+                </Stack>
 
                 {match.phase === 'reconnecting' && (
-                  <Alert severity="warning" sx={{ '& .MuiAlert-message': { width: '100%' } }}>
+                  <Alert severity="warning" sx={{ '& .MuiAlert-message': { width: '100%' }, left: '50%', position: 'absolute', top: 72, transform: 'translateX(-50%)', width: 'min(92%, 620px)', zIndex: 5 }}>
                     <Typography sx={{ fontSize: 13, fontWeight: 800 }}>
                       Connection interrupted — reconnecting ({Math.max(0, Math.ceil(((match.reconnectDeadline || now) - now) / 1000))}s)
                     </Typography>
@@ -612,7 +546,7 @@ export function ConnectFourGameDialog({
                   </Alert>
                 )}
 
-                <Box ref={boardAreaRef} sx={{ alignItems: 'center', display: 'flex', flex: '1 1 0', justifyContent: 'center', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
+                <Box ref={boardAreaRef} sx={{ alignItems: 'center', display: 'flex', justifyContent: 'center', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
                   <Box
                     key={shakeNonce}
                     sx={{
@@ -720,49 +654,40 @@ export function ConnectFourGameDialog({
                 </Box>
                 </Box>
 
-                <Typography sx={{ color: alpha('#fff', 0.48), fontSize: 10, textAlign: 'center' }}>
-                  Use ← → to select and Enter to drop · Number keys 1–7 play a column
-                </Typography>
                 <Typography
                   aria-live="polite"
                   data-testid="connect-four-board-status"
                   noWrap
                   sx={{
-                    color: match.pendingMoveId ? '#9ffcff' : alpha('#9ffcff', 0.68),
-                    fontSize: 10,
-                    lineHeight: '15px',
-                    minHeight: 15,
+                    border: 0, clip: 'rect(0 0 0 0)', height: 1, lineHeight: '15px', margin: -1, minHeight: '15px',
                     overflow: 'hidden',
-                    textAlign: 'center',
-                    textOverflow: 'ellipsis',
+                    padding: 0, position: 'absolute', whiteSpace: 'nowrap', width: 1,
                   }}
                 >
                   {match.pendingMoveId
-                    ? 'Move placed — waiting for encrypted acknowledgement…'
+                    ? 'Move placed — waiting for confirmation…'
                     : state.ply === 0
                       ? 'The starting player was selected fairly from both players’ private nonces.'
                       : '\u00a0'}
                 </Typography>
-                {match.phase === 'finished' && (
-                  <Box sx={{ backgroundColor: alpha('#fff', 0.045), border: `1px solid ${alpha('#fff', 0.09)}`, borderRadius: 2, p: 1.5, position: 'relative', textAlign: 'center' }}>
-                    <Typography sx={{ fontSize: 20, fontWeight: 900 }}>{outcomeText(match.outcome, localSeat)}</Typography>
-                    <Typography sx={{ color: alpha('#fff', 0.62), fontSize: 12, mt: 0.4 }}>{outcomeDetail(match.outcome)}</Typography>
-                    <Typography sx={{ color: alpha('#fff', 0.42), fontSize: 10, mt: 0.8 }}>{state.ply} moves against {opponentName}</Typography>
-                    {!reducedMotion && match.outcome?.type === 'win' && match.outcome.winner === localSeat && Array.from({ length: 18 }, (_, index) => (
-                      <Box key={index} aria-hidden sx={{ '@keyframes qlConfetti': { from: { opacity: 1, transform: `translate(0,0) rotate(0deg)` }, to: { opacity: 0, transform: `translate(${(index % 2 ? 1 : -1) * (35 + index * 3)}px,${55 + (index % 5) * 12}px) rotate(${180 + index * 31}deg)` } }, animation: `qlConfetti ${700 + (index % 4) * 130}ms ease-out ${index * 28}ms both`, backgroundColor: index % 3 === 0 ? '#2cf8ff' : index % 3 === 1 ? '#ffd24f' : '#ff5876', height: 7, left: `${12 + (index * 17) % 78}%`, position: 'absolute', top: 2, width: 4 }} />
-                    ))}
-                  </Box>
-                )}
-                {match.error && <Alert severity="error">{match.error}</Alert>}
-              </Stack>
+                <Stack alignItems="center" direction="row" spacing={1.25} sx={{ minWidth: 0 }}>
+                  <Box sx={{ alignItems: 'center', backgroundColor: alpha(PLAYER_COLORS[localSeat], 0.2), border: `2px solid ${PLAYER_COLORS[localSeat]}`, borderRadius: '50%', display: 'flex', flex: '0 0 auto', fontSize: 12, fontWeight: 800, height: 30, justifyContent: 'center', width: 30 }}>{playerInitial('You')}</Box>
+                  <Box sx={{ minWidth: 0 }}><Typography noWrap sx={{ fontSize: 15, fontWeight: 700, lineHeight: '19px' }}>You</Typography><Typography sx={{ color: '#8d99a8', fontSize: 12, lineHeight: '16px' }}>{localSeat === 1 ? 'Gold' : 'Coral'}</Typography></Box>
+                </Stack>
+                {match.outcome && <Box aria-live="assertive" role="status" sx={{ '@keyframes connectFourResultReveal': { '0%': { opacity: 0, transform: 'translate(-50%, -44%) scale(0.86)' }, '65%': { opacity: 1, transform: 'translate(-50%, -50%) scale(1.04)' }, '100%': { opacity: 1, transform: 'translate(-50%, -50%) scale(1)' } }, animation: 'connectFourResultReveal 620ms ease-out both', backgroundColor: alpha('#071421', 0.92), border: `1px solid ${alpha('#22d8e4', 0.58)}`, borderRadius: '10px', boxShadow: `0 0 24px ${alpha('#22d8e4', 0.2)}`, left: '50%', px: 3, py: 1.4, position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 4 }}>
+                  <Typography sx={{ color: '#f4f6f8', fontSize: 24, fontWeight: 700, lineHeight: 1.2, textAlign: 'center', whiteSpace: 'nowrap' }}>{resultAnnouncement}</Typography>
+                  <Typography sx={{ color: '#8d99a8', fontSize: 13, fontWeight: 500, mt: 0.5, textAlign: 'center', whiteSpace: 'nowrap' }}>{resultSubtitle}</Typography>
+                  <Typography sx={{ border: 0, clip: 'rect(0 0 0 0)', height: 1, margin: -1, overflow: 'hidden', padding: 0, position: 'absolute', whiteSpace: 'nowrap', width: 1 }}>{state.ply} moves against {opponentName}</Typography>
+                </Box>}
+                {match.error && <Alert severity="error" sx={{ bottom: 60, left: '50%', position: 'absolute', transform: 'translateX(-50%)', width: 'min(92%, 620px)', zIndex: 5 }}>{friendlyGameStatus(match.error)}</Alert>}
+              </Box>
             )}
 
             {match.phase === 'finished' && !state && (
-              <Alert severity={match.error === 'declined' ? 'info' : 'warning'}>
-                {match.error === 'Invitation busy'
-                  ? `${opponentName} is already in a game.`
-                  : match.error || 'Game ended'}
-              </Alert>
+              <Stack alignItems="center" spacing={0.75}>
+                <Typography sx={{ fontSize: 18, fontWeight: 700, textAlign: 'center' }}>Game ended</Typography>
+                {match.error && <Typography sx={{ color: '#8d99a8', fontSize: 14, fontWeight: 500, textAlign: 'center' }}>{friendlyGameStatus(match.error)}</Typography>}
+              </Stack>
             )}
             </Box>
             {canShowChat && (
@@ -774,11 +699,12 @@ export function ConnectFourGameDialog({
                 onTyping={onTyping}
                 opponentName={opponentName}
                 remoteTyping={Boolean(match.remoteTypingUntil && match.remoteTypingUntil > now)}
+                variant="chess"
               />
             )}
           </DialogContent>
 
-          <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <DialogActions sx={{ flex: '0 0 auto', minHeight: 42, px: { xs: 2.5, md: '34px' }, pb: '14px', pt: 0 }}>
             {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
               <>
                 <Button onClick={() => onRespond(false)}>Decline</Button>
@@ -786,12 +712,12 @@ export function ConnectFourGameDialog({
               </>
             )}
             {(match.phase === 'opening' || match.phase === 'waiting' || match.phase === 'round-waiting') && <Button onClick={onClose}>Cancel</Button>}
-            {match.phase === 'active' && <Button color="error" onClick={onResign}>Resign</Button>}
+            {match.phase === 'active' && <Button onClick={() => setResignConfirmationOpen(true)} sx={{ background: 'transparent', color: '#ff4e4e', fontSize: 13, fontWeight: 600, letterSpacing: '0.02em', p: 1 }}>RESIGN</Button>}
             {match.phase === 'finished' && (
               <>
                 {state && opponentAddress && (
-                  <Button disabled={!transportReady || match.sessionClosed === true} startIcon={<ReplayRoundedIcon />} onClick={onRematch} variant="contained">
-                    Play again
+                  <Button aria-label="Play again" disabled={!transportReady || match.sessionClosed === true} startIcon={<ReplayRoundedIcon />} onClick={onRematch} variant="contained" sx={{ '@keyframes connectFourRematchPulse': { '0%, 100%': { boxShadow: `0 0 0 0 ${alpha('#22d8e4', 0.08)}` }, '50%': { boxShadow: `0 0 14px 3px ${alpha('#22d8e4', 0.32)}` } }, animation: 'connectFourRematchPulse 1.8s ease-in-out infinite' }}>
+                    Rematch
                   </Button>
                 )}
                 <Button onClick={onClose}>Close</Button>
@@ -801,5 +727,10 @@ export function ConnectFourGameDialog({
         </>
       )}
     </Dialog>
+    <Dialog open={resignConfirmationOpen} onClose={() => setResignConfirmationOpen(false)} aria-labelledby="connect-four-resign-title" PaperProps={{ sx: { backgroundColor: '#0b1927', border: `1px solid ${alpha('#63869d', 0.36)}`, borderRadius: '8px', color: '#f4f6f8', width: 'min(360px, calc(100vw - 32px))' } }}>
+      <DialogTitle id="connect-four-resign-title" sx={{ fontSize: 18, fontWeight: 700, pb: 1 }}>Resign this game?</DialogTitle>
+      <DialogActions sx={{ px: 3, pb: 2.5 }}><Button onClick={() => setResignConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" onClick={() => { setResignConfirmationOpen(false); onResign(); }}>Resign</Button></DialogActions>
+    </Dialog>
+    </>
   );
 }
