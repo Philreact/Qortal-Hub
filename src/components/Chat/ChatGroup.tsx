@@ -1507,6 +1507,8 @@ export const ChatGroup = ({
   const editorRef = useRef(null);
   const [formattingTrayResetKey, setFormattingTrayResetKey] = useState(0);
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
+  const queueChatsRef = useRef(queueChats);
+  queueChatsRef.current = queueChats;
   const {
     enabled: reticulumChatEnabled,
     events: reticulumChatEvents,
@@ -3534,7 +3536,23 @@ export const ChatGroup = ({
       // Reference-only events never correspond to an optimistic message row.
       // Sending deletes through the shared queue processor creates an unrelated
       // provider state update (and a second delayed one) on every listener pass.
-      const processed = processWithNewMessages([item], reticulumChatQueueId);
+      const incomingSpecialId =
+        item?.specialId || item?.decryptedData?.specialId;
+      const hasPendingOptimisticMatch = Boolean(
+        incomingSpecialId &&
+          queueChatsRef.current?.[reticulumChatQueueId]?.some(
+            (queuedItem) =>
+              queuedItem?.message?.specialId === incomingSpecialId
+          )
+      );
+      // Historical Reticulum events are already persisted messages. Running
+      // every replayed event through the shared optimistic queue schedules a
+      // provider update (plus a delayed cleanup) even when there is nothing to
+      // reconcile. A large replay can therefore exceed React's nested-update
+      // limit while another Q-Chat surface, such as Qortal Land, is mounting.
+      const processed = hasPendingOptimisticMatch
+        ? processWithNewMessages([item], reticulumChatQueueId)
+        : [item];
       const nextItem = processed?.[0] || item;
       if (
         isChatSenderBlocked(nextItem) ||
