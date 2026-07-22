@@ -487,22 +487,46 @@ function MemberGroupsEffects({
   return null;
 }
 
-function ReticulumSectionLayer({
+function PersistentSectionLayer({
   active,
   children,
+  topOffset = 0,
 }: {
   active: boolean;
   children: ReactNode;
+  topOffset?: number;
 }) {
+  const layerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (active) return;
+    const focusedElement = document.activeElement;
+    if (
+      focusedElement instanceof HTMLElement &&
+      layerRef.current?.contains(focusedElement)
+    ) {
+      focusedElement.blur();
+    }
+  }, [active]);
+
   return (
     <Box
+      aria-hidden={!active}
+      ref={layerRef}
       sx={{
-        display: active ? 'flex' : 'none',
-        flex: 1,
+        bottom: 0,
+        display: 'flex',
+        left: 0,
         minHeight: 0,
         minWidth: 0,
         overflow: 'hidden',
+        pointerEvents: active ? 'auto' : 'none',
+        position: 'absolute',
+        right: 0,
+        top: topOffset,
+        visibility: active ? 'visible' : 'hidden',
         width: '100%',
+        zIndex: active ? 1 : 0,
       }}
     >
       {children}
@@ -876,6 +900,9 @@ export const Group = ({
   const [reticulumReadEntryToken, setReticulumReadEntryToken] = useState(0);
   const [reticulumMountedGroupSections, setReticulumMountedGroupSections] =
     useState<Record<string, string[]>>({});
+  const [mountedLandGroupId, setMountedLandGroupId] = useState<string | null>(
+    null
+  );
   const [reticulumMembersPanelOpen, setReticulumMembersPanelOpen] =
     useState(false);
   const [mobileViewMode, setMobileViewMode] = useState('home');
@@ -1204,11 +1231,13 @@ export const Group = ({
   }, [activeReticulumChannelId]);
 
   useEffect(() => {
+    setMountedLandGroupId(null);
+  }, [selectedGroup?.groupId]);
+
+  useEffect(() => {
     if (!reticulumChatEnabled || !selectedGroup?.groupId) return;
     if (
-      !['announcement', 'forum', 'land', 'members', 'adminSpace'].includes(
-        groupSection
-      )
+      !['announcement', 'forum', 'members', 'adminSpace'].includes(groupSection)
     ) {
       return;
     }
@@ -3213,6 +3242,8 @@ export const Group = ({
     setIsLoadingGroups(false);
     setIsLoadingGroup(false);
     setFirstSecretKeyInCreation(false);
+    setMountedLandGroupId(null);
+    setReticulumMountedGroupSections({});
     setGroupSection('home');
     setGroupAnnouncements({});
     setDefaultThread(null);
@@ -3661,6 +3692,10 @@ export const Group = ({
   }, [bumpReticulumReadEntryToken, groupSection, reticulumChatEnabled]);
 
   const goToQortalLand = useCallback(() => {
+    const groupId = selectedGroupRef.current?.groupId;
+    if (groupId !== undefined && groupId !== null) {
+      setMountedLandGroupId(String(groupId));
+    }
     setSelectedDirect(null);
     setNewChat(false);
     setGroupSection('land');
@@ -3831,10 +3866,33 @@ export const Group = ({
   );
   const mountedReticulumSections =
     reticulumMountedGroupSections[selectedGroupIdKey] || [];
-  const shouldMountReticulumSection = useCallback(
-    (section: string) =>
-      groupSection === section || mountedReticulumSections.includes(section),
-    [groupSection, mountedReticulumSections]
+  const canMountQortalLand = Boolean(
+    selectedGroup &&
+      triedToFetchSecretKey &&
+      !notPartOfKeys &&
+      !(
+        admins.includes(myAddress) &&
+        !secretKey &&
+        isPrivate
+      )
+  );
+  const shouldMountGroupSection = useCallback(
+    (section: string) => {
+      if (section === 'land') {
+        return (
+          groupSection === section || mountedLandGroupId === selectedGroupIdKey
+        );
+      }
+      return (
+        groupSection === section || mountedReticulumSections.includes(section)
+      );
+    },
+    [
+      groupSection,
+      mountedLandGroupId,
+      mountedReticulumSections,
+      selectedGroupIdKey,
+    ]
   );
 
   const renderQChatTabContent = ({
@@ -3845,6 +3903,14 @@ export const Group = ({
     isSelected: boolean;
   }) => {
     const isVisible = isSelected && !hide;
+    const isGroupContentVisible =
+      isVisible &&
+      !isReticulumDirectOverlayOpen &&
+      !(
+        !reticulumChatEnabled &&
+        desktopSideView === 'directs' &&
+        (newChat || selectedDirect)
+      );
 
     return (
       <Box
@@ -3978,42 +4044,56 @@ export const Group = ({
                 (desktopSideView !== 'directs' && !selectedDirect && !newChat))
             }
           >
-            {reticulumChatEnabled && groupSection !== 'chat' && (
-              <ReticulumGroupSectionHeader
-                activeSection={groupSection}
-                canManageReticulumGroup={canManageReticulumGroup}
-                sectionLabel={
-                  groupSection === 'land'
-                    ? 'QortalLand'
-                    : groupSection === 'forum'
-                      ? 'Threads'
-                      : groupSection === 'members'
-                        ? 'Members'
-                        : selectedGroup?.groupName || 'Group'
-                }
-                onChatClick={goToChat}
-                onGroupCallClick={
-                  gcallGroupNumericId !== null
-                    ? handleGroupCallHeaderClick
-                    : undefined
-                }
-                onQortalLandClick={goToQortalLand}
-                onThreadsClick={goToThreads}
-                groupCallInCall={
-                  inThisGroupGcall && gcallRoomState === 'connected'
-                }
-                groupCallJoining={gcallRoomState === 'joining'}
-                groupCallDisabled={inOtherGcall}
-                groupCallTooltip={
-                  inOtherGcall
-                    ? t('core:group_call_blocked', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : ''
-                }
-                membersPanelOpen={reticulumMembersPanelOpen}
-                onMembersClick={toggleReticulumMembersPanel}
-              />
+            {reticulumChatEnabled && (
+              <Box
+                aria-hidden={groupSection === 'chat'}
+                sx={{
+                  left: 0,
+                  pointerEvents: groupSection === 'chat' ? 'none' : 'auto',
+                  position: 'absolute',
+                  right: 0,
+                  top: 0,
+                  visibility:
+                    groupSection === 'chat' ? 'hidden' : 'visible',
+                  zIndex: 3,
+                }}
+              >
+                <ReticulumGroupSectionHeader
+                  activeSection={groupSection}
+                  canManageReticulumGroup={canManageReticulumGroup}
+                  sectionLabel={
+                    groupSection === 'land'
+                      ? 'QortalLand'
+                      : groupSection === 'forum'
+                        ? 'Threads'
+                        : groupSection === 'members'
+                          ? 'Members'
+                          : selectedGroup?.groupName || 'Group'
+                  }
+                  onChatClick={goToChat}
+                  onGroupCallClick={
+                    gcallGroupNumericId !== null
+                      ? handleGroupCallHeaderClick
+                      : undefined
+                  }
+                  onQortalLandClick={goToQortalLand}
+                  onThreadsClick={goToThreads}
+                  groupCallInCall={
+                    inThisGroupGcall && gcallRoomState === 'connected'
+                  }
+                  groupCallJoining={gcallRoomState === 'joining'}
+                  groupCallDisabled={inOtherGcall}
+                  groupCallTooltip={
+                    inOtherGcall
+                      ? t('core:group_call_blocked', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : ''
+                  }
+                  membersPanelOpen={reticulumMembersPanelOpen}
+                  onMembersClick={toggleReticulumMembersPanel}
+                />
+              </Box>
             )}
             {!reticulumChatEnabled && (
               <DesktopHeader
@@ -4066,7 +4146,7 @@ export const Group = ({
 
             <ChatContentBox>
               {reticulumChatEnabled && !!selectedGroup && (
-                <ReticulumSectionLayer active={groupSection === 'chat'}>
+                <PersistentSectionLayer active={groupSection === 'chat'}>
                   <ReticulumChatGroup
                     myAddress={myAddress}
                     adminsWithNames={adminsWithNames}
@@ -4129,80 +4209,88 @@ export const Group = ({
                     reticulumReadEntryToken={reticulumReadEntryToken}
                     isGroupOwner={groupOwner?.owner === myAddress}
                   />
-                </ReticulumSectionLayer>
+                </PersistentSectionLayer>
               )}
               {!reticulumChatEnabled && triedToFetchSecretKey && (
-                <ChatGroup
-                  myAddress={myAddress}
-                  selectedGroup={selectedGroup?.groupId}
-                  selectedGroupName={
-                    selectedGroup?.groupName || selectedGroup?.name || ''
+                <PersistentSectionLayer
+                  active={
+                    groupSection === 'chat' && !selectedDirect && !newChat
                   }
-                  getSecretKey={getSecretKey}
-                  secretKey={secretKey}
-                  isPrivate={isPrivate}
-                  isActive={
-                    isVisible &&
-                    groupSection === 'chat' &&
-                    !selectedDirect &&
-                    !newChat
-                  }
-                  setSecretKey={setSecretKey}
-                  handleNewEncryptionNotification={setNewEncryptionNotification}
-                  hide={groupSection !== 'chat' || !!selectedDirect || newChat}
-                  hideView={
-                    !(isVisible && selectedGroup) ||
-                    (desktopViewMode !== 'apps' && desktopViewMode !== 'dev')
-                  }
-                  handleSecretKeyCreationInProgress={
-                    handleSecretKeyCreationInProgress
-                  }
-                  triedToFetchSecretKey={triedToFetchSecretKey}
-                  getTimestampEnterChatParent={getTimestampEnterChat}
-                  notificationReticulumChannelId={
-                    notificationReticulumChannelId
-                  }
-                  onGroupCallClick={
-                    gcallGroupNumericId !== null
-                      ? handleGroupCallHeaderClick
-                      : undefined
-                  }
-                  onQortalLandClick={goToQortalLand}
-                  onAnnouncementsClick={goToAnnouncements}
-                  onThreadsClick={goToThreads}
-                  onMembersClick={() => setGroupSection('members')}
-                  onAdminsClick={() => setGroupSection('adminSpace')}
-                  groupCallInCall={
-                    inThisGroupGcall && gcallRoomState === 'connected'
-                  }
-                  groupCallJoining={gcallRoomState === 'joining'}
-                  groupCallDisabled={inOtherGcall}
-                  groupCallTooltip={
-                    inOtherGcall
-                      ? t('core:group_call_blocked', {
-                          postProcess: 'capitalizeFirstChar',
-                        })
-                      : ''
-                  }
-                  hasUnreadAnnouncements={isUnread}
-                  onReticulumChannelSelected={(channelId) => {
-                    const normalizedChannelId = channelId || 'general';
-                    setActiveReticulumChannelId((previousChannelId) => {
-                      const previous = previousChannelId || 'general';
-                      if (previous !== normalizedChannelId) {
-                        bumpReticulumReadEntryToken();
-                      }
-                      return normalizedChannelId;
-                    });
-                    if (
-                      notificationReticulumChannelId &&
-                      notificationReticulumChannelId === normalizedChannelId
-                    ) {
-                      setNotificationReticulumChannelId('');
+                >
+                  <ChatGroup
+                    myAddress={myAddress}
+                    selectedGroup={selectedGroup?.groupId}
+                    selectedGroupName={
+                      selectedGroup?.groupName || selectedGroup?.name || ''
                     }
-                  }}
-                  reticulumReadEntryToken={reticulumReadEntryToken}
-                />
+                    getSecretKey={getSecretKey}
+                    secretKey={secretKey}
+                    isPrivate={isPrivate}
+                    isActive={
+                      isVisible &&
+                      groupSection === 'chat' &&
+                      !selectedDirect &&
+                      !newChat
+                    }
+                    setSecretKey={setSecretKey}
+                    handleNewEncryptionNotification={
+                      setNewEncryptionNotification
+                    }
+                    hide={false}
+                    hideView={
+                      !(isVisible && selectedGroup) ||
+                      (desktopViewMode !== 'apps' && desktopViewMode !== 'dev')
+                    }
+                    handleSecretKeyCreationInProgress={
+                      handleSecretKeyCreationInProgress
+                    }
+                    triedToFetchSecretKey={triedToFetchSecretKey}
+                    getTimestampEnterChatParent={getTimestampEnterChat}
+                    notificationReticulumChannelId={
+                      notificationReticulumChannelId
+                    }
+                    onGroupCallClick={
+                      gcallGroupNumericId !== null
+                        ? handleGroupCallHeaderClick
+                        : undefined
+                    }
+                    onQortalLandClick={goToQortalLand}
+                    onAnnouncementsClick={goToAnnouncements}
+                    onThreadsClick={goToThreads}
+                    onMembersClick={() => setGroupSection('members')}
+                    onAdminsClick={() => setGroupSection('adminSpace')}
+                    groupCallInCall={
+                      inThisGroupGcall && gcallRoomState === 'connected'
+                    }
+                    groupCallJoining={gcallRoomState === 'joining'}
+                    groupCallDisabled={inOtherGcall}
+                    groupCallTooltip={
+                      inOtherGcall
+                        ? t('core:group_call_blocked', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                        : ''
+                    }
+                    hasUnreadAnnouncements={isUnread}
+                    onReticulumChannelSelected={(channelId) => {
+                      const normalizedChannelId = channelId || 'general';
+                      setActiveReticulumChannelId((previousChannelId) => {
+                        const previous = previousChannelId || 'general';
+                        if (previous !== normalizedChannelId) {
+                          bumpReticulumReadEntryToken();
+                        }
+                        return normalizedChannelId;
+                      });
+                      if (
+                        notificationReticulumChannelId &&
+                        notificationReticulumChannelId === normalizedChannelId
+                      ) {
+                        setNotificationReticulumChannelId('');
+                      }
+                    }}
+                    reticulumReadEntryToken={reticulumReadEntryToken}
+                  />
+                </PersistentSectionLayer>
               )}
               {isPrivate &&
                 firstSecretKeyInCreation &&
@@ -4316,8 +4404,11 @@ export const Group = ({
                 isPrivate &&
                 triedToFetchSecretKey ? null : !triedToFetchSecretKey ? null : reticulumChatEnabled ? (
                 <>
-                  {shouldMountReticulumSection('forum') && (
-                    <ReticulumSectionLayer active={groupSection === 'forum'}>
+                  {shouldMountGroupSection('forum') && (
+                    <PersistentSectionLayer
+                      active={groupSection === 'forum'}
+                      topOffset={50}
+                    >
                       <GroupForum
                         myAddress={myAddress}
                         selectedGroup={selectedGroup}
@@ -4330,23 +4421,7 @@ export const Group = ({
                         setDefaultThread={setDefaultThread}
                         isPrivate={isPrivate}
                       />
-                    </ReticulumSectionLayer>
-                  )}
-                  {shouldMountReticulumSection('land') && (
-                    <ReticulumSectionLayer active={groupSection === 'land'}>
-                      <Suspense fallback={null}>
-                        <LazyQortalLand
-                          key={selectedGroup?.groupId}
-                          groupId={Number(selectedGroup?.groupId)}
-                          groupName={
-                            selectedGroup?.groupName ||
-                            selectedGroup?.name ||
-                            ''
-                          }
-                          myAddress={myAddress}
-                        />
-                      </Suspense>
-                    </ReticulumSectionLayer>
+                    </PersistentSectionLayer>
                   )}
                 </>
               ) : (
@@ -4376,18 +4451,6 @@ export const Group = ({
                     setDefaultThread={setDefaultThread}
                     isPrivate={isPrivate}
                   />
-                  {groupSection === 'land' && (
-                    <Suspense fallback={null}>
-                      <LazyQortalLand
-                        key={selectedGroup?.groupId}
-                        groupId={Number(selectedGroup?.groupId)}
-                        groupName={
-                          selectedGroup?.groupName || selectedGroup?.name || ''
-                        }
-                        myAddress={myAddress}
-                      />
-                    </Suspense>
-                  )}
                   {groupSection === 'adminSpace' && (
                     <AdminSpace
                       adminsWithNames={adminsWithNames}
@@ -4411,6 +4474,27 @@ export const Group = ({
                     </Suspense>
                   )}
                 </>
+              )}
+
+              {canMountQortalLand && shouldMountGroupSection('land') && (
+                <PersistentSectionLayer
+                  active={groupSection === 'land'}
+                  topOffset={reticulumChatEnabled ? 50 : 0}
+                >
+                  <Suspense fallback={null}>
+                    <LazyQortalLand
+                      key={selectedGroup?.groupId}
+                      groupId={Number(selectedGroup?.groupId)}
+                      groupName={
+                        selectedGroup?.groupName || selectedGroup?.name || ''
+                      }
+                      myAddress={myAddress}
+                      isActive={
+                        isGroupContentVisible && groupSection === 'land'
+                      }
+                    />
+                  </Suspense>
+                </PersistentSectionLayer>
               )}
 
               <FloatingButtonContainerBox>

@@ -172,6 +172,7 @@ type QortalLandProps = {
   groupId: number;
   groupName: string;
   myAddress: string;
+  isActive?: boolean;
 };
 
 type QortalLandCharacterCustomization = {
@@ -2648,13 +2649,19 @@ const isNearClubDjBooth = (roomId: LandRoomId, x: number, y: number): boolean =>
   return Math.hypot(weightedX, weightedY) <= hotspot.radius;
 };
 
-export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
+export function QortalLand({
+  groupId,
+  groupName,
+  myAddress,
+  isActive = true,
+}: QortalLandProps) {
   const theme = useTheme();
   const groupCall = useGroupCallContext();
   const balance = useAtomValue(balanceAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
+  const isActiveRef = useRef(isActive);
   const movementKeysRef = useRef<Set<string>>(new Set());
   const landGameActiveRef = useRef(false);
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
@@ -2765,6 +2772,36 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   );
   const sessionId = useMemo(() => createSessionId(), []);
   const qortBalance = useMemo(() => normalizeQortBalance(balance), [balance]);
+  useEffect(() => {
+    isActiveRef.current = isActive;
+    if (!isActive) {
+      movementKeysRef.current.clear();
+      localStateRef.current = { ...localStateRef.current, movement: 'idle' };
+      chatInputRef.current?.blur();
+    }
+
+    const game = gameRef.current;
+    if (!game) return undefined;
+    if (!isActive) {
+      game.loop.sleep();
+      return undefined;
+    }
+
+    game.loop.wake();
+    const resizeFrame = window.requestAnimationFrame(() => {
+      const container = containerRef.current;
+      if (!container) return;
+      const width = Math.max(320, Math.floor(container.clientWidth || 900));
+      const height = Math.max(320, Math.floor(container.clientHeight || 560));
+      if (game.scale.width !== width || game.scale.height !== height) {
+        game.scale.resize(width, height);
+      }
+    });
+    return () => {
+      window.cancelAnimationFrame(resizeFrame);
+    };
+  }, [isActive]);
+
   const handleLandGameActiveChange = useCallback((active: boolean) => {
     landGameActiveRef.current = active;
     if (active) {
@@ -3524,6 +3561,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   useEffect(() => {
     if (!actionTarget) return;
     const closeOnEscape = (event: KeyboardEvent) => {
+      if (!isActiveRef.current) return;
       if (event.key === 'Escape') {
         setActionTarget(null);
       }
@@ -3653,6 +3691,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
   useEffect(() => {
     const handleStartChat = (event: KeyboardEvent) => {
+      if (!isActiveRef.current) return;
       if (event.key !== 'Enter') return;
       if (isEditableTarget(event.target)) return;
       if (reticulumReady !== true) return;
@@ -3667,6 +3706,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
     const pressedKeys = movementKeysRef.current;
     const normalizeMovementKey = (key: string): string => key.trim().toLowerCase();
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isActiveRef.current) return;
       if (isEditableTarget(event.target)) return;
       if (landGameActiveRef.current) {
         const blocked = normalizeMovementKey(event.key);
@@ -8115,6 +8155,9 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         scene: QortalLandScene,
       });
       gameRef.current = game;
+      game.events.once(Phaser.Core.Events.READY, () => {
+        if (!destroyed && !isActiveRef.current) game.loop.sleep();
+      });
 
       const measureContainerSize = () => {
         if (!containerRef.current) return { width, height };
@@ -8128,7 +8171,12 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       const resizeGameToContainer = () => {
         if (destroyed) return;
         const nextSize = measureContainerSize();
-        game.scale.resize(nextSize.width, nextSize.height);
+        if (
+          game.scale.width !== nextSize.width ||
+          game.scale.height !== nextSize.height
+        ) {
+          game.scale.resize(nextSize.width, nextSize.height);
+        }
       };
 
       const scheduleGameResize = () => {
@@ -8157,7 +8205,13 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       removeWindowResizeListener?.();
       resizeObserver?.disconnect();
-      gameRef.current?.destroy(true);
+      const game = gameRef.current;
+      if (game) {
+        game.destroy(true);
+        // Phaser finalizes destruction on its next frame. Ensure an inactive
+        // Land instance is awake long enough to process that pending cleanup.
+        game.loop.wake();
+      }
       gameRef.current = null;
       remotePlayersRef.current.clear();
       landChatBubblesRef.current.clear();
