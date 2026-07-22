@@ -1,6 +1,7 @@
 import struct
 import time
 import unittest
+from unittest.mock import patch
 
 import RNS
 from RNS.vendor import umsgpack
@@ -227,6 +228,31 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         self.assertTrue(state["authenticated"])
         self.assertEqual(state["phase"], "connected")
         self.assertNotIn("authAccept", state)
+
+    def test_signed_control_preserves_messagepack_key_order(self):
+        payload = {
+            "v": 1, "a": self.address, "c": "accept", "f": self.address,
+            "t": self.address, "h": b"h" * 32, "q": b"q" * 32,
+            "l": b"l" * 16, "n": b"n" * 16, "r": b"r" * 16,
+            "ts": int(time.time() * 1000), "z": b"z" * 64,
+        }
+        captured = []
+
+        class Packet:
+            def __init__(self, _link, raw):
+                captured.append(raw)
+
+            def send(self):
+                return None
+
+        with patch("qortalland_proximity.RNS.Packet", Packet):
+            self.manager._send_control({"link": object()}, payload)
+
+        decoded = umsgpack.unpackb(captured[0][len(CONTROL_MAGIC):])
+        self.assertEqual(list(decoded.keys()), list(payload.keys()))
+        signed = dict(decoded)
+        signed.pop("z")
+        self.assertEqual(umsgpack.packb(signed), umsgpack.packb({key: value for key, value in payload.items() if key != "z"}))
 
 
 if __name__ == "__main__":

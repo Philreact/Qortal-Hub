@@ -883,7 +883,13 @@ class QortalLandProximityVoiceManager:
         link = state.get("link")
         if link is None:
             return
-        body = {"v": PROTOCOL_VERSION, "ts": int(time.time() * 1000), **payload}
+        # Signed handshake controls already contain ``v`` and ``ts``. Preserve
+        # their insertion order because MessagePack signatures cover the exact
+        # encoded bytes, not just the map's key/value pairs.
+        if "v" in payload and "ts" in payload:
+            body = dict(payload)
+        else:
+            body = {"v": PROTOCOL_VERSION, "ts": int(time.time() * 1000), **payload}
         raw = CONTROL_MAGIC + umsgpack.packb(body)
         if len(raw) > 425:
             raise ValueError("proximity_control_oversized")
