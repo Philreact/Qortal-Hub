@@ -146,11 +146,22 @@ class QortalLandProximityVoiceManager:
         self.last_stats_at = 0.0
         self.capacity_reduced_until = 0.0
         self.renderer_lost_at: Optional[float] = None
+        self.diagnostic_last: Dict[str, float] = {}
         self.stats = {
             "localFrames": 0, "sentFrames": 0, "receivedFrames": 0,
             "staleDrops": 0, "queueDrops": 0, "invalidFrames": 0,
             "linkFailures": 0,
         }
+
+    def _trace(self, stage: str, address: str = "", code: str = "", throttle: float = 0.0) -> None:
+        key = f"{stage}:{address}:{code}"
+        now = time.time()
+        if throttle > 0 and now - self.diagnostic_last.get(key, 0.0) < throttle:
+            return
+        self.diagnostic_last[key] = now
+        peer = hashlib.sha256(str(address or "unknown").encode("utf-8")).hexdigest()[:10]
+        suffix = f" code={str(code)[:48]}" if code else ""
+        self.log(f"[qortalland-proximity] stage={stage} peer={peer}{suffix}")
 
     def set_context(self, context: Dict[str, Any]) -> None:
         previous = self.context
@@ -340,6 +351,7 @@ class QortalLandProximityVoiceManager:
         self.link_retry.clear()
         self.replacement_since.clear()
         self.visible_capacity_peers.clear()
+        self.diagnostic_last.clear()
         while True:
             try:
                 self.local_audio_queue.get_nowait()
@@ -514,6 +526,7 @@ class QortalLandProximityVoiceManager:
                 "peerHash": resolved_peer, "roomId": str(wire.get("u") or ""),
                 "busy": wire.get("b") is True, "at": time.time(),
             }
+            self._trace("discovery_accepted", address, throttle=10.0)
             self._reconcile()
         except Exception:
             self.stats["invalidFrames"] += 1
@@ -701,6 +714,7 @@ class QortalLandProximityVoiceManager:
         peer_hash = self.resolve_peer(address) or (capability or {}).get("peerHash")
         identity = self.resolve_identity(peer_hash) if peer_hash else None
         if identity is None:
+            self._trace("candidate_waiting_identity", address, throttle=5.0)
             return
         try:
             destination = self.build_destination(identity)
@@ -710,6 +724,7 @@ class QortalLandProximityVoiceManager:
                 if now - self.path_requested_at.get(address, 0) >= 1.0:
                     self.path_requested_at[address] = now
                     RNS.Transport.request_path(destination_hash)
+                    self._trace("candidate_requesting_path", address, throttle=5.0)
                 return
             state = {
                 "address": address, "peerHash": peer_hash, "distance": distance,
@@ -722,6 +737,7 @@ class QortalLandProximityVoiceManager:
             with self.lock:
                 self.links[address] = state
                 self.links_by_object[id(link)] = address
+            self._trace("link_opening", address)
             self._emit_peer(address, state)
         except Exception as exc:
             self.stats["linkFailures"] += 1
@@ -756,6 +772,7 @@ class QortalLandProximityVoiceManager:
         state["nonce"] = nonce
         link.set_packet_callback(self._on_packet)
         RNS.Packet(link, raw).send()
+        self._trace("classifier_sent", state["address"])
         self._emit_peer(state["address"], state)
 
     def handle_classifier(self, link, raw: bytes) -> bool:
@@ -764,6 +781,7 @@ class QortalLandProximityVoiceManager:
         try:
             hello = umsgpack.unpackb(bytes(raw[len(LINK_MAGIC):]))
             if not isinstance(hello, dict) or not self._verify_link_hello(link, hello):
+                self._trace("classifier_rejected", str(hello.get("f") or "") if isinstance(hello, dict) else "", "validation")
                 _safe_close(link)
                 return True
             address = str(hello["f"])
@@ -778,8 +796,8 @@ class QortalLandProximityVoiceManager:
             position = self.remote_positions.get(address) or {}
             state = {
                 "address": address, "peerHash": str(position.get("peerHash") or ""),
-                "distance": self._distance_to(address), "phase": "authenticating", "link": link,
-                "linkId": bytes(self.link_id_bytes(link) or b""), "authenticated": False,
+                "distance": self._distance_to(address), "phase": "connected", "link": link,
+                "linkId": bytes(self.link_id_bytes(link) or b""), "authenticated": True,
                 "createdAt": time.time(), "lastActivity": time.time(), "muted": False,
                 "volume": 1.0, "sourceId": self._source_id(address), "txSequence": 0,
                 "remoteCapabilityHash": hello["c"], "nonce": hello["n"],
@@ -800,7 +818,9 @@ class QortalLandProximityVoiceManager:
             accept["z"] = self.ephemeral_private.sign(umsgpack.packb(accept))
             state["authAccept"] = accept
             state["lastAuthAccept"] = time.time()
+            state["authAcceptAttempts"] = 1
             self._send_control(state, accept)
+            self._trace("accept_sent", address)
             self._emit_peer(address, state)
         except Exception:
             self.stats["invalidFrames"] += 1
@@ -899,17 +919,29 @@ class QortalLandProximityVoiceManager:
             if command == "accept":
                 remote = self.remote_capabilities.get(state["address"])
                 required = {"v", "a", "c", "f", "t", "h", "q", "l", "n", "r", "ts", "z"}
-                if (
-                    not remote or set(control.keys()) != required
-                    or control.get("h") != remote.get("hash")
-                    or control.get("q") != self.capability_hash
-                    or control.get("f") != state["address"]
-                    or control.get("t") != self.context["address"]
-                    or control.get("l") != state.get("linkId")
-                    or control.get("n") != state.get("nonce")
-                    or not isinstance(control.get("r"), bytes) or len(control["r"]) != 16
-                    or abs(int(time.time() * 1000) - int(control.get("ts") or 0)) > CAPABILITY_CLOCK_SKEW_MS
-                ):
+                rejection = ""
+                if not remote:
+                    rejection = "missing_remote_capability"
+                elif set(control.keys()) != required:
+                    rejection = "schema"
+                elif control.get("h") != remote.get("hash"):
+                    rejection = "remote_capability_hash"
+                elif control.get("q") != self.capability_hash:
+                    rejection = "local_capability_hash"
+                elif control.get("f") != state["address"]:
+                    rejection = "sender"
+                elif not self.context or control.get("t") != self.context["address"]:
+                    rejection = "recipient"
+                elif control.get("l") != state.get("linkId"):
+                    rejection = "link_id"
+                elif control.get("n") != state.get("nonce"):
+                    rejection = "nonce"
+                elif not isinstance(control.get("r"), bytes) or len(control["r"]) != 16:
+                    rejection = "response_nonce"
+                elif abs(int(time.time() * 1000) - int(control.get("ts") or 0)) > CAPABILITY_CLOCK_SKEW_MS:
+                    rejection = "timestamp"
+                if rejection:
+                    self._trace("accept_rejected", state["address"], rejection, throttle=2.0)
                     return
                 signed = dict(control)
                 signature = signed.pop("z")
@@ -919,6 +951,7 @@ class QortalLandProximityVoiceManager:
                         signature, umsgpack.packb(signed)
                     )
                 except Exception:
+                    self._trace("accept_rejected", state["address"], "signature", throttle=2.0)
                     return
                 state["authenticated"] = True
                 state["phase"] = "connected"
@@ -926,6 +959,7 @@ class QortalLandProximityVoiceManager:
                 self._send_control(state, {
                     "c": "auth_ack", "l": state["linkId"], "n": state["nonce"],
                 })
+                self._trace("link_authenticated", state["address"], "outbound")
                 self._emit_peer(state["address"], state)
             elif command == "auth_ack":
                 if (
@@ -937,9 +971,11 @@ class QortalLandProximityVoiceManager:
                     return
                 state.pop("authAccept", None)
                 state.pop("lastAuthAccept", None)
+                state.pop("authAcceptAttempts", None)
                 state["authenticated"] = True
                 state["phase"] = "connected"
                 self.link_retry.pop(state["address"], None)
+                self._trace("link_authenticated", state["address"], "inbound")
                 self._emit_peer(state["address"], state)
             elif command == "ping":
                 if set(control.keys()) != {"v", "ts", "c"}:
@@ -1164,14 +1200,21 @@ class QortalLandProximityVoiceManager:
                 self._close_peer(address, "establishment_timeout")
                 continue
             if (
-                not state.get("authenticated") and state.get("authAccept")
+                state.get("authAccept")
                 and now - float(state.get("lastAuthAccept") or 0) >= 1.0
             ):
-                try:
-                    state["lastAuthAccept"] = now
-                    self._send_control(state, state["authAccept"])
-                except Exception:
-                    self.stats["linkFailures"] += 1
+                attempts = int(state.get("authAcceptAttempts") or 1)
+                if attempts >= 10:
+                    state.pop("authAccept", None)
+                    state.pop("lastAuthAccept", None)
+                    state.pop("authAcceptAttempts", None)
+                else:
+                    try:
+                        state["lastAuthAccept"] = now
+                        state["authAcceptAttempts"] = attempts + 1
+                        self._send_control(state, state["authAccept"])
+                    except Exception:
+                        self.stats["linkFailures"] += 1
             if state.get("authenticated") and now - float(state.get("lastSend") or 0) >= HEARTBEAT_INTERVAL:
                 try:
                     state["pingAt"] = now
@@ -1192,6 +1235,7 @@ class QortalLandProximityVoiceManager:
                 if self.links.get(address, {}).get("link") is link:
                     self.links.pop(address, None)
             self._schedule_retry(address)
+            self._trace("link_closed", address, "callback", throttle=1.0)
             self.emit("PROXIMITY_PEER_STATE", {"address": address, "state": "disconnected", "sourceId": state.get("sourceId", 0)})
 
     def _close_peer(self, address: str, reason: str) -> None:

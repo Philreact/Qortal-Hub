@@ -187,7 +187,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         self.assertTrue(self.manager.on_discovery(decoded, "cd" * 16))
         self.assertIn(remote_address, self.manager.remote_capabilities)
 
-    def test_inbound_link_retries_accept_and_waits_for_auth_ack(self):
+    def test_inbound_link_retries_accept_until_optional_auth_ack(self):
         self.authorize()
         link = object()
         address = "Q" + "p" * 33
@@ -199,10 +199,11 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "link": link,
             "linkId": link_id,
             "nonce": nonce,
-            "phase": "authenticating",
-            "authenticated": False,
+            "phase": "connected",
+            "authenticated": True,
             "authAccept": accept,
             "lastAuthAccept": time.time() - 2,
+            "authAcceptAttempts": 1,
             "createdAt": time.time(),
             "lastActivity": time.time(),
             "sourceId": 1,
@@ -215,7 +216,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
 
         self.manager.tick()
         self.assertIn(accept, sent)
-        self.assertFalse(state["authenticated"])
+        self.assertTrue(state["authenticated"])
 
         packet = type("Packet", (), {"link": link})()
         ack = {
