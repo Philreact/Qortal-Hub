@@ -24,13 +24,18 @@ import {
 import { useAtomValue } from 'jotai';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { balanceAtom, userInfoAtom } from '../../atoms/global';
-import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.png';
+import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.webp';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useVoiceCall, type VoiceCallApi } from '../../hooks/useVoiceCall';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 import { useQortalLandGame } from './games/useQortalLandGame';
 import { ProximityVoiceControl } from './proximity/ProximityVoiceControl';
 import { useQortalLandProximityVoice } from './proximity/useQortalLandProximityVoice';
+import {
+  QORTAL_LAND_OPTIMIZED_ASSET_DIMENSIONS,
+  qortalLandOptimizedAssetRenderScale,
+} from './qortalLandOptimizedAssets';
+import { collectQortalLandRoomAssetIds } from './qortalLandRoomAssetPolicy';
 
 type LandPlayerState = {
   authorAddress: string;
@@ -455,6 +460,8 @@ type QortalLandDevelopmentPngAsset = {
   id: string;
   path: string;
   url: string;
+  renderScaleX: number;
+  renderScaleY: number;
 };
 
 type QortalLandDevelopmentPngPropPlacement = {
@@ -532,6 +539,21 @@ const qortalLandDevelopmentPngModules = (import.meta as any).glob(
   { eager: true, import: 'default' }
 ) as Record<string, string>;
 
+const qortalLandDevelopmentWebpModules = (import.meta as any).glob(
+  '../../assets/qortalland/source/**/*.webp',
+  { eager: true, import: 'default' }
+) as Record<string, string>;
+
+const qortalLandDevelopmentWebpUrlById = new Map(
+  Object.entries(qortalLandDevelopmentWebpModules).map(([path, url]) => {
+    const id = path
+      .replace(/^.*\/qortalland\/source\//, '')
+      .replace(/\.webp$/i, '')
+      .replace(/\\/g, '/');
+    return [id, url] as const;
+  })
+);
+
 const qortalLandDevelopmentPngAssets: QortalLandDevelopmentPngAsset[] = Object.entries(
   qortalLandDevelopmentPngModules
 ).map(([path, url]) => {
@@ -539,7 +561,17 @@ const qortalLandDevelopmentPngAssets: QortalLandDevelopmentPngAsset[] = Object.e
     .replace(/^.*\/qortalland\/source\//, '')
     .replace(/\.png$/i, '')
     .replace(/\\/g, '/');
-  return { id, path, url };
+  const optimizedUrl = qortalLandDevelopmentWebpUrlById.get(id);
+  const renderScale = optimizedUrl && QORTAL_LAND_OPTIMIZED_ASSET_DIMENSIONS[id]
+    ? qortalLandOptimizedAssetRenderScale(id)
+    : { x: 1, y: 1 };
+  return {
+    id,
+    path,
+    url: optimizedUrl ?? url,
+    renderScaleX: renderScale.x,
+    renderScaleY: renderScale.y,
+  };
 });
 
 const qortalLandDevelopmentPngAssetById = new Map(
@@ -2135,6 +2167,33 @@ const QORTAL_LAND_DEVELOPMENT_PNG_PROP_PLACEMENTS: QortalLandDevelopmentPngPropP
   // },
 ];
 
+const qortalLandDevelopmentPngAssetsForRoom = (
+  roomId: LandRoomId
+): QortalLandDevelopmentPngAsset[] => {
+  const assetIds = collectQortalLandRoomAssetIds({
+    roomId,
+    defaultRoomId: QORTAL_LAND_DEFAULT_ROOM_ID,
+    placements: QORTAL_LAND_DEVELOPMENT_PNG_PROP_PLACEMENTS,
+    extraAssetIdsByRoom: {
+      [QORTAL_LAND_DEFAULT_ROOM_ID]: [
+        QORTAL_LAND_DEVELOPMENT_CLUB_FLOOR_ASSET_ID,
+        QORTAL_LAND_DEVELOPMENT_BACK_WALL_ASSET_ID,
+        QORTAL_LAND_DEVELOPMENT_LEFT_WALL_ASSET_ID,
+        QORTAL_LAND_DEVELOPMENT_RIGHT_WALL_ASSET_ID,
+        ...QORTAL_LAND_DEVELOPMENT_CLUB_DOOR_ASSET_IDS,
+      ],
+      [QORTAL_LAND_PARK_ROOM_ID]: [
+        QORTAL_LAND_DEVELOPMENT_PARK_SKYLINE_ASSET_ID,
+        QORTAL_LAND_DEVELOPMENT_PARK_FLOOR_ASSET_ID,
+        ...QORTAL_LAND_DEVELOPMENT_PARK_PORTAL_ASSET_IDS,
+      ],
+    },
+  });
+  return assetIds
+    .map((assetId) => qortalLandDevelopmentPngAssetById.get(assetId))
+    .filter((asset): asset is QortalLandDevelopmentPngAsset => Boolean(asset));
+};
+
 type ReticulumChatEventForLand = {
   eventId?: unknown;
   groupId?: unknown;
@@ -2640,6 +2699,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
   const [landGameRoomId, setLandGameRoomId] = useState<LandRoomId>(
     QORTAL_LAND_START_ROOM_ID
   );
+  const [loadingRoomAssets, setLoadingRoomAssets] = useState<LandRoomId | null>(null);
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -4503,6 +4563,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
         private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
         private gameIndicators = new Map<string, { container: any; badge: any; gamepad: any }>();
         private proximityVoiceIndicators = new Map<string, { container: any; ring: any; mic: any }>();
+        private pendingRoomTransition: QortalLandRoomTransitionTarget | null = null;
+        private roomAssetLoadCallbacks = new Map<LandRoomId, Array<() => void>>();
         private background?: any;
         private lightSweep?: any;
         private foreground?: any;
@@ -4612,7 +4674,7 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             frameWidth: LAND_CHARACTER_FRAME_SIZE,
             frameHeight: LAND_CHARACTER_FRAME_SIZE,
           });
-          qortalLandDevelopmentPngAssets.forEach((asset) => {
+          qortalLandDevelopmentPngAssetsForRoom(QORTAL_LAND_START_ROOM_ID).forEach((asset) => {
             const textureKey = qortalLandDevelopmentPngTextureKey(asset.id);
             if (!this.textures.exists(textureKey)) {
               this.load.image(textureKey, asset.url);
@@ -4623,6 +4685,100 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
             const textureKey = qortalLandChatEmojiTextureKey(emoji.key);
             if (emojiUrl && !this.textures.exists(textureKey)) {
               this.load.image(textureKey, emojiUrl);
+            }
+          });
+        }
+
+        private areRoomAssetsReady(roomId: LandRoomId): boolean {
+          return qortalLandDevelopmentPngAssetsForRoom(roomId).every((asset) =>
+            this.textures.exists(qortalLandDevelopmentPngTextureKey(asset.id))
+          );
+        }
+
+        private ensureRoomAssets(roomId: LandRoomId, onReady: () => void) {
+          const missingAssets = qortalLandDevelopmentPngAssetsForRoom(roomId).filter(
+            (asset) => !this.textures.exists(qortalLandDevelopmentPngTextureKey(asset.id))
+          );
+          if (missingAssets.length === 0) {
+            onReady();
+            return;
+          }
+          const existingCallbacks = this.roomAssetLoadCallbacks.get(roomId);
+          if (existingCallbacks) {
+            existingCallbacks.push(onReady);
+            return;
+          }
+          this.roomAssetLoadCallbacks.set(roomId, [onReady]);
+          missingAssets.forEach((asset) => {
+            this.load.image(qortalLandDevelopmentPngTextureKey(asset.id), asset.url);
+          });
+          this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+            const callbacks = this.roomAssetLoadCallbacks.get(roomId) ?? [];
+            this.roomAssetLoadCallbacks.delete(roomId);
+            callbacks.forEach((callback) => callback());
+          });
+          if (!this.load.isLoading()) this.load.start();
+        }
+
+        private prefetchAdjacentRoomAssets(roomId: LandRoomId) {
+          if (roomId !== QORTAL_LAND_SKYWALK_ROOM_ID) return;
+          this.ensureRoomAssets(QORTAL_LAND_DEFAULT_ROOM_ID, () => {});
+        }
+
+        private applyRoomTransition(transition: QortalLandRoomTransitionTarget) {
+          if (destroyed) return;
+          currentRoomRef.current = transition.roomId;
+          setLandGameRoomId(transition.roomId);
+          setLoadingRoomAssets(null);
+          this.pendingRoomTransition = null;
+          movementKeysRef.current.clear();
+          localStateRef.current = {
+            roomId: transition.roomId,
+            x: transition.x,
+            y: transition.y,
+            direction: transition.direction,
+            movement: 'idle',
+          };
+          this.drawWorld();
+          const scale = characterScaleForRoomY(transition.roomId, transition.y);
+          const renderY = qortalLandAvatarRenderY(
+            transition.roomId,
+            transition.x,
+            transition.y
+          );
+          this.localAvatar?.setData('logicalX', transition.x);
+          this.localAvatar?.setData('logicalY', transition.y);
+          this.localAvatar?.setPosition(transition.x, renderY);
+          this.localAvatar?.setScale(
+            avatarScaleXForDirection(transition.direction, scale),
+            scale
+          );
+          this.animateAvatar(this.localAvatar, false, transition.direction);
+          this.localAvatar?.setDepth(transition.y + 20);
+          this.localLabel?.setPosition(
+            transition.x,
+            renderY - LAND_CHARACTER_LABEL_OFFSET * scale
+          );
+          this.localLabel?.setDepth(transition.y + 90);
+          this.updateCameraLayout();
+          this.updateInteractionPrompt();
+          window.setTimeout(() => {
+            if (!destroyed) this.prefetchAdjacentRoomAssets(transition.roomId);
+          }, 0);
+        }
+
+        private requestRoomTransition(transition: QortalLandRoomTransitionTarget) {
+          if (this.pendingRoomTransition) return;
+          if (this.areRoomAssetsReady(transition.roomId)) {
+            this.applyRoomTransition(transition);
+            return;
+          }
+          this.pendingRoomTransition = transition;
+          movementKeysRef.current.clear();
+          setLoadingRoomAssets(transition.roomId);
+          this.ensureRoomAssets(transition.roomId, () => {
+            if (this.pendingRoomTransition === transition) {
+              this.applyRoomTransition(transition);
             }
           });
         }
@@ -4875,8 +5031,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           sprite.setName('club.floor_png');
           sprite.setOrigin(placement.originX ?? 0, placement.originY ?? 0);
           sprite.setScale(
-            placement.scaleX ?? placement.scale ?? 1,
-            placement.scaleY ?? placement.scale ?? 1
+            (placement.scaleX ?? placement.scale ?? 1) * asset.renderScaleX,
+            (placement.scaleY ?? placement.scale ?? 1) * asset.renderScaleY
           );
           sprite.setAlpha(placement.alpha ?? 1);
           sprite.setDepth(placement.depth ?? -95);
@@ -4898,8 +5054,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           sprite.setName('park.skyline_png');
           sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 1);
           sprite.setScale(
-            placement.scaleX ?? placement.scale ?? 1,
-            placement.scaleY ?? placement.scale ?? 1
+            (placement.scaleX ?? placement.scale ?? 1) * asset.renderScaleX,
+            (placement.scaleY ?? placement.scale ?? 1) * asset.renderScaleY
           );
           sprite.setAlpha(placement.alpha ?? 1);
           sprite.setDepth(placement.depth ?? -99);
@@ -4921,8 +5077,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           sprite.setName('park.floor_png');
           sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 1);
           sprite.setScale(
-            placement.scaleX ?? placement.scale ?? 1,
-            placement.scaleY ?? placement.scale ?? 1
+            (placement.scaleX ?? placement.scale ?? 1) * asset.renderScaleX,
+            (placement.scaleY ?? placement.scale ?? 1) * asset.renderScaleY
           );
           sprite.setAlpha(placement.alpha ?? 1);
           sprite.setDepth(placement.depth ?? -95);
@@ -4956,8 +5112,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           const textureKey = qortalLandDevelopmentPngTextureKey(asset.id);
           if (!this.textures.exists(textureKey)) return null;
           const frame = this.textures.getFrame(textureKey) as any;
-          const sourceWidth = Math.max(1, Number(frame?.width) || 1);
-          const sourceHeight = Math.max(1, Number(frame?.height) || 1);
+          const sourceWidth = Math.max(1, Number(frame?.width) || 1) * asset.renderScaleX;
+          const sourceHeight = Math.max(1, Number(frame?.height) || 1) * asset.renderScaleY;
           const scaleX = placement.scaleX ?? placement.scale ?? 1;
           const scaleY = placement.scaleY ?? placement.scale ?? 1;
           const originX = placement.originX ?? 0.5;
@@ -5032,8 +5188,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           sprite.setName('club.back_wall_main_png');
           sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 1);
           sprite.setScale(
-            placement.scaleX ?? placement.scale ?? 1,
-            placement.scaleY ?? placement.scale ?? 1
+            (placement.scaleX ?? placement.scale ?? 1) * asset.renderScaleX,
+            (placement.scaleY ?? placement.scale ?? 1) * asset.renderScaleY
           );
           sprite.setAlpha(placement.alpha ?? 1);
           sprite.setDepth(placement.depth ?? -96);
@@ -5053,8 +5209,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           sprite.setName(placement.id);
           sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 0);
           sprite.setScale(
-            placement.scaleX ?? placement.scale ?? 1,
-            placement.scaleY ?? placement.scale ?? 1
+            (placement.scaleX ?? placement.scale ?? 1) * asset.renderScaleX,
+            (placement.scaleY ?? placement.scale ?? 1) * asset.renderScaleY
           );
           sprite.setAlpha(placement.alpha ?? 1);
           sprite.setDepth(placement.depth ?? -98);
@@ -5176,14 +5332,29 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           const sourceImage = frame?.source?.image as CanvasImageSource | undefined;
           if (!sourceImage) return null;
           const warp = placement.warp ?? {};
-          const maxWarpOffset = Math.max(80, Math.min(720, Math.max(width, height) * 0.55));
-          const warpOffset = (value: number | undefined): number =>
-            Math.max(-maxWarpOffset, Math.min(maxWarpOffset, Number(value) || 0));
+          const asset = qortalLandDevelopmentPngAssetById.get(placement.assetId);
+          const renderScaleX = asset?.renderScaleX ?? 1;
+          const renderScaleY = asset?.renderScaleY ?? 1;
+          const maxWarpOffset = Math.max(
+            80,
+            Math.min(720, Math.max(width * renderScaleX, height * renderScaleY) * 0.55)
+          );
+          const warpOffset = (value: number | undefined, renderScale: number): number =>
+            Math.max(-maxWarpOffset, Math.min(maxWarpOffset, Number(value) || 0)) / renderScale;
           const points = {
-            tl: { x: warpOffset(warp.tlX), y: warpOffset(warp.tlY) },
-            tr: { x: width + warpOffset(warp.trX), y: warpOffset(warp.trY) },
-            br: { x: width + warpOffset(warp.brX), y: height + warpOffset(warp.brY) },
-            bl: { x: warpOffset(warp.blX), y: height + warpOffset(warp.blY) },
+            tl: { x: warpOffset(warp.tlX, renderScaleX), y: warpOffset(warp.tlY, renderScaleY) },
+            tr: {
+              x: width + warpOffset(warp.trX, renderScaleX),
+              y: warpOffset(warp.trY, renderScaleY),
+            },
+            br: {
+              x: width + warpOffset(warp.brX, renderScaleX),
+              y: height + warpOffset(warp.brY, renderScaleY),
+            },
+            bl: {
+              x: warpOffset(warp.blX, renderScaleX),
+              y: height + warpOffset(warp.blY, renderScaleY),
+            },
           };
           const minX = Math.min(points.tl.x, points.tr.x, points.br.x, points.bl.x);
           const minY = Math.min(points.tl.y, points.tr.y, points.br.y, points.bl.y);
@@ -5245,8 +5416,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           index: number
         ) {
           const lookTextureKey = this.developmentLookTextureKeyForPlacement(placement, textureKey);
-          const baseScaleX = placement.scaleX ?? placement.scale ?? 1;
-          const baseScaleY = placement.scaleY ?? placement.scale ?? 1;
+          const asset = qortalLandDevelopmentPngAssetById.get(placement.assetId);
+          const baseScaleX =
+            (placement.scaleX ?? placement.scale ?? 1) * (asset?.renderScaleX ?? 1);
+          const baseScaleY =
+            (placement.scaleY ?? placement.scale ?? 1) * (asset?.renderScaleY ?? 1);
           const depth = placement.depth ?? -82;
           const baseAlpha = placement.alpha ?? 1;
           const frame = this.textures.getFrame(lookTextureKey);
@@ -5297,8 +5471,11 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           const textureKeys = QORTAL_LAND_DEVELOPMENT_CLUB_DOOR_ASSET_IDS.map((assetId) =>
             qortalLandDevelopmentPngTextureKey(assetId)
           );
-          const baseScaleX = placement.scaleX ?? placement.scale ?? 1;
-          const baseScaleY = placement.scaleY ?? placement.scale ?? 1;
+          const asset = qortalLandDevelopmentPngAssetById.get(placement.assetId);
+          const baseScaleX =
+            (placement.scaleX ?? placement.scale ?? 1) * (asset?.renderScaleX ?? 1);
+          const baseScaleY =
+            (placement.scaleY ?? placement.scale ?? 1) * (asset?.renderScaleY ?? 1);
           const baseAlpha = placement.alpha ?? 1;
           const sprites = textureKeys.map((textureKey, index) =>
             this.createWarpableDevelopmentPng(placement, textureKey, index)
@@ -5604,8 +5781,8 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
               );
               sprite.setOrigin(placement.originX ?? 0.5, placement.originY ?? 1);
               sprite.setScale(
-                placement.scaleX ?? placement.scale ?? 1,
-                placement.scaleY ?? placement.scale ?? 1
+                (placement.scaleX ?? placement.scale ?? 1) * asset.renderScaleX,
+                (placement.scaleY ?? placement.scale ?? 1) * asset.renderScaleY
               );
               sprite.setAlpha(placement.alpha ?? 1);
               sprite.setFlipX(Boolean(placement.flipX));
@@ -7568,6 +7745,15 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
 
         private updateLocalPlayer(delta: number) {
           if (!this.localAvatar) return;
+          if (this.pendingRoomTransition) {
+            movementKeysRef.current.clear();
+            this.animateAvatar(this.localAvatar, false, localStateRef.current.direction);
+            localStateRef.current = {
+              ...localStateRef.current,
+              movement: 'idle',
+            };
+            return;
+          }
           const step = (190 * delta) / 1000;
           const pressedKeys = movementKeysRef.current;
           const left = pressedKeys.has('arrowleft') || pressedKeys.has('a');
@@ -7618,14 +7804,16 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           ));
           const transition = this.getRoomTransition(roomId, x, y);
           if (transition) {
-            roomId = transition.roomId;
-            currentRoomRef.current = roomId;
-            setLandGameRoomId(roomId);
-            x = transition.x;
-            y = transition.y;
-            direction = transition.direction;
-            movementKeysRef.current.clear();
-            this.drawWorld();
+            this.requestRoomTransition(transition);
+            if (this.pendingRoomTransition) {
+              x = previousX;
+              y = previousY;
+            } else {
+              roomId = transition.roomId;
+              x = transition.x;
+              y = transition.y;
+              direction = transition.direction;
+            }
           }
           const moving = Boolean(left || right || up || down);
           const scale = characterScaleForRoomY(roomId, y);
@@ -8149,6 +8337,31 @@ export function QortalLand({ groupId, groupName, myAddress }: QortalLandProps) {
           },
         }}
       >
+        {loadingRoomAssets !== null && (
+          <Box
+            role="status"
+            aria-live="polite"
+            sx={{
+              alignItems: 'center',
+              backgroundColor: 'rgba(5, 8, 17, 0.86)',
+              border: '1px solid rgba(44, 248, 255, 0.38)',
+              borderRadius: '10px',
+              color: '#d9fdff',
+              display: 'flex',
+              left: '50%',
+              padding: '10px 14px',
+              pointerEvents: 'none',
+              position: 'absolute',
+              top: 18,
+              transform: 'translateX(-50%)',
+              zIndex: 5,
+            }}
+          >
+            <Typography sx={{ fontSize: 12, fontWeight: 700 }}>
+              Loading destination room…
+            </Typography>
+          </Box>
+        )}
         {reticulumReady === true && (
           <ClickAwayListener
             onClickAway={() => {
