@@ -44,6 +44,8 @@ const PROXIMITY_OPUS_BITRATE = 24_000;
 const PROXIMITY_CONGESTED_OPUS_BITRATE = 16_000;
 const OPEN_MIC_VAD_HANGOVER_MS = 320;
 const PROXIMITY_AUDIO_PROFILE = 'high-stability' as const;
+const INBOUND_MICROBATCH_MAX_FRAMES = 8;
+const INBOUND_MICROBATCH_WAIT_MS = 6;
 
 const isExpectedCapability = (
   value: unknown,
@@ -519,6 +521,32 @@ export function useQortalLandProximityVoice(options: Options) {
         } : current);
       }
     });
+    type InboundPlayoutPacket = {
+      sourceAddr: string;
+      seq: number;
+      opusFrame: Uint8Array;
+      vad: boolean;
+      timestampMs: number;
+    };
+    let inboundPackets: InboundPlayoutPacket[] = [];
+    let inboundFlushTimer: number | null = null;
+    const flushInboundPackets = () => {
+      if (inboundFlushTimer !== null) {
+        window.clearTimeout(inboundFlushTimer);
+        inboundFlushTimer = null;
+      }
+      if (inboundPackets.length === 0) return;
+      const packets = inboundPackets;
+      inboundPackets = [];
+      // WebSocket/RNS bursts can deliver several frames in one event-loop turn.
+      // Hand them to the shared receiver together and in source/sequence order.
+      packets.sort((left, right) =>
+        left.sourceAddr === right.sourceAddr
+          ? left.seq - right.seq
+          : left.sourceAddr.localeCompare(right.sourceAddr)
+      );
+      void receiverRef.current?.handleDecodedPackets(packets);
+    };
     const disposeBinary = qortalLandRealtime.onBinary((buffer) => {
       const frame = parseInboundAudio(buffer);
       if (!frame) return;
@@ -526,18 +554,27 @@ export function useQortalLandProximityVoice(options: Options) {
       if (!peerAddress || blockedAddressesRef.current[peerAddress]) return;
       const previousGeneration = sourceGenerationRef.current.get(frame.sourceId);
       if (previousGeneration !== undefined && previousGeneration !== frame.generation) {
+        inboundPackets = inboundPackets.filter((packet) => packet.sourceAddr !== peerAddress);
         void receiverRef.current?.removeSource(peerAddress);
       }
       sourceGenerationRef.current.set(frame.sourceId, frame.generation);
-      void receiverRef.current?.handleDecodedPackets([{
+      receiverRef.current?.noteIncomingAudio(frame.receivedAt);
+      inboundPackets.push({
         sourceAddr: peerAddress,
         seq: frame.sequence,
         opusFrame: frame.opus,
         vad: true,
         timestampMs: frame.receivedAt,
-      }]);
+      });
+      if (inboundPackets.length >= INBOUND_MICROBATCH_MAX_FRAMES) {
+        flushInboundPackets();
+      } else if (inboundFlushTimer === null) {
+        inboundFlushTimer = window.setTimeout(flushInboundPackets, INBOUND_MICROBATCH_WAIT_MS);
+      }
     });
     return () => {
+      if (inboundFlushTimer !== null) window.clearTimeout(inboundFlushTimer);
+      inboundPackets = [];
       disposeState();
       disposeEvent();
       disposeBinary();

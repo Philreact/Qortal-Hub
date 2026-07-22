@@ -67,7 +67,7 @@ _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
 _audio_rtt_monitor_thread: Optional[threading.Thread] = None
 _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.MDU))
 # Grep logs for this string to confirm the rebuilt script is running (sync with GC_RETICULUM_WIRE_BUILD_MARKER in group-call-wire-reticulum.ts).
-PRESENCE_BRIDGE_BUILD = "wire399-qortalland-proximity-audio-quality-v1"
+PRESENCE_BRIDGE_BUILD = "wire400-qortalland-proximity-media-scheduling-v1"
 
 # Peer cache: must match TS base58 in electron/src/presence.ts (Qortal alphabet).
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -553,6 +553,7 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "path-management": 128,
     "resource-control": 128,
     "game-control": 128,
+    "proximity-media": 32,
 }
 for _audio_shard in range(_SCHEDULER_AUDIO_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"audio-send-{_audio_shard}"] = 64
@@ -7741,6 +7742,16 @@ def _enqueue_game_control(fn: Callable[..., Any], args: tuple) -> bool:
     )
 
 
+def _enqueue_proximity_media(fn: Callable[..., Any], args: tuple) -> bool:
+    return _enqueue_scheduler_task(
+        "proximity-media",
+        f"qortalland-proximity:{getattr(fn, '__name__', 'media')}",
+        fn,
+        *args,
+        drop_oldest=True,
+    )
+
+
 def _encode_qortalland_proximity_discovery(wire: Dict[str, Any]) -> Optional[bytes]:
     try:
         capability = wire.get("c")
@@ -7894,6 +7905,7 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
             build_destination=build_outbound_destination,
             link_id_bytes=lambda link: _rns_link_id_bytes(link) or b"",
             enqueue=_enqueue_game_control,
+            enqueue_proximity_media=_enqueue_proximity_media,
             refresh_path=lambda peer_hash, reason: _force_overlay_peer_path_refresh(
                 peer_hash,
                 target="qortalland-game",

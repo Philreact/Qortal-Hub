@@ -39,6 +39,8 @@ CAPABILITY_MAX_AGE_MS = 4 * 60 * 60 * 1000
 CAPABILITY_CLOCK_SKEW_MS = 2 * 60 * 1000
 LOCAL_AUDIO_HEADER = struct.Struct(">4sBBHIIQH")
 RNS_AUDIO_HEADER = struct.Struct(">4sBBIIIH")
+MEDIA_DRAIN_MAX_FRAMES = 24
+MEDIA_DRAIN_TIME_BUDGET = 0.012
 
 PROXIMITY_COMMANDS = {
     "ENABLE_PROXIMITY_VOICE",
@@ -96,6 +98,7 @@ class QortalLandProximityVoiceManager:
         verify_wallet: Callable[[Dict[str, Any], str, str], bool],
         derive_address: Callable[[str], str],
         decode_base58: Callable[[str], bytes],
+        enqueue_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
     ):
         self.emit = emit
         self.send_binary = send_binary
@@ -105,6 +108,7 @@ class QortalLandProximityVoiceManager:
         self.build_destination = build_destination
         self.link_id_bytes = link_id_bytes
         self.enqueue = enqueue
+        self.enqueue_media = enqueue_media or enqueue
         self.broadcast_discovery = broadcast_discovery
         self.verify_wallet = verify_wallet
         self.derive_address = derive_address
@@ -151,6 +155,7 @@ class QortalLandProximityVoiceManager:
         self.stats = {
             "localFrames": 0, "sentFrames": 0, "receivedFrames": 0,
             "staleDrops": 0, "queueDrops": 0, "invalidFrames": 0,
+            "localQueueDrops": 0, "rendererQueueDrops": 0,
             "duplicateDrops": 0, "sequenceSkips": 0, "linkFailures": 0,
         }
 
@@ -732,6 +737,7 @@ class QortalLandProximityVoiceManager:
                 "phase": "opening", "createdAt": time.time(), "lastActivity": time.time(),
                 "authenticated": False, "muted": False, "volume": 1.0,
                 "sourceId": self._source_id(address), "txSequence": 0,
+                "sendLock": threading.RLock(),
             }
             link = RNS.Link(destination, established_callback=self._outbound_established, closed_callback=self._link_closed)
             state["link"] = link
@@ -772,7 +778,7 @@ class QortalLandProximityVoiceManager:
         state["linkId"] = link_id
         state["nonce"] = nonce
         link.set_packet_callback(self._on_packet)
-        RNS.Packet(link, raw).send()
+        self._send_packet(state, raw)
         self._trace("classifier_sent", state["address"])
         self._emit_peer(state["address"], state)
 
@@ -802,6 +808,7 @@ class QortalLandProximityVoiceManager:
                 "createdAt": time.time(), "lastActivity": time.time(), "muted": False,
                 "volume": 1.0, "sourceId": self._source_id(address), "txSequence": 0,
                 "remoteCapabilityHash": hello["c"], "nonce": hello["n"],
+                "sendLock": threading.RLock(),
             }
             with self.lock:
                 self.links[address] = state
@@ -880,6 +887,18 @@ class QortalLandProximityVoiceManager:
         self.used_link_nonces[nonce] = now
         return self._distance_to(address) <= PRECONNECT_DISTANCE
 
+    def _send_packet(self, state: Dict[str, Any], raw: bytes) -> None:
+        link = state.get("link")
+        if link is None:
+            return
+        send_lock = state.get("sendLock")
+        if send_lock is None:
+            send_lock = threading.RLock()
+            state["sendLock"] = send_lock
+        with send_lock:
+            RNS.Packet(link, raw).send()
+        state["lastSend"] = time.time()
+
     def _send_control(self, state: Dict[str, Any], payload: Dict[str, Any]) -> None:
         link = state.get("link")
         if link is None:
@@ -894,8 +913,7 @@ class QortalLandProximityVoiceManager:
         raw = CONTROL_MAGIC + umsgpack.packb(body)
         if len(raw) > 425:
             raise ValueError("proximity_control_oversized")
-        RNS.Packet(link, raw).send()
-        state["lastSend"] = time.time()
+        self._send_packet(state, raw)
 
     def _send_control_all(self, payload: Dict[str, Any]) -> None:
         for state in list(self.links.values()):
@@ -1103,8 +1121,7 @@ class QortalLandProximityVoiceManager:
                     continue
                 frame = RNS_AUDIO_HEADER.pack(MEDIA_MAGIC, PROTOCOL_VERSION, 0, generation, sequence, captured_at & 0xFFFFFFFF, len(payload)) + payload
                 try:
-                    RNS.Packet(state["link"], frame).send()
-                    state["lastSend"] = time.time()
+                    self._send_packet(state, frame)
                     self.stats["sentFrames"] += 1
                 except Exception:
                     self.stats["linkFailures"] += 1
@@ -1123,24 +1140,27 @@ class QortalLandProximityVoiceManager:
             try:
                 self.local_audio_queue.get_nowait()
                 self.stats["queueDrops"] += 1
+                self.stats["localQueueDrops"] += 1
                 self.capacity_reduced_until = time.time() + 10.0
                 self.local_audio_queue.put_nowait(item)
             except (queue.Empty, queue.Full):
                 self.stats["queueDrops"] += 1
+                self.stats["localQueueDrops"] += 1
                 return True
         with self.lock:
             if self.media_drain_scheduled:
                 return True
             self.media_drain_scheduled = True
-        if not self.enqueue(self._drain_local_audio, ()):
+        if not self.enqueue_media(self._drain_local_audio, ()):
             with self.lock:
                 self.media_drain_scheduled = False
             return False
         return True
 
     def _drain_local_audio(self) -> None:
+        started_at = time.monotonic()
         drained = 0
-        while drained < 4:
+        while drained < MEDIA_DRAIN_MAX_FRAMES:
             try:
                 queued_at, raw = self.local_audio_queue.get_nowait()
             except queue.Empty:
@@ -1150,6 +1170,11 @@ class QortalLandProximityVoiceManager:
             else:
                 self.stats["staleDrops"] += 1
             drained += 1
+            # Drain short bursts in one scheduler turn instead of repeatedly
+            # yielding after four frames. Retain a strict time budget so media
+            # cannot monopolise its RNS lane when a send becomes slow.
+            if drained >= 4 and time.monotonic() - started_at >= MEDIA_DRAIN_TIME_BUDGET:
+                break
         with self.lock:
             self.media_drain_scheduled = False
             has_more = not self.local_audio_queue.empty()
@@ -1158,7 +1183,7 @@ class QortalLandProximityVoiceManager:
                 if self.media_drain_scheduled:
                     return
                 self.media_drain_scheduled = True
-            if not self.enqueue(self._drain_local_audio, ()):
+            if not self.enqueue_media(self._drain_local_audio, ()):
                 with self.lock:
                     self.media_drain_scheduled = False
     def tick(self) -> None:
@@ -1199,7 +1224,8 @@ class QortalLandProximityVoiceManager:
                 f"local={self.stats['localFrames']} sent={self.stats['sentFrames']} "
                 f"received={self.stats['receivedFrames']} skips={self.stats['sequenceSkips']} "
                 f"duplicates={self.stats['duplicateDrops']} stale={self.stats['staleDrops']} "
-                f"queueDrops={self.stats['queueDrops']} invalid={self.stats['invalidFrames']} "
+                f"queueDrops={self.stats['queueDrops']} localQueueDrops={self.stats['localQueueDrops']} "
+                f"rendererQueueDrops={self.stats['rendererQueueDrops']} invalid={self.stats['invalidFrames']} "
                 f"linkFailures={self.stats['linkFailures']}"
             )
         for nonce, used_at in list(self.used_link_nonces.items()):

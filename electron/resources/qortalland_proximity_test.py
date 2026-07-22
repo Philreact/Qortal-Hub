@@ -95,6 +95,43 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         self.assertTrue(self.manager.handle_local_audio(frame))
         self.assertEqual(self.manager.stats["localFrames"], 1)
 
+    def test_media_drain_consumes_a_short_burst_in_one_scheduler_turn(self):
+        self.authorize()
+        self.manager._set_transmit(True)
+        scheduled = []
+        self.manager.enqueue_media = lambda fn, args: bool(scheduled.append((fn, args)) or True)
+        captured_at = int(time.time() * 1000)
+        for sequence in range(1, 13):
+            payload = f"opus-{sequence}".encode()
+            frame = LOCAL_AUDIO_HEADER.pack(
+                LOCAL_AUDIO_MAGIC, 1, 0, 0, self.manager.stream_generation,
+                sequence, captured_at, len(payload),
+            ) + payload
+            self.assertTrue(self.manager.queue_local_audio(frame))
+
+        self.assertEqual(len(scheduled), 1)
+        fn, args = scheduled.pop()
+        fn(*args)
+        self.assertEqual(self.manager.stats["localFrames"], 12)
+        self.assertTrue(self.manager.local_audio_queue.empty())
+        self.assertEqual(scheduled, [])
+
+    def test_local_media_queue_reports_its_own_overflow_counter(self):
+        scheduled = []
+        self.manager.enqueue_media = lambda fn, args: bool(scheduled.append((fn, args)) or True)
+        captured_at = int(time.time() * 1000)
+        for sequence in range(1, 34):
+            payload = b"opus"
+            frame = LOCAL_AUDIO_HEADER.pack(
+                LOCAL_AUDIO_MAGIC, 1, 0, 0, self.manager.stream_generation,
+                sequence, captured_at, len(payload),
+            ) + payload
+            self.assertTrue(self.manager.queue_local_audio(frame))
+
+        self.assertEqual(self.manager.stats["queueDrops"], 1)
+        self.assertEqual(self.manager.stats["localQueueDrops"], 1)
+        self.assertEqual(self.manager.stats["rendererQueueDrops"], 0)
+
     def test_distance_gain_has_full_fade_and_silence_boundaries(self):
         self.assertEqual(self.manager._gain(50), 1.0)
         self.assertGreater(self.manager._gain(250), 0.0)

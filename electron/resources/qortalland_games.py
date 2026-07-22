@@ -240,6 +240,7 @@ class QortalLandGameManager:
         enqueue: Callable[[Callable[..., Any], tuple], bool],
         refresh_path: Optional[Callable[[str, str], bool]] = None,
         broadcast_proximity: Optional[Callable[[Dict[str, Any]], None]] = None,
+        enqueue_proximity_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
     ):
         self.emit = emit
         self.log = log
@@ -277,6 +278,7 @@ class QortalLandGameManager:
             build_destination=build_destination,
             link_id_bytes=link_id_bytes,
             enqueue=enqueue,
+            enqueue_media=enqueue_proximity_media,
             broadcast_discovery=broadcast_proximity or (lambda _wire: None),
             verify_wallet=verify_signature,
             derive_address=derive_qortal_address,
@@ -509,10 +511,12 @@ class QortalLandGameManager:
                     if queued_source == source_id:
                         del self.socket_media_out[index]
                         self.proximity.stats["queueDrops"] += 1
+                        self.proximity.stats["rendererQueueDrops"] += 1
                         break
             elif len(self.socket_media_out) >= 128:
                 self.socket_media_out.popleft()
                 self.proximity.stats["queueDrops"] += 1
+                self.proximity.stats["rendererQueueDrops"] += 1
             self.socket_media_out.append((socket_client, bytes(frame), source_id, time.monotonic()))
         return True
 
