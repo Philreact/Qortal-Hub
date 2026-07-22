@@ -683,6 +683,52 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(sum(len(batch["messages"]) for batch in batches), 100)
         self.assertTrue(all(len(json.dumps(batch).encode("utf-8")) <= 16 * 1024 for batch in batches))
 
+    def test_chat_allows_rapid_messages_in_both_directions(self):
+        sender, _sender_events = self.make_manager()
+        receiver, receiver_events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, message):
+                self.messages.append(message.payload)
+                return object()
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        sender_channel = Channel()
+        receiver_channel = Channel()
+        sender.matches[match_id] = {
+            "matchId": match_id, "roundId": match_id, "phase": "active",
+            "channel": sender_channel, "outbound": True,
+            "requester": self.address, "recipient": "Qremote111111111111111111111111111111",
+            "chatMessages": [],
+        }
+        receiver.matches[match_id] = {
+            "matchId": match_id, "roundId": match_id, "phase": "active",
+            "channel": receiver_channel, "outbound": False,
+            "requester": self.address, "recipient": "Qremote111111111111111111111111111111",
+            "chatMessages": [], "lastRx": time.time(),
+        }
+
+        for index in range(20):
+            sender._send_active({"matchId": match_id, "message": {
+                "type": "CHAT_MESSAGE",
+                "messageId": f"10000000-0000-4000-8000-{index:012d}",
+                "text": f"message {index}",
+                "createdAt": int(time.time() * 1000),
+            }})
+
+        for payload in sender_channel.messages:
+            receiver._on_channel(match_id, GameMessage(payload))
+
+        self.assertEqual(len(sender.matches[match_id]["chatMessages"]), 20)
+        self.assertEqual(len(receiver.matches[match_id]["chatMessages"]), 20)
+        self.assertEqual(
+            len([event for event, _payload in receiver_events if event == "GAME_MESSAGE"]),
+            20,
+        )
+
     def test_typing_signal_never_tears_down_the_game(self):
         manager, events = self.make_manager()
         match_id = "00112233-4455-6677-8899-aabbccddeeff"

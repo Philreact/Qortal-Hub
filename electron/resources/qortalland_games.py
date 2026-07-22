@@ -144,8 +144,6 @@ CHAT_MAX_CHARS = 500
 CHAT_MAX_BYTES = 2000
 CHAT_CHUNK_BYTES = 180
 CHAT_HISTORY_LIMIT = 100
-CHAT_RATE_WINDOW = 10
-CHAT_RATE_LIMIT = 8
 
 
 def _b58decode(value: str) -> bytes:
@@ -1372,15 +1370,6 @@ class QortalLandGameManager:
         return message_id, text, created_at
 
     @staticmethod
-    def _check_chat_rate(state: Dict[str, Any], key: str) -> None:
-        now = time.time()
-        recent = [stamp for stamp in state.get(key, []) if now - stamp < CHAT_RATE_WINDOW]
-        if len(recent) >= CHAT_RATE_LIMIT:
-            raise ValueError("chat_rate_limited")
-        recent.append(now)
-        state[key] = recent
-
-    @staticmethod
     def _remember_chat(state: Dict[str, Any], record: Dict[str, Any]) -> None:
         history = state.setdefault("chatMessages", [])
         existing = next((item for item in history if item.get("messageId") == record.get("messageId")), None)
@@ -1437,7 +1426,6 @@ class QortalLandGameManager:
         except UnicodeDecodeError as exc:
             raise ValueError("invalid_chat_encoding") from exc
         self._validate_chat_message({"messageId": message_id, "text": text_value, "createdAt": created_at})
-        self._check_chat_rate(state, "remoteChatTimes")
         author = state["recipient"] if state.get("outbound") else state["requester"]
         record = {"messageId": message_id, "text": text_value, "createdAt": created_at, "authorAddress": author, "delivered": True}
         self._remember_chat(state, record)
@@ -1928,7 +1916,6 @@ class QortalLandGameManager:
             message_id, text_value, created_at = self._validate_chat_message(game_message)
             if any(item.get("messageId") == message_id for item in state.get("chatMessages", [])):
                 raise ValueError("duplicate_chat_message")
-            self._check_chat_rate(state, "localChatTimes")
             author = state["requester"] if state.get("outbound") else state["recipient"]
             record = {
                 "messageId": message_id, "text": text_value, "createdAt": created_at,
