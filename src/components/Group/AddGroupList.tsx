@@ -5,7 +5,6 @@ import {
   CircularProgress,
   Dialog,
   DialogContent,
-  DialogTitle,
   Divider,
   IconButton,
   InputAdornment,
@@ -19,6 +18,7 @@ import {
   useTheme,
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import GroupIcon from '@mui/icons-material/Group';
 import PersonIcon from '@mui/icons-material/Person';
 import DescriptionIcon from '@mui/icons-material/Description';
@@ -31,33 +31,28 @@ import LockIcon from '@mui/icons-material/Lock';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import WhatshotRoundedIcon from '@mui/icons-material/WhatshotRounded';
+import BoltRoundedIcon from '@mui/icons-material/BoltRounded';
+import EmojiEventsRoundedIcon from '@mui/icons-material/EmojiEventsRounded';
+import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import { useTranslation } from 'react-i18next';
 import { useAtom, useSetAtom } from 'jotai';
 import { memberGroupsAtom, txListAtom } from '../../atoms/global';
-import { formatTimestamp } from '../../utils/time.ts';
-import { Spacer } from '../../common/Spacer.tsx';
-import Logo2 from '../../assets/svgs/Logo2.svg';
+import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 import {
-  getGroupLevel,
-  getGroupLevelColor,
-} from './ReticulumGroupLevel';
-import {
-  getCommunityLevel,
-  getLegacyLevel,
-} from './ReticulumGroupAbout';
+  ensureReticulumGroupScore,
+  useReticulumGroupScoreSnapshot,
+} from './reticulumGroupScore';
+import { GroupScoreBadge } from './ReticulumGroupLevel';
 
-const GROUP_ROW_HEIGHT = 88;
+const GROUP_ROW_HEIGHT = 82;
 const FIND_GROUPS_PAGE_SIZE = 10;
 const FIND_GROUPS_AVATAR_LIMIT = 20;
 
 export const isOpenGroup = (group) =>
   group?.isOpen === true || group?.groupType === 0 || group?.groupType === 'OPEN';
 const formatMemberCount = (count) =>
-  new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(
-    Number(count) || 0
-  );
+  new Intl.NumberFormat().format(Math.max(0, Number(count) || 0));
 
 export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
@@ -78,25 +73,26 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const [ownerLoading, setOwnerLoading] = useState(false);
   const listRef = useRef(null);
   const [inputValue, setInputValue] = useState('');
-  const [sortMode, setSortMode] = useState<'popular' | 'newest'>('popular');
+  const [sortMode, setSortMode] = useState<'top' | 'active' | 'newest' | 'largest'>('top');
   const [showOpen, setShowOpen] = useState(false);
   const [showPrivate, setShowPrivate] = useState(false);
   const [visibleCount, setVisibleCount] = useState(FIND_GROUPS_PAGE_SIZE);
-  const [topGroupOwnerNames, setTopGroupOwnerNames] = useState({});
-  const [publicActivityByGroup, setPublicActivityByGroup] = useState<
-    Record<
-      string,
-      {
-        messages24h: number;
-        messages7d: number;
-        activeAuthors7d: number;
-        observedAt: number;
-        confidence: number;
-      }
-    >
-  >({});
+  const [groupOwnerNames, setGroupOwnerNames] = useState({});
+  const avatarOwnerLookupAttemptedRef = useRef<Set<string>>(new Set());
+  const groupScoreSnapshot = useReticulumGroupScoreSnapshot();
   const [isLoading, setIsLoading] = useState(false);
+  const [joiningGroupId, setJoiningGroupId] = useState<string | null>(null);
+  const joiningGroupIdRef = useRef<string | null>(null);
+  const [joinError, setJoinError] = useState('');
+  const [ownerAddressCopied, setOwnerAddressCopied] = useState(false);
+  const ownerCopyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const theme = useTheme();
+
+  useEffect(() => () => {
+    if (ownerCopyResetTimerRef.current) {
+      clearTimeout(ownerCopyResetTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedGroup?.groupId) {
@@ -136,84 +132,118 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   // Derive filtered list from groups + search so refetches (e.g. when memberGroups updates) don't clear the filter
   const filteredItems = useMemo(() => {
     const query = (inputValue || '').trim().toLowerCase();
+    const publicOnlySort = sortMode === 'top' || sortMode === 'active';
+    const scoreFor = (group) =>
+      isOpenGroup(group)
+        ? groupScoreSnapshot.groups[String(group?.groupId)]
+        : undefined;
+    const compareCreated = (a, b) =>
+      Number(b?.created || 0) - Number(a?.created || 0);
+    const compareMembers = (a, b) =>
+      Number(b?.memberCount || 0) - Number(a?.memberCount || 0);
+    const compareOptionalScore = (aScore, bScore, key) => {
+      if (!aScore && !bScore) return 0;
+      if (!aScore) return 1;
+      if (!bScore) return -1;
+      return Number(bScore?.[key] || 0) - Number(aScore?.[key] || 0);
+    };
     return groups
       .filter((item) => {
-        const matchesQuery = !query || item.groupName.toLowerCase().includes(query);
+        const matchesQuery =
+          !query ||
+          String(item?.groupName || '').toLowerCase().includes(query) ||
+          String(item?.description || '').toLowerCase().includes(query);
+        if (publicOnlySort && !isOpenGroup(item)) return false;
         const matchesAccess = (!showOpen && !showPrivate) ||
           (showOpen && isOpenGroup(item)) ||
           (showPrivate && !isOpenGroup(item));
         return matchesQuery && matchesAccess;
       })
       .sort((a, b) => {
+        const aScore = scoreFor(a);
+        const bScore = scoreFor(b);
+        if (sortMode === 'top') {
+          return (
+            compareOptionalScore(aScore, bScore, 'score') ||
+            compareOptionalScore(aScore, bScore, 'activityScore') ||
+            compareMembers(a, b) ||
+            compareCreated(a, b)
+          );
+        }
+        if (sortMode === 'active') {
+          return (
+            compareOptionalScore(aScore, bScore, 'activityScore') ||
+            Number(bScore?.activity?.activeAuthors7d || 0) -
+              Number(aScore?.activity?.activeAuthors7d || 0) ||
+            Number(bScore?.activity?.messages7d || 0) -
+              Number(aScore?.activity?.messages7d || 0) ||
+            compareOptionalScore(aScore, bScore, 'score') ||
+            compareMembers(a, b) ||
+            compareCreated(a, b)
+          );
+        }
         if (sortMode === 'newest') {
-          return Number(b?.created || 0) - Number(a?.created || 0);
+          return (
+            compareCreated(a, b) ||
+            Number(b?.groupId || 0) - Number(a?.groupId || 0)
+          );
         }
-        const aActivity = isOpenGroup(a)
-          ? publicActivityByGroup[String(a?.groupId)]
-          : undefined;
-        const bActivity = isOpenGroup(b)
-          ? publicActivityByGroup[String(b?.groupId)]
-          : undefined;
-        if (aActivity || bActivity) {
-          if (!aActivity) return 1;
-          if (!bActivity) return -1;
-          const activityOrder =
-            bActivity.activeAuthors7d - aActivity.activeAuthors7d ||
-            bActivity.messages24h - aActivity.messages24h ||
-            bActivity.messages7d - aActivity.messages7d;
-          if (activityOrder !== 0) return activityOrder;
-        }
-        const aLevel = getGroupLevel(
-          getLegacyLevel(a?.created ?? a?.creationTimestamp ?? a?.createdAt),
-          getCommunityLevel(Number(a?.memberCount) || 0)
-        ) ?? -1;
-        const bLevel = getGroupLevel(
-          getLegacyLevel(b?.created ?? b?.creationTimestamp ?? b?.createdAt),
-          getCommunityLevel(Number(b?.memberCount) || 0)
-        ) ?? -1;
-        return bLevel - aLevel || Number(b?.memberCount || 0) - Number(a?.memberCount || 0);
+        return (
+          compareMembers(a, b) ||
+          compareOptionalScore(aScore, bScore, 'score') ||
+          compareCreated(a, b)
+        );
       });
   }, [
     groups,
     inputValue,
-    publicActivityByGroup,
+    groupScoreSnapshot,
     showOpen,
     showPrivate,
     sortMode,
   ]);
 
-  const avatarEligibleGroupIds = useMemo(
-    () => new Set(
-      [...groups]
-        .sort((a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0))
-        .slice(0, FIND_GROUPS_AVATAR_LIMIT)
-        .map((group) => String(group.groupId))
-    ),
-    [groups]
-  );
   const visibleItems = useMemo(
     () => filteredItems.slice(0, visibleCount),
     [filteredItems, visibleCount]
   );
+  const avatarEligibleGroupIds = useMemo(() => {
+    const ids = new Set(
+      [...groups]
+        .sort((a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0))
+        .slice(0, FIND_GROUPS_AVATAR_LIMIT)
+        .map((group) => String(group.groupId))
+    );
+    visibleItems.forEach((group) => ids.add(String(group?.groupId)));
+    return ids;
+  }, [groups, visibleItems]);
 
   useEffect(() => {
     setVisibleCount(FIND_GROUPS_PAGE_SIZE);
     listRef.current?.scrollToRow?.(0);
   }, [inputValue, showOpen, showPrivate, sortMode]);
 
-  // Discover only the owners needed for the top twenty avatar requests.  Groups
-  // further down the directory deliberately keep the local fallback artwork.
+  // Load the first twenty directory avatars, then retain every additional avatar
+  // the user discovers by searching or loading more results during this session.
   useEffect(() => {
     let cancelled = false;
-    const topGroups = [...groups]
-      .sort((a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0))
-      .slice(0, FIND_GROUPS_AVATAR_LIMIT);
-    if (topGroups.length === 0) {
-      setTopGroupOwnerNames({});
+    const eligibleGroups = groups.filter((group) =>
+      avatarEligibleGroupIds.has(String(group?.groupId))
+    );
+    const groupsToResolve = eligibleGroups.filter((group) => {
+      const key = String(group?.groupId);
+      if (!key || avatarOwnerLookupAttemptedRef.current.has(key)) return false;
+      avatarOwnerLookupAttemptedRef.current.add(key);
+      return true;
+    });
+    if (groupsToResolve.length === 0) {
       return undefined;
     }
     void Promise.all(
-      topGroups.map(async (group) => {
+      groupsToResolve.map(async (group) => {
+        if (group?.ownerPrimaryName) {
+          return [String(group.groupId), group.ownerPrimaryName];
+        }
         try {
           const response = await fetch(`${getBaseApiReact()}/groups/${group.groupId}`);
           const data = await response.json();
@@ -223,39 +253,43 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
         }
       })
     ).then((entries) => {
-      if (!cancelled) setTopGroupOwnerNames(Object.fromEntries(entries));
+      if (!cancelled) {
+        setGroupOwnerNames((previous) => ({
+          ...previous,
+          ...Object.fromEntries(entries),
+        }));
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [groups]);
+  }, [avatarEligibleGroupIds, groups]);
 
   const handleChange = (event) => {
     setInputValue(event.target.value);
   };
+
+  const handleSortChange = (
+    nextSortMode: 'top' | 'active' | 'newest' | 'largest'
+  ) => {
+    if (nextSortMode === 'top' || nextSortMode === 'active') {
+      setShowPrivate(false);
+    }
+    setSortMode(nextSortMode);
+  };
+
+  const isJoinedGroup = (groupId) =>
+    (memberGroups || []).some(
+      (group) => String(group?.groupId) === String(groupId)
+    );
 
   const getGroups = async () => {
     setGroupsLoading(true);
     try {
       const response = await fetch(`${getBaseApiReact()}/groups/?limit=0`);
       const groupData = await response.json();
-      const publicGroupIds = groupData
-        .filter(isOpenGroup)
-        .map((group) => Number(group?.groupId))
-        .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
-      await window.reticulumChat?.setPublicGroupDirectory?.(publicGroupIds);
-      const activity = await window.reticulumChat?.getPublicGroupActivity?.();
-      if (Array.isArray(activity)) {
-        setPublicActivityByGroup(
-          Object.fromEntries(
-            activity.map((summary) => [String(summary.groupId), summary])
-          )
-        );
-      }
-      const filteredGroup = groupData.filter(
-        (item) => !memberGroups.find((group) => group.groupId === item.groupId)
-      );
-      setGroups(filteredGroup);
+      void ensureReticulumGroupScore();
+      setGroups(Array.isArray(groupData) ? groupData : []);
     } catch (error) {
       console.error(error);
     } finally {
@@ -267,31 +301,15 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     getGroups();
   }, [memberGroups]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      const activity = await window.reticulumChat?.getPublicGroupActivity?.();
-      if (cancelled || !Array.isArray(activity)) return;
-      setPublicActivityByGroup(
-        Object.fromEntries(
-          activity.map((summary) => [String(summary.groupId), summary])
-        )
-      );
-    };
-    const initialTimer = window.setTimeout(() => void refresh(), 2_000);
-    const interval = window.setInterval(() => void refresh(), 60_000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(initialTimer);
-      window.clearInterval(interval);
-    };
-  }, []);
-
   const handleOpenDialog = (group) => {
+    setJoinError('');
+    setOwnerAddressCopied(false);
     setSelectedGroup(group);
   };
 
   const handleCloseDialog = () => {
+    setJoinError('');
+    setOwnerAddressCopied(false);
     setSelectedGroup(null);
   };
 
@@ -300,6 +318,14 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
       navigator.clipboard
         .writeText(ownerAddress)
         .then(() => {
+          if (ownerCopyResetTimerRef.current) {
+            clearTimeout(ownerCopyResetTimerRef.current);
+          }
+          setOwnerAddressCopied(true);
+          ownerCopyResetTimerRef.current = setTimeout(
+            () => setOwnerAddressCopied(false),
+            1600
+          );
           setInfoSnack({
             type: 'success',
             message: t('auth:action.copy_address', {
@@ -321,6 +347,11 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   };
 
   const handleJoinGroup = async (group, isOpen) => {
+    const groupIdKey = String(group?.groupId || '');
+    if (!groupIdKey || joiningGroupIdRef.current) return;
+    joiningGroupIdRef.current = groupIdKey;
+    setJoiningGroupId(groupIdKey);
+    setJoinError('');
     try {
       const groupId = group.groupId;
 
@@ -391,6 +422,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               res(response);
               return;
             } else {
+              setJoinError('Unable to join this group. Please try again.');
               setInfoSnack({
                 type: 'error',
                 message: response?.error,
@@ -400,6 +432,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
             }
           })
           .catch((error) => {
+            setJoinError('Unable to join this group. Please try again.');
             setInfoSnack({
               type: 'error',
               message:
@@ -414,9 +447,14 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
       });
       setIsLoading(false);
     } catch (error) {
-      console.log(error);
+      if (!error?.isCanceled) {
+        setJoinError('Unable to join this group. Please try again.');
+        console.log(error);
+      }
     } finally {
       setIsLoading(false);
+      joiningGroupIdRef.current = null;
+      setJoiningGroupId(null);
     }
   };
 
@@ -435,34 +473,40 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     const group = visibleItems[index];
     const memberCount = group?.memberCount ?? 0;
     const openGroup = isOpenGroup(group);
-    const publicActivity = openGroup
-      ? publicActivityByGroup[String(group?.groupId)]
+    const joinedGroup = isJoinedGroup(group?.groupId);
+    const joiningGroup = joiningGroupId === String(group?.groupId);
+    const groupScore = openGroup
+      ? groupScoreSnapshot.groups[String(group?.groupId)]
       : undefined;
-    const ownerName = topGroupOwnerNames[String(group?.groupId)];
-    const showRemoteAvatar = avatarEligibleGroupIds.has(String(group?.groupId)) && Boolean(ownerName);
+    const ownerName =
+      groupOwnerNames[String(group?.groupId)] || group?.ownerPrimaryName;
+    const showRemoteAvatar = Boolean(ownerName);
     const avatarUrl = showRemoteAvatar
       ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerName)}/qortal_group_avatar_${group.groupId}?async=true`
       : undefined;
-    const legacyLevel = getLegacyLevel(group?.created ?? group?.creationTimestamp ?? group?.createdAt);
-    const communityLevel = getCommunityLevel(Number(memberCount) || 0);
-    const level = getGroupLevel(legacyLevel, communityLevel);
-    const levelColor = getGroupLevelColor(level);
-    const createdDate = group?.created ? formatTimestamp(group.created) : '—';
-
     return (
       <div key={key} style={style}>
-        <ListItem disablePadding sx={{ borderBottom: `1px solid ${theme.palette.divider}`, px: 0 }}>
+        <ListItem disablePadding sx={{ borderBottom: '1px solid rgba(255,255,255,0.065)', px: 0 }}>
           <ListItemButton
             onClick={() => handleOpenDialog(group)}
             sx={{
               borderRadius: 0,
-              py: 0.9,
-              px: 1,
               alignItems: 'center',
-              gap: 1.2,
+              columnGap: { xs: 1.25, sm: 1.75, md: 2.5 },
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: '46px minmax(0, 1fr) 36px 72px',
+                sm: '46px minmax(0, 1fr) 36px 88px 76px',
+                md: '52px minmax(0, 1fr) 38px 108px 80px',
+              },
               minHeight: GROUP_ROW_HEIGHT,
+              px: { xs: 1.25, sm: 1.75, md: 2.25 },
+              py: 1.25,
               '&:hover': {
-                bgcolor: theme.palette.action.hover,
+                bgcolor: 'rgba(255,255,255,0.02)',
+              },
+              '&:focus-visible': {
+                boxShadow: 'inset 0 0 0 2px rgba(96,165,250,0.7)',
               },
             }}
           >
@@ -470,117 +514,135 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               alt=""
               imgProps={{ loading: 'lazy' }}
               src={avatarUrl}
-              sx={{ backgroundColor: '#151a22', border: `1px solid ${theme.palette.divider}`, flexShrink: 0, height: 58, width: 58 }}
-            >
-              <Box alt="" component="img" src={Logo2} sx={{ height: 30, width: 30 }} />
-            </Avatar>
-            <Box
               sx={{
-                display: 'flex',
-                alignItems: 'center',
-                alignSelf: 'flex-start',
+                backgroundColor: '#0D1015',
+                border: '1px solid rgba(255,255,255,0.055)',
                 flexShrink: 0,
-                mr: 0,
-                mt: 0.15,
+                height: { xs: 46, md: 52 },
+                width: { xs: 46, md: 52 },
+                '& .MuiAvatar-img': { objectFit: 'cover' },
               }}
             >
-              {!openGroup ? (
-                <LockIcon
+              <Box alt="" aria-hidden component="img" src={qortalWhiteLogo} sx={{ height: 22, objectFit: 'contain', opacity: 0.15, width: 22 }} />
+            </Avatar>
+            <Box sx={{ minWidth: 0 }}>
+              <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.75, minWidth: 0 }}>
+                <Typography
                   sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: 18,
+                    fontSize: 16,
+                    fontWeight: 700,
+                    color: theme.palette.text.primary,
+                    letterSpacing: '-0.015em',
+                    lineHeight: '21px',
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
                   }}
-                />
-              ) : (
-                <PublicRoundedIcon
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: 18,
-                  }}
-                />
-              )}
-            </Box>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography
-                sx={{
-                  display: 'inline-block',
-                  fontSize: 16,
-                  fontWeight: 750,
-                  color: theme.palette.text.primary,
-                  lineHeight: '21px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {group?.groupName}
-              </Typography>
-              {level !== null && (
-                <Tooltip title={`Group Level ${level} (${legacyLevel} legacy + ${communityLevel} community)`}>
-                  <Box aria-label={`Group Level ${level}`} component="span" sx={{ alignItems: 'center', backgroundColor: levelColor, borderRadius: '50%', boxShadow: `0 2px 7px ${levelColor}55`, color: '#ffffff', display: 'inline-flex', fontSize: 12, fontWeight: 800, height: 28, justifyContent: 'center', ml: 0.8, verticalAlign: 'middle', width: 28 }}>
-                    {level}
-                  </Box>
+                >
+                  {group?.groupName}
+                </Typography>
+                <Tooltip title={openGroup ? 'Open Group' : 'Reticulum Encrypted Group'}>
+                  {openGroup ? (
+                    <PublicRoundedIcon aria-label="Open Group" sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 15 }} />
+                  ) : (
+                    <LockIcon aria-label="Reticulum Encrypted Group" sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 15 }} />
+                  )}
                 </Tooltip>
-              )}
+              </Box>
               {group?.description && (
                 <Tooltip disableInteractive placement="top-start" title={group.description}>
                 <Typography
                   variant="body2"
                   sx={{
                     color: theme.palette.text.secondary,
-                  mt: 0.2,
-                  fontSize: 13,
-                  lineHeight: '18px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  display: 'block',
-                }}
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: { xs: 1, sm: 2 },
+                    display: '-webkit-box',
+                    fontSize: 14,
+                    fontWeight: 400,
+                    lineHeight: '18px',
+                    maxWidth: 540,
+                    mt: '3px',
+                    overflow: 'hidden',
+                  }}
                 >
                   {group.description}
                 </Typography>
                 </Tooltip>
               )}
-              <Typography
-                sx={{
-                  color: theme.palette.text.secondary,
-                  opacity: 0.85,
-                  display: 'none',
-                  fontSize: 12,
-                  mt: 0.25,
-                  lineHeight: 1.4,
-                }}
-              >
-                {memberCount} {t('group:group.member', { count: memberCount })}
-                {' • '}
-                {t('group:group.created', {
-                  postProcess: 'capitalizeFirstChar',
-                  date: createdDate,
-                })}
+              <Typography noWrap sx={{ color: 'text.secondary', display: { xs: 'block', sm: 'none' }, fontSize: 11.5, lineHeight: '16px', mt: 0.15 }}>
+                {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
               </Typography>
             </Box>
-            <Box sx={{ color: 'text.secondary', display: { xs: 'none', sm: 'block' }, flex: '0 0 112px', textAlign: 'right' }}>
-              {publicActivity ? (
-                <>
-                  <Typography noWrap sx={{ fontSize: 13, lineHeight: '18px' }}>
-                    {formatMemberCount(publicActivity.activeAuthors7d)} active
-                  </Typography>
-                  <Typography noWrap sx={{ fontSize: 12, lineHeight: '17px', opacity: 0.8 }}>
-                    {formatMemberCount(publicActivity.messages7d)} messages
-                  </Typography>
-                </>
-              ) : (
-                <Typography noWrap sx={{ fontSize: 13, lineHeight: '18px' }}>
-                  {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
-                </Typography>
-              )}
+            <Box sx={{ alignItems: 'center', display: 'flex', justifyContent: 'center' }}>
+              {groupScore ? (
+                <GroupScoreBadge
+                  circleSize={36}
+                  popoverAlign="center"
+                  score={groupScore}
+                  size="compact"
+                  triggerVariant="circle"
+                />
+              ) : null}
+            </Box>
+            <Box sx={{ color: 'text.secondary', display: { xs: 'none', sm: 'block' }, width: '100%' }}>
+              <Typography noWrap sx={{ fontSize: 14, fontWeight: 400, letterSpacing: '-0.005em', lineHeight: '20px', textAlign: 'left' }}>
+                {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
+              </Typography>
             </Box>
             <ButtonBase
-              aria-label={`${openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
-              onClick={(event) => { event.stopPropagation(); handleJoinGroup(group, openGroup); }}
-              sx={{ backgroundColor: openGroup ? 'primary.main' : 'transparent', border: `1px solid ${openGroup ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '7px', color: openGroup ? 'primary.contrastText' : 'text.secondary', flex: '0 0 84px', fontSize: 14, fontWeight: 650, minHeight: 42, px: 1.25, '&:hover': { backgroundColor: openGroup ? 'primary.dark' : theme.palette.action.hover, color: openGroup ? 'primary.contrastText' : 'text.primary' } }}
+              aria-label={`${joinedGroup ? 'Joined' : openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
+              disabled={joinedGroup || Boolean(joiningGroupId)}
+              onClick={(event) => { event.stopPropagation(); if (!joinedGroup && !joiningGroupIdRef.current) handleJoinGroup(group, openGroup); }}
+              sx={{
+                background: joinedGroup
+                  ? theme.palette.action.selected
+                  : openGroup
+                    ? 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)'
+                    : 'transparent',
+                border: `1px solid ${joinedGroup ? theme.palette.divider : openGroup ? '#5ea2ff' : theme.palette.divider}`,
+                borderRadius: '8px',
+                boxShadow: openGroup && !joinedGroup
+                  ? '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
+                  : 'none',
+                color: joinedGroup ? 'text.secondary' : openGroup ? '#ffffff' : 'text.secondary',
+                fontSize: 14,
+                fontWeight: 600,
+                height: 38,
+                justifySelf: 'end',
+                letterSpacing: '0.005em',
+                lineHeight: 1,
+                minWidth: 0,
+                p: 0,
+                width: { xs: 72, sm: 76, md: 80 },
+                '&:hover': {
+                  background: joinedGroup
+                    ? theme.palette.action.selected
+                    : openGroup
+                      ? 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)'
+                      : theme.palette.action.hover,
+                  borderColor: openGroup && !joinedGroup ? '#78b1ff' : undefined,
+                  color: joinedGroup ? 'text.secondary' : openGroup ? '#ffffff' : 'text.primary',
+                },
+                '&:active': {
+                  background: openGroup && !joinedGroup ? '#2b63c5' : undefined,
+                  boxShadow: 'none',
+                },
+                '&:focus-visible': {
+                  outline: '2px solid #93c5fd',
+                  outlineOffset: 2,
+                },
+                '&.Mui-disabled': {
+                  color: joinedGroup ? theme.palette.text.secondary : openGroup ? '#ffffff' : theme.palette.text.secondary,
+                  cursor: 'not-allowed',
+                  opacity: joinedGroup ? 0.72 : 0.5,
+                },
+              }}
             >
-              {openGroup ? 'Join' : 'Request'}
+              {joiningGroup ? (
+                <CircularProgress color="inherit" size={15} thickness={5} />
+              ) : joinedGroup ? 'Joined' : openGroup ? 'Join' : 'Request'}
             </ButtonBase>
           </ListItemButton>
         </ListItem>
@@ -589,22 +651,50 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   };
 
   const isSelectedGroupOpen =
-    selectedGroup != null && selectedGroup?.isOpen !== false;
+    selectedGroup != null && isOpenGroup(selectedGroup);
+  const isSelectedGroupJoined = isJoinedGroup(selectedGroup?.groupId);
+  const selectedGroupMemberCount = Math.max(
+    0,
+    Number(selectedGroup?.memberCount) || 0
+  );
+  const selectedOwnerDisplayName =
+    ownerPrimaryName || ownerAddress || 'Unknown';
+  const selectedOwnerAvatarUrl = ownerPrimaryName
+    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerPrimaryName)}/qortal_avatar?async=true`
+    : undefined;
+  const privateFilterDisabled = sortMode === 'top' || sortMode === 'active';
+  const privateFilterExplanation =
+    sortMode === 'top'
+      ? 'Group Scores are available only for Open Groups.'
+      : sortMode === 'active'
+        ? 'Activity ranking is available only for Open Groups.'
+        : '';
+  const sortDescription = {
+    top: 'Sorted by Group Score',
+    active: 'Sorted by activity',
+    newest: 'Sorted by newest',
+    largest: 'Sorted by members',
+  }[sortMode];
 
   return (
     <>
       <Dialog
         open={selectedGroup != null}
         onClose={handleCloseDialog}
-        maxWidth="sm"
         fullWidth
+        maxWidth={false}
         PaperProps={{
           sx: {
-            borderRadius: 3,
-            maxWidth: 440,
+            backgroundColor: theme.palette.background.default,
+            backgroundImage: 'none',
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: '12px',
             boxShadow: theme.shadows[12],
+            m: 2,
+            maxHeight: 'min(720px, calc(100vh - 32px))',
+            maxWidth: 'none',
             overflow: 'hidden',
-            bgcolor: theme.palette.background.default,
+            width: 'min(480px, calc(100vw - 32px))',
           },
         }}
         sx={{
@@ -615,299 +705,204 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
         }}
       >
         {selectedGroup && (
-          <>
-            <DialogTitle
-              sx={{
-                fontWeight: 700,
-                fontSize: '1.25rem',
-                letterSpacing: '-0.02em',
-                py: 2,
-                px: 2.5,
-                borderBottom: `1px solid ${theme.palette.divider}`,
-              }}
-            >
-              <Typography
-                component="span"
-                sx={{
-                  color: theme.palette.text.secondary,
-                  fontWeight: 500,
-                  fontSize: '0.875rem',
-                  display: 'block',
-                  mb: 0.5,
-                }}
-              >
-                {t('core:action.join', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
+          <DialogContent
+            sx={{
+              p: 3,
+              overflowY: 'auto',
+              scrollbarColor: 'rgba(143,150,165,0.45) transparent',
+              scrollbarWidth: 'thin',
+              '&::-webkit-scrollbar': { width: 5 },
+              '&::-webkit-scrollbar-thumb': {
+                backgroundColor: 'rgba(143,150,165,0.45)',
+                borderRadius: 8,
+              },
+              '&::-webkit-scrollbar-track': { backgroundColor: 'transparent' },
+            }}
+          >
+            <Box component="header" sx={{ position: 'relative', pr: 5 }}>
+              <Typography sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 500, lineHeight: '20px' }}>
+                Join group
               </Typography>
               <Typography
-                component="span"
+                component="h2"
                 sx={{
-                  wordBreak: 'break-word',
-                  lineHeight: 1.3,
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 2,
+                  display: '-webkit-box',
+                  fontSize: 28,
+                  fontWeight: 700,
+                  letterSpacing: '-0.025em',
+                  lineHeight: '34px',
+                  mt: 1,
+                  overflow: 'hidden',
+                  overflowWrap: 'anywhere',
                 }}
               >
                 {selectedGroup.groupName}
               </Typography>
-            </DialogTitle>
-            <DialogContent sx={{ px: 2.5, pt: 3, pb: 2 }}>
-              <Spacer height="15px" />
-              {ownerLoading && (
-                <Stack
-                  direction="row"
-                  alignItems="center"
-                  spacing={1}
-                  sx={{
-                    mb: 2,
-                    py: 1.5,
-                    px: 2,
-                    borderRadius: 2,
-                    bgcolor: theme.palette.action.hover,
-                  }}
-                >
-                  <CircularProgress size={18} thickness={4} />
-                  <Typography variant="body2" color="text.secondary">
-                    {t('core:loading.generic', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                </Stack>
-              )}
-
-              {selectedGroup.isOpen === false && (
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    mb: 2,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  {t('group:message.generic.closed_group', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
+              <Box sx={{ alignItems: 'center', color: 'text.secondary', display: 'flex', fontSize: 14, lineHeight: '20px', mt: 1.25 }}>
+                {isSelectedGroupOpen ? (
+                  <PublicRoundedIcon sx={{ flexShrink: 0, fontSize: 17, mr: 1 }} />
+                ) : (
+                  <LockIcon sx={{ flexShrink: 0, fontSize: 17, mr: 1 }} />
+                )}
+                <Typography component="span" sx={{ fontSize: 14 }}>
+                  {isSelectedGroupOpen ? 'Public' : 'Private'}
                 </Typography>
-              )}
-
-              <Stack spacing={2}>
-                <Box>
-                  <Stack
-                    direction="row"
-                    alignItems="center"
-                    spacing={0.75}
-                    sx={{ mb: 1.5 }}
-                  >
-                    <DescriptionIcon
-                      sx={{
-                        fontSize: 18,
-                        color: theme.palette.text.secondary,
-                      }}
-                    />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontWeight: 600,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                        color: theme.palette.text.secondary,
-                      }}
-                    >
-                      {t('group:group.description', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                    </Typography>
-                  </Stack>
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      color: theme.palette.text.primary,
-                      lineHeight: 1.5,
-                      pl: 2.75,
-                    }}
-                  >
-                    {selectedGroup.description &&
-                    selectedGroup.description.trim() !== ''
-                      ? selectedGroup.description
-                      : '—'}
-                  </Typography>
-                </Box>
-
-                <Box>
-                  <Stack
-                    direction="row"
-                    alignItems="center"
-                    spacing={0.75}
-                    sx={{ mb: 0.5 }}
-                  >
-                    <GroupIcon
-                      sx={{
-                        fontSize: 18,
-                        color: theme.palette.text.secondary,
-                      }}
-                    />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontWeight: 600,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                        color: theme.palette.text.secondary,
-                      }}
-                    >
-                      {t('group:group.member_number', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                    </Typography>
-                  </Stack>
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      color: theme.palette.text.primary,
-                      pl: 2.75,
-                    }}
-                  >
-                    {selectedGroup.memberCount ?? 0}{' '}
-                    {t('group:group.member', {
-                      count: selectedGroup.memberCount ?? 0,
-                    })}
-                  </Typography>
-                </Box>
-
-                <Box>
-                  <Stack
-                    direction="row"
-                    alignItems="center"
-                    spacing={0.75}
-                    sx={{ mb: 1.5 }}
-                  >
-                    <PersonIcon
-                      sx={{
-                        fontSize: 18,
-                        color: theme.palette.text.secondary,
-                      }}
-                    />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontWeight: 600,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                        color: theme.palette.text.secondary,
-                      }}
-                    >
-                      {t('group:group.owner', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                    </Typography>
-                  </Stack>
-                  <Box sx={{ pl: 2.75 }}>
-                    {ownerLoading ? (
-                      <Stack spacing={0.75}>
-                        <Skeleton
-                          variant="text"
-                          width="40%"
-                          height={20}
-                          sx={{ bgcolor: theme.palette.action.hover }}
-                        />
-                        <Skeleton
-                          variant="text"
-                          width="90%"
-                          height={16}
-                          sx={{ bgcolor: theme.palette.action.hover }}
-                        />
-                      </Stack>
-                    ) : (
-                      <>
-                        {ownerPrimaryName && (
-                          <Typography
-                            variant="body2"
-                            sx={{
-                              fontWeight: 500,
-                              color: theme.palette.text.primary,
-                              mb: 0.25,
-                            }}
-                          >
-                            {ownerPrimaryName}
-                          </Typography>
-                        )}
-                        {ownerAddress && (
-                          <Stack
-                            direction="row"
-                            alignItems="center"
-                            spacing={0.5}
-                            flexWrap="wrap"
-                          >
-                            <Typography
-                              variant="body2"
-                              sx={{
-                                color: theme.palette.text.secondary,
-                                fontSize: '0.78rem',
-                                fontWeight: 600,
-                                letterSpacing: '-0.01em',
-                                wordBreak: 'break-all',
-                              }}
-                            >
-                              {ownerAddress}
-                            </Typography>
-                            <IconButton
-                              size="small"
-                              onClick={handleCopyAddress}
-                              aria-label={t('auth:action.copy_address', {
-                                postProcess: 'capitalizeFirstChar',
-                              })}
-                              sx={{
-                                color: theme.palette.text.secondary,
-                                '&:hover': {
-                                  color: theme.palette.primary.main,
-                                  bgcolor: theme.palette.action.selected,
-                                },
-                              }}
-                            >
-                              <ContentCopyIcon fontSize="small" />
-                            </IconButton>
-                          </Stack>
-                        )}
-                        {!ownerAddress && !ownerLoading && (
-                          <Typography variant="body2" color="text.secondary">
-                            —
-                          </Typography>
-                        )}
-                      </>
-                    )}
-                  </Box>
-                </Box>
-              </Stack>
-
-              <Divider sx={{ mt: 3.5, mb: 2 }} />
-
-              <LoadingButton
-                fullWidth
-                loading={isLoading}
-                loadingPosition="start"
-                variant="contained"
-                color="primary"
-                onClick={() =>
-                  handleJoinGroup(selectedGroup, isSelectedGroupOpen)
-                }
+                <Box component="span" sx={{ mx: 1 }}>•</Box>
+                <Typography component="span" sx={{ fontSize: 14 }}>
+                  {formatMemberCount(selectedGroupMemberCount)} {selectedGroupMemberCount === 1 ? 'member' : 'members'}
+                </Typography>
+              </Box>
+              <IconButton
+                aria-label="Close group preview"
+                onClick={handleCloseDialog}
                 sx={{
-                  py: 1.5,
-                  borderRadius: 2,
-                  textTransform: 'uppercase',
-                  fontWeight: 600,
-                  letterSpacing: '0.1em',
-                  fontSize: '0.8125rem',
-                  boxShadow: theme.shadows[2],
-                  '&:hover': {
-                    boxShadow: theme.shadows[4],
-                  },
+                  borderRadius: '8px',
+                  color: 'text.secondary',
+                  height: 34,
+                  position: 'absolute',
+                  right: -2,
+                  top: -2,
+                  width: 34,
+                  '&:hover': { backgroundColor: 'action.hover', color: 'text.primary' },
+                  '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 },
                 }}
               >
-                {t('group:action.join_group', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
+                <CloseRoundedIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Box>
+
+            <Divider sx={{ my: 2.75 }} />
+
+            <Box>
+              <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.125 }}>
+                <DescriptionIcon sx={{ color: 'primary.main', fontSize: 16 }} />
+                <Typography sx={{ color: 'text.secondary', fontSize: 12, fontWeight: 700, letterSpacing: '0.09em', lineHeight: '16px' }}>
+                  DESCRIPTION
+                </Typography>
+              </Box>
+              <Typography sx={{ color: 'text.primary', fontSize: 16, fontWeight: 400, letterSpacing: '-0.005em', lineHeight: '25px', mt: 1.5, overflowWrap: 'anywhere' }}>
+                {selectedGroup.description?.trim() || '—'}
+              </Typography>
+            </Box>
+
+            <Divider sx={{ my: 2.75 }} />
+
+            <Box>
+              <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.125 }}>
+                <GroupIcon sx={{ color: 'primary.main', fontSize: 16 }} />
+                <Typography sx={{ color: 'text.secondary', fontSize: 12, fontWeight: 700, letterSpacing: '0.09em', lineHeight: '16px' }}>
+                  MEMBERS
+                </Typography>
+              </Box>
+              <Box sx={{ alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.025)', border: `1px solid ${theme.palette.divider}`, borderRadius: '9px', display: 'inline-flex', height: 48, mt: 1.5, pl: 1.25, pr: 2 }}>
+                <Box sx={{ alignItems: 'center', backgroundColor: 'rgba(59,130,246,0.12)', border: '1px solid rgba(96,165,250,0.28)', borderRadius: '50%', color: 'primary.main', display: 'flex', height: 32, justifyContent: 'center', mr: 1.5, width: 32 }}>
+                  <GroupIcon sx={{ fontSize: 18 }} />
+                </Box>
+                <Typography sx={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', lineHeight: '20px' }}>
+                  {formatMemberCount(selectedGroupMemberCount)} {selectedGroupMemberCount === 1 ? 'member' : 'members'}
+                </Typography>
+              </Box>
+            </Box>
+
+            <Divider sx={{ my: 2.75 }} />
+
+            <Box>
+              <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.125 }}>
+                <PersonIcon sx={{ color: 'primary.main', fontSize: 16 }} />
+                <Typography sx={{ color: 'text.secondary', fontSize: 12, fontWeight: 700, letterSpacing: '0.09em', lineHeight: '16px' }}>
+                  OWNER
+                </Typography>
+              </Box>
+              <Box sx={{ alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.025)', border: `1px solid ${theme.palette.divider}`, borderRadius: '9px', columnGap: 1.5, display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) 34px', minHeight: 66, mt: 1.5, px: 1.5, py: 1.25 }}>
+                {ownerLoading ? (
+                  <Skeleton height={44} variant="circular" width={44} />
+                ) : (
+                  <Avatar src={selectedOwnerAvatarUrl} sx={{ backgroundColor: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', fontSize: 18, fontWeight: 600, height: 44, width: 44 }}>
+                    {String(selectedOwnerDisplayName).charAt(0).toUpperCase() || '?'}
+                  </Avatar>
+                )}
+                <Box sx={{ minWidth: 0 }}>
+                  {ownerLoading ? (
+                    <Stack spacing={0.4}>
+                      <Skeleton height={20} width="45%" />
+                      <Skeleton height={18} width="90%" />
+                    </Stack>
+                  ) : (
+                    <>
+                      <Typography noWrap sx={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', lineHeight: '20px' }}>
+                        {selectedOwnerDisplayName}
+                      </Typography>
+                      <Tooltip arrow title={ownerAddress || ''}>
+                        <Typography component="span" tabIndex={ownerAddress ? 0 : -1} sx={{ color: 'text.secondary', display: 'block', fontSize: 13, lineHeight: '18px', mt: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {ownerAddress || '—'}
+                        </Typography>
+                      </Tooltip>
+                    </>
+                  )}
+                </Box>
+                <Tooltip arrow title={ownerAddressCopied ? 'Copied' : 'Copy address'}>
+                  <span>
+                    <IconButton
+                      aria-label={ownerAddressCopied ? 'Address copied' : 'Copy owner address'}
+                      disabled={!ownerAddress || ownerLoading}
+                      onClick={handleCopyAddress}
+                      sx={{
+                        border: `1px solid ${theme.palette.divider}`,
+                        borderRadius: '8px',
+                        color: ownerAddressCopied ? 'success.main' : 'text.secondary',
+                        height: 34,
+                        width: 34,
+                        '&:hover': { backgroundColor: 'action.hover', color: ownerAddressCopied ? 'success.main' : 'primary.main' },
+                        '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 },
+                      }}
+                    >
+                      {ownerAddressCopied ? <CheckRoundedIcon sx={{ fontSize: 17 }} /> : <ContentCopyIcon sx={{ fontSize: 17 }} />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Box>
+            </Box>
+
+            <Box sx={{ mt: 3 }}>
+              {joinError ? (
+                <Typography role="alert" sx={{ color: 'error.main', fontSize: 13, lineHeight: '18px', mb: 1 }}>
+                  {joinError}
+                </Typography>
+              ) : null}
+              <LoadingButton
+                aria-label={`${isSelectedGroupOpen ? 'Join' : 'Apply to join'} ${selectedGroup.groupName}`}
+                disabled={isSelectedGroupJoined || Boolean(joiningGroupId)}
+                fullWidth
+                loading={isLoading && joiningGroupId === String(selectedGroup.groupId)}
+                onClick={() => handleJoinGroup(selectedGroup, isSelectedGroupOpen)}
+                sx={{
+                  background: isSelectedGroupJoined ? theme.palette.action.selected : 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)',
+                  border: `1px solid ${isSelectedGroupJoined ? theme.palette.divider : '#5ea2ff'}`,
+                  borderRadius: '9px',
+                  boxShadow: isSelectedGroupJoined ? 'none' : '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)',
+                  color: isSelectedGroupJoined ? 'text.secondary' : '#ffffff',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  height: 46,
+                  letterSpacing: '0.01em',
+                  lineHeight: 1,
+                  textTransform: 'none',
+                  '&:hover': { background: isSelectedGroupJoined ? theme.palette.action.selected : 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)', borderColor: isSelectedGroupJoined ? theme.palette.divider : '#78b1ff' },
+                  '&:active': { background: isSelectedGroupJoined ? theme.palette.action.selected : '#2b63c5', boxShadow: 'none' },
+                  '&:focus-visible': { outline: '2px solid #93c5fd', outlineOffset: 2 },
+                  '&.Mui-disabled': { color: isSelectedGroupJoined ? theme.palette.text.secondary : '#ffffff', opacity: isSelectedGroupJoined ? 0.72 : 0.5 },
+                }}
+              >
+                {isSelectedGroupJoined
+                  ? 'Joined'
+                  : isSelectedGroupOpen
+                    ? 'Join Group'
+                    : 'Apply to Join'}
               </LoadingButton>
-            </DialogContent>
-          </>
+            </Box>
+          </DialogContent>
         )}
       </Dialog>
 
@@ -916,46 +911,59 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
           display: 'flex',
           flexDirection: 'column',
           flexGrow: 1,
-          gap: 2,
+          gap: 1.5,
           minHeight: 0,
         }}
       >
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.35 }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
           <TextField
+            inputProps={{ 'aria-label': 'Search groups by name' }}
             placeholder="Search by group name"
             variant="outlined"
             fullWidth
             value={inputValue}
             onChange={handleChange}
             InputProps={{
-              startAdornment: <InputAdornment position="start"><SearchRoundedIcon sx={{ color: 'text.secondary', fontSize: 20 }} /></InputAdornment>,
+              startAdornment: <InputAdornment position="start"><SearchRoundedIcon sx={{ color: 'text.secondary', fontSize: 18, mr: 0.5 }} /></InputAdornment>,
               endAdornment: inputValue ? <InputAdornment position="end"><IconButton aria-label="Clear search" onClick={() => setInputValue('')} size="small"><CloseRoundedIcon fontSize="small" /></IconButton></InputAdornment> : undefined,
             }}
             sx={{
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px',
-                bgcolor: theme.palette.background.paper,
-                fontSize: 16,
-                minHeight: 48,
-                px: 1.25,
+                borderRadius: '9px',
+                bgcolor: '#0D0F14',
+                color: 'text.primary',
+                fontSize: 15,
+                height: 44,
+                letterSpacing: '-0.005em',
+                px: 2,
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'rgba(255,255,255,0.16)',
+                },
                 '&:hover .MuiOutlinedInput-notchedOutline': {
-                  borderColor: theme.palette.action.hover,
+                  borderColor: 'rgba(255,255,255,0.24)',
                 },
                 '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                  borderWidth: 2,
+                  borderColor: '#2563eb',
+                  borderWidth: 1,
                 },
               },
             }}
           />
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
-            {[
-              { icon: <WhatshotRoundedIcon sx={{ fontSize: 20 }} />, label: 'Popular', selected: sortMode === 'popular', onClick: () => setSortMode('popular') },
-              { icon: <ScheduleRoundedIcon sx={{ fontSize: 20 }} />, label: 'Newest', selected: sortMode === 'newest', onClick: () => setSortMode('newest') },
-              { icon: <PublicRoundedIcon sx={{ fontSize: 20 }} />, label: 'Open', selected: showOpen, onClick: () => setShowOpen((current) => !current) },
-              { icon: <LockIcon sx={{ fontSize: 20 }} />, label: 'Private', selected: showPrivate, onClick: () => setShowPrivate((current) => !current) },
-            ].map((filter) => (
-              <ButtonBase aria-pressed={filter.selected} key={filter.label} onClick={filter.onClick} sx={{ backgroundColor: filter.selected ? 'primary.main' : 'transparent', border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '8px', color: filter.selected ? 'primary.contrastText' : 'text.secondary', fontSize: 15, fontWeight: 600, gap: 0.9, height: 42, minWidth: 120, px: 1.6, '&:hover': { backgroundColor: filter.selected ? 'primary.dark' : theme.palette.action.hover } }}>{filter.icon}{filter.label}</ButtonBase>
-            ))}
+          <Box sx={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 1.25 }}>
+              {[
+                { icon: <EmojiEventsRoundedIcon sx={{ fontSize: 17 }} />, label: 'Top', selected: sortMode === 'top', onClick: () => handleSortChange('top') },
+                { icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />, label: 'Active', selected: sortMode === 'active', onClick: () => handleSortChange('active') },
+                { icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />, label: 'Newest', selected: sortMode === 'newest', onClick: () => handleSortChange('newest') },
+                { icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />, label: 'Largest', selected: sortMode === 'largest', onClick: () => handleSortChange('largest') },
+              ].map((filter) => (
+                <ButtonBase aria-pressed={filter.selected} key={filter.label} onClick={filter.onClick} sx={{ backgroundColor: filter.selected ? 'primary.main' : 'transparent', border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: filter.selected ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: filter.selected ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 } }}>{filter.icon}{filter.label}</ButtonBase>
+              ))}
+              <ButtonBase aria-pressed={showOpen} onClick={() => setShowOpen((current) => !current)} sx={{ backgroundColor: showOpen ? 'primary.main' : 'transparent', border: `1px solid ${showOpen ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: showOpen ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: showOpen ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 } }}><PublicRoundedIcon sx={{ fontSize: 17 }} />Open</ButtonBase>
+              <Tooltip arrow title={privateFilterExplanation}>
+                <span style={{ display: 'inline-flex' }}>
+                  <ButtonBase aria-pressed={showPrivate} disabled={privateFilterDisabled} onClick={() => setShowPrivate((current) => !current)} sx={{ backgroundColor: showPrivate ? 'primary.main' : 'transparent', border: `1px solid ${showPrivate ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: showPrivate ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: showPrivate ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 }, '&.Mui-disabled': { borderColor: theme.palette.divider, color: theme.palette.text.disabled, opacity: 0.58 } }}><LockIcon sx={{ fontSize: 17 }} />Private</ButtonBase>
+                </span>
+              </Tooltip>
           </Box>
         </Box>
 
@@ -965,12 +973,35 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
             width: '100%',
             flexGrow: 1,
             minHeight: 0,
+            backgroundColor: '#14171D',
+            border: '1px solid rgba(255,255,255,0.075)',
+            borderRadius: '10px',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
           }}
         >
-          <Box sx={{ alignItems: 'center', borderBottom: `1px solid ${theme.palette.divider}`, display: 'flex', justifyContent: 'space-between', mb: 0 }}>
-            <Typography sx={{ fontSize: 18, fontWeight: 750, lineHeight: '25px', pb: 1.1 }}>Groups</Typography>
-            <Typography sx={{ color: 'text.secondary', fontSize: 13, pb: 1.1 }}>{sortMode === 'popular' ? 'Sorted by Server Level' : 'Sorted by newest'}</Typography>
+          <Box sx={{ alignItems: 'center', backgroundColor: '#171A22', borderBottom: '1px solid rgba(255,255,255,0.075)', boxSizing: 'border-box', display: 'flex', flexShrink: 0, height: 44, justifyContent: 'space-between', px: 2 }}>
+            <Typography sx={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: '21px' }}>Groups</Typography>
+            <Typography sx={{ color: 'text.secondary', fontSize: 13.5, fontWeight: 500 }}>{sortDescription}</Typography>
           </Box>
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              '& .ReactVirtualized__List': {
+                scrollbarColor: 'rgba(143,150,165,0.62) transparent',
+                scrollbarGutter: 'stable',
+                scrollbarWidth: 'thin',
+                '&::-webkit-scrollbar': { width: 6 },
+                '&::-webkit-scrollbar-thumb': {
+                  backgroundColor: 'rgba(143,150,165,0.62)',
+                  borderRadius: 8,
+                },
+                '&::-webkit-scrollbar-track': { backgroundColor: 'transparent' },
+              },
+            }}
+          >
           {groupsLoading ? (
             <Stack
               alignItems="center"
@@ -1019,6 +1050,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               )}
             </AutoSizer>
           )}
+          </Box>
         </Box>
       </Box>
     </>

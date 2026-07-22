@@ -26,6 +26,8 @@ import { getBaseApiReact, QORTAL_APP_CONTEXT } from '../App';
 import { getFee } from '../background/background.ts';
 import { QORTAL_PROTOCOL } from '../constants/constants.ts';
 import { CustomizedSnackbars } from './Snackbar/Snackbar';
+import { GroupScoreBadge } from './Group/ReticulumGroupLevel';
+import { useReticulumGroupScore } from './Group/reticulumGroupScore';
 
 export const CustomStyledMenu = styled(Menu, {
   shouldForwardProp: (prop) => prop !== 'reticulumMenu',
@@ -63,6 +65,22 @@ export const CustomStyledMenu = styled(Menu, {
     },
   },
 }));
+
+const ReticulumMenuGroupScore = ({
+  groupId,
+  isPublic,
+}: {
+  groupId?: string | number;
+  isPublic: boolean;
+}) => {
+  const score = useReticulumGroupScore(groupId, isPublic);
+  if (!score) return null;
+  return (
+    <Box sx={{ px: 0.15, pt: 0.25 }}>
+      <GroupScoreBadge score={score} size="menu" />
+    </Box>
+  );
+};
 
 export const ContextMenu = ({
   children,
@@ -524,6 +542,12 @@ export const ContextMenu = ({
               About Group
             </Typography>
           </MenuItem>
+        )}
+        {reticulumGroup && isMenuOpen && !isClosedGroup && (
+          <ReticulumMenuGroupScore
+            groupId={displayedGroupInfo.groupId}
+            isPublic
+          />
         )}
         {reticulumGroup && showGroupInfo && (
           <>

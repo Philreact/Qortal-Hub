@@ -3494,6 +3494,17 @@ ipcMain.handle('reticulumChat:getPublicGroupActivity', async () => {
   return manager?.getPublicGroupActivitySummaries() ?? [];
 });
 
+ipcMain.handle('reticulumChat:getPublicGroupActivitySnapshot', async () => {
+  const manager = getReticulumChatManager();
+  return (
+    manager?.getPublicGroupActivitySnapshot() ?? {
+      availableGroupIds: [],
+      observedAt: Date.now(),
+      summaries: [],
+    }
+  );
+});
+
 ipcMain.handle(
   'reticulumChat:setLocalDmAddresses',
   async (_event, addresses: string[]) => {

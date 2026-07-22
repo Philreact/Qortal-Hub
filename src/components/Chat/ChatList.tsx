@@ -129,10 +129,6 @@ export const ChatList = ({
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<
     number | null
   >(null);
-  const [initialUnreadPrompt, setInitialUnreadPrompt] = useState<{
-    count: number;
-    firstIndex: number;
-  } | null>(null);
   const [reticulumUnreadBoundaryIndex, setReticulumUnreadBoundaryIndex] =
     useState<number | null>(null);
   const hasLoadedInitialRef = useRef(false);
@@ -150,9 +146,7 @@ export const ChatList = ({
   const previousMessageCountRef = useRef(0);
   const reticulumUnreadPromptShownRef = useRef(false);
   const pendingInitialReticulumBottomRef = useRef(false);
-  const reticulumUnreadPromptTimeoutRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
+  const pendingInitialReticulumUnreadIndexRef = useRef<number | null>(null);
 
   const chatIdentity = useMemo(() => {
     if (chatId != null) {
@@ -287,11 +281,7 @@ export const ChatList = ({
     previousMessageCountRef.current = 0;
     reticulumUnreadPromptShownRef.current = false;
     pendingInitialReticulumBottomRef.current = false;
-    if (reticulumUnreadPromptTimeoutRef.current) {
-      window.clearTimeout(reticulumUnreadPromptTimeoutRef.current);
-      reticulumUnreadPromptTimeoutRef.current = null;
-    }
-    setInitialUnreadPrompt(null);
+    pendingInitialReticulumUnreadIndexRef.current = null;
     setReticulumUnreadBoundaryIndex(null);
     clearScrollRetries();
   }, [chatIdentity, clearScrollRetries]);
@@ -498,11 +488,32 @@ export const ChatList = ({
           },
           []
         );
-        const shouldShowInitialReticulumUnreadPrompt =
+        const shouldAcknowledgeInitialReticulumUnread =
           reticulumChatEnabled &&
           !reticulumUnreadPromptShownRef.current &&
           initialReticulumUnreadCount > 0 &&
           initialReticulumUnreadIndexes.length > 0;
+        const firstReticulumUnreadIndex =
+          shouldAcknowledgeInitialReticulumUnread
+            ? initialReticulumUnreadIndexes[
+                Math.max(
+                  0,
+                  initialReticulumUnreadIndexes.length -
+                    initialReticulumUnreadCount
+                )
+              ]
+            : null;
+
+        if (
+          typeof firstReticulumUnreadIndex === 'number' &&
+          Number.isInteger(firstReticulumUnreadIndex)
+        ) {
+          reticulumUnreadPromptShownRef.current = true;
+          pendingInitialReticulumUnreadIndexRef.current =
+            firstReticulumUnreadIndex;
+          setReticulumUnreadBoundaryIndex(firstReticulumUnreadIndex);
+          onReticulumUnreadAcknowledged?.();
+        }
 
         const hasUnreadMessages = totalMessages.some(
           (msg) =>
@@ -524,7 +535,7 @@ export const ChatList = ({
           if (!atBottom && hasUnreadMessages) {
             setShowScrollButton(hasUnreadMessages);
             setShowScrollDownButton(false);
-          } else if (!shouldShowInitialReticulumUnreadPrompt) {
+          } else {
             handleMessageSeen();
           }
         }
@@ -542,33 +553,14 @@ export const ChatList = ({
               ? findDivideIndex
               : undefined;
           if (reticulumChatEnabled) {
-            // Wait for the virtualizer to receive the new rows. Scrolling while
-            // it still has the previous row count is what left a channel midway.
-            pendingInitialReticulumBottomRef.current = true;
+            // Wait for the virtualizer to receive the new rows. Unread channels
+            // land at their first unread row; read channels land at the end.
+            pendingInitialReticulumBottomRef.current =
+              pendingInitialReticulumUnreadIndexRef.current === null;
           } else {
             scrollToBottom(totalMessages, divideIndex, true);
           }
           hasLoadedInitialRef.current = true;
-        }
-
-        if (shouldShowInitialReticulumUnreadPrompt) {
-          reticulumUnreadPromptShownRef.current = true;
-          reticulumUnreadPromptTimeoutRef.current = window.setTimeout(() => {
-            reticulumUnreadPromptTimeoutRef.current = null;
-            const firstUnreadIndex =
-              initialReticulumUnreadIndexes[
-                Math.max(
-                  0,
-                  initialReticulumUnreadIndexes.length -
-                    initialReticulumUnreadCount
-                )
-              ];
-            if (!Number.isInteger(firstUnreadIndex)) return;
-            setInitialUnreadPrompt({
-              count: initialReticulumUnreadCount,
-              firstIndex: firstUnreadIndex,
-            });
-          }, 160);
         }
       },
       reticulumChatEnabled ? 100 : 500
@@ -582,6 +574,7 @@ export const ChatList = ({
     initialMessages,
     isPinnedToBottom,
     myAddress,
+    onReticulumUnreadAcknowledged,
     reticulumChatEnabled,
     reticulumUnreadCount,
     tempMessages,
@@ -636,15 +629,24 @@ export const ChatList = ({
   useEffect(() => {
     if (
       !reticulumChatEnabled ||
-      !pendingInitialReticulumBottomRef.current ||
       messages.length === 0
     ) {
       return;
     }
 
+    const unreadIndex = pendingInitialReticulumUnreadIndexRef.current;
+    if (typeof unreadIndex === 'number' && Number.isInteger(unreadIndex)) {
+      pendingInitialReticulumUnreadIndexRef.current = null;
+      pendingInitialReticulumBottomRef.current = false;
+      scrollToIndexAfterMeasurements(unreadIndex, 'start', [50, 150]);
+      return;
+    }
+
+    if (!pendingInitialReticulumBottomRef.current) return;
+
     pendingInitialReticulumBottomRef.current = false;
     scrollToBottom(undefined, undefined, false, true);
-  }, [messages, reticulumChatEnabled]);
+  }, [messages, reticulumChatEnabled, scrollToIndexAfterMeasurements]);
 
   const handleMessageSeen = useCallback(() => {
     setMessages((prevMessages) =>
@@ -656,39 +658,6 @@ export const ChatList = ({
     setShowScrollButton(false);
     lastSeenUnreadMessageTimestamp.current = Date.now();
   }, []);
-
-  const startReadingInitialUnreadMessages = useCallback(() => {
-    if (!initialUnreadPrompt) return;
-    const firstUnreadIndex = initialUnreadPrompt.firstIndex;
-    const firstUnreadIsVisible = rowVirtualizer
-      .getVirtualItems()
-      .some((item) => item.index === firstUnreadIndex);
-    if (!firstUnreadIsVisible) {
-      // The list is already settled when the reader presses the prompt. A
-      // single targeted move avoids fighting dynamic row measurement.
-      clearScrollRetries();
-      window.requestAnimationFrame(() => {
-        rowVirtualizer.scrollToIndex(firstUnreadIndex, { align: 'start' });
-      });
-    }
-    if (highlightTimeoutRef.current) {
-      clearTimeout(highlightTimeoutRef.current);
-    }
-    setReticulumUnreadBoundaryIndex(firstUnreadIndex);
-    setHighlightedMessageIndex(firstUnreadIndex);
-    highlightTimeoutRef.current = setTimeout(() => {
-      setHighlightedMessageIndex(null);
-      setReticulumUnreadBoundaryIndex(null);
-      highlightTimeoutRef.current = null;
-    }, 5000);
-    setInitialUnreadPrompt(null);
-    onReticulumUnreadAcknowledged?.();
-  }, [
-    clearScrollRetries,
-    initialUnreadPrompt,
-    onReticulumUnreadAcknowledged,
-    rowVirtualizer,
-  ]);
 
   const sentNewMessageGroupFunc = useCallback(() => {
     // Reticulum follows locally-authored messages from the state update above.
@@ -894,35 +863,6 @@ export const ChatList = ({
           width: '100%',
         }}
       >
-        {initialUnreadPrompt && (
-          <Button
-            onClick={startReadingInitialUnreadMessages}
-            sx={{
-              backgroundColor: 'rgba(21, 24, 29, 0.94)',
-              border: `1px solid ${theme.palette.divider}`,
-              borderRadius: '0 0 8px 8px',
-              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.28)',
-              color: theme.palette.text.primary,
-              fontSize: '12px',
-              fontWeight: 600,
-              left: '50%',
-              minHeight: 30,
-              px: 1.5,
-              position: 'absolute',
-              textTransform: 'none',
-              top: 0,
-              transform: 'translateX(-50%)',
-              zIndex: 12,
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-              },
-            }}
-          >
-            {initialUnreadPrompt.count} unread message
-            {initialUnreadPrompt.count === 1 ? '' : 's'}. See what you've
-            missed...
-          </Button>
-        )}
         <Box
           ref={parentRef}
           onScroll={handleScroll}
