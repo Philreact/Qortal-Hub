@@ -67,7 +67,7 @@ _rns_callback_scheduler_monitor_thread: Optional[threading.Thread] = None
 _audio_rtt_monitor_thread: Optional[threading.Thread] = None
 _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.MDU))
 # Grep logs for this string to confirm the rebuilt script is running (sync with GC_RETICULUM_WIRE_BUILD_MARKER in group-call-wire-reticulum.ts).
-PRESENCE_BRIDGE_BUILD = "wire398-qortalland-proximity-voice-auth-v3"
+PRESENCE_BRIDGE_BUILD = "wire399-qortalland-proximity-audio-quality-v1"
 
 # Peer cache: must match TS base58 in electron/src/presence.ts (Qortal alphabet).
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"

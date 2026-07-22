@@ -40,6 +40,10 @@ type Options = {
 
 const HEADER_BYTES = 26;
 const MAGIC = [0x51, 0x4c, 0x41, 0x31] as const;
+const PROXIMITY_OPUS_BITRATE = 24_000;
+const PROXIMITY_CONGESTED_OPUS_BITRATE = 16_000;
+const OPEN_MIC_VAD_HANGOVER_MS = 320;
+const PROXIMITY_AUDIO_PROFILE = 'high-stability' as const;
 
 const isExpectedCapability = (
   value: unknown,
@@ -133,6 +137,8 @@ export function useQortalLandProximityVoice(options: Options) {
   const modeRef = useRef(mode);
   const pttHeldRef = useRef(false);
   const vadRef = useRef(false);
+  const vadHangoverUntilRef = useRef(0);
+  const advertisedTransmitRef = useRef(false);
   const suspendedRef = useRef(suspended);
   const generationRef = useRef(1);
   const sequenceRef = useRef(0);
@@ -165,6 +171,8 @@ export function useQortalLandProximityVoice(options: Options) {
 
   const updateTransmit = useCallback((next: boolean) => {
     const allowed = next && optedInRef.current && !suspendedRef.current && qortalLandRealtime.isReady();
+    if (advertisedTransmitRef.current === allowed) return;
+    advertisedTransmitRef.current = allowed;
     setTransmitting(allowed);
     try { send('SET_PROXIMITY_TRANSMIT', { transmitting: allowed, mode: modeRef.current }); } catch { /* reconnecting */ }
   }, [send]);
@@ -173,22 +181,34 @@ export function useQortalLandProximityVoice(options: Options) {
     if (!senderRef.current) senderRef.current = new GroupCallAudioSenderEngine();
     if (!receiverRef.current) receiverRef.current = new GroupCallAudioReceiveEngine(() => {});
     const sender = senderRef.current;
-    sender.setOpusBitrate(16_000);
     try {
-      await receiverRef.current.configure({ outputDeviceId: outputDeviceId || null, hearCall: true, profile: 'low-latency' });
+      await receiverRef.current.configure({
+        outputDeviceId: outputDeviceId || null,
+        hearCall: true,
+        profile: PROXIMITY_AUDIO_PROFILE,
+      });
       receiverRef.current.setMasterVolume(masterVolume);
       await sender.startOrUpdate({
         inputDeviceId: inputDeviceId || null,
         outputDeviceId: outputDeviceId || null,
         muted: false,
-        profile: 'low-latency',
+        profile: PROXIMITY_AUDIO_PROFILE,
         onVadChanged: (vad) => {
           vadRef.current = vad;
-          const wantsAudio = modeRef.current === 'open-mic' ? vad : pttHeldRef.current && vad;
+          if (vad) vadHangoverUntilRef.current = Date.now() + OPEN_MIC_VAD_HANGOVER_MS;
+          // PTT is already an explicit speech gate. Applying frame-level VAD on top
+          // clips quiet syllables and consonants and repeatedly starves the jitter buffer.
+          const wantsAudio = modeRef.current === 'open-mic'
+            ? vad || Date.now() < vadHangoverUntilRef.current
+            : pttHeldRef.current;
           updateTransmit(wantsAudio);
         },
         onEncodedFrame: ({ opusFrame, vad }) => {
-          const wantsAudio = modeRef.current === 'open-mic' ? vad : pttHeldRef.current && vad;
+          if (vad) vadHangoverUntilRef.current = Date.now() + OPEN_MIC_VAD_HANGOVER_MS;
+          const wantsAudio = modeRef.current === 'open-mic'
+            ? vad || Date.now() < vadHangoverUntilRef.current
+            : pttHeldRef.current;
+          updateTransmit(wantsAudio);
           if (!wantsAudio || !optedInRef.current || suspendedRef.current || opusFrame.byteLength > 320) return;
           try {
             sequenceRef.current = (sequenceRef.current + 1) >>> 0;
@@ -196,6 +216,9 @@ export function useQortalLandProximityVoice(options: Options) {
           } catch { /* realtime reconnect owns recovery */ }
         },
       });
+      // startOrUpdate resets encoder overrides when it rebuilds capture, so apply
+      // the proximity budget only after the new encoder is live.
+      sender.setOpusBitrate(PROXIMITY_OPUS_BITRATE);
       audioFailureStateRef.current = null;
       const available = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
       setDevices(available.filter((device) => device.kind === 'audioinput' || device.kind === 'audiooutput'));
@@ -249,6 +272,7 @@ export function useQortalLandProximityVoice(options: Options) {
     audioFailureStateRef.current = null;
     optedInRef.current = false;
     pttHeldRef.current = false;
+    vadHangoverUntilRef.current = 0;
     updateTransmit(false);
     try { send('DISABLE_PROXIMITY_VOICE'); } catch { /* already disconnected */ }
     await senderRef.current?.stop();
@@ -270,7 +294,7 @@ export function useQortalLandProximityVoice(options: Options) {
     setModeState(next);
     localStorage.setItem(`qortalland:proximity:mode:${address}`, next);
     if (next === 'push-to-talk') updateTransmit(false);
-    else updateTransmit(vadRef.current);
+    else updateTransmit(vadRef.current || Date.now() < vadHangoverUntilRef.current);
   }, [address, updateTransmit]);
 
   const setPttKey = useCallback((key: string) => {
@@ -389,12 +413,16 @@ export function useQortalLandProximityVoice(options: Options) {
         if (typeof event.streamGeneration === 'number') generationRef.current = event.streamGeneration;
         setState(next === 'off' && audioFailureStateRef.current ? audioFailureStateRef.current : next);
         if (next === 'ready') {
-          updateTransmit(modeRef.current === 'open-mic' ? vadRef.current : pttHeldRef.current && vadRef.current);
+          updateTransmit(modeRef.current === 'open-mic'
+            ? vadRef.current || Date.now() < vadHangoverUntilRef.current
+            : pttHeldRef.current);
         }
         return;
       }
       if (event.type === 'PROXIMITY_TRANSPORT_STATS') {
-        senderRef.current?.setOpusBitrate(event.capacityReduced === true ? 12_000 : 16_000);
+        senderRef.current?.setOpusBitrate(
+          event.capacityReduced === true ? PROXIMITY_CONGESTED_OPUS_BITRATE : PROXIMITY_OPUS_BITRATE
+        );
         return;
       }
       if (event.type === 'PROXIMITY_SNAPSHOT') {
@@ -577,7 +605,7 @@ export function useQortalLandProximityVoice(options: Options) {
       if (modeRef.current !== 'push-to-talk' || event.repeat || isTypingTarget(event.target)) return;
       if (event.key.toLowerCase() !== pttKey) return;
       pttHeldRef.current = true;
-      updateTransmit(vadRef.current);
+      updateTransmit(true);
     };
     const up = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== pttKey) return;

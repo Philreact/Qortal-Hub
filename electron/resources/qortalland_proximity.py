@@ -144,13 +144,14 @@ class QortalLandProximityVoiceManager:
         self.visible_capacity_peers: set[str] = set()
         self.last_discovery_at = 0.0
         self.last_stats_at = 0.0
+        self.last_media_log_at = 0.0
         self.capacity_reduced_until = 0.0
         self.renderer_lost_at: Optional[float] = None
         self.diagnostic_last: Dict[str, float] = {}
         self.stats = {
             "localFrames": 0, "sentFrames": 0, "receivedFrames": 0,
             "staleDrops": 0, "queueDrops": 0, "invalidFrames": 0,
-            "linkFailures": 0,
+            "duplicateDrops": 0, "sequenceSkips": 0, "linkFailures": 0,
         }
 
     def _trace(self, stage: str, address: str = "", code: str = "", throttle: float = 0.0) -> None:
@@ -1045,13 +1046,15 @@ class QortalLandProximityVoiceManager:
                 seen = state.setdefault("rxSeenSequences", set())
                 maximum = int(state.get("rxMaxSequence") or 0)
                 if sequence in seen:
-                    self.stats["invalidFrames"] += 1
+                    self.stats["duplicateDrops"] += 1
                     return
                 if maximum > sequence and maximum - sequence > 32:
                     self.stats["staleDrops"] += 1
                     return
                 seen.add(sequence)
                 if sequence > maximum:
+                    if maximum >= 0 and sequence > maximum + 1:
+                        self.stats["sequenceSkips"] += sequence - maximum - 1
                     maximum = sequence
                     state["rxMaxSequence"] = sequence
                 state["rxSeenSequences"] = {item for item in seen if maximum - item <= 32}
@@ -1183,9 +1186,22 @@ class QortalLandProximityVoiceManager:
             self.last_stats_at = now
             self.emit("PROXIMITY_TRANSPORT_STATS", {
                 "stats": dict(self.stats),
-                "bitrate": 12000 if now < self.capacity_reduced_until else 16000,
+                "bitrate": 16000 if now < self.capacity_reduced_until else 24000,
                 "capacityReduced": now < self.capacity_reduced_until,
             })
+        if self.enabled and now - self.last_media_log_at >= 15 and (
+            self.stats["localFrames"] or self.stats["receivedFrames"]
+        ):
+            self.last_media_log_at = now
+            self.log(
+                "[qortalland-proximity] stage=media_stats "
+                f"peers={sum(1 for state in self.links.values() if state.get('authenticated'))} "
+                f"local={self.stats['localFrames']} sent={self.stats['sentFrames']} "
+                f"received={self.stats['receivedFrames']} skips={self.stats['sequenceSkips']} "
+                f"duplicates={self.stats['duplicateDrops']} stale={self.stats['staleDrops']} "
+                f"queueDrops={self.stats['queueDrops']} invalid={self.stats['invalidFrames']} "
+                f"linkFailures={self.stats['linkFailures']}"
+            )
         for nonce, used_at in list(self.used_link_nonces.items()):
             if now - used_at > 300:
                 self.used_link_nonces.pop(nonce, None)
