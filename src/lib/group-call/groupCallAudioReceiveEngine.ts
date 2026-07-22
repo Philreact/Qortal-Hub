@@ -647,6 +647,10 @@ export interface GroupCallAudioReceiveEngineConfig {
   hearCall: boolean;
   profile: GroupCallAudioQualityProfile;
   postFailoverRootHoldUntilMs: number;
+  /** Optional pitch-safe lower rate bound for transports with bursty delivery. */
+  minimumPlayoutRate?: number;
+  /** Optional per-source playout target floor in milliseconds. */
+  minimumTargetPlayoutMs?: number;
 }
 
 export class GroupCallAudioReceiveEngine {
@@ -3276,6 +3280,8 @@ export class GroupCallAudioReceiveEngine {
     await playout.start(ctx, sourceAddr, output, {
       metricsRef: this.metricsRef,
       profile: this.config.profile,
+      minimumPlayoutRate: this.config.minimumPlayoutRate,
+      minimumTargetPlayoutMs: this.config.minimumTargetPlayoutMs,
       getActiveSourceCount: () => this.playouts.size,
       afterDrain: ({ missedFramesThisTick }) => {
         if (missedFramesThisTick > 0) {

@@ -44,6 +44,10 @@ const PROXIMITY_OPUS_BITRATE = 24_000;
 const PROXIMITY_CONGESTED_OPUS_BITRATE = 16_000;
 const OPEN_MIC_VAD_HANGOVER_MS = 320;
 const PROXIMITY_AUDIO_PROFILE = 'high-stability' as const;
+// Reticulum proximity media arrives in short bursts. Keep a little more audio
+// in reserve and prevent the PCM playout fallback from audibly lowering pitch.
+const PROXIMITY_MINIMUM_PLAYOUT_RATE = 0.985;
+const PROXIMITY_MINIMUM_TARGET_PLAYOUT_MS = 160;
 const INBOUND_MICROBATCH_MAX_FRAMES = 8;
 const INBOUND_MICROBATCH_WAIT_MS = 6;
 
@@ -188,6 +192,8 @@ export function useQortalLandProximityVoice(options: Options) {
         outputDeviceId: outputDeviceId || null,
         hearCall: true,
         profile: PROXIMITY_AUDIO_PROFILE,
+        minimumPlayoutRate: PROXIMITY_MINIMUM_PLAYOUT_RATE,
+        minimumTargetPlayoutMs: PROXIMITY_MINIMUM_TARGET_PLAYOUT_MS,
       });
       receiverRef.current.setMasterVolume(masterVolume);
       await sender.startOrUpdate({
