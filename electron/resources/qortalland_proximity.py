@@ -778,8 +778,8 @@ class QortalLandProximityVoiceManager:
             position = self.remote_positions.get(address) or {}
             state = {
                 "address": address, "peerHash": str(position.get("peerHash") or ""),
-                "distance": self._distance_to(address), "phase": "connected", "link": link,
-                "linkId": bytes(self.link_id_bytes(link) or b""), "authenticated": True,
+                "distance": self._distance_to(address), "phase": "authenticating", "link": link,
+                "linkId": bytes(self.link_id_bytes(link) or b""), "authenticated": False,
                 "createdAt": time.time(), "lastActivity": time.time(), "muted": False,
                 "volume": 1.0, "sourceId": self._source_id(address), "txSequence": 0,
                 "remoteCapabilityHash": hello["c"], "nonce": hello["n"],
@@ -798,6 +798,8 @@ class QortalLandProximityVoiceManager:
                 "ts": int(time.time() * 1000),
             }
             accept["z"] = self.ephemeral_private.sign(umsgpack.packb(accept))
+            state["authAccept"] = accept
+            state["lastAuthAccept"] = time.time()
             self._send_control(state, accept)
             self._emit_peer(address, state)
         except Exception:
@@ -918,6 +920,23 @@ class QortalLandProximityVoiceManager:
                     )
                 except Exception:
                     return
+                state["authenticated"] = True
+                state["phase"] = "connected"
+                self.link_retry.pop(state["address"], None)
+                self._send_control(state, {
+                    "c": "auth_ack", "l": state["linkId"], "n": state["nonce"],
+                })
+                self._emit_peer(state["address"], state)
+            elif command == "auth_ack":
+                if (
+                    set(control.keys()) != {"v", "ts", "c", "l", "n"}
+                    or control.get("l") != state.get("linkId")
+                    or control.get("n") != state.get("nonce")
+                    or not state.get("authAccept")
+                ):
+                    return
+                state.pop("authAccept", None)
+                state.pop("lastAuthAccept", None)
                 state["authenticated"] = True
                 state["phase"] = "connected"
                 self.link_retry.pop(state["address"], None)
@@ -1144,6 +1163,15 @@ class QortalLandProximityVoiceManager:
                 self._schedule_retry(address)
                 self._close_peer(address, "establishment_timeout")
                 continue
+            if (
+                not state.get("authenticated") and state.get("authAccept")
+                and now - float(state.get("lastAuthAccept") or 0) >= 1.0
+            ):
+                try:
+                    state["lastAuthAccept"] = now
+                    self._send_control(state, state["authAccept"])
+                except Exception:
+                    self.stats["linkFailures"] += 1
             if state.get("authenticated") and now - float(state.get("lastSend") or 0) >= HEARTBEAT_INTERVAL:
                 try:
                     state["pingAt"] = now

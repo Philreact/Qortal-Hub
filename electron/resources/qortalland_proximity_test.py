@@ -3,6 +3,7 @@ import time
 import unittest
 
 import RNS
+from RNS.vendor import umsgpack
 
 from presence_bridge import (
     _MAX_ENCRYPTED_WIRE_BYTES,
@@ -11,6 +12,7 @@ from presence_bridge import (
 )
 from qortalland_games import _b58encode, canonical_bytes, derive_qortal_address, verify_signature, _b58decode
 from qortalland_proximity import (
+    CONTROL_MAGIC,
     LINK_MAGIC,
     LOCAL_AUDIO_HEADER,
     LOCAL_AUDIO_MAGIC,
@@ -175,11 +177,55 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "publicKey": remote_public_key,
         })
         self.manager.resolve_peer = lambda address: "ab" * 16 if address == remote_address else None
-        tampered = {**remote_discovery[-1], "u": "another-room"}
+        encoded = _encode_qortalland_proximity_discovery(remote_discovery[-1])
+        self.assertIsNotNone(encoded)
+        decoded = _decode_qortalland_proximity_discovery(encoded)
+        self.assertIsNotNone(decoded)
+        tampered = {**decoded, "u": "another-room"}
         self.assertTrue(self.manager.on_discovery(tampered, "cd" * 16))
         self.assertNotIn(remote_address, self.manager.remote_capabilities)
-        self.assertTrue(self.manager.on_discovery(remote_discovery[-1], "cd" * 16))
+        self.assertTrue(self.manager.on_discovery(decoded, "cd" * 16))
         self.assertIn(remote_address, self.manager.remote_capabilities)
+
+    def test_inbound_link_retries_accept_and_waits_for_auth_ack(self):
+        self.authorize()
+        link = object()
+        address = "Q" + "p" * 33
+        link_id = b"l" * 16
+        nonce = b"n" * 16
+        accept = {"c": "accept", "marker": "test"}
+        state = {
+            "address": address,
+            "link": link,
+            "linkId": link_id,
+            "nonce": nonce,
+            "phase": "authenticating",
+            "authenticated": False,
+            "authAccept": accept,
+            "lastAuthAccept": time.time() - 2,
+            "createdAt": time.time(),
+            "lastActivity": time.time(),
+            "sourceId": 1,
+        }
+        self.manager.links[address] = state
+        self.manager.links_by_object[id(link)] = address
+        sent = []
+        self.manager._send_control = lambda _state, payload: sent.append(payload)
+        self.manager._reconcile = lambda: None
+
+        self.manager.tick()
+        self.assertIn(accept, sent)
+        self.assertFalse(state["authenticated"])
+
+        packet = type("Packet", (), {"link": link})()
+        ack = {
+            "v": 1, "ts": int(time.time() * 1000), "c": "auth_ack",
+            "l": link_id, "n": nonce,
+        }
+        self.manager._on_packet(CONTROL_MAGIC + umsgpack.packb(ack), packet)
+        self.assertTrue(state["authenticated"])
+        self.assertEqual(state["phase"], "connected")
+        self.assertNotIn("authAccept", state)
 
 
 if __name__ == "__main__":
