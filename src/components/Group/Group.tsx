@@ -1550,6 +1550,12 @@ export const Group = ({
 
   const refreshReticulumChatSummaries = useCallback(async (): Promise<boolean> => {
     try {
+      if (typeof window.reticulumChat?.isEnabled !== 'function') {
+        console.error(
+          '[ReticulumChat] Activity dashboard cannot initialize: isEnabled bridge is unavailable'
+        );
+        return false;
+      }
       const enabled = await window.reticulumChat?.isEnabled?.();
       setReticulumChatEnabled(enabled === true);
       if (!enabled) {
@@ -1559,8 +1565,18 @@ export const Group = ({
         void window.reticulumChat?.updateMentionBadge?.(0);
         return false;
       }
+      if (typeof window.reticulumChat?.getSummaries !== 'function') {
+        console.error(
+          '[ReticulumChat] Activity dashboard cannot initialize: getSummaries bridge is unavailable'
+        );
+        return false;
+      }
       const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
       if (!Array.isArray(summaries)) {
+        console.error(
+          '[ReticulumChat] Activity dashboard summary refresh returned an invalid result',
+          { resultType: summaries === null ? 'null' : typeof summaries }
+        );
         reticulumMentionBadgeSummariesRef.current = null;
         setReticulumChatSummaries({});
         void window.reticulumChat?.updateMentionBadge?.(0);
@@ -1675,49 +1691,86 @@ export const Group = ({
     setReticulumMembershipsAppliedKey('');
     setReticulumSummariesLoadedMembershipKey('');
     void (async () => {
-      const enabled = await window.reticulumChat?.isEnabled?.();
-      if (cancelled || !enabled) {
-        if (!cancelled) {
-          for (const groupId of reticulumSubscribedGroupIdsRef.current) {
+      try {
+        if (typeof window.reticulumChat?.isEnabled !== 'function') {
+          console.error(
+            '[ReticulumChat] Membership sync cannot initialize: isEnabled bridge is unavailable'
+          );
+          return;
+        }
+        const enabled = await window.reticulumChat.isEnabled();
+        if (cancelled || !enabled) {
+          if (!cancelled) {
+            for (const groupId of reticulumSubscribedGroupIdsRef.current) {
+              void window.reticulumChat?.unsubscribeGroup?.(groupId);
+            }
+            reticulumSubscribedGroupIdsRef.current = new Set();
+            void window.reticulumChat?.setLocalGroupMemberships?.([]);
+            reticulumMentionBadgeSummariesRef.current = null;
+            setReticulumChatSummaries({});
+            void window.reticulumChat?.updateMentionBadge?.(0);
+          }
+          return;
+        }
+        if (typeof window.reticulumChat?.setLocalGroupMemberships !== 'function') {
+          console.error(
+            '[ReticulumChat] Membership sync cannot initialize: setLocalGroupMemberships bridge is unavailable'
+          );
+          return;
+        }
+        const membershipResult = await window.reticulumChat.setLocalGroupMemberships(
+          reticulumMemberships
+        );
+        if (cancelled) return;
+        if (membershipResult?.success !== true) {
+          console.error('[ReticulumChat] Membership sync was rejected', {
+            groupCount: groupIds.length,
+            failureCode:
+              typeof membershipResult?.error === 'string'
+                ? membershipResult.error
+                : 'unknown',
+          });
+          return;
+        }
+        setReticulumMembershipsAppliedKey(reticulumMembershipsKey);
+        const nextIds = new Set(groupIds);
+        const previousIds = reticulumSubscribedGroupIdsRef.current;
+        for (const groupId of previousIds) {
+          if (!nextIds.has(groupId)) {
             void window.reticulumChat?.unsubscribeGroup?.(groupId);
           }
-          reticulumSubscribedGroupIdsRef.current = new Set();
-          void window.reticulumChat?.setLocalGroupMemberships?.([]);
+        }
+        for (const groupId of nextIds) {
+          if (!previousIds.has(groupId)) {
+            void window.reticulumChat?.subscribeGroup?.(groupId);
+          }
+        }
+        reticulumSubscribedGroupIdsRef.current = nextIds;
+        if (groupIds.length === 0) {
           reticulumMentionBadgeSummariesRef.current = null;
           setReticulumChatSummaries({});
           void window.reticulumChat?.updateMentionBadge?.(0);
+          return;
         }
-        return;
-      }
-      const membershipResult =
-        await window.reticulumChat?.setLocalGroupMemberships?.(
-          reticulumMemberships
-        );
-      if (cancelled || membershipResult?.success !== true) return;
-      setReticulumMembershipsAppliedKey(reticulumMembershipsKey);
-      const nextIds = new Set(groupIds);
-      const previousIds = reticulumSubscribedGroupIdsRef.current;
-      for (const groupId of previousIds) {
-        if (!nextIds.has(groupId)) {
-          void window.reticulumChat?.unsubscribeGroup?.(groupId);
+        const summariesLoaded = await refreshReticulumChatSummaries();
+        if (cancelled) return;
+        if (!summariesLoaded) {
+          console.error(
+            '[ReticulumChat] Activity dashboard did not load after membership sync',
+            { groupCount: groupIds.length }
+          );
+          return;
+        }
+        setReticulumSummariesLoadedMembershipKey(reticulumMembershipsKey);
+        scheduleReticulumChatSummariesRefresh();
+      } catch (error) {
+        if (!cancelled) {
+          console.error(
+            '[ReticulumChat] Membership and activity dashboard initialization failed:',
+            error
+          );
         }
       }
-      for (const groupId of nextIds) {
-        if (!previousIds.has(groupId)) {
-          void window.reticulumChat?.subscribeGroup?.(groupId);
-        }
-      }
-      reticulumSubscribedGroupIdsRef.current = nextIds;
-      if (groupIds.length === 0) {
-        reticulumMentionBadgeSummariesRef.current = null;
-        setReticulumChatSummaries({});
-        void window.reticulumChat?.updateMentionBadge?.(0);
-        return;
-      }
-      const summariesLoaded = await refreshReticulumChatSummaries();
-      if (cancelled || !summariesLoaded) return;
-      setReticulumSummariesLoadedMembershipKey(reticulumMembershipsKey);
-      scheduleReticulumChatSummariesRefresh();
     })();
 
     return () => {
@@ -2699,7 +2752,10 @@ export const Group = ({
         setReticulumAdminGroupsLoadedAddress(requestedAddress);
         return true;
       } catch (error) {
-        console.error(error);
+        console.error(
+          '[ReticulumChat] Failed to load admin-group metadata required by membership sync:',
+          error
+        );
         if (myAddressRef.current === requestedAddress) {
           setMyGroupsWhereIAmAdmin([]);
           setReticulumAdminGroupsLoadedAddress(requestedAddress);
@@ -3247,6 +3303,50 @@ export const Group = ({
     hasConfirmedReticulumGroups &&
     reticulumMembershipsAppliedKey === reticulumMembershipsKey &&
     reticulumSummariesLoadedMembershipKey === reticulumMembershipsKey;
+  useEffect(() => {
+    if (
+      !isQChatTabActive ||
+      !hasConfirmedReticulumGroups ||
+      reticulumActivityDashboardReady ||
+      selectedGroup ||
+      selectedDirect ||
+      newChat
+    ) {
+      return undefined;
+    }
+    const timeout = window.setTimeout(() => {
+      console.error(
+        '[ReticulumChat] Activity dashboard is still not ready after 10 seconds',
+        {
+          adminMetadataReady:
+            reticulumAdminGroupsLoadedAddress === myAddress,
+          bridgeAvailable: Boolean(window.reticulumChat),
+          groupCount: getGroupIdsFromGroupLikeList(
+            memberGroupsForReticulum
+          ).length,
+          membershipsApplied:
+            reticulumMembershipsAppliedKey === reticulumMembershipsKey,
+          summariesLoaded:
+            reticulumSummariesLoadedMembershipKey ===
+            reticulumMembershipsKey,
+        }
+      );
+    }, 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [
+    hasConfirmedReticulumGroups,
+    isQChatTabActive,
+    memberGroupsForReticulum,
+    myAddress,
+    newChat,
+    reticulumActivityDashboardReady,
+    reticulumAdminGroupsLoadedAddress,
+    reticulumMembershipsAppliedKey,
+    reticulumMembershipsKey,
+    reticulumSummariesLoadedMembershipKey,
+    selectedDirect,
+    selectedGroup,
+  ]);
   const reticulumHasUnreadActivity = memberGroupsWithReticulumActivity.some(
     (group: any) => {
       const summary = group?.reticulumChatSummary;

@@ -1745,6 +1745,8 @@ const RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_TTL_MS = 10 * 60_000;
 const RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
+const RETICULUM_CHAT_MEMBERSHIP_INITIALIZATION_BATCH_SIZE = 1;
+const RETICULUM_CHAT_MEMBERSHIP_SYNCHRONOUS_GROUP_LIMIT = 8;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
@@ -5468,6 +5470,10 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   private channelMetadataProjectionActive = false;
   private channelMetadataProjectionRepairGroups = new Set<number>();
+  private membershipInitializationQueue: number[] = [];
+  private membershipInitializationQueuedIds = new Set<number>();
+  private membershipInitializationTimer: ReturnType<typeof setTimeout> | null =
+    null;
   private activeDigestGroups = new Map<number, number>();
   private activeChannelSubscriptions = new Map<number, Set<string>>();
   private recentInboundControlWires = new Map<string, number>();
@@ -6367,6 +6373,12 @@ export class ReticulumChatManager extends EventEmitter {
     this.channelMetadataProjectionQueuedIds.clear();
     this.channelMetadataProjectionAttemptedIds.clear();
     this.channelMetadataProjectionRepairGroups.clear();
+    if (this.membershipInitializationTimer) {
+      clearTimeout(this.membershipInitializationTimer);
+      this.membershipInitializationTimer = null;
+    }
+    this.membershipInitializationQueue = [];
+    this.membershipInitializationQueuedIds.clear();
     this.db.close();
   }
 
@@ -6430,7 +6442,10 @@ export class ReticulumChatManager extends EventEmitter {
   setLocalGroupMemberships(
     memberships: ReticulumChatLocalGroupMembership[]
   ): void {
+    const membershipsWereInitialized = this.localGroupMembershipsInitialized;
     const previousGroupIds = this.localGroupIds;
+    const previousPrivateGroupIds = this.localPrivateGroupIds;
+    const previousAdminGroupIds = this.localGroupAdminIds;
     const previousGroupAddresses = this.localGroupAddresses;
     const previousPublicGroupIds = new Set(
       [...this.localGroupIds].filter(
@@ -6440,6 +6455,17 @@ export class ReticulumChatManager extends EventEmitter {
     const normalizedMemberships =
       this.normalizeLocalGroupMemberships(memberships);
     const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
+    const groupsRequiringInitialization = normalizedMemberships
+      .filter(({ groupId, isPrivate, isAdmin, localAddress }) => {
+        if (!membershipsWereInitialized) return true;
+        return (
+          !previousGroupIds.has(groupId) ||
+          previousPrivateGroupIds.has(groupId) !== isPrivate ||
+          previousAdminGroupIds.has(groupId) !== isAdmin ||
+          previousGroupAddresses.get(groupId) !== localAddress
+        );
+      })
+      .map(({ groupId }) => groupId);
     this.localPrivateGroupIds = new Set(
       normalizedMemberships
         .filter(({ isPrivate }) => isPrivate)
@@ -6501,15 +6527,85 @@ export class ReticulumChatManager extends EventEmitter {
       this.stopSubscriptionRefreshTimer();
       this.clearSubscriptionFanoutQueue();
     }
-    for (const groupId of nextGroupIds) {
+    if (
+      nextGroupIds.length <=
+      RETICULUM_CHAT_MEMBERSHIP_SYNCHRONOUS_GROUP_LIMIT
+    ) {
+      const initializingIds = new Set(groupsRequiringInitialization);
+      this.membershipInitializationQueue =
+        this.membershipInitializationQueue.filter(
+          (groupId) => !initializingIds.has(groupId)
+        );
+      for (const groupId of groupsRequiringInitialization) {
+        this.membershipInitializationQueuedIds.delete(groupId);
+        this.initializeMembershipGroup(groupId);
+      }
+    } else {
+      this.enqueueMembershipInitialization(groupsRequiringInitialization);
+    }
+    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+  }
+
+  private initializeMembershipGroup(groupId: number): void {
+    if (this.isClosed || !this.localGroupIds.has(groupId)) return;
+    try {
       this.queueChannelMetadataProjectionRepair(groupId);
       const [latestEvent] = this.db.getRecentEvents(groupId, 1, null);
       if (latestEvent) {
         this.emitSummaryChanged(groupId, latestEvent);
       }
-      void this.ensureGroupKeyState(groupId);
+      void this.ensureGroupKeyState(groupId).catch((error) => {
+        loggerWarn(
+          `[ReticulumChat] Membership key initialization failed for group ${groupId}:`,
+          error
+        );
+      });
+    } catch (error) {
+      loggerWarn(
+        `[ReticulumChat] Membership initialization failed for group ${groupId}:`,
+        error
+      );
     }
-    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+  }
+
+  private enqueueMembershipInitialization(groupIds: number[]): void {
+    if (this.isClosed) return;
+    for (const groupId of groupIds) {
+      if (!this.localGroupIds.has(groupId)) continue;
+      if (this.membershipInitializationQueuedIds.has(groupId)) continue;
+      this.membershipInitializationQueuedIds.add(groupId);
+      this.membershipInitializationQueue.push(groupId);
+    }
+    this.scheduleMembershipInitialization();
+  }
+
+  private scheduleMembershipInitialization(): void {
+    if (
+      this.isClosed ||
+      this.membershipInitializationTimer ||
+      this.membershipInitializationQueue.length === 0
+    ) {
+      return;
+    }
+    this.membershipInitializationTimer = setTimeout(() => {
+      this.membershipInitializationTimer = null;
+      this.processMembershipInitializationBatch();
+    }, 0);
+  }
+
+  private processMembershipInitializationBatch(): void {
+    if (this.isClosed) return;
+    for (
+      let processed = 0;
+      processed < RETICULUM_CHAT_MEMBERSHIP_INITIALIZATION_BATCH_SIZE;
+      processed += 1
+    ) {
+      const groupId = this.membershipInitializationQueue.shift();
+      if (groupId === undefined) break;
+      this.membershipInitializationQueuedIds.delete(groupId);
+      this.initializeMembershipGroup(groupId);
+    }
+    this.scheduleMembershipInitialization();
   }
 
   setPublicGroupDirectory(groupIds: number[]): void {

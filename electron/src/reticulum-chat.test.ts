@@ -4147,6 +4147,74 @@ describe('reticulum chat manager', () => {
     provider.close();
   });
 
+  it('applies large membership sets immediately and defers deduplicated initialization work', async () => {
+    vi.useFakeTimers();
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    try {
+      const repair = vi
+        .spyOn(manager as any, 'queueChannelMetadataProjectionRepair')
+        .mockImplementation(() => undefined);
+      const recentEvents = vi
+        .spyOn((manager as any).db, 'getRecentEvents')
+        .mockReturnValue([]);
+      const ensureKey = vi
+        .spyOn(manager as any, 'ensureGroupKeyState')
+        .mockResolvedValue(undefined);
+      const memberships = Array.from({ length: 54 }, (_, index) => ({
+        groupId: index + 1,
+        isPrivate: true,
+      }));
+
+      manager.setLocalGroupMemberships(memberships);
+
+      expect((manager as any).localGroupIds.size).toBe(54);
+      expect(repair).not.toHaveBeenCalled();
+      expect(recentEvents).not.toHaveBeenCalled();
+      expect(ensureKey).not.toHaveBeenCalled();
+      expect((manager as any).membershipInitializationQueue).toHaveLength(54);
+
+      manager.setLocalGroupMemberships(memberships);
+      expect((manager as any).membershipInitializationQueue).toHaveLength(54);
+
+      await vi.runAllTimersAsync();
+
+      expect(repair).toHaveBeenCalledTimes(54);
+      expect(recentEvents).toHaveBeenCalledTimes(54);
+      expect(ensureKey).toHaveBeenCalledTimes(54);
+      expect((manager as any).membershipInitializationQueue).toHaveLength(0);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves synchronous initialization for small membership sets', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    try {
+      const repair = vi
+        .spyOn(manager as any, 'queueChannelMetadataProjectionRepair')
+        .mockImplementation(() => undefined);
+      const recentEvents = vi
+        .spyOn((manager as any).db, 'getRecentEvents')
+        .mockReturnValue([]);
+      const ensureKey = vi
+        .spyOn(manager as any, 'ensureGroupKeyState')
+        .mockResolvedValue(undefined);
+
+      manager.setLocalGroupMemberships([
+        { groupId: 1, isPrivate: true },
+        { groupId: 2, isPrivate: true },
+      ]);
+
+      expect(repair).toHaveBeenCalledTimes(2);
+      expect(recentEvents).toHaveBeenCalledTimes(2);
+      expect(ensureKey).toHaveBeenCalledTimes(2);
+      expect((manager as any).membershipInitializationQueue).toHaveLength(0);
+    } finally {
+      manager.close();
+    }
+  });
+
   it('marks replies whose parent message was deleted in renderer history', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     manager.setLocalGroupMemberships([149]);
