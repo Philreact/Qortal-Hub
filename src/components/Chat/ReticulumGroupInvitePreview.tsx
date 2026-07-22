@@ -17,16 +17,14 @@ import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
 import { getFee } from '../../background/background';
 import { memberGroupsAtom } from '../../atoms/global';
 import {
-  getCommunityLevel,
-  getLegacyLevel,
   getReticulumGroupMetadata,
 } from '../Group/ReticulumGroupAbout';
 import { getNameInfo } from '../Group/groupApi';
+import { GroupScoreBadge } from '../Group/ReticulumGroupLevel';
 import {
-  getGroupLevel,
-  getGroupLevelColor,
-  GroupLevelBadge,
-} from '../Group/ReticulumGroupLevel';
+  getReticulumGroupScoreColor,
+  useReticulumGroupScore,
+} from '../Group/reticulumGroupScore';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 
 const INVITE_PREFIX = 'qortal://use-group/';
@@ -173,12 +171,10 @@ function InviteCard({ groupId }: { groupId: string }) {
   const isOpen = group?.isOpen === true || group?.groupType === 0 || group?.groupType === 'OPEN';
   const description = group?.description ?? group?.groupDescription ?? '';
   const memberCount = Number(group?.memberCount) || 0;
-  const created = group?.created ?? group?.creationTimestamp ?? group?.createdAt;
-  const legacyLevel = getLegacyLevel(created);
-  const communityLevel = getCommunityLevel(memberCount);
-  const groupLevelColor = getGroupLevelColor(
-    getGroupLevel(legacyLevel, communityLevel)
-  );
+  const groupScore = useReticulumGroupScore(groupId, isOpen);
+  const groupScoreColor = groupScore
+    ? getReticulumGroupScoreColor(groupScore.score)
+    : 'rgba(151,161,178,0.38)';
   const avatarUrl = ownerName
     ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
     : undefined;
@@ -232,7 +228,9 @@ function InviteCard({ groupId }: { groupId: string }) {
       sx={{
         background: 'linear-gradient(180deg, #111419 0%, #0d1014 100%)',
         border: '1px solid rgba(151,161,178,0.25)',
-        borderLeft: `3px solid ${groupLevelColor}`,
+        borderLeft: isOpen
+          ? `3px solid ${groupScoreColor}`
+          : '1px solid rgba(151,161,178,0.25)',
         borderRadius: '8px',
         boxShadow: '0 6px 15px rgba(0,0,0,0.18)',
         boxSizing: 'border-box',
@@ -242,43 +240,42 @@ function InviteCard({ groupId }: { groupId: string }) {
         width: 'min(510px, 100%)',
       }}
     >
-      <Box sx={{ alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'text.secondary', display: 'flex', fontSize: 12, fontWeight: 700, height: 45, justifyContent: 'space-between', letterSpacing: '0.1em', px: 2.25 }}>
+      <Box sx={{ alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'text.secondary', display: 'flex', fontSize: 12, fontWeight: 700, height: 45, letterSpacing: '0.1em', px: 2.25 }}>
         <Typography sx={{ color: 'inherit', fontSize: 'inherit', fontWeight: 'inherit', letterSpacing: 'inherit' }}>GROUP INVITATION</Typography>
-        <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.5, letterSpacing: 0 }}>
-          {isOpen ? <PublicRoundedIcon sx={{ fontSize: 15 }} /> : <LockRoundedIcon sx={{ fontSize: 15 }} />}
-          <Typography sx={{ fontSize: 13.5 }}>{isOpen ? 'Open group' : 'Closed group'}</Typography>
-        </Box>
       </Box>
-      <Box sx={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: 2.1, height: 147, px: 2.25, py: 1.6 }}>
-        <Avatar
-          alt={group.groupName}
-          imgProps={{ onError: () => setAvatarLoaded(false), onLoad: () => setAvatarLoaded(true) }}
-          src={avatarUrl}
-          sx={{ backgroundColor: 'rgba(255,255,255,0.045)', border: 0, borderRadius: '19px', flexShrink: 0, fontSize: 23, fontWeight: 800, height: 77, width: 77 }}
-        >
-          {!avatarLoaded ? <Box alt="" aria-hidden component="img" src={qortalWhiteLogo} sx={{ height: '42%', objectFit: 'contain', opacity: 0.15, width: '42%' }} /> : null}
-        </Avatar>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography sx={{ fontSize: 18, fontWeight: 650, lineHeight: 1.2 }} noWrap>{group.groupName}</Typography>
-          {description && (
-            <Tooltip arrow disableHoverListener={!descriptionOverflowing} title={<Box sx={{ maxHeight: 180, maxWidth: 360, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{description}</Box>}>
-              <Typography ref={descriptionRef} tabIndex={descriptionOverflowing ? 0 : -1} sx={{ WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, color: 'text.secondary', display: '-webkit-box', fontSize: 12, letterSpacing: '0.01em', lineHeight: 1.45, mt: 0.45, overflow: 'hidden' }}>{description}</Typography>
-            </Tooltip>
-          )}
-          <Box sx={{ mt: 0.8 }}>
-            <GroupLevelBadge
-              communityLevel={communityLevel}
-              created={created}
-              legacyLevel={legacyLevel}
-              memberCount={memberCount}
-              size="compact"
-            />
+      <Box sx={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', height: 147, px: 2.25, py: 1.6 }}>
+        <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: 2.1, width: '100%' }}>
+          <Avatar
+            alt={group.groupName}
+            imgProps={{ onError: () => setAvatarLoaded(false), onLoad: () => setAvatarLoaded(true) }}
+            src={avatarUrl}
+            sx={{ backgroundColor: 'rgba(255,255,255,0.045)', border: 0, borderRadius: '19px', flexShrink: 0, fontSize: 23, fontWeight: 800, height: 77, width: 77 }}
+          >
+            {!avatarLoaded ? <Box alt="" aria-hidden component="img" src={qortalWhiteLogo} sx={{ height: '42%', objectFit: 'contain', opacity: 0.15, width: '42%' }} /> : null}
+          </Avatar>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.65, minWidth: 0 }}>
+              <Typography sx={{ fontSize: 18, fontWeight: 650, lineHeight: 1.2, minWidth: 0 }} noWrap>{group.groupName}</Typography>
+              {isOpen ? (
+                <PublicRoundedIcon aria-label="Open group" sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }} />
+              ) : (
+                <LockRoundedIcon aria-label="Closed group" sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }} />
+              )}
+            </Box>
+            {description && (
+              <Tooltip arrow disableHoverListener={!descriptionOverflowing} title={<Box sx={{ maxHeight: 180, maxWidth: 360, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{description}</Box>}>
+                <Typography ref={descriptionRef} tabIndex={descriptionOverflowing ? 0 : -1} sx={{ WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, color: 'text.secondary', display: '-webkit-box', fontSize: 12, letterSpacing: '0.01em', lineHeight: 1.45, mt: 0.45, overflow: 'hidden' }}>{description}</Typography>
+              </Tooltip>
+            )}
+            <Box sx={{ mt: 0.8 }}>
+              <GroupScoreBadge score={groupScore} size="compact" />
+            </Box>
+            <Box sx={{ alignItems: 'center', color: 'text.secondary', display: 'flex', gap: 0.5, mt: 0.85 }}><GroupsRoundedIcon sx={{ fontSize: 14 }} /><Typography sx={{ fontSize: 12.5 }}>{memberCount} {memberCount === 1 ? 'member' : 'members'}</Typography></Box>
           </Box>
-          <Box sx={{ alignItems: 'center', color: 'text.secondary', display: 'flex', gap: 0.5, mt: 0.85 }}><GroupsRoundedIcon sx={{ fontSize: 14 }} /><Typography sx={{ fontSize: 12.5 }}>{memberCount} {memberCount === 1 ? 'member' : 'members'}</Typography></Box>
+          <Button disabled={actionDisabled} onClick={() => void join()} variant="contained" sx={{ alignSelf: 'flex-start', borderRadius: '6px', flexShrink: 0, fontSize: 12, fontWeight: 600, minHeight: 38, minWidth: 88, mt: 2.65, textTransform: 'none' }}>
+            {isJoining ? <CircularProgress size={17} sx={{ color: 'inherit' }} /> : actionLabel}
+          </Button>
         </Box>
-        <Button disabled={actionDisabled} onClick={() => void join()} variant="contained" sx={{ alignSelf: 'flex-start', borderRadius: '6px', flexShrink: 0, fontSize: 12, fontWeight: 600, minHeight: 38, minWidth: 88, mt: 2.65, textTransform: 'none' }}>
-          {isJoining ? <CircularProgress size={17} sx={{ color: 'inherit' }} /> : actionLabel}
-        </Button>
       </Box>
     </Box>
   );

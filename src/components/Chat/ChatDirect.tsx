@@ -39,10 +39,6 @@ import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import PersonAddRoundedIcon from '@mui/icons-material/PersonAddRounded';
 import PersonRemoveRoundedIcon from '@mui/icons-material/PersonRemoveRounded';
-import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
-import MicRoundedIcon from '@mui/icons-material/MicRounded';
-import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
-import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendIcon from '@mui/icons-material/Send';
@@ -78,7 +74,6 @@ import {
 import { useVoiceCallContext } from '../../context/VoiceCallContext';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
 import { buildDirectVoiceCallChatId } from '../../lib/call/directVoiceCallChatId';
-import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 import { useIsOnline } from '../../hooks/usePresence';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
@@ -315,17 +310,9 @@ export const ChatDirect = ({
 
   const {
     callState,
-    audioMode,
-    startupStatus,
-    callMediaReady,
-    isMuted,
-    hearCall,
-    callDuration,
     activeCallChatId,
     initiateCall: initiateVoiceCall,
     hangUp,
-    toggleMute,
-    toggleHearCall,
   } = useVoiceCallContext();
   const { confirmCallSwitch } = useCallSwitchGuard();
 
@@ -343,6 +330,9 @@ export const ChatDirect = ({
   );
   const p2pHealthGood = p2pHealth === 'good';
   const directVoiceBlockedByP2p = !callMatchesThisDirect && !p2pHealthGood;
+  const directVoiceBlockedByFriend = Boolean(
+    selectedDirect?.address && !dmFriendsByAddress[selectedDirect.address]
+  );
 
   const signCallRequest = useCallback(
     async (fields: Record<string, unknown>) => {
@@ -382,6 +372,7 @@ export const ChatDirect = ({
     if (callMatchesThisDirect) return;
     if (!peerOnline) return;
     if (directVoiceBlockedByP2p) return;
+    if (directVoiceBlockedByFriend) return;
     const confirmed = await confirmCallSwitch({
       type: 'direct',
       chatId: directVoiceChatId,
@@ -396,6 +387,7 @@ export const ChatDirect = ({
     callMatchesThisDirect,
     confirmCallSwitch,
     directVoiceChatId,
+    directVoiceBlockedByFriend,
     directVoiceBlockedByP2p,
     initiateVoiceCall,
     peerOnline,
@@ -403,16 +395,6 @@ export const ChatDirect = ({
     signCallRequest,
   ]);
 
-  const fmtCallDuration = useCallback(
-    (secs: number): string => {
-      const m = Math.floor(secs / 60)
-        .toString()
-        .padStart(2, '0');
-      const s = (secs % 60).toString().padStart(2, '0');
-      return `${m}:${s}`;
-    },
-    [myAddress]
-  );
   const { t } = useTranslation([
     'auth',
     'core',
@@ -441,6 +423,7 @@ export const ChatDirect = ({
   const hasInitializedWebsocket = useRef(false);
   const [chatReferences, setChatReferences] = useState({});
   const editorRef = useRef(null);
+  const [formattingTrayResetKey, setFormattingTrayResetKey] = useState(0);
   const socketRef = useRef(null);
   const timeoutIdRef = useRef(null);
   const [messageSize, setMessageSize] = useState(0);
@@ -2097,6 +2080,9 @@ export const ChatDirect = ({
           (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') &&
           !hasPendingReticulumResources
         ) return;
+        if (reticulumDirectUiEnabled) {
+          setFormattingTrayResetKey((key) => key + 1);
+        }
         setIsSending(true);
         pauseAllQueues();
         const message = JSON.stringify(htmlContent);
@@ -2419,11 +2405,13 @@ export const ChatDirect = ({
                   ? 'In call'
                   : callMatchesThisDirect && callState === 'calling'
                     ? ''
-                    : !peerOnline
-                      ? t('core:presence.call_offline_tooltip')
-                      : directVoiceBlockedByP2p
-                        ? p2pHealthBadTooltip
-                        : 'Start voice call'
+                      : !peerOnline
+                        ? t('core:presence.call_offline_tooltip')
+                        : directVoiceBlockedByFriend
+                          ? 'Add this user as a friend before calling'
+                          : directVoiceBlockedByP2p
+                            ? p2pHealthBadTooltip
+                            : 'Start voice call'
               }
             >
               <span>
@@ -2433,6 +2421,7 @@ export const ChatDirect = ({
                     !(
                       (peerOnline &&
                         !callMatchesThisDirect &&
+                        !directVoiceBlockedByFriend &&
                         !directVoiceBlockedByP2p) ||
                       (callMatchesThisDirect && callState === 'connected')
                     )
@@ -2469,31 +2458,6 @@ export const ChatDirect = ({
           </Box>
         )}
       </Box>
-
-      {!isNewChat && callMatchesThisDirect && callState === 'calling' && (
-        <Box
-          sx={{
-            alignItems: 'center',
-            backgroundColor: 'action.selected',
-            display: 'flex',
-            flexShrink: 0,
-            gap: 1.5,
-            px: 2,
-            py: 1,
-          }}
-        >
-          <CircularProgress size={14} thickness={5} />
-          <Typography
-            variant="body2"
-            sx={{ flex: 1, fontSize: 12, fontWeight: 600 }}
-          >
-            Calling…
-          </Typography>
-          <IconButton size="small" onClick={hangUp} sx={{ color: '#ef4444' }}>
-            <CallEndRoundedIcon fontSize="small" />
-          </IconButton>
-        </Box>
-      )}
 
       {isNewChat && (
         <>
@@ -2771,142 +2735,6 @@ export const ChatDirect = ({
         </>
       )}
 
-      {!isNewChat && callMatchesThisDirect && callState === 'connected' && (
-        <Box
-          sx={{
-            alignItems: 'center',
-            backgroundColor:
-              callMediaReady
-                ? theme.palette.mode === 'dark'
-                  ? 'rgba(34,197,94,0.12)'
-                  : 'rgba(34,197,94,0.08)'
-                : theme.palette.mode === 'dark'
-                  ? 'rgba(59,130,246,0.14)'
-                  : 'rgba(59,130,246,0.08)',
-            borderRadius: 1.5,
-            display: 'flex',
-            flexShrink: 0,
-            flexWrap: 'wrap',
-            gap: 1,
-            mb: 1,
-            mx: 2,
-            mt: 1,
-            px: 2,
-            py: 0.75,
-          }}
-        >
-          <Box
-            sx={{
-              backgroundColor: callMediaReady ? '#22c55e' : 'primary.main',
-              borderRadius: '50%',
-              flexShrink: 0,
-              height: 8,
-              width: 8,
-            }}
-          />
-          <Typography
-            variant="caption"
-            sx={{
-              color: callMediaReady ? 'success.main' : 'primary.main',
-              flex: 1,
-              fontSize: 11,
-              fontWeight: 600,
-            }}
-          >
-            {callMediaReady
-              ? `In call — ${fmtCallDuration(callDuration)}`
-              : `${startupStatus.headline || 'Connecting...'} — ${fmtCallDuration(callDuration)}`}
-          </Typography>
-          {audioMode === 'reticulum' && callMediaReady && (
-            <Typography
-              variant="caption"
-              sx={{
-                backgroundColor: 'primary.main',
-                borderRadius: 1,
-                color: '#fff',
-                fontSize: 10,
-                fontWeight: 600,
-                letterSpacing: 0.3,
-                px: 0.75,
-                py: 0.2,
-              }}
-            >
-              Reticulum
-            </Typography>
-          )}
-          {callMediaReady ? <CallAudioSettingsButton /> : null}
-          <Tooltip
-            title={
-              isMuted
-                ? t('core:group_call_unmute', {
-                    postProcess: 'capitalizeFirstChar',
-                  })
-                : t('core:group_call_mute', {
-                    postProcess: 'capitalizeFirstChar',
-                  })
-            }
-          >
-            <IconButton
-              size="small"
-              disabled={!callMediaReady}
-              onClick={toggleMute}
-              sx={{
-                color: isMuted ? 'error.main' : 'text.secondary',
-                height: 26,
-                width: 26,
-              }}
-            >
-              {isMuted ? (
-                <MicOffRoundedIcon sx={{ fontSize: 15 }} />
-              ) : (
-                <MicRoundedIcon sx={{ fontSize: 15 }} />
-              )}
-            </IconButton>
-          </Tooltip>
-          <Tooltip
-            title={
-              hearCall
-                ? t('core:call_audio_mute', {
-                    postProcess: 'capitalizeFirstChar',
-                  })
-                : t('core:call_audio_hear', {
-                    postProcess: 'capitalizeFirstChar',
-                  })
-            }
-          >
-            <IconButton
-              size="small"
-              disabled={!callMediaReady}
-              onClick={toggleHearCall}
-              sx={{
-                color: hearCall ? 'text.secondary' : 'error.main',
-                height: 26,
-                width: 26,
-              }}
-            >
-              {hearCall ? (
-                <VolumeUpRoundedIcon sx={{ fontSize: 15 }} />
-              ) : (
-                <VolumeOffRoundedIcon sx={{ fontSize: 15 }} />
-              )}
-            </IconButton>
-          </Tooltip>
-          <IconButton
-            size="small"
-            onClick={hangUp}
-            sx={{
-              backgroundColor: '#ef4444',
-              color: '#fff',
-              height: 26,
-              width: 26,
-              '&:hover': { backgroundColor: '#dc2626' },
-            }}
-          >
-            <CallEndRoundedIcon sx={{ fontSize: 15 }} />
-          </IconButton>
-        </Box>
-      )}
-
       <Box
         sx={{
           display: 'flex',
@@ -2934,18 +2762,25 @@ export const ChatDirect = ({
           qchatCompletedTransfers={qchatCompletedTransfers}
           reticulumChatEnabled={reticulumDirectUiEnabled}
         />
-        {reticulumDirectEnabled && reticulumDirectTypingUsers.size > 0 && (
+        {reticulumDirectUiEnabled && (
           <Typography
             variant="caption"
             sx={{
               color: 'text.secondary',
               flexShrink: 0,
               fontStyle: 'italic',
-              px: 2,
-              py: 0.5,
+              height: '24px',
+              lineHeight: '20px',
+              overflow: 'hidden',
+              px: 2.25,
+              pt: '2px',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
             }}
           >
-            {selectedDirect?.name || selectedDirect?.address} is typing...
+            {reticulumDirectTypingUsers.size > 0
+              ? `${selectedDirect?.name || selectedDirect?.address} is typing...`
+              : ''}
           </Typography>
         )}
       </Box>
@@ -3187,6 +3022,7 @@ export const ChatDirect = ({
             setIsFocusedParent={setIsFocusedParent}
             insertFiles={insertFiles}
             compactChat={reticulumDirectUiEnabled}
+            collapseFormattingTraySignal={formattingTrayResetKey}
             placeholder={
               reticulumDirectUiEnabled
                 ? 'Send message...'

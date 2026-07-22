@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Avatar,
@@ -17,14 +17,27 @@ import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
 import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
-import { userInfoAtom } from '../../atoms/global';
+import {
+  dmFriendsByAddressAtom,
+  infoSnackGlobalAtom,
+  openSnackGlobalAtom,
+  p2pHealthAtom,
+  userInfoAtom,
+} from '../../atoms/global';
+import { onlineAddressesAtom } from '../../atoms/presence';
 import { useVoiceCallContext } from '../../context/VoiceCallContext';
 import {
+  buildDirectVoiceCallChatId,
   isDirectVoiceCallChatId,
   peerAddressFromDirectVoiceChatId,
 } from '../../lib/call/directVoiceCallChatId';
+import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
+import {
+  subscribeToEvent,
+  unsubscribeFromEvent,
+} from '../../utils/events';
 import { DIRECT_VOICE_CALL_NAV_SLOT_ID } from '../Desktop/GlobalQortalNavBar';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
 import { DirectVoiceDebugPanel } from './DirectVoiceDebugPanel';
@@ -44,12 +57,19 @@ export function DirectVoiceCallNavWidget() {
   const { t } = useTranslation(['core']);
   const userInfo = useAtomValue(userInfoAtom);
   const myAddress = userInfo?.address ?? '';
+  const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
+  const onlineAddresses = useAtomValue(onlineAddressesAtom);
+  const p2pHealth = useAtomValue(p2pHealthAtom);
+  const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
+  const setOpenSnack = useSetAtom(openSnackGlobalAtom);
+  const { confirmCallSwitch } = useCallSwitchGuard();
   const {
     activeCallChatId,
     startupStatus,
     callMediaReady,
     callDuration,
     callState,
+    initiateCall,
     hangUp,
     hearCall,
     isMuted,
@@ -57,6 +77,75 @@ export function DirectVoiceCallNavWidget() {
     toggleMute,
   } = useVoiceCallContext();
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+
+  const showCallError = useCallback(
+    (message: string) => {
+      setInfoSnack({ message, type: 'error' });
+      setOpenSnack(true);
+    },
+    [setInfoSnack, setOpenSnack]
+  );
+
+  useEffect(() => {
+    const startDirectCall = async (event: Event) => {
+      const detail = (event as CustomEvent<{ address?: string; name?: string }>)
+        .detail;
+      const targetAddress = detail?.address?.trim() ?? '';
+      const targetLabel = detail?.name?.trim() || 'This user';
+      if (!targetAddress || !myAddress || targetAddress === myAddress) return;
+
+      if (!dmFriendsByAddress[targetAddress]) {
+        showCallError(`Add ${targetLabel} as a friend before calling.`);
+        return;
+      }
+      if (!onlineAddresses.has(targetAddress)) {
+        showCallError(`${targetLabel} is offline and cannot receive a call.`);
+        return;
+      }
+      if (p2pHealth !== 'good') {
+        showCallError('Voice calls are unavailable until P2P connectivity recovers.');
+        return;
+      }
+
+      const chatId = buildDirectVoiceCallChatId(myAddress, targetAddress);
+      if (
+        activeCallChatId === chatId &&
+        (callState === 'calling' || callState === 'connected')
+      ) {
+        return;
+      }
+      const confirmed = await confirmCallSwitch({ type: 'direct', chatId });
+      if (!confirmed) return;
+
+      await initiateCall(targetAddress, chatId, async (fields) => {
+        const result = await (window as any).sendMessage(
+          'signPresenceMessage',
+          fields,
+          10_000
+        );
+        return {
+          signature: result?.signature ?? '',
+          publicKey: userInfo?.publicKey ?? '',
+        };
+      });
+    };
+
+    subscribeToEvent('startReticulumDirectVoiceCall', startDirectCall);
+    return () => {
+      unsubscribeFromEvent('startReticulumDirectVoiceCall', startDirectCall);
+    };
+  }, [
+    activeCallChatId,
+    callState,
+    confirmCallSwitch,
+    dmFriendsByAddress,
+    initiateCall,
+    myAddress,
+    onlineAddresses,
+    p2pHealth,
+    showCallError,
+    userInfo?.publicKey,
+  ]);
 
   useEffect(() => {
     setPortalTarget(document.getElementById(DIRECT_VOICE_CALL_NAV_SLOT_ID));

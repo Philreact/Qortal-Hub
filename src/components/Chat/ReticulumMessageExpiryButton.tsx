@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import {
-  Divider,
+  Box,
   IconButton,
   ListItemIcon,
   ListItemText,
-  Menu,
   MenuItem,
+  SvgIcon,
   Tooltip,
   useTheme,
 } from '@mui/material';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
-import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
+import { CustomStyledMenu } from '../ContextMenu';
 import {
   formatReticulumExpiryDuration,
   isReticulumMessageExpiryOptionAllowed,
@@ -24,6 +24,39 @@ type ReticulumMessageExpiryButtonProps = {
   onChange: (durationMs: number | undefined) => void;
   value?: number;
 };
+
+const expiryMenuItemSx = {
+  borderRadius: '6px',
+  fontSize: 13,
+  fontWeight: 600,
+  minHeight: 36,
+  px: 1,
+  py: 0.65,
+  transition: 'background-color 120ms ease',
+  '&:hover': { backgroundColor: 'action.hover' },
+  '& .MuiListItemIcon-root': {
+    color: 'text.secondary',
+    minWidth: 30,
+  },
+  '& .MuiListItemText-primary': {
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: '18px',
+  },
+  '& .MuiListItemText-secondary': {
+    fontSize: 11,
+    lineHeight: '15px',
+  },
+  '& .MuiSvgIcon-root': { fontSize: 18 },
+};
+
+function BombIcon() {
+  return (
+    <SvgIcon viewBox="0 0 24 24">
+      <path d="M11.25 7a7.25 7.25 0 1 0 7.25 7.25A7.25 7.25 0 0 0 11.25 7Zm3.5 2.15a5.3 5.3 0 0 0-1.7-.75l2.18-2.18 2.55 2.55-2.18 2.18a5.3 5.3 0 0 0-.85-1.8ZM18.2 3h1.55v2.2H18.2V3Zm2.6 3.05H23V7.6h-2.2V6.05Zm-4.65-4.1h1.55v2.2h-1.55v-2.2Z" />
+    </SvgIcon>
+  );
+}
 
 export function ReticulumMessageExpiryButton({
   channelExpiryDurationMs,
@@ -86,67 +119,71 @@ export function ReticulumMessageExpiryButton({
               width: 34,
             }}
           >
-            <ScheduleRoundedIcon sx={{ fontSize: 20 }} />
+            <BombIcon />
           </IconButton>
         </span>
       </Tooltip>
-      <Menu
+      <CustomStyledMenu
+        reticulumMenu
         anchorEl={anchorEl}
         onClose={() => setAnchorEl(null)}
         open={Boolean(anchorEl)}
+        anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         slotProps={{
           paper: {
             sx: {
-              border: `1px solid ${theme.palette.divider}`,
-              minWidth: 250,
+              backgroundColor: `${theme.palette.background.paper} !important`,
+              overflow: 'hidden',
             },
           },
         }}
       >
-        <MenuItem
-          selected={value === undefined}
-          onClick={() => select(undefined)}
-        >
-          <ListItemIcon>
-            {value === undefined ? <CheckRoundedIcon fontSize="small" /> : null}
-          </ListItemIcon>
-          <ListItemText
-            primary="Channel default"
-            secondary={channelDefaultSummary}
-          />
-        </MenuItem>
-        <Divider />
-        {RETICULUM_MESSAGE_EXPIRY_OPTIONS.map((option) => {
-          const allowed = isReticulumMessageExpiryOptionAllowed(
-            option.durationMs,
-            channelExpiryDurationMs
-          );
-          return (
-            <MenuItem
-              disabled={!allowed}
-              key={option.durationMs}
-              selected={value === option.durationMs}
-              onClick={() => select(option.durationMs)}
-            >
-              <ListItemIcon>
-                {value === option.durationMs ? (
-                  <CheckRoundedIcon fontSize="small" />
-                ) : null}
-              </ListItemIcon>
-              <ListItemText
-                primary={option.label}
-                secondary={
-                  allowed || !channelExpiryDurationMs
-                    ? undefined
-                    : `Channel maximum is ${formatReticulumExpiryDuration(
-                        channelExpiryDurationMs
-                      )}`
-                }
-              />
-            </MenuItem>
-          );
-        })}
-      </Menu>
+        <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+          <MenuItem
+            selected={value === undefined}
+            onClick={() => select(undefined)}
+            sx={expiryMenuItemSx}
+          >
+            <ListItemIcon>
+              {value === undefined ? <CheckRoundedIcon /> : null}
+            </ListItemIcon>
+            <ListItemText
+              primary="Channel default"
+              secondary={channelDefaultSummary}
+            />
+          </MenuItem>
+          {RETICULUM_MESSAGE_EXPIRY_OPTIONS.map((option) => {
+            const allowed = isReticulumMessageExpiryOptionAllowed(
+              option.durationMs,
+              channelExpiryDurationMs
+            );
+            return (
+              <MenuItem
+                disabled={!allowed}
+                key={option.durationMs}
+                selected={value === option.durationMs}
+                onClick={() => select(option.durationMs)}
+                sx={expiryMenuItemSx}
+              >
+                <ListItemIcon>
+                  {value === option.durationMs ? <CheckRoundedIcon /> : null}
+                </ListItemIcon>
+                <ListItemText
+                  primary={option.label}
+                  secondary={
+                    allowed || !channelExpiryDurationMs
+                      ? undefined
+                      : `Channel maximum is ${formatReticulumExpiryDuration(
+                          channelExpiryDurationMs
+                        )}`
+                  }
+                />
+              </MenuItem>
+            );
+          })}
+        </Box>
+      </CustomStyledMenu>
     </>
   );
 }

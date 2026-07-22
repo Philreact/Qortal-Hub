@@ -575,6 +575,18 @@ declare global {
           confidence: number;
         }>
       >;
+      getPublicGroupActivitySnapshot: () => Promise<{
+        availableGroupIds: number[];
+        observedAt: number;
+        summaries: Array<{
+          groupId: number;
+          messages24h: number;
+          messages7d: number;
+          activeAuthors7d: number;
+          observedAt: number;
+          confidence: number;
+        }>;
+      }>;
       setLocalDmAddresses: (
         addresses: string[]
       ) => Promise<{ success: boolean; error?: string }>;

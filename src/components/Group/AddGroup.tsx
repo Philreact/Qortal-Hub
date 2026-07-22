@@ -11,7 +11,6 @@ import Typography from '@mui/material/Typography';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -28,11 +27,10 @@ import {
   TextField,
   Tooltip,
 } from '@mui/material';
-import { AddGroupList, isOpenGroup } from './AddGroupList';
 import { UserListOfInvites } from './UserListOfInvites';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { getFee } from '../../background/background.ts';
-import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
+import { QORTAL_APP_CONTEXT } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
@@ -203,24 +201,16 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     setValue(2);
   };
 
-  const openFindGroupRequestFunc = () => {
-    setValue(1);
-  };
-
   const tabItems = [
     {
+      value: 0,
       icon: <AddRoundedIcon sx={{ fontSize: 22 }} />,
       label: t('group:action.create_group', {
         postProcess: 'capitalizeFirstChar',
       }),
     },
     {
-      icon: <SearchRoundedIcon sx={{ fontSize: 21 }} />,
-      label: t('group:action.find_group', {
-        postProcess: 'capitalizeFirstChar',
-      }),
-    },
-    {
+      value: 2,
       icon: <CheckRoundedIcon sx={{ fontSize: 21 }} />,
       label: t('group:group.invites', {
         postProcess: 'capitalizeFirstChar',
@@ -235,58 +225,22 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   }, [initialTab, open]);
 
   useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    const primePublicGroupActivity = async () => {
-      try {
-        const response = await fetch(`${getBaseApiReact()}/groups/?limit=0`);
-        const groupData = await response.json();
-        if (cancelled || !Array.isArray(groupData)) return;
-        const publicGroupIds = groupData
-          .filter(isOpenGroup)
-          .map((group) => Number(group?.groupId))
-          .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
-        await window.reticulumChat?.setPublicGroupDirectory?.(publicGroupIds);
-        if (!cancelled) {
-          await window.reticulumChat?.getPublicGroupActivity?.();
-        }
-      } catch (error) {
-        console.warn(
-          '[ReticulumChat] Failed to initialize public group activity:',
-          error
-        );
-      }
-    };
-    void primePublicGroupActivity();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
-  useEffect(() => {
     subscribeToEvent('openGroupInvitesRequest', openGroupInvitesRequestFunc);
-    subscribeToEvent('openFindGroupRequest', openFindGroupRequestFunc);
 
     return () => {
       unsubscribeFromEvent(
         'openGroupInvitesRequest',
         openGroupInvitesRequestFunc
       );
-      unsubscribeFromEvent(
-        'openFindGroupRequest',
-        openFindGroupRequestFunc
-      );
     };
   }, []);
 
   const modeTitle =
-    value === 0 ? 'Create group' : value === 1 ? 'Find groups' : 'Group invites';
+    value === 0 ? 'Create group' : 'Group invites';
   const modeDescription =
     value === 0
       ? 'Choose a name, describe your group, and get started.'
-      : value === 1
-        ? 'Discover groups that are available to join.'
-        : 'Review the invitations you have received.';
+      : 'Review the invitations you have received.';
   const canCreateGroup = Boolean(name.trim() && description.trim()) && !isCreating;
 
   const handleDialogClose = (_event, reason) => {
@@ -314,12 +268,12 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
             boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
             display: 'flex',
             flexDirection: 'column',
-            height: value === 1 ? 'min(900px, calc(100vh - 32px))' : 'min(680px, calc(100vh - 32px))',
+            height: 'min(680px, calc(100vh - 32px))',
             m: 2,
-            maxHeight: value === 1 ? 'min(900px, calc(100vh - 32px))' : 'min(720px, calc(100vh - 32px))',
+            maxHeight: 'min(720px, calc(100vh - 32px))',
             maxWidth: 'calc(100vw - 32px)',
             overflow: 'hidden',
-            width: value === 1 ? 1000 : 680,
+            width: 680,
           },
         }}
       >
@@ -337,23 +291,23 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           <Box sx={{ minWidth: 0 }}>
             <Typography
               component="h2"
-              sx={{ color: 'text.primary', fontSize: value === 1 ? { xs: 30, sm: 38 } : { xs: 25, sm: 28 }, fontWeight: 800, lineHeight: 1.15 }}
+              sx={{ color: 'text.primary', fontSize: { xs: 25, sm: 28 }, fontWeight: 800, lineHeight: 1.15 }}
             >
               {modeTitle}
             </Typography>
-            <Typography sx={{ color: 'text.secondary', fontSize: value === 1 ? 18 : 14, lineHeight: value === 1 ? '26px' : '20px', mt: 0.75 }}>
+            <Typography sx={{ color: 'text.secondary', fontSize: 14, lineHeight: '20px', mt: 0.75 }}>
               {modeDescription}
             </Typography>
           </Box>
           <Box aria-label="Group management modes" sx={{ display: 'flex', flexShrink: 0, gap: 0.5 }}>
-            {tabItems.map((item, index) => {
-              const selected = value === index;
+            {tabItems.map((item) => {
+              const selected = value === item.value;
               return (
                 <Tooltip key={item.label} title={item.label}>
                   <IconButton
                     aria-label={item.label}
                     aria-pressed={selected}
-                    onClick={() => setValue(index)}
+                    onClick={() => setValue(item.value)}
                     sx={{
                       backgroundColor: selected ? RETICULUM_ACTIVE_BLUE : 'transparent',
                       borderRadius: '8px',
@@ -609,12 +563,6 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                   </Box>
                 </Collapse>
               </Box>
-            </Box>
-          )}
-
-          {value === 1 && (
-            <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto', px: { xs: 2.5, sm: 4 }, py: 2.5 }}>
-              <AddGroupList setOpenSnack={setOpenSnack} setInfoSnack={setInfoSnack} />
             </Box>
           )}
 

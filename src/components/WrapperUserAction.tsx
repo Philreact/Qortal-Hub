@@ -14,13 +14,14 @@ import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineR
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import PersonSearchRoundedIcon from '@mui/icons-material/PersonSearchRounded';
+import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { executeEvent } from '../utils/events';
 import { useBlockedAddresses } from '../hooks/useBlockUsers';
-import { useAtom } from 'jotai';
-import { isRunningPublicNodeAtom } from '../atoms/global';
+import { useAtom, useAtomValue } from 'jotai';
+import { isRunningPublicNodeAtom, userInfoAtom } from '../atoms/global';
 import { useTranslation } from 'react-i18next';
 import { CustomStyledMenu } from './ContextMenu';
 import { ReticulumUserCard } from './Chat/ReticulumUserCard';
@@ -46,6 +47,7 @@ export const WrapperUserAction = ({
     'tutorial',
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
+  const userInfo = useAtomValue(userInfoAtom);
 
   const [anchorEl, setAnchorEl] = useState(null);
   const [cardAnchorEl, setCardAnchorEl] = useState(null);
@@ -100,8 +102,9 @@ export const WrapperUserAction = ({
   return (
     <>
       <Box
-        onClick={reticulumUserCard ? handleCardOpen : trigger === 'click' ? handleOpen : undefined}
+        onClick={reticulumUserCard && trigger !== 'hover' ? handleCardOpen : trigger === 'click' ? handleOpen : undefined}
         onContextMenu={trigger === 'contextMenu' ? handleOpen : undefined}
+        onMouseEnter={reticulumUserCard && trigger === 'hover' ? handleCardOpen : undefined}
         sx={{
           alignItems: 'center',
           alignSelf: fullWidth ? 'stretch' : 'flex-start',
@@ -163,6 +166,22 @@ export const WrapperUserAction = ({
                 <ListItemIcon><ChatBubbleOutlineRoundedIcon /></ListItemIcon>
                 <ListItemText primary="Send Message" />
               </MenuItem>
+
+              {address && address !== userInfo?.address && (
+                <MenuItem
+                  onClick={() => {
+                    handleClose();
+                    executeEvent('startReticulumDirectVoiceCall', {
+                      address,
+                      name,
+                    });
+                  }}
+                  sx={reticulumMenuItemSx}
+                >
+                  <ListItemIcon><CallRoundedIcon /></ListItemIcon>
+                  <ListItemText primary="Start Voice Call" />
+                </MenuItem>
+              )}
 
               <MenuItem
                 onClick={() => {
@@ -420,7 +439,14 @@ const ReticulumHideUser = ({ address, context, handleClose }) => {
 
   useEffect(() => {
     let cancelled = false;
-    if (!address || !context?.ownerAddress || !context?.scopeType) return;
+    if (
+      context?.disabled ||
+      !address ||
+      !context?.ownerAddress ||
+      !context?.scopeType
+    ) {
+      return;
+    }
     void window.reticulumChat
       ?.getSilence?.(
         context.ownerAddress,
@@ -437,7 +463,24 @@ const ReticulumHideUser = ({ address, context, handleClose }) => {
     return () => {
       cancelled = true;
     };
-  }, [address, context?.groupId, context?.ownerAddress, context?.scopeType]);
+  }, [
+    address,
+    context?.disabled,
+    context?.groupId,
+    context?.ownerAddress,
+    context?.scopeType,
+  ]);
+
+  if (context?.disabled) {
+    return (
+      <MenuItem disabled sx={reticulumMenuItemSx}>
+        <ListItemIcon>
+          <VisibilityOffRoundedIcon />
+        </ListItemIcon>
+        <ListItemText primary="Hide" />
+      </MenuItem>
+    );
+  }
 
   const applySilence = async (durationMs: number | null) => {
     if (isLoading) return;

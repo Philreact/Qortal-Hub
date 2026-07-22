@@ -809,14 +809,13 @@ export const groupChatHasUnreadAtom = atom((get) => {
   if (!groups?.length || !myAddress) return false;
   return groups.some((group: any) => {
     if (group?.groupId === '0') return false;
-    if (
-      group?.reticulumChatSummary?.hasUnreadMention === true ||
-      (group?.reticulumChatSummary?.mentionCount ?? 0) > 0
-    ) {
-      return true;
+    if (reticulumChatEnabled) {
+      return (
+        group?.reticulumChatSummary?.hasUnreadMention === true ||
+        (group?.reticulumChatSummary?.mentionCount ?? 0) > 0 ||
+        (group?.reticulumChatSummary?.unreadCount ?? 0) > 0
+      );
     }
-    if ((group?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
-    if (reticulumChatEnabled) return false;
     return (
       group?.data &&
       group?.sender !== myAddress &&
@@ -843,6 +842,7 @@ export const groupsAnnHasUnreadAtom = atom((get) => {
 
 /** Combined: groups tab has any unread (chat or announcements). */
 export const hasUnreadGroupsAtom = atom((get) => {
+  if (get(reticulumChatEnabledAtom)) return get(groupChatHasUnreadAtom);
   return get(groupChatHasUnreadAtom) || get(groupsAnnHasUnreadAtom);
 });
 
@@ -856,14 +856,13 @@ export const isUnreadChatAtomFamily = atomFamily((selectedGroupId: string) =>
     const timestampEnterData = get(timestampEnterDataAtom) || {};
     const reticulumChatEnabled = get(reticulumChatEnabledAtom);
     const findGroup = groups?.find((g: any) => g?.groupId === selectedGroupId);
-    if (
-      findGroup?.reticulumChatSummary?.hasUnreadMention === true ||
-      (findGroup?.reticulumChatSummary?.mentionCount ?? 0) > 0
-    ) {
-      return true;
+    if (reticulumChatEnabled) {
+      return (
+        findGroup?.reticulumChatSummary?.hasUnreadMention === true ||
+        (findGroup?.reticulumChatSummary?.mentionCount ?? 0) > 0 ||
+        (findGroup?.reticulumChatSummary?.unreadCount ?? 0) > 0
+      );
     }
-    if ((findGroup?.reticulumChatSummary?.unreadCount ?? 0) > 0) return true;
-    if (reticulumChatEnabled) return false;
     if (!findGroup?.data || !findGroup?.timestamp) return false;
     if (findGroup?.sender === myAddress) return false;
     return !!(

@@ -601,19 +601,17 @@ export const MessageItemComponent = ({
       0
   );
   const reticulumSilenceContext = useMemo(() => {
-    if (!reticulumChatEnabled || !myAddress || myAddress === message?.sender) {
+    if (!reticulumChatEnabled || !myAddress) {
       return undefined;
     }
     if (message?.reticulumDirect === true) {
+      if (myAddress === message?.sender) return undefined;
       return {
         ownerAddress: myAddress,
         scopeType: 'dm' as const,
       };
     }
     if (!reticulumMemberRolesReady) {
-      return undefined;
-    }
-    if (reticulumMemberRole === 'owner' || reticulumMemberRole === 'admin') {
       return undefined;
     }
     const groupId = Number(
@@ -623,7 +621,14 @@ export const MessageItemComponent = ({
         selectedGroup
     );
     if (!Number.isInteger(groupId) || groupId <= 0) return undefined;
+    if (
+      myAddress === message?.sender &&
+      reticulumMemberRole !== 'owner'
+    ) {
+      return undefined;
+    }
     return {
+      disabled: reticulumMemberRole === 'owner',
       ownerAddress: myAddress,
       scopeType: 'group' as const,
       groupId,
@@ -1727,7 +1732,10 @@ export const MessageItemComponent = ({
                   disabled={!reticulumChatEnabled && myAddress === message?.sender}
                   address={message?.sender}
                   name={message?.senderName}
+                  reticulumMenu={reticulumChatEnabled}
+                  reticulumSilenceContext={reticulumSilenceContext}
                   reticulumUserCard={reticulumUserCard}
+                  trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
                 >
                   <Typography
                     sx={{

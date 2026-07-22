@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import {
   Avatar,
   Box,
@@ -14,51 +15,24 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import { getBaseApiReact } from '../../App';
+import { userInfoAtom } from '../../atoms/global';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { WrapperUserAction } from '../WrapperUserAction';
 import { getNameInfo } from './groupApi';
-import { GroupLevelBadge } from './ReticulumGroupLevel';
+import { GroupScoreBadge } from './ReticulumGroupLevel';
+import {
+  getCommunityLevel,
+  getLegacyLevel,
+  useReticulumGroupScore,
+} from './reticulumGroupScore';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 
 const GROUP_META_TTL = 5 * 60 * 1000;
 const metadataCache = new Map<string, { data: any; fetchedAt: number }>();
 const inflightMetadata = new Map<string, Promise<any>>();
 
-export const getLegacyLevel = (timestamp?: number | string) => {
-  const created = Number(timestamp);
-  if (!Number.isFinite(created) || created <= 0) return null;
-  const start = new Date(created);
-  const now = new Date();
-  let years = now.getFullYear() - start.getFullYear();
-  if (
-    now.getMonth() < start.getMonth() ||
-    (now.getMonth() === start.getMonth() && now.getDate() < start.getDate())
-  ) years -= 1;
-  return Math.max(1, years + 1);
-};
-
-export const getCommunityLevel = (count?: number) => {
-  const members = Math.max(0, Number(count) || 0);
-  if (members <= 10) return 1;
-  if (members <= 25) return 2;
-  if (members <= 50) return 3;
-  if (members <= 99) return 4;
-  if (members <= 249) return 5;
-  if (members <= 499) return 6;
-  if (members <= 999) return 7;
-  if (members <= 2499) return 8;
-  if (members <= 4999) return 9;
-  return 10;
-};
-
-export const getGroupLevelColor = (level: number) => {
-  if (level === 1) return '#D7DCE5';
-  if (level === 2) return '#4CCB78';
-  if (level === 3) return '#4C8DFF';
-  if (level === 4) return '#A970FF';
-  if (level === 5) return '#FF9F43';
-  return '#FF5364';
-};
+export { getCommunityLevel, getLegacyLevel };
 
 const getMetadata = async (group: any, force = false) => {
   const id = String(group?.groupId ?? '');
@@ -119,6 +93,7 @@ const formatCreatedDate = (timestamp?: number | string) => {
 };
 
 export const ReticulumGroupAboutModal = () => {
+  const userInfo = useAtomValue(userInfoAtom);
   const [requestedGroup, setRequestedGroup] = useState<any>(null);
   const [details, setDetails] = useState<any>(null);
   const [ownerName, setOwnerName] = useState('');
@@ -150,6 +125,7 @@ export const ReticulumGroupAboutModal = () => {
   }, [requestedGroup]);
 
   const data = details || requestedGroup;
+  const ownerAddress = String(data?.owner || '').trim();
   const groupId = data?.groupId;
   const groupName = data?.groupName || data?.name || 'Group';
   const memberCount = data?.memberCount;
@@ -159,6 +135,7 @@ export const ReticulumGroupAboutModal = () => {
   const inviteLink = groupId ? `${QORTAL_PROTOCOL}use-group/action-join/groupid-${groupId}` : '';
   const description = data?.description ?? data?.groupDescription ?? '';
   const isOpen = data?.isOpen === true || data?.groupType === 0 || data?.groupType === 'OPEN';
+  const groupScore = useReticulumGroupScore(groupId, isOpen);
   const avatarUrl = ownerName && groupId
     ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
     : undefined;
@@ -230,11 +207,9 @@ export const ReticulumGroupAboutModal = () => {
               </Avatar>
               <Typography sx={{ fontSize: 24, fontWeight: 750, lineHeight: 1.2 }}>{groupName}</Typography>
               <Box sx={{ mt: 1.15 }}>
-                <GroupLevelBadge
-                  communityLevel={communityLevel}
-                  created={created}
-                  legacyLevel={legacyLevel}
-                  memberCount={Number(memberCount) || 0}
+                <GroupScoreBadge
+                  popoverAlign="center"
+                  score={groupScore}
                   size="full"
                 />
               </Box>
@@ -256,7 +231,40 @@ export const ReticulumGroupAboutModal = () => {
               {statRows.map(([label, value]) => (
                 <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
                   <Typography sx={{ color: 'text.secondary', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{label}</Typography>
-                  <Typography sx={{ color: label === 'Owner' ? '#FFB35D' : 'text.primary', fontSize: 13, fontWeight: 600, maxWidth: '58%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</Typography>
+                  {label === 'Owner' && ownerAddress ? (
+                    <Box sx={{ maxWidth: '58%', minWidth: 0 }}>
+                      <WrapperUserAction
+                        address={ownerAddress}
+                        name={ownerName || ownerAddress}
+                        reticulumUserCard={{
+                          address: ownerAddress,
+                          isMinterResolved: false,
+                          isOwn: ownerAddress === userInfo?.address,
+                          name: ownerName || undefined,
+                          role: 'owner',
+                          roleColor: '#FFB35D',
+                          status: null,
+                        }}
+                        trigger="hover"
+                      >
+                        <Typography
+                          sx={{
+                            color: '#FFB35D',
+                            fontSize: 13,
+                            fontWeight: 600,
+                            maxWidth: '100%',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {value}
+                        </Typography>
+                      </WrapperUserAction>
+                    </Box>
+                  ) : (
+                    <Typography sx={{ color: label === 'Owner' ? '#FFB35D' : 'text.primary', fontSize: 13, fontWeight: 600, maxWidth: '58%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</Typography>
+                  )}
                 </Box>
               ))}
             </Box>

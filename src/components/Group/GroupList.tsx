@@ -2,10 +2,12 @@ import {
   Avatar,
   Box,
   ButtonBase,
+  CircularProgress,
   Dialog,
   DialogContent,
   DialogTitle,
   GlobalStyles,
+  IconButton,
   List,
   ListItem,
   ListItemAvatar,
@@ -47,7 +49,10 @@ import { CustomButton } from '../../styles/App-styles';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import PersonOffIcon from '@mui/icons-material/PersonOff';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import AccessibilityNewOutlinedIcon from '@mui/icons-material/AccessibilityNewOutlined';
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import {
   groupAnnouncementSelector,
   groupChatTimestampSelector,
@@ -74,23 +79,17 @@ import {
   meshCallMaxParticipantsForMemberGroup,
   meshCallParticipantCountForMemberGroup,
 } from '../../lib/group-call/qortalGroupIdKey';
+import {
+  orderReticulumGroups,
+  persistReticulumGroupOrder,
+  readReticulumGroupOrder,
+} from './reticulumGroupRail';
+import { getNameInfo } from './groupApi';
+import { requestQueueMemberNames } from './groupQueues';
 
-const RETICULUM_GROUP_ORDER_STORAGE_KEY = 'qortal_reticulum_group_order_v1';
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_NOTIFICATION_RED = '#f23f42';
 const RETICULUM_CALL_GREEN = '#22c55e';
-const RETICULUM_AVATAR_PALETTE = [
-  '#7dd3fc',
-  '#86efac',
-  '#f9a8d4',
-  '#c4b5fd',
-  '#fcd34d',
-  '#fdba74',
-  '#a7f3d0',
-  '#93c5fd',
-  '#f0abfc',
-  '#fca5a5',
-];
 
 const reticulumTextScaleOptions = [
   { value: 'default', label: 'Default', detail: 'Current chat text size' },
@@ -98,27 +97,342 @@ const reticulumTextScaleOptions = [
   { value: 'high', label: 'High', detail: 'Largest readable chat text' },
 ] as const;
 
-const ReticulumChatSettingsDialog = ({
-  allowBlockedUsers,
-  open,
-  onClose,
-  onManageBlockedUsers,
+type ReticulumSilenceState = {
+  active: boolean;
+  createdAt: number;
+  expiresAt: number | null;
+  ignoredThrough: number;
+  ownerAddress: string;
+  scopeId: string;
+  scopeType: 'group' | 'dm';
+  targetAddress: string;
+  updatedAt: number;
+};
+
+const ReticulumHiddenUsersSettings = ({
+  active,
+  groupIds,
+  myAddress,
 }: {
-  allowBlockedUsers: boolean;
-  open: boolean;
-  onClose: () => void;
-  onManageBlockedUsers: () => void;
+  active: boolean;
+  groupIds: number[];
+  myAddress: string;
 }) => {
   const theme = useTheme();
-  const [activeSection, setActiveSection] = useState<'accessibility' | 'blocked'>(
+  const [hiddenUsers, setHiddenUsers] = useState<ReticulumSilenceState[]>([]);
+  const [namesByAddress, setNamesByAddress] = useState<Record<string, string>>(
+    {}
+  );
+  const [loading, setLoading] = useState(false);
+  const [unhidingAddress, setUnhidingAddress] = useState('');
+  const [error, setError] = useState('');
+  const requestIdRef = useRef(0);
+
+  const refresh = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    if (
+      !active ||
+      !myAddress ||
+      !window.reticulumChat?.listSilences
+    ) {
+      setHiddenUsers([]);
+      setLoading(false);
+      setError('');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      await window.reticulumChat.setLocalDmAddresses?.([myAddress]);
+      const silenceLists = await Promise.all([
+        window.reticulumChat.listSilences(myAddress, 'dm'),
+        ...groupIds.map((groupId) =>
+          window.reticulumChat.listSilences(myAddress, 'group', groupId)
+        ),
+      ]);
+      const silences = silenceLists
+        .flat()
+        .filter((silence) => silence.active) as ReticulumSilenceState[];
+      if (requestIdRef.current !== requestId) return;
+      setHiddenUsers(silences);
+
+      const unresolvedAddresses = [...new Set(
+        silences.map((silence) => silence.targetAddress)
+      )]
+        .filter((address) => address && !namesByAddress[address]);
+      if (unresolvedAddresses.length > 0) {
+        const resolved = await Promise.all(
+          unresolvedAddresses.map(async (address) => {
+            try {
+              const name = await requestQueueMemberNames.enqueue(() =>
+                getNameInfo(address)
+              );
+              return name ? ([address, name] as const) : null;
+            } catch {
+              return null;
+            }
+          })
+        );
+        if (requestIdRef.current !== requestId) return;
+        const entries = resolved.filter(
+          (entry): entry is readonly [string, string] => Boolean(entry)
+        );
+        if (entries.length > 0) {
+          setNamesByAddress((current) => ({
+            ...current,
+            ...Object.fromEntries(entries),
+          }));
+        }
+      }
+    } catch (loadError) {
+      if (requestIdRef.current !== requestId) return;
+      setHiddenUsers([]);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Unable to load hidden users'
+      );
+    } finally {
+      if (requestIdRef.current === requestId) setLoading(false);
+    }
+  }, [active, groupIds, myAddress, namesByAddress]);
+
+  useEffect(() => {
+    void refresh();
+    return () => {
+      requestIdRef.current += 1;
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!active || !myAddress) return;
+    return window.reticulumChat?.onSilenceChanged?.((payload) => {
+      if (payload.ownerAddress === myAddress) {
+        void refresh();
+      }
+    });
+  }, [active, myAddress, refresh]);
+
+  const hiddenPeople = useMemo(() => {
+    const people = new Map<string, ReticulumSilenceState[]>();
+    for (const silence of hiddenUsers) {
+      const existing = people.get(silence.targetAddress) || [];
+      existing.push(silence);
+      people.set(silence.targetAddress, existing);
+    }
+    return [...people.entries()].map(([targetAddress, silences]) => ({
+      silences,
+      targetAddress,
+    }));
+  }, [hiddenUsers]);
+
+  const unhide = useCallback(
+    async (targetAddress: string) => {
+      if (
+        !myAddress ||
+        !window.reticulumChat?.clearSilence ||
+        unhidingAddress
+      ) {
+        return;
+      }
+      setUnhidingAddress(targetAddress);
+      setError('');
+      try {
+        const matchingSilences = hiddenUsers.filter(
+          (silence) => silence.targetAddress === targetAddress
+        );
+        const results = await Promise.all(
+          matchingSilences.map((silence) =>
+            window.reticulumChat.clearSilence(
+              myAddress,
+              targetAddress,
+              silence.scopeType,
+              silence.scopeType === 'group'
+                ? Number(silence.scopeId)
+                : undefined
+            )
+          )
+        );
+        const failure = results.find((result) => !result?.success);
+        if (failure) {
+          throw new Error(failure.error || 'Unable to unhide user');
+        }
+        setHiddenUsers((current) =>
+          current.filter((silence) => silence.targetAddress !== targetAddress)
+        );
+      } catch (unhideError) {
+        setError(
+          unhideError instanceof Error
+            ? unhideError.message
+            : 'Unable to unhide user'
+        );
+      } finally {
+        setUnhidingAddress('');
+      }
+    },
+    [hiddenUsers, myAddress, unhidingAddress]
+  );
+
+  return (
+    <>
+      <Typography
+        component="h2"
+        sx={{
+          color: 'text.primary',
+          fontSize: 20,
+          fontWeight: 650,
+          lineHeight: '26px',
+        }}
+      >
+        Hidden Users
+      </Typography>
+      <Typography
+        sx={{
+          color: 'text.secondary',
+          fontSize: 14,
+          fontWeight: 400,
+          lineHeight: '20px',
+          maxWidth: 460,
+          mt: 0.75,
+        }}
+      >
+        People hidden in Reticulum Q-Chat stay out of your Reticulum chat until
+        you unhide them.
+      </Typography>
+
+      <Box
+        sx={{
+          border: `1px solid ${theme.palette.divider}`,
+          borderRadius: '10px',
+          mt: 2.5,
+          overflow: 'hidden',
+        }}
+      >
+        {loading ? (
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              justifyContent: 'center',
+              minHeight: 96,
+            }}
+          >
+            <CircularProgress size={24} />
+          </Box>
+        ) : hiddenPeople.length === 0 ? (
+          <Typography
+            sx={{ color: 'text.secondary', fontSize: 14, px: 2, py: 2.25 }}
+          >
+            No users hidden
+          </Typography>
+        ) : (
+          hiddenPeople.map(({ silences, targetAddress }, index) => {
+            const displayName =
+              namesByAddress[targetAddress] || targetAddress;
+            const permanent = silences.some(
+              (silence) => silence.expiresAt == null
+            );
+            const latestExpiry = Math.max(
+              ...silences.map((silence) => Number(silence.expiresAt) || 0)
+            );
+            return (
+              <Box
+                key={targetAddress}
+                sx={{
+                  alignItems: 'center',
+                  borderTop: index === 0 ? 'none' : '1px solid',
+                  borderColor: 'divider',
+                  display: 'flex',
+                  gap: 1.5,
+                  minHeight: 64,
+                  px: 2,
+                  py: 1,
+                }}
+              >
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      color: 'text.primary',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      lineHeight: '20px',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {displayName}
+                  </Typography>
+                  {displayName !== targetAddress && (
+                    <Typography
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: 11,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {targetAddress}
+                    </Typography>
+                  )}
+                  <Typography
+                    sx={{ color: 'text.secondary', fontSize: 11, mt: 0.25 }}
+                  >
+                    {permanent
+                      ? 'Hidden until you unhide them'
+                      : `Hidden until ${new Date(
+                          latestExpiry
+                        ).toLocaleString()}`}
+                  </Typography>
+                </Box>
+                <Tooltip title="Unhide">
+                  <span>
+                    <IconButton
+                      aria-label={`Unhide ${displayName}`}
+                      disabled={unhidingAddress === targetAddress}
+                      onClick={() => void unhide(targetAddress)}
+                      size="small"
+                      sx={{ color: 'text.secondary' }}
+                    >
+                      {unhidingAddress === targetAddress ? (
+                        <CircularProgress size={18} />
+                      ) : (
+                        <VisibilityRoundedIcon sx={{ fontSize: 19 }} />
+                      )}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Box>
+            );
+          })
+        )}
+      </Box>
+      {error && (
+        <Typography color="error" sx={{ fontSize: 12, mt: 1 }}>
+          {error}
+        </Typography>
+      )}
+    </>
+  );
+};
+
+const ReticulumChatSettingsDialog = ({
+  groupIds,
+  myAddress,
+  open,
+  onClose,
+}: {
+  groupIds: number[];
+  myAddress: string;
+  open: boolean;
+  onClose: () => void;
+}) => {
+  const theme = useTheme();
+  const [activeSection, setActiveSection] = useState<'accessibility' | 'hidden'>(
     'accessibility'
   );
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
-  useEffect(() => {
-    if (!allowBlockedUsers && activeSection === 'blocked') {
-      setActiveSection('accessibility');
-    }
-  }, [activeSection, allowBlockedUsers]);
   const navButtonSx = (selected: boolean) => ({
     alignItems: 'center',
     backgroundColor: selected ? theme.palette.action.hover : 'transparent',
@@ -217,27 +531,26 @@ const ReticulumChatSettingsDialog = ({
           <ButtonBase onClick={() => setActiveSection('accessibility')} sx={navButtonSx(activeSection === 'accessibility')}>
             <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} /> Text size
           </ButtonBase>
-          {allowBlockedUsers && (
-            <>
-              <Typography
-                sx={{
-                  color: 'text.secondary',
-                  fontSize: 11,
-                  fontWeight: 650,
-                  letterSpacing: '0.08em',
-                  lineHeight: '16px',
-                  mb: 1.25,
-                  mt: 3,
-                  textTransform: 'uppercase',
-                }}
-              >
-                Safety
-              </Typography>
-              <ButtonBase onClick={() => setActiveSection('blocked')} sx={navButtonSx(activeSection === 'blocked')}>
-                <PersonOffIcon sx={{ fontSize: 19 }} /> Blocked users
-              </ButtonBase>
-            </>
-          )}
+          <Typography
+            sx={{
+              color: 'text.secondary',
+              fontSize: 11,
+              fontWeight: 650,
+              letterSpacing: '0.08em',
+              lineHeight: '16px',
+              mb: 1.25,
+              mt: 3,
+              textTransform: 'uppercase',
+            }}
+          >
+            Privacy
+          </Typography>
+          <ButtonBase
+            onClick={() => setActiveSection('hidden')}
+            sx={navButtonSx(activeSection === 'hidden')}
+          >
+            <VisibilityOffRoundedIcon sx={{ fontSize: 19 }} /> Hidden users
+          </ButtonBase>
         </Box>
         <DialogContent sx={{ flex: 1, minHeight: 0, overflowY: 'auto', p: '28px' }}>
           {activeSection === 'accessibility' ? (
@@ -278,35 +591,11 @@ const ReticulumChatSettingsDialog = ({
               </Box>
             </>
           ) : (
-            <>
-              <Typography component="h2" sx={{ color: 'text.primary', fontSize: 20, fontWeight: 650, lineHeight: '26px' }}>
-                Blocked users
-              </Typography>
-              <Typography sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 400, lineHeight: '20px', maxWidth: 460, mt: 0.75 }}>
-                Review blocked accounts or add a name or address to your block list.
-              </Typography>
-              <ButtonBase
-                onClick={() => {
-                  onClose();
-                  onManageBlockedUsers();
-                }}
-                sx={{
-                  backgroundColor: theme.palette.primary.main,
-                  borderRadius: '8px',
-                  color: theme.palette.primary.contrastText,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  lineHeight: '20px',
-                  minHeight: 38,
-                  mt: 2.5,
-                  px: 2,
-                  '&:active': { backgroundColor: '#1e40af' },
-                  '&:focus-visible': { boxShadow: `0 0 0 2px ${theme.palette.background.paper}, 0 0 0 4px ${theme.palette.primary.main}`, outline: 'none' },
-                }}
-              >
-                Manage blocked accounts
-              </ButtonBase>
-            </>
+            <ReticulumHiddenUsersSettings
+              active={open && activeSection === 'hidden'}
+              groupIds={groupIds}
+              myAddress={myAddress}
+            />
           )}
         </DialogContent>
       </Box>
@@ -372,15 +661,6 @@ function GroupDropIndicator({
     />
   );
 }
-
-const getPastelAvatarColor = (value?: string | number) => {
-  const key = String(value || 'group');
-  let hash = 0;
-  for (let index = 0; index < key.length; index += 1) {
-    hash = (hash * 31 + key.charCodeAt(index)) % RETICULUM_AVATAR_PALETTE.length;
-  }
-  return RETICULUM_AVATAR_PALETTE[Math.abs(hash) % RETICULUM_AVATAR_PALETTE.length];
-};
 
 const ReticulumDmMorphIcon = ({
   active,
@@ -494,6 +774,7 @@ const GroupListInner = ({
   selectedGroup,
   getUserSettings,
   setOpenAddGroup,
+  setOpenFindGroup,
   setIsOpenBlockedUserModal,
   myAddress,
   reticulumChatEnabled,
@@ -512,17 +793,9 @@ const GroupListInner = ({
   const groupChatHasUnread = useAtomValue(groupChatHasUnreadAtom);
   const groupsAnnHasUnread = useAtomValue(groupsAnnHasUnreadAtom);
   const railMode = Boolean(reticulumChatEnabled);
-  const [manualGroupOrder, setManualGroupOrder] = useState<string[]>(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const parsed = JSON.parse(
-        window.localStorage.getItem(RETICULUM_GROUP_ORDER_STORAGE_KEY) || '[]'
-      );
-      return Array.isArray(parsed) ? parsed.map(String) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [manualGroupOrder, setManualGroupOrder] = useState<string[]>(
+    readReticulumGroupOrder
+  );
   const [groupDragTarget, setGroupDragTarget] =
     useState<GroupDragTarget | null>(null);
   const groupDragTargetRef = useRef<GroupDragTarget | null>(null);
@@ -532,30 +805,25 @@ const GroupListInner = ({
   );
   const orderedGroups = useMemo(() => {
     if (!railMode) return groups;
-    const orderIndex = new Map(
-      manualGroupOrder.map((groupId, index) => [String(groupId), index])
-    );
-    return [...groups].sort((a: any, b: any) => {
-      const aIndex = orderIndex.get(String(a?.groupId));
-      const bIndex = orderIndex.get(String(b?.groupId));
-      if (aIndex != null && bIndex != null) return aIndex - bIndex;
-      if (aIndex != null) return -1;
-      if (bIndex != null) return 1;
-      return 0;
-    });
+    return orderReticulumGroups(groups, manualGroupOrder);
   }, [groups, manualGroupOrder, railMode]);
   const orderedGroupIds = useMemo(
     () => orderedGroups.map((group: any) => String(group?.groupId)),
     [orderedGroups]
   );
+  const reticulumGroupIds = useMemo(
+    () =>
+      orderedGroups
+        .map((group: any) => Number(group?.groupId))
+        .filter(
+          (groupId: number) => Number.isInteger(groupId) && groupId > 0
+        ),
+    [orderedGroups]
+  );
 
   const persistManualGroupOrder = useCallback((nextOrder: string[]) => {
     setManualGroupOrder(nextOrder);
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(
-      RETICULUM_GROUP_ORDER_STORAGE_KEY,
-      JSON.stringify(nextOrder)
-    );
+    persistReticulumGroupOrder(nextOrder);
   }, []);
 
   const handleGroupDragEnd = useCallback(
@@ -821,6 +1089,30 @@ const GroupListInner = ({
             </ButtonBase>
           </Tooltip>
 
+          <Tooltip placement="right" title="Find groups">
+            <ButtonBase
+              aria-label="Find groups"
+              onClick={() => {
+                setOpenFindGroup(true);
+              }}
+              sx={{
+                alignItems: 'center',
+                borderRadius: '8px',
+                color: theme.palette.text.secondary,
+                display: 'flex',
+                height: 34,
+                justifyContent: 'center',
+                width: 34,
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  color: theme.palette.text.primary,
+                },
+              }}
+            >
+              <SearchRoundedIcon sx={{ fontSize: 20 }} />
+            </ButtonBase>
+          </Tooltip>
+
           <Tooltip placement="right" title="Chat settings">
             <ButtonBase
               onClick={() => {
@@ -845,10 +1137,10 @@ const GroupListInner = ({
           </Tooltip>
         </Box>
         <ReticulumChatSettingsDialog
-          allowBlockedUsers={!isRunningPublicNode}
+          groupIds={reticulumGroupIds}
+          myAddress={myAddress}
           open={reticulumSettingsOpen}
           onClose={() => setReticulumSettingsOpen(false)}
-          onManageBlockedUsers={() => setIsOpenBlockedUserModal(true)}
         />
       </Box>
     );
@@ -1271,19 +1563,12 @@ const GroupItem = memo(
     if (railMode) {
       const groupLabel =
         group.groupId === '0' ? 'General' : group.groupName || 'Group';
-      const fallbackAvatarColor = getPastelAvatarColor(
-        group?.groupId || group?.groupName
-      );
       const unreadBadgeLabel =
         reticulumUnreadCount > 99 ? '99+' : String(reticulumUnreadCount);
       const avatarNode = ownerName ? (
         <Avatar
           sx={{
-            backgroundColor: isAvatarLoaded
-              ? isSelected
-                ? RETICULUM_ACTIVE_BLUE
-                : theme.palette.background.surface
-              : fallbackAvatarColor,
+            backgroundColor: 'transparent',
             color: theme.palette.common.white,
             display: 'flex',
             fontWeight: 800,
@@ -1309,7 +1594,7 @@ const GroupItem = memo(
         <Avatar
           alt={group?.groupName?.charAt(0)}
           sx={{
-            backgroundColor: fallbackAvatarColor,
+            backgroundColor: 'transparent',
             color: theme.palette.common.white,
             display: 'flex',
             fontWeight: 800,

@@ -1426,6 +1426,21 @@ try {
             confidence: number;
           }>
         >,
+      getPublicGroupActivitySnapshot: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:getPublicGroupActivitySnapshot'
+        ) as Promise<{
+          availableGroupIds: number[];
+          observedAt: number;
+          summaries: Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>;
+        }>,
       setLocalDmAddresses: async (addresses: string[]) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalDmAddresses',
@@ -2139,6 +2154,21 @@ try {
             confidence: number;
           }>
         >,
+      getPublicGroupActivitySnapshot: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:getPublicGroupActivitySnapshot'
+        ) as Promise<{
+          availableGroupIds: number[];
+          observedAt: number;
+          summaries: Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>;
+        }>,
       setLocalDmAddresses: async (addresses: string[]) =>
         ipcRenderer.invoke(
           'reticulumChat:setLocalDmAddresses',

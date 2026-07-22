@@ -20,6 +20,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { useTranslation } from 'react-i18next';
 import { GroupActivityEmptyState } from './GroupActivityEmptyState';
+import { executeEvent } from '../../utils/events';
 
 export const GroupInvites = ({
   myAddress,
@@ -250,9 +251,8 @@ export const GroupInvites = ({
   );
 
   const handleFindGroups = useCallback(() => {
-    setOpenAddGroupTab?.(1);
-    setOpenAddGroup?.(true);
-  }, [setOpenAddGroup, setOpenAddGroupTab]);
+    executeEvent('open-group-discovery', {});
+  }, []);
 
   const handleInviteItemClick = (e: React.MouseEvent<HTMLElement>, group: (typeof groupsWithJoinRequests)[number]) => {
     setPopoverAnchor(e.currentTarget as HTMLElement);

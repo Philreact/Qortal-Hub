@@ -27,7 +27,7 @@ import FormatQuoteIcon from '@mui/icons-material/FormatQuote';
 import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
 import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
-import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
 import Compressor from 'compressorjs';
@@ -519,6 +519,7 @@ type TiptapProps = {
   compactChat?: boolean;
   compactActions?: ReactNode;
   placeholder?: string;
+  collapseFormattingTraySignal?: number;
 };
 
 const Tiptap = ({
@@ -541,10 +542,16 @@ const Tiptap = ({
   compactChat = false,
   compactActions,
   placeholder,
+  collapseFormattingTraySignal,
 }: TiptapProps) => {
   const theme = useTheme();
   const compactFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFormattingTray, setShowFormattingTray] = useState(false);
+
+  useEffect(() => {
+    if (collapseFormattingTraySignal === undefined) return;
+    setShowFormattingTray(false);
+  }, [collapseFormattingTraySignal]);
   const [isDisabledEditorEnter, setIsDisabledEditorEnter] = useAtom(
     isDisabledEditorEnterAtom
   );
@@ -914,13 +921,16 @@ const Tiptap = ({
                 onClick={() => compactFileInputRef.current?.click()}
                 size="small"
                 sx={{
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '8px',
                   color: theme.palette.text.secondary,
                   flexShrink: 0,
                   height: 34,
                   width: 34,
                 }}
               >
-                <AddCircleOutlineIcon sx={{ fontSize: 22 }} />
+                <AddRoundedIcon sx={{ fontSize: 20 }} />
               </IconButton>
             </span>
           </Tooltip>
@@ -955,7 +965,7 @@ const Tiptap = ({
                 fontSize: 14,
                 fontWeight: 700,
                 height: 34,
-                width: 42,
+                width: 34,
               }}
             >
               Aa

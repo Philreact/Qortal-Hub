@@ -110,7 +110,6 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import TagRoundedIcon from '@mui/icons-material/TagRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
-import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { ContextMenu, CustomStyledMenu } from '../ContextMenu';
 import { GroupAvatar } from './GroupAvatar';
 import { messageHasImage } from '../../utils/chat';
@@ -1314,19 +1313,6 @@ export const ChatGroup = ({
   ] = useState<Record<string, 'owner' | 'admin'>>({});
   const [reticulumMemberRolesReady, setReticulumMemberRolesReady] =
     useState(false);
-  const [reticulumSilencedUsersOpen, setReticulumSilencedUsersOpen] =
-    useState(false);
-  const [reticulumSilencedUsers, setReticulumSilencedUsers] = useState<
-    ReticulumSilenceState[]
-  >([]);
-  const [reticulumSilencedUsersLoading, setReticulumSilencedUsersLoading] =
-    useState(false);
-  const [reticulumSilencedUsersError, setReticulumSilencedUsersError] =
-    useState('');
-  const [reticulumUnsilencingAddress, setReticulumUnsilencingAddress] =
-    useState('');
-  const reticulumSilenceListRequestRef = useRef(0);
-  const reticulumSilenceScopeRevisionRef = useRef(0);
   const [reticulumHiddenAuthorAddresses, setReticulumHiddenAuthorAddresses] =
     useState<Set<string>>(() => new Set());
   const [isOpenQManager, setIsOpenQManager] = useState(null);
@@ -1519,6 +1505,7 @@ export const ChatGroup = ({
   const timeoutIdRef = useRef(null); // Timeout ID reference
   const groupSocketTimeoutRef = useRef(null); // Group Socket Timeout reference
   const editorRef = useRef(null);
+  const [formattingTrayResetKey, setFormattingTrayResetKey] = useState(0);
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
   const {
     enabled: reticulumChatEnabled,
@@ -2170,107 +2157,6 @@ export const ChatGroup = ({
     [isReticulumHiddenAuthor]
   );
 
-  const refreshReticulumSilencedUsers = useCallback(async () => {
-    const requestId = ++reticulumSilenceListRequestRef.current;
-    const groupId = Number(selectedGroup);
-    if (
-      !reticulumChatEnabled ||
-      !myAddress ||
-      !Number.isInteger(groupId) ||
-      groupId <= 0 ||
-      !window.reticulumChat?.listSilences
-    ) {
-      setReticulumSilencedUsers([]);
-      setReticulumHiddenAuthorAddresses((current) =>
-        current.size === 0 ? current : new Set<string>()
-      );
-      setReticulumSilencedUsersLoading(false);
-      setReticulumSilencedUsersError('');
-      return;
-    }
-    setReticulumSilencedUsersLoading(true);
-    setReticulumSilencedUsersError('');
-    try {
-      const silences = await loadActiveReticulumGroupSilences();
-      if (reticulumSilenceListRequestRef.current !== requestId) return;
-      setReticulumSilencedUsers(silences);
-      setReticulumHiddenAuthorsFromSilences(silences);
-    } catch (error) {
-      if (reticulumSilenceListRequestRef.current !== requestId) return;
-      setReticulumSilencedUsers([]);
-      setReticulumSilencedUsersError(
-        error instanceof Error ? error.message : 'Unable to load hidden users'
-      );
-    } finally {
-      if (reticulumSilenceListRequestRef.current === requestId) {
-        setReticulumSilencedUsersLoading(false);
-      }
-    }
-  }, [
-    loadActiveReticulumGroupSilences,
-    myAddress,
-    reticulumChatEnabled,
-    selectedGroup,
-    setReticulumHiddenAuthorsFromSilences,
-  ]);
-
-  const openReticulumSilencedUsers = useCallback(() => {
-    setReticulumSilencedUsersOpen(true);
-    void refreshReticulumSilencedUsers();
-  }, [refreshReticulumSilencedUsers]);
-
-  const closeReticulumSilencedUsers = useCallback(() => {
-    reticulumSilenceListRequestRef.current += 1;
-    reticulumSilenceScopeRevisionRef.current += 1;
-    setReticulumSilencedUsersOpen(false);
-    setReticulumSilencedUsersLoading(false);
-    setReticulumSilencedUsersError('');
-    setReticulumUnsilencingAddress('');
-  }, []);
-
-  const unsilenceReticulumGroupUser = useCallback(
-    async (targetAddress: string) => {
-      const groupId = Number(selectedGroup);
-      if (
-        !myAddress ||
-        !targetAddress ||
-        !Number.isInteger(groupId) ||
-        groupId <= 0 ||
-        !window.reticulumChat?.clearSilence
-      ) {
-        return;
-      }
-      const scopeRevision = reticulumSilenceScopeRevisionRef.current;
-      setReticulumUnsilencingAddress(targetAddress);
-      setReticulumSilencedUsersError('');
-      try {
-        const result = await window.reticulumChat.clearSilence(
-          myAddress,
-          targetAddress,
-          'group',
-          groupId
-        );
-        if (!result?.success) {
-          throw new Error(result?.error || 'Unable to unhide user');
-        }
-        if (reticulumSilenceScopeRevisionRef.current !== scopeRevision) return;
-        setReticulumSilencedUsers((current) =>
-          current.filter((silence) => silence.targetAddress !== targetAddress)
-        );
-      } catch (error) {
-        if (reticulumSilenceScopeRevisionRef.current !== scopeRevision) return;
-        setReticulumSilencedUsersError(
-          error instanceof Error ? error.message : 'Unable to unhide user'
-        );
-      } finally {
-        if (reticulumSilenceScopeRevisionRef.current === scopeRevision) {
-          setReticulumUnsilencingAddress('');
-        }
-      }
-    },
-    [myAddress, selectedGroup]
-  );
-
   useEffect(() => {
     let cancelled = false;
     const groupId = Number(selectedGroup);
@@ -2322,21 +2208,12 @@ export const ChatGroup = ({
             return areStringSetsEqual(current, next) ? current : next;
           });
         }
-        if (reticulumSilencedUsersOpen) {
-          void refreshReticulumSilencedUsers();
-        }
       }
     });
   }, [
-    refreshReticulumSilencedUsers,
     reticulumChatEnabled,
-    reticulumSilencedUsersOpen,
     selectedGroup,
   ]);
-
-  useEffect(() => {
-    closeReticulumSilencedUsers();
-  }, [closeReticulumSilencedUsers, selectedGroup]);
   const reticulumSearchAuthorOptions = useMemo(() => {
     const map = new Map<string, string>();
     for (const member of groupMentionMembers) {
@@ -4566,6 +4443,9 @@ export const ChatGroup = ({
           !deleteImage
         )
           return;
+        if (reticulumChatEnabled) {
+          setFormattingTrayResetKey((key) => key + 1);
+        }
         if (htmlContent?.trim() === '<p></p>') {
           htmlContent = null;
         }
@@ -6976,15 +6856,6 @@ export const ChatGroup = ({
                   </Box>
                 </Tooltip>
               </ContextMenu>
-              <Tooltip title="Hidden users">
-                <IconButton
-                  size="small"
-                  onClick={openReticulumSilencedUsers}
-                  sx={{ color: 'text.secondary', p: 0.5 }}
-                >
-                  <VisibilityOffRoundedIcon sx={{ fontSize: 17 }} />
-                </IconButton>
-              </Tooltip>
             </Box>
             {isReticulumChannelMetadataVisible && (
               <DndContext
@@ -7618,15 +7489,19 @@ export const ChatGroup = ({
             />
           )}
 
-          {reticulumTypingText && (
+          {reticulumChatEnabled && (
             <Typography
               sx={{
                 color: theme.palette.text.secondary,
                 flexShrink: 0,
                 fontSize: '12px',
-                minHeight: '18px',
-                px: 2,
-                py: 0.5,
+                height: '24px',
+                lineHeight: '20px',
+                overflow: 'hidden',
+                px: 2.25,
+                pt: '2px',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
             >
               {reticulumTypingText}
@@ -7945,6 +7820,7 @@ export const ChatGroup = ({
                     insertImage={insertImage}
                     insertFiles={insertFiles}
                     compactChat={reticulumChatEnabled}
+                    collapseFormattingTraySignal={formattingTrayResetKey}
                     compactActions={
                       reticulumChatEnabled ? (
                         <ReticulumMessageExpiryButton
@@ -8948,130 +8824,6 @@ export const ChatGroup = ({
           )}
         </Box>
       )}
-
-      <Dialog
-        open={reticulumSilencedUsersOpen}
-        onClose={closeReticulumSilencedUsers}
-        fullWidth
-        maxWidth="xs"
-        PaperProps={{ sx: reticulumDialogPaperSx }}
-      >
-        <DialogTitle sx={reticulumDialogTitleSx}>Hidden users</DialogTitle>
-        <DialogContent sx={{ px: 3, pb: 1.5 }}>
-          {reticulumSilencedUsersLoading ? (
-            <Box
-              sx={{
-                alignItems: 'center',
-                display: 'flex',
-                justifyContent: 'center',
-                minHeight: 96,
-              }}
-            >
-              <CircularProgress size={24} />
-            </Box>
-          ) : reticulumSilencedUsers.length === 0 ? (
-            <Typography sx={{ color: 'text.secondary', fontSize: 14, py: 2 }}>
-              No users are hidden in this group.
-            </Typography>
-          ) : (
-            <Box>
-              {reticulumSilencedUsers.map((silence, index) => {
-                const displayName =
-                  reticulumMemberNameByAddress.get(silence.targetAddress) ||
-                  silence.targetAddress;
-                return (
-                  <Box
-                    key={silence.targetAddress}
-                    sx={{
-                      alignItems: 'center',
-                      borderTop: index === 0 ? 'none' : '1px solid',
-                      borderColor: 'divider',
-                      display: 'flex',
-                      gap: 1.5,
-                      minHeight: 64,
-                      py: 1,
-                    }}
-                  >
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography
-                        sx={{
-                          fontSize: 14,
-                          fontWeight: 700,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {displayName}
-                      </Typography>
-                      {displayName !== silence.targetAddress && (
-                        <Typography
-                          sx={{
-                            color: 'text.secondary',
-                            fontSize: 11,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {silence.targetAddress}
-                        </Typography>
-                      )}
-                      <Typography
-                        sx={{ color: 'text.secondary', fontSize: 11, mt: 0.25 }}
-                      >
-                        {silence.expiresAt == null
-                          ? 'Until turned off'
-                          : `Until ${new Date(
-                              silence.expiresAt
-                            ).toLocaleString()}`}
-                      </Typography>
-                    </Box>
-                    <Tooltip title="Unhide">
-                      <span>
-                        <IconButton
-                          aria-label={`Unhide ${displayName}`}
-                          disabled={
-                            reticulumUnsilencingAddress ===
-                            silence.targetAddress
-                          }
-                          onClick={() =>
-                            void unsilenceReticulumGroupUser(
-                              silence.targetAddress
-                            )
-                          }
-                          size="small"
-                          sx={{ color: 'text.secondary' }}
-                        >
-                          {reticulumUnsilencingAddress ===
-                          silence.targetAddress ? (
-                            <CircularProgress size={18} />
-                          ) : (
-                            <VisibilityRoundedIcon sx={{ fontSize: 19 }} />
-                          )}
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  </Box>
-                );
-              })}
-            </Box>
-          )}
-          {reticulumSilencedUsersError && (
-            <Typography color="error" sx={{ fontSize: 12, mt: 1 }}>
-              {reticulumSilencedUsersError}
-            </Typography>
-          )}
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2.5 }}>
-          <Button
-            onClick={closeReticulumSilencedUsers}
-            sx={reticulumSecondaryButtonSx}
-          >
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog
         open={Boolean(reticulumLargeImageChoice)}

@@ -1466,6 +1466,12 @@ export type ReticulumPublicGroupActivityLocalState = {
   days: Array<{ bucket: number; count: number; authors: string }>;
 };
 
+export type ReticulumPublicGroupActivitySnapshot = {
+  availableGroupIds: number[];
+  observedAt: number;
+  summaries: ReticulumPublicGroupActivitySummary[];
+};
+
 function emptyPublicActivityAuthorSketch(): Uint8Array {
   return new Uint8Array(RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS);
 }
@@ -6348,6 +6354,39 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
+  getPublicGroupActivitySnapshot(): ReticulumPublicGroupActivitySnapshot {
+    if (
+      this.hasKnownPublicGroups() &&
+      this.now() - this.publicGroupActivityLastRequestedAt >=
+        RETICULUM_PUBLIC_ACTIVITY_REFRESH_MS
+    ) {
+      this.schedulePublicActivityRefresh(0);
+    }
+    const now = this.now();
+    const byGroup = new Map(
+      this.buildPublicGroupActivityTop(RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX).map(
+        (summary) => [summary.groupId, summary]
+      )
+    );
+    for (const groupId of this.localGroupIds) {
+      if (!this.isLocalPublicGroup(groupId) || byGroup.has(groupId)) continue;
+      byGroup.set(
+        groupId,
+        summarizeReticulumPublicGroupActivity(
+          groupId,
+          this.publicGroupActivityStates.get(groupId) ??
+            createReticulumPublicGroupActivityState(),
+          now
+        )
+      );
+    }
+    return {
+      availableGroupIds: [...byGroup.keys()],
+      observedAt: now,
+      summaries: [...byGroup.values()],
+    };
+  }
+
   private isLocalPublicGroup(groupId: number): boolean {
     return (
       this.localGroupMembershipsInitialized &&
@@ -6379,10 +6418,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   private recordPublicGroupActivity(event: ReticulumChatEvent): void {
     if (!this.isLocalPublicGroup(event.groupId)) return;
-    if (
-      event.eventType !== 'message' &&
-      event.eventType !== 'attachment_manifest'
-    ) {
+    if (event.eventType !== 'message') {
       return;
     }
     const channel = this.db.getChannel(event.groupId, event.channelId);

@@ -84,6 +84,7 @@ import {
   isOpenBlockedModalAtom,
   isRunningPublicNodeAtom,
   memberGroupsAtom,
+  memberGroupsWithReticulumChatAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
   reticulumDirectSummariesAtom,
@@ -102,6 +103,10 @@ import { WalletsAppWrapper } from './WalletsAppWrapper';
 import { useTranslation } from 'react-i18next';
 import { GroupList } from './GroupList';
 import { ReticulumGroupAboutModal } from './ReticulumGroupAbout';
+import { FirstTimeQChatEmptyState } from './FirstTimeQChatEmptyState';
+import { ReturningUserActivityDashboard } from './ReturningUserActivityDashboard';
+import { ReturningUserCaughtUpState } from './ReturningUserCaughtUpState';
+import { startReticulumGroupScoreScheduler } from './reticulumGroupScore';
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
@@ -140,6 +145,9 @@ const ReticulumChatGroup = memo(ChatGroup);
 
 const LazyAddGroup = lazy(() =>
   import('./AddGroup').then((m) => ({ default: m.AddGroup }))
+);
+const LazyFindGroupModal = lazy(() =>
+  import('./FindGroupModal').then((m) => ({ default: m.FindGroupModal }))
 );
 const LazyManageMembers = lazy(() =>
   import('./ManageMembers').then((m) => ({ default: m.ManageMembers }))
@@ -823,6 +831,7 @@ export const Group = ({
   const [groupOwner, setGroupOwner] = useState(null);
   const [triedToFetchSecretKey, setTriedToFetchSecretKey] = useState(false);
   const [openAddGroup, setOpenAddGroup] = useState(false);
+  const [openFindGroup, setOpenFindGroup] = useState(false);
   const [openAddGroupTab, setOpenAddGroupTab] = useState<0 | 1 | 2>(0);
   const [openManageMembers, setOpenManageMembers] = useState(false);
   const setMemberGroups = useSetAtom(memberGroupsAtom);
@@ -855,6 +864,9 @@ export const Group = ({
   const setMutedGroups = useSetAtom(mutedGroupsAtom);
   const mutedGroups = useAtomValue(mutedGroupsAtom);
   const memberGroupsForReticulum = useAtomValue(memberGroupsAtom);
+  const memberGroupsWithReticulumActivity = useAtomValue(
+    memberGroupsWithReticulumChatAtom
+  );
   const [memberGroupsLoadedAddress, setMemberGroupsLoadedAddress] =
     useState('');
   const [notificationReticulumChannelId, setNotificationReticulumChannelId] =
@@ -1139,6 +1151,8 @@ export const Group = ({
     setReticulumAdminGroupsLoadedAddress,
   ] = useState('');
   const [reticulumMembershipsAppliedKey, setReticulumMembershipsAppliedKey] =
+    useState('');
+  const [reticulumSummariesLoadedMembershipKey, setReticulumSummariesLoadedMembershipKey] =
     useState('');
   const [reticulumTransportReadyRevision, setReticulumTransportReadyRevision] =
     useState(0);
@@ -1534,7 +1548,7 @@ export const Group = ({
     [fireReticulumChatNotification, mutedGroups]
   );
 
-  const refreshReticulumChatSummaries = useCallback(async () => {
+  const refreshReticulumChatSummaries = useCallback(async (): Promise<boolean> => {
     try {
       const enabled = await window.reticulumChat?.isEnabled?.();
       setReticulumChatEnabled(enabled === true);
@@ -1543,14 +1557,14 @@ export const Group = ({
         reticulumMentionBadgeSummariesRef.current = null;
         setReticulumChatSummaries({});
         void window.reticulumChat?.updateMentionBadge?.(0);
-        return;
+        return false;
       }
       const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
       if (!Array.isArray(summaries)) {
         reticulumMentionBadgeSummariesRef.current = null;
         setReticulumChatSummaries({});
         void window.reticulumChat?.updateMentionBadge?.(0);
-        return;
+        return false;
       }
       const next = summaries.reduce(
         (acc, summary: any) => {
@@ -1573,11 +1587,13 @@ export const Group = ({
       reticulumMentionBadgeSummariesRef.current = badgeState.summaries;
       void window.reticulumChat?.updateMentionBadge?.(badgeState.count);
       void maybeFireReticulumChatNotification(previous, next);
+      return true;
     } catch (error) {
       console.error(
         '[ReticulumChat] Failed to refresh group summaries:',
         error
       );
+      return false;
     }
   }, [
     maybeFireReticulumChatNotification,
@@ -1600,6 +1616,7 @@ export const Group = ({
     myAddressRef.current = myAddress || '';
     setReticulumAdminGroupsLoadedAddress('');
     setReticulumMembershipsAppliedKey('');
+    setReticulumSummariesLoadedMembershipKey('');
     previousReticulumSummariesRef.current = null;
     notifiedReticulumEventIdsRef.current.clear();
     if (!myAddress) {
@@ -1656,6 +1673,7 @@ export const Group = ({
 
     let cancelled = false;
     setReticulumMembershipsAppliedKey('');
+    setReticulumSummariesLoadedMembershipKey('');
     void (async () => {
       const enabled = await window.reticulumChat?.isEnabled?.();
       if (cancelled || !enabled) {
@@ -1696,7 +1714,9 @@ export const Group = ({
         void window.reticulumChat?.updateMentionBadge?.(0);
         return;
       }
-      await refreshReticulumChatSummaries();
+      const summariesLoaded = await refreshReticulumChatSummaries();
+      if (cancelled || !summariesLoaded) return;
+      setReticulumSummariesLoadedMembershipKey(reticulumMembershipsKey);
       scheduleReticulumChatSummariesRefresh();
     })();
 
@@ -3211,9 +3231,43 @@ export const Group = ({
     setSelectedDirect(null);
     setNewChat(false);
     openQChatTab();
-    setOpenAddGroupTab(1);
-    setOpenAddGroup(true);
+    setOpenAddGroup(false);
+    setOpenFindGroup(true);
   }, []);
+
+  const hasConfirmedNoReticulumGroups =
+    reticulumChatEnabled &&
+    memberGroupsLoadedAddress === myAddress &&
+    getGroupIdsFromGroupLikeList(memberGroupsForReticulum).length === 0;
+  const hasConfirmedReticulumGroups =
+    reticulumChatEnabled &&
+    memberGroupsLoadedAddress === myAddress &&
+    getGroupIdsFromGroupLikeList(memberGroupsForReticulum).length > 0;
+  const reticulumActivityDashboardReady =
+    hasConfirmedReticulumGroups &&
+    reticulumMembershipsAppliedKey === reticulumMembershipsKey &&
+    reticulumSummariesLoadedMembershipKey === reticulumMembershipsKey;
+  const reticulumHasUnreadActivity = memberGroupsWithReticulumActivity.some(
+    (group: any) => {
+      const summary = group?.reticulumChatSummary;
+      return (
+        Number(summary?.unreadCount || 0) > 0 ||
+        Number(summary?.mentionCount || 0) > 0 ||
+        summary?.hasUnreadMention === true
+      );
+    }
+  );
+  const reticulumWelcomeDisplayName =
+    typeof userInfo?.name === 'string' &&
+    userInfo.name.trim() &&
+    userInfo.name.trim() !== myAddress
+      ? userInfo.name.trim()
+      : undefined;
+
+  useEffect(() => {
+    if (!reticulumChatEnabled) return undefined;
+    return startReticulumGroupScoreScheduler();
+  }, [reticulumChatEnabled]);
 
   useEffect(() => {
     subscribeToEvent('open-group-discovery', openGroupDiscovery);
@@ -3715,6 +3769,7 @@ export const Group = ({
             selectedGroup={selectedGroup}
             getUserSettings={getUserSettings}
             setOpenAddGroup={setOpenAddGroup}
+            setOpenFindGroup={setOpenFindGroup}
             setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
             myAddress={myAddress}
             reticulumChatEnabled={reticulumChatEnabled}
@@ -3780,13 +3835,39 @@ export const Group = ({
             !newChat &&
             !selectedGroup &&
             !isReticulumDirectOverlayOpen && (
-              <CenterBox>
-                <NoSelectionTypography>
-                  {t('group:message.generic.no_selection', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                </NoSelectionTypography>
-              </CenterBox>
+              reticulumChatEnabled ? (
+                hasConfirmedNoReticulumGroups ? (
+                  <FirstTimeQChatEmptyState
+                    onFindCommunities={openGroupDiscovery}
+                  />
+                ) : reticulumActivityDashboardReady ? (
+                  reticulumHasUnreadActivity ? (
+                    <ReturningUserActivityDashboard
+                      displayName={reticulumWelcomeDisplayName}
+                      groups={memberGroupsWithReticulumActivity}
+                      onBrowseCommunities={openGroupDiscovery}
+                      onSelectGroup={selectGroupFunc}
+                    />
+                  ) : (
+                    <ReturningUserCaughtUpState
+                      displayName={reticulumWelcomeDisplayName}
+                      onBrowseCommunities={openGroupDiscovery}
+                    />
+                  )
+                ) : (
+                  <CenterBox>
+                    <CircularProgress size={28} />
+                  </CenterBox>
+                )
+              ) : (
+                <CenterBox>
+                  <NoSelectionTypography>
+                    {t('group:message.generic.no_selection', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </NoSelectionTypography>
+                </CenterBox>
+              )
             )}
 
           <SelectedGroupWrapper
@@ -4478,6 +4559,15 @@ export const Group = ({
                 open={openAddGroup}
                 initialTab={openAddGroupTab}
                 setOpen={setOpenAddGroup}
+              />
+            </Suspense>
+          )}
+
+          {openFindGroup && (
+            <Suspense fallback={null}>
+              <LazyFindGroupModal
+                open={openFindGroup}
+                setOpen={setOpenFindGroup}
               />
             </Suspense>
           )}
