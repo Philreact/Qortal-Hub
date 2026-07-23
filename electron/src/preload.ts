@@ -915,6 +915,25 @@ try {
         return '';
       }
     },
+    convertGifToWebp: async (payload: { filePath: string; targetBytes?: number }) =>
+      ipcRenderer.invoke('reticulumResource:convertGifToWebp', payload) as Promise<{
+        success: boolean;
+        filePath?: string;
+        fileName?: string;
+        mimeType?: string;
+        originalSizeBytes?: number;
+        sizeBytes?: number;
+        width?: number;
+        height?: number;
+        pages?: number;
+        targetAchieved?: boolean;
+        error?: string;
+      }>,
+    releaseConvertedMedia: async (filePath: string) =>
+      ipcRenderer.invoke('reticulumResource:releaseConvertedMedia', filePath) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
     importBase64: async (payload: unknown) =>
       ipcRenderer.invoke('reticulumResource:importBase64', payload) as Promise<{
         success: boolean;

@@ -78,6 +78,7 @@ import { useIsOnline } from '../../hooks/usePresence';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 import { fileToBase64 } from '../../utils/fileReading';
+import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 
 const uid = new ShortUniqueId({ length: 5 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
@@ -137,6 +138,7 @@ type PendingReticulumDirectFile = {
   isImage: boolean;
   base64?: string;
   previewUrl?: string;
+  temporaryFilePath?: string;
 };
 
 const sha256Hex = async (value: string): Promise<string> => {
@@ -434,6 +436,17 @@ export const ChatDirect = ({
   const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
     PendingReticulumDirectFile[]
   >([]);
+  const [isCompressingReticulumGif, setIsCompressingReticulumGif] =
+    useState(false);
+  const reticulumGifConversionSequenceRef = useRef(0);
+  const reticulumGifConversionPeerRef = useRef('');
+  reticulumGifConversionPeerRef.current = String(
+    selectedDirect?.address || ''
+  ).trim();
+  useEffect(() => {
+    reticulumGifConversionSequenceRef.current += 1;
+    setIsCompressingReticulumGif(false);
+  }, [selectedDirect?.address]);
   const {
     enabled: reticulumDirectEnabled,
     messages: reticulumDirectMessages,
@@ -1840,6 +1853,11 @@ export const ChatDirect = ({
     setPendingReticulumFiles((files) => {
       files.forEach((file) => {
         if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+        if (file.temporaryFilePath) {
+          void window.reticulumResources?.releaseConvertedMedia?.(
+            file.temporaryFilePath
+          );
+        }
       });
       return [];
     });
@@ -1849,6 +1867,11 @@ export const ChatDirect = ({
     return () => {
       pendingReticulumFiles.forEach((file) => {
         if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+        if (file.temporaryFilePath) {
+          void window.reticulumResources?.releaseConvertedMedia?.(
+            file.temporaryFilePath
+          );
+        }
       });
     };
   }, [pendingReticulumFiles]);
@@ -1904,6 +1927,7 @@ export const ChatDirect = ({
 
   const insertFiles = useCallback(
     async (files: File[]) => {
+      if (isCompressingReticulumGif) return;
       const file = files.find((item) => item && item.size >= 0);
       if (!file) return;
       if (!reticulumDirectEnabled) {
@@ -1922,9 +1946,72 @@ export const ChatDirect = ({
         setOpenSnack(true);
         return;
       }
+      if (file.type === 'image/gif') {
+        const filePath =
+          window.reticulumResources?.getPathForFile?.(file) ||
+          (typeof (file as File & { path?: unknown }).path === 'string'
+            ? String((file as File & { path?: unknown }).path)
+            : '');
+        if (filePath) {
+          const conversionSequence = ++reticulumGifConversionSequenceRef.current;
+          const conversionPeer = reticulumGifConversionPeerRef.current;
+          setIsCompressingReticulumGif(true);
+          try {
+            const converted =
+              await window.reticulumResources?.convertGifToWebp?.({
+                filePath,
+                targetBytes: 500 * 1024,
+              });
+            if (
+              converted?.success &&
+              converted.filePath &&
+              converted.fileName &&
+              converted.mimeType &&
+              typeof converted.sizeBytes === 'number'
+            ) {
+              if (
+                reticulumGifConversionSequenceRef.current !==
+                  conversionSequence ||
+                reticulumGifConversionPeerRef.current !== conversionPeer
+              ) {
+                void window.reticulumResources?.releaseConvertedMedia?.(
+                  converted.filePath
+                );
+                return;
+              }
+              clearPendingReticulumFiles();
+              setPendingReticulumFiles([
+                {
+                  filePath: converted.filePath,
+                  temporaryFilePath: converted.filePath,
+                  fileName: converted.fileName,
+                  mimeType: converted.mimeType,
+                  sizeBytes: converted.sizeBytes,
+                  isImage: true,
+                },
+              ]);
+              return;
+            }
+          } catch (error) {
+            console.warn('Reticulum direct GIF conversion failed:', error);
+          } finally {
+            if (
+              reticulumGifConversionSequenceRef.current === conversionSequence
+            ) {
+              setIsCompressingReticulumGif(false);
+            }
+          }
+        }
+      }
       await addPendingReticulumFile(file);
     },
-    [addPendingReticulumFile, pendingReticulumFiles.length, reticulumDirectEnabled]
+    [
+      addPendingReticulumFile,
+      clearPendingReticulumFiles,
+      isCompressingReticulumGif,
+      pendingReticulumFiles.length,
+      reticulumDirectEnabled,
+    ]
   );
 
   const buildReticulumDirectResourcePayload = useCallback(async () => {
@@ -2063,6 +2150,7 @@ export const ChatDirect = ({
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
+      if (reticulumDirectEnabled && isCompressingReticulumGif) return;
       if (reticulumDirectPending) return;
       if (+balance < MIN_REQUIRED_QORTS)
         throw new Error(
@@ -3036,6 +3124,9 @@ export const ChatDirect = ({
                 : undefined
             }
           />
+          {isCompressingReticulumGif && (
+            <ReticulumGifCompressionStatus />
+          )}
           {pendingReticulumFiles.length > 0 && (
             <Box
               sx={{
@@ -3143,12 +3234,17 @@ export const ChatDirect = ({
           )}
           <CustomButton
             onClick={() => {
-              if (isSending || reticulumDirectPending) return;
+              if (
+                isSending ||
+                isCompressingReticulumGif ||
+                reticulumDirectPending
+              )
+                return;
               sendMessage();
             }}
             sx={{
               alignItems: 'center',
-              backgroundColor: isSending
+              backgroundColor: isSending || isCompressingReticulumGif
                 ? theme.palette.action.disabledBackground
                 : reticulumDirectUiEnabled
                   ? RETICULUM_ACTIVE_BLUE
@@ -3161,7 +3257,10 @@ export const ChatDirect = ({
               color: reticulumDirectUiEnabled
                 ? theme.palette.common.white
                 : theme.palette.text.primary,
-              cursor: isSending || reticulumDirectPending ? 'default' : 'pointer',
+              cursor:
+                isSending || isCompressingReticulumGif || reticulumDirectPending
+                  ? 'default'
+                  : 'pointer',
               display: 'inline-flex',
               gap: '6px',
               fontSize: '14px',
@@ -3172,7 +3271,8 @@ export const ChatDirect = ({
               padding: reticulumDirectUiEnabled ? '8px 14px' : '10px 16px',
               position: 'relative',
               transition: 'background-color 0.2s ease, border-color 0.2s ease',
-              '&:hover': isSending || reticulumDirectPending
+              '&:hover':
+                isSending || isCompressingReticulumGif || reticulumDirectPending
                 ? {}
                 : {
                     backgroundColor: reticulumDirectUiEnabled
@@ -3189,7 +3289,7 @@ export const ChatDirect = ({
               },
             }}
           >
-            {isSending ? (
+            {isSending || isCompressingReticulumGif ? (
               <CircularProgress
                 size={18}
                 sx={{

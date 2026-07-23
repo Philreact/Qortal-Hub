@@ -132,6 +132,7 @@ import {
   RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
   ReticulumResourceStore,
 } from './reticulum-resource-store';
+import { reticulumMediaWorkerPool } from './reticulum-media-worker-pool';
 import { isDisabledLegacy } from './feature-flags';
 import {
   AUDIO_SURFACE_WINDOW_ROLE,
@@ -351,6 +352,7 @@ function getReticulumResourceStore(): ReticulumResourceStore {
 }
 
 export function shutdownReticulumResourceStore(): void {
+  reticulumMediaWorkerPool.stop();
   reticulumResourceUrlTokens.clear();
   if (reticulumResourceProtocolRegistered) {
     try {
@@ -4280,6 +4282,97 @@ function managedReticulumChatResourceNamespace(value: unknown): string | null {
     ? namespace
     : null;
 }
+
+ipcMain.handle(
+  'reticulumResource:convertGifToWebp',
+  async (_event, payload: { filePath?: string; targetBytes?: number }) => {
+    const inputPath =
+      typeof payload?.filePath === 'string' && payload.filePath.trim()
+        ? path.resolve(payload.filePath.trim())
+        : '';
+    if (!inputPath) return { success: false, error: 'Invalid GIF file path' };
+
+    const targetBytes = Math.min(
+      4 * 1024 * 1024,
+      Math.max(128 * 1024, Math.floor(Number(payload?.targetBytes) || 500 * 1024))
+    );
+    const outputDir = path.join(app.getPath('temp'), 'qortal-reticulum-media');
+    const outputPath = path.join(
+      outputDir,
+      `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.webp`
+    );
+    try {
+      const stat = await fs.promises.stat(inputPath);
+      if (!stat.isFile()) return { success: false, error: 'Selected GIF is not a file' };
+      if (stat.size <= 0 || stat.size > 100 * 1024 * 1024) {
+        return { success: false, error: 'GIF must be between 1 byte and 100 MB' };
+      }
+      await fs.promises.mkdir(outputDir, { recursive: true });
+      const result = await reticulumMediaWorkerPool.run({
+        kind: 'gif_to_webp',
+        inputPath,
+        outputPath,
+        targetBytes,
+      });
+      if (!result || !result.ok) {
+        await fs.promises.unlink(outputPath).catch(() => undefined);
+        return {
+          success: false,
+          error:
+            (result && 'error' in result ? result.error : undefined) ||
+            'Animated WebP conversion is unavailable',
+        };
+      }
+      return {
+        success: true,
+        filePath: result.outputPath,
+        fileName: `${path.basename(inputPath, path.extname(inputPath)) || 'animation'}.webp`,
+        mimeType: 'image/webp',
+        originalSizeBytes: stat.size,
+        sizeBytes: result.sizeBytes,
+        width: result.width,
+        height: result.height,
+        pages: result.pages,
+        targetAchieved: result.targetAchieved,
+      };
+    } catch (err) {
+      await fs.promises.unlink(outputPath).catch(() => undefined);
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Animated WebP conversion failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumResource:releaseConvertedMedia',
+  async (_event, candidatePath: string) => {
+    const mediaDir = path.resolve(
+      path.join(app.getPath('temp'), 'qortal-reticulum-media')
+    );
+    const resolvedPath =
+      typeof candidatePath === 'string' && candidatePath.trim()
+        ? path.resolve(candidatePath.trim())
+        : '';
+    if (
+      !resolvedPath ||
+      (resolvedPath !== mediaDir && !resolvedPath.startsWith(`${mediaDir}${path.sep}`))
+    ) {
+      return { success: false, error: 'Invalid converted media path' };
+    }
+    try {
+      await fs.promises.unlink(resolvedPath);
+      return { success: true };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { success: true };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Converted media cleanup failed',
+      };
+    }
+  }
+);
 
 ipcMain.handle(
   'reticulumResource:importBase64',

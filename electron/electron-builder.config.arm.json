@@ -50,7 +50,7 @@
     "app/**/*",
     "scripts/**/*"
   ],
-  "asarUnpack": ["build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js", "build/src/reticulum-resource.worker.js"],
+  "asarUnpack": ["build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js", "build/src/reticulum-resource.worker.js", "build/src/reticulum-media.worker.js"],
   "linux": {
     "target": ["AppImage", "deb"],
     "category": "Network",

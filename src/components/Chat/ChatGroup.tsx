@@ -118,6 +118,7 @@ import {
   isDisabledTyping,
   useReticulumGroupChat,
 } from '../../hooks/useReticulumGroupChat';
+import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { fileToBase64 } from '../../utils/fileReading';
 import { generateHTML } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -168,6 +169,7 @@ type PendingReticulumResourceFile = {
   base64?: string;
   width?: number;
   height?: number;
+  temporaryFilePath?: string;
 };
 
 type ReticulumGroupChannel = {
@@ -1495,7 +1497,18 @@ export const ChatGroup = ({
   } | null>(null);
   const [isCompressingReticulumImage, setIsCompressingReticulumImage] =
     useState(false);
+  const [isCompressingReticulumGif, setIsCompressingReticulumGif] =
+    useState(false);
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
+  const reticulumGifConversionSequenceRef = useRef(0);
+  const reticulumGifConversionContextRef = useRef('');
+  reticulumGifConversionContextRef.current = `${selectedGroup || ''}:${
+    selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
+  }`;
+  useEffect(() => {
+    reticulumGifConversionSequenceRef.current += 1;
+    setIsCompressingReticulumGif(false);
+  }, [selectedGroup, selectedReticulumChannelId]);
   const reticulumChannelRefreshSeqRef = useRef(0);
   const reticulumChannelMetadataRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
@@ -4382,6 +4395,11 @@ export const ChatGroup = ({
     setPendingReticulumFiles((prev) => {
       prev.forEach((file) => {
         if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+        if (file.temporaryFilePath) {
+          void window.reticulumResources?.releaseConvertedMedia?.(
+            file.temporaryFilePath
+          );
+        }
       });
       return [];
     });
@@ -4395,6 +4413,11 @@ export const ChatGroup = ({
     return () => {
       pendingReticulumFilesRef.current.forEach((file) => {
         if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+        if (file.temporaryFilePath) {
+          void window.reticulumResources?.releaseConvertedMedia?.(
+            file.temporaryFilePath
+          );
+        }
       });
     };
   }, []);
@@ -4442,6 +4465,11 @@ export const ChatGroup = ({
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
+      if (
+        reticulumChatEnabled &&
+        (isCompressingReticulumImage || isCompressingReticulumGif)
+      )
+        return;
       if (!canWriteSelectedReticulumChannel) {
         throw new Error('Only group admins can write in this channel');
       }
@@ -5480,6 +5508,7 @@ export const ChatGroup = ({
 
   const insertFiles = useCallback(
     async (files: File[]) => {
+      if (isCompressingReticulumImage || isCompressingReticulumGif) return;
       const file = files.find((item) => item && item.size >= 0);
       if (!file) return;
       if (
@@ -5517,6 +5546,56 @@ export const ChatGroup = ({
         (typeof (file as File & { path?: unknown }).path === 'string'
           ? String((file as File & { path?: unknown }).path)
           : '');
+      if (file.type === 'image/gif' && filePath) {
+        const conversionSequence = ++reticulumGifConversionSequenceRef.current;
+        const conversionContext = reticulumGifConversionContextRef.current;
+        setIsCompressingReticulumGif(true);
+        try {
+          const converted =
+            await window.reticulumResources?.convertGifToWebp?.({
+              filePath,
+              targetBytes: 500 * 1024,
+            });
+          if (
+            converted?.success &&
+            converted.filePath &&
+            converted.fileName &&
+            converted.mimeType &&
+            typeof converted.sizeBytes === 'number'
+          ) {
+            if (
+              reticulumGifConversionSequenceRef.current !== conversionSequence ||
+              reticulumGifConversionContextRef.current !== conversionContext
+            ) {
+              void window.reticulumResources?.releaseConvertedMedia?.(
+                converted.filePath
+              );
+              return;
+            }
+            setPendingReticulumFiles([
+              {
+                filePath: converted.filePath,
+                temporaryFilePath: converted.filePath,
+                fileName: converted.fileName,
+                mimeType: converted.mimeType,
+                sizeBytes: converted.sizeBytes,
+                isImage: true,
+                ...(converted.width ? { width: converted.width } : {}),
+                ...(converted.height ? { height: converted.height } : {}),
+              },
+            ]);
+            return;
+          }
+        } catch (error) {
+          console.warn('Reticulum animated GIF conversion failed:', error);
+        } finally {
+          if (
+            reticulumGifConversionSequenceRef.current === conversionSequence
+          ) {
+            setIsCompressingReticulumGif(false);
+          }
+        }
+      }
       if (!isImage && !filePath) {
         setInfoSnack({
           type: 'error',
@@ -5535,6 +5614,8 @@ export const ChatGroup = ({
       addPendingReticulumFile,
       chatImagesToSave,
       insertImage,
+      isCompressingReticulumGif,
+      isCompressingReticulumImage,
       isDeleteImage,
       isPrivate,
       onEditMessage,
@@ -7710,6 +7791,10 @@ export const ChatGroup = ({
                       </div>
                     ))}
 
+                    {isCompressingReticulumGif && (
+                      <ReticulumGifCompressionStatus />
+                    )}
+
                     {pendingReticulumFiles.map((file, index) => (
                       <Box
                         key={`${file.fileName}-${index}`}
@@ -7774,6 +7859,11 @@ export const ChatGroup = ({
                                 const removed = prev[index];
                                 if (removed?.previewUrl) {
                                   URL.revokeObjectURL(removed.previewUrl);
+                                }
+                                if (removed?.temporaryFilePath) {
+                                  void window.reticulumResources?.releaseConvertedMedia?.(
+                                    removed.temporaryFilePath
+                                  );
                                 }
                                 return prev.filter((_, i) => i !== index);
                               });
@@ -7939,14 +8029,22 @@ export const ChatGroup = ({
                 >
                   <CustomButton
                     onClick={() => {
-                      if (isSending || !canWriteSelectedReticulumChannel)
+                      if (
+                        isSending ||
+                        isCompressingReticulumGif ||
+                        isCompressingReticulumImage ||
+                        !canWriteSelectedReticulumChannel
+                      )
                         return;
                       sendMessage();
                     }}
                     sx={{
                       alignItems: 'center',
                       backgroundColor:
-                        isSending || !canWriteSelectedReticulumChannel
+                        isSending ||
+                        isCompressingReticulumGif ||
+                        isCompressingReticulumImage ||
+                        !canWriteSelectedReticulumChannel
                           ? theme.palette.action.disabledBackground
                           : reticulumChatEnabled
                             ? RETICULUM_ACTIVE_BLUE
@@ -7960,7 +8058,10 @@ export const ChatGroup = ({
                         ? theme.palette.common.white
                         : theme.palette.text.primary,
                       cursor:
-                        isSending || !canWriteSelectedReticulumChannel
+                        isSending ||
+                        isCompressingReticulumGif ||
+                        isCompressingReticulumImage ||
+                        !canWriteSelectedReticulumChannel
                           ? 'default'
                           : 'pointer',
                       display: 'inline-flex',
@@ -7975,7 +8076,10 @@ export const ChatGroup = ({
                       transition:
                         'background-color 0.2s ease, border-color 0.2s ease',
                       '&:hover':
-                        isSending || !canWriteSelectedReticulumChannel
+                        isSending ||
+                        isCompressingReticulumGif ||
+                        isCompressingReticulumImage ||
+                        !canWriteSelectedReticulumChannel
                           ? {}
                           : {
                               backgroundColor: reticulumChatEnabled
@@ -7992,7 +8096,9 @@ export const ChatGroup = ({
                       },
                     }}
                   >
-                    {isSending ? (
+                    {isSending ||
+                    isCompressingReticulumGif ||
+                    isCompressingReticulumImage ? (
                       <CircularProgress
                         size={18}
                         sx={{

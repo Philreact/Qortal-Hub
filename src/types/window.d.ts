@@ -952,6 +952,25 @@ declare global {
 
     reticulumResources?: {
       getPathForFile: (file: File) => string;
+      convertGifToWebp: (payload: {
+        filePath: string;
+        targetBytes?: number;
+      }) => Promise<{
+        success: boolean;
+        filePath?: string;
+        fileName?: string;
+        mimeType?: string;
+        originalSizeBytes?: number;
+        sizeBytes?: number;
+        width?: number;
+        height?: number;
+        pages?: number;
+        targetAchieved?: boolean;
+        error?: string;
+      }>;
+      releaseConvertedMedia: (
+        filePath: string
+      ) => Promise<{ success: boolean; error?: string }>;
       importBase64: (payload: {
         base64?: string;
         namespace?: string;
