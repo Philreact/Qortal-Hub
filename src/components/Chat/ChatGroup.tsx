@@ -119,6 +119,11 @@ import {
   useReticulumGroupChat,
 } from '../../hooks/useReticulumGroupChat';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
+import {
+  ReticulumDiscussionDialog,
+  type ReticulumDiscussionDraft,
+  type ReticulumDiscussionFile,
+} from './ReticulumDiscussionDialog';
 import { fileToBase64 } from '../../utils/fileReading';
 import { generateHTML } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -1355,6 +1360,25 @@ export const ChatGroup = ({
   const hasInitialized = useRef(false);
   const [isFocusedParent, setIsFocusedParent] = useState(false);
   const [replyMessage, setReplyMessage] = useState(null);
+  const [reticulumDiscussionRootId, setReticulumDiscussionRootId] =
+    useState('');
+  const [reticulumDiscussionMessages, setReticulumDiscussionMessages] =
+    useState<any[]>([]);
+  const [isReticulumDiscussionLoading, setIsReticulumDiscussionLoading] =
+    useState(false);
+  const [reticulumDiscussionFiles, setReticulumDiscussionFiles] = useState<
+    ReticulumDiscussionFile[]
+  >([]);
+  const [
+    isPreparingReticulumDiscussionFile,
+    setIsPreparingReticulumDiscussionFile,
+  ] = useState(false);
+  const [
+    isCompressingReticulumDiscussionGif,
+    setIsCompressingReticulumDiscussionGif,
+  ] = useState(false);
+  const reticulumDiscussionLoadSequenceRef = useRef(0);
+  const reticulumDiscussionFileSequenceRef = useRef(0);
   const [onEditMessage, setOnEditMessage] = useState(null);
   const [groupMentionMembers, setGroupMentionMembers] = useState<
     {
@@ -1551,6 +1575,7 @@ export const ChatGroup = ({
   const [reticulumLargeImageChoice, setReticulumLargeImageChoice] = useState<{
     file: File;
     filePath: string;
+    target: 'channel' | 'discussion';
   } | null>(null);
   const [isCompressingReticulumImage, setIsCompressingReticulumImage] =
     useState(false);
@@ -1590,6 +1615,8 @@ export const ChatGroup = ({
     sendTyping: sendReticulumTypingSignal,
     typing: reticulumTyping,
     visibilityChange: reticulumVisibilityChange,
+    discussionIndex: reticulumDiscussionIndex,
+    getDiscussionMessages: getReticulumDiscussionMessages,
   } = useReticulumGroupChat(selectedGroup, selectedReticulumChannelId);
   const [reticulumProcessedHistoryKey, setReticulumProcessedHistoryKey] =
     useState('');
@@ -4281,6 +4308,288 @@ export const ChatGroup = ({
     ]
   );
 
+  const loadReticulumDiscussion = useCallback(
+    async (rootEventId: string, showLoading = true) => {
+      if (!rootEventId || !reticulumChatEnabled) return;
+      const sequence = ++reticulumDiscussionLoadSequenceRef.current;
+      if (showLoading) setIsReticulumDiscussionLoading(true);
+      try {
+        const events = await getReticulumDiscussionMessages(rootEventId);
+        const converted = await Promise.all(
+          events.map((event) => convertReticulumEventToChatItem(event))
+        );
+        if (
+          reticulumDiscussionLoadSequenceRef.current !== sequence ||
+          reticulumDiscussionRootId !== rootEventId
+        ) {
+          return;
+        }
+        setReticulumDiscussionMessages(converted.filter(Boolean));
+      } catch (error) {
+        if (reticulumDiscussionLoadSequenceRef.current === sequence) {
+          console.error('[ReticulumChat] Failed to load discussion', error);
+          setReticulumDiscussionMessages([]);
+        }
+      } finally {
+        if (reticulumDiscussionLoadSequenceRef.current === sequence) {
+          setIsReticulumDiscussionLoading(false);
+        }
+      }
+    },
+    [
+      convertReticulumEventToChatItem,
+      getReticulumDiscussionMessages,
+      reticulumChatEnabled,
+      reticulumDiscussionRootId,
+    ]
+  );
+
+  const openReticulumDiscussion = useCallback(
+    (message: any) => {
+      const eventId = String(message?.signature || '');
+      if (!eventId) return;
+      const rootEventId =
+        reticulumDiscussionIndex.rootByEventId[eventId] || eventId;
+      setReticulumDiscussionRootId(rootEventId);
+      setReticulumDiscussionMessages([]);
+      setIsReticulumDiscussionLoading(true);
+    },
+    [reticulumDiscussionIndex.rootByEventId]
+  );
+
+  const closeReticulumDiscussion = useCallback(() => {
+    reticulumDiscussionLoadSequenceRef.current += 1;
+    reticulumDiscussionFileSequenceRef.current += 1;
+    setReticulumDiscussionRootId('');
+    setReticulumDiscussionMessages([]);
+    setIsReticulumDiscussionLoading(false);
+    setIsPreparingReticulumDiscussionFile(false);
+    setIsCompressingReticulumDiscussionGif(false);
+    setReticulumLargeImageChoice((current) =>
+      current?.target === 'discussion' ? null : current
+    );
+    stopReticulumTyping();
+    setReticulumDiscussionFiles((current) => {
+      current.forEach((file) => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+        if (file.temporaryFilePath) {
+          void window.reticulumResources?.releaseConvertedMedia?.(
+            file.temporaryFilePath
+          );
+        }
+      });
+      return [];
+    });
+  }, [stopReticulumTyping]);
+
+  useEffect(() => {
+    closeReticulumDiscussion();
+  }, [closeReticulumDiscussion, selectedGroup, selectedReticulumChannelId]);
+
+  const activeReticulumDiscussionReplyCount = reticulumDiscussionRootId
+    ? reticulumDiscussionIndex.replyCounts[reticulumDiscussionRootId] || 0
+    : 0;
+
+  useEffect(() => {
+    if (!reticulumDiscussionRootId) return;
+    void loadReticulumDiscussion(reticulumDiscussionRootId);
+  }, [
+    activeReticulumDiscussionReplyCount,
+    loadReticulumDiscussion,
+    reticulumDiscussionRootId,
+  ]);
+
+  const sendReticulumDiscussionReply = useCallback(
+    async (draft: ReticulumDiscussionDraft) => {
+      if (!reticulumDiscussionRootId || !canWriteSelectedReticulumChannel) {
+        return false;
+      }
+      let ownsSendingState = false;
+      try {
+        if (isSending) return false;
+        if (
+          new TextEncoder().encode(JSON.stringify(draft.messageText))
+            .byteLength > MAX_SIZE_MESSAGE
+        ) {
+          throw new Error(
+            `Message is too long (maximum ${MAX_SIZE_MESSAGE} bytes)`
+          );
+        }
+        if (+balance < MIN_REQUIRED_QORTS) {
+          throw new Error(
+            t('group:message.error.qortals_required', {
+              quantity: MIN_REQUIRED_QORTS,
+              postProcess: 'capitalizeFirstChar',
+            })
+          );
+        }
+        setIsSending(true);
+        ownsSendingState = true;
+        stopReticulumTyping();
+        const images = await Promise.all(
+          reticulumDiscussionFiles
+            .filter((file) => file.isImage)
+            .map(async (file, index) => {
+              const metadata = {
+                feature: 'reticulum-chat',
+                groupId: selectedGroup,
+                attachmentKind: 'image',
+                originalMimeType: file.mimeType,
+                ...(file.width && file.height
+                  ? { height: file.height, width: file.width }
+                  : {}),
+              };
+              const imported = file.filePath
+                ? await window.reticulumResources?.importFilePath?.({
+                    encrypted: false,
+                    fileName:
+                      file.fileName ||
+                      `discussion-image-${Date.now()}-${index}`,
+                    filePath: file.filePath,
+                    metadata,
+                    mimeType: file.mimeType || 'image/webp',
+                    namespace: 'reticulum-group-resource',
+                    ownerId: `${selectedGroup}:${myAddress}`,
+                  })
+                : await window.reticulumResources?.importBase64?.({
+                    base64: file.base64 || '',
+                    encrypted: false,
+                    fileName:
+                      file.fileName ||
+                      `discussion-image-${Date.now()}-${index}`,
+                    metadata,
+                    mimeType: file.mimeType || 'image/webp',
+                    namespace: 'reticulum-group-resource',
+                    ownerId: `${selectedGroup}:${myAddress}`,
+                  });
+              if (!imported?.success || !imported.manifest) {
+                throw new Error(
+                  imported?.error || 'Reticulum image resource import failed'
+                );
+              }
+              return {
+                ...(imported.manifest as Record<string, unknown>),
+                ...(file.width && file.height
+                  ? { height: file.height, width: file.width }
+                  : {}),
+                reticulumResource: true,
+                timestamp: Date.now(),
+              };
+            })
+        );
+        const attachments = await Promise.all(
+          reticulumDiscussionFiles
+            .filter((file) => !file.isImage)
+            .map(async (file) => {
+              if (!file.filePath) {
+                throw new Error('File attachments require a local file path');
+              }
+              const imported =
+                await window.reticulumResources?.importFilePath?.({
+                  encrypted: false,
+                  fileName: file.fileName,
+                  filePath: file.filePath,
+                  metadata: {
+                    attachmentKind: 'file',
+                    feature: 'reticulum-chat',
+                    groupId: selectedGroup,
+                  },
+                  mimeType: file.mimeType || 'application/octet-stream',
+                  namespace: 'reticulum-group-resource',
+                  ownerId: `${selectedGroup}:${myAddress}`,
+                });
+              if (!imported?.success || !imported.manifest) {
+                throw new Error(
+                  imported?.error || 'Reticulum file resource import failed'
+                );
+              }
+              return {
+                ...(imported.manifest as Record<string, unknown>),
+                reticulumResource: true,
+                timestamp: Date.now(),
+              };
+            })
+        );
+        const mentionedAddresses = resolveMentionedAddresses(
+          draft.htmlContent || ''
+        );
+        const mentionTargets = resolveMentionTargets(draft.htmlContent || '');
+        const mentionedAddressHashes =
+          await buildMentionAddressHashes(mentionedAddresses);
+        const messageExpiryPayload = buildReticulumMessageExpiryPayload(
+          draft.expiryDurationMs,
+          selectedReticulumChannelExpiryDurationMs
+        );
+        const encryptedPayload = JSON.stringify({
+          ...(attachments.length > 0 ? { attachments } : {}),
+          repliedTo: reticulumDiscussionRootId,
+          type: '',
+          specialId: uid.rnd(),
+          images,
+          mentionedAddresses,
+          mentionTargets,
+          isEdited: false,
+          messageText: draft.messageText,
+          ...messageExpiryPayload,
+          version: 3,
+        });
+        const result = await publishReticulumGroupChatEvent({
+          encryptedPayload,
+          eventType: 'message',
+          mentionAddressHashes: mentionedAddressHashes,
+          mentionTargets,
+          replyToEventId: reticulumDiscussionRootId,
+        });
+        if (!result?.success) {
+          throw new Error(result?.error || 'Unable to send discussion reply');
+        }
+        setReticulumDiscussionFiles((current) => {
+          current.forEach((file) => {
+            if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+            if (file.temporaryFilePath) {
+              void window.reticulumResources?.releaseConvertedMedia?.(
+                file.temporaryFilePath
+              );
+            }
+          });
+          return [];
+        });
+        await loadReticulumDiscussion(reticulumDiscussionRootId, false);
+        return true;
+      } catch (error) {
+        setInfoSnack({
+          type: 'error',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Unable to send discussion reply',
+        });
+        setOpenSnack(true);
+        return false;
+      } finally {
+        if (ownsSendingState) setIsSending(false);
+      }
+    },
+    [
+      balance,
+      canWriteSelectedReticulumChannel,
+      isSending,
+      loadReticulumDiscussion,
+      myAddress,
+      publishReticulumGroupChatEvent,
+      resolveMentionedAddresses,
+      resolveMentionTargets,
+      reticulumDiscussionFiles,
+      reticulumDiscussionRootId,
+      selectedGroup,
+      selectedReticulumChannelExpiryDurationMs,
+      setInfoSnack,
+      setOpenSnack,
+      stopReticulumTyping,
+      t,
+    ]
+  );
+
   useEffect(() => {
     reticulumSearchPageCursorsRef.current = [null];
     setReticulumSearchPage(0);
@@ -5970,11 +6279,12 @@ export const ChatGroup = ({
         const conversionContext = reticulumGifConversionContextRef.current;
         setIsCompressingReticulumGif(true);
         try {
-          const converted =
-            await window.reticulumResources?.convertGifToWebp?.({
+          const converted = await window.reticulumResources?.convertGifToWebp?.(
+            {
               filePath,
               targetBytes: 500 * 1024,
-            });
+            }
+          );
           if (
             converted?.success &&
             converted.filePath &&
@@ -5983,7 +6293,8 @@ export const ChatGroup = ({
             typeof converted.sizeBytes === 'number'
           ) {
             if (
-              reticulumGifConversionSequenceRef.current !== conversionSequence ||
+              reticulumGifConversionSequenceRef.current !==
+                conversionSequence ||
               reticulumGifConversionContextRef.current !== conversionContext
             ) {
               void window.reticulumResources?.releaseConvertedMedia?.(
@@ -6024,7 +6335,11 @@ export const ChatGroup = ({
         return;
       }
       if (isImage && isReticulumCompressibleImage(file)) {
-        setReticulumLargeImageChoice({ file, filePath });
+        setReticulumLargeImageChoice({
+          file,
+          filePath,
+          target: 'channel',
+        });
         return;
       }
       await addPendingReticulumFile(file, { filePathOverride: filePath });
@@ -6044,6 +6359,168 @@ export const ChatGroup = ({
     ]
   );
 
+  const removeReticulumDiscussionFile = useCallback((index: number) => {
+    setReticulumDiscussionFiles((current) => {
+      const removed = current[index];
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.temporaryFilePath) {
+        void window.reticulumResources?.releaseConvertedMedia?.(
+          removed.temporaryFilePath
+        );
+      }
+      return current.filter((_, fileIndex) => fileIndex !== index);
+    });
+  }, []);
+
+  const addReticulumDiscussionFile = useCallback(
+    async (
+      file: File,
+      options: {
+        asAttachment?: boolean;
+        expectedSequence?: number;
+        filePathOverride?: string;
+        temporaryFilePath?: string;
+      } = {}
+    ) => {
+      const filePath =
+        options.filePathOverride ||
+        window.reticulumResources?.getPathForFile?.(file) ||
+        (typeof (file as File & { path?: unknown }).path === 'string'
+          ? String((file as File & { path?: unknown }).path)
+          : '');
+      const isImage =
+        file.type?.startsWith('image/') === true &&
+        options.asAttachment !== true;
+      if (!isImage && !filePath) {
+        throw new Error('This file source cannot be streamed from disk');
+      }
+      const dimensions = isImage ? await getImageFileDimensions(file) : null;
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+      const base64 =
+        isImage && !filePath ? await fileToBase64(file) : undefined;
+      if (
+        options.expectedSequence !== undefined &&
+        options.expectedSequence !== reticulumDiscussionFileSequenceRef.current
+      ) {
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        return false;
+      }
+      setReticulumDiscussionFiles([
+        {
+          ...(base64 ? { base64 } : {}),
+          fileName: file.name || 'resource.bin',
+          ...(filePath ? { filePath } : {}),
+          ...(dimensions
+            ? { height: dimensions.height, width: dimensions.width }
+            : {}),
+          isImage,
+          mimeType: file.type || 'application/octet-stream',
+          ...(previewUrl ? { previewUrl } : {}),
+          sizeBytes: file.size || 0,
+          ...(options.temporaryFilePath
+            ? { temporaryFilePath: options.temporaryFilePath }
+            : {}),
+        },
+      ]);
+      return true;
+    },
+    [getImageFileDimensions]
+  );
+
+  const insertReticulumDiscussionFiles = useCallback(
+    async (files: File[]) => {
+      if (isPreparingReticulumDiscussionFile) return;
+      const file = files.find((candidate) => candidate && candidate.size >= 0);
+      if (!file) return;
+      if (reticulumDiscussionFiles.length > 0) {
+        setInfoSnack({
+          type: 'error',
+          message: t('core:message.generic.message_with_image', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+        });
+        setOpenSnack(true);
+        return;
+      }
+      const sequence = ++reticulumDiscussionFileSequenceRef.current;
+      setIsPreparingReticulumDiscussionFile(true);
+      setIsCompressingReticulumDiscussionGif(false);
+      try {
+        const filePath =
+          window.reticulumResources?.getPathForFile?.(file) ||
+          (typeof (file as File & { path?: unknown }).path === 'string'
+            ? String((file as File & { path?: unknown }).path)
+            : '');
+        if (file.type === 'image/gif' && filePath) {
+          setIsCompressingReticulumDiscussionGif(true);
+          const converted = await window.reticulumResources?.convertGifToWebp?.(
+            { filePath, targetBytes: 500 * 1024 }
+          );
+          if (sequence !== reticulumDiscussionFileSequenceRef.current) {
+            if (converted?.filePath) {
+              void window.reticulumResources?.releaseConvertedMedia?.(
+                converted.filePath
+              );
+            }
+            return;
+          }
+          if (
+            converted?.success &&
+            converted.filePath &&
+            converted.fileName &&
+            converted.mimeType
+          ) {
+            setReticulumDiscussionFiles([
+              {
+                fileName: converted.fileName,
+                filePath: converted.filePath,
+                ...(converted.height ? { height: converted.height } : {}),
+                isImage: true,
+                mimeType: converted.mimeType,
+                sizeBytes: Number(converted.sizeBytes) || 0,
+                temporaryFilePath: converted.filePath,
+                ...(converted.width ? { width: converted.width } : {}),
+              },
+            ]);
+            return;
+          }
+        }
+        if (isReticulumCompressibleImage(file)) {
+          setReticulumLargeImageChoice({
+            file,
+            filePath,
+            target: 'discussion',
+          });
+          return;
+        }
+        await addReticulumDiscussionFile(file, {
+          expectedSequence: sequence,
+          filePathOverride: filePath,
+        });
+      } catch (error) {
+        setInfoSnack({
+          type: 'error',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Unable to prepare attachment',
+        });
+        setOpenSnack(true);
+      } finally {
+        if (sequence === reticulumDiscussionFileSequenceRef.current) {
+          setIsPreparingReticulumDiscussionFile(false);
+          setIsCompressingReticulumDiscussionGif(false);
+        }
+      }
+    },
+    [
+      addReticulumDiscussionFile,
+      isPreparingReticulumDiscussionFile,
+      reticulumDiscussionFiles.length,
+      t,
+    ]
+  );
+
   const closeReticulumLargeImageChoice = useCallback(() => {
     if (isCompressingReticulumImage) return;
     setReticulumLargeImageChoice(null);
@@ -6053,14 +6530,27 @@ export const ChatGroup = ({
     const choice = reticulumLargeImageChoice;
     if (!choice || isCompressingReticulumImage) return;
     setIsCompressingReticulumImage(true);
+    if (choice.target === 'discussion') {
+      setIsPreparingReticulumDiscussionFile(true);
+    }
     try {
       const compressed = await compressReticulumImageFile(choice.file);
-      await addPendingReticulumFile(compressed);
+      if (choice.target === 'discussion') {
+        await addReticulumDiscussionFile(compressed, {
+          expectedSequence: reticulumDiscussionFileSequenceRef.current,
+        });
+      } else {
+        await addPendingReticulumFile(compressed);
+      }
       setReticulumLargeImageChoice(null);
     } finally {
       setIsCompressingReticulumImage(false);
+      if (choice.target === 'discussion') {
+        setIsPreparingReticulumDiscussionFile(false);
+      }
     }
   }, [
+    addReticulumDiscussionFile,
     addPendingReticulumFile,
     isCompressingReticulumImage,
     reticulumLargeImageChoice,
@@ -6069,14 +6559,22 @@ export const ChatGroup = ({
   const useReticulumImageAsAttachment = useCallback(async () => {
     const choice = reticulumLargeImageChoice;
     if (!choice || isCompressingReticulumImage) return;
-    const added = await addPendingReticulumFile(choice.file, {
-      asAttachment: true,
-      filePathOverride: choice.filePath,
-    });
+    const added =
+      choice.target === 'discussion'
+        ? await addReticulumDiscussionFile(choice.file, {
+            asAttachment: true,
+            expectedSequence: reticulumDiscussionFileSequenceRef.current,
+            filePathOverride: choice.filePath,
+          })
+        : await addPendingReticulumFile(choice.file, {
+            asAttachment: true,
+            filePathOverride: choice.filePath,
+          });
     if (added) {
       setReticulumLargeImageChoice(null);
     }
   }, [
+    addReticulumDiscussionFile,
     addPendingReticulumFile,
     isCompressingReticulumImage,
     reticulumLargeImageChoice,
@@ -8100,6 +8598,14 @@ export const ChatGroup = ({
                   ? acknowledgeReticulumUnreadMessages
                   : undefined
               }
+              reticulumDiscussionReplyCounts={
+                reticulumChatEnabled
+                  ? reticulumDiscussionIndex.replyCounts
+                  : undefined
+              }
+              onOpenReticulumDiscussion={
+                reticulumChatEnabled ? openReticulumDiscussion : undefined
+              }
               myAddress={myAddress}
               myName={myName}
               hasOlderMessages={
@@ -8121,8 +8627,7 @@ export const ChatGroup = ({
                 (reticulumInitialHistoryReady &&
                   reticulumProcessedHistoryKey ===
                     `${selectedGroup || ''}:${
-                      selectedReticulumChannelId ||
-                      DEFAULT_RETICULUM_CHANNEL_ID
+                      selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
                     }:${reticulumVisibilityChange?.revision || 0}`)
               }
               selectedGroup={selectedGroup}
@@ -11135,6 +11640,32 @@ export const ChatGroup = ({
             postProcess: 'capitalizeFirstChar',
           }),
         }}
+      />
+
+      <ReticulumDiscussionDialog
+        canWrite={canWriteSelectedReticulumChannel}
+        channelExpiryDurationMs={selectedReticulumChannelExpiryDurationMs}
+        compressingGif={isCompressingReticulumDiscussionGif}
+        files={reticulumDiscussionFiles}
+        loading={isReticulumDiscussionLoading}
+        membersWithNames={members}
+        messages={reticulumDiscussionMessages}
+        myAddress={myAddress}
+        onClose={closeReticulumDiscussion}
+        onRemoveFile={removeReticulumDiscussionFile}
+        onSelectFiles={insertReticulumDiscussionFiles}
+        onSend={sendReticulumDiscussionReply}
+        onTypingChange={noteReticulumComposerActivity}
+        open={Boolean(reticulumDiscussionRootId)}
+        preparingFile={isPreparingReticulumDiscussionFile}
+        replyCount={activeReticulumDiscussionReplyCount}
+        reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
+        reticulumGroupDisplayName={selectedGroupName}
+        reticulumMemberJoinedByAddress={reticulumMemberJoinedByAddress}
+        reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
+        reticulumMemberRolesReady={reticulumMemberRolesReady}
+        reticulumMentionUsers={reticulumMentionUsers}
+        selectedGroup={selectedGroup}
       />
 
       {reticulumChatEnabled && (

@@ -157,6 +157,11 @@ export interface ReticulumChatEvent {
   signature: string;
 }
 
+export interface ReticulumChatDiscussionIndex {
+  replyCounts: Record<string, number>;
+  rootByEventId: Record<string, string>;
+}
+
 export type ReticulumDmEventType =
   | 'message'
   | 'edit'
@@ -9142,6 +9147,42 @@ export class ReticulumChatManager extends EventEmitter {
       'message-history-read'
     );
     return events;
+  }
+
+  getDiscussionIndex(
+    groupId: number,
+    channelId = RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+  ): ReticulumChatDiscussionIndex {
+    this.assertLocalGroupMember(groupId);
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    if (!this.localChannelReadPredicate(groupId)(normalizedChannelId)) {
+      return { replyCounts: {}, rootByEventId: {} };
+    }
+    const localAddress = this.localGroupAddresses.get(groupId) || '';
+    return this.db.getDiscussionIndex(
+      groupId,
+      normalizedChannelId,
+      this.activeSilencedAuthors(localAddress, 'group', String(groupId))
+    );
+  }
+
+  getDiscussionMessages(
+    groupId: number,
+    channelId: string,
+    eventId: string
+  ): ReticulumChatEvent[] {
+    this.assertLocalGroupMember(groupId);
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    if (!this.localChannelReadPredicate(groupId)(normalizedChannelId)) return [];
+    const localAddress = this.localGroupAddresses.get(groupId) || '';
+    return this.db
+      .getDiscussionMessages(
+        groupId,
+        normalizedChannelId,
+        eventId,
+        this.activeSilencedAuthors(localAddress, 'group', String(groupId))
+      )
+      .map((event) => this.eventForRenderer(event));
   }
 
   private eventForRenderer(

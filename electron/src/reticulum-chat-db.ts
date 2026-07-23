@@ -48,9 +48,11 @@ export function normalizeReticulumChatDisplayName(
 }
 
 function normalizeExcludedAuthors(addresses: readonly string[]): string[] {
-  return [...new Set(
-    addresses.map((address) => String(address || '').trim()).filter(Boolean)
-  )].slice(0, 100);
+  return [
+    ...new Set(
+      addresses.map((address) => String(address || '').trim()).filter(Boolean)
+    ),
+  ].slice(0, 100);
 }
 
 const RETICULUM_CHAT_METADATA_EVENT_TYPES = new Set([
@@ -536,6 +538,23 @@ type MessageProjectionRow = {
   has_attachment?: number | null;
 };
 
+export function buildReticulumDiscussionIndex(
+  rows: ReadonlyArray<{ discussion_root_id: string; reply_count: number }>
+): {
+  replyCounts: Record<string, number>;
+  rootByEventId: Record<string, string>;
+} {
+  const replyCounts: Record<string, number> = {};
+  const rootByEventId: Record<string, string> = {};
+  for (const row of rows) {
+    const replyCount = Math.max(0, Number(row.reply_count) || 0);
+    if (replyCount === 0) continue;
+    replyCounts[row.discussion_root_id] = replyCount;
+    rootByEventId[row.discussion_root_id] = row.discussion_root_id;
+  }
+  return { replyCounts, rootByEventId };
+}
+
 type RelayCacheRow = {
   blob_id: string;
   event_id: string;
@@ -776,8 +795,7 @@ function silenceRowToRecord(row: SilenceRow): ReticulumChatSilenceRecord {
     scopeType: row.scope_type as ReticulumChatSilenceScope,
     scopeId: row.scope_id,
     createdAt: Number(row.created_at || 0),
-    expiresAt:
-      row.expires_at == null ? null : Number(row.expires_at),
+    expiresAt: row.expires_at == null ? null : Number(row.expires_at),
     ignoredThrough: Number(row.ignored_through || 0),
     updatedAt: Number(row.updated_at || 0),
   };
@@ -2567,14 +2585,7 @@ export class ReticulumChatDatabase {
             AND scope_id = ?
         `
       )
-      .run(
-        clearedAt,
-        clearedAt,
-        owner,
-        target,
-        scopeType,
-        normalizedScopeId
-      );
+      .run(clearedAt, clearedAt, owner, target, scopeType, normalizedScopeId);
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -2668,9 +2679,13 @@ export class ReticulumChatDatabase {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     if (!normalized) return [];
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    const excludedSenders = [...new Set(
-      excludedSenderAddresses.map((address) => String(address || '').trim()).filter(Boolean)
-    )].slice(0, 100);
+    const excludedSenders = [
+      ...new Set(
+        excludedSenderAddresses
+          .map((address) => String(address || '').trim())
+          .filter(Boolean)
+      ),
+    ].slice(0, 100);
     const excludedClause = excludedSenders.length
       ? `AND sender_address NOT IN (${excludedSenders.map(() => '?').join(', ')})`
       : '';
@@ -2819,13 +2834,7 @@ export class ReticulumChatDatabase {
             )
         `
         )
-        .get(
-          event.conversationId,
-          address,
-          address,
-          address,
-          Date.now()
-        ) as
+        .get(event.conversationId, address, address, address, Date.now()) as
         | { count?: number }
         | undefined;
       return {
@@ -5134,9 +5143,7 @@ export class ReticulumChatDatabase {
         rootEventId,
         now,
         ...excludedAuthors
-      ) as
-      | MessageProjectionRow
-      | undefined;
+      ) as MessageProjectionRow | undefined;
     if (!target) return [];
     const beforeLimit = Math.max(
       0,
@@ -5358,7 +5365,8 @@ export class ReticulumChatDatabase {
               safeLimit
             ) as MessageProjectionRow[]);
     } else {
-      const channelClause = normalizedChannelId == null ? '' : 'AND channel_id = ?';
+      const channelClause =
+        normalizedChannelId == null ? '' : 'AND channel_id = ?';
       const excludedClause = `AND author_address NOT IN (${excludedAuthors
         .map(() => '?')
         .join(', ')})`;
@@ -5386,6 +5394,154 @@ export class ReticulumChatDatabase {
           safeLimit
         ) as MessageProjectionRow[];
     }
+    return rows.map(messageProjectionRowToEvent);
+  }
+
+  getDiscussionIndex(
+    groupId: number,
+    channelId: string,
+    excludedAuthorAddresses: readonly string[] = []
+  ): {
+    replyCounts: Record<string, number>;
+    rootByEventId: Record<string, string>;
+  } {
+    const now = Date.now();
+    this.pruneExpiredMessagesThrottled(now);
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const excludedAuthors = normalizeExcludedAuthors(excludedAuthorAddresses);
+    const excludedClause = excludedAuthors.length
+      ? `AND projection.author_address NOT IN (${excludedAuthors
+          .map(() => '?')
+          .join(', ')})`
+      : '';
+    const rows = this.db
+      .prepare(
+        `
+          WITH RECURSIVE discussion_tree(event_id, discussion_root_id) AS (
+            SELECT root_event_id, root_event_id
+            FROM rchat_message_projection
+            WHERE group_id = ?
+              AND channel_id = ?
+              AND reply_to_event_id IS NULL
+            UNION
+            SELECT child.root_event_id, tree.discussion_root_id
+            FROM rchat_message_projection AS child
+            JOIN discussion_tree AS tree
+              ON child.reply_to_event_id = tree.event_id
+            WHERE child.group_id = ?
+              AND child.channel_id = ?
+          )
+          SELECT tree.discussion_root_id, COUNT(*) AS reply_count
+          FROM discussion_tree AS tree
+          JOIN rchat_message_projection AS projection
+            ON projection.root_event_id = tree.event_id
+          WHERE projection.deleted_at IS NULL
+            AND (projection.expires_at IS NULL OR projection.expires_at > ?)
+            AND tree.event_id <> tree.discussion_root_id
+            ${excludedClause}
+          GROUP BY tree.discussion_root_id
+        `
+      )
+      .all(
+        groupId,
+        normalizedChannelId,
+        groupId,
+        normalizedChannelId,
+        now,
+        ...excludedAuthors
+      ) as Array<{ discussion_root_id: string; reply_count: number }>;
+
+    return buildReticulumDiscussionIndex(rows);
+  }
+
+  getDiscussionMessages(
+    groupId: number,
+    channelId: string,
+    eventId: string,
+    excludedAuthorAddresses: readonly string[] = []
+  ): ReticulumChatEvent[] {
+    const normalizedEventId = String(eventId || '').trim();
+    if (!normalizedEventId) return [];
+    const now = Date.now();
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const excludedAuthors = normalizeExcludedAuthors(excludedAuthorAddresses);
+    const discussionRoot = this.db
+      .prepare(
+        `
+          WITH RECURSIVE ancestors(event_id, reply_to_event_id, depth) AS (
+            SELECT root_event_id, reply_to_event_id, 0
+            FROM rchat_message_projection
+            WHERE group_id = ?
+              AND channel_id = ?
+              AND root_event_id = ?
+            UNION
+            SELECT parent.root_event_id, parent.reply_to_event_id, child.depth + 1
+            FROM rchat_message_projection AS parent
+            JOIN ancestors AS child
+              ON parent.root_event_id = child.reply_to_event_id
+            WHERE parent.group_id = ?
+              AND parent.channel_id = ?
+              AND child.depth < 1000
+          )
+          SELECT event_id
+          FROM ancestors
+          WHERE reply_to_event_id IS NULL
+          ORDER BY depth DESC
+          LIMIT 1
+        `
+      )
+      .get(
+        groupId,
+        normalizedChannelId,
+        normalizedEventId,
+        groupId,
+        normalizedChannelId
+      ) as { event_id?: string } | undefined;
+    const discussionRootId = String(discussionRoot?.event_id || '');
+    if (!discussionRootId) return [];
+    const excludedClause = excludedAuthors.length
+      ? `AND projection.author_address NOT IN (${excludedAuthors
+          .map(() => '?')
+          .join(', ')})`
+      : '';
+    const rows = this.db
+      .prepare(
+        `
+          WITH RECURSIVE descendants(event_id) AS (
+            SELECT ?
+            UNION
+            SELECT child.root_event_id
+            FROM rchat_message_projection AS child
+            JOIN descendants AS parent
+              ON child.reply_to_event_id = parent.event_id
+            WHERE child.group_id = ?
+              AND child.channel_id = ?
+          )
+          SELECT projection.*
+          FROM descendants
+          JOIN rchat_message_projection AS projection
+            ON projection.root_event_id = descendants.event_id
+          WHERE projection.group_id = ?
+            AND projection.channel_id = ?
+            AND projection.deleted_at IS NULL
+            AND (projection.expires_at IS NULL OR projection.expires_at > ?)
+            ${excludedClause}
+          ORDER BY
+            CASE WHEN projection.root_event_id = ? THEN 0 ELSE 1 END,
+            projection.created_at ASC,
+            projection.root_event_id ASC
+        `
+      )
+      .all(
+        discussionRootId,
+        groupId,
+        normalizedChannelId,
+        groupId,
+        normalizedChannelId,
+        now,
+        ...excludedAuthors,
+        discussionRootId
+      ) as MessageProjectionRow[];
     return rows.map(messageProjectionRowToEvent);
   }
 
@@ -5819,10 +5975,11 @@ export class ReticulumChatDatabase {
           .map(() => '?')
           .join(', ')}))`
       : '';
-    const sqliteRows = excludedAuthors.length > 0
-      ? (this.db
-          .prepare(
-            `
+    const sqliteRows =
+      excludedAuthors.length > 0
+        ? (this.db
+            .prepare(
+              `
               SELECT * FROM reticulum_chat_events
               WHERE group_id = ?
                 ${normalizedChannelId == null ? '' : 'AND channel_id = ?'}
@@ -5836,60 +5993,60 @@ export class ReticulumChatDatabase {
               ORDER BY timestamp ASC, event_id ASC
               LIMIT ?
             `
-          )
-          .all(
-            groupId,
-            ...(normalizedChannelId == null ? [] : [normalizedChannelId]),
-            afterTimestamp,
-            ...(afterEventId ? [afterTimestamp, afterEventId] : []),
-            ...excludedAuthors,
-            limit
-          ) as EventRow[])
-      : afterEventId
-      ? normalizedChannelId == null
-        ? (this.db
-            .prepare(
-              `
+            )
+            .all(
+              groupId,
+              ...(normalizedChannelId == null ? [] : [normalizedChannelId]),
+              afterTimestamp,
+              ...(afterEventId ? [afterTimestamp, afterEventId] : []),
+              ...excludedAuthors,
+              limit
+            ) as EventRow[])
+        : afterEventId
+          ? normalizedChannelId == null
+            ? (this.db
+                .prepare(
+                  `
               SELECT * FROM reticulum_chat_events
               WHERE group_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?))
                 AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
               ORDER BY timestamp ASC, event_id ASC
               LIMIT ?
             `
-            )
-            .all(
-              groupId,
-              afterTimestamp,
-              afterTimestamp,
-              afterEventId,
-              limit
-            ) as EventRow[])
-        : (this.stmtGetEventsAfterCursor.all(
-            groupId,
-            normalizedChannelId,
-            afterTimestamp,
-            afterTimestamp,
-            afterEventId,
-            limit
-          ) as EventRow[])
-      : normalizedChannelId == null
-        ? (this.db
-            .prepare(
-              `
+                )
+                .all(
+                  groupId,
+                  afterTimestamp,
+                  afterTimestamp,
+                  afterEventId,
+                  limit
+                ) as EventRow[])
+            : (this.stmtGetEventsAfterCursor.all(
+                groupId,
+                normalizedChannelId,
+                afterTimestamp,
+                afterTimestamp,
+                afterEventId,
+                limit
+              ) as EventRow[])
+          : normalizedChannelId == null
+            ? (this.db
+                .prepare(
+                  `
               SELECT * FROM reticulum_chat_events
               WHERE group_id = ? AND timestamp > ?
                 AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
               ORDER BY timestamp ASC, event_id ASC
               LIMIT ?
             `
-            )
-            .all(groupId, afterTimestamp, limit) as EventRow[])
-        : (this.stmtGetEventsAfter.all(
-            groupId,
-            normalizedChannelId,
-            afterTimestamp,
-            limit
-          ) as EventRow[]);
+                )
+                .all(groupId, afterTimestamp, limit) as EventRow[])
+            : (this.stmtGetEventsAfter.all(
+                groupId,
+                normalizedChannelId,
+                afterTimestamp,
+                limit
+              ) as EventRow[]);
     const matchesAfter = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
       if (!this.eventIsVisible(event)) return false;
@@ -5935,10 +6092,11 @@ export class ReticulumChatDatabase {
           .map(() => '?')
           .join(', ')}))`
       : '';
-    const sqliteRows = excludedAuthors.length > 0
-      ? (this.db
-          .prepare(
-            `
+    const sqliteRows =
+      excludedAuthors.length > 0
+        ? (this.db
+            .prepare(
+              `
               SELECT * FROM (
                 SELECT * FROM reticulum_chat_events
                 WHERE group_id = ?
@@ -5955,20 +6113,20 @@ export class ReticulumChatDatabase {
               )
               ORDER BY timestamp ASC, event_id ASC
             `
-          )
-          .all(
-            groupId,
-            ...(normalizedChannelId == null ? [] : [normalizedChannelId]),
-            beforeTimestamp,
-            ...(beforeEventId ? [beforeTimestamp, beforeEventId] : []),
-            ...excludedAuthors,
-            limit
-          ) as EventRow[])
-      : beforeEventId
-      ? normalizedChannelId == null
-        ? (this.db
-            .prepare(
-              `
+            )
+            .all(
+              groupId,
+              ...(normalizedChannelId == null ? [] : [normalizedChannelId]),
+              beforeTimestamp,
+              ...(beforeEventId ? [beforeTimestamp, beforeEventId] : []),
+              ...excludedAuthors,
+              limit
+            ) as EventRow[])
+        : beforeEventId
+          ? normalizedChannelId == null
+            ? (this.db
+                .prepare(
+                  `
               SELECT * FROM (
                 SELECT * FROM reticulum_chat_events
                 WHERE group_id = ? AND (timestamp < ? OR (timestamp = ? AND event_id < ?))
@@ -5978,26 +6136,26 @@ export class ReticulumChatDatabase {
               )
               ORDER BY timestamp ASC, event_id ASC
             `
-            )
-            .all(
-              groupId,
-              beforeTimestamp,
-              beforeTimestamp,
-              beforeEventId,
-              limit
-            ) as EventRow[])
-        : (this.stmtGetEventsBeforeCursor.all(
-            groupId,
-            normalizedChannelId,
-            beforeTimestamp,
-            beforeTimestamp,
-            beforeEventId,
-            limit
-          ) as EventRow[])
-      : normalizedChannelId == null
-        ? (this.db
-            .prepare(
-              `
+                )
+                .all(
+                  groupId,
+                  beforeTimestamp,
+                  beforeTimestamp,
+                  beforeEventId,
+                  limit
+                ) as EventRow[])
+            : (this.stmtGetEventsBeforeCursor.all(
+                groupId,
+                normalizedChannelId,
+                beforeTimestamp,
+                beforeTimestamp,
+                beforeEventId,
+                limit
+              ) as EventRow[])
+          : normalizedChannelId == null
+            ? (this.db
+                .prepare(
+                  `
               SELECT * FROM (
                 SELECT * FROM reticulum_chat_events
                 WHERE group_id = ? AND timestamp < ?
@@ -6007,14 +6165,14 @@ export class ReticulumChatDatabase {
               )
               ORDER BY timestamp ASC, event_id ASC
             `
-            )
-            .all(groupId, beforeTimestamp, limit) as EventRow[])
-        : (this.stmtGetEventsBefore.all(
-            groupId,
-            normalizedChannelId,
-            beforeTimestamp,
-            limit
-          ) as EventRow[]);
+                )
+                .all(groupId, beforeTimestamp, limit) as EventRow[])
+            : (this.stmtGetEventsBefore.all(
+                groupId,
+                normalizedChannelId,
+                beforeTimestamp,
+                limit
+              ) as EventRow[]);
     const matchesBefore = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
       if (!this.eventIsVisible(event)) return false;
@@ -8337,9 +8495,7 @@ export class ReticulumChatDatabase {
         observedAt: Math.max(0, Number(row.observed_at) || 0),
         confidence: Math.max(0, Number(row.confidence) || 0),
       }))
-      .filter(
-        (row) => Number.isInteger(row.groupId) && row.groupId > 0
-      );
+      .filter((row) => Number.isInteger(row.groupId) && row.groupId > 0);
   }
 
   upsertPublicGroupActivityLocalState(
@@ -8499,9 +8655,11 @@ export class ReticulumChatDatabase {
       normalizedChannelId,
       [...activeSilencedAuthors]
     );
-    const recentEvents = this.getRecentEvents(groupId, 500, normalizedChannelId).filter(
-      (event) => !activeSilencedAuthors.has(event.authorAddress)
-    );
+    const recentEvents = this.getRecentEvents(
+      groupId,
+      500,
+      normalizedChannelId
+    ).filter((event) => !activeSilencedAuthors.has(event.authorAddress));
     const memoryLast = events[events.length - 1] ?? null;
     const lastEvent = memoryLast;
     if (!lastEvent) return null;
@@ -8523,8 +8681,9 @@ export class ReticulumChatDatabase {
                 (ignoredThroughByAuthor.get(event.authorAddress) ?? 0)
           ).length
         : 0;
-    const mentionRow = myAddress && !suppressUnreadState
-      ? (activeSilencedAuthors.size > 0 || ignoredThroughByAuthor.size > 0
+    const mentionRow =
+      myAddress && !suppressUnreadState
+        ? activeSilencedAuthors.size > 0 || ignoredThroughByAuthor.size > 0
           ? (this.db
               .prepare(
                 `
@@ -8567,8 +8726,8 @@ export class ReticulumChatDatabase {
               myAddress,
               myAddress,
               watermark
-            ) as { cnt?: number } | undefined))
-      : undefined;
+            ) as { cnt?: number } | undefined)
+        : undefined;
     const mentionCount =
       typeof mentionRow?.cnt === 'number' && Number.isFinite(mentionRow.cnt)
         ? mentionRow.cnt
@@ -9995,6 +10154,10 @@ export class ReticulumChatDatabase {
         run: () => this.migrateMetadataSnapshotLineageSchema(),
       },
       { name: 'local-user-silences', run: () => this.initSilenceSchema() },
+      {
+        name: 'discussion-reply-index',
+        run: () => this.migrateDiscussionReplyIndexSchema(),
+      },
     ];
     for (const migration of migrations) {
       try {
@@ -10006,6 +10169,14 @@ export class ReticulumChatDatabase {
         );
       }
     }
+  }
+
+  private migrateDiscussionReplyIndexSchema(): void {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_reply
+        ON rchat_message_projection
+          (group_id, channel_id, reply_to_event_id, created_at, root_event_id);
+    `);
   }
 
   private tableColumns(tableName: string): Set<string> {

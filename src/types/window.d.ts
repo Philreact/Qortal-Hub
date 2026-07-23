@@ -566,16 +566,29 @@ declare global {
 
     reticulumChat?: {
       isEnabled: () => Promise<boolean>;
+      getReadinessStatus: () => Promise<{
+        state: 'idle' | 'starting' | 'ready' | 'failed';
+        revision: number;
+        error?: string;
+      }>;
+      onReadinessChanged: (
+        cb: (status: {
+          state: 'idle' | 'starting' | 'ready' | 'failed';
+          revision: number;
+          error?: string;
+        }) => void
+      ) => () => void;
       setLocalGroupMemberships: (
         groupIds: Array<
-          number | {
-            groupId: number;
-            isPrivate?: boolean;
-            isOpen?: boolean;
-            localAddress?: string;
-            address?: string;
-            isAdmin?: boolean;
-          }
+          | number
+          | {
+              groupId: number;
+              isPrivate?: boolean;
+              isOpen?: boolean;
+              localAddress?: string;
+              address?: string;
+              isAdmin?: boolean;
+            }
         >
       ) => Promise<{ success: boolean; error?: string }>;
       setPublicGroupDirectory: (
@@ -769,6 +782,18 @@ declare global {
           repairNetwork?: boolean;
         }
       ) => Promise<unknown[]>;
+      getDiscussionIndex: (
+        groupId: number,
+        channelId?: string
+      ) => Promise<{
+        replyCounts: Record<string, number>;
+        rootByEventId: Record<string, string>;
+      }>;
+      getDiscussionMessages: (
+        groupId: number,
+        channelId: string,
+        eventId: string
+      ) => Promise<unknown[]>;
       getChannelMetadataHistory: (
         groupId: number,
         limit?: number
@@ -817,16 +842,12 @@ declare global {
         eventId: string,
         text: string
       ) => Promise<{ success: boolean }>;
-      deleteSearchText: (
-        eventId: string
-      ) => Promise<{ success: boolean }>;
+      deleteSearchText: (eventId: string) => Promise<{ success: boolean }>;
       replaceMentions: (
         eventId: string,
         mentionedAddresses: string[]
       ) => Promise<{ success: boolean }>;
-      deleteMentions: (
-        eventId: string
-      ) => Promise<{ success: boolean }>;
+      deleteMentions: (eventId: string) => Promise<{ success: boolean }>;
       markRead: (
         groupId: number,
         channelId: string,
@@ -846,9 +867,7 @@ declare global {
           metadataChanged?: boolean;
         }) => void
       ) => () => void;
-      onDirectEvent: (
-        cb: (payload: { event: unknown }) => void
-      ) => () => void;
+      onDirectEvent: (cb: (payload: { event: unknown }) => void) => () => void;
       onDirectTyping: (
         cb: (payload: {
           conversationId: string;
@@ -857,10 +876,7 @@ declare global {
         }) => void
       ) => () => void;
       onDirectSummaryChanged: (
-        cb: (payload: {
-          conversationId?: string;
-          peerAddress?: string;
-        }) => void
+        cb: (payload: { conversationId?: string; peerAddress?: string }) => void
       ) => () => void;
       onSilenceChanged: (
         cb: (payload: {
@@ -989,17 +1005,13 @@ declare global {
         encrypted?: boolean;
         metadata?: Record<string, unknown>;
       }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
-      getUrl: (
-        fileHash: string
-      ) => Promise<{
+      getUrl: (fileHash: string) => Promise<{
         success: boolean;
         url?: string;
         manifest?: unknown;
         error?: string;
       }>;
-      getStatus: (
-        fileHash: string
-      ) => Promise<{
+      getStatus: (fileHash: string) => Promise<{
         success: boolean;
         manifest?: unknown;
         bytesTransferred?: number;

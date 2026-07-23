@@ -85,6 +85,8 @@ type ChatListProps = {
   reticulumMemberRolesReady?: boolean;
   reticulumUnreadCount?: number;
   onReticulumUnreadAcknowledged?: () => void;
+  reticulumDiscussionReplyCounts?: Record<string, number>;
+  onOpenReticulumDiscussion?: (message: any) => void;
   secretKeyObject?: any;
   compactScrollButton?: boolean;
   chatId?: any;
@@ -128,6 +130,8 @@ export const ChatList = ({
   reticulumMemberRolesReady = true,
   reticulumUnreadCount = 0,
   onReticulumUnreadAcknowledged,
+  reticulumDiscussionReplyCounts,
+  onOpenReticulumDiscussion,
   secretKeyObject,
   compactScrollButton = false,
   chatId,
@@ -603,7 +607,16 @@ export const ChatList = ({
               if (typeof unreadIndex === 'number') {
                 scrollToIndexAfterMeasurements(unreadIndex, 'start', [30, 60]);
               } else {
-                scrollToBottom(totalMessages, undefined, false, false);
+                // Let the virtualizer keep the final row targeted while its
+                // estimated message heights are replaced with measurements.
+                // Its dynamic scrollToIndex correction stops as soon as the
+                // measured end offset matches, and manual input cancels it via
+                // cancelReticulumScrollRetries.
+                scrollToIndexAfterMeasurements(
+                  totalMessages.length - 1,
+                  'end',
+                  [30, 60]
+                );
               }
               clearInitialReticulumReveal();
               initialReticulumRevealTimeoutRef.current = window.setTimeout(
@@ -1104,6 +1117,14 @@ export const ChatList = ({
                         replyIndex={replyIndex}
                         replyExpiredMeta={replyExpiredMeta}
                         reticulumChatEnabled={reticulumChatEnabled}
+                        reticulumDiscussionReplyCount={
+                          reticulumDiscussionReplyCounts?.[
+                            String(message?.signature || '')
+                          ] || 0
+                        }
+                        onOpenReticulumDiscussion={
+                          onOpenReticulumDiscussion
+                        }
                         reticulumGroupAvatarOwnerName={
                           reticulumGroupAvatarOwnerName
                         }

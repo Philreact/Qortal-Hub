@@ -56,6 +56,7 @@ import {
   deriveAddressFromPublicKey,
 } from './presence';
 import {
+  buildReticulumDiscussionIndex,
   hashReticulumChatMentionAddress,
   hashReticulumChatMetadataEntityState,
   ReticulumChatDatabase,
@@ -4259,6 +4260,22 @@ describe('reticulum chat manager', () => {
       },
     ]);
     manager.close();
+  });
+
+  it('builds a compact index from aggregated discussion counts', () => {
+    expect(
+      buildReticulumDiscussionIndex([
+        {
+          discussion_root_id: 'discussion-root',
+          reply_count: 2,
+        },
+      ])
+    ).toEqual({
+      replyCounts: { 'discussion-root': 2 },
+      rootByEventId: {
+        'discussion-root': 'discussion-root',
+      },
+    });
   });
 
   it('does not cache unavailable group membership validation as not-member', async () => {

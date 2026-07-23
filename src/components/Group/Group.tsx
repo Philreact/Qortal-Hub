@@ -353,8 +353,7 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
       groupProperty?.isOpen === false;
     const joinedAt = Number(
       (group as { reticulumJoinedAt?: unknown; joinedAt?: unknown })
-        ?.reticulumJoinedAt ??
-        (group as { joinedAt?: unknown })?.joinedAt
+        ?.reticulumJoinedAt ?? (group as { joinedAt?: unknown })?.joinedAt
     );
     const previous = byGroupId.get(groupId);
     byGroupId.set(groupId, {
@@ -364,17 +363,13 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
         (Number.isFinite(joinedAt) && joinedAt > 0 ? joinedAt : undefined),
     });
   }
-  return [...byGroupId.entries()].map(
-    ([groupId, { isPrivate, joinedAt }]) => ({
-      groupId,
-      isPrivate,
-      isAdmin: adminGroupIds.has(groupId),
-      ...(joinedAt ? { joinedAt } : {}),
-      ...(normalizedLocalAddress
-        ? { localAddress: normalizedLocalAddress }
-        : {}),
-    })
-  );
+  return [...byGroupId.entries()].map(([groupId, { isPrivate, joinedAt }]) => ({
+    groupId,
+    isPrivate,
+    isAdmin: adminGroupIds.has(groupId),
+    ...(joinedAt ? { joinedAt } : {}),
+    ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
+  }));
 };
 
 const collectReticulumPlainText = (value: unknown, out: string[]): void => {
@@ -1203,10 +1198,14 @@ export const Group = ({
   ] = useState('');
   const [reticulumMembershipsAppliedKey, setReticulumMembershipsAppliedKey] =
     useState('');
-  const [reticulumSummariesLoadedMembershipKey, setReticulumSummariesLoadedMembershipKey] =
-    useState('');
+  const [
+    reticulumSummariesLoadedMembershipKey,
+    setReticulumSummariesLoadedMembershipKey,
+  ] = useState('');
   const [reticulumTransportReadyRevision, setReticulumTransportReadyRevision] =
     useState(0);
+  const [reticulumChatReadinessState, setReticulumChatReadinessState] =
+    useState<'idle' | 'starting' | 'ready' | 'failed'>('idle');
   const reticulumAdminGroupIds = useMemo(
     () => new Set(getGroupIdsFromGroupLikeList(myGroupsWhereIAmAdmin)),
     [myGroupsWhereIAmAdmin]
@@ -1601,75 +1600,76 @@ export const Group = ({
     [fireReticulumChatNotification, mutedGroups]
   );
 
-  const refreshReticulumChatSummaries = useCallback(async (): Promise<boolean> => {
-    try {
-      if (typeof window.reticulumChat?.isEnabled !== 'function') {
+  const refreshReticulumChatSummaries =
+    useCallback(async (): Promise<boolean> => {
+      try {
+        if (typeof window.reticulumChat?.isEnabled !== 'function') {
+          console.error(
+            '[ReticulumChat] Activity dashboard cannot initialize: isEnabled bridge is unavailable'
+          );
+          return false;
+        }
+        const enabled = await window.reticulumChat?.isEnabled?.();
+        setReticulumChatEnabled(enabled === true);
+        if (!enabled) {
+          previousReticulumSummariesRef.current = null;
+          reticulumMentionBadgeSummariesRef.current = null;
+          setReticulumChatSummaries({});
+          void window.reticulumChat?.updateMentionBadge?.(0);
+          return false;
+        }
+        if (typeof window.reticulumChat?.getSummaries !== 'function') {
+          console.error(
+            '[ReticulumChat] Activity dashboard cannot initialize: getSummaries bridge is unavailable'
+          );
+          return false;
+        }
+        const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
+        if (!Array.isArray(summaries)) {
+          console.error(
+            '[ReticulumChat] Activity dashboard summary refresh returned an invalid result',
+            { resultType: summaries === null ? 'null' : typeof summaries }
+          );
+          reticulumMentionBadgeSummariesRef.current = null;
+          setReticulumChatSummaries({});
+          void window.reticulumChat?.updateMentionBadge?.(0);
+          return false;
+        }
+        const next = summaries.reduce(
+          (acc, summary: any) => {
+            const groupId = Number(summary?.groupId);
+            if (!Number.isInteger(groupId) || groupId <= 0) return acc;
+            acc[String(groupId)] = summary;
+            return acc;
+          },
+          {} as Record<string, any>
+        );
+        const previous = previousReticulumSummariesRef.current;
+        previousReticulumSummariesRef.current = next;
+        setReticulumChatSummaries(next);
+        const badgeState = getReticulumMentionBadgeStateForRefresh(
+          reticulumMentionBadgeSummariesRef.current,
+          next,
+          getGroupIdFromGroupLike(selectedGroupRef.current),
+          activeReticulumChannelIdRef.current || 'general'
+        );
+        reticulumMentionBadgeSummariesRef.current = badgeState.summaries;
+        void window.reticulumChat?.updateMentionBadge?.(badgeState.count);
+        void maybeFireReticulumChatNotification(previous, next);
+        return true;
+      } catch (error) {
         console.error(
-          '[ReticulumChat] Activity dashboard cannot initialize: isEnabled bridge is unavailable'
+          '[ReticulumChat] Failed to refresh group summaries:',
+          error
         );
         return false;
       }
-      const enabled = await window.reticulumChat?.isEnabled?.();
-      setReticulumChatEnabled(enabled === true);
-      if (!enabled) {
-        previousReticulumSummariesRef.current = null;
-        reticulumMentionBadgeSummariesRef.current = null;
-        setReticulumChatSummaries({});
-        void window.reticulumChat?.updateMentionBadge?.(0);
-        return false;
-      }
-      if (typeof window.reticulumChat?.getSummaries !== 'function') {
-        console.error(
-          '[ReticulumChat] Activity dashboard cannot initialize: getSummaries bridge is unavailable'
-        );
-        return false;
-      }
-      const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
-      if (!Array.isArray(summaries)) {
-        console.error(
-          '[ReticulumChat] Activity dashboard summary refresh returned an invalid result',
-          { resultType: summaries === null ? 'null' : typeof summaries }
-        );
-        reticulumMentionBadgeSummariesRef.current = null;
-        setReticulumChatSummaries({});
-        void window.reticulumChat?.updateMentionBadge?.(0);
-        return false;
-      }
-      const next = summaries.reduce(
-        (acc, summary: any) => {
-          const groupId = Number(summary?.groupId);
-          if (!Number.isInteger(groupId) || groupId <= 0) return acc;
-          acc[String(groupId)] = summary;
-          return acc;
-        },
-        {} as Record<string, any>
-      );
-      const previous = previousReticulumSummariesRef.current;
-      previousReticulumSummariesRef.current = next;
-      setReticulumChatSummaries(next);
-      const badgeState = getReticulumMentionBadgeStateForRefresh(
-        reticulumMentionBadgeSummariesRef.current,
-        next,
-        getGroupIdFromGroupLike(selectedGroupRef.current),
-        activeReticulumChannelIdRef.current || 'general'
-      );
-      reticulumMentionBadgeSummariesRef.current = badgeState.summaries;
-      void window.reticulumChat?.updateMentionBadge?.(badgeState.count);
-      void maybeFireReticulumChatNotification(previous, next);
-      return true;
-    } catch (error) {
-      console.error(
-        '[ReticulumChat] Failed to refresh group summaries:',
-        error
-      );
-      return false;
-    }
-  }, [
-    maybeFireReticulumChatNotification,
-    myAddress,
-    setReticulumChatEnabled,
-    setReticulumChatSummaries,
-  ]);
+    }, [
+      maybeFireReticulumChatNotification,
+      myAddress,
+      setReticulumChatEnabled,
+      setReticulumChatSummaries,
+    ]);
 
   const scheduleReticulumChatSummariesRefresh = useCallback(() => {
     if (reticulumSummariesRefreshTimerRef.current) {
@@ -1732,6 +1732,46 @@ export const Group = ({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let latestRevision = -1;
+    let latestState: 'idle' | 'starting' | 'ready' | 'failed' | undefined;
+    const applyReadinessStatus = (status: {
+      state: 'idle' | 'starting' | 'ready' | 'failed';
+      revision: number;
+    }) => {
+      if (cancelled || status.revision < latestRevision) {
+        return;
+      }
+      if (
+        status.revision === latestRevision &&
+        latestState === 'ready' &&
+        status.state !== 'ready'
+      ) {
+        return;
+      }
+      const becameReady = status.state === 'ready' && latestState !== 'ready';
+      latestRevision = status.revision;
+      latestState = status.state;
+      setReticulumChatReadinessState(status.state);
+      if (becameReady) {
+        setReticulumTransportReadyRevision((revision) => revision + 1);
+      }
+    };
+    const unsubscribe =
+      window.reticulumChat?.onReadinessChanged?.(applyReadinessStatus);
+
+    void window.reticulumChat
+      ?.getReadinessStatus?.()
+      .then(applyReadinessStatus)
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!myAddress) return;
     if (memberGroupsLoadedAddress !== myAddress) {
       return;
@@ -1766,7 +1806,9 @@ export const Group = ({
           }
           return;
         }
-        if (typeof window.reticulumChat?.setLocalGroupMemberships !== 'function') {
+        if (
+          typeof window.reticulumChat?.setLocalGroupMemberships !== 'function'
+        ) {
           console.error(
             '[ReticulumChat] Membership sync cannot initialize: setLocalGroupMemberships bridge is unavailable'
           );
@@ -1785,9 +1827,10 @@ export const Group = ({
           })
         );
         if (cancelled) return;
-        const membershipResult = await window.reticulumChat.setLocalGroupMemberships(
-          resolvedReticulumMemberships
-        );
+        const membershipResult =
+          await window.reticulumChat.setLocalGroupMemberships(
+            resolvedReticulumMemberships
+          );
         if (cancelled) return;
         if (membershipResult?.success !== true) {
           console.error('[ReticulumChat] Membership sync was rejected', {
@@ -3394,6 +3437,7 @@ export const Group = ({
     if (
       !isQChatTabActive ||
       !hasConfirmedReticulumGroups ||
+      reticulumChatReadinessState !== 'ready' ||
       reticulumActivityDashboardReady ||
       selectedGroup ||
       selectedDirect ||
@@ -3405,17 +3449,14 @@ export const Group = ({
       console.error(
         '[ReticulumChat] Activity dashboard is still not ready after 10 seconds',
         {
-          adminMetadataReady:
-            reticulumAdminGroupsLoadedAddress === myAddress,
+          adminMetadataReady: reticulumAdminGroupsLoadedAddress === myAddress,
           bridgeAvailable: Boolean(window.reticulumChat),
-          groupCount: getGroupIdsFromGroupLikeList(
-            memberGroupsForReticulum
-          ).length,
+          groupCount: getGroupIdsFromGroupLikeList(memberGroupsForReticulum)
+            .length,
           membershipsApplied:
             reticulumMembershipsAppliedKey === reticulumMembershipsKey,
           summariesLoaded:
-            reticulumSummariesLoadedMembershipKey ===
-            reticulumMembershipsKey,
+            reticulumSummariesLoadedMembershipKey === reticulumMembershipsKey,
         }
       );
     }, 10_000);
@@ -3428,6 +3469,7 @@ export const Group = ({
     newChat,
     reticulumActivityDashboardReady,
     reticulumAdminGroupsLoadedAddress,
+    reticulumChatReadinessState,
     reticulumMembershipsAppliedKey,
     reticulumMembershipsKey,
     reticulumSummariesLoadedMembershipKey,
@@ -3924,13 +3966,9 @@ export const Group = ({
     reticulumMountedGroupSections[selectedGroupIdKey] || [];
   const canMountQortalLand = Boolean(
     selectedGroup &&
-      triedToFetchSecretKey &&
-      !notPartOfKeys &&
-      !(
-        admins.includes(myAddress) &&
-        !secretKey &&
-        isPrivate
-      )
+    triedToFetchSecretKey &&
+    !notPartOfKeys &&
+    !(admins.includes(myAddress) && !secretKey && isPrivate)
   );
   const shouldMountGroupSection = useCallback(
     (section: string) => {
@@ -4056,41 +4094,40 @@ export const Group = ({
             !selectedDirect &&
             !newChat &&
             !selectedGroup &&
-            !isReticulumDirectOverlayOpen && (
-              reticulumChatEnabled ? (
-                hasConfirmedNoReticulumGroups ? (
-                  <FirstTimeQChatEmptyState
-                    onFindCommunities={openGroupDiscovery}
+            !isReticulumDirectOverlayOpen &&
+            (reticulumChatEnabled ? (
+              hasConfirmedNoReticulumGroups ? (
+                <FirstTimeQChatEmptyState
+                  onFindCommunities={openGroupDiscovery}
+                />
+              ) : reticulumActivityDashboardReady ? (
+                reticulumHasUnreadActivity ? (
+                  <ReturningUserActivityDashboard
+                    displayName={reticulumWelcomeDisplayName}
+                    groups={memberGroupsWithReticulumActivity}
+                    onBrowseCommunities={openGroupDiscovery}
+                    onSelectGroup={selectGroupFunc}
                   />
-                ) : reticulumActivityDashboardReady ? (
-                  reticulumHasUnreadActivity ? (
-                    <ReturningUserActivityDashboard
-                      displayName={reticulumWelcomeDisplayName}
-                      groups={memberGroupsWithReticulumActivity}
-                      onBrowseCommunities={openGroupDiscovery}
-                      onSelectGroup={selectGroupFunc}
-                    />
-                  ) : (
-                    <ReturningUserCaughtUpState
-                      displayName={reticulumWelcomeDisplayName}
-                      onBrowseCommunities={openGroupDiscovery}
-                    />
-                  )
                 ) : (
-                  <CenterBox>
-                    <CircularProgress size={28} />
-                  </CenterBox>
+                  <ReturningUserCaughtUpState
+                    displayName={reticulumWelcomeDisplayName}
+                    onBrowseCommunities={openGroupDiscovery}
+                  />
                 )
               ) : (
                 <CenterBox>
-                  <NoSelectionTypography>
-                    {t('group:message.generic.no_selection', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </NoSelectionTypography>
+                  <CircularProgress size={28} />
                 </CenterBox>
               )
-            )}
+            ) : (
+              <CenterBox>
+                <NoSelectionTypography>
+                  {t('group:message.generic.no_selection', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                </NoSelectionTypography>
+              </CenterBox>
+            ))}
 
           <SelectedGroupWrapper
             isVisible={
@@ -4109,8 +4146,7 @@ export const Group = ({
                   position: 'absolute',
                   right: 0,
                   top: 0,
-                  visibility:
-                    groupSection === 'chat' ? 'hidden' : 'visible',
+                  visibility: groupSection === 'chat' ? 'hidden' : 'visible',
                   zIndex: 3,
                 }}
               >

@@ -135,6 +135,10 @@ import {
 import { reticulumMediaWorkerPool } from './reticulum-media-worker-pool';
 import { isDisabledLegacy } from './feature-flags';
 import {
+  SingleFlightReadiness,
+  type ReadinessStatus,
+} from './single-flight-readiness';
+import {
   AUDIO_SURFACE_WINDOW_ROLE,
   AUDIO_SURFACE_ENTRY_PATH,
   MAIN_WINDOW_ROLE,
@@ -358,7 +362,10 @@ export function shutdownReticulumResourceStore(): void {
     try {
       session.defaultSession.protocol.unhandle(RETICULUM_RESOURCE_PROTOCOL);
     } catch (err) {
-      loggerWarn('[ReticulumResource] Failed to unhandle resource protocol:', err);
+      loggerWarn(
+        '[ReticulumResource] Failed to unhandle resource protocol:',
+        err
+      );
     } finally {
       reticulumResourceProtocolRegistered = false;
     }
@@ -379,8 +386,10 @@ function pruneReticulumResourceUrlTokens(now = Date.now()): void {
       reticulumResourceUrlTokens.delete(token);
     }
   }
-  if (reticulumResourceUrlTokens.size <= RETICULUM_RESOURCE_URL_TOKEN_MAX) return;
-  const excess = reticulumResourceUrlTokens.size - RETICULUM_RESOURCE_URL_TOKEN_MAX;
+  if (reticulumResourceUrlTokens.size <= RETICULUM_RESOURCE_URL_TOKEN_MAX)
+    return;
+  const excess =
+    reticulumResourceUrlTokens.size - RETICULUM_RESOURCE_URL_TOKEN_MAX;
   const oldest = [...reticulumResourceUrlTokens.entries()]
     .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
     .slice(0, excess);
@@ -436,10 +445,13 @@ async function registerReticulumResourceProtocol(): Promise<void> {
       if (!manifest) return new Response('Not Found', { status: 404 });
       const filePath =
         store.getVerifiedAssembledPath(fileHash) ??
-        await store.assembleResourceAsync(fileHash);
+        (await store.assembleResourceAsync(fileHash));
       const response = await net.fetch(pathToFileURL(filePath).toString());
       const headers = new Headers(response.headers);
-      headers.set('content-type', manifest.mimeType || 'application/octet-stream');
+      headers.set(
+        'content-type',
+        manifest.mimeType || 'application/octet-stream'
+      );
       headers.set('cache-control', 'no-store');
       headers.set('cross-origin-resource-policy', 'same-origin');
       return new Response(response.body, { status: response.status, headers });
@@ -1400,15 +1412,26 @@ const attachQortalLandGameRestartListener = () => {
 
 const getQortalLandRealtimeBootstrap = (event: Electron.IpcMainInvokeEvent) => {
   const mainWindow = myCapacitorApp.getMainWindow();
-  if (mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
-    throw new Error('Qortal Land realtime transport is restricted to the main window');
+  if (
+    mainWindow.isDestroyed() ||
+    event.sender.id !== mainWindow.webContents.id
+  ) {
+    throw new Error(
+      'Qortal Land realtime transport is restricted to the main window'
+    );
   }
   attachQortalLandGameRestartListener();
   return getReticulumBridge()?.getQortalLandGameTransportBootstrap() ?? null;
 };
 
-ipcMain.handle('qortalLandRealtime:getTransportBootstrap', getQortalLandRealtimeBootstrap);
-ipcMain.handle('qortalLandGames:getTransportBootstrap', getQortalLandRealtimeBootstrap);
+ipcMain.handle(
+  'qortalLandRealtime:getTransportBootstrap',
+  getQortalLandRealtimeBootstrap
+);
+ipcMain.handle(
+  'qortalLandGames:getTransportBootstrap',
+  getQortalLandRealtimeBootstrap
+);
 
 startSystemCallReadinessMonitor();
 
@@ -1840,8 +1863,10 @@ ipcMain.handle(
         Math.min(
           100 * 1024 * 1024 * 1024,
           Math.floor(
-            Number(partial.reticulumResourceLimitBytes ?? current.reticulumResourceLimitBytes) ||
-              RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES
+            Number(
+              partial.reticulumResourceLimitBytes ??
+                current.reticulumResourceLimitBytes
+            ) || RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES
           )
         )
       ),
@@ -2405,9 +2430,11 @@ function stopPresenceMainHeartbeatScheduler(): void {
     presenceMainHeartbeatTimer = null;
     loggerLog('[Presence] Main heartbeat scheduler stopped');
   }
-  getReticulumBridge()?.clearPresenceCache('heartbeat_scheduler_stopped').catch((err) => {
-    loggerWarn('[Presence] Failed to clear Reticulum presence cache:', err);
-  });
+  getReticulumBridge()
+    ?.clearPresenceCache('heartbeat_scheduler_stopped')
+    .catch((err) => {
+      loggerWarn('[Presence] Failed to clear Reticulum presence cache:', err);
+    });
 }
 
 function sendPresenceMainHeartbeatRequest(): void {
@@ -2483,7 +2510,7 @@ export async function startDecentralizedStunAfterP2P(
   }
 }
 
-export async function ensureReticulumManagersStarted(): Promise<void> {
+async function startReticulumManagers(): Promise<void> {
   let bridgeTransport = getReticulumBridge();
   if (bridgeTransport) {
     try {
@@ -2525,21 +2552,26 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
       Number(appSettings.reticulumResourceLimitBytes) ||
       RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
   });
-  const reticulumChat = startReticulumChatManager(bridgeTransport ?? null, undefined, {
-    signLocalFields: signReticulumChatControlFields,
-    validateGroupMember: validateQortalGroupMember,
-    validateGroupAdmin: validateQortalGroupAdmin,
-    getVerifiedReticulumPeers: () => getPresenceManager()?.getReticulumVerifiedPeers() ?? [],
-    hasGoodOverlayHealth: () => {
-      const manager = getPresenceManager();
-      if (!manager) return false;
-      return (
-        manager.getReticulumActiveNeighborHashes().length > 0 ||
-        manager.getReticulumVerifiedPeers().length > 0
-      );
-    },
-    resourceStore,
-  });
+  const reticulumChat = startReticulumChatManager(
+    bridgeTransport ?? null,
+    undefined,
+    {
+      signLocalFields: signReticulumChatControlFields,
+      validateGroupMember: validateQortalGroupMember,
+      validateGroupAdmin: validateQortalGroupAdmin,
+      getVerifiedReticulumPeers: () =>
+        getPresenceManager()?.getReticulumVerifiedPeers() ?? [],
+      hasGoodOverlayHealth: () => {
+        const manager = getPresenceManager();
+        if (!manager) return false;
+        return (
+          manager.getReticulumActiveNeighborHashes().length > 0 ||
+          manager.getReticulumVerifiedPeers().length > 0
+        );
+      },
+      resourceStore,
+    }
+  );
   attachReticulumChatListeners(reticulumChat);
   startReticulumOverlayMaintenanceSync();
 
@@ -2561,6 +2593,31 @@ export async function ensureReticulumManagersStarted(): Promise<void> {
 
   stopReticulumMeshCoordinator();
   startReticulumMeshCoordinator(getReticulumBridge());
+}
+
+const reticulumChatReadiness = new SingleFlightReadiness({
+  isReady: () => Boolean(getReticulumChatManager()),
+  onStatusChange: notifyReticulumChatReadinessChanged,
+  start: startReticulumManagers,
+});
+
+export function getReticulumChatReadinessStatus(): ReadinessStatus {
+  return reticulumChatReadiness.getStatus();
+}
+
+export function ensureReticulumManagersStarted(): Promise<void> {
+  return reticulumChatReadiness.ensureReady();
+}
+
+async function getReadyReticulumChatManager(): Promise<
+  ReturnType<typeof getReticulumChatManager>
+> {
+  const existingManager = getReticulumChatManager();
+  if (existingManager) {
+    return existingManager;
+  }
+  await ensureReticulumManagersStarted();
+  return getReticulumChatManager();
 }
 
 ipcMain.handle('p2p:start', async (_event, options?: P2PNetworkOptions) => {
@@ -2683,8 +2740,10 @@ let reticulumOverlaySyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let reticulumOverlaySyncSequence = 0;
 let reticulumOverlaySyncInFlight = false;
 let reticulumOverlaySyncPending = false;
-let reticulumOverlayMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
-let reticulumChatSubscriptionReplayTimer: ReturnType<typeof setTimeout> | null = null;
+let reticulumOverlayMaintenanceTimer: ReturnType<typeof setInterval> | null =
+  null;
+let reticulumChatSubscriptionReplayTimer: ReturnType<typeof setTimeout> | null =
+  null;
 
 function flushPresenceUpdates(): void {
   if (presenceUpdateFlushTimer) {
@@ -2868,7 +2927,8 @@ async function signReticulumChatControlFields(
     if (
       isRendererFrameUnavailableError(err) ||
       !isRendererMainFrameReady(main.webContents)
-    ) return null;
+    )
+      return null;
     loggerWarn('[ReticulumChat] Control signing failed:', err);
   }
   return null;
@@ -2916,7 +2976,10 @@ async function validateQortalGroupMember(
     if (result === false) return false;
     return null;
   } catch (err) {
-    loggerWarn('[ReticulumChat] Selected-node group membership validation failed:', err);
+    loggerWarn(
+      '[ReticulumChat] Selected-node group membership validation failed:',
+      err
+    );
     return null;
   }
 }
@@ -3159,7 +3222,10 @@ export function registerLateReticulumBridgeRecovery(): void {
         attachPresenceListeners(pm);
       }
     } catch (err) {
-      loggerWarn('[ReticulumBridge] Late recovery presence rebind failed:', err);
+      loggerWarn(
+        '[ReticulumBridge] Late recovery presence rebind failed:',
+        err
+      );
     }
     if (!pm) {
       pm = getPresenceManager();
@@ -3316,6 +3382,7 @@ const chatEventSubscribers = new Set<Electron.WebContents>();
 const chatTypingSubscribers = new Set<Electron.WebContents>();
 const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
+const reticulumChatReadinessSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandStateSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandChatSubscribers = new Set<Electron.WebContents>();
@@ -3327,6 +3394,14 @@ const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSilenceSubscribers = new Set<Electron.WebContents>();
+
+function notifyReticulumChatReadinessChanged(status: ReadinessStatus): void {
+  broadcastToSet(
+    reticulumChatReadinessSubscribers,
+    'reticulumChat:readinessChanged',
+    status
+  );
+}
 let reticulumChatListenersAttached = false;
 
 export function attachChatListeners(
@@ -3358,7 +3433,11 @@ export function attachReticulumChatListeners(
   reticulumChatListenersAttached = true;
 
   manager.on('event', (payload: unknown) =>
-    broadcastToSet(reticulumChatEventSubscribers, 'reticulumChat:event', payload)
+    broadcastToSet(
+      reticulumChatEventSubscribers,
+      'reticulumChat:event',
+      payload
+    )
   );
 
   manager.on('typing', (payload: unknown) =>
@@ -3455,24 +3534,43 @@ ipcMain.handle('reticulumChat:isEnabled', async () => {
   return settings.reticulumChatEnabled === true;
 });
 
+ipcMain.handle('reticulumChat:getReadinessStatus', () =>
+  getReticulumChatReadinessStatus()
+);
+
 ipcMain.handle(
   'reticulumChat:setLocalGroupMemberships',
   async (
     _event,
     groupIds: Array<
-      number | {
-        groupId?: unknown;
-        isPrivate?: unknown;
-        isOpen?: unknown;
-        localAddress?: unknown;
-        address?: unknown;
-        isAdmin?: unknown;
-      }
+      | number
+      | {
+          groupId?: unknown;
+          isPrivate?: unknown;
+          isOpen?: unknown;
+          localAddress?: unknown;
+          address?: unknown;
+          isAdmin?: unknown;
+        }
     >
   ) => {
-    const manager = getReticulumChatManager();
+    let manager: ReturnType<typeof getReticulumChatManager>;
+    try {
+      manager = await getReadyReticulumChatManager();
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Reticulum chat manager failed to start',
+      };
+    }
     if (!manager) {
-      return { success: false, error: 'Reticulum chat manager is not running' };
+      return {
+        success: false,
+        error: 'Reticulum chat manager is not running',
+      };
     }
     manager.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
     return { success: true };
@@ -3482,7 +3580,18 @@ ipcMain.handle(
 ipcMain.handle(
   'reticulumChat:setPublicGroupDirectory',
   async (_event, groupIds: number[]) => {
-    const manager = getReticulumChatManager();
+    let manager: ReturnType<typeof getReticulumChatManager>;
+    try {
+      manager = await getReadyReticulumChatManager();
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Reticulum chat manager failed to start',
+      };
+    }
     if (!manager) {
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
@@ -3711,7 +3820,12 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:markDirectRead',
-  async (_event, myAddress: string, peerAddress: string, upToTimestamp: number) => {
+  async (
+    _event,
+    myAddress: string,
+    peerAddress: string,
+    upToTimestamp: number
+  ) => {
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) {
       return { success: false, error: 'Reticulum chat is disabled' };
@@ -3725,25 +3839,31 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle('reticulumChat:subscribeGroup', async (_event, groupId: number) => {
-  const settings = await readAppSettings();
-  if (settings.reticulumChatEnabled !== true) {
-    return { success: false, error: 'Reticulum chat is disabled' };
+ipcMain.handle(
+  'reticulumChat:subscribeGroup',
+  async (_event, groupId: number) => {
+    const settings = await readAppSettings();
+    if (settings.reticulumChatEnabled !== true) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      manager.subscribeGroup(groupId);
+      return { success: true };
+    } catch (err) {
+      return {
+        success: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum chat subscribe failed',
+      };
+    }
   }
-  const manager = getReticulumChatManager();
-  if (!manager) {
-    return { success: false, error: 'Reticulum chat manager is not running' };
-  }
-  try {
-    manager.subscribeGroup(groupId);
-    return { success: true };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Reticulum chat subscribe failed',
-    };
-  }
-});
+);
 
 ipcMain.handle(
   'reticulumChat:subscribeChannel',
@@ -3762,7 +3882,10 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum channel subscribe failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum channel subscribe failed',
       };
     }
   }
@@ -3812,12 +3935,15 @@ function reticulumChatReservationKey(
   return `${reservation.groupId}:${reservation.authorAddress}:${reservation.authorStreamId}:${reservation.authorSeq}`;
 }
 
-function releaseReticulumChatReservationsForWebContents(webContentsId: number): void {
+function releaseReticulumChatReservationsForWebContents(
+  webContentsId: number
+): void {
   reticulumChatReservationEpochs.set(
     webContentsId,
     (reticulumChatReservationEpochs.get(webContentsId) ?? 0) + 1
   );
-  const reservations = reticulumChatReservationsByWebContents.get(webContentsId);
+  const reservations =
+    reticulumChatReservationsByWebContents.get(webContentsId);
   reticulumChatReservationsByWebContents.delete(webContentsId);
   const manager = getReticulumChatManager();
   if (!manager || !reservations) return;
@@ -3831,16 +3957,18 @@ function releaseReticulumChatReservationsForWebContents(webContentsId: number): 
   }
 }
 
-function ensureReticulumChatReservationLifecycle(
-  sender: WebContents
-): number {
+function ensureReticulumChatReservationLifecycle(sender: WebContents): number {
   const webContentsId = sender.id;
   if (!reticulumChatReservationLifecycleWired.has(webContentsId)) {
     reticulumChatReservationLifecycleWired.add(webContentsId);
     reticulumChatReservationEpochs.set(webContentsId, 0);
-    sender.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
-      if (isMainFrame) releaseReticulumChatReservationsForWebContents(webContentsId);
-    });
+    sender.on(
+      'did-start-navigation',
+      (_event, _url, _isInPlace, isMainFrame) => {
+        if (isMainFrame)
+          releaseReticulumChatReservationsForWebContents(webContentsId);
+      }
+    );
     sender.once('destroyed', () => {
       releaseReticulumChatReservationsForWebContents(webContentsId);
       reticulumChatReservationLifecycleWired.delete(webContentsId);
@@ -3854,7 +3982,8 @@ function untrackReticulumChatReservation(
   webContentsId: number,
   reservation: ReticulumChatSequenceReservation
 ): void {
-  const reservations = reticulumChatReservationsByWebContents.get(webContentsId);
+  const reservations =
+    reticulumChatReservationsByWebContents.get(webContentsId);
   if (!reservations) return;
   reservations.delete(reticulumChatReservationKey(reservation));
   if (reservations.size === 0) {
@@ -3894,7 +4023,10 @@ ipcMain.handle(
     const manager = getReticulumChatManager();
     if (!manager) throw new Error('Reticulum chat manager is not running');
     const epoch = ensureReticulumChatReservationLifecycle(ipcEvent.sender);
-    const reserved = await manager.reserveAuthorSequence(groupId, authorAddress);
+    const reserved = await manager.reserveAuthorSequence(
+      groupId,
+      authorAddress
+    );
     if (
       ipcEvent.sender.isDestroyed() ||
       (reticulumChatReservationEpochs.get(ipcEvent.sender.id) ?? 0) !== epoch
@@ -3905,13 +4037,19 @@ ipcMain.handle(
         reserved.authorStreamId,
         reserved.authorSeq
       );
-      throw new Error('Reticulum chat renderer changed while reserving sequence');
+      throw new Error(
+        'Reticulum chat renderer changed while reserving sequence'
+      );
     }
     const reservation = { groupId, authorAddress, ...reserved };
     const reservations =
-      reticulumChatReservationsByWebContents.get(ipcEvent.sender.id) ?? new Map();
+      reticulumChatReservationsByWebContents.get(ipcEvent.sender.id) ??
+      new Map();
     reservations.set(reticulumChatReservationKey(reservation), reservation);
-    reticulumChatReservationsByWebContents.set(ipcEvent.sender.id, reservations);
+    reticulumChatReservationsByWebContents.set(
+      ipcEvent.sender.id,
+      reservations
+    );
     return reserved;
   }
 );
@@ -3975,7 +4113,10 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum chat typing send failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum chat typing send failed',
       };
     }
   }
@@ -4011,7 +4152,8 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand state send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand state send failed',
       };
     }
   }
@@ -4029,7 +4171,9 @@ ipcMain.handle(
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     try {
-      const result = await manager.sendLandChat(message as Parameters<typeof manager.sendLandChat>[0]);
+      const result = await manager.sendLandChat(
+        message as Parameters<typeof manager.sendLandChat>[0]
+      );
       if (!result.ok) {
         const failed = result as Exclude<typeof result, { ok: true }>;
         return { success: false, error: failed.error ?? failed.reason };
@@ -4038,7 +4182,8 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand chat send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand chat send failed',
       };
     }
   }
@@ -4079,7 +4224,8 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand action send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand action send failed',
       };
     }
   }
@@ -4121,7 +4267,8 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand call send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand call send failed',
       };
     }
   }
@@ -4129,22 +4276,23 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:requestResource',
-  async (
-    _event,
-    groupId: number,
-    manifest: unknown,
-    eventId?: string
-  ) => {
+  async (_event, groupId: number, manifest: unknown, eventId?: string) => {
     const manifestRecord =
       manifest && typeof manifest === 'object'
         ? (manifest as Record<string, unknown>)
         : null;
     const fileHash =
-      typeof manifestRecord?.fileHash === 'string' ? manifestRecord.fileHash : '';
+      typeof manifestRecord?.fileHash === 'string'
+        ? manifestRecord.fileHash
+        : '';
     const resourceName =
-      typeof manifestRecord?.fileName === 'string' ? manifestRecord.fileName : '';
+      typeof manifestRecord?.fileName === 'string'
+        ? manifestRecord.fileName
+        : '';
     const resourceSize =
-      typeof manifestRecord?.sizeBytes === 'number' ? manifestRecord.sizeBytes : 0;
+      typeof manifestRecord?.sizeBytes === 'number'
+        ? manifestRecord.sizeBytes
+        : 0;
     const shortHash = fileHash ? fileHash.slice(0, 12) : 'missing';
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) {
@@ -4186,7 +4334,10 @@ ipcMain.handle(
       );
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum resource request failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum resource request failed',
       };
     }
   }
@@ -4206,11 +4357,17 @@ ipcMain.handle(
         ? (manifest as Record<string, unknown>)
         : null;
     const fileHash =
-      typeof manifestRecord?.fileHash === 'string' ? manifestRecord.fileHash : '';
+      typeof manifestRecord?.fileHash === 'string'
+        ? manifestRecord.fileHash
+        : '';
     const resourceName =
-      typeof manifestRecord?.fileName === 'string' ? manifestRecord.fileName : '';
+      typeof manifestRecord?.fileName === 'string'
+        ? manifestRecord.fileName
+        : '';
     const resourceSize =
-      typeof manifestRecord?.sizeBytes === 'number' ? manifestRecord.sizeBytes : 0;
+      typeof manifestRecord?.sizeBytes === 'number'
+        ? manifestRecord.sizeBytes
+        : 0;
     const shortHash = fileHash ? fileHash.slice(0, 12) : 'missing';
     const settings = await readAppSettings();
     if (settings.reticulumChatEnabled !== true) {
@@ -4253,32 +4410,42 @@ ipcMain.handle(
       );
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum direct resource request failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum direct resource request failed',
       };
     }
   }
 );
 
-ipcMain.handle('reticulumChat:cancelResource', async (_event, fileHash: string) => {
-  const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
-  if (!hash) return { success: false, error: 'Invalid file hash' };
-  const manager = getReticulumChatManager();
-  if (!manager) {
-    return { success: false, error: 'Reticulum chat manager is not running' };
+ipcMain.handle(
+  'reticulumChat:cancelResource',
+  async (_event, fileHash: string) => {
+    const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+    if (!hash) return { success: false, error: 'Invalid file hash' };
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    try {
+      return { success: true, canceled: await manager.cancelResource(hash) };
+    } catch (err) {
+      return {
+        success: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum resource cancel failed',
+      };
+    }
   }
-  try {
-    return { success: true, canceled: await manager.cancelResource(hash) };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Reticulum resource cancel failed',
-    };
-  }
-});
+);
 
 function managedReticulumChatResourceNamespace(value: unknown): string | null {
   const namespace = typeof value === 'string' ? value.trim() : '';
-  return namespace === 'reticulum-group-resource' || namespace === 'reticulum-dm-resource'
+  return namespace === 'reticulum-group-resource' ||
+    namespace === 'reticulum-dm-resource'
     ? namespace
     : null;
 }
@@ -4294,7 +4461,10 @@ ipcMain.handle(
 
     const targetBytes = Math.min(
       4 * 1024 * 1024,
-      Math.max(128 * 1024, Math.floor(Number(payload?.targetBytes) || 500 * 1024))
+      Math.max(
+        128 * 1024,
+        Math.floor(Number(payload?.targetBytes) || 500 * 1024)
+      )
     );
     const outputDir = path.join(app.getPath('temp'), 'qortal-reticulum-media');
     const outputPath = path.join(
@@ -4303,9 +4473,13 @@ ipcMain.handle(
     );
     try {
       const stat = await fs.promises.stat(inputPath);
-      if (!stat.isFile()) return { success: false, error: 'Selected GIF is not a file' };
+      if (!stat.isFile())
+        return { success: false, error: 'Selected GIF is not a file' };
       if (stat.size <= 0 || stat.size > 100 * 1024 * 1024) {
-        return { success: false, error: 'GIF must be between 1 byte and 100 MB' };
+        return {
+          success: false,
+          error: 'GIF must be between 1 byte and 100 MB',
+        };
       }
       await fs.promises.mkdir(outputDir, { recursive: true });
       const result = await reticulumMediaWorkerPool.run({
@@ -4339,7 +4513,10 @@ ipcMain.handle(
       await fs.promises.unlink(outputPath).catch(() => undefined);
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Animated WebP conversion failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Animated WebP conversion failed',
       };
     }
   }
@@ -4357,7 +4534,8 @@ ipcMain.handle(
         : '';
     if (
       !resolvedPath ||
-      (resolvedPath !== mediaDir && !resolvedPath.startsWith(`${mediaDir}${path.sep}`))
+      (resolvedPath !== mediaDir &&
+        !resolvedPath.startsWith(`${mediaDir}${path.sep}`))
     ) {
       return { success: false, error: 'Invalid converted media path' };
     }
@@ -4365,10 +4543,12 @@ ipcMain.handle(
       await fs.promises.unlink(resolvedPath);
       return { success: true };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { success: true };
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT')
+        return { success: true };
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Converted media cleanup failed',
+        error:
+          err instanceof Error ? err.message : 'Converted media cleanup failed',
       };
     }
   }
@@ -4389,7 +4569,8 @@ ipcMain.handle(
     }
   ) => {
     const base64 = normalizeBase64Payload(payload?.base64);
-    if (!base64) return { success: false, error: 'Invalid base64 resource data' };
+    if (!base64)
+      return { success: false, error: 'Invalid base64 resource data' };
     const mimeType =
       typeof payload?.mimeType === 'string' && payload.mimeType.trim()
         ? payload.mimeType.trim()
@@ -4399,8 +4580,12 @@ ipcMain.handle(
         ? payload.fileName.trim()
         : 'resource.bin';
     const namespace = managedReticulumChatResourceNamespace(payload?.namespace);
-    if (!namespace) return { success: false, error: 'Invalid chat resource namespace' };
-    const tempDir = path.join(app.getPath('temp'), 'qortal-reticulum-resource-imports');
+    if (!namespace)
+      return { success: false, error: 'Invalid chat resource namespace' };
+    const tempDir = path.join(
+      app.getPath('temp'),
+      'qortal-reticulum-resource-imports'
+    );
     const tempPath = path.join(
       tempDir,
       `${Date.now()}-${Math.random().toString(16).slice(2)}-${path.basename(fileName)}`
@@ -4427,7 +4612,10 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum resource import failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum resource import failed',
       };
     } finally {
       await fs.promises.unlink(tempPath).catch(() => undefined);
@@ -4456,7 +4644,8 @@ ipcMain.handle(
     if (!sourcePath) return { success: false, error: 'Invalid file path' };
     try {
       const stat = await fs.promises.stat(sourcePath);
-      if (!stat.isFile()) return { success: false, error: 'Selected path is not a file' };
+      if (!stat.isFile())
+        return { success: false, error: 'Selected path is not a file' };
       const fileName =
         typeof payload?.fileName === 'string' && payload.fileName.trim()
           ? payload.fileName.trim()
@@ -4465,8 +4654,11 @@ ipcMain.handle(
         typeof payload?.mimeType === 'string' && payload.mimeType.trim()
           ? payload.mimeType.trim()
           : guessMimeTypeFromFileName(fileName);
-      const namespace = managedReticulumChatResourceNamespace(payload?.namespace);
-      if (!namespace) return { success: false, error: 'Invalid chat resource namespace' };
+      const namespace = managedReticulumChatResourceNamespace(
+        payload?.namespace
+      );
+      if (!namespace)
+        return { success: false, error: 'Invalid chat resource namespace' };
       const manifest = await getReticulumResourceStore().importLocalFileAsync({
         sourcePath,
         namespace,
@@ -4486,7 +4678,10 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum resource file import failed',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum resource file import failed',
       };
     }
   }
@@ -4500,8 +4695,10 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
     const manifest = store.getManifest(hash);
     if (!manifest) return { success: false, error: 'Unknown resource' };
     const assembledPath =
-      store.getVerifiedAssembledPath(hash) ?? await store.assembleResourceAsync(hash);
-    if (!assembledPath) return { success: false, error: 'Resource not assembled' };
+      store.getVerifiedAssembledPath(hash) ??
+      (await store.assembleResourceAsync(hash));
+    if (!assembledPath)
+      return { success: false, error: 'Resource not assembled' };
     store.acquireLease(hash, 'viewer', RETICULUM_RESOURCE_URL_TOKEN_TTL_MS);
     return {
       success: true,
@@ -4511,7 +4708,8 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
   } catch (err) {
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Reticulum resource URL failed',
+      error:
+        err instanceof Error ? err.message : 'Reticulum resource URL failed',
     };
   }
 });
@@ -4529,7 +4727,8 @@ ipcMain.handle('reticulumResource:getStorageStatus', async () => {
   } catch (err) {
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Reticulum storage status failed',
+      error:
+        err instanceof Error ? err.message : 'Reticulum storage status failed',
     };
   }
 });
@@ -4542,52 +4741,62 @@ ipcMain.handle('reticulumResource:cleanupStorage', async () => {
   } catch (err) {
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Reticulum storage cleanup failed',
+      error:
+        err instanceof Error ? err.message : 'Reticulum storage cleanup failed',
     };
   }
 });
 
-ipcMain.handle('reticulumResource:getStatus', async (_event, fileHash: string) => {
-  const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
-  if (!hash) return { success: false, error: 'Invalid file hash' };
-  try {
-    const store = getReticulumResourceStore();
-    const manifest = store.getManifest(hash);
-    if (!manifest) return { success: false, error: 'Unknown resource' };
-    const complete = Boolean(store.getVerifiedAssembledPath(hash));
-    const completedBytes = complete ? manifest.sizeBytes : store.getCompletedBytes(hash);
-    const latestRangeUpdatedAt = store.getLatestRangeUpdatedAt(hash);
-    const runtime = getReticulumChatManager()?.getResourceDownloadStatus(hash) ?? null;
-    const runtimeProgress =
-      runtime && typeof runtime.progress === 'number'
-        ? Math.max(0, Math.min(1, runtime.progress))
-        : null;
-    const totalBytes = Math.max(0, Number(manifest.sizeBytes || 0));
-    const runtimeBytes =
-      runtime && typeof runtime.bytesTransferred === 'number'
-        ? Math.max(0, Math.min(totalBytes, runtime.bytesTransferred))
-        : null;
-    return {
-      success: true,
-      manifest,
-      bytesTransferred: runtimeBytes ?? completedBytes,
-      totalBytes,
-      progress: Math.max(
-        totalBytes > 0 ? Math.min(1, completedBytes / totalBytes) : 0,
-        runtimeProgress ?? 0
-      ),
-      complete,
-      latestRangeUpdatedAt: latestRangeUpdatedAt || null,
-      checkedAt: Date.now(),
-      runtime,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Reticulum resource status failed',
-    };
+ipcMain.handle(
+  'reticulumResource:getStatus',
+  async (_event, fileHash: string) => {
+    const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+    if (!hash) return { success: false, error: 'Invalid file hash' };
+    try {
+      const store = getReticulumResourceStore();
+      const manifest = store.getManifest(hash);
+      if (!manifest) return { success: false, error: 'Unknown resource' };
+      const complete = Boolean(store.getVerifiedAssembledPath(hash));
+      const completedBytes = complete
+        ? manifest.sizeBytes
+        : store.getCompletedBytes(hash);
+      const latestRangeUpdatedAt = store.getLatestRangeUpdatedAt(hash);
+      const runtime =
+        getReticulumChatManager()?.getResourceDownloadStatus(hash) ?? null;
+      const runtimeProgress =
+        runtime && typeof runtime.progress === 'number'
+          ? Math.max(0, Math.min(1, runtime.progress))
+          : null;
+      const totalBytes = Math.max(0, Number(manifest.sizeBytes || 0));
+      const runtimeBytes =
+        runtime && typeof runtime.bytesTransferred === 'number'
+          ? Math.max(0, Math.min(totalBytes, runtime.bytesTransferred))
+          : null;
+      return {
+        success: true,
+        manifest,
+        bytesTransferred: runtimeBytes ?? completedBytes,
+        totalBytes,
+        progress: Math.max(
+          totalBytes > 0 ? Math.min(1, completedBytes / totalBytes) : 0,
+          runtimeProgress ?? 0
+        ),
+        complete,
+        latestRangeUpdatedAt: latestRangeUpdatedAt || null,
+        checkedAt: Date.now(),
+        runtime,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Reticulum resource status failed',
+      };
+    }
   }
-});
+);
 
 ipcMain.handle(
   'reticulumResource:saveAs',
@@ -4601,7 +4810,8 @@ ipcMain.handle(
       const leaseId = store.acquireLease(hash, 'save', 60 * 60_000);
       try {
         const assembledPath =
-          store.getVerifiedAssembledPath(hash) ?? await store.assembleResourceAsync(hash);
+          store.getVerifiedAssembledPath(hash) ??
+          (await store.assembleResourceAsync(hash));
         const defaultPath = path.basename(
           typeof suggestedFileName === 'string' && suggestedFileName.trim()
             ? suggestedFileName.trim()
@@ -4611,7 +4821,9 @@ ipcMain.handle(
         if (result.canceled || !result.filePath) {
           return { success: false, canceled: true };
         }
-        await fs.promises.mkdir(path.dirname(result.filePath), { recursive: true });
+        await fs.promises.mkdir(path.dirname(result.filePath), {
+          recursive: true,
+        });
         await pipeline(
           fs.createReadStream(assembledPath),
           fs.createWriteStream(result.filePath)
@@ -4623,7 +4835,8 @@ ipcMain.handle(
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'Reticulum resource save failed',
+        error:
+          err instanceof Error ? err.message : 'Reticulum resource save failed',
       };
     }
   }
@@ -4664,7 +4877,12 @@ ipcMain.handle(
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return manager
       ? readReticulumGroupState([], () =>
-          manager.getHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+          manager.getHistory(
+            groupId,
+            channelId,
+            limit,
+            optionsMaybe as ReticulumChatHistoryReadOptions
+          )
         )
       : [];
   }
@@ -4688,7 +4906,36 @@ ipcMain.handle(
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return manager
       ? readReticulumGroupState([], () =>
-          manager.getMessageHistory(groupId, channelId, limit, optionsMaybe as ReticulumChatHistoryReadOptions)
+          manager.getMessageHistory(
+            groupId,
+            channelId,
+            limit,
+            optionsMaybe as ReticulumChatHistoryReadOptions
+          )
+        )
+      : [];
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDiscussionIndex',
+  async (_event, groupId: number, channelId?: string) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState({ replyCounts: {}, rootByEventId: {} }, () =>
+          manager.getDiscussionIndex(groupId, channelId || 'general')
+        )
+      : { replyCounts: {}, rootByEventId: {} };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDiscussionMessages',
+  async (_event, groupId: number, channelId: string, eventId: string) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState([], () =>
+          manager.getDiscussionMessages(groupId, channelId, eventId)
         )
       : [];
   }
@@ -4699,7 +4946,9 @@ ipcMain.handle(
   async (_event, groupId: number, limit?: number) => {
     const manager = getReticulumChatManager();
     return manager
-      ? readReticulumGroupState([], () => manager.getChannelMetadataHistory(groupId, limit))
+      ? readReticulumGroupState([], () =>
+          manager.getChannelMetadataHistory(groupId, limit)
+        )
       : [];
   }
 );
@@ -4709,17 +4958,22 @@ ipcMain.handle(
   async (_event, groupId: number, includeArchived?: boolean) => {
     const manager = getReticulumChatManager();
     return manager
-      ? readReticulumGroupState([], () => manager.getChannels(groupId, includeArchived === true))
+      ? readReticulumGroupState([], () =>
+          manager.getChannels(groupId, includeArchived === true)
+        )
       : [];
   }
 );
 
-ipcMain.handle('reticulumChat:getCategories', async (_event, groupId: number) => {
-  const manager = getReticulumChatManager();
-  return manager
-    ? readReticulumGroupState([], () => manager.getCategories(groupId))
-    : [];
-});
+ipcMain.handle(
+  'reticulumChat:getCategories',
+  async (_event, groupId: number) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState([], () => manager.getCategories(groupId))
+      : [];
+  }
+);
 
 ipcMain.handle(
   'reticulumChat:applyChannelMetadata',
@@ -4733,20 +4987,26 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle('reticulumChat:getSyncState', async (_event, groupId: number) => {
-  const manager = getReticulumChatManager();
-  return manager
-    ? readReticulumGroupState({}, () => manager.getSyncState(groupId))
-    : {};
-});
+ipcMain.handle(
+  'reticulumChat:getSyncState',
+  async (_event, groupId: number) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState({}, () => manager.getSyncState(groupId))
+      : {};
+  }
+);
 
-ipcMain.handle('reticulumChat:getSummaries', async (_event, myAddress?: string) => {
-  const manager = getReticulumChatManager();
-  const address = typeof myAddress === 'string' ? myAddress : '';
-  return manager
-    ? manager.getChatSummaries(address, RETICULUM_CHAT_ONLINE_SINCE_MS)
-    : [];
-});
+ipcMain.handle(
+  'reticulumChat:getSummaries',
+  async (_event, myAddress?: string) => {
+    const manager = getReticulumChatManager();
+    const address = typeof myAddress === 'string' ? myAddress : '';
+    return manager
+      ? manager.getChatSummaries(address, RETICULUM_CHAT_ONLINE_SINCE_MS)
+      : [];
+  }
+);
 
 ipcMain.handle(
   'reticulumChat:search',
@@ -4794,7 +5054,12 @@ ipcMain.handle(
     const manager = getReticulumChatManager();
     return manager
       ? readReticulumGroupState([], () =>
-          manager.getMessageWindowAroundEvent(groupId, channelId, eventId, safeOptions)
+          manager.getMessageWindowAroundEvent(
+            groupId,
+            channelId,
+            eventId,
+            safeOptions
+          )
         )
       : [];
   }
@@ -4884,7 +5149,12 @@ ipcMain.handle(
     if (manager) {
       manager.markRead(groupId, channelId, timestamp, normalizedAddress);
     } else {
-      markReticulumChatReadInDb(groupId, channelId, timestamp, normalizedAddress);
+      markReticulumChatReadInDb(
+        groupId,
+        channelId,
+        timestamp,
+        normalizedAddress
+      );
     }
     return { success: true };
   }
@@ -4909,6 +5179,12 @@ ipcMain.on('reticulumChat:event:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:event:unsubscribe', (event) => {
   reticulumChatEventSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:readinessChanged:subscribe', (event) => {
+  reticulumChatReadinessSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:readinessChanged:unsubscribe', (event) => {
+  reticulumChatReadinessSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:typing:subscribe', (event) => {
   reticulumChatTypingSubscribers.add(event.sender);
@@ -5534,33 +5810,39 @@ ipcMain.handle(
     data: Buffer | Uint8Array,
     timing?: { rendererSendAtWallMs?: number }
   ) => {
-    return runMainPressureTask('gcall.sendAudio', {
-      roomId,
-      targetCount: 1,
-      bytes: Buffer.isBuffer(data) ? data.length : data?.byteLength,
-    }, () => {
-      const mgr = getGroupCallManager();
-      if (!mgr) return { success: false, error: 'GroupCall manager not running' };
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-      attachGroupAudioIpcTiming(buf, timing, {
-        channel: 'sendAudio',
+    return runMainPressureTask(
+      'gcall.sendAudio',
+      {
         roomId,
         targetCount: 1,
-      });
-      const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
-      if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
-        return { success: false, error: 'payload-too-large' };
+        bytes: Buffer.isBuffer(data) ? data.length : data?.byteLength,
+      },
+      () => {
+        const mgr = getGroupCallManager();
+        if (!mgr)
+          return { success: false, error: 'GroupCall manager not running' };
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        attachGroupAudioIpcTiming(buf, timing, {
+          channel: 'sendAudio',
+          roomId,
+          targetCount: 1,
+        });
+        const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
+        if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
+          return { success: false, error: 'payload-too-large' };
+        }
+        const result = mgr.sendAudio(roomId, toAddress, buf);
+        if (result.success) {
+          return { success: true, diagnostics: result.diagnostics };
+        }
+        return {
+          success: false,
+          error:
+            ('error' in result ? result.error : undefined) ?? 'relay-rejected',
+          diagnostics: result.diagnostics,
+        };
       }
-      const result = mgr.sendAudio(roomId, toAddress, buf);
-      if (result.success) {
-        return { success: true, diagnostics: result.diagnostics };
-      }
-      return {
-        success: false,
-        error: ('error' in result ? result.error : undefined) ?? 'relay-rejected',
-        diagnostics: result.diagnostics,
-      };
-    });
+    );
   }
 );
 
@@ -5573,36 +5855,42 @@ ipcMain.handle(
     data: Buffer | Uint8Array,
     timing?: { rendererSendAtWallMs?: number }
   ) => {
-    return runMainPressureTask('gcall.sendAudioBatch', {
-      roomId,
-      targetCount: Array.isArray(toAddresses) ? toAddresses.length : 0,
-      bytes: Buffer.isBuffer(data) ? data.length : data?.byteLength,
-    }, () => {
-      const mgr = getGroupCallManager();
-      if (!mgr) return { success: false, error: 'GroupCall manager not running' };
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-      attachGroupAudioIpcTiming(buf, timing, {
-        channel: 'sendAudioBatch',
+    return runMainPressureTask(
+      'gcall.sendAudioBatch',
+      {
         roomId,
         targetCount: Array.isArray(toAddresses) ? toAddresses.length : 0,
-      });
-      const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
-      if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
-        return { success: false, error: 'payload-too-large' };
+        bytes: Buffer.isBuffer(data) ? data.length : data?.byteLength,
+      },
+      () => {
+        const mgr = getGroupCallManager();
+        if (!mgr)
+          return { success: false, error: 'GroupCall manager not running' };
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        attachGroupAudioIpcTiming(buf, timing, {
+          channel: 'sendAudioBatch',
+          roomId,
+          targetCount: Array.isArray(toAddresses) ? toAddresses.length : 0,
+        });
+        const GCALL_IPC_SEND_AUDIO_MAX_BYTES = 12_288;
+        if (buf.length > GCALL_IPC_SEND_AUDIO_MAX_BYTES) {
+          return { success: false, error: 'payload-too-large' };
+        }
+        if (!Array.isArray(toAddresses) || toAddresses.length === 0) {
+          return { success: true, diagnostics: undefined };
+        }
+        const result = mgr.sendAudioBatch(roomId, toAddresses, buf);
+        if (result.success) {
+          return { success: true, diagnostics: result.diagnostics };
+        }
+        return {
+          success: false,
+          error:
+            ('error' in result ? result.error : undefined) ?? 'relay-rejected',
+          diagnostics: result.diagnostics,
+        };
       }
-      if (!Array.isArray(toAddresses) || toAddresses.length === 0) {
-        return { success: true, diagnostics: undefined };
-      }
-      const result = mgr.sendAudioBatch(roomId, toAddresses, buf);
-      if (result.success) {
-        return { success: true, diagnostics: result.diagnostics };
-      }
-      return {
-        success: false,
-        error: ('error' in result ? result.error : undefined) ?? 'relay-rejected',
-        diagnostics: result.diagnostics,
-      };
-    });
+    );
   }
 );
 
@@ -6033,18 +6321,25 @@ ipcMain.on('audio-surface:host-ready', (event) => {
 });
 
 ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
-  runMainPressureTask('audio-surface.host-event', {
-    type: payload?.type ?? 'unknown',
-  }, () => {
-    if (!isAudioSurfaceHostSender(event.sender)) {
-      loggerWarn('[AudioSurface] rejecting host-event from unexpected sender', {
-        senderId: event.sender.id,
-        type: payload?.type ?? 'unknown',
-      });
-      return;
+  runMainPressureTask(
+    'audio-surface.host-event',
+    {
+      type: payload?.type ?? 'unknown',
+    },
+    () => {
+      if (!isAudioSurfaceHostSender(event.sender)) {
+        loggerWarn(
+          '[AudioSurface] rejecting host-event from unexpected sender',
+          {
+            senderId: event.sender.id,
+            type: payload?.type ?? 'unknown',
+          }
+        );
+        return;
+      }
+      emitAudioSurfaceEvent(payload);
     }
-    emitAudioSurfaceEvent(payload);
-  });
+  );
 });
 
 /**
@@ -6054,38 +6349,42 @@ ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
 ipcMain.handle(
   'audio-surface:command-result',
   (event, envelope: AudioSurfaceCommandResultEnvelope) => {
-    return runMainPressureTask('audio-surface.command-result', {
-      commandId: envelope?.commandId,
-      pendingCount: pendingAudioSurfaceCommands.size,
-    }, () => {
-      if (!isAudioSurfaceHostSender(event.sender)) {
-        loggerWarn('[AudioSurface] command-result: rejected sender', {
-          senderId: event.sender.id,
-          isolatedIds: [...isolatedAudioSurfaceContents],
-        });
-        return { ack: false as const, reason: 'bad-sender' };
+    return runMainPressureTask(
+      'audio-surface.command-result',
+      {
+        commandId: envelope?.commandId,
+        pendingCount: pendingAudioSurfaceCommands.size,
+      },
+      () => {
+        if (!isAudioSurfaceHostSender(event.sender)) {
+          loggerWarn('[AudioSurface] command-result: rejected sender', {
+            senderId: event.sender.id,
+            isolatedIds: [...isolatedAudioSurfaceContents],
+          });
+          return { ack: false as const, reason: 'bad-sender' };
+        }
+        const commandId = envelope?.commandId;
+        const response = envelope?.response;
+        if (typeof commandId !== 'string' || !commandId) {
+          loggerWarn('[AudioSurface] command-result: missing commandId', {
+            envelope,
+          });
+          return { ack: false as const, reason: 'missing-command-id' };
+        }
+        const pending = pendingAudioSurfaceCommands.get(commandId);
+        if (!pending) {
+          loggerWarn('[AudioSurface] command-result: no pending op', {
+            commandId,
+            pendingCount: pendingAudioSurfaceCommands.size,
+            sampleIds: [...pendingAudioSurfaceCommands.keys()].slice(0, 5),
+          });
+          return { ack: false as const, reason: 'unknown-command' };
+        }
+        pendingAudioSurfaceCommands.delete(commandId);
+        pending.resolve(response);
+        return { ack: true as const };
       }
-      const commandId = envelope?.commandId;
-      const response = envelope?.response;
-      if (typeof commandId !== 'string' || !commandId) {
-        loggerWarn('[AudioSurface] command-result: missing commandId', {
-          envelope,
-        });
-        return { ack: false as const, reason: 'missing-command-id' };
-      }
-      const pending = pendingAudioSurfaceCommands.get(commandId);
-      if (!pending) {
-        loggerWarn('[AudioSurface] command-result: no pending op', {
-          commandId,
-          pendingCount: pendingAudioSurfaceCommands.size,
-          sampleIds: [...pendingAudioSurfaceCommands.keys()].slice(0, 5),
-        });
-        return { ack: false as const, reason: 'unknown-command' };
-      }
-      pendingAudioSurfaceCommands.delete(commandId);
-      pending.resolve(response);
-      return { ack: true as const };
-    });
+    );
   }
 );
 

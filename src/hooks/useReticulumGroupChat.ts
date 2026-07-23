@@ -23,6 +23,11 @@ type ReticulumChatVisibilityChange = {
   revision: number;
 };
 
+type ReticulumDiscussionIndex = {
+  replyCounts: Record<string, number>;
+  rootByEventId: Record<string, string>;
+};
+
 const mergeReticulumEvents = (
   prev: unknown[],
   incoming: ReticulumChatHookEvent[]
@@ -124,6 +129,11 @@ export function useReticulumGroupChat(
   const visibilityRevisionRef = useRef(0);
   const [visibilityChange, setVisibilityChange] =
     useState<ReticulumChatVisibilityChange | null>(null);
+  const [discussionIndex, setDiscussionIndex] =
+    useState<ReticulumDiscussionIndex>({
+      replyCounts: {},
+      rootByEventId: {},
+    });
   const activeChatKey = enabled && validGroupId != null
     ? `${validGroupId}:${normalizedChannelId}`
     : '';
@@ -579,6 +589,57 @@ export function useReticulumGroupChat(
     [enabled, normalizedChannelId, validGroupId]
   );
 
+  useEffect(() => {
+    if (!enabled || validGroupId == null) {
+      setDiscussionIndex({ replyCounts: {}, rootByEventId: {} });
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void window.reticulumChat
+        ?.getDiscussionIndex?.(validGroupId, normalizedChannelId)
+        .then((index) => {
+          if (cancelled) return;
+          setDiscussionIndex({
+            replyCounts: index?.replyCounts || {},
+            rootByEventId: index?.rootByEventId || {},
+          });
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDiscussionIndex({ replyCounts: {}, rootByEventId: {} });
+          }
+        });
+    }, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    enabled,
+    events,
+    normalizedChannelId,
+    validGroupId,
+    visibilityChange?.revision,
+  ]);
+
+  const getDiscussionMessages = useCallback(
+    async (eventId: string) => {
+      if (!enabled || validGroupId == null || !eventId) return [];
+      const discussionEvents =
+        (await window.reticulumChat?.getDiscussionMessages?.(
+          validGroupId,
+          normalizedChannelId,
+          eventId
+        )) || [];
+      return addPrimaryNamesToEvents(
+        discussionEvents as ReticulumChatHookEvent[],
+        primaryNameCacheRef.current
+      );
+    },
+    [enabled, normalizedChannelId, validGroupId]
+  );
+
   return {
     enabled,
     events,
@@ -589,6 +650,8 @@ export function useReticulumGroupChat(
     loadOlder,
     typing,
     visibilityChange,
+    discussionIndex,
+    getDiscussionMessages,
     publishEvent,
     sendTyping,
   };

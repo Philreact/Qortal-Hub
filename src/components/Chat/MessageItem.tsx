@@ -275,6 +275,10 @@ type MessageItemProps = {
   replyIndex: number;
   replyExpiredMeta?: any;
   reticulumChatEnabled?: boolean;
+  reticulumDiscussionReplyCount?: number;
+  onOpenReticulumDiscussion?: (message: any) => void;
+  reticulumDiscussionRootId?: string;
+  reticulumDiscussionView?: boolean;
   reticulumGroupAvatarOwnerName?: string;
   reticulumGroupDisplayName?: string;
   reticulumMentionUsers?: Record<
@@ -313,6 +317,10 @@ export const MessageItemComponent = ({
   replyIndex,
   replyExpiredMeta,
   reticulumChatEnabled = false,
+  reticulumDiscussionReplyCount = 0,
+  onOpenReticulumDiscussion,
+  reticulumDiscussionRootId,
+  reticulumDiscussionView = false,
   reticulumGroupAvatarOwnerName,
   reticulumGroupDisplayName,
   reticulumMentionUsers,
@@ -1549,6 +1557,13 @@ export const MessageItemComponent = ({
         return isToday ? time : `${date.toLocaleDateString()} ${time}`;
       })()
     : formatTimestamp(message.timestamp);
+  const hasReticulumDiscussion =
+    reticulumChatEnabled && reticulumDiscussionReplyCount > 0;
+  const collapseGroupedHeader =
+    isGroupedWithPrevious && !hasReticulumDiscussion;
+  const showReplyPreview =
+    !reticulumDiscussionView ||
+    String(message?.repliedTo || '') !== reticulumDiscussionRootId;
 
   return (
     <>
@@ -1835,10 +1850,10 @@ export const MessageItemComponent = ({
                 flexWrap: 'wrap',
                 gap: '8px',
                 justifyContent: 'space-between',
-                height: isGroupedWithPrevious ? 0 : undefined,
-                minHeight: isGroupedWithPrevious ? 0 : '32px',
-                overflow: isGroupedWithPrevious ? 'visible' : undefined,
-                ...(isGroupedWithPrevious
+                height: collapseGroupedHeader ? 0 : undefined,
+                minHeight: collapseGroupedHeader ? 0 : '32px',
+                overflow: collapseGroupedHeader ? 'visible' : undefined,
+                ...(collapseGroupedHeader
                   ? {
                       alignSelf: 'flex-end',
                       position: 'absolute',
@@ -1856,7 +1871,7 @@ export const MessageItemComponent = ({
                   flexWrap: 'wrap',
                   gap: '8px',
                   minWidth: 0,
-                  display: isGroupedWithPrevious ? 'none' : 'flex',
+                  display: collapseGroupedHeader ? 'none' : 'flex',
                 }}
               >
               <WrapperUserAction
@@ -1936,6 +1951,52 @@ export const MessageItemComponent = ({
                   </Typography>
                 )}
 
+                {hasReticulumDiscussion &&
+                  onOpenReticulumDiscussion && (
+                    <Tooltip
+                      title={`View ${reticulumDiscussionReplyCount} ${
+                        reticulumDiscussionReplyCount === 1
+                          ? 'reply'
+                          : 'replies'
+                      }`}
+                    >
+                      <ButtonBase
+                        aria-label={`View ${reticulumDiscussionReplyCount} ${
+                          reticulumDiscussionReplyCount === 1
+                            ? 'reply'
+                            : 'replies'
+                        }`}
+                        onClick={() => onOpenReticulumDiscussion(message)}
+                        sx={{
+                          alignItems: 'center',
+                          backgroundColor: alpha(
+                            theme.palette.primary.main,
+                            0.12
+                          ),
+                          borderRadius: '50%',
+                          color: theme.palette.primary.main,
+                          display: 'inline-flex',
+                          flexShrink: 0,
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          height: 24,
+                          justifyContent: 'center',
+                          lineHeight: 1,
+                          minWidth: 24,
+                          px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
+                          '&:hover': {
+                            backgroundColor: alpha(
+                              theme.palette.primary.main,
+                              0.2
+                            ),
+                          },
+                        }}
+                      >
+                        +{reticulumDiscussionReplyCount}
+                      </ButtonBase>
+                    </Tooltip>
+                  )}
+
                 {message?.isEdit && !isUpdating && !isTemp && (
                   <Typography
                     sx={{
@@ -1954,7 +2015,7 @@ export const MessageItemComponent = ({
               </Box>
 
               {/* Action toolbar in header row so it never overlaps message body */}
-              {!isShowingAsReply && (
+              {!isShowingAsReply && !reticulumDiscussionView && (
                 <Box
                   className="message-item-toolbar"
                   sx={{
@@ -2081,7 +2142,7 @@ export const MessageItemComponent = ({
             </Box>
 
             {/* Reply preview - active reply */}
-            {reply && (
+            {showReplyPreview && reply && (
               <Box
                 sx={{
                   borderLeft: isRepliedToMe
@@ -2198,7 +2259,9 @@ export const MessageItemComponent = ({
             )}
 
             {/* Reply preview - expired/missing reply */}
-            {!reply && (replyExpiredMeta || message?.repliedTo) && (
+            {showReplyPreview &&
+              !reply &&
+              (replyExpiredMeta || message?.repliedTo) && (
               <Box
                 sx={{
                   borderLeft: isRepliedToMe
