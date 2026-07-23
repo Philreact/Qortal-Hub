@@ -2076,6 +2076,7 @@ try {
           progress?: number;
           complete?: boolean;
           failed?: boolean;
+          failureReason?: 'verification_failed';
         }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
@@ -2089,6 +2090,7 @@ try {
               progress?: number;
               complete?: boolean;
               failed?: boolean;
+              failureReason?: 'verification_failed';
             }
           );
         };
@@ -2867,6 +2869,7 @@ try {
           progress?: number;
           complete?: boolean;
           failed?: boolean;
+          failureReason?: 'verification_failed';
         }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
@@ -2880,6 +2883,7 @@ try {
               progress?: number;
               complete?: boolean;
               failed?: boolean;
+              failureReason?: 'verification_failed';
             }
           );
         };

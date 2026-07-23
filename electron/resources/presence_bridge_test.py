@@ -2482,6 +2482,205 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.bridge._resource_sessions_by_key[state["sessionKey"]] = session_id
         return state, link
 
+    def test_parallel_peer_lookup_requires_an_exact_transfer_id(self):
+        first = self.pending("first-range", resource_type="reticulum_group_resource_range")
+        second = self.pending("second-range", resource_type="reticulum_group_resource_range")
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, first)
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, second)
+
+        self.assertIs(
+            self.bridge._qchat_file_get_pending_receive(self.peer_hash, "first-range"),
+            first,
+        )
+        self.assertIs(
+            self.bridge._qchat_file_get_pending_receive(self.peer_hash, "second-range"),
+            second,
+        )
+        self.assertIsNone(
+            self.bridge._qchat_file_get_pending_receive(self.peer_hash, "unknown-range")
+        )
+        self.assertIsNone(self.bridge._qchat_file_get_pending_receive(self.peer_hash))
+
+        self.bridge._qchat_file_remove_pending_receive(self.peer_hash, "second-range")
+        self.assertIs(self.bridge._qchat_file_get_pending_receive(self.peer_hash), first)
+
+    def test_parallel_ranges_with_same_event_have_distinct_semantic_keys(self):
+        first = self.pending(
+            "first-range",
+            resource_type="reticulum_group_resource_range",
+            event_id="shared-event",
+        )
+        second = self.pending(
+            "second-range",
+            resource_type="reticulum_group_resource_range",
+            event_id="shared-event",
+        )
+        file_hash = "ab" * 32
+        first["metadata"].update(
+            {"fileHash": file_hash, "byteRanges": [[0, 1048576]]}
+        )
+        second["metadata"].update(
+            {"fileHash": file_hash, "byteRanges": [[1048576, 2097152]]}
+        )
+
+        self.assertNotEqual(
+            self.bridge._resource_session_semantic_key(first),
+            self.bridge._resource_session_semantic_key(second),
+        )
+
+    def test_session_response_skips_legacy_peer_fallback_callbacks(self):
+        _state, link = self.session(lane="bulk")
+        first = self.pending("first-range", resource_type="reticulum_group_resource_range")
+        second = self.pending("second-range", resource_type="reticulum_group_resource_range")
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, first)
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, second)
+
+        class ResponseResource:
+            request_id = bytes.fromhex("33" * 16)
+
+            def __init__(self, response_link):
+                self.link = response_link
+
+        resource = ResponseResource(link)
+        with mock.patch.object(
+            self.bridge,
+            "_qchat_file_get_pending_receive",
+        ) as get_pending, mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            self.bridge.on_qchat_file_resource_started(resource)
+            self.bridge.on_qchat_file_resource_concluded(resource)
+
+        get_pending.assert_not_called()
+        emit.assert_not_called()
+        self.assertIn("first-range", self.bridge._qchat_file_accepts_by_transfer)
+        self.assertIn("second-range", self.bridge._qchat_file_accepts_by_transfer)
+
+    def test_range_response_is_bound_to_its_transfer_and_payload_hash(self):
+        contents = b"verified range response"
+        payload_hash = self.bridge.hashlib.sha256(contents).hexdigest()
+        transfer_id = "verified-range"
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.bin"
+            save_path = Path(directory) / "received.bin"
+            source_path.write_bytes(contents)
+            response = open(source_path, "rb")
+            receipt = FakeSessionReceipt()
+            receipt.response = response
+            receipt.metadata = {
+                "transferId": transfer_id,
+                "size": len(contents),
+                "sha256": payload_hash,
+            }
+            pending = self.pending(
+                transfer_id,
+                resource_type="reticulum_group_resource_range",
+            )
+            pending.update(
+                {
+                    "savePath": str(save_path),
+                    "size": len(contents),
+                }
+            )
+            job = {
+                "transferId": transfer_id,
+                "pending": pending,
+                "created_at": time.time(),
+                "followers": [],
+            }
+            self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+
+            with mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+                self.bridge._resource_session_response_received(job, receipt)
+
+            self.assertTrue(job["completed"])
+            self.assertEqual(save_path.read_bytes(), contents)
+            received = [
+                call
+                for call in emit.call_args_list
+                if call.args and call.args[0] == "received"
+            ]
+            self.assertEqual(len(received), 1)
+            self.assertEqual(received[0].args[1]["transferId"], transfer_id)
+            self.assertEqual(received[0].args[1]["payloadHash"], payload_hash)
+
+    def test_range_response_from_legacy_peer_uses_request_receipt_identity(self):
+        contents = b"legacy range response"
+        payload_hash = self.bridge.hashlib.sha256(contents).hexdigest()
+        transfer_id = "expected-range"
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.bin"
+            save_path = Path(directory) / "received.bin"
+            source_path.write_bytes(contents)
+            receipt = FakeSessionReceipt()
+            receipt.response = open(source_path, "rb")
+            receipt.metadata = {"size": len(contents)}
+            pending = self.pending(
+                transfer_id,
+                resource_type="reticulum_group_resource_range",
+            )
+            pending.update(
+                {
+                    "savePath": str(save_path),
+                    "size": len(contents),
+                }
+            )
+            job = {
+                "transferId": transfer_id,
+                "pending": pending,
+                "created_at": time.time(),
+                "followers": [],
+            }
+            self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+
+            with mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+                self.bridge._resource_session_response_received(job, receipt)
+
+            self.assertTrue(job["completed"])
+            self.assertEqual(save_path.read_bytes(), contents)
+            received = [
+                call
+                for call in emit.call_args_list
+                if call.args and call.args[0] == "received"
+            ]
+            self.assertEqual(len(received), 1)
+            self.assertEqual(received[0].args[1]["transferId"], transfer_id)
+            self.assertEqual(received[0].args[1]["payloadHash"], payload_hash)
+
+    def test_range_response_rejects_mismatched_metadata_identity(self):
+        contents = b"wrong transfer response"
+        transfer_id = "expected-range"
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.bin"
+            save_path = Path(directory) / "received.bin"
+            source_path.write_bytes(contents)
+            receipt = FakeSessionReceipt()
+            receipt.response = open(source_path, "rb")
+            receipt.metadata = {"transferId": "different-range"}
+            pending = self.pending(
+                transfer_id,
+                resource_type="reticulum_group_resource_range",
+            )
+            pending.update({"savePath": str(save_path), "size": len(contents)})
+            job = {
+                "transferId": transfer_id,
+                "pending": pending,
+                "created_at": time.time(),
+                "followers": [],
+            }
+            self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+
+            with mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+                self.bridge._resource_session_response_received(job, receipt)
+
+            self.assertFalse(save_path.exists())
+            failures = [
+                call
+                for call in emit.call_args_list
+                if call.args and call.args[0] == "failed"
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0].args[1]["reason"], "resource_response_invalid")
+            self.assertIn("transfer id mismatch", failures[0].args[1]["error"])
+
     def test_managed_accept_uses_reusable_session_instead_of_link_queue(self):
         payload = {
             "peerPresenceHash": self.peer_hash,
@@ -2827,40 +3026,64 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.assertNotIn(link_id, self.bridge._qchat_file_links_by_id)
 
     def test_parallel_dispatch_never_exceeds_lane_limit(self):
-        state, link = self.session()
-        job_count = self.bridge._RESOURCE_SESSION_FAST_CONCURRENCY + 6
-        state["pending_jobs"] = [
-            {
-                "pending": self.pending(f"parallel-{index}"),
-                "created_at": time.time(),
-                "followers": [],
-            }
-            for index in range(job_count)
-        ]
+        for lane, limit in (
+            ("fast", self.bridge._RESOURCE_SESSION_FAST_CONCURRENCY),
+            ("bulk", self.bridge._RESOURCE_SESSION_BULK_CONCURRENCY),
+        ):
+            with self.subTest(lane=lane):
+                state, link = self.session(lane=lane)
+                job_count = limit + 6
+                state["pending_jobs"] = [
+                    {
+                        "pending": self.pending(f"{lane}-parallel-{index}"),
+                        "created_at": time.time(),
+                        "followers": [],
+                    }
+                    for index in range(job_count)
+                ]
 
-        threads = [
-            threading.Thread(
-                target=self.bridge._resource_session_dispatch_pending,
-                args=(state,),
-            )
-            for _ in range(4)
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=2)
+                threads = [
+                    threading.Thread(
+                        target=self.bridge._resource_session_dispatch_pending,
+                        args=(state,),
+                    )
+                    for _ in range(4)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=2)
 
+                self.assertEqual(len(state["active_requests"]), limit)
+                self.assertEqual(len(link.requests), limit)
+                self.assertEqual(len(state["pending_jobs"]), job_count - limit)
+
+    def test_bulk_jobs_are_balanced_across_independent_session_pool(self):
+        selected_states = []
+        with mock.patch.object(self.bridge, "_resource_session_poll_path"):
+            for index in range(self.bridge._RESOURCE_SESSION_BULK_POOL_SIZE * 2):
+                state, reason = self.bridge._resource_session_get_or_create(
+                    self.peer_hash,
+                    object(),
+                    "bulk",
+                )
+                self.assertEqual(reason, "")
+                self.assertIsInstance(state, dict)
+                state["pending_jobs"].append({"index": index})
+                selected_states.append(state)
+
+        unique_states = {state["linkId"]: state for state in selected_states}
         self.assertEqual(
-            len(state["active_requests"]),
-            self.bridge._RESOURCE_SESSION_FAST_CONCURRENCY,
+            len(unique_states),
+            self.bridge._RESOURCE_SESSION_BULK_POOL_SIZE,
         )
         self.assertEqual(
-            len(link.requests),
-            self.bridge._RESOURCE_SESSION_FAST_CONCURRENCY,
+            sorted(len(state["pending_jobs"]) for state in unique_states.values()),
+            [2] * self.bridge._RESOURCE_SESSION_BULK_POOL_SIZE,
         )
         self.assertEqual(
-            len(state["pending_jobs"]),
-            job_count - self.bridge._RESOURCE_SESSION_FAST_CONCURRENCY,
+            sorted(state["sessionSlot"] for state in unique_states.values()),
+            list(range(self.bridge._RESOURCE_SESSION_BULK_POOL_SIZE)),
         )
 
     def test_identical_event_downloads_share_one_network_job(self):

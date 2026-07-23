@@ -86,6 +86,7 @@ export type ReticulumResourceTransferProgress = {
   complete?: boolean;
   failed?: boolean;
   canceled?: boolean;
+  failureReason?: 'verification_failed';
   sourcePeerHashes?: string[];
   featureData?: Record<string, unknown>;
 };
@@ -122,6 +123,8 @@ type ReticulumResourceDownloadState<TRequestWire> = {
   peerBulkThrottleLoggedAt: Map<string, number>;
   waitingForProvider: boolean;
   nextRequestAt: number;
+  integrityRecoveryAttempts: number;
+  integrityRecoveryPromise?: Promise<void>;
   featureData?: Record<string, unknown>;
   storageLeaseId: string;
   storageReservationId?: string;
@@ -620,6 +623,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       peerBulkThrottleLoggedAt: new Map(),
       waitingForProvider: false,
       nextRequestAt: 0,
+      integrityRecoveryAttempts: 0,
       storageLeaseId: this.resourceStore.acquireLease(
         blobId,
         'transfer',
@@ -787,8 +791,10 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         this.emitProgress(state, true);
         this.releaseStorageProtection(state);
         this.downloads.delete(state.fileHash);
-      } catch {
-        this.emitProgress(state);
+      } catch (error) {
+        if (!(await this.recoverInvalidAssembly(state, error))) {
+          this.emitProgress(state);
+        }
       }
       return;
     }
@@ -1011,10 +1017,6 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.activeAccepts.add(transferId);
     const startedAt = this.now();
     this.activeAcceptStartedAt.set(transferId, startedAt);
-    this.transferProgressWatch.set(transferId, {
-      lastProgressAt: startedAt,
-      lastProgressBytes: 0,
-    });
     this.markOfferRangesInFlight(state, offer);
     loggerLog(
       `[${this.loggerPrefix}] resource_session_opened fileHash=${state.fileHash} ` +
@@ -1173,7 +1175,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       progress: number;
       bytesTransferred?: number;
     },
-    failed = false
+    failed = false,
+    failureReason?: ReticulumResourceTransferProgress['failureReason']
   ): void {
     const totalBytes = Math.max(0, Math.floor(Number(state.manifest.sizeBytes) || 0));
     const completedBytes = this.resourceStore.getCompletedBytes(state.fileHash);
@@ -1191,8 +1194,9 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       bytesTransferred,
       totalBytes,
       progress: totalBytes > 0 ? bytesTransferred / totalBytes : 0,
-      complete: complete || bytesTransferred >= totalBytes,
+      complete,
       failed,
+      ...(failureReason ? { failureReason } : {}),
       sourcePeerHashes: [...state.sourcePeerHashes],
       ...(state.featureData ? { featureData: state.featureData } : {}),
     };
@@ -1214,6 +1218,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       : boundedBytes != null && offer.sizeBytes > 0
         ? boundedBytes / offer.sizeBytes
         : 0;
+    this.handleTransferReceivingStarted(offer.transferId);
     this.activeAcceptStartedAt.set(offer.transferId, this.now());
     this.updateTransferProgressWatch(offer.transferId, boundedBytes ?? 0);
     this.refreshOfferRangesInFlight(state, offer);
@@ -1223,6 +1228,21 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       progress,
       bytesTransferred: boundedBytes ?? 0,
     });
+  }
+
+  private handleTransferReceivingStarted(transferId: string): void {
+    const offer = this.offers.get(transferId);
+    if (!offer || !this.activeAccepts.has(transferId)) return;
+    const now = this.now();
+    this.activeAcceptStartedAt.set(transferId, now);
+    if (!this.transferProgressWatch.has(transferId)) {
+      this.transferProgressWatch.set(transferId, {
+        lastProgressAt: now,
+        lastProgressBytes: 0,
+      });
+    }
+    const state = this.downloads.get(offer.fileHash);
+    if (state) this.refreshOfferRangesInFlight(state, offer);
   }
 
   private logTransferSpeed(
@@ -1691,11 +1711,74 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.releaseStorageProtection(state);
       this.downloads.delete(offer.fileHash);
       return;
-    } catch {
-      this.emitProgress(state);
-      state.nextRequestAt = 0;
-      this.scheduleDownload(0);
+    } catch (error) {
+      if (!(await this.recoverInvalidAssembly(state, error))) {
+        this.emitProgress(state);
+        state.nextRequestAt = 0;
+        this.scheduleDownload(0);
+      }
     }
+  }
+
+  private isAssemblyIntegrityError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return (
+      message.includes('Assembled file hash mismatch') ||
+      message.includes('Resource source size mismatch') ||
+      message.includes('Partial file size mismatch')
+    );
+  }
+
+  private async recoverInvalidAssembly(
+    state: ReticulumResourceDownloadState<TRequestWire>,
+    error: unknown
+  ): Promise<boolean> {
+    if (!this.isAssemblyIntegrityError(error)) return false;
+    if (state.integrityRecoveryPromise) {
+      await state.integrityRecoveryPromise;
+      return true;
+    }
+
+    const recovery = (async () => {
+      state.integrityRecoveryAttempts += 1;
+      const terminal = state.integrityRecoveryAttempts > 1;
+      loggerWarn(
+        `[${this.loggerPrefix}] resource_verification_failed fileHash=${state.fileHash} ` +
+          `attempt=${state.integrityRecoveryAttempts} action=${terminal ? 'stop' : 'redownload'} ` +
+          `reason=${error instanceof Error ? error.message : String(error || 'unknown')}`
+      );
+      state.rangeAttempts.clear();
+      state.inFlightRanges.clear();
+      this.clearRequestedResourcesForFile(state.fileHash);
+      await this.resourceStore.discardResourceDataAsync(state.fileHash);
+      if (this.downloads.get(state.fileHash) !== state) return;
+
+      state.missingRanges = this.buildMissingRangeMap(state.manifest);
+      state.waitingForProvider = false;
+      state.nextRequestAt = 0;
+      this.emitProgress(
+        state,
+        false,
+        undefined,
+        terminal,
+        'verification_failed'
+      );
+      if (terminal) {
+        this.releaseStorageProtection(state);
+        this.downloads.delete(state.fileHash);
+        return;
+      }
+      this.scheduleDownload(0);
+    })();
+    state.integrityRecoveryPromise = recovery;
+    try {
+      await recovery;
+    } finally {
+      if (state.integrityRecoveryPromise === recovery) {
+        delete state.integrityRecoveryPromise;
+      }
+    }
+    return true;
   }
 
   private isValidOffer(offer: ReticulumResourceTransferOffer): boolean {

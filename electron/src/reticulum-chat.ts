@@ -5891,6 +5891,7 @@ export class ReticulumChatManager extends EventEmitter {
       complete: progress.complete,
       failed: progress.failed,
       canceled: progress.canceled,
+      failureReason: progress.failureReason,
     });
     if (progress.complete) void this.sendGroupResourceReceipts(progress);
   }
@@ -5908,6 +5909,7 @@ export class ReticulumChatManager extends EventEmitter {
       complete: progress.complete,
       failed: progress.failed,
       canceled: progress.canceled,
+      failureReason: progress.failureReason,
     });
     if (progress.complete) void this.sendDirectResourceReceipts(progress);
   }

@@ -81,6 +81,7 @@ import { CustomStyledMenu } from '../ContextMenu';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
+const RETICULUM_FILE_UNAVAILABLE_TIMEOUT_MS = 12_000;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
 const RETICULUM_IMAGE_REQUEST_BACKOFF_MS = 30_000;
 const RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS = 12_000;
@@ -840,6 +841,9 @@ export const MessageItemComponent = ({
   const [fileResourceStatus, setFileResourceStatus] = useState<
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
   >('idle');
+  const [fileResourceFailureReason, setFileResourceFailureReason] = useState<
+    'verification_failed' | null
+  >(null);
   const [fileResourceProgress, setFileResourceProgress] = useState<number | null>(null);
   const [fileResourceBytes, setFileResourceBytes] = useState<{
     received: number;
@@ -883,11 +887,15 @@ export const MessageItemComponent = ({
     const previousRequestAt = reticulumImageResourceRequestTimes.get(key);
     const requestAllowed = shouldRequestReticulumImageResource(key, nowMs);
 
+    const clearAvailabilityTimer = () => {
+      if (availabilityTimer === null) return;
+      window.clearTimeout(availabilityTimer);
+      availabilityTimer = null;
+    };
     const scheduleAvailabilityCheck = (delayMs: number) => {
-      if (availabilityTimer !== null) {
-        window.clearTimeout(availabilityTimer);
-      }
+      clearAvailabilityTimer();
       availabilityTimer = window.setTimeout(() => {
+        availabilityTimer = null;
         void window.reticulumResources
           ?.getStatus?.(imageResourceId)
           .then((status) => {
@@ -926,7 +934,7 @@ export const MessageItemComponent = ({
       scheduleAvailabilityCheck(remainingAvailabilityWait);
       return () => {
         cancelled = true;
-        if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+        clearAvailabilityTimer();
       };
     }
 
@@ -937,6 +945,7 @@ export const MessageItemComponent = ({
         const status = await window.reticulumResources?.getStatus?.(imageResourceId);
         if (cancelled) return;
         if (status?.success && status.complete) {
+          clearAvailabilityTimer();
           reticulumImageResourceRequestTimes.delete(key);
           setReticulumImageDownloadIssue(null);
           return;
@@ -956,7 +965,7 @@ export const MessageItemComponent = ({
             );
         if (cancelled) return;
         if (!response?.success) {
-          if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+          clearAvailabilityTimer();
           setReticulumImageDownloadIssue('error');
           console.warn(
             '[ReticulumResource] Image resource request failed:',
@@ -966,7 +975,7 @@ export const MessageItemComponent = ({
         }
       } catch (error) {
         if (cancelled) return;
-        if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+        clearAvailabilityTimer();
         setReticulumImageDownloadIssue('error');
         console.warn(
           '[ReticulumResource] Image resource request failed:',
@@ -978,7 +987,7 @@ export const MessageItemComponent = ({
 
     return () => {
       cancelled = true;
-      if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+      clearAvailabilityTimer();
     };
   }, [
     imageResourceId,
@@ -1185,6 +1194,7 @@ export const MessageItemComponent = ({
       progress?: number;
       complete?: boolean;
       failed?: boolean;
+      failureReason?: 'verification_failed';
       latestRangeUpdatedAt?: number | null;
       checkedAt?: number;
       runtime?: {
@@ -1202,6 +1212,26 @@ export const MessageItemComponent = ({
       } | null;
     }) => {
       if (!payload) return;
+      const verificationFailed = payload.failureReason === 'verification_failed';
+      if (verificationFailed) {
+        const restartedAt = Date.now();
+        setFileResourceFailureReason('verification_failed');
+        setFileResourceProgress(0);
+        setFileResourceBytes(
+          typeof payload.totalBytes === 'number' && payload.totalBytes > 0
+            ? { received: 0, total: payload.totalBytes }
+            : null
+        );
+        setFileResourceLastChunkAt(null);
+        setFileResourceStartedAt(restartedAt);
+        setFileResourceStatus(payload.failed ? 'error' : 'downloading');
+      } else if (
+        payload.complete ||
+        (typeof payload.bytesTransferred === 'number' &&
+          payload.bytesTransferred > 0)
+      ) {
+        setFileResourceFailureReason(null);
+      }
       if (typeof payload.checkedAt === 'number') {
         setFileResourceCheckedAt(payload.checkedAt);
       }
@@ -1209,7 +1239,11 @@ export const MessageItemComponent = ({
         setFileResourceRuntime(payload.runtime);
       }
       if (typeof payload.progress === 'number') {
-        const nextProgress = Math.max(0, Math.min(100, Math.round(payload.progress * 100)));
+        const maximumProgress = payload.complete ? 100 : 99;
+        const nextProgress = Math.max(
+          0,
+          Math.min(maximumProgress, Math.round(payload.progress * 100))
+        );
         setFileResourceProgress((progress) =>
           typeof progress === 'number' ? Math.max(progress, nextProgress) : nextProgress
         );
@@ -1225,7 +1259,10 @@ export const MessageItemComponent = ({
         const received = Math.max(0, Math.min(payload.bytesTransferred, payload.totalBytes));
         const byteProgress = Math.max(
           0,
-          Math.min(100, Math.round((received / payload.totalBytes) * 100))
+          Math.min(
+            payload.complete ? 100 : 99,
+            Math.round((received / payload.totalBytes) * 100)
+          )
         );
         setFileResourceBytes((bytes) => ({
           received:
@@ -1245,6 +1282,7 @@ export const MessageItemComponent = ({
         setFileResourceLastChunkAt(payload.latestRangeUpdatedAt);
       }
       if (payload.canceled) {
+        setFileResourceFailureReason(null);
         setFileResourceStatus('idle');
         setFileResourceProgress(null);
         setFileResourceBytes(null);
@@ -1254,6 +1292,7 @@ export const MessageItemComponent = ({
         return;
       }
       if (payload.complete) {
+        setFileResourceFailureReason(null);
         setFileResourceStatus('ready');
         setFileResourceProgress(100);
         setFileResourceBytes(null);
@@ -1327,6 +1366,7 @@ export const MessageItemComponent = ({
       return { success: true };
     }
     setFileResourceStatus('downloading');
+    setFileResourceFailureReason(null);
     setFileResourceProgress((progress) =>
       typeof progress === 'number' ? progress : 0
     );
@@ -1375,6 +1415,7 @@ export const MessageItemComponent = ({
   const cancelReticulumFileResource = useCallback(async () => {
     if (!reticulumFileResourceId) return;
     setFileResourceStatus('idle');
+    setFileResourceFailureReason(null);
     setFileResourceProgress(null);
     setFileResourceBytes(null);
     setFileResourceRuntime(null);
@@ -1412,6 +1453,7 @@ export const MessageItemComponent = ({
     let cancelled = false;
     if (!reticulumFileResourceId) {
       setFileResourceStatus('idle');
+      setFileResourceFailureReason(null);
       setFileResourceProgress(null);
       setFileResourceBytes(null);
       return;
@@ -1422,6 +1464,7 @@ export const MessageItemComponent = ({
         applyFileResourceStatus(result);
       } else {
         setFileResourceStatus('idle');
+        setFileResourceFailureReason(null);
         setFileResourceProgress(null);
         setFileResourceBytes(null);
         setFileResourceLastChunkAt(null);
@@ -1538,9 +1581,38 @@ export const MessageItemComponent = ({
         : '';
     return [peersText, transfersText, speedText].filter(Boolean).join(' · ');
   })();
+  const fileResourceUnavailableNoPeers = (() => {
+    if (
+      (fileResourceStatus !== 'downloading' && fileResourceStatus !== 'error') ||
+      !fileResourceStartedAt ||
+      nowMs - fileResourceStartedAt < RETICULUM_FILE_UNAVAILABLE_TIMEOUT_MS ||
+      fileResourceBytes?.received
+    ) {
+      return false;
+    }
+    const runtime = fileResourceRuntime;
+    if (!runtime?.active) return false;
+    const providerCount = Math.max(
+      Number(runtime.peerCount || 0),
+      Number(runtime.advertisedPeerCount || 0)
+    );
+    const activeTransferCount =
+      Number(runtime.activeTransfers || 0) +
+      Number(runtime.pendingTransfers || 0) +
+      Number(runtime.inFlightRangeCount || 0);
+    return providerCount === 0 && activeTransferCount === 0;
+  })();
   const fileResourceStatusText = (() => {
     if (fileResourceStatus === 'ready') return 'ready';
     if (fileResourceStatus === 'saving') return 'saving';
+    if (fileResourceUnavailableNoPeers) {
+      return 'file unavailable right now (no peers)';
+    }
+    if (fileResourceFailureReason === 'verification_failed') {
+      return fileResourceStatus === 'error'
+        ? 'file verification failed'
+        : 'file verification failed · retrying';
+    }
     if (fileResourceStatus === 'downloading') {
       if (fileResourceProgress === null) return 'downloading';
       const bytesText =
@@ -2806,11 +2878,15 @@ export const MessageItemComponent = ({
                   border: '1px solid',
                   borderColor: theme.palette.divider,
                   borderRadius: '8px',
+                  boxSizing: 'border-box',
                   display: 'flex',
                   gap: '10px',
+                  height: '72px',
                   marginTop: '8px',
-                  maxWidth: 460,
+                  maxWidth: 640,
+                  overflow: 'hidden',
                   p: 1.25,
+                  width: 'min(100%, 640px)',
                 }}
               >
                 <InsertDriveFileRoundedIcon
@@ -2833,60 +2909,83 @@ export const MessageItemComponent = ({
                       color:
                         fileResourceStatus === 'error'
                           ? theme.palette.error.main
+                          : fileResourceFailureReason === 'verification_failed'
+                            ? theme.palette.warning.main
                           : theme.palette.text.secondary,
                       fontSize: 12,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                     }}
+                    title={`${formatQchatFileSize(reticulumFileSize)} · ${fileResourceStatusText}`}
                   >
                     {formatQchatFileSize(reticulumFileSize)} · {fileResourceStatusText}
                   </Typography>
-                  {(fileResourceStatus === 'downloading' ||
-                    fileResourceStatus === 'saving') && (
-                    <LinearProgress
-                      variant={
-                        fileResourceProgress !== null ? 'determinate' : 'indeterminate'
-                      }
-                      value={fileResourceProgress ?? undefined}
-                      sx={{
-                        mt: 0.75,
-                        height: 4,
-                        borderRadius: 1,
-                      }}
-                    />
-                  )}
+                  <Box sx={{ height: '10px', overflow: 'hidden' }}>
+                    {(fileResourceStatus === 'downloading' ||
+                      fileResourceStatus === 'saving') && (
+                      <LinearProgress
+                        variant={
+                          fileResourceProgress !== null ? 'determinate' : 'indeterminate'
+                        }
+                        value={fileResourceProgress ?? undefined}
+                        sx={{
+                          mt: 0.75,
+                          height: 4,
+                          borderRadius: 1,
+                        }}
+                      />
+                    )}
+                  </Box>
                 </Box>
-                {fileResourceStatus === 'downloading' ? (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    color="inherit"
-                    startIcon={<CancelRoundedIcon />}
-                    onClick={() => {
-                      void cancelReticulumFileResource();
-                    }}
-                    sx={{ flexShrink: 0, textTransform: 'none' }}
-                  >
-                    Cancel
-                  </Button>
-                ) : (
-                  <Box sx={{ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 0.5 }}>
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    flexShrink: 0,
+                    justifyContent: 'flex-end',
+                    width: '112px',
+                  }}
+                >
+                  {fileResourceStatus === 'downloading' &&
+                  !fileResourceUnavailableNoPeers ? (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="inherit"
+                      startIcon={<CancelRoundedIcon />}
+                      onClick={() => {
+                        void cancelReticulumFileResource();
+                      }}
+                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                    >
+                      Cancel
+                    </Button>
+                  ) : (
                     <Button
                       size="small"
                       variant="contained"
                       startIcon={<DownloadRoundedIcon />}
                       disabled={fileResourceStatus === 'saving'}
                       onClick={() => {
+                        if (fileResourceUnavailableNoPeers) {
+                          void requestReticulumFileResource();
+                          return;
+                        }
                         void saveReticulumFileResource();
                       }}
                       sx={{ flexShrink: 0, textTransform: 'none' }}
                     >
-                      {fileResourceStatus === 'ready'
+                      {fileResourceUnavailableNoPeers
+                        ? 'Retry'
+                        : fileResourceStatus === 'ready'
                         ? 'Save'
                         : fileResourceStatus === 'error'
                           ? 'Retry'
                           : 'Download'}
                     </Button>
-                  </Box>
-                )}
+                  )}
+                </Box>
               </Box>
             )}
 

@@ -6,6 +6,7 @@ import * as path from 'path';
 import { ReticulumResourceStore, type ReticulumResourceManifest } from './reticulum-resource-store';
 import {
   RETICULUM_RESOURCE_TRANSFER_TTL_MS,
+  type ReticulumResourceTransferProgress,
   ReticulumResourceTransferManager,
 } from './reticulum-resource-transfer';
 
@@ -104,5 +105,124 @@ describe('reticulum resource transfer storage protection', () => {
     expect(completedRangeSpy).toHaveBeenCalledTimes(1);
     expect((transfer as any).downloads.has(manifest.fileHash)).toBe(true);
     expect(state.missingRanges.size).toBe(2);
+  });
+
+  it('discards corrupt completed data and retries without reporting completion', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+    });
+    stores.push(store);
+    const expectedContents = Buffer.from('verified attachment');
+    const corruptContents = Buffer.from('corrupted attachmen');
+    expect(corruptContents.length).toBe(expectedContents.length);
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'attachment.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: expectedContents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(expectedContents).digest('hex'),
+      encrypted: false,
+      createdAt: Date.now(),
+      metadata: { groupId: 716 },
+    };
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    store.storeByteRange(
+      manifest.fileHash,
+      0,
+      corruptContents.length,
+      corruptContents
+    );
+    const progressEvents: ReticulumResourceTransferProgress[] = [];
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      resourceStore: store,
+      buildRequestPayloads: async () => [],
+      onProgress: (progress) => progressEvents.push(progress),
+    });
+    transfers.push(transfer);
+
+    const state = (transfer as any).upsertDownload(716, manifest, undefined, []);
+    expect(state.missingRanges.size).toBe(0);
+    (transfer as any).emitProgress(state);
+    expect(progressEvents.at(-1)).toEqual(
+      expect.objectContaining({
+        bytesTransferred: manifest.sizeBytes,
+        complete: false,
+      })
+    );
+
+    await (transfer as any).dispatchRequests(state);
+
+    expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
+    expect(state.missingRanges.size).toBe(1);
+    expect((transfer as any).downloads.get(manifest.fileHash)).toBe(state);
+    expect(progressEvents).not.toContainEqual(
+      expect.objectContaining({ complete: true })
+    );
+    expect(progressEvents).toContainEqual(
+      expect.objectContaining({
+        fileHash: manifest.fileHash,
+        bytesTransferred: 0,
+        progress: 0,
+        complete: false,
+        failed: false,
+        failureReason: 'verification_failed',
+      })
+    );
+  });
+
+  it('does not time out a range before Reticulum starts receiving it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: { cancelReticulumResourceDetailed } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [],
+    });
+    transfers.push(transfer);
+
+    const transferId = 'queued-range';
+    (transfer as any).offers.set(transferId, {
+      transferId,
+      contextId: 716,
+      fileHash: 'a'.repeat(64),
+      totalSizeBytes: 1024,
+      sizeBytes: 1024,
+      fileName: 'queued.range.bin',
+      mimeType: 'application/octet-stream',
+      ranges: [{ startByte: 0, endByteExclusive: 1024 }],
+      sourcePeerHash: 'b'.repeat(32),
+    });
+    (transfer as any).activeAccepts.add(transferId);
+    (transfer as any).activeAcceptStartedAt.set(transferId, now);
+
+    now += 30_000;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
+
+    transfer.handleResourceEvent({ status: 'auth_sent', transferId });
+    now += 30_000;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
+
+    (transfer as any).handleTransferReceivingStarted(transferId);
+    now += 10_001;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transferId,
+        reason: 'resource_range_no_progress_retry',
+      })
+    );
   });
 });

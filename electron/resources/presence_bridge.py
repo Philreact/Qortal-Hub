@@ -212,6 +212,7 @@ _RESOURCE_SESSION_MAX_TOTAL = 16
 _RESOURCE_SESSION_MAX_QUEUE_PER_LANE = 64
 _RESOURCE_SESSION_MAX_QUEUE_TOTAL = 256
 _RESOURCE_SESSION_FAST_CONCURRENCY = 4
+_RESOURCE_SESSION_BULK_POOL_SIZE = 5
 _RESOURCE_SESSION_BULK_CONCURRENCY = 1
 _RESOURCE_SESSION_PROVIDER_CONCURRENCY = 8
 _RESOURCE_SESSION_AUTH_MAX_QUEUE_SECONDS = 90.0
@@ -13380,13 +13381,33 @@ def _qchat_file_remove_pending_receive(peer_hash: str, transfer_id: str) -> None
 def _qchat_file_get_pending_receive(peer_hash: str, transfer_id: str = "") -> Optional[Dict[str, Any]]:
     transfer_key = transfer_id.strip()
     if transfer_key:
-        pending = _qchat_file_accepts_by_transfer.get(transfer_key)
-        if pending is not None:
-            return pending
+        # An explicit transfer ID must never fall through to a different
+        # transfer owned by the same peer.
+        return _qchat_file_accepts_by_transfer.get(transfer_key)
     peer_key = peer_hash.strip().lower()
     if peer_key:
-        return _qchat_file_accepts_by_peer.get(peer_key)
+        candidates = [
+            pending
+            for pending in _qchat_file_accepts_by_transfer.values()
+            if str(pending.get("peerPresenceHash") or "").strip().lower() == peer_key
+        ]
+        # The peer-only lookup exists for old Reticulum resources that do not
+        # expose transfer metadata. It is safe only when there is one possible
+        # receive; parallel ranges must be matched by transfer ID.
+        if len(candidates) == 1:
+            return candidates[0]
     return None
+
+
+def _qchat_file_is_resource_session_response(
+    resource,
+    state: Optional[Dict[str, Any]],
+) -> bool:
+    return (
+        isinstance(state, dict)
+        and state.get("manager_kind") == "resource_session"
+        and getattr(resource, "request_id", None) is not None
+    )
 
 
 def _qchat_file_expire_pending_receive(peer_hash: str, transfer_id: str = "") -> Optional[Dict[str, Any]]:
@@ -14532,6 +14553,12 @@ def on_qchat_file_resource_started(resource) -> None:
     link = getattr(resource, "link", None)
     link_id = get_qchat_file_link_id(link) if link is not None else None
     state = get_qchat_file_link_state(link_id) if link_id else None
+    if _qchat_file_is_resource_session_response(resource, state):
+        # RNS request responses are matched to their exact request receipt and
+        # completed by _resource_session_response_received. Running the legacy
+        # peer-based callback as well can attach a parallel response to the
+        # wrong range.
+        return
     peer_hash = str(
         (state or {}).get("peerPresenceHash")
         or getattr(resource, "_qchat_peer_hash", "")
@@ -14688,6 +14715,8 @@ def on_qchat_file_resource_concluded(resource) -> None:
     link = getattr(resource, "link", None)
     link_id = get_qchat_file_link_id(link) if link is not None else None
     state = get_qchat_file_link_state(link_id) if link_id else None
+    if _qchat_file_is_resource_session_response(resource, state):
+        return
     peer_hash = str(
         (state or {}).get("peerPresenceHash")
         or getattr(resource, "_qchat_peer_hash", "")
@@ -18345,8 +18374,10 @@ def _resource_session_lane(resource_type: str, logical_resource_type: str = "") 
     return "fast" if normalized == _RETICULUM_CHAT_RESOURCE_TYPE else "bulk"
 
 
-def _resource_session_key(peer_hash: str, lane: str) -> str:
-    return f"{str(peer_hash or '').strip().lower()}:{lane}"
+def _resource_session_key(peer_hash: str, lane: str, slot: int = 0) -> str:
+    peer_key = str(peer_hash or "").strip().lower()
+    session_lane = "bulk" if lane == "bulk" else "fast"
+    return f"{peer_key}:{session_lane}:{max(0, int(slot))}"
 
 
 def _resource_session_waiter_key(link_id: str, transfer_id: str) -> str:
@@ -18378,17 +18409,17 @@ def _resource_session_semantic_key(pending: Dict[str, Any]) -> str:
     peer_hash = str(pending.get("peerPresenceHash") or "").strip().lower()
     group_id = str(metadata.get("groupId") or auth.get("groupId") or auth.get("g") or "")
     expected_hash = str(pending.get("sha256") or metadata.get("fileHash") or "").strip().lower()
+    file_hash = str(metadata.get("fileHash") or auth.get("fileHash") or "").strip().lower()
+    byte_ranges = metadata.get("byteRanges") or auth.get("byteRanges")
+    if file_hash and isinstance(byte_ranges, list):
+        encoded_ranges = json.dumps(byte_ranges, separators=(",", ":"), sort_keys=True)
+        return f"range:{file_hash}:{encoded_ranges}"
     event_id = str(metadata.get("eventId") or auth.get("eventId") or auth.get("id") or "").strip()
     if event_id and expected_hash:
         return f"event:{group_id}:{event_id}:{expected_hash}"
     snapshot_hash = str(metadata.get("snapshotHash") or "").strip().lower()
     if snapshot_hash and expected_hash:
         return f"snapshot:{group_id}:{snapshot_hash}:{expected_hash}"
-    file_hash = str(metadata.get("fileHash") or auth.get("fileHash") or "").strip().lower()
-    byte_ranges = metadata.get("byteRanges") or auth.get("byteRanges")
-    if file_hash and isinstance(byte_ranges, list):
-        encoded_ranges = json.dumps(byte_ranges, separators=(",", ":"), sort_keys=True)
-        return f"range:{file_hash}:{encoded_ranges}"
     logical = str(metadata.get("logicalResourceType") or "").strip().lower()
     if "history_page" in logical:
         cursor = auth.get("before") if auth.get("before") is not None else auth.get("after")
@@ -18551,13 +18582,14 @@ def _resource_session_finish_followers(
             _qchat_file_emit(
                 "received",
                 {
+                    **(pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}),
                     "transferId": transfer_id,
                     "peerPresenceHash": peer_hash,
                     "fileName": pending.get("fileName") or "",
                     "path": save_path,
                     "sha256": actual_hash,
+                    "payloadHash": actual_hash,
                     "resourceType": pending.get("resourceType") or "",
-                    **(pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}),
                 },
             )
         except Exception as exc:
@@ -18729,6 +18761,11 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
             )
         actual_hash = _sha256_file_hex(source_path)
         metadata_hash = str(metadata.get("sha256") or "").strip().lower()
+        if metadata_hash and (
+            len(metadata_hash) != 64
+            or any(character not in "0123456789abcdef" for character in metadata_hash)
+        ):
+            raise RuntimeError("Reticulum response payload hash is invalid")
         if metadata_hash and actual_hash.lower() != metadata_hash:
             raise RuntimeError("Reticulum response metadata hash mismatch")
         if expected_hash and actual_hash.lower() != expected_hash:
@@ -18741,13 +18778,14 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
         _qchat_file_emit(
             "received",
             {
+                **pending_metadata,
                 "transferId": transfer_id,
                 "peerPresenceHash": peer_hash,
                 "fileName": pending.get("fileName") or "",
                 "path": save_path,
                 "sha256": actual_hash,
+                "payloadHash": metadata_hash or actual_hash,
                 "resourceType": pending.get("resourceType") or "",
-                **pending_metadata,
             },
         )
         _resource_session_finish_job(
@@ -19109,24 +19147,56 @@ def _resource_session_get_or_create(
     session_lane = "bulk" if lane == "bulk" else "fast"
     if not _valid_presence_destination_hash_hex(peer_key):
         return None, "unknown_peer_presence_hash"
-    session_key = _resource_session_key(peer_key, session_lane)
+    pool_size = _RESOURCE_SESSION_BULK_POOL_SIZE if session_lane == "bulk" else 1
     now = time.time()
+    existing_states: List[Dict[str, Any]] = []
+    available_slots: List[int] = []
     with _state_lock:
-        failure = _resource_session_failures_by_key.get(session_key)
-        backoff_until = float((failure or {}).get("backoff_until") or 0)
-        session_id = _resource_sessions_by_key.get(session_key)
-        state = _qchat_file_links_by_id.get(session_id) if session_id else None
-        if isinstance(state, dict) and state.get("closing") is not True:
-            if not state.get("peerIdentity") and peer_identity:
-                state["peerIdentity"] = peer_identity
-            state["last_used_at"] = now
-            state["activity_generation"] = int(
-                state.get("activity_generation") or 0
+        for slot in range(pool_size):
+            session_key = _resource_session_key(peer_key, session_lane, slot)
+            session_id = _resource_sessions_by_key.get(session_key)
+            state = _qchat_file_links_by_id.get(session_id) if session_id else None
+            if isinstance(state, dict) and state.get("closing") is not True:
+                existing_states.append(state)
+                continue
+            failure = _resource_session_failures_by_key.get(session_key)
+            backoff_until = float((failure or {}).get("backoff_until") or 0)
+            if backoff_until <= now:
+                available_slots.append(slot)
+
+        least_loaded = min(
+            existing_states,
+            key=lambda item: (
+                len(item.get("active_requests") or {})
+                + len(item.get("pending_jobs") or []),
+                int(item.get("sessionSlot") or 0),
+            ),
+            default=None,
+        )
+        least_loaded_count = (
+            len(least_loaded.get("active_requests") or {})
+            + len(least_loaded.get("pending_jobs") or [])
+            if isinstance(least_loaded, dict)
+            else 0
+        )
+        if isinstance(least_loaded, dict) and (
+            least_loaded_count == 0 or not available_slots
+        ):
+            if not least_loaded.get("peerIdentity") and peer_identity:
+                least_loaded["peerIdentity"] = peer_identity
+            least_loaded["last_used_at"] = now
+            least_loaded["activity_generation"] = int(
+                least_loaded.get("activity_generation") or 0
             ) + 1
-            return state, ""
-    if backoff_until > now:
+            return least_loaded, ""
+
+    if not available_slots:
         return None, "resource_session_backoff"
+    session_slot = available_slots[0]
+    session_key = _resource_session_key(peer_key, session_lane, session_slot)
     if not _resource_session_evict_idle_for_capacity():
+        if isinstance(least_loaded, dict):
+            return least_loaded, ""
         return None, "resource_session_capacity"
     session_id = str(uuid.uuid4())
     state = {
@@ -19134,6 +19204,7 @@ def _resource_session_get_or_create(
         "manager_kind": "resource_session",
         "sessionKey": session_key,
         "sessionLane": session_lane,
+        "sessionSlot": session_slot,
         "peerPresenceHash": peer_key,
         "peerDestinationHash": peer_key,
         "peerIdentity": peer_identity,

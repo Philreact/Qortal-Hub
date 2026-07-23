@@ -963,6 +963,7 @@ declare global {
           complete?: boolean;
           failed?: boolean;
           canceled?: boolean;
+          failureReason?: 'verification_failed';
         }) => void
       ) => () => void;
     };
