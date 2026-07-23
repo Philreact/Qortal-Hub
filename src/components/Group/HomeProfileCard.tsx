@@ -51,6 +51,7 @@ import { useTranslation } from 'react-i18next';
 import {
   blockedAddressesAtom,
   blockedNamesAtom,
+  disableDevLogsAtom,
   enabledDevModeAtom,
   rawWalletAtom,
   userInfoAtom,
@@ -221,6 +222,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const setOpenSnack = useSetAtom(openSnackGlobalAtom);
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
+  const [disableDevLogs, setDisableDevLogs] = useAtom(disableDevLogsAtom);
 
   const avatarAnchorRef = useRef<HTMLButtonElement | null>(null);
   const avatarPanelRef = useRef<HTMLDivElement | null>(null);
@@ -1024,6 +1026,30 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       }
     },
     [setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleDevLogFiltering = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = disableDevLogs;
+      setDisableDevLogs(checked);
+
+      try {
+        if (typeof window.electronAPI?.setDisableDevLogs === 'function') {
+          await window.electronAPI.setDisableDevLogs(checked);
+        }
+      } catch (error) {
+        setDisableDevLogs(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'dev_log_filter_update_error',
+            'We could not update developer log filtering right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [disableDevLogs, setDisableDevLogs, setInfoSnack, setOpenSnack, td]
   );
 
   const handleCloseActionChange = useCallback(
@@ -3733,6 +3759,55 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                           ))}
                         </Select>
                       </Box>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('filter_developer_logs', 'Filter Developer Logs')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'filter_developer_logs_desc',
+                            'Turn on to hide verbose main-process logs while keeping warnings and errors visible.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={disableDevLogs}
+                        onChange={handleToggleDevLogFiltering}
+                        sx={settingsSwitchSx}
+                      />
                     </Box>
 
                     <Box

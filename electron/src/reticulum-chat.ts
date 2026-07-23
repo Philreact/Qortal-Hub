@@ -76,7 +76,11 @@ import type {
   ReticulumSendFailureReason,
   ReticulumSendResult,
 } from './reticulum-bridge';
-import { log as loggerLog, warn as loggerWarn } from './logger';
+import {
+  info as loggerInfo,
+  log as loggerLog,
+  warn as loggerWarn,
+} from './logger';
 import {
   byteLengthUtf8JsonWithBridgeSender,
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
@@ -1539,10 +1543,7 @@ function publicActivityAuthorRank(hash: Buffer): number {
 function addPublicActivityAuthor(sketch: Uint8Array, address: string): void {
   const hash = nodeCrypto.createHash('sha256').update(address, 'utf8').digest();
   const register = hash[0] & (RETICULUM_PUBLIC_ACTIVITY_HLL_REGISTERS - 1);
-  sketch[register] = Math.max(
-    sketch[register],
-    publicActivityAuthorRank(hash)
-  );
+  sketch[register] = Math.max(sketch[register], publicActivityAuthorRank(hash));
 }
 
 function estimatePublicActivityAuthors(sketch: Uint8Array): number {
@@ -1578,9 +1579,7 @@ export function parseReticulumPublicGroupActivityState(
         bucket: Math.floor(Number(slot?.bucket)),
         count: Math.max(0, Math.floor(Number(slot?.count) || 0)),
       }))
-      .filter(
-        (slot) => Number.isFinite(slot.bucket) && slot.count > 0
-      );
+      .filter((slot) => Number.isFinite(slot.bucket) && slot.count > 0);
     const days = (Array.isArray(parsed.days) ? parsed.days : [])
       .map((slot: any) => ({
         bucket: Math.floor(Number(slot?.bucket)),
@@ -1589,9 +1588,7 @@ export function parseReticulumPublicGroupActivityState(
           decodePublicActivityAuthorSketch(slot?.authors)
         ),
       }))
-      .filter(
-        (slot) => Number.isFinite(slot.bucket) && slot.count > 0
-      );
+      .filter((slot) => Number.isFinite(slot.bucket) && slot.count > 0);
     return { v: 1, hours, days };
   } catch {
     return createReticulumPublicGroupActivityState();
@@ -1663,10 +1660,7 @@ export function summarizeReticulumPublicGroupActivity(
     (total, slot) => total + slot.count,
     0
   );
-  const messages7d = state.days.reduce(
-    (total, slot) => total + slot.count,
-    0
-  );
+  const messages7d = state.days.reduce((total, slot) => total + slot.count, 0);
   const authors = emptyPublicActivityAuthorSketch();
   for (const day of state.days) {
     const sketch = decodePublicActivityAuthorSketch(day.authors);
@@ -1713,7 +1707,11 @@ const RETICULUM_LAND_STATE_SEQUENCE_MAX = 4096;
 const RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS = 30_000;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 2 * 60_000;
 const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MS = [
-  5_000, 15_000, 30_000, 60_000, 5 * 60_000,
+  5_000,
+  15_000,
+  30_000,
+  60_000,
+  5 * 60_000,
 ] as const;
 const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MAX = 4096;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
@@ -5100,8 +5098,9 @@ export class ReticulumChatManager extends EventEmitter {
     ReticulumPublicGroupActivityPendingRequest
   >();
   private publicGroupActivityServedAt = new Map<string, number>();
-  private publicGroupActivityRefreshTimer: ReturnType<typeof setTimeout> | null =
-    null;
+  private publicGroupActivityRefreshTimer: ReturnType<
+    typeof setTimeout
+  > | null = null;
   private publicGroupActivityRefreshDueAt = 0;
   private publicGroupActivityFlushTimer: ReturnType<typeof setTimeout> | null =
     null;
@@ -6533,8 +6532,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.clearSubscriptionFanoutQueue();
     }
     if (
-      nextGroupIds.length <=
-      RETICULUM_CHAT_MEMBERSHIP_SYNCHRONOUS_GROUP_LIMIT
+      nextGroupIds.length <= RETICULUM_CHAT_MEMBERSHIP_SYNCHRONOUS_GROUP_LIMIT
     ) {
       const initializingIds = new Set(groupsRequiringInitialization);
       this.membershipInitializationQueue =
@@ -6617,9 +6615,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.publicGroupDirectoryIds = new Set(
       (Array.isArray(groupIds) ? groupIds : [])
         .map((groupId) => Number(groupId))
-        .filter(
-          (groupId) => Number.isInteger(groupId) && groupId > 0
-        )
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
     );
     for (const groupId of this.publicGroupActivitySamples.keys()) {
       if (!this.isKnownPublicGroup(groupId)) {
@@ -6793,8 +6789,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     return [...byGroup.values()]
       .filter(
-        (summary) =>
-          summary.messages7d > 0 || summary.activeAuthors7d > 0
+        (summary) => summary.messages7d > 0 || summary.activeAuthors7d > 0
       )
       .sort(
         (a, b) =>
@@ -6804,7 +6799,10 @@ export class ReticulumChatManager extends EventEmitter {
           b.observedAt - a.observedAt ||
           a.groupId - b.groupId
       )
-      .slice(0, Math.max(1, Math.min(RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX, limit)));
+      .slice(
+        0,
+        Math.max(1, Math.min(RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX, limit))
+      );
   }
 
   private buildLocalPublicGroupActivityTop(
@@ -6817,8 +6815,7 @@ export class ReticulumChatManager extends EventEmitter {
         summarizeReticulumPublicGroupActivity(groupId, state, now)
       )
       .filter(
-        (summary) =>
-          summary.messages7d > 0 || summary.activeAuthors7d > 0
+        (summary) => summary.messages7d > 0 || summary.activeAuthors7d > 0
       )
       .sort(
         (a, b) =>
@@ -6827,7 +6824,10 @@ export class ReticulumChatManager extends EventEmitter {
           b.messages7d - a.messages7d ||
           a.groupId - b.groupId
       )
-      .slice(0, Math.max(1, Math.min(RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT, limit)));
+      .slice(
+        0,
+        Math.max(1, Math.min(RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT, limit))
+      );
   }
 
   private schedulePublicActivityRefresh(delayMs: number): void {
@@ -6853,7 +6853,8 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private prunePublicGroupActivityRuntime(now = this.now()): void {
-    for (const [requestId, request] of this.publicGroupActivityPendingRequests) {
+    for (const [requestId, request] of this
+      .publicGroupActivityPendingRequests) {
       if (request.expiresAt <= now) {
         this.publicGroupActivityPendingRequests.delete(requestId);
       }
@@ -6870,8 +6871,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (samples.size === 0) this.publicGroupActivitySamples.delete(groupId);
     }
     while (
-      this.publicGroupActivitySamples.size >
-      RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
+      this.publicGroupActivitySamples.size > RETICULUM_PUBLIC_ACTIVITY_CACHE_MAX
     ) {
       const oldest = [...this.publicGroupActivitySamples.entries()].sort(
         (a, b) =>
@@ -6905,9 +6905,7 @@ export class ReticulumChatManager extends EventEmitter {
         .map((peer) => peer.destinationHash.trim().toLowerCase())
         .filter((peer) => peer && !seen.has(peer) && seen.add(peer));
       if (peers.length === 0) {
-        this.schedulePublicActivityRefresh(
-          RETICULUM_PUBLIC_ACTIVITY_RETRY_MS
-        );
+        this.schedulePublicActivityRefresh(RETICULUM_PUBLIC_ACTIVITY_RETRY_MS);
         return;
       }
       const selected: string[] = [];
@@ -6929,14 +6927,12 @@ export class ReticulumChatManager extends EventEmitter {
       };
       this.publicGroupActivityPendingRequests.set(requestId, pending);
       this.publicGroupActivityLastRequestedAt = now;
-      const wire: Extract<
-        ReticulumChatWire,
-        { k: 'public_activity_req_v1' }
-      > = {
-        t: 'RCHAT',
-        k: 'public_activity_req_v1',
-        q: requestId,
-      };
+      const wire: Extract<ReticulumChatWire, { k: 'public_activity_req_v1' }> =
+        {
+          t: 'RCHAT',
+          k: 'public_activity_req_v1',
+          q: requestId,
+        };
       const results = await Promise.all(
         selected.map(async (peer) => ({
           peer,
@@ -6968,24 +6964,20 @@ export class ReticulumChatManager extends EventEmitter {
     if (!/^[0-9a-f]{16}$/.test(requestId) || !peerHash) return;
     const now = this.now();
     const lastServedAt = this.publicGroupActivityServedAt.get(peerHash) ?? 0;
-    if (
-      now - lastServedAt < RETICULUM_PUBLIC_ACTIVITY_SERVE_THROTTLE_MS
-    ) {
+    if (now - lastServedAt < RETICULUM_PUBLIC_ACTIVITY_SERVE_THROTTLE_MS) {
       return;
     }
     this.publicGroupActivityServedAt.set(peerHash, now);
     const entries: ReticulumPublicGroupActivityEntryWire[] =
       this.buildLocalPublicGroupActivityTop(
         RETICULUM_PUBLIC_ACTIVITY_TOP_LIMIT
-      ).map(
-        (summary) => [
-          summary.groupId,
-          summary.messages24h,
-          summary.messages7d,
-          summary.activeAuthors7d,
-          summary.observedAt,
-        ]
-      );
+      ).map((summary) => [
+        summary.groupId,
+        summary.messages24h,
+        summary.messages7d,
+        summary.activeAuthors7d,
+        summary.observedAt,
+      ]);
     const response: Extract<
       ReticulumChatWire,
       { k: 'public_activity_top_v1' }
@@ -7091,9 +7083,7 @@ export class ReticulumChatManager extends EventEmitter {
     now: number
   ): ReticulumPublicGroupActivitySummary | null {
     const summaries = [
-      ...(
-        this.publicGroupActivitySamples.get(groupId)?.values() ?? []
-      ),
+      ...(this.publicGroupActivitySamples.get(groupId)?.values() ?? []),
     ]
       .filter((sample) => sample.expiresAt > now)
       .map((sample) => sample.summary);
@@ -7108,9 +7098,7 @@ export class ReticulumChatManager extends EventEmitter {
       const sorted = [...values].sort((a, b) => a - b);
       return sorted[Math.floor((sorted.length - 1) / 2)];
     };
-    const messages7d = median(
-      summaries.map((summary) => summary.messages7d)
-    );
+    const messages7d = median(summaries.map((summary) => summary.messages7d));
     return {
       groupId,
       messages24h: Math.min(
@@ -7122,9 +7110,7 @@ export class ReticulumChatManager extends EventEmitter {
         messages7d,
         median(summaries.map((summary) => summary.activeAuthors7d))
       ),
-      observedAt: Math.max(
-        ...summaries.map((summary) => summary.observedAt)
-      ),
+      observedAt: Math.max(...summaries.map((summary) => summary.observedAt)),
       confidence: Math.min(
         RETICULUM_PUBLIC_ACTIVITY_SAMPLE_PEERS,
         summaries.length
@@ -7244,7 +7230,10 @@ export class ReticulumChatManager extends EventEmitter {
     const normalizedDuration =
       durationMs == null
         ? null
-        : Math.max(60_000, Math.min(30 * 24 * 60 * 60 * 1000, Math.floor(durationMs)));
+        : Math.max(
+            60_000,
+            Math.min(30 * 24 * 60 * 60 * 1000, Math.floor(durationMs))
+          );
     const record = this.db.setSilence(
       context.ownerAddress,
       context.targetAddress,
@@ -7292,14 +7281,12 @@ export class ReticulumChatManager extends EventEmitter {
     targetAddress: string,
     scopeType: ReticulumChatSilenceScope,
     groupId?: number
-  ):
-    | {
-        ownerAddress: string;
-        targetAddress: string;
-        scopeType: ReticulumChatSilenceScope;
-        scopeId: string;
-      }
-    | null {
+  ): {
+    ownerAddress: string;
+    targetAddress: string;
+    scopeType: ReticulumChatSilenceScope;
+    scopeId: string;
+  } | null {
     const owner = String(ownerAddress || '').trim();
     const target = String(targetAddress || '').trim();
     if (!target) return null;
@@ -7391,11 +7378,7 @@ export class ReticulumChatManager extends EventEmitter {
     const now = this.now();
     let nextExpiry = Number.POSITIVE_INFINITY;
     for (const record of this.silenceCache.values()) {
-      if (
-        !record ||
-        record.expiresAt == null ||
-        record.expiresAt <= now
-      ) {
+      if (!record || record.expiresAt == null || record.expiresAt <= now) {
         continue;
       }
       nextExpiry = Math.min(nextExpiry, record.expiresAt);
@@ -7409,10 +7392,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.silenceExpiryTimer && this.silenceExpiryAt === nextExpiry) return;
     if (this.silenceExpiryTimer) clearTimeout(this.silenceExpiryTimer);
     this.silenceExpiryAt = nextExpiry;
-    const delay = Math.max(
-      1,
-      Math.min(2_147_483_647, nextExpiry - now)
-    );
+    const delay = Math.max(1, Math.min(2_147_483_647, nextExpiry - now));
     this.silenceExpiryTimer = setTimeout(() => {
       this.silenceExpiryTimer = null;
       this.silenceExpiryAt = 0;
@@ -8443,7 +8423,8 @@ export class ReticulumChatManager extends EventEmitter {
   ): boolean {
     const now = this.now();
     const recent = (map.get(key) ?? []).filter(
-      (timestamp) => timestamp > now - RETICULUM_LAND_SOCIAL_ACTION_RATE_WINDOW_MS
+      (timestamp) =>
+        timestamp > now - RETICULUM_LAND_SOCIAL_ACTION_RATE_WINDOW_MS
     );
     if (
       recent.length >= RETICULUM_LAND_SOCIAL_ACTION_RATE_MAX ||
@@ -8586,8 +8567,7 @@ export class ReticulumChatManager extends EventEmitter {
       throw new Error('QortalLand action signing unavailable');
     }
     const timestamp = this.now();
-    const normalizedAmount =
-      0;
+    const normalizedAmount = 0;
     const compactActionId = compactLandActionIdForWire(actionId);
     const signature = signEd25519Detached(
       new Uint8Array(
@@ -9088,17 +9068,17 @@ export class ReticulumChatManager extends EventEmitter {
       safeLimit,
       options,
       silencedAuthors
-    )
-      .filter(
-        (event) =>
-          canReadChannel(event.channelId) &&
-          (CHANNEL_METADATA_EVENT_TYPES.has(event.eventType) ||
-            !silencedAuthorSet.has(event.authorAddress))
-      );
-    const events = (options.afterTimestamp != null
-      ? visibleEvents.slice(0, safeLimit)
-      : visibleEvents.slice(-safeLimit))
-      .map((event) => this.eventForRenderer(event));
+    ).filter(
+      (event) =>
+        canReadChannel(event.channelId) &&
+        (CHANNEL_METADATA_EVENT_TYPES.has(event.eventType) ||
+          !silencedAuthorSet.has(event.authorAddress))
+    );
+    const events = (
+      options.afterTimestamp != null
+        ? visibleEvents.slice(0, safeLimit)
+        : visibleEvents.slice(-safeLimit)
+    ).map((event) => this.eventForRenderer(event));
     this.requestNetworkHistoryForRead(
       groupId,
       channelId,
@@ -9173,7 +9153,8 @@ export class ReticulumChatManager extends EventEmitter {
   ): ReticulumChatEvent[] {
     this.assertLocalGroupMember(groupId);
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
-    if (!this.localChannelReadPredicate(groupId)(normalizedChannelId)) return [];
+    if (!this.localChannelReadPredicate(groupId)(normalizedChannelId))
+      return [];
     const localAddress = this.localGroupAddresses.get(groupId) || '';
     return this.db
       .getDiscussionMessages(
@@ -9223,12 +9204,14 @@ export class ReticulumChatManager extends EventEmitter {
       localAddress === event.senderAddress
         ? event.recipientAddress
         : event.senderAddress;
-    return this.isAuthorSilenced(
-      localAddress,
-      peerAddress,
-      'dm',
-      event.conversationId
-    ) && event.senderAddress === peerAddress;
+    return (
+      this.isAuthorSilenced(
+        localAddress,
+        peerAddress,
+        'dm',
+        event.conversationId
+      ) && event.senderAddress === peerAddress
+    );
   }
 
   private emitDirectEventIfVisible(event: ReticulumDmEvent): void {
@@ -9665,8 +9648,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (
       events.some(
         (event) =>
-          event.eventId === eventId &&
-          silencedAuthors.has(event.authorAddress)
+          event.eventId === eventId && silencedAuthors.has(event.authorAddress)
       )
     ) {
       return [];
@@ -12742,26 +12724,25 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (this.bridge && linkedSessionReady) {
       try {
-        const accepted =
-          await this.bridge.acceptReticulumChatResourceDetailed({
-            peerPresenceHash: source,
-            reticulumIdentityPublicKeyBase64: linkedIdentity,
+        const accepted = await this.bridge.acceptReticulumChatResourceDetailed({
+          peerPresenceHash: source,
+          reticulumIdentityPublicKeyBase64: linkedIdentity,
+          transferId,
+          savePath: this.tempEventBlobPath(`${transferId}.dm-page.recv`),
+          fileName: `${transferId}.dm-page.json`,
+          size: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
+          metadata: {
+            resourceType: 'reticulum_chat_event',
+            logicalResourceType: 'reticulum_chat_dm_page',
+            conversationId,
+            variableSize: true,
+          },
+          authMessage: {
+            type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
             transferId,
-            savePath: this.tempEventBlobPath(`${transferId}.dm-page.recv`),
-            fileName: `${transferId}.dm-page.json`,
-            size: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
-            metadata: {
-              resourceType: 'reticulum_chat_event',
-              logicalResourceType: 'reticulum_chat_dm_page',
-              conversationId,
-              variableSize: true,
-            },
-            authMessage: {
-              type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
-              transferId,
-              ...request.q,
-            },
-          });
+            ...request.q,
+          },
+        });
         if (accepted.ok) {
           if (RETICULUM_CHAT_TRACE) {
             loggerLog(
@@ -18918,9 +18899,7 @@ export class ReticulumChatManager extends EventEmitter {
     return publicSnapshot;
   }
 
-  private async getPublicMetadataSnapshotForSend(
-    groupId: number
-  ): Promise<{
+  private async getPublicMetadataSnapshotForSend(groupId: number): Promise<{
     snapshot: ReticulumChatMetadataSnapshotRecord;
     fullSnapshot?: ReticulumChatMetadataSnapshotRecord;
   } | null> {
@@ -18967,7 +18946,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.metadataSnapshotHasAdminPrivateChannels(snapshot) ||
       !wireFitsReticulum(wire)
     ) {
-      loggerWarn(
+      loggerInfo(
         `[ReticulumChat] metadata_snapshot_offer_too_large group=${groupId} peer=${peer.slice(0, 16)} bytes=${Buffer.byteLength(JSON.stringify(wire), 'utf8')} context=${reason}`
       );
       await this.sendMetadataSnapshotResourceToPeer(
@@ -19276,9 +19255,12 @@ export class ReticulumChatManager extends EventEmitter {
       'metadata_snapshot_request'
     );
     if (requesterIsMember !== true) {
-      loggerWarn(
-        `[ReticulumChat] metadata_snapshot_request_ignored group=${groupId} peer=${peerHash.slice(0, 16)} reason=${requesterIsMember === null ? 'membership_unavailable' : 'requester_not_member'}`
-      );
+      const message = `[ReticulumChat] metadata_snapshot_request_ignored group=${groupId} peer=${peerHash.slice(0, 16)} reason=${requesterIsMember === null ? 'membership_unavailable' : 'requester_not_member'}`;
+      if (requesterIsMember === null) {
+        loggerWarn(message);
+      } else {
+        loggerInfo(message);
+      }
       return;
     }
     const requestedHash =
@@ -19292,7 +19274,7 @@ export class ReticulumChatManager extends EventEmitter {
       snapshot.scope === 'full' &&
       !(await this.isValidatedGroupAdmin(groupId, requesterAddress))
     ) {
-      loggerWarn(
+      loggerInfo(
         `[ReticulumChat] metadata_snapshot_request_ignored group=${groupId} peer=${peerHash.slice(0, 16)} reason=full_snapshot_admin_required requester=${requesterAddress}`
       );
       return;
@@ -19308,7 +19290,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.metadataSnapshotHasAdminPrivateChannels(snapshot) ||
       !wireFitsReticulum(response)
     ) {
-      loggerWarn(
+      loggerInfo(
         `[ReticulumChat] metadata_snapshot_offer_too_large group=${groupId} peer=${peerHash.slice(0, 16)} bytes=${Buffer.byteLength(JSON.stringify(response), 'utf8')} context=request`
       );
       await this.sendMetadataSnapshotResourceToPeer(
@@ -25873,8 +25855,9 @@ export class ReticulumChatManager extends EventEmitter {
     const isDirectHistoryPageRequest = this.directHistoryPageRequests.has(
       payload.transferId
     );
-    const directHistoryPageRequestKey =
-      this.directHistoryPageTransferKeys.get(payload.transferId);
+    const directHistoryPageRequestKey = this.directHistoryPageTransferKeys.get(
+      payload.transferId
+    );
     const offer =
       this.eventPageOffers.get(payload.transferId) ??
       this.directHistoryPageRequests.get(payload.transferId);
@@ -25925,9 +25908,7 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       }
       if (directHistoryPageRequestKey) {
-        this.clearDirectHistoryPageRequestBackoff(
-          directHistoryPageRequestKey
-        );
+        this.clearDirectHistoryPageRequestBackoff(directHistoryPageRequestKey);
       }
       applyStartedAt = Date.now();
       const sourcePeerHash =
