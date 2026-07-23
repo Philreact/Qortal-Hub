@@ -24,8 +24,10 @@ import { dirname, join } from 'path';
 import { pipeline } from 'stream/promises';
 import { pathToFileURL } from 'url';
 import {
+  DEV_LOGS_DISABLED_STORAGE_KEY,
   log as loggerLog,
   error as loggerError,
+  setDisableDevLogs,
   warn as loggerWarn,
 } from './logger';
 import {
@@ -1651,6 +1653,15 @@ const miscPersistentStore = createPersistentJsonStore(
   'misc persistent store'
 );
 
+void persistentStore
+  .get(DEV_LOGS_DISABLED_STORAGE_KEY)
+  .then((value) => {
+    setDisableDevLogs(value === false ? false : true);
+  })
+  .catch((err) => {
+    loggerError('Error loading dev log setting from persistent store', err);
+  });
+
 export function flushPersistentStore(): void {
   persistentStore.flush();
 }
@@ -1667,11 +1678,24 @@ ipcMain.handle(
   'persistentStore:set',
   async (_event, key: string, value: unknown) => {
     await persistentStore.set(key, value);
+    if (key === DEV_LOGS_DISABLED_STORAGE_KEY) {
+      setDisableDevLogs(value === false ? false : true);
+    }
   }
 );
 
 ipcMain.handle('persistentStore:delete', async (_event, key: string) => {
   await persistentStore.deleteKey(key);
+  if (key === DEV_LOGS_DISABLED_STORAGE_KEY) {
+    setDisableDevLogs(true);
+  }
+});
+
+ipcMain.handle('logger:setDisableDevLogs', async (_event, value: boolean) => {
+  const next = value === false ? false : true;
+  setDisableDevLogs(next);
+  await persistentStore.set(DEV_LOGS_DISABLED_STORAGE_KEY, next);
+  return next;
 });
 
 ipcMain.handle('miscPersistentStore:get', async (_event, key: string) =>

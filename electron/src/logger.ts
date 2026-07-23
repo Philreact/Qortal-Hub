@@ -18,7 +18,13 @@ const nodeRequire = createRequire(__filename);
 
 const noop = (..._args: unknown[]) => {};
 
-export const DISABLE_DEV_LOGS = false;
+export const DEV_LOGS_DISABLED_STORAGE_KEY = 'qortal_disable_dev_logs';
+
+let disableDevLogs = true;
+
+export function setDisableDevLogs(value: boolean): void {
+  disableDevLogs = value;
+}
 
 const IMPORTANT_LOG_PATTERNS = [
   /\bfailed\b/i,
@@ -48,7 +54,7 @@ function shouldEmitLog(
 ): boolean {
   if (method === 'error' || method === 'warn') return true;
   if (process.type !== 'browser') return true;
-  if (!DISABLE_DEV_LOGS) return true;
+  if (!disableDevLogs) return true;
   return isImportantLog(args);
 }
 

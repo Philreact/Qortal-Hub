@@ -58,6 +58,8 @@ export const ELECTRON_PERSISTENT_ATOM_KEYS = {
   callAudioDevices: 'qortal_call_audio_devices',
   /** DM friends by address (see dmFriendsByAddressAtom). */
   dmFriends: 'qortal_dm_friends',
+  /** Main-process dev-log filtering preference. */
+  disableDevLogs: 'qortal_disable_dev_logs',
 } as const;
 
 /** Populate in-memory cache from appStorage (call once when app mounts in Electron). */

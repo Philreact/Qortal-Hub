@@ -92,6 +92,7 @@ declare global {
         measuredAt: number;
       }>;
       showAppMenu?: (x?: number, y?: number) => void;
+      setDisableDevLogs?: (value: boolean) => Promise<boolean>;
       getAppSettings?: () => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;

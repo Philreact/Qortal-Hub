@@ -189,6 +189,12 @@ export const chatWidgetClosedAtom = atomWithStorage<boolean>(
   false
 );
 
+export const disableDevLogsAtom = atomWithStorage<boolean>(
+  'qortal_disable_dev_logs',
+  true,
+  electronStorage as any
+);
+
 /** Persisted: global chat widget position and size. Saved only on drag/resize end. */
 export const globalChatWidgetBoundsAtom = atomWithStorage<{
   x: number;

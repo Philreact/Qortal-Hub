@@ -438,6 +438,8 @@ try {
     showAppMenu: (x?: number, y?: number) =>
       ipcRenderer.invoke('window:showAppMenu', { x, y }),
     getAppSettings: () => ipcRenderer.invoke('appSettings:get'),
+    setDisableDevLogs: (value: boolean) =>
+      ipcRenderer.invoke('logger:setDisableDevLogs', value),
     setAppSettings: (settings: {
       closeAction?: 'ask' | 'minimizeToTray' | 'quit';
       disableStartupSound?: boolean;

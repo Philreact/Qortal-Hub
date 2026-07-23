@@ -32,6 +32,7 @@ import { ChangeEvent, Fragment, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
 import {
+  disableDevLogsAtom,
   enabledDevModeAtom,
   infoSnackGlobalAtom,
   openSnackGlobalAtom,
@@ -158,6 +159,7 @@ function formatElapsedDuration(connectedAt: number, now: number): string {
 export const Settings = ({ open, setOpen, rawWallet }) => {
   const [checked, setChecked] = useState(false);
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
+  const [disableDevLogs, setDisableDevLogs] = useAtom(disableDevLogsAtom);
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
@@ -382,6 +384,32 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
     }
   }, []);
 
+  const handleDisableDevLogsChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const next = event.target.checked;
+      const previous = disableDevLogs;
+      setDisableDevLogs(next);
+      try {
+        if (typeof window.electronAPI?.setDisableDevLogs === 'function') {
+          await window.electronAPI.setDisableDevLogs(next);
+        }
+      } catch {
+        setDisableDevLogs(previous);
+        setInfoSnackCustom({
+          type: 'error',
+          message: 'Could not update developer log setting.',
+        });
+        setOpenSnackGlobal(true);
+      }
+    },
+    [
+      disableDevLogs,
+      setDisableDevLogs,
+      setInfoSnackCustom,
+      setOpenSnackGlobal,
+    ]
+  );
+
   const handleReticulumManagedConfigChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const enabled = event.target.checked;
@@ -539,6 +567,32 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                         JSON.stringify(e.target.checked)
                       );
                     }}
+                  />
+                </Box>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 2,
+                    px: 2,
+                    py: 1.25,
+                    borderBottom: 1,
+                    borderColor: 'divider',
+                  }}
+                >
+                  <Box>
+                    <Typography variant="body2" color="text.secondary">
+                      Filter developer logs
+                    </Typography>
+                    <Typography variant="caption" color="text.disabled">
+                      Hide verbose main-process logs while keeping warnings and
+                      errors visible.
+                    </Typography>
+                  </Box>
+                  <LocalNodeSwitch
+                    checked={disableDevLogs}
+                    onChange={handleDisableDevLogsChange}
                   />
                 </Box>
                 {!isDisabledLegacy && (

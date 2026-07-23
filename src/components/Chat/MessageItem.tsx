@@ -84,10 +84,40 @@ const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
 const RETICULUM_IMAGE_REQUEST_BACKOFF_MS = 30_000;
 const RETICULUM_IMAGE_REQUEST_TRACK_LIMIT = 500;
+const RETICULUM_INLINE_IMAGE_MAX_WIDTH = 640;
+const RETICULUM_INLINE_IMAGE_MAX_HEIGHT = 360;
+const RETICULUM_INLINE_IMAGE_FALLBACK_WIDTH = 480;
+const RETICULUM_INLINE_IMAGE_FALLBACK_ASPECT_RATIO = '4 / 3';
 
 const reticulumImageResourceRequestTimes = new Map<string, number>();
 const reticulumMintershipCache = new Map<string, boolean>();
 const reticulumMintershipRequests = new Map<string, Promise<boolean>>();
+
+function getReticulumInlineImageDisplaySize(
+  width: number | null,
+  height: number | null
+): { width: number; height: number; aspectRatio: string } {
+  if (!width || !height) {
+    return {
+      width: RETICULUM_INLINE_IMAGE_FALLBACK_WIDTH,
+      height: Math.round(RETICULUM_INLINE_IMAGE_FALLBACK_WIDTH * 0.75),
+      aspectRatio: RETICULUM_INLINE_IMAGE_FALLBACK_ASPECT_RATIO,
+    };
+  }
+
+  const scale = Math.min(
+    1,
+    RETICULUM_INLINE_IMAGE_MAX_WIDTH / width,
+    RETICULUM_INLINE_IMAGE_MAX_HEIGHT / height
+  );
+  const displayWidth = Math.max(1, Math.round(width * scale));
+  const displayHeight = Math.max(1, Math.round(height * scale));
+  return {
+    width: displayWidth,
+    height: displayHeight,
+    aspectRatio: `${displayWidth} / ${displayHeight}`,
+  };
+}
 
 const getReticulumMintership = (address: string): Promise<boolean> => {
   const normalizedAddress = address.trim();
@@ -608,7 +638,7 @@ export const MessageItemComponent = ({
     isReticulumResourceImage && !shouldAutoDownloadReticulumImage
       ? imageResourceManifest
       : null;
-  const imageResourceWidth = (() => {
+  const imageResourceMetadataWidth = (() => {
     const direct = Number(imageResourceManifest?.width);
     const metadata = Number(
       (imageResourceManifest?.metadata as Record<string, unknown> | undefined)?.width
@@ -616,7 +646,7 @@ export const MessageItemComponent = ({
     const value = Number.isFinite(direct) && direct > 0 ? direct : metadata;
     return Number.isFinite(value) && value > 0 ? value : null;
   })();
-  const imageResourceHeight = (() => {
+  const imageResourceMetadataHeight = (() => {
     const direct = Number(imageResourceManifest?.height);
     const metadata = Number(
       (imageResourceManifest?.metadata as Record<string, unknown> | undefined)?.height
@@ -624,20 +654,21 @@ export const MessageItemComponent = ({
     const value = Number.isFinite(direct) && direct > 0 ? direct : metadata;
     return Number.isFinite(value) && value > 0 ? value : null;
   })();
+  const [loadedResourceImageSize, setLoadedResourceImageSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const imageResourceWidth =
+    loadedResourceImageSize?.width ?? imageResourceMetadataWidth;
+  const imageResourceHeight =
+    loadedResourceImageSize?.height ?? imageResourceMetadataHeight;
+  const imageResourceDisplaySize = getReticulumInlineImageDisplaySize(
+    imageResourceWidth,
+    imageResourceHeight
+  );
   const imageResourceAspectRatio =
-    imageResourceWidth && imageResourceHeight
-      ? `${imageResourceWidth} / ${imageResourceHeight}`
-      : '4 / 3';
-  const imageResourceDisplayMaxWidth =
-    imageResourceWidth && imageResourceHeight
-      ? Math.min(
-          640,
-          Math.max(
-            160,
-            Math.round(360 * (imageResourceWidth / imageResourceHeight))
-          )
-        )
-      : 480;
+    imageResourceDisplaySize.aspectRatio;
+  const imageResourceDisplayWidth = imageResourceDisplaySize.width;
   const reticulumFileAttachment =
     isReticulumMessageWithResources && Array.isArray(message?.attachments)
       ? message.attachments.find(
@@ -730,6 +761,9 @@ export const MessageItemComponent = ({
   const [reticulumImageViewerContainer, setReticulumImageViewerContainer] =
     useState<HTMLElement | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
+  useEffect(() => {
+    setLoadedResourceImageSize(null);
+  }, [imageResourceId]);
   const reticulumImageFileName =
     typeof imageResourceManifest?.fileName === 'string' &&
     imageResourceManifest.fileName.trim()
@@ -2541,7 +2575,7 @@ export const MessageItemComponent = ({
                     isolation: 'isolate',
                     margin: '8px 0 0',
                     overflow: 'hidden',
-                    width: `min(100%, ${imageResourceDisplayMaxWidth}px)`,
+                    width: `min(100%, ${imageResourceDisplayWidth}px)`,
                   }}
                 >
                   <Box
@@ -2563,6 +2597,23 @@ export const MessageItemComponent = ({
                       if (!isReticulumResourceImage || !localResourceImageUrl) return;
                       setLocalResourceImageUrl(null);
                       setResourceReloadNonce((value) => value + 1);
+                    }}
+                    onLoad={(event) => {
+                      const width = Number(event.currentTarget.naturalWidth || 0);
+                      const height = Number(event.currentTarget.naturalHeight || 0);
+                      if (
+                        !Number.isFinite(width) ||
+                        !Number.isFinite(height) ||
+                        width <= 0 ||
+                        height <= 0
+                      ) {
+                        return;
+                      }
+                      setLoadedResourceImageSize((previous) =>
+                        previous?.width === width && previous?.height === height
+                          ? previous
+                          : { width, height }
+                      );
                     }}
                     sx={{
                       cursor: canOpenReticulumImage ? 'pointer' : 'default',
@@ -2592,7 +2643,7 @@ export const MessageItemComponent = ({
                     minHeight: 96,
                     overflow: 'hidden',
                     position: 'relative',
-                    width: `min(100%, ${imageResourceDisplayMaxWidth}px)`,
+                    width: `min(100%, ${imageResourceDisplayWidth}px)`,
                   }}
                 >
                   <Typography sx={{ fontSize: '13px' }}>
