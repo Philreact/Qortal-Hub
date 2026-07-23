@@ -148,6 +148,7 @@ const mergeEvents = (prev: ReticulumDmEvent[], incoming: ReticulumDmEvent[]) => 
 export function useReticulumDirectChat(myAddress?: string, peerAddress?: string) {
   const [enabled, setEnabled] = useState(false);
   const [events, setEvents] = useState<ReticulumDmEvent[]>([]);
+  const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState('');
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const pendingRef = useRef<ReticulumDmEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -157,6 +158,7 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
   const visibilityRevisionRef = useRef(0);
 
   const valid = Boolean(myAddress && peerAddress);
+  const activeHistoryKey = valid ? `${myAddress}:${peerAddress}` : '';
   const messages = useMemo(() => events.map(reticulumDmEventToChatMessage), [events]);
 
   const flushPending = useCallback(() => {
@@ -240,8 +242,18 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
             visibilityRevisionRef.current === historyVisibilityRevision
           ) {
             setEvents(enriched);
+            setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
           }
         });
+      })
+      .catch(() => {
+        if (
+          !cancelled &&
+          activeConversationGenerationRef.current === generation
+        ) {
+          setEvents([]);
+          setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
+        }
       });
     const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
       const candidate = event as ReticulumDmEvent;
@@ -473,6 +485,8 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
   return {
     enabled,
     events,
+    initialHistoryReady:
+      activeHistoryKey !== '' && loadedInitialHistoryKey === activeHistoryKey,
     messages,
     typingUsers,
     publish,

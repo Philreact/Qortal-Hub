@@ -110,6 +110,7 @@ export function useReticulumGroupChat(
   const [events, setEvents] = useState<unknown[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlder, setHasOlder] = useState(false);
+  const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState('');
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   const eventsRef = useRef<unknown[]>([]);
   const activeChatKeyRef = useRef('');
@@ -284,9 +285,13 @@ export function useReticulumGroupChat(
         setHasOlder(historyEvents.length > 0);
         mergeEvents(historyEvents, expectedChatKey);
         void enrichVisibleEvents(historyEvents, expectedChatKey);
+        setLoadedInitialHistoryKey(expectedChatKey);
       })
       .catch(() => {
-        if (!cancelled) setHasOlder(false);
+        if (!cancelled) {
+          setHasOlder(false);
+          setLoadedInitialHistoryKey(expectedChatKey);
+        }
       });
 
     const offEvent = window.reticulumChat?.onEvent?.((payload) => {
@@ -578,6 +583,8 @@ export function useReticulumGroupChat(
     enabled,
     events,
     hasOlder,
+    initialHistoryReady:
+      activeChatKey !== '' && loadedInitialHistoryKey === activeChatKey,
     loadingOlder,
     loadOlder,
     typing,

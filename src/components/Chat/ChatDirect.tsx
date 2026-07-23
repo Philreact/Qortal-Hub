@@ -437,6 +437,7 @@ export const ChatDirect = ({
   const {
     enabled: reticulumDirectEnabled,
     messages: reticulumDirectMessages,
+    initialHistoryReady: reticulumDirectInitialHistoryReady,
     typingUsers: reticulumDirectTypingUsers,
     publish: publishReticulumDirectEvent,
     markRead: markReticulumDirectRead,
@@ -2746,6 +2747,11 @@ export const ChatDirect = ({
         }}
       >
         <ChatList
+          key={
+            reticulumDirectUiEnabled
+              ? `reticulum-direct:${selectedDirect?.address || ''}`
+              : 'legacy-direct-chat'
+          }
           chatReferences={chatReferences}
           handleReaction={handleReaction}
           onEdit={onEdit}
@@ -2761,6 +2767,7 @@ export const ChatDirect = ({
           qchatFileTransferStates={qchatFileTransferStates}
           qchatCompletedTransfers={qchatCompletedTransfers}
           reticulumChatEnabled={reticulumDirectUiEnabled}
+          reticulumInitialHistoryReady={reticulumDirectInitialHistoryReady}
         />
         {reticulumDirectUiEnabled && (
           <Typography

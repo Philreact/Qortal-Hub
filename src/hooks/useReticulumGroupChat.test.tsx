@@ -81,6 +81,37 @@ describe('useReticulumGroupChat', () => {
     vi.restoreAllMocks();
   });
 
+  it('scopes initial-history readiness to the active channel', async () => {
+    const alphaHistory = deferred<unknown[]>();
+    const betaHistory = deferred<unknown[]>();
+    getMessageHistory.mockImplementation(
+      (_groupId: number, channelId: string) =>
+        channelId === 'alpha' ? alphaHistory.promise : betaHistory.promise
+    );
+    const { result, rerender } = renderHook(
+      ({ channelId }) => useReticulumGroupChat(42, channelId),
+      { initialProps: { channelId: 'alpha' } }
+    );
+
+    await waitFor(() => expect(getMessageHistory).toHaveBeenCalledTimes(1));
+    expect(result.current.initialHistoryReady).toBe(false);
+
+    await act(async () => {
+      alphaHistory.resolve([event('alpha-current', 'alpha', 200)]);
+      await alphaHistory.promise;
+    });
+    await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
+
+    rerender({ channelId: 'beta' });
+    expect(result.current.initialHistoryReady).toBe(false);
+
+    await act(async () => {
+      betaHistory.resolve([event('beta-current', 'beta', 300)]);
+      await betaHistory.promise;
+    });
+    await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
+  });
+
   it('does not merge an older page after switching channels', async () => {
     const olderPage = deferred<unknown[]>();
     getMessageHistory.mockImplementation(

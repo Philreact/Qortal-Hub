@@ -1512,6 +1512,7 @@ export const ChatGroup = ({
   const {
     enabled: reticulumChatEnabled,
     events: reticulumChatEvents,
+    initialHistoryReady: reticulumInitialHistoryReady,
     hasOlder: reticulumHasOlderMessages,
     loadingOlder: reticulumLoadingOlderMessages,
     loadOlder: loadOlderReticulumMessages,
@@ -1520,6 +1521,8 @@ export const ChatGroup = ({
     typing: reticulumTyping,
     visibilityChange: reticulumVisibilityChange,
   } = useReticulumGroupChat(selectedGroup, selectedReticulumChannelId);
+  const [reticulumProcessedHistoryKey, setReticulumProcessedHistoryKey] =
+    useState('');
   const shouldSuppressLegacyGroupChat =
     !reticulumChatEnabled && !isReticulumModeResolved;
 
@@ -4134,10 +4137,16 @@ export const ChatGroup = ({
   );
 
   useEffect(() => {
-    if (!reticulumChatEnabled || reticulumChatEvents.length === 0) return;
+    if (!reticulumChatEnabled) return;
     const eventContext = `${selectedGroup || ''}:${
       selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
     }:${reticulumVisibilityChange?.revision || 0}`;
+    if (reticulumChatEvents.length === 0) {
+      if (reticulumInitialHistoryReady) {
+        setReticulumProcessedHistoryKey(eventContext);
+      }
+      return;
+    }
     void (async () => {
       for (const event of reticulumChatEvents) {
         const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
@@ -4180,6 +4189,12 @@ export const ChatGroup = ({
             processingReticulumEventIdsRef.current.delete(processingKey);
         }
       }
+      if (
+        reticulumInitialHistoryReady &&
+        reticulumEventContextRef.current === eventContext
+      ) {
+        setReticulumProcessedHistoryKey(eventContext);
+      }
     })();
   }, [
     applyReticulumChatItem,
@@ -4187,6 +4202,7 @@ export const ChatGroup = ({
     messages,
     reticulumChatEnabled,
     reticulumChatEvents,
+    reticulumInitialHistoryReady,
     reticulumMemberNameByAddress,
     reticulumVisibilityChange?.revision,
     selectedGroup,
@@ -7451,6 +7467,11 @@ export const ChatGroup = ({
           )}
           {!shouldSuppressLegacyGroupChat && (
             <ChatList
+              key={
+                reticulumChatEnabled
+                  ? `reticulum-group:${selectedGroup}:${selectedReticulumChannelId}`
+                  : 'legacy-group-chat'
+              }
               chatId={
                 reticulumChatEnabled
                   ? `${selectedGroup}:${selectedReticulumChannelId}`
@@ -7498,6 +7519,15 @@ export const ChatGroup = ({
               onReply={onReply}
               openQManager={openQManager}
               reticulumChatEnabled={reticulumChatEnabled}
+              reticulumInitialHistoryReady={
+                !reticulumChatEnabled ||
+                (reticulumInitialHistoryReady &&
+                  reticulumProcessedHistoryKey ===
+                    `${selectedGroup || ''}:${
+                      selectedReticulumChannelId ||
+                      DEFAULT_RETICULUM_CHANNEL_ID
+                    }:${reticulumVisibilityChange?.revision || 0}`)
+              }
               selectedGroup={selectedGroup}
               secretKeyObject={secretKey}
               tempChatReferences={tempChatReferences}

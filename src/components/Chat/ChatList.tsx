@@ -70,6 +70,7 @@ type ChatListProps = {
   hasSecretKey?: any;
   isPrivate?: any;
   reticulumChatEnabled?: boolean;
+  reticulumInitialHistoryReady?: boolean;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
   reticulumUnreadCount?: number;
@@ -108,6 +109,7 @@ export const ChatList = ({
   hasSecretKey,
   isPrivate,
   reticulumChatEnabled = false,
+  reticulumInitialHistoryReady = true,
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
   reticulumUnreadCount = 0,
@@ -147,6 +149,11 @@ export const ChatList = ({
   const reticulumUnreadPromptShownRef = useRef(false);
   const pendingInitialReticulumBottomRef = useRef(false);
   const pendingInitialReticulumUnreadIndexRef = useRef<number | null>(null);
+  const initialReticulumRevealTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const [positionedReticulumChatIdentity, setPositionedReticulumChatIdentity] =
+    useState('');
 
   const chatIdentity = useMemo(() => {
     if (chatId != null) {
@@ -250,6 +257,13 @@ export const ChatList = ({
     scrollRetryTimeoutsRef.current = [];
   }, []);
 
+  const clearInitialReticulumReveal = useCallback(() => {
+    if (initialReticulumRevealTimeoutRef.current) {
+      window.clearTimeout(initialReticulumRevealTimeoutRef.current);
+      initialReticulumRevealTimeoutRef.current = null;
+    }
+  }, []);
+
   const scrollToIndexAfterMeasurements = useCallback(
     (
       index: number,
@@ -283,14 +297,17 @@ export const ChatList = ({
     pendingInitialReticulumBottomRef.current = false;
     pendingInitialReticulumUnreadIndexRef.current = null;
     setReticulumUnreadBoundaryIndex(null);
+    setPositionedReticulumChatIdentity('');
+    clearInitialReticulumReveal();
     clearScrollRetries();
-  }, [chatIdentity, clearScrollRetries]);
+  }, [chatIdentity, clearInitialReticulumReveal, clearScrollRetries]);
 
   useEffect(() => {
     return () => {
       clearScrollRetries();
+      clearInitialReticulumReveal();
     };
-  }, [clearScrollRetries]);
+  }, [clearInitialReticulumReveal, clearScrollRetries]);
 
   const isAtBottom = useMemo(() => {
     if (parentRef.current && rowVirtualizer?.isScrolling !== undefined) {
@@ -401,6 +418,12 @@ export const ChatList = ({
 
   // Update message list with unique signatures and tempMessages
   useEffect(() => {
+    if (reticulumChatEnabled && !reticulumInitialHistoryReady) {
+      previousMessageCountRef.current = 0;
+      setMessages([]);
+      return;
+    }
+
     const uniqueInitialMessagesMap = new Map();
 
     // Only add a message if it doesn't already exist in the Map
@@ -445,6 +468,9 @@ export const ChatList = ({
       setMessages([]);
       setShowScrollButton(false);
       setShowScrollDownButton(false);
+      if (reticulumChatEnabled) {
+        setPositionedReticulumChatIdentity(chatIdentity);
+      }
       return;
     }
 
@@ -553,10 +579,28 @@ export const ChatList = ({
               ? findDivideIndex
               : undefined;
           if (reticulumChatEnabled) {
-            // Wait for the virtualizer to receive the new rows. Unread channels
-            // land at their first unread row; read channels land at the end.
-            pendingInitialReticulumBottomRef.current =
-              pendingInitialReticulumUnreadIndexRef.current === null;
+            // Position the hidden Reticulum viewport before revealing it. This
+            // prevents history, stale rows, and virtual row measurements from
+            // becoming visible as a sequence of scroll jumps.
+            const unreadIndex = pendingInitialReticulumUnreadIndexRef.current;
+            pendingInitialReticulumUnreadIndexRef.current = null;
+            pendingInitialReticulumBottomRef.current = false;
+            window.requestAnimationFrame(() => {
+              if (typeof unreadIndex === 'number') {
+                scrollToIndexAfterMeasurements(unreadIndex, 'start', [30, 60]);
+              } else {
+                scrollToBottom(totalMessages, undefined, false, false);
+              }
+              clearInitialReticulumReveal();
+              initialReticulumRevealTimeoutRef.current = window.setTimeout(
+                () => {
+                  clearScrollRetries();
+                  setPositionedReticulumChatIdentity(chatIdentity);
+                  initialReticulumRevealTimeoutRef.current = null;
+                },
+                90
+              );
+            });
           } else {
             scrollToBottom(totalMessages, divideIndex, true);
           }
@@ -576,9 +620,13 @@ export const ChatList = ({
     myAddress,
     onReticulumUnreadAcknowledged,
     reticulumChatEnabled,
+    reticulumInitialHistoryReady,
     reticulumUnreadCount,
     tempMessages,
     scrollToMessageId,
+    clearInitialReticulumReveal,
+    clearScrollRetries,
+    scrollToIndexAfterMeasurements,
   ]);
 
   const scrollToBottom = (
@@ -625,28 +673,6 @@ export const ChatList = ({
     }
     if (markSeen) handleMessageSeen();
   };
-
-  useEffect(() => {
-    if (
-      !reticulumChatEnabled ||
-      messages.length === 0
-    ) {
-      return;
-    }
-
-    const unreadIndex = pendingInitialReticulumUnreadIndexRef.current;
-    if (typeof unreadIndex === 'number' && Number.isInteger(unreadIndex)) {
-      pendingInitialReticulumUnreadIndexRef.current = null;
-      pendingInitialReticulumBottomRef.current = false;
-      scrollToIndexAfterMeasurements(unreadIndex, 'start', [50, 150]);
-      return;
-    }
-
-    if (!pendingInitialReticulumBottomRef.current) return;
-
-    pendingInitialReticulumBottomRef.current = false;
-    scrollToBottom(undefined, undefined, false, true);
-  }, [messages, reticulumChatEnabled, scrollToIndexAfterMeasurements]);
 
   const handleMessageSeen = useCallback(() => {
     setMessages((prevMessages) =>
@@ -875,6 +901,11 @@ export const ChatList = ({
             height: '0px',
             overflow: 'auto',
             position: 'relative',
+            visibility:
+              reticulumChatEnabled &&
+              positionedReticulumChatIdentity !== chatIdentity
+                ? 'hidden'
+                : 'visible',
           }}
           sx={
             reticulumChatEnabled
