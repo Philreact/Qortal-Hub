@@ -83,6 +83,8 @@ const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
 const RETICULUM_IMAGE_REQUEST_BACKOFF_MS = 30_000;
+const RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS = 12_000;
+const RETICULUM_IMAGE_AVAILABILITY_RECHECK_MS = 15_000;
 const RETICULUM_IMAGE_REQUEST_TRACK_LIMIT = 500;
 const RETICULUM_INLINE_IMAGE_MAX_WIDTH = 640;
 const RETICULUM_INLINE_IMAGE_MAX_HEIGHT = 360;
@@ -782,6 +784,34 @@ export const MessageItemComponent = ({
         (localResourceImageUrl || displayImageUrl.startsWith('data:image/'))
     );
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
+  const [reticulumImageDownloadIssue, setReticulumImageDownloadIssue] = useState<
+    'unavailable' | 'error' | null
+  >(null);
+  const reticulumImageRequestKey =
+    isReticulumResourceImage && imageResourceId
+      ? isReticulumDirectResourceMessage
+        ? myAddress && reticulumDirectPeerAddress
+          ? `dm:${myAddress}:${reticulumDirectPeerAddress}:${imageResourceId}:${
+              reticulumResourceEventId || ''
+            }`
+          : ''
+        : Number.isInteger(reticulumResourceGroupId) &&
+            reticulumResourceGroupId > 0
+          ? `${reticulumResourceGroupId}:${imageResourceId}:${
+              reticulumResourceEventId || ''
+            }`
+          : ''
+      : '';
+  useEffect(() => {
+    setReticulumImageDownloadIssue(null);
+  }, [imageResourceId]);
+  const retryReticulumImageDownload = useCallback(() => {
+    if (reticulumImageRequestKey) {
+      reticulumImageResourceRequestTimes.delete(reticulumImageRequestKey);
+    }
+    setReticulumImageDownloadIssue(null);
+    setResourceReloadNonce((value) => value + 1);
+  }, [reticulumImageRequestKey]);
   const openReticulumImageViewer = useCallback(
     async (containerElement: HTMLElement | null) => {
       let viewerSrc = displayImageUrl;
@@ -846,22 +876,69 @@ export const MessageItemComponent = ({
       return;
     }
 
-    const key = isReticulumDirectResourceMessage
-      ? `dm:${myAddress}:${reticulumDirectPeerAddress}:${imageResourceId}:${
-          reticulumResourceEventId || ''
-        }`
-      : `${reticulumResourceGroupId}:${imageResourceId}:${
-          reticulumResourceEventId || ''
-        }`;
-    if (!shouldRequestReticulumImageResource(key, Date.now())) return;
-
     let cancelled = false;
+    let availabilityTimer: number | null = null;
+    const key = reticulumImageRequestKey;
+    const nowMs = Date.now();
+    const previousRequestAt = reticulumImageResourceRequestTimes.get(key);
+    const requestAllowed = shouldRequestReticulumImageResource(key, nowMs);
+
+    const scheduleAvailabilityCheck = (delayMs: number) => {
+      if (availabilityTimer !== null) {
+        window.clearTimeout(availabilityTimer);
+      }
+      availabilityTimer = window.setTimeout(() => {
+        void window.reticulumResources
+          ?.getStatus?.(imageResourceId)
+          .then((status) => {
+            if (cancelled) return;
+            if (status?.success && status.complete) {
+              reticulumImageResourceRequestTimes.delete(key);
+              setReticulumImageDownloadIssue(null);
+              setResourceReloadNonce((value) => value + 1);
+              return;
+            }
+
+            const runtime = status?.runtime;
+            const hasActiveTransfer = Boolean(
+              (runtime?.activeTransfers ?? 0) > 0 ||
+                (runtime?.pendingTransfers ?? 0) > 0 ||
+                (runtime?.inFlightRangeCount ?? 0) > 0
+            );
+            if (hasActiveTransfer) {
+              scheduleAvailabilityCheck(RETICULUM_IMAGE_AVAILABILITY_RECHECK_MS);
+              return;
+            }
+            setReticulumImageDownloadIssue('unavailable');
+          })
+          .catch(() => {
+            if (!cancelled) setReticulumImageDownloadIssue('error');
+          });
+      }, Math.max(0, delayMs));
+    };
+
+    if (!requestAllowed) {
+      const remainingAvailabilityWait = Math.max(
+        0,
+        RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS -
+          (nowMs - (previousRequestAt ?? nowMs))
+      );
+      scheduleAvailabilityCheck(remainingAvailabilityWait);
+      return () => {
+        cancelled = true;
+        if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+      };
+    }
+
+    setReticulumImageDownloadIssue(null);
+    scheduleAvailabilityCheck(RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS);
     void (async () => {
       try {
         const status = await window.reticulumResources?.getStatus?.(imageResourceId);
         if (cancelled) return;
         if (status?.success && status.complete) {
           reticulumImageResourceRequestTimes.delete(key);
+          setReticulumImageDownloadIssue(null);
           return;
         }
 
@@ -879,6 +956,8 @@ export const MessageItemComponent = ({
             );
         if (cancelled) return;
         if (!response?.success) {
+          if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+          setReticulumImageDownloadIssue('error');
           console.warn(
             '[ReticulumResource] Image resource request failed:',
             response?.error || 'request API unavailable',
@@ -887,6 +966,8 @@ export const MessageItemComponent = ({
         }
       } catch (error) {
         if (cancelled) return;
+        if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
+        setReticulumImageDownloadIssue('error');
         console.warn(
           '[ReticulumResource] Image resource request failed:',
           error instanceof Error ? error.message : error,
@@ -897,6 +978,7 @@ export const MessageItemComponent = ({
 
     return () => {
       cancelled = true;
+      if (availabilityTimer !== null) window.clearTimeout(availabilityTimer);
     };
   }, [
     imageResourceId,
@@ -907,6 +989,8 @@ export const MessageItemComponent = ({
     reticulumDirectPeerAddress,
     reticulumResourceEventId,
     reticulumResourceGroupId,
+    reticulumImageRequestKey,
+    resourceReloadNonce,
     shouldAutoDownloadReticulumImage,
   ]);
 
@@ -1198,10 +1282,17 @@ export const MessageItemComponent = ({
     return window.reticulumChat.onResource((payload) => {
       if (
         shouldAutoDownloadReticulumImage &&
-        payload?.fileHash === imageResourceId &&
-        payload.complete === true
+        payload?.fileHash === imageResourceId
       ) {
-        setResourceReloadNonce((value) => value + 1);
+        if (payload.complete === true) {
+          if (reticulumImageRequestKey) {
+            reticulumImageResourceRequestTimes.delete(reticulumImageRequestKey);
+          }
+          setReticulumImageDownloadIssue(null);
+          setResourceReloadNonce((value) => value + 1);
+        } else if (payload.failed === true) {
+          setReticulumImageDownloadIssue('error');
+        }
       }
       if (payload?.fileHash === reticulumFileResourceId) {
         applyFileResourceStatus(payload);
@@ -1215,6 +1306,7 @@ export const MessageItemComponent = ({
     imageResourceId,
     markFileResourceReadyIfComplete,
     reticulumFileResourceId,
+    reticulumImageRequestKey,
     shouldAutoDownloadReticulumImage,
   ]);
 
@@ -2646,17 +2738,64 @@ export const MessageItemComponent = ({
                     width: `min(100%, ${imageResourceDisplayWidth}px)`,
                   }}
                 >
-                  <Typography sx={{ fontSize: '13px' }}>
-                    Downloading image...
-                  </Typography>
-                  <LinearProgress
-                    sx={{
-                      bottom: 0,
-                      left: 0,
-                      position: 'absolute',
-                      right: 0,
-                    }}
-                  />
+                  {reticulumImageDownloadIssue ? (
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        padding: '16px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: '13px',
+                          fontWeight: 500,
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        {reticulumImageDownloadIssue === 'unavailable'
+                          ? 'Image unavailable right now (no peers)'
+                          : "Couldn't download image"}
+                      </Typography>
+                      <Button
+                        size="small"
+                        onClick={retryReticulumImageDownload}
+                        sx={{
+                          backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                          borderRadius: '999px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          lineHeight: 1,
+                          minWidth: 0,
+                          padding: '7px 14px',
+                          textTransform: 'none',
+                          '&:hover': {
+                            backgroundColor: alpha(theme.palette.primary.main, 0.17),
+                          },
+                        }}
+                      >
+                        Retry
+                      </Button>
+                    </Box>
+                  ) : (
+                    <>
+                      <Typography sx={{ fontSize: '13px' }}>
+                        Downloading image...
+                      </Typography>
+                      <LinearProgress
+                        sx={{
+                          bottom: 0,
+                          left: 0,
+                          position: 'absolute',
+                          right: 0,
+                        }}
+                      />
+                    </>
+                  )}
                 </Box>
               ) : null)}
 
