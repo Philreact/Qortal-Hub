@@ -119,6 +119,7 @@ export const ChatList = ({
   hasSecretKey,
   isPrivate,
   reticulumChatEnabled = false,
+  reticulumInitialHistoryReady = true,
   reticulumGroupAvatarOwnerName,
   reticulumGroupDisplayName,
   reticulumMentionUsers,
