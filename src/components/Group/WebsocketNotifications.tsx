@@ -15,6 +15,39 @@ import {
   getNotificationPermissionKey,
   getPermission,
 } from '../../qortal/qortal-requests';
+import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+
+const QCHAT_NOTIFICATION_APP_NAME = 'q-chat';
+
+const isQChatMentionNotification = (notification: any) =>
+  notification?.event === 'RESOURCE_PUBLISHED' &&
+  notification?.appName === QCHAT_NOTIFICATION_APP_NAME &&
+  notification?.data?.qChatMention === true;
+
+const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+const getNotificationCreatorTimestamp = (notification: {
+  data?: { created?: number; timestamp?: number };
+  timestamp?: number;
+}) =>
+  notification?.data?.created ??
+  notification?.data?.timestamp ??
+  notification?.timestamp;
+
+const trimNotificationsToLast3Days = <
+  T extends {
+    data?: { created?: number; timestamp?: number };
+    timestamp?: number;
+  },
+>(
+  notifications: T[]
+): T[] => {
+  const cutoff = Date.now() - NOTIFICATION_AGE_MS;
+  return notifications.filter((notification) => {
+    const timestamp = getNotificationCreatorTimestamp(notification);
+    return timestamp == null || timestamp >= cutoff;
+  });
+};
 
 /** Message object with "You got a new qmail" in all supported languages (for Q-Mail subscription). */
 function getNewQmailMessage(): Record<string, string> {
@@ -106,6 +139,200 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
     return () =>
       unsubscribeFromEvent('custom-ws-subscriptions-updated', handler);
   }, [setCustomSubscriptions]);
+
+  useEffect(() => {
+    const handleQChatMention = async (
+      event: CustomEvent<{
+        channelId?: string;
+        eventId?: string;
+        groupId?: number;
+        groupName?: string;
+        mentionCount?: number;
+        syncUnreadCount?: boolean;
+        timestamp?: number;
+      }>
+    ) => {
+      const detail = event.detail;
+      const eventId = String(detail?.eventId || '');
+      const groupId = Number(detail?.groupId);
+      const isUnreadCountSync = detail?.syncUnreadCount === true;
+      if (
+        (!eventId && !isUnreadCountSync) ||
+        !Number.isFinite(groupId)
+      ) {
+        return;
+      }
+      const permission = await getPermission(
+        getNotificationPermissionKey(QCHAT_NOTIFICATION_APP_NAME)
+      );
+      if (permission !== true) return;
+
+      const timestamp = Number(detail?.timestamp || Date.now());
+      const groupName =
+        String(detail?.groupName || '').trim() || `Group ${groupId}`;
+      const channelId = String(detail?.channelId || 'general');
+      let notificationForPush: any = null;
+
+      setPaymentNotifications((previous) => {
+        const trimmed = trimNotificationsToLast3Days(previous);
+        const existing = trimmed.find(
+          (notification) =>
+            isQChatMentionNotification(notification) &&
+            Number(notification?.data?.groupId) === groupId
+        );
+        if (isUnreadCountSync) {
+          const mentionCount = Math.max(
+            0,
+            Number(detail?.mentionCount) || 0
+          );
+          if (mentionCount === 0) {
+            return trimmed.filter(
+              (notification) =>
+                !(
+                  isQChatMentionNotification(notification) &&
+                  Number(notification?.data?.groupId) === groupId
+                )
+            );
+          }
+          const syncedNotification = {
+            appName: QCHAT_NOTIFICATION_APP_NAME,
+            appService: 'APP',
+            data: {
+              channelId,
+              created: timestamp,
+              eventId: existing?.data?.eventId || '',
+              eventIds: existing?.data?.eventIds || [],
+              groupId,
+              groupName,
+              identifier: `q-chat-mention-${groupId}`,
+              mentionCount,
+              qChatMention: true,
+            },
+            event: 'RESOURCE_PUBLISHED',
+            image: '',
+            message: {
+              en:
+                mentionCount === 1
+                  ? '1 mention'
+                  : `${mentionCount} mentions`,
+            },
+            notificationId: `q-chat-mention-${groupId}`,
+          };
+          return [
+            syncedNotification,
+            ...trimmed.filter(
+              (notification) =>
+                !(
+                  isQChatMentionNotification(notification) &&
+                  Number(notification?.data?.groupId) === groupId
+                )
+            ),
+          ];
+        }
+        const eventIds = Array.isArray(existing?.data?.eventIds)
+          ? existing.data.eventIds
+          : existing?.data?.eventId
+            ? [existing.data.eventId]
+            : [];
+        if (eventIds.includes(eventId)) return trimmed;
+
+        const nextEventIds = [...eventIds, eventId].slice(-100);
+        const mentionCount = Math.max(
+          nextEventIds.length,
+          Number(existing?.data?.mentionCount) || 0
+        );
+        const nextNotification = {
+          appName: QCHAT_NOTIFICATION_APP_NAME,
+          appService: 'APP',
+          data: {
+            channelId,
+            created: timestamp,
+            eventId,
+            eventIds: nextEventIds,
+            groupId,
+            groupName,
+            identifier: `q-chat-mention-${groupId}`,
+            mentionCount,
+            qChatMention: true,
+          },
+          event: 'RESOURCE_PUBLISHED',
+          image: '',
+          message: {
+            en:
+              mentionCount === 1
+                ? '1 mention'
+                : `${mentionCount} mentions`,
+          },
+          notificationId: `q-chat-mention-${groupId}`,
+        };
+        notificationForPush = nextNotification;
+        return [
+          nextNotification,
+          ...trimmed.filter(
+            (notification) =>
+              !(
+                isQChatMentionNotification(notification) &&
+                Number(notification?.data?.groupId) === groupId
+              )
+          ),
+        ];
+      });
+
+      if (notificationForPush) {
+        void fireOsNotificationPayment(
+          notificationForPush,
+          groupName,
+          '1 mention',
+          LogoSelected,
+          undefined,
+          {
+            channelId,
+            eventId,
+            from: groupId,
+            qChatMention: true,
+          }
+        );
+      }
+    };
+
+    const handlePermissionUpdated = (
+      event: CustomEvent<{ key?: string; value?: boolean }>
+    ) => {
+      const qChatPermissionKey = getNotificationPermissionKey(
+        QCHAT_NOTIFICATION_APP_NAME
+      );
+      if (
+        event.detail?.key !== qChatPermissionKey ||
+        event.detail?.value !== false
+      ) {
+        return;
+      }
+      setPaymentNotifications((previous) =>
+        previous.filter(
+          (notification) => !isQChatMentionNotification(notification)
+        )
+      );
+    };
+
+    subscribeToEvent(
+      'q-chat-mention-notification',
+      handleQChatMention as EventListener
+    );
+    subscribeToEvent(
+      'notification-permission-updated',
+      handlePermissionUpdated as EventListener
+    );
+    return () => {
+      unsubscribeFromEvent(
+        'q-chat-mention-notification',
+        handleQChatMention as EventListener
+      );
+      unsubscribeFromEvent(
+        'notification-permission-updated',
+        handlePermissionUpdated as EventListener
+      );
+    };
+  }, [setPaymentNotifications]);
 
   useEffect(() => {
     const current = Array.isArray(seenInAppKeys) ? seenInAppKeys : [];
@@ -206,25 +433,6 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         );
         const query = `qortal_qmail_${userName.slice(0, 20)}_${currentAddress.slice(-6)}_mail_`;
         const socketLink = `${getBaseApiReactSocket()}/websockets/notifications`;
-        const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
-        const getNotificationCreatorTimestamp = (n: {
-          data?: { created?: number; timestamp?: number };
-          timestamp?: number;
-        }) => n?.data?.created ?? n?.data?.timestamp ?? n?.timestamp;
-        const trimNotificationsToLast3Days = <
-          T extends {
-            data?: { created?: number; timestamp?: number };
-            timestamp?: number;
-          },
-        >(
-          list: T[]
-        ): T[] => {
-          const cutoff = Date.now() - NOTIFICATION_AGE_MS;
-          return list.filter((n) => {
-            const ts = getNotificationCreatorTimestamp(n);
-            return ts == null || ts >= cutoff;
-          }) as T[];
-        };
         socketRef.current = new WebSocket(socketLink);
 
         socketRef.current.onopen = () => {
@@ -291,7 +499,10 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
                       listOfMyNamesRef.current.includes(n?.data?.name)
                     )
                 );
-                setPaymentNotifications(trimNotificationsToLast3Days(filtered));
+                setPaymentNotifications((previous) => [
+                  ...previous.filter(isQChatMentionNotification),
+                  ...trimNotificationsToLast3Days(filtered),
+                ]);
               }
               if (data?.event === 'PAYMENT_RECEIVED' && data?.data) {
                 const tx = data;

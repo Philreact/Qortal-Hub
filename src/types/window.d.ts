@@ -718,6 +718,7 @@ declare global {
           roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
+          statusFlags?: unknown;
         }
       ) => Promise<{ success: boolean; error?: string }>;
       sendLandChat: (
@@ -891,6 +892,7 @@ declare global {
           roomId?: string;
           direction?: string;
           movement?: string;
+          statusFlags?: number;
           timestamp?: number;
         }) => void
       ) => () => void;

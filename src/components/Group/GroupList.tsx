@@ -12,6 +12,7 @@ import {
   ListItem,
   ListItemAvatar,
   ListItemText,
+  Switch,
   Tooltip,
   Typography,
   useTheme,
@@ -51,6 +52,7 @@ import PersonOffIcon from '@mui/icons-material/PersonOff';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import AccessibilityNewOutlinedIcon from '@mui/icons-material/AccessibilityNewOutlined';
+import NotificationsNoneRoundedIcon from '@mui/icons-material/NotificationsNoneRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import {
@@ -87,9 +89,21 @@ import {
 import { getNameInfo } from './groupApi';
 import { requestQueueMemberNames } from './groupQueues';
 import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
+import {
+  getNotificationPermissionKey,
+  getPermission,
+  setPermission,
+} from '../../qortal/qortal-requests';
+import {
+  subscribeToEvent,
+  unsubscribeFromEvent,
+} from '../../utils/events';
+import {
+  ReticulumUnreadCountBadge,
+  RETICULUM_NOTIFICATION_RED,
+} from '../common/ReticulumUnreadCountBadge';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
-const RETICULUM_NOTIFICATION_RED = '#f23f42';
 const RETICULUM_CALL_GREEN = '#22c55e';
 
 const reticulumTextScaleOptions = [
@@ -425,9 +439,38 @@ const ReticulumChatSettingsDialog = ({
 }) => {
   const theme = useTheme();
   const [activeSection, setActiveSection] = useState<
-    'accessibility' | 'hidden'
+    'accessibility' | 'notifications' | 'hidden'
   >('accessibility');
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
+  const [mentionNotificationsEnabled, setMentionNotificationsEnabled] =
+    useState(false);
+  const qChatNotificationPermissionKey =
+    getNotificationPermissionKey('Q-Chat');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getPermission(qChatNotificationPermissionKey).then((permission) => {
+      if (!cancelled) setMentionNotificationsEnabled(permission === true);
+    });
+    const handlePermissionUpdated = (
+      event: CustomEvent<{ key?: string; value?: boolean }>
+    ) => {
+      if (event.detail?.key !== qChatNotificationPermissionKey) return;
+      setMentionNotificationsEnabled(event.detail.value === true);
+    };
+    subscribeToEvent(
+      'notification-permission-updated',
+      handlePermissionUpdated as EventListener
+    );
+    return () => {
+      cancelled = true;
+      unsubscribeFromEvent(
+        'notification-permission-updated',
+        handlePermissionUpdated as EventListener
+      );
+    };
+  }, [open, qChatNotificationPermissionKey]);
   const navButtonSx = (selected: boolean) => ({
     alignItems: 'center',
     backgroundColor: selected ? theme.palette.action.hover : 'transparent',
@@ -541,6 +584,26 @@ const ReticulumChatSettingsDialog = ({
               textTransform: 'uppercase',
             }}
           >
+            Notifications
+          </Typography>
+          <ButtonBase
+            onClick={() => setActiveSection('notifications')}
+            sx={navButtonSx(activeSection === 'notifications')}
+          >
+            <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} /> Mentions
+          </ButtonBase>
+          <Typography
+            sx={{
+              color: 'text.secondary',
+              fontSize: 11,
+              fontWeight: 650,
+              letterSpacing: '0.08em',
+              lineHeight: '16px',
+              mb: 1.25,
+              mt: 3,
+              textTransform: 'uppercase',
+            }}
+          >
             Privacy
           </Typography>
           <ButtonBase
@@ -635,6 +698,81 @@ const ReticulumChatSettingsDialog = ({
                     </ButtonBase>
                   );
                 })}
+              </Box>
+            </>
+          ) : activeSection === 'notifications' ? (
+            <>
+              <Typography
+                component="h2"
+                sx={{
+                  color: 'text.primary',
+                  fontSize: 20,
+                  fontWeight: 650,
+                  lineHeight: '26px',
+                }}
+              >
+                Notifications
+              </Typography>
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  fontWeight: 400,
+                  lineHeight: '20px',
+                  maxWidth: 460,
+                  mt: 0.75,
+                }}
+              >
+                Show Reticulum Q-Chat mentions in the Hub notification panel.
+                Regular unread messages will not create Hub notifications.
+              </Typography>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: 'background.default',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '10px',
+                  display: 'flex',
+                  gap: 2,
+                  justifyContent: 'space-between',
+                  mt: 2.5,
+                  px: 2,
+                  py: 1.5,
+                }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      color: 'text.primary',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      lineHeight: '20px',
+                    }}
+                  >
+                    Mention notifications
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: 13,
+                      lineHeight: '18px',
+                      mt: 0.25,
+                    }}
+                  >
+                    Add a notification when someone mentions you in a channel.
+                  </Typography>
+                </Box>
+                <Switch
+                  checked={mentionNotificationsEnabled === true}
+                  inputProps={{ 'aria-label': 'Mention notifications' }}
+                  onChange={(_, checked) => {
+                    setMentionNotificationsEnabled(checked)
+                    void setPermission(
+                      qChatNotificationPermissionKey,
+                      checked
+                    );
+                  }}
+                />
               </Box>
             </>
           ) : (
@@ -1632,8 +1770,6 @@ const GroupItem = memo(
     if (railMode) {
       const groupLabel =
         group.groupId === '0' ? 'General' : group.groupName || 'Group';
-      const unreadBadgeLabel =
-        reticulumUnreadCount > 99 ? '99+' : String(reticulumUnreadCount);
       const fallbackAvatarBackground =
         theme.palette.mode === 'dark'
           ? 'rgba(7, 10, 17, 0.82)'
@@ -1819,32 +1955,18 @@ const GroupItem = memo(
                       Date.now() - group?.timestamp <
                         timeDifferenceForNotificationChats) ||
                       timestampEnterData < group?.timestamp))) && (
-                  <Box
+                  <ReticulumUnreadCountBadge
+                    count={
+                      hasReticulumUnread ? reticulumUnreadCount : null
+                    }
+                    outlineColor={theme.palette.background.surface}
                     sx={{
-                      alignItems: 'center',
-                      backgroundColor: RETICULUM_NOTIFICATION_RED,
-                      border: `2px solid ${theme.palette.background.surface}`,
-                      borderRadius: '50%',
                       bottom: -2,
-                      color: theme.palette.common.white,
-                      display: 'flex',
-                      fontSize: 10,
-                      fontWeight: 800,
-                      height: 18,
-                      justifyContent: 'center',
-                      lineHeight: 1,
-                      minWidth: 18,
-                      px:
-                        hasReticulumUnread && reticulumUnreadCount > 9
-                          ? 0.45
-                          : 0,
                       position: 'absolute',
                       right: -2,
                       zIndex: 2,
                     }}
-                  >
-                    {hasReticulumUnread ? unreadBadgeLabel : ''}
-                  </Box>
+                  />
                 )}
 
                 {hasReticulumMention && (

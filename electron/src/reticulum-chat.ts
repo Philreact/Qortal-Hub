@@ -1294,6 +1294,7 @@ export type ReticulumChatWire =
       u?: string;
       d?: string;
       m?: string;
+      v?: number;
       ts: number;
       z: string;
       o?: string;
@@ -8320,6 +8321,7 @@ export class ReticulumChatManager extends EventEmitter {
       roomId?: unknown;
       direction?: unknown;
       movement?: unknown;
+      statusFlags?: unknown;
     }
   ): Promise<void> {
     this.assertLocalGroupMember(groupId);
@@ -8348,6 +8350,10 @@ export class ReticulumChatManager extends EventEmitter {
       typeof state.movement === 'string'
         ? state.movement.trim().slice(0, 8)
         : '';
+    const statusFlags = Math.max(
+      0,
+      Math.min(3, Math.floor(Number(state.statusFlags) || 0))
+    );
     if (!address || !sessionId) {
       throw new Error('Invalid QortalLand state');
     }
@@ -8423,6 +8429,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(roomId ? { u: roomId } : {}),
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
+      ...(statusFlags ? { v: statusFlags } : {}),
       ts: timestamp,
       z: base58Encode(signature),
     };
@@ -27469,6 +27476,10 @@ export class ReticulumChatManager extends EventEmitter {
       roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
+      statusFlags: Math.max(
+        0,
+        Math.min(3, Math.floor(Number(wire.v) || 0))
+      ),
       timestamp: Number.isFinite(Number(wire.ts))
         ? Number(wire.ts)
         : this.now(),

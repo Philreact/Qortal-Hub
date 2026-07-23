@@ -39,15 +39,20 @@ export function NotificationPermissionSlideDown() {
     ) => {
       const { requestId, appInfo, payload } = event.detail || {};
       if (!requestId || !appInfo) return;
-      setQueue((prev) => [
-        ...prev,
-        {
-          requestId,
-          appInfo,
-          payload,
-          expiresAt: Date.now() + TIMEOUT_MS,
-        },
-      ]);
+      setQueue((prev) => {
+        if (prev.some((request) => request.requestId === requestId)) {
+          return prev;
+        }
+        return [
+          ...prev,
+          {
+            requestId,
+            appInfo,
+            payload,
+            expiresAt: Date.now() + TIMEOUT_MS,
+          },
+        ];
+      });
     };
     subscribeToEvent('show-notification-permission', listener as any);
     return () =>

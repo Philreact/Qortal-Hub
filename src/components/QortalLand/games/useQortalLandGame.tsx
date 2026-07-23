@@ -92,6 +92,8 @@ type Options = {
   sessionId: string;
   roomId: string;
   enabled: boolean;
+  doNotDisturb?: boolean;
+  onActivity?: () => void;
   onActiveChange?: (active: boolean) => void;
   onPlayerSeen?: (address: string) => void;
   resolvePlayerName?: (address: string) => string;
@@ -206,6 +208,8 @@ export function useQortalLandGame(options: Options) {
     sessionId,
     roomId,
     enabled,
+    doNotDisturb = false,
+    onActivity,
     onActiveChange,
     onPlayerSeen,
     resolvePlayerName,
@@ -219,8 +223,12 @@ export function useQortalLandGame(options: Options) {
   const moveInFlightRef = useRef(false);
   const typingSentRef = useRef(false);
   const typingTimerRef = useRef<number | null>(null);
+  const doNotDisturbRef = useRef(doNotDisturb);
 
   useEffect(() => { matchRef.current = match; }, [match]);
+  useEffect(() => {
+    doNotDisturbRef.current = doNotDisturb;
+  }, [doNotDisturb]);
   const replaceMatch = useCallback((next: Match | null) => {
     matchRef.current = next;
     setMatch(next);
@@ -532,6 +540,14 @@ export function useQortalLandGame(options: Options) {
     if (event.type === 'GAME_INVITE_RECEIVED') {
       if (matchRef.current && event.matchId !== matchRef.current.matchId) return;
       if (!isGameId(event.game)) return;
+      if (doNotDisturbRef.current) {
+        send('RESPOND_TO_INVITE', {
+          matchId: String(event.matchId),
+          decision: 'decline',
+          reason: 'do_not_disturb',
+        });
+        return;
+      }
       onPlayerSeen?.(String(event.requesterAddress));
       replaceMatch({
         matchId: String(event.matchId), requesterAddress: String(event.requesterAddress),
@@ -691,7 +707,10 @@ export function useQortalLandGame(options: Options) {
         ...value,
         phase: 'finished',
         sessionClosed: true,
-        error: `Invitation ${String(event.reason || 'declined')}`,
+        error:
+          event.reason === 'do_not_disturb'
+            ? 'This player is in Do Not Disturb mode.'
+            : `Invitation ${String(event.reason || 'declined')}`,
       }));
       return;
     }
@@ -793,6 +812,7 @@ export function useQortalLandGame(options: Options) {
   }, []);
 
   const challenge = useCallback(async (target: Target, game: QortalLandGameId = 'connect-four') => {
+    onActivity?.();
     if (!transportReady || target.address === address) return;
     const existing = matchRef.current;
     if (existing?.phase === 'session-idle') {
@@ -825,9 +845,10 @@ export function useQortalLandGame(options: Options) {
       chatMessages: [],
     });
     send('OPEN_GAME_LINK', { matchId, recipientAddress: target.address, requesterNonce, game });
-  }, [address, replaceMatch, resolvePlayerName, send, transportReady]);
+  }, [address, onActivity, replaceMatch, resolvePlayerName, send, transportReady]);
 
   const respond = useCallback((accepted: boolean) => {
+    onActivity?.();
     const current = matchRef.current;
     if (!current) return;
     const recipientNonce = accepted ? randomHex(16) : undefined;
@@ -857,9 +878,10 @@ export function useQortalLandGame(options: Options) {
       phase: accepted ? 'starting' : 'finished',
       error: accepted ? undefined : 'declined',
     });
-  }, [beginRound, replaceMatch, send]);
+  }, [beginRound, onActivity, replaceMatch, send]);
 
   const playColumn = useCallback(async (column: number): Promise<boolean> => {
+    onActivity?.();
     const current = matchRef.current;
     if (moveInFlightRef.current || current?.game !== 'connect-four' || !current.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat || connectFourDropRow(current.state, column) === null) return false;
     moveInFlightRef.current = true;
@@ -885,9 +907,10 @@ export function useQortalLandGame(options: Options) {
     } finally {
       moveInFlightRef.current = false;
     }
-  }, [failProtocol, replaceMatch, send]);
+  }, [failProtocol, onActivity, replaceMatch, send]);
 
   const playCheckersMove = useCallback(async (from: number, path: number[]): Promise<boolean> => {
+    onActivity?.();
     const current = matchRef.current;
     if (moveInFlightRef.current || current?.game !== 'checkers' || !current.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat) return false;
     moveInFlightRef.current = true;
@@ -906,9 +929,10 @@ export function useQortalLandGame(options: Options) {
     } finally {
       moveInFlightRef.current = false;
     }
-  }, [failProtocol, replaceMatch, send]);
+  }, [failProtocol, onActivity, replaceMatch, send]);
 
   const playChessMove = useCallback(async (from: number, to: number, promotion?: ChessPromotion): Promise<boolean> => {
+    onActivity?.();
     const current = matchRef.current;
     if (moveInFlightRef.current || current?.game !== 'chess' || !current.state || !current.localSeat || current.phase !== 'active' || current.pendingMoveId || current.state.nextSeat !== current.localSeat) return false;
     moveInFlightRef.current = true;
@@ -927,16 +951,18 @@ export function useQortalLandGame(options: Options) {
     } finally {
       moveInFlightRef.current = false;
     }
-  }, [failProtocol, replaceMatch, send]);
+  }, [failProtocol, onActivity, replaceMatch, send]);
 
   const performResign = useCallback(() => {
+    onActivity?.();
     const current = matchRef.current;
     if (!current?.localSeat) return;
     send('RESIGN_GAME', { matchId: current.matchId });
     replaceMatch({ ...current, phase: 'finishing', outcome: { type: 'resigned', winner: current.localSeat === 1 ? 2 : 1 } });
-  }, [replaceMatch, send]);
+  }, [onActivity, replaceMatch, send]);
 
   const sendChat = useCallback((text: string): boolean => {
+    onActivity?.();
     const current = matchRef.current;
     const normalized = text.trim();
     if (
@@ -968,9 +994,10 @@ export function useQortalLandGame(options: Options) {
       } : value);
       return false;
     }
-  }, [address, replaceMatch, send, updateMatch]);
+  }, [address, onActivity, replaceMatch, send, updateMatch]);
 
   const sendTyping = useCallback((active: boolean) => {
+    if (active) onActivity?.();
     if (typingTimerRef.current) {
       window.clearTimeout(typingTimerRef.current);
       typingTimerRef.current = null;
@@ -999,9 +1026,10 @@ export function useQortalLandGame(options: Options) {
         }
       }, 2_000);
     }
-  }, [send]);
+  }, [onActivity, send]);
 
   const close = useCallback(() => {
+    onActivity?.();
     const current = matchRef.current;
     if (current?.phase === 'round-waiting') {
       try {
@@ -1016,9 +1044,10 @@ export function useQortalLandGame(options: Options) {
     }
     if (current) try { send('CLOSE_GAME_LINK', { matchId: current.matchId }); } catch { /* done */ }
     replaceMatch(null);
-  }, [replaceMatch, send]);
+  }, [onActivity, replaceMatch, send]);
 
   const rematch = useCallback(() => {
+    onActivity?.();
     const current = matchRef.current;
     if (!current || current.phase !== 'finished' || !current.state || !transportReady) return;
     const roundId = crypto.randomUUID();
@@ -1037,7 +1066,7 @@ export function useQortalLandGame(options: Options) {
       error: undefined,
     });
     send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, ...gameConfig(current.game) } });
-  }, [replaceMatch, send, transportReady]);
+  }, [onActivity, replaceMatch, send, transportReady]);
 
   const modal = match?.game === 'checkers' ? (
     <CheckersGameDialog

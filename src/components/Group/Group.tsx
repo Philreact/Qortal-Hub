@@ -124,6 +124,12 @@ import { useWebsocketStatus } from './useWebsocketStatus';
 import { DirectsSidebar } from './DirectsSidebar';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
+import { getNotificationPermission } from '../../qortal/get';
+import {
+  getNotificationPermissionKey,
+  getPermission,
+  setPermission,
+} from '../../qortal/qortal-requests';
 import {
   AdminRowBox,
   CenterBox,
@@ -142,6 +148,7 @@ import {
 } from './Group.styles';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
+const qChatNotificationPermissionRequests = new Map<string, Promise<void>>();
 
 // Keeps the Reticulum chat tree out of unrelated Group-shell re-renders. The
 // legacy ChatGroup instance below deliberately retains its existing behavior.
@@ -155,6 +162,11 @@ const LazyFindGroupModal = lazy(() =>
 );
 const LazyManageMembers = lazy(() =>
   import('./ManageMembers').then((m) => ({ default: m.ManageMembers }))
+);
+const LazyQortalLandMembers = lazy(() =>
+  import('../QortalLand/QortalLandMembers').then((m) => ({
+    default: m.QortalLandMembers,
+  }))
 );
 const LazyBlockedUsersModal = lazy(() =>
   import('./BlockedUsersModal').then((m) => ({ default: m.BlockedUsersModal }))
@@ -919,6 +931,8 @@ export const Group = ({
     useState('');
   const [notificationReticulumChannelId, setNotificationReticulumChannelId] =
     useState('');
+  const [notificationReticulumMessageId, setNotificationReticulumMessageId] =
+    useState('');
   const [activeReticulumChannelId, setActiveReticulumChannelId] =
     useState('general');
   const [reticulumReadEntryToken, setReticulumReadEntryToken] = useState(0);
@@ -1489,6 +1503,7 @@ export const Group = ({
         executeEvent('openGroupMessage', {
           from: groupId,
           channelId,
+          eventId: event.eventId,
         });
         notification.close();
       };
@@ -1601,6 +1616,53 @@ export const Group = ({
     [fireReticulumChatNotification, mutedGroups]
   );
 
+  const syncReticulumMentionNotifications = useCallback(
+    (summaries: Record<string, ReticulumNotificationSummary>) => {
+      for (const group of memberGroupsRef.current || []) {
+        const groupId = Number(group?.groupId);
+        if (!Number.isFinite(groupId)) continue;
+        const summary = summaries?.[String(groupId)];
+        const channels = Array.isArray(summary?.channels)
+          ? summary.channels
+          : [];
+        const mentionedChannels = channels.filter(
+          (channel) => Number(channel?.mentionCount || 0) > 0
+        );
+        const latestMentionedChannel = mentionedChannels.reduce<
+          ReticulumNotificationSummary | undefined
+        >((latest, channel) => {
+          if (!latest) return channel;
+          return Number(channel?.updatedAt || 0) >
+            Number(latest?.updatedAt || 0)
+            ? channel
+            : latest;
+        }, undefined);
+        const mentionCount = Math.max(
+          0,
+          Number(summary?.mentionCount) || 0
+        );
+        executeEvent('q-chat-mention-notification', {
+          channelId: String(
+            latestMentionedChannel?.channelId ||
+              summary?.channelId ||
+              'general'
+          ),
+          groupId,
+          groupName:
+            group?.groupName || group?.name || `Group ${String(groupId)}`,
+          mentionCount,
+          syncUnreadCount: true,
+          timestamp: Number(
+            latestMentionedChannel?.updatedAt ||
+              summary?.updatedAt ||
+              Date.now()
+          ),
+        });
+      }
+    },
+    []
+  );
+
   const refreshReticulumChatSummaries = useCallback(async (): Promise<boolean> => {
     try {
       if (typeof window.reticulumChat?.isEnabled !== 'function') {
@@ -1647,6 +1709,7 @@ export const Group = ({
       const previous = previousReticulumSummariesRef.current;
       previousReticulumSummariesRef.current = next;
       setReticulumChatSummaries(next);
+      syncReticulumMentionNotifications(next);
       const badgeState = getReticulumMentionBadgeStateForRefresh(
         reticulumMentionBadgeSummariesRef.current,
         next,
@@ -1669,6 +1732,7 @@ export const Group = ({
     myAddress,
     setReticulumChatEnabled,
     setReticulumChatSummaries,
+    syncReticulumMentionNotifications,
   ]);
 
   const scheduleReticulumChatSummariesRefresh = useCallback(() => {
@@ -2568,14 +2632,64 @@ export const Group = ({
     reticulumGroupMentionNameCacheRef.current.clear();
   }, [memberGroupsForReticulum, myAddress, userInfo?.name]);
 
+  const recordReticulumMentionNotification = useCallback(
+    (
+      event: ReticulumBackgroundEvent,
+      groupId: number,
+      mentionedAddresses: string[]
+    ) => {
+      const eventId = String(event?.eventId || '');
+      if (
+        event.eventType === 'edit' ||
+        !eventId ||
+        !myAddressRef.current ||
+        event.authorAddress === myAddressRef.current ||
+        !mentionedAddresses.includes(myAddressRef.current) ||
+        (Array.isArray(mutedGroups) &&
+          mutedGroups.some(
+            (mutedGroupId) => String(mutedGroupId) === String(groupId)
+          ))
+      ) {
+        return;
+      }
+
+      const group = memberGroupsRef.current?.find(
+        (item: any) => Number(item?.groupId) === groupId
+      );
+      const groupName =
+        group?.groupName || group?.name || `Group ${String(groupId)}`;
+      const channelId = String(event.channelId || 'general');
+      const timestamp = Number(event.timestamp || Date.now());
+
+      executeEvent('q-chat-mention-notification', {
+        channelId,
+        eventId,
+        groupId,
+        groupName,
+        timestamp,
+      });
+    },
+    [mutedGroups]
+  );
+
   const processReticulumBackgroundEvent = useCallback(
-    async (event: ReticulumBackgroundEvent) => {
+    async (
+      event: ReticulumBackgroundEvent,
+      options: { recordMentionNotification?: boolean } = {}
+    ) => {
       if (!event?.eventId || !event?.groupId || !event?.eventType) return;
-      if (hasProcessedReticulumBackgroundEvent(event.eventId)) {
+      const alreadyProcessed = hasProcessedReticulumBackgroundEvent(
+        event.eventId
+      );
+      if (
+        alreadyProcessed &&
+        options.recordMentionNotification !== true
+      ) {
         return;
       }
 
       if (event.eventType === 'delete') {
+        if (alreadyProcessed) return;
         if (event.targetEventId) {
           await window.reticulumChat?.deleteSearchText?.(event.targetEventId);
           await window.reticulumChat?.deleteMentions?.(event.targetEventId);
@@ -2622,12 +2736,23 @@ export const Group = ({
 
       await window.reticulumChat?.indexSearchText?.(targetEventId, text);
       const mentionMap = await getReticulumMentionNameMap(groupId);
-      await window.reticulumChat?.replaceMentions?.(targetEventId, [
+      const mentionedAddresses = [
         ...new Set([
           ...reticulumMentionedAddressesFromPayload(payload),
           ...resolveReticulumMentionAddresses(text, mentionMap),
         ]),
-      ]);
+      ];
+      await window.reticulumChat?.replaceMentions?.(
+        targetEventId,
+        mentionedAddresses
+      );
+      if (options.recordMentionNotification === true) {
+        recordReticulumMentionNotification(
+          event,
+          groupId,
+          mentionedAddresses
+        );
+      }
       noteProcessedReticulumBackgroundEvent(event.eventId);
       scheduleReticulumChatSummariesRefresh();
     },
@@ -2635,6 +2760,7 @@ export const Group = ({
       getReticulumMentionNameMap,
       hasProcessedReticulumBackgroundEvent,
       noteProcessedReticulumBackgroundEvent,
+      recordReticulumMentionNotification,
       scheduleReticulumChatSummariesRefresh,
     ]
   );
@@ -2649,7 +2775,9 @@ export const Group = ({
       unsubscribe = window.reticulumChat?.onEvent?.((payload) => {
         const event = payload?.event as ReticulumBackgroundEvent | undefined;
         if (!event?.eventId) return;
-        void processReticulumBackgroundEvent(event).catch((error) => {
+        void processReticulumBackgroundEvent(event, {
+          recordMentionNotification: true,
+        }).catch((error) => {
           console.error(
             '[ReticulumChat] Background event processing failed:',
             error
@@ -3295,6 +3423,8 @@ export const Group = ({
     setFirstSecretKeyInCreation(false);
     setMountedLandGroupId(null);
     setReticulumMountedGroupSections({});
+    setNotificationReticulumChannelId('');
+    setNotificationReticulumMessageId('');
     setGroupSection('home');
     setGroupAnnouncements({});
     setDefaultThread(null);
@@ -3457,6 +3587,38 @@ export const Group = ({
   }, [reticulumChatEnabled]);
 
   useEffect(() => {
+    if (
+      !isQChatTabActive ||
+      !reticulumChatEnabled ||
+      !myAddress
+    ) {
+      return;
+    }
+    const permissionKey = getNotificationPermissionKey('Q-Chat', myAddress);
+    if (qChatNotificationPermissionRequests.has(permissionKey)) return;
+    const request = (async () => {
+      const storedPermission = await getPermission(permissionKey);
+      if (storedPermission !== null) return;
+      try {
+        await getNotificationPermission({
+          appInfo: { name: 'Q-Chat' },
+        });
+      } catch {
+        // The standard Q-App flow only persists acceptance. Persisting a
+        // decline prevents Q-Chat from asking again on every mount.
+        await setPermission(permissionKey, false);
+      }
+    })().finally(() => {
+      qChatNotificationPermissionRequests.delete(permissionKey);
+    });
+    qChatNotificationPermissionRequests.set(permissionKey, request);
+  }, [
+    isQChatTabActive,
+    myAddress,
+    reticulumChatEnabled,
+  ]);
+
+  useEffect(() => {
     subscribeToEvent('open-group-discovery', openGroupDiscovery);
 
     return () => {
@@ -3483,9 +3645,12 @@ export const Group = ({
       const groupId = e.detail?.from;
       const channelId =
         typeof e.detail?.channelId === 'string' ? e.detail.channelId : '';
+      const eventId =
+        typeof e.detail?.eventId === 'string' ? e.detail.eventId : '';
       if (channelId) {
         setNotificationReticulumChannelId(channelId);
       }
+      setNotificationReticulumMessageId(eventId);
       const findGroup = memberGroupsRef.current?.find(
         (group: any) => +group?.groupId === +groupId
       );
@@ -3809,10 +3974,15 @@ export const Group = ({
         notificationReticulumChannelId === normalizedChannelId
       ) {
         setNotificationReticulumChannelId('');
+        setNotificationReticulumMessageId('');
       }
     },
     [bumpReticulumReadEntryToken, notificationReticulumChannelId]
   );
+  const handleReticulumNotificationHandled = useCallback(() => {
+    setNotificationReticulumChannelId('');
+    setNotificationReticulumMessageId('');
+  }, []);
 
   useEffect(() => {
     if (!reticulumChatEnabled) return;
@@ -4240,6 +4410,9 @@ export const Group = ({
                     notificationReticulumChannelId={
                       notificationReticulumChannelId
                     }
+                    notificationReticulumMessageId={
+                      notificationReticulumMessageId
+                    }
                     onGroupCallClick={
                       gcallGroupNumericId !== null
                         ? handleGroupCallHeaderClick
@@ -4262,6 +4435,9 @@ export const Group = ({
                         : ''
                     }
                     onReticulumChannelSelected={handleReticulumChannelSelected}
+                    onReticulumNotificationHandled={
+                      handleReticulumNotificationHandled
+                    }
                     reticulumReadEntryToken={reticulumReadEntryToken}
                     isGroupOwner={groupOwner?.owner === myAddress}
                   />
@@ -4601,16 +4777,23 @@ export const Group = ({
                   }}
                 >
                   <Suspense fallback={null}>
-                    <LazyManageMembers
-                      inline
-                      reticulumSidebar
-                      selectedGroup={selectedGroup}
-                      address={myAddress}
-                      open
-                      setOpen={setOpenManageMembers}
-                      isAdmin={admins.includes(myAddress)}
-                      isOwner={groupOwner?.owner === myAddress}
-                    />
+                    {groupSection === 'land' ? (
+                      <LazyQortalLandMembers
+                        groupId={Number(selectedGroup.groupId)}
+                        myAddress={myAddress}
+                      />
+                    ) : (
+                      <LazyManageMembers
+                        inline
+                        reticulumSidebar
+                        selectedGroup={selectedGroup}
+                        address={myAddress}
+                        open
+                        setOpen={setOpenManageMembers}
+                        isAdmin={admins.includes(myAddress)}
+                        isOwner={groupOwner?.owner === myAddress}
+                      />
+                    )}
                   </Suspense>
                 </Box>
               )}

@@ -37,6 +37,7 @@ import {
   qortalLandOptimizedAssetRenderScale,
 } from './qortalLandOptimizedAssets';
 import { collectQortalLandRoomAssetIds } from './qortalLandRoomAssetPolicy';
+import { publishQortalLandPresence } from './qortalLandPresence';
 
 type LandPlayerState = {
   authorAddress: string;
@@ -61,6 +62,8 @@ type LandPlayerState = {
   lastSeenAt: number;
   velocityX: number;
   velocityY: number;
+  afk: boolean;
+  dnd: boolean;
 };
 
 type LocalLandState = {
@@ -69,6 +72,8 @@ type LocalLandState = {
   y: number;
   direction: string;
   movement: string;
+  afk: boolean;
+  dnd: boolean;
 };
 
 type LandChatBubble = {
@@ -223,6 +228,10 @@ const QORTAL_LAND_CHARACTER_PREVIEW_FACINGS: QortalLandCharacterPreviewFacing[] 
 ];
 
 const LAND_SEND_INTERVAL_MS = 200;
+const LAND_AFK_TIMEOUT_MS = 2 * 60 * 1000;
+const LAND_AFK_CHECK_INTERVAL_MS = 5_000;
+const LAND_STATUS_AFK = 1;
+const LAND_STATUS_DND = 2;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
 const LAND_REMOTE_INTERPOLATION_BUFFER_MS = 180;
@@ -256,6 +265,7 @@ const LAND_CHARACTER_FRAMES_PER_DIRECTION = 7;
 const LAND_CHARACTER_FEET_BASELINE = 292;
 const LAND_CHARACTER_RENDER_SCALE = 0.56;
 const LAND_CHARACTER_LABEL_OFFSET = 248;
+const LAND_CHARACTER_AVAILABILITY_OFFSET = 42;
 const LAND_CHARACTER_CHAT_BUBBLE_OFFSET = 292;
 const QORTAL_LAND_CHARACTER_CUSTOMIZATION_STORAGE_KEY = 'qortalland.characterCustomization';
 type LandRoomId = 'club' | 'skywalk' | 'mall' | 'park';
@@ -2232,8 +2242,19 @@ const createLandChatMessageId = (): string => {
 
 const parseLandChatCommand = (
   rawText: string
-): { text: string; mode: LandChatMode; moodAction?: LandSocialActionType } => {
+): {
+  text: string;
+  mode: LandChatMode;
+  moodAction?: LandSocialActionType;
+  presenceCommand?: 'afk' | 'dnd';
+} => {
   const normalized = rawText.trim().replace(/\s+/g, ' ');
+  if (/^\/afk$/i.test(normalized)) {
+    return { text: '', mode: 'say', presenceCommand: 'afk' };
+  }
+  if (/^\/dnd$/i.test(normalized)) {
+    return { text: '', mode: 'say', presenceCommand: 'dnd' };
+  }
   const yellMatch = normalized.match(/^\/(?:y|yell)\s+(.+)$/i);
   if (yellMatch?.[1]?.trim()) {
     return { text: yellMatch[1].trim(), mode: 'yell' };
@@ -2711,6 +2732,8 @@ export function QortalLand({
     ...initialPositionForAddress(myAddress || ''),
     direction: 'r',
     movement: 'idle',
+    afk: false,
+    dnd: false,
   });
   const lastSentRef = useRef<LocalLandState & { sentAt: number }>({
     ...localStateRef.current,
@@ -2720,11 +2743,15 @@ export function QortalLand({
   const landChatSequenceRef = useRef(0);
   const landActionSequenceRef = useRef(0);
   const landActionCooldownTimerRef = useRef<number | null>(null);
+  const lastLandActivityAtRef = useRef(Date.now());
+  const recordLandActivityRef = useRef<() => void>(() => undefined);
   const [reticulumReady, setReticulumReady] = useState<boolean | null>(null);
   const [landGameRoomId, setLandGameRoomId] = useState<LandRoomId>(
     QORTAL_LAND_START_ROOM_ID
   );
   const [loadingRoomAssets, setLoadingRoomAssets] = useState<LandRoomId | null>(null);
+  const [isLandAfk, setIsLandAfk] = useState(false);
+  const [isLandDnd, setIsLandDnd] = useState(false);
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -2747,6 +2774,7 @@ export function QortalLand({
   const [activeLandCallPeerAddress, setActiveLandCallPeerAddress] = useState<string | null>(null);
   const [landCallPresenceVersion, setLandCallPresenceVersion] = useState(0);
   const [landGamePresenceVersion, setLandGamePresenceVersion] = useState(0);
+  const [landAvailabilityVersion, setLandAvailabilityVersion] = useState(0);
   const [isAssetDevPanelOpen, setIsAssetDevPanelOpen] = useState(false);
   const [selectedDevRoomId, setSelectedDevRoomId] = useState<LandRoomId>(
     QORTAL_LAND_PARK_ROOM_ID
@@ -2790,13 +2818,113 @@ export function QortalLand({
   );
   const sessionId = useMemo(() => createSessionId(), []);
   const qortBalance = useMemo(() => normalizeQortBalance(balance), [balance]);
+  const publishLandPresenceSnapshot = useCallback(() => {
+    const byAddress = new Map<
+      string,
+      {
+        address: string;
+        roomId: string;
+        afk: boolean;
+        dnd: boolean;
+        lastSeenAt: number;
+      }
+    >();
+    if (myAddress && isActiveRef.current) {
+      byAddress.set(myAddress, {
+        address: myAddress,
+        roomId: localStateRef.current.roomId,
+        afk: localStateRef.current.afk,
+        dnd: localStateRef.current.dnd,
+        lastSeenAt: Date.now(),
+      });
+    }
+    for (const player of remotePlayersRef.current.values()) {
+      const previous = byAddress.get(player.authorAddress);
+      if (!previous || player.lastSeenAt > previous.lastSeenAt) {
+        byAddress.set(player.authorAddress, {
+          address: player.authorAddress,
+          roomId: player.roomId,
+          afk: player.afk,
+          dnd: player.dnd,
+          lastSeenAt: player.lastSeenAt,
+        });
+      }
+    }
+    publishQortalLandPresence({
+      groupId,
+      members: [...byAddress.values()],
+    });
+  }, [groupId, myAddress]);
+
+  const setLocalLandAvailability = useCallback(
+    (next: { afk?: boolean; dnd?: boolean }) => {
+      const current = localStateRef.current;
+      const afk = next.afk ?? current.afk;
+      const dnd = next.dnd ?? current.dnd;
+      if (afk === current.afk && dnd === current.dnd) return;
+      localStateRef.current = { ...current, afk, dnd };
+      setIsLandAfk(afk);
+      setIsLandDnd(dnd);
+      lastSentRef.current = { ...lastSentRef.current, sentAt: 0 };
+      publishLandPresenceSnapshot();
+    },
+    [publishLandPresenceSnapshot]
+  );
+
+  const recordLandActivity = useCallback(() => {
+    lastLandActivityAtRef.current = Date.now();
+    if (localStateRef.current.afk) {
+      setLocalLandAvailability({ afk: false });
+    }
+  }, [setLocalLandAvailability]);
+
+  useEffect(() => {
+    recordLandActivityRef.current = recordLandActivity;
+  }, [recordLandActivity]);
+
+  useEffect(() => {
+    if (!isActive) return undefined;
+    const interval = window.setInterval(() => {
+      if (
+        !localStateRef.current.afk &&
+        Date.now() - lastLandActivityAtRef.current >= LAND_AFK_TIMEOUT_MS
+      ) {
+        setLocalLandAvailability({ afk: true });
+      }
+    }, LAND_AFK_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [isActive, setLocalLandAvailability]);
+
+  useEffect(() => {
+    publishLandPresenceSnapshot();
+  }, [isLandAfk, isLandDnd, landGameRoomId, publishLandPresenceSnapshot]);
+
   useEffect(() => {
     isActiveRef.current = isActive;
     if (!isActive) {
       movementKeysRef.current.clear();
       localStateRef.current = { ...localStateRef.current, movement: 'idle' };
       chatInputRef.current?.blur();
+      if (reticulumReady === true && myAddress) {
+        sequenceRef.current += 1;
+        void window.reticulumChat?.sendLandState?.(groupId, myAddress, {
+          sessionId,
+          sequence: sequenceRef.current,
+          ...localStateRef.current,
+          movement: 'leave',
+          statusFlags:
+            (localStateRef.current.afk ? LAND_STATUS_AFK : 0) |
+            (localStateRef.current.dnd ? LAND_STATUS_DND : 0),
+        });
+      }
+    } else {
+      lastLandActivityAtRef.current = Date.now();
+      if (localStateRef.current.afk) {
+        setLocalLandAvailability({ afk: false });
+      }
+      lastSentRef.current = { ...lastSentRef.current, sentAt: 0 };
     }
+    publishLandPresenceSnapshot();
 
     const game = gameRef.current;
     if (!game) return undefined;
@@ -2818,7 +2946,15 @@ export function QortalLand({
     return () => {
       window.cancelAnimationFrame(resizeFrame);
     };
-  }, [isActive]);
+  }, [
+    groupId,
+    isActive,
+    myAddress,
+    publishLandPresenceSnapshot,
+    reticulumReady,
+    setLocalLandAvailability,
+    sessionId,
+  ]);
 
   const handleLandGameActiveChange = useCallback((active: boolean) => {
     landGameActiveRef.current = active;
@@ -3549,10 +3685,32 @@ export function QortalLand({
     sessionId,
     roomId: landGameRoomId,
     enabled: reticulumReady === true,
+    doNotDisturb: isLandDnd,
+    onActivity: recordLandActivity,
     onActiveChange: handleLandGameActiveChange,
     onPlayerSeen: handleLandGamePlayerSeen,
     resolvePlayerName: resolveLandPlayerName,
   });
+
+  useEffect(() => {
+    const callInUse =
+      landVoiceCall.callState !== 'idle' ||
+      groupCall.roomState === 'joining' ||
+      groupCall.roomState === 'connected';
+    if (!isActive || !callInUse) return undefined;
+    recordLandActivity();
+    const interval = window.setInterval(recordLandActivity, 30_000);
+    return () => window.clearInterval(interval);
+  }, [
+    groupCall.roomState,
+    isActive,
+    landVoiceCall.callState,
+    recordLandActivity,
+  ]);
+
+  useEffect(() => {
+    if (proximityVoice.transmitting) recordLandActivity();
+  }, [proximityVoice.transmitting, recordLandActivity]);
 
   const wakeLandChatPanel = useCallback(() => {
     setIsChatDimmed(false);
@@ -3566,11 +3724,12 @@ export function QortalLand({
   }, [queuePrimaryNameLookups, wakeLandChatPanel]);
 
   const focusLandChatInput = useCallback(() => {
+    recordLandActivity();
     wakeLandChatPanel();
     window.setTimeout(() => {
       chatInputRef.current?.focus();
     }, 0);
-  }, [wakeLandChatPanel]);
+  }, [recordLandActivity, wakeLandChatPanel]);
 
   const cancelLandChatTyping = useCallback(() => {
     setChatText('');
@@ -3581,6 +3740,7 @@ export function QortalLand({
   }, []);
 
   const insertLandChatEmojiShortcut = useCallback((shortcut: string) => {
+    recordLandActivity();
     setChatText((current) => {
       const input = chatInputRef.current;
       const start = input?.selectionStart ?? current.length;
@@ -3598,7 +3758,7 @@ export function QortalLand({
     if (chatError) setChatError('');
     setIsEmojiPickerOpen(false);
     focusLandChatInput();
-  }, [chatError, focusLandChatInput]);
+  }, [chatError, focusLandChatInput, recordLandActivity]);
 
   useEffect(() => {
     queuePrimaryNameLookups([myAddress]);
@@ -3826,6 +3986,7 @@ export function QortalLand({
     if (isSendingChat || reticulumReady !== true) return;
     const { text, mode, moodAction } = parseLandChatCommand(chatText);
     if (!text) return;
+    recordLandActivity();
     if (utf8ByteLength(text) > LAND_CHAT_MAX_TEXT_BYTES) {
       setChatError('Message is too large');
       return;
@@ -3896,19 +4057,41 @@ export function QortalLand({
     isSendingChat,
     myAddress,
     publishLandEventPayload,
+    recordLandActivity,
     reticulumReady,
     sessionId,
   ]);
 
   const submitLandChatFromInput = useCallback(() => {
     if (activeChatTab !== 'local') return;
-    const { text } = parseLandChatCommand(chatText);
+    const { text, presenceCommand } = parseLandChatCommand(chatText);
+    if (presenceCommand) {
+      const nextAfk =
+        presenceCommand === 'afk' ? !localStateRef.current.afk : undefined;
+      recordLandActivity();
+      if (presenceCommand === 'afk') {
+        setLocalLandAvailability({ afk: nextAfk });
+      } else {
+        setLocalLandAvailability({ dnd: !localStateRef.current.dnd });
+      }
+      setChatText('');
+      setChatError('');
+      setIsEmojiPickerOpen(false);
+      return;
+    }
     if (!text) {
       cancelLandChatTyping();
       return;
     }
     void sendLandChat();
-  }, [activeChatTab, cancelLandChatTyping, chatText, sendLandChat]);
+  }, [
+    activeChatTab,
+    cancelLandChatTyping,
+    chatText,
+    recordLandActivity,
+    sendLandChat,
+    setLocalLandAvailability,
+  ]);
 
   const sendSocialAction = useCallback(async (actionType: LandSocialActionType) => {
     const target = actionTarget;
@@ -3924,6 +4107,7 @@ export function QortalLand({
       sendingSocialAction ||
       socialActionCooldownUntil > now
     ) return;
+    recordLandActivity();
     setSendingSocialAction(actionType);
     setSocialActionError('');
     const actionId = createLandChatMessageId();
@@ -3979,6 +4163,7 @@ export function QortalLand({
     groupId,
     myAddress,
     reticulumReady,
+    recordLandActivity,
     sendingSocialAction,
     sessionId,
     socialActionCooldownUntil,
@@ -4098,6 +4283,7 @@ export function QortalLand({
     (target: LandActionTarget) => {
       if (!myAddress || landVoiceCall.callState !== 'idle') return;
       if (isAddressInLandCall(target.authorAddress)) return;
+      recordLandActivity();
       const chatId = buildDirectVoiceCallChatId(myAddress, target.authorAddress);
       setActionTarget(null);
       setActiveLandCallPeerAddress(target.authorAddress);
@@ -4107,6 +4293,7 @@ export function QortalLand({
       isAddressInLandCall,
       landVoiceCall,
       myAddress,
+      recordLandActivity,
       signLandCallFields,
     ]
   );
@@ -4123,9 +4310,15 @@ export function QortalLand({
       const existing = remotePlayersRef.current.get(key);
       const now = Date.now();
       const roomId = normalizeLandRoomId(payload.roomId);
+      const statusFlags = Math.max(
+        0,
+        Math.min(3, Math.floor(Number(payload.statusFlags) || 0))
+      );
       if (payload.movement === 'leave') {
         if (!existing || payload.sequence >= existing.sequence) {
           remotePlayersRef.current.delete(key);
+          setLandAvailabilityVersion((value) => value + 1);
+          publishLandPresenceSnapshot();
         }
         return;
       }
@@ -4167,6 +4360,13 @@ export function QortalLand({
       const timelineAt = roomChanged || !existing
         ? now
         : Math.max(fromTimelineAt + LAND_REMOTE_RECONCILE_MS, mappedTimelineAt);
+      const afk = (statusFlags & LAND_STATUS_AFK) !== 0;
+      const dnd = (statusFlags & LAND_STATUS_DND) !== 0;
+      const availabilityChanged =
+        !existing ||
+        existing.roomId !== roomId ||
+        existing.afk !== afk ||
+        existing.dnd !== dnd;
       remotePlayersRef.current.set(key, {
         authorAddress: payload.authorAddress,
         sessionId: payload.sessionId,
@@ -4194,7 +4394,13 @@ export function QortalLand({
         lastSeenAt: now,
         velocityX,
         velocityY,
+        afk,
+        dnd,
       });
+      if (availabilityChanged) {
+        setLandAvailabilityVersion((value) => value + 1);
+        publishLandPresenceSnapshot();
+      }
     });
     return () => {
       unsubscribe?.();
@@ -4204,9 +4410,18 @@ export function QortalLand({
         sequence: sequenceRef.current + 1,
         ...localStateRef.current,
         movement: 'leave',
+        statusFlags:
+          (localStateRef.current.afk ? LAND_STATUS_AFK : 0) |
+          (localStateRef.current.dnd ? LAND_STATUS_DND : 0),
       });
     };
-  }, [groupId, myAddress, queuePrimaryNameLookups, sessionId]);
+  }, [
+    groupId,
+    myAddress,
+    publishLandPresenceSnapshot,
+    queuePrimaryNameLookups,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -4511,6 +4726,7 @@ export function QortalLand({
   useEffect(() => {
     if (reticulumReady !== true || !Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     const interval = window.setInterval(() => {
+      if (!isActiveRef.current) return;
       const now = Date.now();
       const current = localStateRef.current;
       const previous = lastSentRef.current;
@@ -4518,7 +4734,9 @@ export function QortalLand({
         Math.abs(current.x - previous.x) >= 2 ||
         Math.abs(current.y - previous.y) >= 2 ||
         current.direction !== previous.direction ||
-        current.movement !== previous.movement;
+        current.movement !== previous.movement ||
+        current.afk !== previous.afk ||
+        current.dnd !== previous.dnd;
       if (!moved && now - previous.sentAt < LAND_HEARTBEAT_MS) return;
       sequenceRef.current += 1;
       lastSentRef.current = { ...current, sentAt: now };
@@ -4526,6 +4744,9 @@ export function QortalLand({
         sessionId,
         sequence: sequenceRef.current,
         ...current,
+        statusFlags:
+          (current.afk ? LAND_STATUS_AFK : 0) |
+          (current.dnd ? LAND_STATUS_DND : 0),
       });
     }, LAND_SEND_INTERVAL_MS);
     return () => window.clearInterval(interval);
@@ -4691,8 +4912,10 @@ export function QortalLand({
       class QortalLandScene extends Phaser.Scene {
         private localAvatar?: any;
         private localLabel?: any;
+        private localAvailabilityLabel?: any;
         private remotes = new Map<string, any>();
         private remoteLabels = new Map<string, any>();
+        private remoteAvailabilityLabels = new Map<string, any>();
         private chatBubbles = new Map<string, {
           container: any;
           background: any;
@@ -4889,6 +5112,7 @@ export function QortalLand({
           this.pendingRoomTransition = null;
           movementKeysRef.current.clear();
           localStateRef.current = {
+            ...localStateRef.current,
             roomId: transition.roomId,
             x: transition.x,
             y: transition.y,
@@ -4916,6 +5140,15 @@ export function QortalLand({
             renderY - LAND_CHARACTER_LABEL_OFFSET * scale
           );
           this.localLabel?.setDepth(transition.y + 90);
+          this.updateAvailabilityLabel(
+            this.localAvailabilityLabel,
+            localStateRef.current.afk,
+            localStateRef.current.dnd,
+            transition.x,
+            renderY -
+              (LAND_CHARACTER_LABEL_OFFSET + LAND_CHARACTER_AVAILABILITY_OFFSET) * scale,
+            transition.y + 91
+          );
           this.updateCameraLayout();
           this.updateInteractionPrompt();
           window.setTimeout(() => {
@@ -4994,9 +5227,19 @@ export function QortalLand({
               }
             )
             .setOrigin(0.5);
+          this.localAvailabilityLabel = this.createAvailabilityLabel();
           this.localAvatar.setScale(startScale);
           this.localAvatar.setDepth(start.y + 20);
           this.localLabel.setDepth(start.y + 90);
+          this.updateAvailabilityLabel(
+            this.localAvailabilityLabel,
+            start.afk,
+            start.dnd,
+            start.x,
+            start.y -
+              (LAND_CHARACTER_LABEL_OFFSET + LAND_CHARACTER_AVAILABILITY_OFFSET) * startScale,
+            start.y + 91
+          );
           this.interactionPrompt = this.createInteractionPrompt();
           this.updateInteractionPrompt();
           this.updateCameraLayout();
@@ -7966,6 +8209,40 @@ export function QortalLand({
           }
         }
 
+        private createAvailabilityLabel() {
+          return this.add
+            .text(0, 0, '', {
+              backgroundColor: '#222832',
+              color: '#f8fbff',
+              fontFamily: 'Inter, Arial, sans-serif',
+              fontSize: '9px',
+              fontStyle: 'bold',
+              padding: { x: 4, y: 2 },
+            })
+            .setOrigin(0.5)
+            .setVisible(false);
+        }
+
+        private updateAvailabilityLabel(
+          label: any,
+          afk: boolean,
+          dnd: boolean,
+          x: number,
+          y: number,
+          depth: number
+        ) {
+          if (!label) return;
+          const text = afk && dnd ? 'AFK · DND' : dnd ? 'DND' : afk ? 'AFK' : '';
+          label
+            .setText(text)
+            .setPosition(x, y)
+            .setDepth(depth)
+            .setVisible(Boolean(text));
+          if (text) {
+            label.setBackgroundColor(dnd ? '#71333c' : '#605126');
+          }
+        }
+
         private updateLocalPlayer(delta: number) {
           if (!this.localAvatar) return;
           if (this.pendingRoomTransition) {
@@ -8039,6 +8316,13 @@ export function QortalLand({
             }
           }
           const moving = Boolean(left || right || up || down);
+          if (
+            Math.abs(x - previousX) >= 0.25 ||
+            Math.abs(y - previousY) >= 0.25 ||
+            roomId !== currentRoomRef.current
+          ) {
+            recordLandActivityRef.current();
+          }
           const scale = characterScaleForRoomY(roomId, y);
           const localLabelText = displayNameForAddress(myAddress, primaryNameCacheRef.current);
           if (this.localLabel?.text !== localLabelText) {
@@ -8053,7 +8337,17 @@ export function QortalLand({
           this.localLabel?.setPosition(x, renderY - LAND_CHARACTER_LABEL_OFFSET * scale);
           this.localAvatar.setDepth(y + 20);
           this.localLabel?.setDepth(y + 90);
+          this.updateAvailabilityLabel(
+            this.localAvailabilityLabel,
+            localStateRef.current.afk,
+            localStateRef.current.dnd,
+            x,
+            renderY -
+              (LAND_CHARACTER_LABEL_OFFSET + LAND_CHARACTER_AVAILABILITY_OFFSET) * scale,
+            y + 91
+          );
           localStateRef.current = {
+            ...localStateRef.current,
             roomId,
             x,
             y,
@@ -8158,10 +8452,16 @@ export function QortalLand({
 
         private updateRemotePlayers() {
           const now = Date.now();
+          let presenceChanged = false;
           for (const [key, player] of remotePlayersRef.current.entries()) {
             if (now - player.lastSeenAt > LAND_REMOTE_TTL_MS) {
               remotePlayersRef.current.delete(key);
+              presenceChanged = true;
             }
+          }
+          if (presenceChanged) {
+            setLandAvailabilityVersion((value) => value + 1);
+            publishLandPresenceSnapshot();
           }
           for (const [key, avatar] of this.remotes.entries()) {
             const player = remotePlayersRef.current.get(key);
@@ -8170,6 +8470,8 @@ export function QortalLand({
             this.remotes.delete(key);
             this.remoteLabels.get(key)?.destroy();
             this.remoteLabels.delete(key);
+            this.remoteAvailabilityLabels.get(key)?.destroy();
+            this.remoteAvailabilityLabels.delete(key);
           }
           let remoteIndex = 0;
           for (const [key, player] of remotePlayersRef.current.entries()) {
@@ -8230,6 +8532,7 @@ export function QortalLand({
                 )
                 .setOrigin(0.5);
               this.remoteLabels.set(key, label);
+              this.remoteAvailabilityLabels.set(key, this.createAvailabilityLabel());
             }
             const elapsedSinceUpdate = now - player.receivedAt;
             const renderAt = now - LAND_REMOTE_INTERPOLATION_BUFFER_MS;
@@ -8288,6 +8591,15 @@ export function QortalLand({
             avatar.setDepth(nextY + 20);
             label?.setPosition(nextX, renderY - LAND_CHARACTER_LABEL_OFFSET * scale);
             label?.setDepth(nextY + 90);
+            this.updateAvailabilityLabel(
+              this.remoteAvailabilityLabels.get(key),
+              player.afk,
+              player.dnd,
+              nextX,
+              renderY -
+                (LAND_CHARACTER_LABEL_OFFSET + LAND_CHARACTER_AVAILABILITY_OFFSET) * scale,
+              nextY + 91
+            );
             remoteIndex += 1;
           }
         }
@@ -8392,8 +8704,15 @@ export function QortalLand({
     !isSendingQort;
   void landCallPresenceVersion;
   void landGamePresenceVersion;
+  void landAvailabilityVersion;
   const actionTargetInCall = actionTarget ? isAddressInLandCall(actionTarget.authorAddress) : false;
   const actionTargetInGame = actionTarget ? isAddressInLandGame(actionTarget.authorAddress) : false;
+  const actionTargetDnd = actionTarget
+    ? [...remotePlayersRef.current.values()].some(
+        (player) =>
+          player.authorAddress === actionTarget.authorAddress && player.dnd
+      )
+    : false;
   const localLandCallActive = ['calling', 'ringing', 'connected'].includes(landVoiceCall.callState);
   const canStartLandCall =
     Boolean(actionTarget) &&
@@ -8410,6 +8729,7 @@ export function QortalLand({
     !localLandCallActive &&
     !actionTargetInCall &&
     !actionTargetInGame &&
+    !actionTargetDnd &&
     actionTarget?.authorAddress !== myAddress;
   const activeLandCallPeerName = activeLandCallPeerAddress
     ? displayNameForAddress(activeLandCallPeerAddress, primaryNameCacheRef.current)
@@ -8440,6 +8760,7 @@ export function QortalLand({
 
   return (
     <Box
+      onPointerDown={recordLandActivity}
       sx={{
         backgroundColor: '#050811',
         display: 'flex',
@@ -8627,7 +8948,9 @@ export function QortalLand({
                       borderRadius: '5px',
                       color: isActive ? '#2cf8ff' : 'rgba(220, 220, 226, 0.48)',
                       cursor: 'pointer',
-                      display: 'flex',
+                      // Keep Whispers implemented but out of the QortalLand UI
+                      // until its transport is ready for users.
+                      display: tab === 'whispers' ? 'none' : 'flex',
                       fontSize: 12,
                       fontWeight: isActive ? 900 : 800,
                       height: 31,
@@ -8883,6 +9206,7 @@ export function QortalLand({
                   }}
                   onBlur={() => setIsChatFocused(false)}
                   onChange={(event) => {
+                    recordLandActivity();
                     const next = event.target.value.slice(0, LAND_CHAT_MAX_INPUT_CHARS);
                     setChatText(next);
                     if (chatError) setChatError('');
@@ -9769,7 +10093,13 @@ export function QortalLand({
                 display: actionTarget.authorAddress === myAddress ? 'none' : 'flex',
               }}
             >
-              {actionTargetInGame ? 'In a game' : actionTargetInCall ? 'In a call' : 'Play games'}
+              {actionTargetDnd
+                ? 'Do Not Disturb'
+                : actionTargetInGame
+                  ? 'In a game'
+                  : actionTargetInCall
+                    ? 'In a call'
+                    : 'Play games'}
             </Button>
             {showGamePicker && actionTarget.authorAddress !== myAddress && (
               <Box sx={{ mt: 0.5 }}>
@@ -9841,7 +10171,10 @@ export function QortalLand({
           </Box>
           <IconButton
             aria-label="End QortalLand call"
-            onClick={() => void landVoiceCall.hangUp()}
+            onClick={() => {
+              recordLandActivity();
+              void landVoiceCall.hangUp();
+            }}
             sx={{
               backgroundColor: alpha('#ff4f6d', 0.16),
               border: `1px solid ${alpha('#ff4f6d', 0.34)}`,
@@ -10018,7 +10351,10 @@ export function QortalLand({
       </Dialog>
       <Dialog
         open={Boolean(landVoiceCall.incomingCall)}
-        onClose={() => landVoiceCall.rejectCall()}
+        onClose={() => {
+          recordLandActivity();
+          landVoiceCall.rejectCall();
+        }}
         PaperProps={{
           sx: {
             background: `linear-gradient(180deg, ${alpha('#10182a', 0.98)}, ${alpha('#070914', 0.98)})`,
@@ -10053,13 +10389,19 @@ export function QortalLand({
         </DialogContent>
         <DialogActions sx={{ padding: '12px 20px 18px' }}>
           <Button
-            onClick={() => landVoiceCall.rejectCall()}
+            onClick={() => {
+              recordLandActivity();
+              landVoiceCall.rejectCall();
+            }}
             sx={{ color: theme.palette.text.secondary, textTransform: 'none' }}
           >
             Decline
           </Button>
           <Button
-            onClick={() => void landVoiceCall.acceptCall()}
+            onClick={() => {
+              recordLandActivity();
+              void landVoiceCall.acceptCall();
+            }}
             startIcon={<CallRoundedIcon fontSize="small" />}
             sx={{
               backgroundColor: alpha('#2cf8ff', 0.16),

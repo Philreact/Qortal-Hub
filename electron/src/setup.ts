@@ -3995,6 +3995,7 @@ ipcMain.handle(
       roomId?: unknown;
       direction?: unknown;
       movement?: unknown;
+      statusFlags?: unknown;
     }
   ) => {
     const settings = await readAppSettings();
