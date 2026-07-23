@@ -133,11 +133,12 @@ export function useQortalLandProximityVoice(options: Options) {
   const [error, setError] = useState('');
   const [transmitting, setTransmitting] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [inputDeviceId, setInputDeviceIdState] = useState(() => localStorage.getItem(`qortalland:proximity:input:${address}`) || '');
-  const [outputDeviceId, setOutputDeviceIdState] = useState(() => localStorage.getItem(`qortalland:proximity:output:${address}`) || '');
+  const [inputDeviceId, setInputDeviceIdState] = useState(() => localStorage.getItem(`qortalland:proximity:input-v2:${address}`) || '');
+  const [outputDeviceId, setOutputDeviceIdState] = useState(() => localStorage.getItem(`qortalland:proximity:output-v2:${address}`) || '');
   const [masterVolume, setMasterVolumeState] = useState(() => {
-    const stored = Number(localStorage.getItem(`qortalland:proximity:volume:${address}`));
-    return Number.isFinite(stored) && stored >= 0 && stored <= 2 ? stored : 1;
+    const storedValue = localStorage.getItem(`qortalland:proximity:volume-v2:${address}`);
+    const stored = storedValue === null ? Number.NaN : Number(storedValue);
+    return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : 0.75;
   });
   const optedInRef = useRef(false);
   const modeRef = useRef(mode);
@@ -273,8 +274,8 @@ export function useQortalLandProximityVoice(options: Options) {
       send('SET_PROXIMITY_PEER_POLICY', { address: blockedAddress, blocked: true });
     }
     blockedRef.current = new Set(blocked);
-    send('ENABLE_PROXIMITY_VOICE', { mode });
-  }, [address, blockedAddresses, enabled, getPosition, groupId, mode, publicKey, send, sessionId, startAudio]);
+    send('ENABLE_PROXIMITY_VOICE', { mode: modeRef.current });
+  }, [address, blockedAddresses, enabled, getPosition, groupId, publicKey, send, sessionId, startAudio]);
 
   const disable = useCallback(async () => {
     audioFailureStateRef.current = null;
@@ -313,18 +314,18 @@ export function useQortalLandProximityVoice(options: Options) {
 
   const setInputDeviceId = useCallback((deviceId: string) => {
     setInputDeviceIdState(deviceId);
-    localStorage.setItem(`qortalland:proximity:input:${address}`, deviceId);
+    localStorage.setItem(`qortalland:proximity:input-v2:${address}`, deviceId);
   }, [address]);
 
   const setOutputDeviceId = useCallback((deviceId: string) => {
     setOutputDeviceIdState(deviceId);
-    localStorage.setItem(`qortalland:proximity:output:${address}`, deviceId);
+    localStorage.setItem(`qortalland:proximity:output-v2:${address}`, deviceId);
   }, [address]);
 
   const setMasterVolume = useCallback((volume: number) => {
-    const next = Math.max(0, Math.min(2, volume));
+    const next = Math.max(0, Math.min(1, volume));
     setMasterVolumeState(next);
-    localStorage.setItem(`qortalland:proximity:volume:${address}`, String(next));
+    localStorage.setItem(`qortalland:proximity:volume-v2:${address}`, String(next));
     receiverRef.current?.setMasterVolume(next);
   }, [address]);
 

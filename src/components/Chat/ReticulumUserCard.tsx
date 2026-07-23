@@ -39,6 +39,9 @@ export type ReticulumUserCardData = {
 
 type ReticulumUserCardProps = {
   anchorEl: HTMLElement | null;
+  anchorPlacement?: 'above' | 'below';
+  anchorPosition?: { left: number; top: number };
+  boundaryHeight?: number;
   data: ReticulumUserCardData;
   onClose: () => void;
 };
@@ -73,11 +76,14 @@ const formatWholeQort = (balance: string | number | null) => {
 
 export const ReticulumUserCard = ({
   anchorEl,
+  anchorPlacement = 'below',
+  anchorPosition,
+  boundaryHeight,
   data,
   onClose,
 }: ReticulumUserCardProps) => {
   const theme = useTheme();
-  const open = Boolean(anchorEl);
+  const open = Boolean(anchorEl || anchorPosition);
   const [profile, setProfile] = useState<CardProfile | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
@@ -245,9 +251,14 @@ export const ReticulumUserCard = ({
       <Popover
         open={open}
         anchorEl={anchorEl}
+        anchorPosition={anchorPosition}
+        anchorReference={anchorPosition ? 'anchorPosition' : 'anchorEl'}
         onClose={onClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        transformOrigin={{
+          vertical: anchorPlacement === 'above' ? 'bottom' : 'top',
+          horizontal: 'left',
+        }}
         marginThreshold={12}
         slotProps={{
           paper: {
@@ -261,8 +272,14 @@ export const ReticulumUserCard = ({
               boxShadow:
                 'inset 0 0 0 1px rgba(255, 255, 255, 0.035), 0 12px 30px rgba(0, 0, 0, 0.38), 0 3px 8px rgba(0, 0, 0, 0.28)',
               maxWidth: 'calc(100vw - 24px)',
-              mt: 1,
-              overflow: 'visible',
+              maxHeight:
+                typeof boundaryHeight === 'number'
+                  ? Math.max(220, boundaryHeight - 24)
+                  : undefined,
+              mb: anchorPlacement === 'above' ? 1 : 0,
+              mt: anchorPlacement === 'below' ? 1 : 0,
+              overflowX: 'hidden',
+              overflowY: 'auto',
               position: 'relative',
               width: 'min(440px, calc(100vw - 24px))',
             },

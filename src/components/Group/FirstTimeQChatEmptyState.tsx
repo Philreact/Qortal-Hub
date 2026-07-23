@@ -1,14 +1,8 @@
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  Divider,
-  IconButton,
   TextField,
   Typography,
 } from '@mui/material';
@@ -19,13 +13,14 @@ import {
   useState,
   type FormEvent,
 } from 'react';
-import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.png';
-import chatBubbleDots from '../../assets/qchat/caught-up-chat-dots.png';
-import chatBubbleLines from '../../assets/qchat/caught-up-chat-lines.png';
+import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.webp';
+import chatBubbleDots from '../../assets/qchat/caught-up-chat-dots.webp';
+import chatBubbleLines from '../../assets/qchat/caught-up-chat-lines.webp';
 import {
   parseReticulumGroupInviteLinks,
   ReticulumGroupInvitePreviews,
 } from '../Chat/ReticulumGroupInvitePreview';
+import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
 
 const FIREFLY_POSITIONS = [
   { left: 15, top: 37 },
@@ -442,47 +437,10 @@ export function FirstTimeQChatEmptyState({
         )}
       </Box>
 
-      <Dialog
-        fullWidth
-        maxWidth="sm"
+      <QChatWhatsNewDialog
         onClose={() => setIsWhatsNewOpen(false)}
         open={isWhatsNewOpen}
-        PaperProps={{
-          sx: {
-            backgroundColor: '#1D2028',
-            backgroundImage: 'none',
-            border: '1px solid rgba(255, 255, 255, 0.13)',
-            borderRadius: '12px',
-            boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
-            minHeight: 360,
-          },
-        }}
-      >
-        <DialogTitle
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            fontSize: 24,
-            fontWeight: 750,
-            justifyContent: 'space-between',
-            lineHeight: 1.2,
-            px: 3,
-            py: 2.5,
-          }}
-        >
-          What's New?
-          <IconButton
-            aria-label="Close What's New"
-            onClick={() => setIsWhatsNewOpen(false)}
-            size="small"
-            sx={{ color: 'text.secondary' }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.08)' }} />
-        <DialogContent />
-      </Dialog>
+      />
     </Box>
   );
 }

@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { HomeIcon } from '../../assets/Icons/HomeIcon';
 import { AppsIcon } from '../../assets/Icons/AppsIcon';
 import { MessagingIconFilled } from '../../assets/Icons/MessagingIconFilled';
-import qortalLogoOfficial from '../../assets/sidebar/qortal-logo-official.png';
+import qortalLogoOfficial from '../../assets/sidebar/qortal-logo-official.webp';
 import {
   enabledDevModeAtom,
   hasUnreadGroupsAtom,

@@ -16,6 +16,7 @@ import {
   type ChessState,
 } from './chess';
 import { GameSessionChat } from './GameSessionChat';
+import { GameInvitationSentDialog } from './GameInvitationSentDialog';
 import { friendlyGameStatus } from './gameDialogText';
 import type { QortalLandGameMatchView } from './useQortalLandGame';
 
@@ -311,6 +312,20 @@ export function ChessGameDialog({
     setSelectedFrom(null);
     await onPlayMove(selectedFrom, index);
   };
+
+  if (match.phase === 'opening') return null;
+
+  if (match.phase === 'waiting') {
+    return (
+      <GameInvitationSentDialog
+        expiresAt={match.expiresAt}
+        gameTitle="Chess"
+        now={now}
+        onCancel={onClose}
+        opponentName={opponentName}
+      />
+    );
+  }
 
   return (
     <>

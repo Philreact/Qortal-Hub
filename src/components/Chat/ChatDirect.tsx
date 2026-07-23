@@ -3202,7 +3202,7 @@ export const ChatDirect = ({
       </Box>
 
       <LoadingSnackbar
-        open={isLoading}
+        open={!reticulumDirectUiEnabled && isLoading}
         info={{
           message: t('core:loading.chat', {
             postProcess: 'capitalizeFirstChar',

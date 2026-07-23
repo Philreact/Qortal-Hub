@@ -86,6 +86,7 @@ import {
 } from './reticulumGroupRail';
 import { getNameInfo } from './groupApi';
 import { requestQueueMemberNames } from './groupQueues';
+import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_NOTIFICATION_RED = '#f23f42';
@@ -130,11 +131,7 @@ const ReticulumHiddenUsersSettings = ({
 
   const refresh = useCallback(async () => {
     const requestId = ++requestIdRef.current;
-    if (
-      !active ||
-      !myAddress ||
-      !window.reticulumChat?.listSilences
-    ) {
+    if (!active || !myAddress || !window.reticulumChat?.listSilences) {
       setHiddenUsers([]);
       setLoading(false);
       setError('');
@@ -156,10 +153,9 @@ const ReticulumHiddenUsersSettings = ({
       if (requestIdRef.current !== requestId) return;
       setHiddenUsers(silences);
 
-      const unresolvedAddresses = [...new Set(
-        silences.map((silence) => silence.targetAddress)
-      )]
-        .filter((address) => address && !namesByAddress[address]);
+      const unresolvedAddresses = [
+        ...new Set(silences.map((silence) => silence.targetAddress)),
+      ].filter((address) => address && !namesByAddress[address]);
       if (unresolvedAddresses.length > 0) {
         const resolved = await Promise.all(
           unresolvedAddresses.map(async (address) => {
@@ -327,8 +323,7 @@ const ReticulumHiddenUsersSettings = ({
           </Typography>
         ) : (
           hiddenPeople.map(({ silences, targetAddress }, index) => {
-            const displayName =
-              namesByAddress[targetAddress] || targetAddress;
+            const displayName = namesByAddress[targetAddress] || targetAddress;
             const permanent = silences.some(
               (silence) => silence.expiresAt == null
             );
@@ -429,9 +424,9 @@ const ReticulumChatSettingsDialog = ({
   onClose: () => void;
 }) => {
   const theme = useTheme();
-  const [activeSection, setActiveSection] = useState<'accessibility' | 'hidden'>(
-    'accessibility'
-  );
+  const [activeSection, setActiveSection] = useState<
+    'accessibility' | 'hidden'
+  >('accessibility');
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
   const navButtonSx = (selected: boolean) => ({
     alignItems: 'center',
@@ -528,7 +523,10 @@ const ReticulumChatSettingsDialog = ({
           >
             Accessibility
           </Typography>
-          <ButtonBase onClick={() => setActiveSection('accessibility')} sx={navButtonSx(activeSection === 'accessibility')}>
+          <ButtonBase
+            onClick={() => setActiveSection('accessibility')}
+            sx={navButtonSx(activeSection === 'accessibility')}
+          >
             <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} /> Text size
           </ButtonBase>
           <Typography
@@ -552,14 +550,34 @@ const ReticulumChatSettingsDialog = ({
             <VisibilityOffRoundedIcon sx={{ fontSize: 19 }} /> Hidden users
           </ButtonBase>
         </Box>
-        <DialogContent sx={{ flex: 1, minHeight: 0, overflowY: 'auto', p: '28px' }}>
+        <DialogContent
+          sx={{ flex: 1, minHeight: 0, overflowY: 'auto', p: '28px' }}
+        >
           {activeSection === 'accessibility' ? (
             <>
-              <Typography component="h2" sx={{ color: 'text.primary', fontSize: 20, fontWeight: 650, lineHeight: '26px' }}>
+              <Typography
+                component="h2"
+                sx={{
+                  color: 'text.primary',
+                  fontSize: 20,
+                  fontWeight: 650,
+                  lineHeight: '26px',
+                }}
+              >
                 Text size
               </Typography>
-              <Typography sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 400, lineHeight: '20px', maxWidth: 460, mt: 0.75 }}>
-                Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  fontWeight: 400,
+                  lineHeight: '20px',
+                  maxWidth: 460,
+                  mt: 0.75,
+                }}
+              >
+                Choose a reading size for Reticulum messages, channel labels and
+                the members list. Invitation previews keep their fixed layout.
               </Typography>
               <Box sx={{ display: 'grid', gap: 1, mt: 2.5 }}>
                 {reticulumTextScaleOptions.map((option) => {
@@ -570,7 +588,9 @@ const ReticulumChatSettingsDialog = ({
                       onClick={() => setTextScale(option.value)}
                       sx={{
                         alignItems: 'center',
-                        backgroundColor: selected ? theme.palette.action.hover : 'background.default',
+                        backgroundColor: selected
+                          ? theme.palette.action.hover
+                          : 'background.default',
                         border: `1px solid ${selected ? theme.palette.primary.main : theme.palette.divider}`,
                         borderRadius: '10px',
                         display: 'flex',
@@ -581,10 +601,37 @@ const ReticulumChatSettingsDialog = ({
                       }}
                     >
                       <Box>
-                        <Typography sx={{ color: 'text.primary', fontSize: 14, fontWeight: 600, lineHeight: '20px' }}>{option.label}</Typography>
-                        <Typography sx={{ color: 'text.secondary', fontSize: 13, mt: 0.25 }}>{option.detail}</Typography>
+                        <Typography
+                          sx={{
+                            color: 'text.primary',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            lineHeight: '20px',
+                          }}
+                        >
+                          {option.label}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: 'text.secondary',
+                            fontSize: 13,
+                            mt: 0.25,
+                          }}
+                        >
+                          {option.detail}
+                        </Typography>
                       </Box>
-                      <Box sx={{ backgroundColor: selected ? theme.palette.primary.main : 'transparent', border: `1px solid ${selected ? theme.palette.primary.main : theme.palette.text.secondary}`, borderRadius: '50%', height: 16, width: 16 }} />
+                      <Box
+                        sx={{
+                          backgroundColor: selected
+                            ? theme.palette.primary.main
+                            : 'transparent',
+                          border: `1px solid ${selected ? theme.palette.primary.main : theme.palette.text.secondary}`,
+                          borderRadius: '50%',
+                          height: 16,
+                          width: 16,
+                        }}
+                      />
                     </ButtonBase>
                   );
                 })}
@@ -789,6 +836,7 @@ const GroupListInner = ({
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
   const [reticulumSettingsOpen, setReticulumSettingsOpen] = useState(false);
+  const [reticulumWhatsNewOpen, setReticulumWhatsNewOpen] = useState(false);
   const groups = useAtomValue(memberGroupsWithReticulumChatAtom);
   const groupChatHasUnread = useAtomValue(groupChatHasUnreadAtom);
   const groupsAnnHasUnread = useAtomValue(groupsAnnHasUnreadAtom);
@@ -815,9 +863,7 @@ const GroupListInner = ({
     () =>
       orderedGroups
         .map((group: any) => Number(group?.groupId))
-        .filter(
-          (groupId: number) => Number.isInteger(groupId) && groupId > 0
-        ),
+        .filter((groupId: number) => Number.isInteger(groupId) && groupId > 0),
     [orderedGroups]
   );
 
@@ -895,7 +941,10 @@ const GroupListInner = ({
         <GlobalStyles
           styles={{
             '.MuiTooltip-tooltip': {
-              backgroundColor: `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000) !important`,
+              backgroundColor:
+                theme.palette.mode === 'dark'
+                  ? `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000) !important`
+                  : `${theme.palette.grey[100]} !important`,
               border: `1px solid ${theme.palette.divider} !important`,
               borderRadius: '6px',
               boxShadow: '0 8px 18px rgba(0, 0, 0, 0.28)',
@@ -905,15 +954,16 @@ const GroupListInner = ({
               padding: '6px 8px',
             },
             '.MuiTooltip-arrow': {
-              color: `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000) !important`,
+              color:
+                theme.palette.mode === 'dark'
+                  ? `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000) !important`
+                  : `${theme.palette.grey[100]} !important`,
             },
           }}
         />
         <Tooltip
           placement="right"
-          title={
-            desktopSideView === 'directs' ? 'Groups' : 'Direct Messages'
-          }
+          title={desktopSideView === 'directs' ? 'Groups' : 'Direct Messages'}
         >
           <ButtonBase
             onClick={() => {
@@ -1053,45 +1103,16 @@ const GroupListInner = ({
             borderColor: 'divider',
             display: 'flex',
             flexDirection: 'column',
-            gap: '8px',
-            mt: 1,
-            pt: 1,
+            gap: '10px',
+            mt: 1.25,
+            pb: 1,
+            pt: 1.75,
             width: '100%',
           }}
         >
-          <Tooltip
-            placement="right"
-            title={t('group:group.group', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-          >
+          <Tooltip placement="right" title="Find Groups">
             <ButtonBase
-              onClick={() => {
-                setOpenAddGroup(true);
-              }}
-              sx={{
-                alignItems: 'center',
-                border: '1px solid',
-                borderColor: 'divider',
-                borderRadius: '8px',
-                color: theme.palette.text.secondary,
-                display: 'flex',
-                height: 34,
-                justifyContent: 'center',
-                width: 34,
-                '&:hover': {
-                  backgroundColor: theme.palette.action.hover,
-                  color: theme.palette.text.primary,
-                },
-              }}
-            >
-              <AddCircleOutlineIcon sx={{ fontSize: 21 }} />
-            </ButtonBase>
-          </Tooltip>
-
-          <Tooltip placement="right" title="Find groups">
-            <ButtonBase
-              aria-label="Find groups"
+              aria-label="Find Groups"
               onClick={() => {
                 setOpenFindGroup(true);
               }}
@@ -1113,8 +1134,33 @@ const GroupListInner = ({
             </ButtonBase>
           </Tooltip>
 
-          <Tooltip placement="right" title="Chat settings">
+          <Tooltip placement="right" title="Create Group">
             <ButtonBase
+              aria-label="Create Group"
+              onClick={() => {
+                setOpenAddGroup(true);
+              }}
+              sx={{
+                alignItems: 'center',
+                borderRadius: '8px',
+                color: theme.palette.text.secondary,
+                display: 'flex',
+                height: 34,
+                justifyContent: 'center',
+                width: 34,
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  color: theme.palette.text.primary,
+                },
+              }}
+            >
+              <AddCircleOutlineIcon sx={{ fontSize: 21 }} />
+            </ButtonBase>
+          </Tooltip>
+
+          <Tooltip placement="right" title="Group Settings">
+            <ButtonBase
+              aria-label="Group Settings"
               onClick={() => {
                 setReticulumSettingsOpen(true);
               }}
@@ -1135,12 +1181,38 @@ const GroupListInner = ({
               <SettingsOutlinedIcon sx={{ fontSize: 20 }} />
             </ButtonBase>
           </Tooltip>
+
+          <ButtonBase
+            aria-label="Open What's New"
+            onClick={() => setReticulumWhatsNewOpen(true)}
+            sx={{
+              borderRadius: '5px',
+              color: theme.palette.text.secondary,
+              fontSize: 10.5,
+              fontWeight: 650,
+              lineHeight: 1,
+              mb: 0.25,
+              px: 0.75,
+              py: 0.5,
+              transition: 'color 150ms ease, background-color 150ms ease',
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+                color: theme.palette.common.white,
+              },
+            }}
+          >
+            v2.0.0
+          </ButtonBase>
         </Box>
         <ReticulumChatSettingsDialog
           groupIds={reticulumGroupIds}
           myAddress={myAddress}
           open={reticulumSettingsOpen}
           onClose={() => setReticulumSettingsOpen(false)}
+        />
+        <QChatWhatsNewDialog
+          onClose={() => setReticulumWhatsNewOpen(false)}
+          open={reticulumWhatsNewOpen}
         />
       </Box>
     );
@@ -1451,12 +1523,7 @@ const GroupItem = memo(
   }: GroupItemProps) => {
     const theme = useTheme();
     const { t } = useTranslation(['core', 'group']);
-    const {
-      attributes,
-      listeners,
-      setNodeRef,
-      isDragging,
-    } = useSortable({
+    const { attributes, listeners, setNodeRef, isDragging } = useSortable({
       id: String(group?.groupId),
       disabled: !railMode,
     });
@@ -1528,14 +1595,15 @@ const GroupItem = memo(
       0,
       Number(group?.reticulumChatSummary?.unreadCount || 0)
     );
-    const hasReticulumUnread =
-      reticulumUnreadCount > 0;
+    const hasReticulumUnread = reticulumUnreadCount > 0;
     const hasReticulumMention =
       group?.reticulumChatSummary?.hasUnreadMention === true ||
       (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
 
     const gcallRoomIdForRow =
-      group?.groupId && group.groupId !== '0' && Number.isFinite(Number(group.groupId))
+      group?.groupId &&
+      group.groupId !== '0' &&
+      Number.isFinite(Number(group.groupId))
         ? `gcall-qortal-${Number(group.groupId)}`
         : null;
     const imInThisGroupGcall =
@@ -1552,7 +1620,8 @@ const GroupItem = memo(
       meshCallMaxParticipantsByGroup,
       group?.groupId
     );
-    const showGroupCallIndicator = Boolean(gcallRoomIdForRow) && (imInThisGroupGcall || meshShowsCall);
+    const showGroupCallIndicator =
+      Boolean(gcallRoomIdForRow) && (imInThisGroupGcall || meshShowsCall);
     const isClosedGroup =
       groupProperty?.isOpen === false ||
       group?.isOpen === false ||
@@ -1565,10 +1634,20 @@ const GroupItem = memo(
         group.groupId === '0' ? 'General' : group.groupName || 'Group';
       const unreadBadgeLabel =
         reticulumUnreadCount > 99 ? '99+' : String(reticulumUnreadCount);
+      const fallbackAvatarBackground =
+        theme.palette.mode === 'dark'
+          ? 'rgba(7, 10, 17, 0.82)'
+          : 'rgba(49, 58, 72, 0.88)';
       const avatarNode = ownerName ? (
         <Avatar
           sx={{
-            backgroundColor: 'transparent',
+            backgroundColor: isAvatarLoaded
+              ? 'transparent'
+              : fallbackAvatarBackground,
+            boxShadow: isAvatarLoaded
+              ? 'none'
+              : 'inset 0 0 0 1px rgba(255, 255, 255, 0.1)',
+            boxSizing: 'border-box',
             color: theme.palette.common.white,
             display: 'flex',
             fontWeight: 800,
@@ -1576,6 +1655,10 @@ const GroupItem = memo(
             m: 'auto',
             width: 38,
             zIndex: 1,
+            '& .MuiAvatar-img': {
+              height: '100%',
+              width: '100%',
+            },
           }}
           alt={group?.groupName?.charAt(0)}
           src={avatarUrl || undefined}
@@ -1594,7 +1677,9 @@ const GroupItem = memo(
         <Avatar
           alt={group?.groupName?.charAt(0)}
           sx={{
-            backgroundColor: 'transparent',
+            backgroundColor: fallbackAvatarBackground,
+            boxShadow: 'inset 0 0 0 1px rgba(255, 255, 255, 0.1)',
+            boxSizing: 'border-box',
             color: theme.palette.common.white,
             display: 'flex',
             fontWeight: 800,
@@ -1618,11 +1703,25 @@ const GroupItem = memo(
           title={
             <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.65 }}>
               {isOpenGroup ? (
-                <PublicRoundedIcon sx={{ color: '#a9c9ff', fontSize: 15 }} />
+                <PublicRoundedIcon
+                  sx={{
+                    color:
+                      theme.palette.mode === 'dark' ? '#a9c9ff' : '#315d97',
+                    fontSize: 15,
+                  }}
+                />
               ) : (
-                <LockIcon sx={{ color: '#f1a0a8', fontSize: 14 }} />
+                <LockIcon
+                  sx={{
+                    color:
+                      theme.palette.mode === 'dark' ? '#f1a0a8' : '#933642',
+                    fontSize: 14,
+                  }}
+                />
               )}
-              <Typography sx={{ color: 'inherit', fontSize: 12, fontWeight: 600 }}>
+              <Typography
+                sx={{ color: 'inherit', fontSize: 12, fontWeight: 600 }}
+              >
                 {groupLabel}
               </Typography>
             </Box>
@@ -1735,7 +1834,10 @@ const GroupItem = memo(
                       justifyContent: 'center',
                       lineHeight: 1,
                       minWidth: 18,
-                      px: hasReticulumUnread && reticulumUnreadCount > 9 ? 0.45 : 0,
+                      px:
+                        hasReticulumUnread && reticulumUnreadCount > 9
+                          ? 0.45
+                          : 0,
                       position: 'absolute',
                       right: -2,
                       zIndex: 2,
@@ -1763,19 +1865,19 @@ const GroupItem = memo(
                 {!reticulumChatEnabled &&
                   announcement &&
                   !announcement?.seentimestamp && (
-                  <CampaignIcon
-                    sx={{
-                      backgroundColor: theme.palette.background.surface,
-                      borderRadius: '50%',
-                      color: theme.palette.other.unread,
-                      fontSize: 16,
-                      left: 0,
-                      position: 'absolute',
-                      top: 0,
-                      zIndex: 2,
-                    }}
-                  />
-                )}
+                    <CampaignIcon
+                      sx={{
+                        backgroundColor: theme.palette.background.surface,
+                        borderRadius: '50%',
+                        color: theme.palette.other.unread,
+                        fontSize: 16,
+                        left: 0,
+                        position: 'absolute',
+                        top: 0,
+                        zIndex: 2,
+                      }}
+                    />
+                  )}
 
                 {showGroupCallIndicator && (
                   <Tooltip
@@ -1818,7 +1920,8 @@ const GroupItem = memo(
                         justifyContent: 'center',
                         left: -4,
                         position: 'absolute',
-                        transition: 'background-color 120ms ease, transform 120ms ease',
+                        transition:
+                          'background-color 120ms ease, transform 120ms ease',
                         width: 23,
                         zIndex: 3,
                         '&:hover': {
@@ -1961,14 +2064,14 @@ const GroupItem = memo(
             {!reticulumChatEnabled &&
               announcement &&
               !announcement?.seentimestamp && (
-              <CampaignIcon
-                sx={{
-                  color: theme.palette.other.unread,
-                  fontSize: '20px',
-                  flexShrink: 0,
-                }}
-              />
-            )}
+                <CampaignIcon
+                  sx={{
+                    color: theme.palette.other.unread,
+                    fontSize: '20px',
+                    flexShrink: 0,
+                  }}
+                />
+              )}
 
             <Box
               sx={{
@@ -1991,15 +2094,15 @@ const GroupItem = memo(
                     Date.now() - group?.timestamp <
                       timeDifferenceForNotificationChats) ||
                     timestampEnterData < group?.timestamp))) && (
-                  <MarkChatUnreadIcon
-                    sx={{
-                      color: hasReticulumUnread
-                        ? RETICULUM_NOTIFICATION_RED
-                        : theme.palette.other.unread,
-                      fontSize: '18px',
-                    }}
-                  />
-                )}
+                <MarkChatUnreadIcon
+                  sx={{
+                    color: hasReticulumUnread
+                      ? RETICULUM_NOTIFICATION_RED
+                      : theme.palette.other.unread,
+                    fontSize: '18px',
+                  }}
+                />
+              )}
 
               {hasReticulumMention && (
                 <AlternateEmailIcon
