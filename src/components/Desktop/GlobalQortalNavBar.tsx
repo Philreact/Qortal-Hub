@@ -1727,6 +1727,7 @@ export function GlobalQortalNavBar({
                 >
                   <GeneralNotifications
                     address={utilityNav.userInfo?.address}
+                    badgeOutlineColor={chromeBackground}
                     tooltipPlacement="bottom"
                     compact
                     buttonSx={utilityModuleButtonSx}

@@ -1317,7 +1317,9 @@ export const ChatGroup = ({
   isActive,
   isPrivate,
   notificationReticulumChannelId,
+  notificationReticulumMessageId,
   onReticulumChannelSelected,
+  onReticulumNotificationHandled,
   onGroupCallClick,
   onQortalLandClick,
   onThreadsClick,
@@ -1483,6 +1485,7 @@ export const ChatGroup = ({
       nonce: number;
     } | null>(null);
   const reticulumSearchRequestSeqRef = useRef(0);
+  const lastReticulumNotificationScrollTargetRef = useRef('');
   const reticulumSearchPageCursorsRef = useRef<
     Array<ReticulumSearchCursor | null>
   >([null]);
@@ -3053,6 +3056,35 @@ export const ChatGroup = ({
     notificationReticulumChannelId,
     reticulumChannelsForSelectedGroup,
     reticulumChatEnabled,
+  ]);
+
+  useEffect(() => {
+    if (
+      !reticulumChatEnabled ||
+      !notificationReticulumChannelId ||
+      selectedReticulumChannelId !== notificationReticulumChannelId
+    ) {
+      return;
+    }
+    if (!notificationReticulumMessageId) {
+      onReticulumNotificationHandled?.();
+      return;
+    }
+    const targetKey = `${selectedGroup}:${notificationReticulumChannelId}:${notificationReticulumMessageId}`;
+    if (lastReticulumNotificationScrollTargetRef.current === targetKey) return;
+    lastReticulumNotificationScrollTargetRef.current = targetKey;
+    setReticulumSearchScrollTarget((current) => ({
+      messageId: notificationReticulumMessageId,
+      nonce: (current?.nonce ?? 0) + 1,
+    }));
+    onReticulumNotificationHandled?.();
+  }, [
+    notificationReticulumChannelId,
+    notificationReticulumMessageId,
+    onReticulumNotificationHandled,
+    reticulumChatEnabled,
+    selectedGroup,
+    selectedReticulumChannelId,
   ]);
 
   useEffect(() => {

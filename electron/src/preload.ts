@@ -1739,6 +1739,7 @@ try {
           roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
+          statusFlags?: unknown;
         }
       ) =>
         ipcRenderer.invoke(
@@ -2136,6 +2137,7 @@ try {
           y: number;
           direction?: string;
           movement?: string;
+          statusFlags?: number;
           timestamp?: number;
         }) => void
       ) => {
@@ -2150,6 +2152,7 @@ try {
               y: number;
               direction?: string;
               movement?: string;
+              statusFlags?: number;
               timestamp?: number;
             }
           );
@@ -2532,6 +2535,7 @@ try {
           roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
+          statusFlags?: unknown;
         }
       ) =>
         ipcRenderer.invoke(
@@ -2929,6 +2933,7 @@ try {
           y: number;
           direction?: string;
           movement?: string;
+          statusFlags?: number;
           timestamp?: number;
         }) => void
       ) => {
@@ -2943,6 +2948,7 @@ try {
               y: number;
               direction?: string;
               movement?: string;
+              statusFlags?: number;
               timestamp?: number;
             }
           );

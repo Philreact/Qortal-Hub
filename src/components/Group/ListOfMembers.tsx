@@ -1,6 +1,8 @@
 import {
   Avatar,
+  alpha,
   Box,
+  IconButton,
   ListItem,
   ListItemAvatar,
   ListItemButton,
@@ -9,6 +11,9 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
+import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import Groups2RoundedIcon from '@mui/icons-material/Groups2Rounded';
 import { useMemo, useRef, useState } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { LoadingButton } from '@mui/lab';
@@ -44,6 +49,10 @@ const ListOfMembers = ({
   const [isLoadingBan, setIsLoadingBan] = useState(false);
   const [isLoadingMakeAdmin, setIsLoadingMakeAdmin] = useState(false);
   const [isLoadingRemoveAdmin, setIsLoadingRemoveAdmin] = useState(false);
+  const [expandedSections, setExpandedSections] = useState({
+    admins: true,
+    members: true,
+  });
   const theme = useTheme();
   const { t } = useTranslation([
     'auth',
@@ -86,6 +95,68 @@ const ListOfMembers = ({
       });
     });
   }, [members, ownerAddress]);
+  const categorizedReticulumMembers = compact && reticulumUserCards;
+  const categorizedRows = useMemo(() => {
+    if (!categorizedReticulumMembers) {
+      return sortedMembers.map((member) => ({ member, type: 'member' }));
+    }
+
+    const labelForMember = (member) =>
+      (member?.primaryName || member?.name || member?.member || '').toString();
+    const sortAlphabetically = (left, right) =>
+      labelForMember(left).localeCompare(labelForMember(right), undefined, {
+        sensitivity: 'base',
+      });
+    const admins = [...(members || [])]
+      .filter(
+        (member) =>
+          member?.member === ownerAddress || Boolean(member?.isAdmin)
+      )
+      .sort((left, right) => {
+        const leftIsOwner = left?.member === ownerAddress;
+        const rightIsOwner = right?.member === ownerAddress;
+        if (leftIsOwner !== rightIsOwner) return leftIsOwner ? -1 : 1;
+        return sortAlphabetically(left, right);
+      });
+    const regularMembers = [...(members || [])]
+      .filter(
+        (member) =>
+          member?.member !== ownerAddress && !Boolean(member?.isAdmin)
+      )
+      .sort(sortAlphabetically);
+
+    return [
+      {
+        count: admins.length,
+        expanded: expandedSections.admins,
+        first: true,
+        label: 'Admins',
+        section: 'admins',
+        type: 'section',
+      },
+      ...(expandedSections.admins
+        ? admins.map((member) => ({ member, type: 'member' }))
+        : []),
+      {
+        count: regularMembers.length,
+        expanded: expandedSections.members,
+        first: false,
+        label: 'Members',
+        section: 'members',
+        type: 'section',
+      },
+      ...(expandedSections.members
+        ? regularMembers.map((member) => ({ member, type: 'member' }))
+        : []),
+    ];
+  }, [
+    categorizedReticulumMembers,
+    expandedSections.admins,
+    expandedSections.members,
+    members,
+    ownerAddress,
+    sortedMembers,
+  ]);
 
   const handlePopoverOpen = (event, index) => {
     setPopoverAnchor(event.currentTarget);
@@ -331,7 +402,74 @@ const ListOfMembers = ({
   };
 
   const rowRenderer = ({ index, key, style }) => {
-    const member = sortedMembers[index];
+    const row = categorizedRows[index];
+    if (row?.type === 'section') {
+      const expanded = Boolean(row.expanded);
+      const SectionIcon =
+        row.section === 'admins'
+          ? AdminPanelSettingsRoundedIcon
+          : Groups2RoundedIcon;
+      return (
+        <div key={key} style={style}>
+          <Box
+            onClick={() =>
+              setExpandedSections((current) => ({
+                ...current,
+                [row.section]: !current[row.section],
+              }))
+            }
+            sx={{
+              alignItems: 'center',
+              borderRadius: '7px',
+              cursor: 'pointer',
+              display: 'flex',
+              height: row.first ? '100%' : 'calc(100% - 6px)',
+              mt: row.first ? 0 : 0.75,
+              px: 0.75,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.text.primary, 0.055),
+              },
+            }}
+          >
+            <SectionIcon
+              sx={{ color: 'text.secondary', fontSize: 17, mr: 0.75 }}
+            />
+            <Typography
+              sx={{
+                flex: 1,
+                fontSize: 11,
+                fontWeight: 750,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+              }}
+            >
+              {row.label}
+            </Typography>
+            <Typography
+              sx={{ color: 'text.secondary', fontSize: 11, mr: 0.25 }}
+            >
+              {row.count}
+            </Typography>
+            <IconButton
+              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${row.label}`}
+              size="small"
+              sx={{
+                color: 'text.secondary',
+                p: 0.25,
+                pointerEvents: 'none',
+                transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                transition: 'transform 140ms ease',
+              }}
+            >
+              <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Box>
+        </div>
+      );
+    }
+
+    const member = row?.member;
+    if (!member) return null;
     const memberLabel = compact
       ? member?.primaryName || member?.name || 'Member'
       : member?.primaryName || member?.member;
@@ -653,6 +791,8 @@ const ListOfMembers = ({
           flexShrink: 1,
           height: compact ? '100%' : '500px',
           minHeight: 0,
+          boxSizing: 'border-box',
+          padding: categorizedReticulumMembers ? '8px 10px' : undefined,
           position: 'relative',
           width: '100%',
         }}
@@ -663,10 +803,15 @@ const ListOfMembers = ({
               height={height}
               overscanRowCount={8}
               ref={listRef}
-              rowCount={sortedMembers.length}
+              rowCount={categorizedRows.length}
               rowHeight={
-                compact && reticulumUserCards
-                  ? compactRowHeight
+                categorizedReticulumMembers
+                  ? ({ index }) =>
+                      categorizedRows[index]?.type === 'section'
+                        ? categorizedRows[index]?.first
+                          ? 40
+                          : 46
+                        : compactRowHeight
                   : compact
                     ? 52
                     : MEMBER_ROW_HEIGHT

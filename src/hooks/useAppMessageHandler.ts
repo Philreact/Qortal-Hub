@@ -49,7 +49,13 @@ export function useAppMessageHandler(
         });
       } else if (message.action === 'NOTIFICATION_OPEN_APP') {
         const payload = message.payload;
-        if (payload?.openWallets) {
+        if (payload?.qChatMention) {
+          executeEvent('openGroupMessage', {
+            channelId: payload.channelId,
+            eventId: payload.eventId,
+            from: payload.from,
+          });
+        } else if (payload?.openWallets) {
           openQWalletsTab();
         } else if (payload?.link) {
           const data = extractComponents(payload.link);

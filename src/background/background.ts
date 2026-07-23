@@ -3689,7 +3689,8 @@ export const fireOsNotificationPayment = async (
   title,
   messageBody,
   icon,
-  qortalLink
+  qortalLink,
+  internalPayload
 ) => {
   try {
     const isDisableNotifications =
@@ -3712,7 +3713,8 @@ export const fireOsNotificationPayment = async (
 
     generalNotificationPayloadById.set(
       notificationId,
-      qortalLink ? { link: qortalLink } : { openWallets: true }
+      internalPayload ||
+        (qortalLink ? { link: qortalLink } : { openWallets: true })
     );
 
     const notification = new window.Notification(title, {
