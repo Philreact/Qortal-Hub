@@ -773,7 +773,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
-      setReticulumChatEnabled(settings?.reticulumChatEnabled === true);
+      setReticulumChatEnabled(
+        settings?.reticulumChatEnabled === false ? false : true
+      );
       setReticulumResourceLimitBytes(
         Number(settings?.reticulumResourceLimitBytes) ||
           10 * RETICULUM_RESOURCE_GIB

@@ -1733,7 +1733,7 @@ export interface AppSettings {
   reticulumMeshUpnpEnabled?: boolean;
   /** When false, do not write/regenerate Qortal Hub's managed Reticulum config. */
   reticulumManagedConfigEnabled?: boolean;
-  /** Opt-in Reticulum-backed group chat transport. Default false until stable. */
+  /** Reticulum-backed group chat transport. Default true; users may opt out. */
   reticulumChatEnabled?: boolean;
   /** Maximum disk bytes used by Reticulum chat images and attachments. */
   reticulumResourceLimitBytes?: number;
@@ -1745,7 +1745,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   p2pEnabled: !isDisabledLegacy,
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
-  reticulumChatEnabled: false,
+  reticulumChatEnabled: true,
   reticulumResourceLimitBytes: RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
 };
 
@@ -1776,7 +1776,8 @@ export async function readAppSettings(): Promise<AppSettings> {
         parsed.reticulumMeshUpnpEnabled === false ? false : true,
       reticulumManagedConfigEnabled:
         parsed.reticulumManagedConfigEnabled === false ? false : true,
-      reticulumChatEnabled: parsed.reticulumChatEnabled === true,
+      reticulumChatEnabled:
+        parsed.reticulumChatEnabled === false ? false : true,
       reticulumResourceLimitBytes: Math.max(
         RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
         Math.min(

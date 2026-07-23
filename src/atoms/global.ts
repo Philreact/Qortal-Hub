@@ -62,7 +62,7 @@ export const reticulumChatSummariesAtom = atomWithReset<
 export const reticulumDirectSummariesAtom = atomWithReset<Record<string, any>>(
   {}
 );
-export const reticulumChatEnabledAtom = atomWithReset(false);
+export const reticulumChatEnabledAtom = atomWithReset(true);
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);
