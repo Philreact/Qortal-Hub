@@ -294,8 +294,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     useState(10 * RETICULUM_RESOURCE_GIB);
   const [reticulumResourceStorage, setReticulumResourceStorage] =
     useState<ReticulumResourceStorageStatus | null>(null);
-  const [isReticulumStorageCleaning, setIsReticulumStorageCleaning] =
-    useState(false);
   const [reticulumConfigEditorInfo, setReticulumConfigEditorInfo] =
     useState<ReticulumConfigEditorInfo | null>(null);
   const [reticulumConfigDraft, setReticulumConfigDraft] = useState('');
@@ -1144,36 +1142,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     },
     [reticulumResourceLimitBytes, setInfoSnack, setOpenSnack, td]
   );
-
-  const handleReticulumStorageCleanup = useCallback(async () => {
-    if (isReticulumStorageCleaning) return;
-    setIsReticulumStorageCleaning(true);
-    try {
-      const response = await window.reticulumResources?.cleanupStorage?.();
-      if (!response?.success) {
-        throw new Error(response?.error || 'Storage cleanup failed');
-      }
-      if (response.status) {
-        setReticulumResourceStorage(response.status as ReticulumResourceStorageStatus);
-      }
-      setInfoSnack({
-        type: 'success',
-        message: td('reticulum_storage_cleaned', 'Attachment storage cleaned.'),
-      });
-      setOpenSnack(true);
-    } catch {
-      setInfoSnack({
-        type: 'error',
-        message: td(
-          'reticulum_storage_cleanup_error',
-          'We could not clean attachment storage right now.'
-        ),
-      });
-      setOpenSnack(true);
-    } finally {
-      setIsReticulumStorageCleaning(false);
-    }
-  }, [isReticulumStorageCleaning, setInfoSnack, setOpenSnack, td]);
 
   const handleSaveReticulumConfig = useCallback(async () => {
     if (
@@ -3764,17 +3732,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             </MenuItem>
                           ))}
                         </Select>
-                        <Button
-                          disabled={isReticulumStorageCleaning}
-                          onClick={() => void handleReticulumStorageCleanup()}
-                          size="small"
-                          variant="outlined"
-                          sx={{ minWidth: 74, textTransform: 'none' }}
-                        >
-                          {isReticulumStorageCleaning
-                            ? td('cleaning', 'Cleaning')
-                            : td('clean', 'Clean')}
-                        </Button>
                       </Box>
                     </Box>
 
