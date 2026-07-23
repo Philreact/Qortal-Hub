@@ -1,6 +1,5 @@
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ExpandLessRoundedIcon from '@mui/icons-material/ExpandLessRounded';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import {
@@ -8,12 +7,9 @@ import {
   Box,
   Button,
   ButtonBase,
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  Divider,
-  IconButton,
   Typography,
+  alpha,
+  useTheme,
 } from '@mui/material';
 import { useAtomValue } from 'jotai';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -24,6 +20,7 @@ import {
   readReticulumGroupOrder,
   subscribeToReticulumGroupOrder,
 } from './reticulumGroupRail';
+import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
 
 const RETICULUM_NOTIFICATION_RED = '#f23f42';
 const RETICULUM_UNREAD_BLUE = '#168bff';
@@ -81,15 +78,22 @@ function GroupActivityCard({
   item: NormalizedActivityGroup;
   onSelect: () => void;
 }) {
+  const theme = useTheme();
   const initial = item.name.trim().charAt(0).toUpperCase() || 'G';
+  const lightMode = theme.palette.mode === 'light';
   return (
     <ButtonBase
       aria-label={activityLabel(item)}
       onClick={onSelect}
       sx={{
         alignItems: 'center',
-        backgroundColor: ACTIVITY_CARD_BACKGROUND,
-        border: '1px solid rgba(255, 255, 255, 0.065)',
+        backgroundColor: lightMode
+          ? alpha(theme.palette.primary.main, 0.09)
+          : ACTIVITY_CARD_BACKGROUND,
+        border: '1px solid',
+        borderColor: lightMode
+          ? alpha(theme.palette.primary.main, 0.18)
+          : 'rgba(255, 255, 255, 0.065)',
         borderRadius: '10px',
         boxShadow: '0 7px 20px rgba(0, 0, 0, 0.18)',
         boxSizing: 'border-box',
@@ -105,8 +109,12 @@ function GroupActivityCard({
           'background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease',
         width: '100%',
         '&:hover': {
-          backgroundColor: 'rgba(36, 40, 50, 0.94)',
-          borderColor: 'rgba(93, 160, 255, 0.22)',
+          backgroundColor: lightMode
+            ? alpha(theme.palette.primary.main, 0.14)
+            : 'rgba(36, 40, 50, 0.94)',
+          borderColor: lightMode
+            ? alpha(theme.palette.primary.main, 0.3)
+            : 'rgba(93, 160, 255, 0.22)',
           boxShadow: '0 10px 26px rgba(0, 0, 0, 0.26)',
           transform: 'translateY(-1px)',
         },
@@ -210,6 +218,7 @@ export function ReturningUserActivityDashboard({
   onBrowseCommunities,
   onSelectGroup,
 }: ReturningUserActivityDashboardProps) {
+  const theme = useTheme();
   const ownerNames = useAtomValue(groupsOwnerNamesAtom) as Record<
     string,
     string | undefined
@@ -379,12 +388,19 @@ export function ReturningUserActivityDashboard({
                   data-qchat-activity-placeholder
                   key={`activity-placeholder-${index}`}
                   sx={{
-                    backgroundColor: ACTIVITY_CARD_BACKGROUND,
-                    border: '1px solid rgba(255, 255, 255, 0.035)',
+                    backgroundColor:
+                      theme.palette.mode === 'light'
+                        ? alpha(theme.palette.text.primary, 0.055)
+                        : ACTIVITY_CARD_BACKGROUND,
+                    border: '1px solid',
+                    borderColor:
+                      theme.palette.mode === 'light'
+                        ? alpha(theme.palette.text.primary, 0.1)
+                        : 'rgba(255, 255, 255, 0.035)',
                     borderRadius: '10px',
                     boxSizing: 'border-box',
                     height: 124,
-                    opacity: 0.38,
+                    opacity: theme.palette.mode === 'light' ? 1 : 0.38,
                     pointerEvents: 'none',
                     width: '100%',
                   }}
@@ -480,47 +496,10 @@ export function ReturningUserActivityDashboard({
         )}
       </Box>
 
-      <Dialog
-        fullWidth
-        maxWidth="sm"
+      <QChatWhatsNewDialog
         onClose={() => setIsWhatsNewOpen(false)}
         open={isWhatsNewOpen}
-        PaperProps={{
-          sx: {
-            backgroundColor: '#1D2028',
-            backgroundImage: 'none',
-            border: '1px solid rgba(255, 255, 255, 0.13)',
-            borderRadius: '12px',
-            boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
-            minHeight: 360,
-          },
-        }}
-      >
-        <DialogTitle
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            fontSize: 24,
-            fontWeight: 750,
-            justifyContent: 'space-between',
-            lineHeight: 1.2,
-            px: 3,
-            py: 2.5,
-          }}
-        >
-          What's New?
-          <IconButton
-            aria-label="Close What's New"
-            onClick={() => setIsWhatsNewOpen(false)}
-            size="small"
-            sx={{ color: 'text.secondary' }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.08)' }} />
-        <DialogContent />
-      </Dialog>
+      />
     </Box>
   );
 }

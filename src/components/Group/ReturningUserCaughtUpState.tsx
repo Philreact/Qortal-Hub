@@ -1,19 +1,14 @@
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import {
   Box,
   Button,
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  Divider,
-  IconButton,
   Typography,
 } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
-import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.png';
-import chatBubbleDots from '../../assets/qchat/caught-up-chat-dots.png';
-import chatBubbleLines from '../../assets/qchat/caught-up-chat-lines.png';
+import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.webp';
+import chatBubbleDots from '../../assets/qchat/caught-up-chat-dots.webp';
+import chatBubbleLines from '../../assets/qchat/caught-up-chat-lines.webp';
+import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
 
 type ReturningUserCaughtUpStateProps = {
   displayName?: string;
@@ -277,28 +272,34 @@ export function ReturningUserCaughtUpState({
         <Button
           aria-label="Browse Communities"
           onClick={onBrowseCommunities}
-          startIcon={<GroupsRoundedIcon sx={{ fontSize: 19 }} />}
+          startIcon={<GroupsRoundedIcon sx={{ fontSize: 16 }} />}
           variant="outlined"
           sx={{
             backgroundColor: 'transparent',
             borderColor: 'rgba(125, 158, 202, 0.42)',
             borderRadius: '8px',
             color: 'text.primary',
-            fontSize: 13,
+            fontSize: '14px',
             fontWeight: 600,
-            height: 40,
+            gap: '9px',
+            height: '46px',
+            letterSpacing: '-0.005em',
+            lineHeight: 1,
+            px: '22px',
             textTransform: 'none',
             transition:
-              'background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease',
-            width: 210,
+              'background-color 150ms ease, border-color 150ms ease',
+            width: 'clamp(225px, 18vw, 250px)',
+            '& .MuiButton-startIcon': {
+              margin: 0,
+            },
             '&:hover': {
-              backgroundColor: 'rgba(38, 48, 64, 0.62)',
-              borderColor: 'rgba(87, 157, 255, 0.72)',
-              boxShadow: '0 7px 18px rgba(0, 0, 0, 0.2)',
+              backgroundColor: 'rgba(38, 48, 64, 0.48)',
+              borderColor: 'rgba(87, 157, 255, 0.66)',
             },
             '&:active': {
               backgroundColor: 'rgba(13, 18, 26, 0.62)',
-              boxShadow: 'none',
+              borderColor: 'rgba(125, 158, 202, 0.36)',
             },
             '&:focus-visible': {
               outline: '2px solid',
@@ -321,47 +322,10 @@ export function ReturningUserCaughtUpState({
         </Typography>
       </Box>
 
-      <Dialog
-        fullWidth
-        maxWidth="sm"
+      <QChatWhatsNewDialog
         onClose={() => setIsWhatsNewOpen(false)}
         open={isWhatsNewOpen}
-        PaperProps={{
-          sx: {
-            backgroundColor: '#1D2028',
-            backgroundImage: 'none',
-            border: '1px solid rgba(255, 255, 255, 0.13)',
-            borderRadius: '12px',
-            boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
-            minHeight: 360,
-          },
-        }}
-      >
-        <DialogTitle
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            fontSize: 24,
-            fontWeight: 750,
-            justifyContent: 'space-between',
-            lineHeight: 1.2,
-            px: 3,
-            py: 2.5,
-          }}
-        >
-          What's New?
-          <IconButton
-            aria-label="Close What's New"
-            onClick={() => setIsWhatsNewOpen(false)}
-            size="small"
-            sx={{ color: 'text.secondary' }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.08)' }} />
-        <DialogContent />
-      </Dialog>
+      />
     </Box>
   );
 }

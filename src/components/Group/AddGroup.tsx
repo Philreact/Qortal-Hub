@@ -1,9 +1,4 @@
-import {
-  Fragment,
-  useContext,
-  useEffect,
-  useState,
-} from 'react';
+import { Fragment, useContext, useEffect, useState } from 'react';
 import Button from '@mui/material/Button';
 import Dialog from '@mui/material/Dialog';
 import IconButton from '@mui/material/IconButton';
@@ -235,13 +230,13 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     };
   }, []);
 
-  const modeTitle =
-    value === 0 ? 'Create group' : 'Group invites';
+  const modeTitle = value === 0 ? 'Create Group' : 'Group invites';
   const modeDescription =
     value === 0
       ? 'Choose a name, describe your group, and get started.'
       : 'Review the invitations you have received.';
-  const canCreateGroup = Boolean(name.trim() && description.trim()) && !isCreating;
+  const canCreateGroup =
+    Boolean(name.trim() && description.trim()) && !isCreating;
 
   const handleDialogClose = (_event, reason) => {
     if (isCreating) return;
@@ -291,15 +286,30 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           <Box sx={{ minWidth: 0 }}>
             <Typography
               component="h2"
-              sx={{ color: 'text.primary', fontSize: { xs: 25, sm: 28 }, fontWeight: 800, lineHeight: 1.15 }}
+              sx={{
+                color: 'text.primary',
+                fontSize: { xs: 25, sm: 28 },
+                fontWeight: 800,
+                lineHeight: 1.15,
+              }}
             >
               {modeTitle}
             </Typography>
-            <Typography sx={{ color: 'text.secondary', fontSize: 14, lineHeight: '20px', mt: 0.75 }}>
+            <Typography
+              sx={{
+                color: 'text.secondary',
+                fontSize: 14,
+                lineHeight: '20px',
+                mt: 0.75,
+              }}
+            >
               {modeDescription}
             </Typography>
           </Box>
-          <Box aria-label="Group management modes" sx={{ display: 'flex', flexShrink: 0, gap: 0.5 }}>
+          <Box
+            aria-label="Group management modes"
+            sx={{ display: 'flex', flexShrink: 0, gap: 0.5 }}
+          >
             {tabItems.map((item) => {
               const selected = value === item.value;
               return (
@@ -309,13 +319,17 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     aria-pressed={selected}
                     onClick={() => setValue(item.value)}
                     sx={{
-                      backgroundColor: selected ? RETICULUM_ACTIVE_BLUE : 'transparent',
+                      backgroundColor: selected
+                        ? RETICULUM_ACTIVE_BLUE
+                        : 'transparent',
                       borderRadius: '8px',
                       color: selected ? 'common.white' : 'text.secondary',
                       height: 40,
                       width: 40,
                       '&:hover': {
-                        backgroundColor: selected ? RETICULUM_ACTIVE_BLUE : 'action.hover',
+                        backgroundColor: selected
+                          ? RETICULUM_ACTIVE_BLUE
+                          : 'action.hover',
                         color: 'common.white',
                       },
                     }}
@@ -328,7 +342,9 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           </Box>
         </Box>
 
-        <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <Box
+          sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}
+        >
           {value === 0 && (
             <Box
               component="form"
@@ -348,11 +364,24 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                 scrollbarColor: 'rgba(143, 150, 165, 0.7) transparent',
                 scrollbarWidth: 'thin',
                 '&::-webkit-scrollbar': { width: 7 },
-                '&::-webkit-scrollbar-thumb': { backgroundColor: 'rgba(143, 150, 165, 0.7)', borderRadius: 8 },
+                '&::-webkit-scrollbar-thumb': {
+                  backgroundColor: 'rgba(143, 150, 165, 0.7)',
+                  borderRadius: 8,
+                },
               }}
             >
               <Box>
-                <Typography component="label" htmlFor="reticulum-group-name" sx={{ color: 'text.primary', display: 'block', fontSize: 15, fontWeight: 800, mb: 1 }}>
+                <Typography
+                  component="label"
+                  htmlFor="reticulum-group-name"
+                  sx={{
+                    color: 'text.primary',
+                    display: 'block',
+                    fontSize: 15,
+                    fontWeight: 800,
+                    mb: 1,
+                  }}
+                >
                   Group name
                 </Typography>
                 <TextField
@@ -371,14 +400,33 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     },
                   }}
                 />
-                <Box sx={{ color: 'text.secondary', display: 'flex', fontSize: 12.5, justifyContent: 'space-between', lineHeight: '18px', mt: 0.75 }}>
+                <Box
+                  sx={{
+                    color: 'text.secondary',
+                    display: 'flex',
+                    fontSize: 12.5,
+                    justifyContent: 'space-between',
+                    lineHeight: '18px',
+                    mt: 0.75,
+                  }}
+                >
                   <span>Use a clear, recognizable name.</span>
                   <span>{name.length} / 32</span>
                 </Box>
               </Box>
 
               <Box>
-                <Typography component="label" htmlFor="reticulum-group-description" sx={{ color: 'text.primary', display: 'block', fontSize: 15, fontWeight: 800, mb: 1 }}>
+                <Typography
+                  component="label"
+                  htmlFor="reticulum-group-description"
+                  sx={{
+                    color: 'text.primary',
+                    display: 'block',
+                    fontSize: 15,
+                    fontWeight: 800,
+                    mb: 1,
+                  }}
+                >
                   Description
                 </Typography>
                 <TextField
@@ -404,13 +452,30 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     },
                   }}
                 />
-                <Box sx={{ color: 'text.secondary', display: 'flex', fontSize: 12.5, justifyContent: 'flex-end', lineHeight: '18px', mt: 0.75 }}>
+                <Box
+                  sx={{
+                    color: 'text.secondary',
+                    display: 'flex',
+                    fontSize: 12.5,
+                    justifyContent: 'flex-end',
+                    lineHeight: '18px',
+                    mt: 0.75,
+                  }}
+                >
                   {description.length} / {GROUP_DESCRIPTION_MAX_LENGTH}
                 </Box>
               </Box>
 
               <Box>
-                <Typography id="reticulum-group-access-label" sx={{ color: 'text.primary', fontSize: 15, fontWeight: 800, mb: 1 }}>
+                <Typography
+                  id="reticulum-group-access-label"
+                  sx={{
+                    color: 'text.primary',
+                    fontSize: 15,
+                    fontWeight: 800,
+                    mb: 1,
+                  }}
+                >
                   Group access
                 </Typography>
                 <Box
@@ -421,13 +486,26 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     border: '1px solid rgba(0, 0, 0, 0.72)',
                     borderRadius: '10px',
                     display: 'grid',
-                    gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                    gridTemplateColumns: {
+                      xs: '1fr',
+                      sm: 'repeat(2, minmax(0, 1fr))',
+                    },
                     overflow: 'hidden',
                   }}
                 >
                   {[
-                    { description: 'Anyone can find and join.', icon: PublicRoundedIcon, label: 'Open', value: '1' },
-                    { description: 'Members join by invitation.', icon: LockRoundedIcon, label: 'Closed', value: '0' },
+                    {
+                      description: 'Anyone can find and join.',
+                      icon: PublicRoundedIcon,
+                      label: 'Open',
+                      value: '1',
+                    },
+                    {
+                      description: 'Members join by invitation.',
+                      icon: LockRoundedIcon,
+                      label: 'Closed',
+                      value: '0',
+                    },
                   ].map((option, index) => {
                     const selected = groupType === option.value;
                     const Icon = option.icon;
@@ -438,15 +516,33 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         onClick={() => setGroupType(option.value)}
                         role="radio"
                         sx={{
-                          backgroundColor: selected ? 'rgba(37, 99, 235, 0.12)' : 'transparent',
-                          borderColor: selected ? RETICULUM_ACTIVE_BLUE : 'rgba(0, 0, 0, 0.72)',
-                          borderLeft: { xs: 'none', sm: index === 0 ? 'none' : '1px solid rgba(0, 0, 0, 0.72)' },
+                          backgroundColor: selected
+                            ? 'rgba(37, 99, 235, 0.12)'
+                            : 'transparent',
+                          borderColor: selected
+                            ? RETICULUM_ACTIVE_BLUE
+                            : 'rgba(0, 0, 0, 0.72)',
+                          borderLeft: {
+                            xs: 'none',
+                            sm:
+                              index === 0
+                                ? 'none'
+                                : '1px solid rgba(0, 0, 0, 0.72)',
+                          },
                           borderRadius: {
                             xs: index === 0 ? '9px 9px 0 0' : '0 0 9px 9px',
                             sm: index === 0 ? '9px 0 0 9px' : '0 9px 9px 0',
                           },
-                          borderTop: { xs: index === 0 ? 'none' : '1px solid rgba(0, 0, 0, 0.72)', sm: 'none' },
-                          boxShadow: selected ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}` : 'none',
+                          borderTop: {
+                            xs:
+                              index === 0
+                                ? 'none'
+                                : '1px solid rgba(0, 0, 0, 0.72)',
+                            sm: 'none',
+                          },
+                          boxShadow: selected
+                            ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}`
+                            : 'none',
                           color: selected ? 'common.white' : 'text.primary',
                           display: 'flex',
                           flexDirection: 'column',
@@ -456,13 +552,49 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                           position: 'relative',
                           textTransform: 'none',
                           zIndex: selected ? 1 : 0,
-                          '&:hover': { backgroundColor: selected ? 'rgba(37, 99, 235, 0.16)' : 'action.hover' },
+                          '&:hover': {
+                            backgroundColor: selected
+                              ? 'rgba(37, 99, 235, 0.16)'
+                              : 'action.hover',
+                          },
                         }}
                       >
-                        {selected && <CheckCircleRoundedIcon sx={{ color: RETICULUM_ACTIVE_BLUE, fontSize: 19, position: 'absolute', right: 9, top: 9 }} />}
-                        <Icon sx={{ color: selected ? 'common.white' : 'text.secondary', fontSize: 25 }} />
-                        <Typography sx={{ color: 'inherit', fontSize: 15, fontWeight: 800 }}>{option.label}</Typography>
-                        <Typography sx={{ color: 'text.secondary', fontSize: 13, lineHeight: '18px', textAlign: 'center' }}>{option.description}</Typography>
+                        {selected && (
+                          <CheckCircleRoundedIcon
+                            sx={{
+                              color: RETICULUM_ACTIVE_BLUE,
+                              fontSize: 19,
+                              position: 'absolute',
+                              right: 9,
+                              top: 9,
+                            }}
+                          />
+                        )}
+                        <Icon
+                          sx={{
+                            color: selected ? 'common.white' : 'text.secondary',
+                            fontSize: 25,
+                          }}
+                        />
+                        <Typography
+                          sx={{
+                            color: 'inherit',
+                            fontSize: 15,
+                            fontWeight: 800,
+                          }}
+                        >
+                          {option.label}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: 'text.secondary',
+                            fontSize: 13,
+                            lineHeight: '18px',
+                            textAlign: 'center',
+                          }}
+                        >
+                          {option.description}
+                        </Typography>
                       </Button>
                     );
                   })}
@@ -487,20 +619,56 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.08)' },
                   }}
                 >
-                  <Typography sx={{ flex: 1, fontSize: 14, fontWeight: 700, textAlign: 'left' }}>Advanced options</Typography>
+                  <Typography
+                    sx={{
+                      flex: 1,
+                      fontSize: 14,
+                      fontWeight: 700,
+                      textAlign: 'left',
+                    }}
+                  >
+                    Advanced options
+                  </Typography>
                   {openAdvance ? <ExpandLess /> : <ExpandMore />}
                 </Button>
                 <Collapse in={openAdvance} timeout="auto" unmountOnExit>
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                      pt: 2,
+                    }}
+                  >
                     <Box>
-                      <Typography component="label" sx={{ color: 'text.primary', display: 'block', fontSize: 13, fontWeight: 700, mb: 0.4 }}>
+                      <Typography
+                        component="label"
+                        sx={{
+                          color: 'text.primary',
+                          display: 'block',
+                          fontSize: 13,
+                          fontWeight: 700,
+                          mb: 0.4,
+                        }}
+                      >
                         Approval threshold
                       </Typography>
-                      <Typography sx={{ color: 'text.secondary', fontSize: 12, lineHeight: '17px', mb: 0.85 }}>
-                        Percentage of admins required to approve group decisions.
+                      <Typography
+                        sx={{
+                          color: 'text.secondary',
+                          fontSize: 12,
+                          lineHeight: '17px',
+                          mb: 0.85,
+                        }}
+                      >
+                        Percentage of admins required to approve group
+                        decisions.
                       </Typography>
                       <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
-                        <Select value={approvalThreshold} onChange={handleChangeApprovalThreshold}>
+                        <Select
+                          value={approvalThreshold}
+                          onChange={handleChangeApprovalThreshold}
+                        >
                           <MenuItem value="0">None</MenuItem>
                           <MenuItem value="1">One</MenuItem>
                           <MenuItem value="20">20%</MenuItem>
@@ -511,13 +679,34 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         </Select>
                       </FormControl>
                     </Box>
-                    <Box sx={{ display: 'grid', gap: 1.75, gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' } }}>
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gap: 1.75,
+                        gridTemplateColumns: {
+                          xs: '1fr',
+                          sm: 'repeat(2, minmax(0, 1fr))',
+                        },
+                      }}
+                    >
                       <Box>
-                        <Typography component="label" sx={{ color: 'text.primary', display: 'block', fontSize: 13, fontWeight: 700, mb: 0.85 }}>
+                        <Typography
+                          component="label"
+                          sx={{
+                            color: 'text.primary',
+                            display: 'block',
+                            fontSize: 13,
+                            fontWeight: 700,
+                            mb: 0.85,
+                          }}
+                        >
                           Minimum approval delay
                         </Typography>
                         <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
-                          <Select value={minBlock} onChange={handleChangeMinBlock}>
+                          <Select
+                            value={minBlock}
+                            onChange={handleChangeMinBlock}
+                          >
                             <MenuItem value="5">5 minutes</MenuItem>
                             <MenuItem value="10">10 minutes</MenuItem>
                             <MenuItem value="30">30 minutes</MenuItem>
@@ -534,11 +723,23 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         </FormControl>
                       </Box>
                       <Box>
-                        <Typography component="label" sx={{ color: 'text.primary', display: 'block', fontSize: 13, fontWeight: 700, mb: 0.85 }}>
+                        <Typography
+                          component="label"
+                          sx={{
+                            color: 'text.primary',
+                            display: 'block',
+                            fontSize: 13,
+                            fontWeight: 700,
+                            mb: 0.85,
+                          }}
+                        >
                           Maximum approval delay
                         </Typography>
                         <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
-                          <Select value={maxBlock} onChange={handleChangeMaxBlock}>
+                          <Select
+                            value={maxBlock}
+                            onChange={handleChangeMaxBlock}
+                          >
                             <MenuItem value="60">1 hour</MenuItem>
                             <MenuItem value="180">3 hours</MenuItem>
                             <MenuItem value="300">5 hours</MenuItem>
@@ -554,10 +755,22 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         </FormControl>
                       </Box>
                     </Box>
-                    <Box sx={{ alignItems: 'center', backgroundColor: '#0D0F14', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '8px', color: 'text.secondary', display: 'flex', gap: 1, p: 1.25 }}>
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: '#0D0F14',
+                        border: '1px solid rgba(255, 255, 255, 0.06)',
+                        borderRadius: '8px',
+                        color: 'text.secondary',
+                        display: 'flex',
+                        gap: 1,
+                        p: 1.25,
+                      }}
+                    >
                       <InfoOutlinedIcon sx={{ fontSize: 18 }} />
                       <Typography sx={{ fontSize: 12, lineHeight: '17px' }}>
-                        These settings affect group transactions and cannot be changed after creation.
+                        These settings affect group transactions and cannot be
+                        changed after creation.
                       </Typography>
                     </Box>
                   </Box>
@@ -567,8 +780,21 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           )}
 
           {value === 2 && (
-            <Box sx={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'auto', px: { xs: 2.5, sm: 4 }, py: 2.5 }}>
-              <UserListOfInvites myAddress={address} setOpenSnack={setOpenSnack} setInfoSnack={setInfoSnack} />
+            <Box
+              sx={{
+                display: 'flex',
+                flex: 1,
+                minHeight: 0,
+                overflow: 'auto',
+                px: { xs: 2.5, sm: 4 },
+                py: 2.5,
+              }}
+            >
+              <UserListOfInvites
+                myAddress={address}
+                setOpenSnack={setOpenSnack}
+                setInfoSnack={setInfoSnack}
+              />
             </Box>
           )}
         </Box>
@@ -585,7 +811,22 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
             py: 1.5,
           }}
         >
-          <Button disabled={isCreating} onClick={handleClose} sx={{ borderRadius: '8px', color: 'text.secondary', fontWeight: 700, minHeight: 40, px: 2, textTransform: 'none', '&:hover': { backgroundColor: 'action.hover', color: 'text.primary' } }}>
+          <Button
+            disabled={isCreating}
+            onClick={handleClose}
+            sx={{
+              borderRadius: '8px',
+              color: 'text.secondary',
+              fontWeight: 700,
+              minHeight: 40,
+              px: 2,
+              textTransform: 'none',
+              '&:hover': {
+                backgroundColor: 'action.hover',
+                color: 'text.primary',
+              },
+            }}
+          >
             Cancel
           </Button>
           {value === 0 && (
@@ -603,10 +844,13 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                 px: 2.25,
                 textTransform: 'none',
                 '&:hover': { backgroundColor: '#1e40af' },
-                '&.Mui-disabled': { backgroundColor: 'action.disabledBackground', color: 'text.disabled' },
+                '&.Mui-disabled': {
+                  backgroundColor: 'action.disabledBackground',
+                  color: 'text.disabled',
+                },
               }}
             >
-              {isCreating ? 'Creating...' : 'Create group'}
+              {isCreating ? 'Creating...' : 'Create Group'}
             </Button>
           )}
         </Box>

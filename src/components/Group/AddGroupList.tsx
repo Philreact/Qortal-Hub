@@ -36,8 +36,12 @@ import EmojiEventsRoundedIcon from '@mui/icons-material/EmojiEventsRounded';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import { useTranslation } from 'react-i18next';
-import { useAtom, useSetAtom } from 'jotai';
-import { memberGroupsAtom, txListAtom } from '../../atoms/global';
+import { useAtom } from 'jotai';
+import {
+  memberGroupsAtom,
+  txListAtom,
+  userInfoAtom,
+} from '../../atoms/global';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 import {
   ensureReticulumGroupScore,
@@ -57,7 +61,8 @@ const formatMemberCount = (count) =>
 export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [memberGroups] = useAtom(memberGroupsAtom);
-  const setTxList = useSetAtom(txListAtom);
+  const [txList, setTxList] = useAtom(txListAtom);
+  const [userInfo] = useAtom(userInfoAtom);
   const { t } = useTranslation([
     'auth',
     'core',
@@ -282,6 +287,13 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     (memberGroups || []).some(
       (group) => String(group?.groupId) === String(groupId)
     );
+  const isPendingGroup = (groupId) =>
+    (txList || []).some(
+      (tx) =>
+        tx?.type === 'joined-group' &&
+        tx?.done !== true &&
+        String(tx?.groupId) === String(groupId)
+    );
 
   const getGroups = async () => {
     setGroupsLoading(true);
@@ -395,6 +407,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
                     }),
                     done: false,
                     groupId,
+                    memberAddress: userInfo?.address,
                   },
                   ...prev,
                 ]);
@@ -474,7 +487,9 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     const memberCount = group?.memberCount ?? 0;
     const openGroup = isOpenGroup(group);
     const joinedGroup = isJoinedGroup(group?.groupId);
+    const pendingGroup = isPendingGroup(group?.groupId);
     const joiningGroup = joiningGroupId === String(group?.groupId);
+    const membershipUnavailable = joinedGroup || pendingGroup;
     const groupScore = openGroup
       ? groupScoreSnapshot.groups[String(group?.groupId)]
       : undefined;
@@ -592,21 +607,21 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               </Typography>
             </Box>
             <ButtonBase
-              aria-label={`${joinedGroup ? 'Joined' : openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
-              disabled={joinedGroup || Boolean(joiningGroupId)}
-              onClick={(event) => { event.stopPropagation(); if (!joinedGroup && !joiningGroupIdRef.current) handleJoinGroup(group, openGroup); }}
+              aria-label={`${joinedGroup ? 'Joined' : pendingGroup ? 'Pending' : openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
+              disabled={membershipUnavailable || Boolean(joiningGroupId)}
+              onClick={(event) => { event.stopPropagation(); if (!membershipUnavailable && !joiningGroupIdRef.current) handleJoinGroup(group, openGroup); }}
               sx={{
-                background: joinedGroup
+                background: membershipUnavailable
                   ? theme.palette.action.selected
                   : openGroup
                     ? 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)'
                     : 'transparent',
-                border: `1px solid ${joinedGroup ? theme.palette.divider : openGroup ? '#5ea2ff' : theme.palette.divider}`,
+                border: `1px solid ${membershipUnavailable ? theme.palette.divider : openGroup ? '#5ea2ff' : theme.palette.divider}`,
                 borderRadius: '8px',
                 boxShadow: openGroup && !joinedGroup
                   ? '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
                   : 'none',
-                color: joinedGroup ? 'text.secondary' : openGroup ? '#ffffff' : 'text.secondary',
+                color: membershipUnavailable ? 'text.secondary' : openGroup ? '#ffffff' : 'text.secondary',
                 fontSize: 14,
                 fontWeight: 600,
                 height: 38,
@@ -617,16 +632,16 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
                 p: 0,
                 width: { xs: 72, sm: 76, md: 80 },
                 '&:hover': {
-                  background: joinedGroup
+                  background: membershipUnavailable
                     ? theme.palette.action.selected
                     : openGroup
                       ? 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)'
                       : theme.palette.action.hover,
-                  borderColor: openGroup && !joinedGroup ? '#78b1ff' : undefined,
-                  color: joinedGroup ? 'text.secondary' : openGroup ? '#ffffff' : 'text.primary',
+                  borderColor: openGroup && !membershipUnavailable ? '#78b1ff' : undefined,
+                  color: membershipUnavailable ? 'text.secondary' : openGroup ? '#ffffff' : 'text.primary',
                 },
                 '&:active': {
-                  background: openGroup && !joinedGroup ? '#2b63c5' : undefined,
+                  background: openGroup && !membershipUnavailable ? '#2b63c5' : undefined,
                   boxShadow: 'none',
                 },
                 '&:focus-visible': {
@@ -634,15 +649,15 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
                   outlineOffset: 2,
                 },
                 '&.Mui-disabled': {
-                  color: joinedGroup ? theme.palette.text.secondary : openGroup ? '#ffffff' : theme.palette.text.secondary,
+                  color: membershipUnavailable ? theme.palette.text.secondary : openGroup ? '#ffffff' : theme.palette.text.secondary,
                   cursor: 'not-allowed',
-                  opacity: joinedGroup ? 0.72 : 0.5,
+                  opacity: membershipUnavailable ? 0.72 : 0.5,
                 },
               }}
             >
               {joiningGroup ? (
                 <CircularProgress color="inherit" size={15} thickness={5} />
-              ) : joinedGroup ? 'Joined' : openGroup ? 'Join' : 'Request'}
+              ) : joinedGroup ? 'Joined' : pendingGroup ? 'Pending' : openGroup ? 'Join' : 'Request'}
             </ButtonBase>
           </ListItemButton>
         </ListItem>
@@ -653,6 +668,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const isSelectedGroupOpen =
     selectedGroup != null && isOpenGroup(selectedGroup);
   const isSelectedGroupJoined = isJoinedGroup(selectedGroup?.groupId);
+  const isSelectedGroupPending = isPendingGroup(selectedGroup?.groupId);
   const selectedGroupMemberCount = Math.max(
     0,
     Number(selectedGroup?.memberCount) || 0
@@ -873,30 +889,36 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               ) : null}
               <LoadingButton
                 aria-label={`${isSelectedGroupOpen ? 'Join' : 'Apply to join'} ${selectedGroup.groupName}`}
-                disabled={isSelectedGroupJoined || Boolean(joiningGroupId)}
+                disabled={
+                  isSelectedGroupJoined ||
+                  isSelectedGroupPending ||
+                  Boolean(joiningGroupId)
+                }
                 fullWidth
                 loading={isLoading && joiningGroupId === String(selectedGroup.groupId)}
                 onClick={() => handleJoinGroup(selectedGroup, isSelectedGroupOpen)}
                 sx={{
-                  background: isSelectedGroupJoined ? theme.palette.action.selected : 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)',
-                  border: `1px solid ${isSelectedGroupJoined ? theme.palette.divider : '#5ea2ff'}`,
+                  background: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.action.selected : 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)',
+                  border: `1px solid ${isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.divider : '#5ea2ff'}`,
                   borderRadius: '9px',
-                  boxShadow: isSelectedGroupJoined ? 'none' : '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)',
-                  color: isSelectedGroupJoined ? 'text.secondary' : '#ffffff',
+                  boxShadow: isSelectedGroupJoined || isSelectedGroupPending ? 'none' : '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)',
+                  color: isSelectedGroupJoined || isSelectedGroupPending ? 'text.secondary' : '#ffffff',
                   fontSize: 14,
                   fontWeight: 600,
                   height: 46,
                   letterSpacing: '0.01em',
                   lineHeight: 1,
                   textTransform: 'none',
-                  '&:hover': { background: isSelectedGroupJoined ? theme.palette.action.selected : 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)', borderColor: isSelectedGroupJoined ? theme.palette.divider : '#78b1ff' },
-                  '&:active': { background: isSelectedGroupJoined ? theme.palette.action.selected : '#2b63c5', boxShadow: 'none' },
+                  '&:hover': { background: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.action.selected : 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)', borderColor: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.divider : '#78b1ff' },
+                  '&:active': { background: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.action.selected : '#2b63c5', boxShadow: 'none' },
                   '&:focus-visible': { outline: '2px solid #93c5fd', outlineOffset: 2 },
-                  '&.Mui-disabled': { color: isSelectedGroupJoined ? theme.palette.text.secondary : '#ffffff', opacity: isSelectedGroupJoined ? 0.72 : 0.5 },
+                  '&.Mui-disabled': { color: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.text.secondary : '#ffffff', opacity: isSelectedGroupJoined || isSelectedGroupPending ? 0.72 : 0.5 },
                 }}
               >
                 {isSelectedGroupJoined
                   ? 'Joined'
+                  : isSelectedGroupPending
+                    ? 'Pending'
                   : isSelectedGroupOpen
                     ? 'Join Group'
                     : 'Apply to Join'}

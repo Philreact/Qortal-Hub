@@ -275,6 +275,13 @@ type MessageItemProps = {
   replyIndex: number;
   replyExpiredMeta?: any;
   reticulumChatEnabled?: boolean;
+  reticulumGroupAvatarOwnerName?: string;
+  reticulumGroupDisplayName?: string;
+  reticulumMentionUsers?: Record<
+    string,
+    { address: string; name?: string }
+  >;
+  reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
   scrollToItem: (index: number) => void;
@@ -306,6 +313,10 @@ export const MessageItemComponent = ({
   replyIndex,
   replyExpiredMeta,
   reticulumChatEnabled = false,
+  reticulumGroupAvatarOwnerName,
+  reticulumGroupDisplayName,
+  reticulumMentionUsers,
+  reticulumMemberJoinedByAddress,
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
   scrollToItem,
@@ -323,9 +334,40 @@ export const MessageItemComponent = ({
   const [nowMs, setNowMs] = useState(Date.now());
   const [reticulumMessageMenuPosition, setReticulumMessageMenuPosition] =
     useState<{ mouseX: number; mouseY: number } | null>(null);
+  const signedGroupWelcomeSystem =
+    message?.qchatSystem?.type === 'group-welcome'
+      ? message.qchatSystem
+      : message?.decryptedData?.qchatSystem?.type === 'group-welcome'
+        ? message.decryptedData.qchatSystem
+        : null;
+  const signedWelcomeJoinedAt = Number(signedGroupWelcomeSystem?.joinedAt);
+  const recordedWelcomeJoinedAt = Number(
+    reticulumMemberJoinedByAddress?.[message?.sender]
+  );
+  const groupWelcomeSystem =
+    reticulumChatEnabled &&
+    reticulumMemberRolesReady &&
+    signedGroupWelcomeSystem?.joinedAddress === message?.sender &&
+    Number(signedGroupWelcomeSystem?.groupId) === Number(message?.groupId) &&
+    Number.isFinite(signedWelcomeJoinedAt) &&
+    signedWelcomeJoinedAt > 0 &&
+    signedWelcomeJoinedAt === recordedWelcomeJoinedAt
+      ? signedGroupWelcomeSystem
+      : null;
+  const isOfficialGroupWelcome = Boolean(
+    reticulumChatEnabled && groupWelcomeSystem
+  );
+  const displaySenderName = isOfficialGroupWelcome
+    ? reticulumGroupDisplayName || groupWelcomeSystem?.groupName || 'Group'
+    : message?.senderName || message?.sender;
 
   useEffect(() => {
     const getInfo = async () => {
+      if (isOfficialGroupWelcome) {
+        setUserInfo(null);
+        setIsUserInfoResolved(true);
+        return;
+      }
       if (!message?.sender) {
         setIsUserInfoResolved(true);
         return;
@@ -343,15 +385,20 @@ export const MessageItemComponent = ({
     };
 
     getInfo();
-  }, [message?.sender, getIndividualUserInfo, reticulumChatEnabled]);
+  }, [
+    getIndividualUserInfo,
+    isOfficialGroupWelcome,
+    message?.sender,
+    reticulumChatEnabled,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
     const senderAddress = message?.sender;
 
-    if (!reticulumChatEnabled || !senderAddress) {
+    if (!reticulumChatEnabled || !senderAddress || isOfficialGroupWelcome) {
       setIsReticulumMinter(false);
-      setIsReticulumMinterResolved(false);
+      setIsReticulumMinterResolved(isOfficialGroupWelcome);
       return () => {
         cancelled = true;
       };
@@ -369,7 +416,7 @@ export const MessageItemComponent = ({
     return () => {
       cancelled = true;
     };
-  }, [message?.sender, reticulumChatEnabled]);
+  }, [isOfficialGroupWelcome, message?.sender, reticulumChatEnabled]);
 
   // Defer only main message body so generateHTML runs when React has time (reduces scroll-time CPU spikes).
   // Reply block uses reply/replyExpiredMeta directly so the reply preview always shows.
@@ -420,12 +467,29 @@ export const MessageItemComponent = ({
   }, [replyExpiredMeta?.messageText, replyExpiredMeta?.editTimestamp]);
 
   const userAvatarUrl = useMemo(() => {
+    if (
+      isOfficialGroupWelcome &&
+      (reticulumGroupAvatarOwnerName ||
+        groupWelcomeSystem?.groupAvatarOwnerName) &&
+      groupWelcomeSystem?.groupId
+    ) {
+      return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
+        reticulumGroupAvatarOwnerName ||
+          groupWelcomeSystem.groupAvatarOwnerName
+      )}/qortal_group_avatar_${groupWelcomeSystem.groupId}?async=true`;
+    }
     return message?.senderName
       ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${
           message?.senderName
         }/qortal_avatar?async=true`
       : '';
-  }, [message?.senderName]);
+  }, [
+    groupWelcomeSystem?.groupAvatarOwnerName,
+    groupWelcomeSystem?.groupId,
+    isOfficialGroupWelcome,
+    message?.senderName,
+    reticulumGroupAvatarOwnerName,
+  ]);
 
   useEffect(() => {
     setIsAvatarLoaded(false);
@@ -1374,10 +1438,32 @@ export const MessageItemComponent = ({
     (!message?.text || message?.text === '<p></p>');
 
   const isOwn = message?.sender === myAddress;
+  const mentionedAddresses = [
+    ...(Array.isArray(message?.mentionedAddresses)
+      ? message.mentionedAddresses
+      : []),
+    ...(Array.isArray(message?.decryptedData?.mentionedAddresses)
+      ? message.decryptedData.mentionedAddresses
+      : []),
+    ...(Array.isArray(message?.decryptedData?.data?.mentionedAddresses)
+      ? message.decryptedData.data.mentionedAddresses
+      : []),
+  ];
+  const isCurrentUserMentioned =
+    reticulumChatEnabled &&
+    !isOwn &&
+    Boolean(myAddress) &&
+    mentionedAddresses.some(
+      (address) => String(address).trim() === myAddress
+    );
   const isOwnReticulumDeletable =
-    isOwn && message?.reticulumChat && typeof onDelete === 'function';
+    isOwn &&
+    !isOfficialGroupWelcome &&
+    message?.reticulumChat &&
+    typeof onDelete === 'function';
   const isOwnReticulumEditable =
     isOwn &&
+    !isOfficialGroupWelcome &&
     message?.reticulumChat &&
     (!message?.isNotEncrypted || isPrivate === false);
   const copyReticulumMessage = useCallback(async () => {
@@ -1417,7 +1503,8 @@ export const MessageItemComponent = ({
   }, [isOwnReticulumDeletable, isOwnReticulumMessageHovered, message, onDelete]);
 
   const senderStatus = useStatus(message?.sender);
-  const reticulumUserCard = reticulumChatEnabled && message?.sender
+  const reticulumUserCard =
+    reticulumChatEnabled && message?.sender && !isOfficialGroupWelcome
     ? {
         address: message.sender,
         avatarUrl: userAvatarUrl,
@@ -1523,6 +1610,17 @@ export const MessageItemComponent = ({
             position: 'relative',
             transition: 'background-color 0.1s ease',
             width: '100%',
+            ...(isOfficialGroupWelcome && {
+              backgroundColor: alpha(theme.palette.primary.main, 0.085),
+              boxShadow: `inset 3px 0 0 ${alpha(
+                theme.palette.primary.main,
+                0.9
+              )}`,
+            }),
+            ...(isCurrentUserMentioned && {
+              backgroundColor: alpha(theme.palette.warning.main, 0.06),
+              boxShadow: `inset 3px 0 0 ${theme.palette.warning.main}`,
+            }),
             ...(isOwn &&
               !reticulumChatEnabled &&
               !isScrollTarget && {
@@ -1556,7 +1654,11 @@ export const MessageItemComponent = ({
               },
               '&:hover': {
                 backgroundColor: reticulumChatEnabled
-                  ? alpha(theme.palette.text.primary, 0.035)
+                  ? isOfficialGroupWelcome || isCurrentUserMentioned
+                    ? isCurrentUserMentioned
+                      ? alpha(theme.palette.warning.main, 0.1)
+                      : alpha(theme.palette.primary.main, 0.14)
+                    : alpha(theme.palette.text.primary, 0.035)
                   : undefined,
               },
               '&:hover .message-item-toolbar': {
@@ -1596,7 +1698,10 @@ export const MessageItemComponent = ({
               }}
             >
               <WrapperUserAction
-                disabled={!reticulumChatEnabled && myAddress === message?.sender}
+                disabled={
+                  isOfficialGroupWelcome ||
+                  (!reticulumChatEnabled && myAddress === message?.sender)
+                }
                 address={message?.sender}
                 name={message?.senderName}
                 reticulumMenu={reticulumChatEnabled}
@@ -1604,7 +1709,33 @@ export const MessageItemComponent = ({
                 reticulumUserCard={reticulumUserCard}
                 trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
               >
-                {reticulumMinterLevel !== null ? (
+                {isOfficialGroupWelcome ? (
+                  <Avatar
+                    alt={displaySenderName}
+                    src={userAvatarUrl}
+                    sx={{
+                      backgroundColor: 'transparent',
+                      border: 'none',
+                      borderRadius: 0,
+                      boxShadow: 'none',
+                      color:
+                        theme.palette.mode === 'light'
+                          ? theme.palette.primary.dark
+                          : theme.palette.primary.light,
+                      fontSize: '15px',
+                      fontWeight: 700,
+                      height: '38px',
+                      overflow: 'visible',
+                      width: '38px',
+                      '& .MuiAvatar-img': {
+                        borderRadius: 0,
+                        objectFit: 'contain',
+                      },
+                    }}
+                  >
+                    {(groupWelcomeSystem?.groupName || 'G').charAt(0)}
+                  </Avatar>
+                ) : reticulumMinterLevel !== null ? (
                   <MinterAvatarOrnament
                     accentColor={
                       reticulumMemberRole
@@ -1729,7 +1860,10 @@ export const MessageItemComponent = ({
                 }}
               >
               <WrapperUserAction
-                  disabled={!reticulumChatEnabled && myAddress === message?.sender}
+                  disabled={
+                    isOfficialGroupWelcome ||
+                    (!reticulumChatEnabled && myAddress === message?.sender)
+                  }
                   address={message?.sender}
                   name={message?.senderName}
                   reticulumMenu={reticulumChatEnabled}
@@ -1740,7 +1874,11 @@ export const MessageItemComponent = ({
                   <Typography
                     sx={{
                       color: reticulumChatEnabled
-                        ? reticulumMemberRoleColor
+                        ? isOfficialGroupWelcome
+                          ? theme.palette.mode === 'light'
+                            ? theme.palette.primary.dark
+                            : theme.palette.primary.light
+                          : reticulumMemberRoleColor
                         : isOwn
                           ? theme.palette.primary.main
                           : theme.palette.text.primary,
@@ -1763,11 +1901,13 @@ export const MessageItemComponent = ({
                         : {}),
                     }}
                   >
-                    {message?.senderName || message?.sender}
+                    {displaySenderName}
                   </Typography>
                 </WrapperUserAction>
 
-                {reticulumChatEnabled && reticulumMemberRole && (
+                {reticulumChatEnabled &&
+                  !isOfficialGroupWelcome &&
+                  reticulumMemberRole && (
                   <Typography
                     sx={{
                       color: reticulumMemberRoleColor,
@@ -2271,11 +2411,38 @@ export const MessageItemComponent = ({
             ) : message?.decryptedData?.type === 'notification' ? (
               <MessageDisplay
                 htmlContent={message.decryptedData?.data?.message}
+                mentionedAddresses={mentionedAddresses}
+                mentionUsers={reticulumMentionUsers}
+                myAddress={myAddress}
               />
             ) : hasNoMessage ? null : htmlText ? (
-              <MessageDisplay htmlContent={htmlText} />
+              <MessageDisplay
+                htmlContent={htmlText}
+                mentionedAddresses={mentionedAddresses}
+                mentionUsers={reticulumMentionUsers}
+                myAddress={myAddress}
+                textColor={
+                  isOfficialGroupWelcome
+                    ? theme.palette.mode === 'light'
+                      ? theme.palette.primary.dark
+                      : theme.palette.primary.light
+                    : undefined
+                }
+              />
             ) : (
-              <MessageDisplay htmlContent={message.text} />
+              <MessageDisplay
+                htmlContent={message.text}
+                mentionedAddresses={mentionedAddresses}
+                mentionUsers={reticulumMentionUsers}
+                myAddress={myAddress}
+                textColor={
+                  isOfficialGroupWelcome
+                    ? theme.palette.mode === 'light'
+                      ? theme.palette.primary.dark
+                      : theme.palette.primary.light
+                    : undefined
+                }
+              />
             )}
 
             {hasNoMessage && (

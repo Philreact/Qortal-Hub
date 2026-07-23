@@ -7,6 +7,8 @@ import { Embed } from '../Embeds/Embed';
 import { Box, IconButton, Tooltip, useTheme } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
+import { ReticulumUserCard } from './ReticulumUserCard';
+import type { ReticulumUserCardData } from './ReticulumUserCard';
 
 export const extractComponents = (url: string) => {
   if (!url || !url.startsWith(QORTAL_PROTOCOL)) {
@@ -116,10 +118,35 @@ const normalizeHtmlContent = (value) => {
   return String(value);
 };
 
-export const MessageDisplay = ({ htmlContent, isReply = false }) => {
+type MentionUser = {
+  address: string;
+  name?: string;
+};
+
+export const MessageDisplay = ({
+  htmlContent,
+  isReply = false,
+  mentionedAddresses,
+  mentionUsers,
+  myAddress,
+  textColor,
+}: {
+  htmlContent: unknown;
+  isReply?: boolean;
+  mentionedAddresses?: string[];
+  mentionUsers?: Record<string, MentionUser>;
+  myAddress?: string;
+  textColor?: string;
+}) => {
   const theme = useTheme();
   const contentRef = useRef(null);
   const [copied, setCopied] = useState(false);
+  const [mentionCard, setMentionCard] = useState<{
+    anchorPlacement: 'above' | 'below';
+    anchorPosition: { left: number; top: number };
+    boundaryHeight: number;
+    data: ReticulumUserCardData;
+  } | null>(null);
   const safeHtmlContent = useMemo(
     () => normalizeHtmlContent(htmlContent),
     [htmlContent]
@@ -177,6 +204,9 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
         'cellpadding',
         'cellspacing',
         'data-url',
+        'data-id',
+        'data-label',
+        'data-type',
       ],
     }).replace(
       /<span[^>]*data-url="qortal:\/\/use-embed\/[^"]*"[^>]*>.*?<\/span>/g,
@@ -184,9 +214,94 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
     );
   }, [safeHtmlContent]);
 
+  const mentionUserByLabel = useMemo(() => {
+    const map = new Map<string, MentionUser>();
+    for (const [label, user] of Object.entries(mentionUsers || {})) {
+      const normalizedLabel = label.trim().replace(/^@/, '').toLowerCase();
+      if (normalizedLabel && user?.address) map.set(normalizedLabel, user);
+      if (user?.address) map.set(user.address.toLowerCase(), user);
+      if (user?.name) map.set(user.name.trim().toLowerCase(), user);
+    }
+    return map;
+  }, [mentionUsers]);
+
+  const openMentionCard = useCallback(
+    (target: HTMLElement): boolean => {
+      if (isReply) return false;
+      const mention = target.closest?.(
+        '[data-type="mention"], .mention'
+      ) as HTMLElement | null;
+      if (!mention) return false;
+      const label = String(
+        mention.dataset.label ||
+          mention.dataset.id ||
+          mention.textContent ||
+          ''
+      )
+        .trim()
+        .replace(/^@/, '');
+      const uniqueMentionedAddresses = [
+        ...new Set(
+          (mentionedAddresses || [])
+            .map((address) => String(address || '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      const user =
+        mentionUserByLabel.get(label.toLowerCase()) ||
+        (uniqueMentionedAddresses.length === 1
+          ? { address: uniqueMentionedAddresses[0], name: label }
+          : undefined);
+      if (!user?.address) return false;
+      const mentionRect = mention.getBoundingClientRect();
+      const chatViewport = mention.closest(
+        '[data-reticulum-chat-scroll-viewport="true"]'
+      ) as HTMLElement | null;
+      const viewportRect = chatViewport?.getBoundingClientRect();
+      const boundary = viewportRect || {
+        bottom: window.innerHeight,
+        height: window.innerHeight,
+        left: 0,
+        right: window.innerWidth,
+        top: 0,
+      };
+      const estimatedCardHeight = user.address === myAddress ? 250 : 340;
+      const cardWidth = Math.min(440, Math.max(280, boundary.right - boundary.left - 24));
+      const spaceBelow = boundary.bottom - mentionRect.bottom;
+      const spaceAbove = mentionRect.top - boundary.top;
+      const anchorPlacement =
+        spaceBelow >= estimatedCardHeight || spaceBelow >= spaceAbove
+          ? 'below'
+          : 'above';
+      const left = Math.min(
+        Math.max(mentionRect.left, boundary.left + 12),
+        Math.max(boundary.left + 12, boundary.right - cardWidth - 12)
+      );
+      setMentionCard({
+        anchorPlacement,
+        anchorPosition: {
+          left: Math.round(left),
+          top: Math.round(
+            anchorPlacement === 'above' ? mentionRect.top : mentionRect.bottom
+          ),
+        },
+        boundaryHeight: boundary.height,
+        data: {
+          address: user.address,
+          isMinterResolved: false,
+          isOwn: user.address === myAddress,
+          name: user.name || label,
+          status: null,
+        },
+      });
+      return true;
+    },
+    [isReply, mentionUserByLabel, mentionedAddresses, myAddress]
+  );
+
   const handleClickCapture = (e) => {
     if (isReply) {
-      const target = e.target;
+      const target = e.target as HTMLElement;
       const isLink =
         target.tagName === 'A' ||
         target.getAttribute?.('data-url') ||
@@ -218,7 +333,11 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
     }
     e.preventDefault();
 
-    const target = e.target;
+    const target = e.target as HTMLElement;
+    if (openMentionCard(target)) {
+      e.stopPropagation();
+      return;
+    }
     if (target.tagName === 'A') {
       openHttpUrlExternally(target.getAttribute('href'));
     } else if (target.getAttribute('data-url')) {
@@ -291,7 +410,11 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
         '--code-block-bg': theme.palette.background.paper,
         '--code-block-accent': theme.palette.primary.main,
         '--code-block-border': theme.palette.divider,
-        '--primary-main': theme.palette.primary.main,
+        '--primary-main':
+          theme.palette.mode === 'light'
+            ? theme.palette.primary.dark
+            : theme.palette.primary.main,
+        ...(textColor ? { '--text-primary': textColor } : {}),
       }}
     >
       {embedLink && <Embed embedLink={embedData} />}
@@ -334,6 +457,16 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
           </Tooltip>
         )}
       </Box>
+      {mentionCard && (
+        <ReticulumUserCard
+          anchorEl={null}
+          anchorPlacement={mentionCard.anchorPlacement}
+          anchorPosition={mentionCard.anchorPosition}
+          boundaryHeight={mentionCard.boundaryHeight}
+          data={mentionCard.data}
+          onClose={() => setMentionCard(null)}
+        />
+      )}
     </Box>
   );
 };

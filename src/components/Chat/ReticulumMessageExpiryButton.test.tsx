@@ -48,6 +48,51 @@ describe('ReticulumMessageExpiryButton', () => {
     );
   });
 
+  it('shows the effective channel default and selected expiry labels', () => {
+    const { rerender } = render(
+      <ReticulumMessageExpiryButton
+        channelExpiryDurationMs={2 * TIME_DAYS_1_IN_MILLISECONDS}
+        onChange={() => undefined}
+      />
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Set message expiry' })
+    ).toHaveTextContent('48');
+
+    rerender(
+      <ReticulumMessageExpiryButton
+        channelExpiryDurationMs={2 * TIME_DAYS_1_IN_MILLISECONDS}
+        onChange={() => undefined}
+        value={TIME_DAYS_1_IN_MILLISECONDS}
+      />
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Set message expiry' })
+    ).toHaveTextContent('24');
+
+    rerender(
+      <ReticulumMessageExpiryButton
+        channelExpiryDurationMs={3 * TIME_DAYS_1_IN_MILLISECONDS}
+        onChange={() => undefined}
+      />
+    );
+    expect(
+      screen.getByRole('button', { name: 'Set message expiry' })
+    ).toHaveTextContent('72');
+
+    rerender(
+      <ReticulumMessageExpiryButton
+        channelExpiryDurationMs={7 * TIME_DAYS_1_IN_MILLISECONDS}
+        onChange={() => undefined}
+      />
+    );
+    expect(
+      screen.getByRole('button', { name: 'Set message expiry' })
+    ).toHaveTextContent('1W');
+  });
+
   it('does not open while expiry changes are disabled', () => {
     render(
       <ReticulumMessageExpiryButton

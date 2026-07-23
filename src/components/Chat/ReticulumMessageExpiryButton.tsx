@@ -58,6 +58,19 @@ function BombIcon() {
   );
 }
 
+const expiryIndicatorLabel = (durationMs?: number): string | null => {
+  if (!durationMs) return null;
+  const option = RETICULUM_MESSAGE_EXPIRY_OPTIONS.find(
+    (candidate) => candidate.durationMs === durationMs
+  );
+  if (!option) return null;
+  if (option.label === '24 hours') return '24';
+  if (option.label === '48 hours') return '48';
+  if (option.label === '72 hours') return '72';
+  if (option.label === '1 week') return '1W';
+  return null;
+};
+
 export function ReticulumMessageExpiryButton({
   channelExpiryDurationMs,
   disabled = false,
@@ -67,6 +80,8 @@ export function ReticulumMessageExpiryButton({
 }: ReticulumMessageExpiryButtonProps) {
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const effectiveExpiryDurationMs = value ?? channelExpiryDurationMs;
+  const indicatorLabel = expiryIndicatorLabel(effectiveExpiryDurationMs);
   const channelDefaultSummary = channelExpiryDurationMs
     ? `Maximum ${formatReticulumExpiryDuration(channelExpiryDurationMs)}`
     : 'No expiry';
@@ -119,7 +134,23 @@ export function ReticulumMessageExpiryButton({
               width: 34,
             }}
           >
-            <BombIcon />
+            {indicatorLabel ? (
+              <Box
+                component="span"
+                sx={{
+                  fontFamily: 'Inter, system-ui, sans-serif',
+                  fontSize: '11px',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontWeight: 800,
+                  letterSpacing: '-0.02em',
+                  lineHeight: 1,
+                }}
+              >
+                {indicatorLabel}
+              </Box>
+            ) : (
+              <BombIcon />
+            )}
           </IconButton>
         </span>
       </Tooltip>

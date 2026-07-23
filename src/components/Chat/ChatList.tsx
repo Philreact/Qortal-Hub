@@ -39,6 +39,12 @@ const isReticulumMessageContinuation = (
   if (!previousMessage?.sender || previousMessage.sender !== message?.sender) {
     return false;
   }
+  const previousSystemType =
+    previousMessage?.qchatSystem?.type ||
+    previousMessage?.decryptedData?.qchatSystem?.type;
+  const systemType =
+    message?.qchatSystem?.type || message?.decryptedData?.qchatSystem?.type;
+  if (previousSystemType || systemType) return false;
 
   const previousTimestamp = getMessageTimestampMs(previousMessage);
   const timestamp = getMessageTimestampMs(message);
@@ -71,6 +77,10 @@ type ChatListProps = {
   isPrivate?: any;
   reticulumChatEnabled?: boolean;
   reticulumInitialHistoryReady?: boolean;
+  reticulumGroupAvatarOwnerName?: string;
+  reticulumGroupDisplayName?: string;
+  reticulumMentionUsers?: Record<string, { address: string; name?: string }>;
+  reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
   reticulumUnreadCount?: number;
@@ -109,7 +119,10 @@ export const ChatList = ({
   hasSecretKey,
   isPrivate,
   reticulumChatEnabled = false,
-  reticulumInitialHistoryReady = true,
+  reticulumGroupAvatarOwnerName,
+  reticulumGroupDisplayName,
+  reticulumMentionUsers,
+  reticulumMemberJoinedByAddress,
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
   reticulumUnreadCount = 0,
@@ -890,6 +903,9 @@ export const ChatList = ({
         }}
       >
         <Box
+          data-reticulum-chat-scroll-viewport={
+            reticulumChatEnabled ? 'true' : undefined
+          }
           ref={parentRef}
           onScroll={handleScroll}
           onWheel={cancelReticulumScrollRetries}
@@ -1087,6 +1103,14 @@ export const ChatList = ({
                         replyIndex={replyIndex}
                         replyExpiredMeta={replyExpiredMeta}
                         reticulumChatEnabled={reticulumChatEnabled}
+                        reticulumGroupAvatarOwnerName={
+                          reticulumGroupAvatarOwnerName
+                        }
+                        reticulumGroupDisplayName={reticulumGroupDisplayName}
+                        reticulumMentionUsers={reticulumMentionUsers}
+                        reticulumMemberJoinedByAddress={
+                          reticulumMemberJoinedByAddress
+                        }
                         reticulumMemberRolesByAddress={
                           reticulumMemberRolesByAddress
                         }

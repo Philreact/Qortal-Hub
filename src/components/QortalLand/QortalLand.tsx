@@ -23,7 +23,7 @@ import {
   useTheme,
 } from '@mui/material';
 import { useAtomValue } from 'jotai';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { balanceAtom, userInfoAtom } from '../../atoms/global';
 import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.webp';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
@@ -91,6 +91,7 @@ type LandChatTranscriptMessage = {
   sequence: number;
   text: string;
   mode: LandChatMode;
+  moodAction?: LandSocialActionType;
   timestamp: number;
 };
 
@@ -110,6 +111,8 @@ type LandActionTarget = {
   authorAddress: string;
   sessionId: string;
   roomId: LandRoomId;
+  anchorX: number;
+  anchorY: number;
   menuX: number;
   menuY: number;
 };
@@ -326,7 +329,7 @@ const QORTAL_LAND_ROOM_LAYOUTS: Record<LandRoomId, QortalLandRoomLayout> = {
     },
     transitions: {
       clubToSkywalk: {
-        target: { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 220, y: 430, direction: 'r' },
+        target: { roomId: QORTAL_LAND_PARK_ROOM_ID, x: 1488, y: 492, direction: 'l' },
       },
       skywalkToClubReturn: {
         target: { roomId: QORTAL_LAND_DEFAULT_ROOM_ID, x: 1495, y: 374, direction: 'd' },
@@ -2227,18 +2230,24 @@ const createLandChatMessageId = (): string => {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 };
 
-const parseLandChatCommand = (rawText: string): { text: string; mode: LandChatMode } => {
+const parseLandChatCommand = (
+  rawText: string
+): { text: string; mode: LandChatMode; moodAction?: LandSocialActionType } => {
   const normalized = rawText.trim().replace(/\s+/g, ' ');
   const yellMatch = normalized.match(/^\/(?:y|yell)\s+(.+)$/i);
   if (yellMatch?.[1]?.trim()) {
     return { text: yellMatch[1].trim(), mode: 'yell' };
   }
-  const emoteMatch = normalized.match(/^\/(cry|laugh|happy|sad)(?:\s+.*)?$/i);
+  const emoteMatch = normalized.match(/^\/(cry|laugh|happy|sad|good|bad|hype|love)(?:\s+.*)?$/i);
   const emote = emoteMatch?.[1]?.toLowerCase();
   if (emote === 'cry') return { text: 'cries', mode: 'emote' };
   if (emote === 'laugh') return { text: 'laughs', mode: 'emote' };
-  if (emote === 'happy') return { text: 'is happy', mode: 'emote' };
-  if (emote === 'sad') return { text: 'is sad', mode: 'emote' };
+  if (emote === 'happy') return { text: 'is happy', mode: 'emote', moodAction: 'sunshine' };
+  if (emote === 'sad') return { text: 'is sad', mode: 'emote', moodAction: 'rain' };
+  if (emote === 'good') return { text: 'is behaving.', mode: 'emote', moodAction: 'angel' };
+  if (emote === 'bad') return { text: 'is feeling naughty.', mode: 'emote', moodAction: 'devil' };
+  if (emote === 'hype') return { text: 'is hyped!', mode: 'emote', moodAction: 'buzz' };
+  if (emote === 'love') return { text: 'says: Lovely!', mode: 'emote', moodAction: 'love' };
   return { text: normalized, mode: 'say' };
 };
 
@@ -2275,6 +2284,10 @@ const parseQortalLandChatEvent = (
     : decoded.chatMode === 'emote'
       ? 'emote'
       : 'say';
+  const moodAction =
+    typeof decoded.moodAction === 'string' && isLandSocialActionType(decoded.moodAction)
+      ? decoded.moodAction
+      : undefined;
   const timestamp = Number(event.timestamp);
 
   return {
@@ -2284,6 +2297,7 @@ const parseQortalLandChatEvent = (
     sequence: Number.isFinite(sequence) ? sequence : 0,
     text,
     mode,
+    moodAction,
     timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
   };
 };
@@ -2373,12 +2387,14 @@ const clampRemoteVelocity = (velocity: number): number => {
 };
 
 const normalizeLandRoomId = (value: unknown): LandRoomId => {
-  return value === QORTAL_LAND_SKYWALK_ROOM_ID ||
-    value === QORTAL_LAND_MALL_ROOM_ID ||
-    value === QORTAL_LAND_PARK_ROOM_ID
+  return value === QORTAL_LAND_PARK_ROOM_ID
     ? value
     : QORTAL_LAND_DEFAULT_ROOM_ID;
 };
+
+// Keep the development tools available in source without exposing their
+// secondary toolbar in the shipped QortalLand interface.
+const QORTAL_LAND_DEVELOPMENT_TOOLBAR_ENABLED = false;
 
 const initialPositionForAddress = (address: string): { roomId: LandRoomId; x: number; y: number } => {
   const hue = addressHue(address);
@@ -2661,6 +2677,7 @@ export function QortalLand({
   const balance = useAtomValue(balanceAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
   const isActiveRef = useRef(isActive);
   const movementKeysRef = useRef<Set<string>>(new Set());
@@ -2816,6 +2833,43 @@ export function QortalLand({
       setSocialActionError('');
     }
   }, [actionTarget]);
+
+  useLayoutEffect(() => {
+    if (!actionTarget) return;
+    const container = containerRef.current;
+    const menu = actionMenuRef.current;
+    if (!container || !menu) return;
+
+    let frame = 0;
+    const clampMenuToViewport = () => {
+      const inset = 12;
+      const maxLeft = Math.max(inset, container.clientWidth - menu.offsetWidth - inset);
+      const maxTop = Math.max(inset, container.clientHeight - menu.offsetHeight - inset);
+      const left = clampNumber(actionTarget.anchorX, inset, maxLeft);
+      const top = clampNumber(actionTarget.anchorY, inset, maxTop);
+      setActionTarget((current) => {
+        if (!current || current.key !== actionTarget.key) return current;
+        if (current.menuX === left && current.menuY === top) return current;
+        return { ...current, menuX: left, menuY: top };
+      });
+    };
+    const scheduleClamp = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(clampMenuToViewport);
+    };
+
+    clampMenuToViewport();
+    scheduleClamp();
+    const resizeObserver = new ResizeObserver(scheduleClamp);
+    resizeObserver.observe(container);
+    resizeObserver.observe(menu);
+    window.addEventListener('resize', scheduleClamp);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', scheduleClamp);
+    };
+  }, [actionTarget?.anchorX, actionTarget?.anchorY, actionTarget?.key, showGamePicker]);
 
   useEffect(() => () => {
     if (landActionCooldownTimerRef.current !== null) {
@@ -3744,76 +3798,6 @@ export function QortalLand({
     };
   }, []);
 
-  const sendLandChat = useCallback(async () => {
-    if (isSendingChat || reticulumReady !== true) return;
-    const { text, mode } = parseLandChatCommand(chatText);
-    if (!text) return;
-    if (utf8ByteLength(text) > LAND_CHAT_MAX_TEXT_BYTES) {
-      setChatError('Message is too large');
-      return;
-    }
-    setIsSendingChat(true);
-    setChatError('');
-    try {
-      const landSequence = landChatSequenceRef.current + 1;
-      landChatSequenceRef.current = landSequence;
-      const published = await publishLandEventPayload({
-        qortalLandType: 'chat',
-        messageText: text,
-        chatMode: mode,
-        landSequence,
-      });
-      const now = Date.now();
-      const message: LandChatTranscriptMessage = {
-        messageId: published.eventId,
-        authorAddress: myAddress,
-        sessionId,
-        sequence: landSequence,
-        text,
-        mode,
-        timestamp: published.timestamp,
-      };
-      appendLandChatMessage(message);
-      landChatBubblesRef.current.set(published.eventId, {
-        messageId: published.eventId,
-        authorAddress: myAddress,
-        sessionId,
-        sequence: landSequence,
-        text,
-        createdAt: now,
-        expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
-      });
-      setChatText('');
-      setIsEmojiPickerOpen(false);
-      setIsChatFocused(true);
-      window.setTimeout(() => {
-        chatInputRef.current?.focus();
-      }, 0);
-    } catch (error) {
-      setChatError(error instanceof Error ? error.message : 'QortalLand chat send failed');
-    } finally {
-      setIsSendingChat(false);
-    }
-  }, [
-    appendLandChatMessage,
-    chatText,
-    isSendingChat,
-    myAddress,
-    publishLandEventPayload,
-    reticulumReady,
-    sessionId,
-  ]);
-
-  const submitLandChatFromInput = useCallback(() => {
-    if (activeChatTab !== 'local') return;
-    const { text } = parseLandChatCommand(chatText);
-    if (!text) {
-      cancelLandChatTyping();
-      return;
-    }
-    void sendLandChat();
-  }, [activeChatTab, cancelLandChatTyping, chatText, sendLandChat]);
-
   const addLandActionAnimation = useCallback((animation: Omit<LandActionAnimation, 'createdAt' | 'expiresAt'> & { timestamp?: number }) => {
     const now = Date.now();
     const packetTimestamp = Number(animation.timestamp);
@@ -3837,6 +3821,94 @@ export function QortalLand({
       expiresAt: createdAt + LAND_ACTION_ANIMATION_TTL_MS,
     });
   }, []);
+
+  const sendLandChat = useCallback(async () => {
+    if (isSendingChat || reticulumReady !== true) return;
+    const { text, mode, moodAction } = parseLandChatCommand(chatText);
+    if (!text) return;
+    if (utf8ByteLength(text) > LAND_CHAT_MAX_TEXT_BYTES) {
+      setChatError('Message is too large');
+      return;
+    }
+    setIsSendingChat(true);
+    setChatError('');
+    try {
+      const landSequence = landChatSequenceRef.current + 1;
+      landChatSequenceRef.current = landSequence;
+      const published = await publishLandEventPayload({
+        qortalLandType: 'chat',
+        messageText: text,
+        chatMode: mode,
+        moodAction,
+        landSequence,
+      });
+      const now = Date.now();
+      const message: LandChatTranscriptMessage = {
+        messageId: published.eventId,
+        authorAddress: myAddress,
+        sessionId,
+        sequence: landSequence,
+        text,
+        mode,
+        moodAction,
+        timestamp: published.timestamp,
+      };
+      appendLandChatMessage(message);
+      if (moodAction) {
+        addLandActionAnimation({
+          actionId: `${published.eventId}:mood`,
+          type: moodAction,
+          fromAddress: myAddress,
+          sourceSessionId: sessionId,
+          sequence: landSequence,
+          toAddress: myAddress,
+          targetSessionId: sessionId,
+          amount: 0,
+          roomId: currentRoomRef.current,
+          timestamp: published.timestamp,
+        });
+      } else {
+        landChatBubblesRef.current.set(published.eventId, {
+          messageId: published.eventId,
+          authorAddress: myAddress,
+          sessionId,
+          sequence: landSequence,
+          text,
+          createdAt: now,
+          expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
+        });
+      }
+      setChatText('');
+      setIsEmojiPickerOpen(false);
+      setIsChatFocused(true);
+      window.setTimeout(() => {
+        chatInputRef.current?.focus();
+      }, 0);
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'QortalLand chat send failed');
+    } finally {
+      setIsSendingChat(false);
+    }
+  }, [
+    addLandActionAnimation,
+    appendLandChatMessage,
+    chatText,
+    isSendingChat,
+    myAddress,
+    publishLandEventPayload,
+    reticulumReady,
+    sessionId,
+  ]);
+
+  const submitLandChatFromInput = useCallback(() => {
+    if (activeChatTab !== 'local') return;
+    const { text } = parseLandChatCommand(chatText);
+    if (!text) {
+      cancelLandChatTyping();
+      return;
+    }
+    void sendLandChat();
+  }, [activeChatTab, cancelLandChatTyping, chatText, sendLandChat]);
 
   const sendSocialAction = useCallback(async (actionType: LandSocialActionType) => {
     const target = actionTarget;
@@ -4166,6 +4238,7 @@ export function QortalLand({
       const now = Date.now();
       for (const message of messages.slice(-LAND_CHAT_RECONCILE_LIMIT)) {
         if (
+          message.moodAction ||
           message.timestamp > now + 5000 ||
           now - message.timestamp >= LAND_CHAT_BUBBLE_TTL_MS ||
           landChatBubblesRef.current.has(message.messageId)
@@ -4209,21 +4282,39 @@ export function QortalLand({
       if (!message) return;
       queuePrimaryNameLookups([payload.authorAddress]);
       const now = Date.now();
-      landChatBubblesRef.current.set(payload.eventId, {
-        messageId: payload.eventId,
-        authorAddress: payload.authorAddress,
-        sessionId: message.sessionId,
-        sequence: message.sequence,
-        text: message.text,
-        createdAt: now,
-        expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
-      });
+      if (message.moodAction) {
+        const actionId = `${payload.eventId}:mood`;
+        if (!landActionAnimationsRef.current.has(actionId)) {
+          addLandActionAnimation({
+            actionId,
+            type: message.moodAction,
+            fromAddress: payload.authorAddress,
+            sourceSessionId: message.sessionId,
+            sequence: message.sequence,
+            toAddress: payload.authorAddress,
+            targetSessionId: message.sessionId,
+            amount: 0,
+            roomId: '',
+            timestamp: now,
+          });
+        }
+      } else {
+        landChatBubblesRef.current.set(payload.eventId, {
+          messageId: payload.eventId,
+          authorAddress: payload.authorAddress,
+          sessionId: message.sessionId,
+          sequence: message.sequence,
+          text: message.text,
+          createdAt: now,
+          expiresAt: now + LAND_CHAT_BUBBLE_TTL_MS,
+        });
+      }
       appendLandChatMessage(message);
     });
     return () => {
       unsubscribe?.();
     };
-  }, [appendLandChatMessage, groupId, myAddress, queuePrimaryNameLookups]);
+  }, [addLandActionAnimation, appendLandChatMessage, groupId, myAddress, queuePrimaryNameLookups]);
 
   useEffect(() => {
     if (!Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
@@ -4621,7 +4712,11 @@ export function QortalLand({
         }>();
         private callIndicators = new Map<string, { container: any; badge: any; phone: any }>();
         private gameIndicators = new Map<string, { container: any; badge: any; gamepad: any }>();
-        private proximityVoiceIndicators = new Map<string, { container: any; ring: any; mic: any }>();
+        private proximityVoiceIndicators = new Map<string, {
+          container: any;
+          primaryNote: any;
+          secondaryNote: any;
+        }>();
         private pendingRoomTransition: QortalLandRoomTransitionTarget | null = null;
         private roomAssetLoadCallbacks = new Map<LandRoomId, Array<() => void>>();
         private background?: any;
@@ -4780,8 +4875,10 @@ export function QortalLand({
         }
 
         private prefetchAdjacentRoomAssets(roomId: LandRoomId) {
-          if (roomId !== QORTAL_LAND_SKYWALK_ROOM_ID) return;
-          this.ensureRoomAssets(QORTAL_LAND_DEFAULT_ROOM_ID, () => {});
+          const adjacentRoomId = roomId === QORTAL_LAND_PARK_ROOM_ID
+            ? QORTAL_LAND_DEFAULT_ROOM_ID
+            : QORTAL_LAND_PARK_ROOM_ID;
+          this.ensureRoomAssets(adjacentRoomId, () => {});
         }
 
         private applyRoomTransition(transition: QortalLandRoomTransitionTarget) {
@@ -4862,13 +4959,25 @@ export function QortalLand({
             const bounds = containerRef.current?.getBoundingClientRect();
             if (!bounds) return;
             const pointerEvent = pointer?.event as PointerEvent | undefined;
+            const menuX = clampNumber(
+              (pointerEvent?.clientX ?? bounds.left + bounds.width / 2) - bounds.left,
+              12,
+              Math.max(12, bounds.width - 290)
+            );
+            const menuY = clampNumber(
+              (pointerEvent?.clientY ?? bounds.top + bounds.height / 2) - bounds.top,
+              12,
+              Math.max(12, bounds.height - 24)
+            );
             setActionTarget({
               key: `${myAddress}:${sessionId}`,
               authorAddress: myAddress,
               sessionId,
               roomId: currentRoomRef.current,
-              menuX: clampNumber((pointerEvent?.clientX ?? bounds.left + bounds.width / 2) - bounds.left, 12, Math.max(12, bounds.width - 290)),
-              menuY: clampNumber((pointerEvent?.clientY ?? bounds.top + bounds.height / 2) - bounds.top, 54, Math.max(54, bounds.height - 390)),
+              anchorX: menuX,
+              anchorY: menuY,
+              menuX,
+              menuY,
             });
           });
           this.localLabel = this.add
@@ -7443,8 +7552,14 @@ export function QortalLand({
                     : animation.type === 'rain'
                       ? { color: 0x74b9ff, symbol: '☁', particle: '│', label: 'RAIN' }
                       : { color: 0xffd45a, symbol: '☀', particle: '✦', label: 'SUNSHINE' };
+          const isSelfMood =
+            animation.type !== 'qort_received' &&
+            animation.fromAddress === animation.toAddress &&
+            animation.sourceSessionId === animation.targetSessionId;
           if (animation.type !== 'qort_received') {
-            visual.label = displayNameForAddress(animation.fromAddress, primaryNameCacheRef.current);
+            visual.label = isSelfMood
+              ? ''
+              : displayNameForAddress(animation.fromAddress, primaryNameCacheRef.current);
           }
           const aura = this.add.graphics();
           aura.fillStyle(visual.color, 0.15);
@@ -7474,7 +7589,7 @@ export function QortalLand({
             padding: { x: 7, y: 3 },
             stroke: '#07101f',
             strokeThickness: 2,
-          }).setOrigin(0.5);
+          }).setOrigin(0.5).setVisible(Boolean(visual.label));
           const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
           const particles = Array.from({ length: reducedMotion ? 4 : 8 }, (_, index) => {
             const particle = this.add.text(0, 0, visual.particle, {
@@ -7601,21 +7716,27 @@ export function QortalLand({
 
         private createProximityVoiceIndicator() {
           const container = this.add.container(0, 0);
-          const ring = this.add.graphics();
-          ring.lineStyle(4, 0x4dffb8, 0.92);
-          ring.strokeCircle(0, 0, 28);
-          ring.lineStyle(2, 0x2cf8ff, 0.36);
-          ring.strokeCircle(0, 0, 34);
-          const mic = this.add.text(0, -40, '●', {
+          const primaryNote = this.add.text(-5, 5, '\u266a', {
             color: '#4dffb8',
-            fontFamily: 'Arial, sans-serif',
-            fontSize: '12px',
+            fontFamily: 'Inter, Segoe UI Symbol, Arial, sans-serif',
+            fontSize: '25px',
+            fontStyle: 'bold',
             stroke: '#041019',
-            strokeThickness: 4,
+            strokeThickness: 3,
           }).setOrigin(0.5);
-          container.add([ring, mic]);
+          const secondaryNote = this.add.text(14, -12, '\u266b', {
+            color: '#2cf8ff',
+            fontFamily: 'Inter, Segoe UI Symbol, Arial, sans-serif',
+            fontSize: '20px',
+            fontStyle: 'bold',
+            stroke: '#041019',
+            strokeThickness: 3,
+          }).setOrigin(0.5);
+          primaryNote.setRotation(-0.12);
+          secondaryNote.setRotation(0.1);
+          container.add([primaryNote, secondaryNote]);
           container.setDepth(12950);
-          return { container, ring, mic };
+          return { container, primaryNote, secondaryNote };
         }
 
         private updateProximityVoiceIndicators() {
@@ -7641,10 +7762,31 @@ export function QortalLand({
               this.proximityVoiceIndicators.set(key, indicator);
             }
             const scale = Math.abs(avatar.scaleY || 1);
-            indicator.container.setPosition(avatar.x, avatar.y - 24 * scale);
-            indicator.container.setScale(Math.max(0.7, Math.min(1.05, scale)));
             const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
-            indicator.container.setAlpha(reduceMotion ? 0.9 : 0.72 + Math.sin(this.time.now / 110) * 0.22);
+            const indicatorScale = Math.max(0.82, Math.min(1.15, scale * 1.22));
+            indicator.container.setPosition(
+              avatar.x + 44 * scale,
+              avatar.y - 184 * scale
+            );
+            indicator.container.setScale(indicatorScale);
+            indicator.container.setAlpha(0.96);
+            if (reduceMotion) {
+              indicator.primaryNote.setPosition(-5, 5).setAlpha(0.9);
+              indicator.secondaryNote.setPosition(14, -12).setAlpha(0.72);
+              continue;
+            }
+
+            const primaryPhase = (Math.sin(this.time.now / 210) + 1) / 2;
+            const secondaryPhase =
+              (Math.sin(this.time.now / 210 + Math.PI) + 1) / 2;
+            indicator.primaryNote
+              .setPosition(-5 + primaryPhase * 3, 7 - primaryPhase * 8)
+              .setAlpha(0.42 + primaryPhase * 0.55)
+              .setScale(0.92 + primaryPhase * 0.12);
+            indicator.secondaryNote
+              .setPosition(12 + secondaryPhase * 4, -8 - secondaryPhase * 9)
+              .setAlpha(0.38 + secondaryPhase * 0.58)
+              .setScale(0.9 + secondaryPhase * 0.13);
           }
         }
 
@@ -7951,43 +8093,13 @@ export function QortalLand({
             clubToSkywalk &&
             this.isAtClubSkywalkDoorPassage(x, y)
           ) {
-            return clubToSkywalk.target;
-          }
-          if (
-            roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
-            x >= 1548 &&
-            y <= 466
-          ) {
             return this.getParkPortalReturnTarget();
-          }
-          if (
-            roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
-            x >= 760 &&
-            x <= 1040 &&
-            y >= 526
-          ) {
-            return { roomId: QORTAL_LAND_MALL_ROOM_ID, x: 900, y: 565, direction: 'd' };
-          }
-          if (
-            roomId === QORTAL_LAND_SKYWALK_ROOM_ID &&
-            x <= 210 &&
-            y <= 440
-          ) {
-            return this.getClubSkywalkDoorReturnTarget();
-          }
-          if (
-            roomId === QORTAL_LAND_MALL_ROOM_ID &&
-            x >= 760 &&
-            x <= 1040 &&
-            y <= 460
-          ) {
-            return { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 900, y: 470, direction: 'u' };
           }
           if (
             roomId === QORTAL_LAND_PARK_ROOM_ID &&
             this.isAtParkPortalPassage(x, y)
           ) {
-            return { roomId: QORTAL_LAND_SKYWALK_ROOM_ID, x: 1488, y: 492, direction: 'l' };
+            return this.getClubSkywalkDoorReturnTarget();
           }
           return null;
         }
@@ -8088,14 +8200,16 @@ export function QortalLand({
                 );
                 const menuY = clampNumber(
                   (pointerEvent?.clientY ?? bounds.top + bounds.height / 2) - bounds.top,
-                  54,
-                  Math.max(54, bounds.height - 390)
+                  12,
+                  Math.max(12, bounds.height - 24)
                 );
                 setActionTarget({
                   key,
                   authorAddress: player.authorAddress,
                   sessionId: player.sessionId,
                   roomId: player.roomId,
+                  anchorX: menuX,
+                  anchorY: menuY,
                   menuX,
                   menuY,
                 });
@@ -8337,87 +8451,83 @@ export function QortalLand({
         width: '100%',
       }}
     >
-      <Box
-        sx={{
-          alignItems: 'center',
-          backgroundColor: 'rgba(9, 13, 18, 0.72)',
-          borderBottom: `1px solid ${theme.palette.divider}`,
-          display: 'flex',
-          gap: 1.5,
-          height: 42,
-          justifyContent: 'space-between',
-          padding: '0 14px',
-          zIndex: 2,
-        }}
-      >
-        <Typography sx={{ color: theme.palette.text.primary, fontSize: 14, fontWeight: 700 }}>
-          QortalLand
-        </Typography>
-        <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.25, minWidth: 0 }}>
-          <Typography sx={{ color: theme.palette.text.secondary, fontSize: 12 }}>
-            {groupName}
+      {QORTAL_LAND_DEVELOPMENT_TOOLBAR_ENABLED ? (
+        <Box
+          sx={{
+            alignItems: 'center',
+            backgroundColor: 'rgba(9, 13, 18, 0.72)',
+            borderBottom: `1px solid ${theme.palette.divider}`,
+            display: 'flex',
+            gap: 1.5,
+            height: 42,
+            justifyContent: 'space-between',
+            padding: '0 14px',
+            zIndex: 2,
+          }}
+        >
+          <Typography
+            sx={{
+              color: theme.palette.text.primary,
+              fontSize: 14,
+              fontWeight: 700,
+            }}
+          >
+            QortalLand
           </Typography>
-          {(window.qortalLandRealtime || window.qortalLandGames) && <ProximityVoiceControl
-            state={proximityVoice.state}
-            mode={proximityVoice.mode}
-            pttKey={proximityVoice.pttKey}
-            transmitting={proximityVoice.transmitting}
-            peers={proximityVoice.peers}
-            error={proximityVoice.error}
-            devices={proximityVoice.devices}
-            inputDeviceId={proximityVoice.inputDeviceId}
-            outputDeviceId={proximityVoice.outputDeviceId}
-            masterVolume={proximityVoice.masterVolume}
-            resolveName={resolveLandPlayerName}
-            onEnable={proximityVoice.enable}
-            onDisable={proximityVoice.disable}
-            onMode={proximityVoice.setMode}
-            onPttKey={proximityVoice.setPttKey}
-            onInputDevice={proximityVoice.setInputDeviceId}
-            onOutputDevice={proximityVoice.setOutputDeviceId}
-            onMasterVolume={proximityVoice.setMasterVolume}
-            onPeerPolicy={proximityVoice.setPeerPolicy}
-          />}
-          <Button
-            size="small"
-            variant={isCharacterPanelOpen ? 'contained' : 'outlined'}
-            onClick={() => setIsCharacterPanelOpen((open) => !open)}
+          <Box
             sx={{
-              borderColor: 'rgba(255, 43, 214, 0.38)',
-              borderRadius: '6px',
-              color: isCharacterPanelOpen ? '#071018' : '#ff7ce8',
-              fontSize: 11,
-              fontWeight: 800,
-              lineHeight: 1.1,
-              minHeight: 28,
-              minWidth: 92,
-              padding: '5px 10px',
-              textTransform: 'none',
+              alignItems: 'center',
+              display: 'flex',
+              gap: 1.25,
+              minWidth: 0,
             }}
           >
-            Customize
-          </Button>
-          <Button
-            size="small"
-            variant={isAssetDevPanelOpen ? 'contained' : 'outlined'}
-            onClick={() => setIsAssetDevPanelOpen((open) => !open)}
-            sx={{
-              borderColor: 'rgba(44, 248, 255, 0.38)',
-              borderRadius: '6px',
-              color: isAssetDevPanelOpen ? '#071018' : '#2cf8ff',
-              fontSize: 11,
-              fontWeight: 800,
-              lineHeight: 1.1,
-              minHeight: 28,
-              minWidth: 86,
-              padding: '5px 10px',
-              textTransform: 'none',
-            }}
-          >
-            Asset Dev
-          </Button>
+            <Typography
+              sx={{ color: theme.palette.text.secondary, fontSize: 12 }}
+            >
+              {groupName}
+            </Typography>
+            <Button
+              size="small"
+              variant={isCharacterPanelOpen ? 'contained' : 'outlined'}
+              onClick={() => setIsCharacterPanelOpen((open) => !open)}
+              sx={{
+                borderColor: 'rgba(255, 43, 214, 0.38)',
+                borderRadius: '6px',
+                color: isCharacterPanelOpen ? '#071018' : '#ff7ce8',
+                fontSize: 11,
+                fontWeight: 800,
+                lineHeight: 1.1,
+                minHeight: 28,
+                minWidth: 92,
+                padding: '5px 10px',
+                textTransform: 'none',
+              }}
+            >
+              Customize
+            </Button>
+            <Button
+              size="small"
+              variant={isAssetDevPanelOpen ? 'contained' : 'outlined'}
+              onClick={() => setIsAssetDevPanelOpen((open) => !open)}
+              sx={{
+                borderColor: 'rgba(44, 248, 255, 0.38)',
+                borderRadius: '6px',
+                color: isAssetDevPanelOpen ? '#071018' : '#2cf8ff',
+                fontSize: 11,
+                fontWeight: 800,
+                lineHeight: 1.1,
+                minHeight: 28,
+                minWidth: 86,
+                padding: '5px 10px',
+                textTransform: 'none',
+              }}
+            >
+              Asset Dev
+            </Button>
+          </Box>
         </Box>
-      </Box>
+      ) : null}
       <Box
         ref={containerRef}
         sx={{
@@ -8464,6 +8574,7 @@ export function QortalLand({
             }}
           >
             <Box
+              data-qortalland-chat-panel="true"
               onClick={wakeLandChatPanel}
               sx={{
                 background:
@@ -8487,7 +8598,7 @@ export function QortalLand({
                 },
               }}
             >
-              <Box sx={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', gap: 0.75, paddingBottom: 0.75 }}>
+              <Box sx={{ alignItems: 'center', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', gap: 0.75, paddingBottom: 0.75 }}>
                 {([
                   ['local', 'World'],
                   ['whispers', 'Whispers'],
@@ -8534,6 +8645,31 @@ export function QortalLand({
                   </Box>
                   );
                 })}
+                {(window.qortalLandRealtime || window.qortalLandGames) && (
+                  <Box sx={{ marginLeft: 'auto' }}>
+                    <ProximityVoiceControl
+                      state={proximityVoice.state}
+                      mode={proximityVoice.mode}
+                      pttKey={proximityVoice.pttKey}
+                      transmitting={proximityVoice.transmitting}
+                      peers={proximityVoice.peers}
+                      error={proximityVoice.error}
+                      devices={proximityVoice.devices}
+                      inputDeviceId={proximityVoice.inputDeviceId}
+                      outputDeviceId={proximityVoice.outputDeviceId}
+                      masterVolume={proximityVoice.masterVolume}
+                      resolveName={resolveLandPlayerName}
+                      onEnable={proximityVoice.enable}
+                      onDisable={proximityVoice.disable}
+                      onMode={proximityVoice.setMode}
+                      onPttKey={proximityVoice.setPttKey}
+                      onInputDevice={proximityVoice.setInputDeviceId}
+                      onOutputDevice={proximityVoice.setOutputDeviceId}
+                      onMasterVolume={proximityVoice.setMasterVolume}
+                      onPeerPolicy={proximityVoice.setPeerPolicy}
+                    />
+                  </Box>
+                )}
               </Box>
               <Box sx={{ minHeight: 118 }}>
                 <Box
@@ -9452,19 +9588,22 @@ export function QortalLand({
         >
           <Box
             onMouseDown={(event) => event.stopPropagation()}
+            ref={actionMenuRef}
             sx={{
               background: `linear-gradient(180deg, ${alpha('#10182a', 0.98)}, ${alpha('#070914', 0.96)})`,
               border: `1px solid ${alpha('#2cf8ff', 0.34)}`,
               borderRadius: '10px',
               boxShadow: `0 18px 38px ${alpha('#000', 0.44)}, 0 0 24px ${alpha('#2cf8ff', 0.1)}`,
+              boxSizing: 'border-box',
               left: actionTarget.menuX,
-              maxHeight: 'calc(100% - 66px)',
-              minWidth: 270,
+              maxHeight: 'calc(100% - 24px)',
+              maxWidth: 'calc(100% - 24px)',
               overflowX: 'hidden',
               overflowY: 'auto',
               padding: '10px',
               position: 'absolute',
               top: actionTarget.menuY,
+              width: 270,
               zIndex: 5,
             }}
           >

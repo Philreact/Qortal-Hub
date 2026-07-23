@@ -43,6 +43,10 @@ import {
   resumeAllQueues,
 } from '../../App';
 import { ChatDirect } from '../Chat/ChatDirect';
+import {
+  applyReticulumJoinUnreadBaseline,
+  resolveReticulumMembershipJoinedAt,
+} from '../Chat/reticulumJoinUnreadBaseline';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { LoadingButton } from '@mui/lab';
 import { LoadingSnackbar } from '../Snackbar/LoadingSnackbar';
@@ -322,10 +326,14 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
   groupId: number;
   isPrivate: boolean;
   isAdmin: boolean;
+  joinedAt?: number;
   localAddress?: string;
 }> => {
   if (!Array.isArray(groups)) return [];
-  const byGroupId = new Map<number, boolean>();
+  const byGroupId = new Map<
+    number,
+    { isPrivate: boolean; joinedAt?: number }
+  >();
   const normalizedLocalAddress =
     typeof localAddress === 'string' ? localAddress.trim() : '';
   for (const group of groups) {
@@ -343,14 +351,30 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
       groupProperty?.isPrivate === true ||
       groupObject.isOpen === false ||
       groupProperty?.isOpen === false;
-    byGroupId.set(groupId, byGroupId.get(groupId) === true || isPrivate);
+    const joinedAt = Number(
+      (group as { reticulumJoinedAt?: unknown; joinedAt?: unknown })
+        ?.reticulumJoinedAt ??
+        (group as { joinedAt?: unknown })?.joinedAt
+    );
+    const previous = byGroupId.get(groupId);
+    byGroupId.set(groupId, {
+      isPrivate: previous?.isPrivate === true || isPrivate,
+      joinedAt:
+        previous?.joinedAt ||
+        (Number.isFinite(joinedAt) && joinedAt > 0 ? joinedAt : undefined),
+    });
   }
-  return [...byGroupId.entries()].map(([groupId, isPrivate]) => ({
-    groupId,
-    isPrivate,
-    isAdmin: adminGroupIds.has(groupId),
-    ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
-  }));
+  return [...byGroupId.entries()].map(
+    ([groupId, { isPrivate, joinedAt }]) => ({
+      groupId,
+      isPrivate,
+      isAdmin: adminGroupIds.has(groupId),
+      ...(joinedAt ? { joinedAt } : {}),
+      ...(normalizedLocalAddress
+        ? { localAddress: normalizedLocalAddress }
+        : {}),
+    })
+  );
 };
 
 const collectReticulumPlainText = (value: unknown, out: string[]): void => {
@@ -1689,10 +1713,11 @@ export const Group = ({
     () =>
       JSON.stringify(
         reticulumMemberships.map(
-          ({ groupId, isPrivate, isAdmin, localAddress }) => ({
+          ({ groupId, isPrivate, isAdmin, joinedAt, localAddress }) => ({
             groupId,
             isPrivate,
             isAdmin,
+            joinedAt: joinedAt || 0,
             localAddress: localAddress || '',
           })
         )
@@ -1747,8 +1772,21 @@ export const Group = ({
           );
           return;
         }
+        const resolvedReticulumMemberships = await Promise.all(
+          reticulumMemberships.map(async (membership) => {
+            if (membership.joinedAt || !membership.localAddress) {
+              return membership;
+            }
+            const joinedAt = await resolveReticulumMembershipJoinedAt(
+              membership.groupId,
+              membership.localAddress
+            ).catch(() => null);
+            return joinedAt ? { ...membership, joinedAt } : membership;
+          })
+        );
+        if (cancelled) return;
         const membershipResult = await window.reticulumChat.setLocalGroupMemberships(
-          reticulumMemberships
+          resolvedReticulumMemberships
         );
         if (cancelled) return;
         if (membershipResult?.success !== true) {
@@ -1761,6 +1799,19 @@ export const Group = ({
           });
           return;
         }
+        await Promise.all(
+          resolvedReticulumMemberships.map(
+            ({ groupId, joinedAt, localAddress }) =>
+              joinedAt && localAddress
+                ? applyReticulumJoinUnreadBaseline({
+                    address: localAddress,
+                    groupId,
+                    joinedAt,
+                  })
+                : Promise.resolve(false)
+          )
+        );
+        if (cancelled) return;
         setReticulumMembershipsAppliedKey(reticulumMembershipsKey);
         const nextIds = new Set(groupIds);
         const previousIds = reticulumSubscribedGroupIdsRef.current;
@@ -3311,16 +3362,21 @@ export const Group = ({
     };
   }, [returnFromAppsMode]);
 
-  const openGroupDiscovery = useCallback(() => {
-    setChatMode('groups');
-    setDesktopSideView('groups');
-    setSelectedGroup(null);
-    setSelectedDirect(null);
-    setNewChat(false);
-    openQChatTab();
-    setOpenAddGroup(false);
-    setOpenFindGroup(true);
-  }, []);
+  const openGroupDiscovery = useCallback(
+    (event?: CustomEvent<{ modalOnly?: boolean }>) => {
+      if (!event?.detail?.modalOnly) {
+        setChatMode('groups');
+        setDesktopSideView('groups');
+        setSelectedGroup(null);
+        setSelectedDirect(null);
+        setNewChat(false);
+        openQChatTab();
+      }
+      setOpenAddGroup(false);
+      setOpenFindGroup(true);
+    },
+    []
+  );
 
   const hasConfirmedNoReticulumGroups =
     reticulumChatEnabled &&

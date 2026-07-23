@@ -30,6 +30,7 @@ import {
   type ConnectFourState,
 } from './connectFour';
 import { GameSessionChat, type GameChatMessage } from './GameSessionChat';
+import { GameInvitationSentDialog } from './GameInvitationSentDialog';
 import { friendlyGameStatus } from './gameDialogText';
 
 export type ConnectFourGamePhase =
@@ -440,6 +441,22 @@ export function ConnectFourGameDialog({
         ? 'Best out of 3?'
         : 'Better luck next time.'
     : '';
+
+  if (match?.phase === 'opening') return null;
+
+  if (match?.phase === 'waiting') {
+    return (
+      <GameInvitationSentDialog
+        expiresAt={match.expiresAt}
+        gameTitle="Connect Four"
+        now={now}
+        onCancel={onClose}
+        onToggleSound={toggleMuted}
+        opponentName={opponentName}
+        soundMuted={muted}
+      />
+    );
+  }
 
   return (
     <>

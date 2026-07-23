@@ -23,6 +23,7 @@ import {
   type CheckersState,
 } from './checkers';
 import { GameSessionChat } from './GameSessionChat';
+import { GameInvitationSentDialog } from './GameInvitationSentDialog';
 import { friendlyGameStatus } from './gameDialogText';
 import type { QortalLandGameMatchView } from './useQortalLandGame';
 
@@ -187,6 +188,20 @@ export function CheckersGameDialog({
     : '';
   const localColor = localSeat === 1 ? '#eab72f' : '#d93659';
   const opponentColor = localSeat === 1 ? '#d93659' : '#eab72f';
+
+  if (match.phase === 'opening') return null;
+
+  if (match.phase === 'waiting') {
+    return (
+      <GameInvitationSentDialog
+        expiresAt={match.expiresAt}
+        gameTitle="Checkers"
+        now={now}
+        onCancel={onClose}
+        opponentName={opponentName}
+      />
+    );
+  }
 
   return (
     <>

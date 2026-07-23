@@ -305,6 +305,7 @@
   border-radius: 6px;
   padding: 0.15em 0.45em;
   font-weight: 600;
+  cursor: pointer;
   transition:
     background 0.15s ease,
     opacity 0.15s ease;
