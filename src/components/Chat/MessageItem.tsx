@@ -9,7 +9,10 @@ import {
   useState,
 } from 'react';
 import { useInView } from 'react-intersection-observer';
-import { MessageDisplay } from './MessageDisplay';
+import {
+  MessageDisplay,
+  type ReticulumChannelLinkAccess,
+} from './MessageDisplay';
 import {
   Avatar,
   Box,
@@ -321,6 +324,7 @@ type MessageItemProps = {
     string,
     { address: string; name?: string; role?: 'admin' | 'owner' }
   >;
+  reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
@@ -360,6 +364,7 @@ export const MessageItemComponent = ({
   reticulumGroupAvatarOwnerName,
   reticulumGroupDisplayName,
   reticulumMentionUsers,
+  reticulumChannelLinkAccess,
   reticulumMemberJoinedByAddress,
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
@@ -2544,14 +2549,23 @@ export const MessageItemComponent = ({
 
                   {reticulumChatEnabled ? (
                     htmlReply ? (
-                      <MessageDisplay isReply htmlContent={htmlReply} />
+                      <MessageDisplay
+                        isReply
+                        htmlContent={htmlReply}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                      />
                     ) : reply?.decryptedData?.type === 'notification' ? (
                       <MessageDisplay
                         isReply
                         htmlContent={reply.decryptedData?.data?.message}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                       />
                     ) : reply?.text ? (
-                      <MessageDisplay isReply htmlContent={reply.text} />
+                      <MessageDisplay
+                        isReply
+                        htmlContent={reply.text}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                      />
                     ) : null
                   ) : (
                     <>
@@ -2663,11 +2677,16 @@ export const MessageItemComponent = ({
 
                   {reticulumChatEnabled ? (
                     htmlReplyExpired ? (
-                      <MessageDisplay isReply htmlContent={htmlReplyExpired} />
+                      <MessageDisplay
+                        isReply
+                        htmlContent={htmlReplyExpired}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                      />
                     ) : replyExpiredMeta?.text ? (
                       <MessageDisplay
                         isReply
                         htmlContent={replyExpiredMeta.text}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                       />
                     ) : null
                   ) : (
@@ -2791,6 +2810,7 @@ export const MessageItemComponent = ({
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
+                reticulumChannelLinkAccess={reticulumChannelLinkAccess}
               />
             ) : hasNoMessage ? null : htmlText ? (
               <MessageDisplay
@@ -2798,6 +2818,7 @@ export const MessageItemComponent = ({
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
+                reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 textColor={
                   isOfficialGroupWelcome
                     ? theme.palette.mode === 'light'
@@ -2812,6 +2833,7 @@ export const MessageItemComponent = ({
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
+                reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 textColor={
                   isOfficialGroupWelcome
                     ? theme.palette.mode === 'light'

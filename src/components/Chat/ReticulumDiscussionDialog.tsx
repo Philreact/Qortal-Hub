@@ -19,6 +19,7 @@ import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { MAX_SIZE_MESSAGE } from '../../constants/constants';
 import Tiptap, { type MentionSuggestionItem } from './TipTap';
 import { MessageItem } from './MessageItem';
+import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 
@@ -69,6 +70,7 @@ type ReticulumDiscussionDialogProps = {
     string,
     { address: string; joined?: number; name: string }
   >;
+  reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   preparingFile: boolean;
   selectedGroup: number | string;
 };
@@ -96,6 +98,7 @@ export const ReticulumDiscussionDialog = ({
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
   reticulumMentionUsers,
+  reticulumChannelLinkAccess,
   preparingFile,
   selectedGroup,
 }: ReticulumDiscussionDialogProps) => {
@@ -420,6 +423,7 @@ export const ReticulumDiscussionDialog = ({
                       }
                       reticulumMemberRolesReady={reticulumMemberRolesReady}
                       reticulumMentionUsers={reticulumMentionUsers}
+                      reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                       scrollToItem={() => undefined}
                       selectedGroup={selectedGroup}
                     />

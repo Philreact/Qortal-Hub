@@ -124,6 +124,29 @@ type MentionUser = {
   role?: 'admin' | 'owner';
 };
 
+export type ReticulumChannelLinkAccess = {
+  groupId: number;
+  ready: boolean;
+  visibleChannelNameById: ReadonlyMap<string, string>;
+};
+
+const parseReticulumChatLinkMentionId = (
+  id: string
+): { kind: 'group' | 'channel'; groupId: number; channelId: string } | null => {
+  const match = id.match(/^reticulum-(group|channel):(\d+):(.+)$/);
+  if (!match) return null;
+  const groupId = Number(match[2]);
+  if (!Number.isInteger(groupId) || groupId <= 0) return null;
+  try {
+    const channelId = decodeURIComponent(match[3]).trim();
+    return channelId
+      ? { kind: match[1] as 'group' | 'channel', groupId, channelId }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const parseReticulumChatLinkMention = (
   target: HTMLElement
 ): { groupId: number; channelId: string } | null => {
@@ -132,15 +155,72 @@ const parseReticulumChatLinkMention = (
   ) as HTMLElement | null;
   if (!mention) return null;
   const id = String(mention.dataset.id || '').trim();
-  const match = id.match(/^reticulum-(?:group|channel):(\d+):(.+)$/);
-  if (!match) return null;
-  const groupId = Number(match[1]);
-  if (!Number.isInteger(groupId) || groupId <= 0) return null;
-  try {
-    const channelId = decodeURIComponent(match[2]).trim();
-    return channelId ? { groupId, channelId } : null;
-  } catch {
-    return null;
+  return parseReticulumChatLinkMentionId(id);
+};
+
+const escapeMentionPattern = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const decorateStaticReticulumMentions = (
+  document: Document,
+  labels: string[]
+): void => {
+  const normalizedLabels = [
+    ...new Set(
+      ['everyone', 'here', 'no-access', ...labels]
+        .map((label) => String(label || '').trim().replace(/^@/, ''))
+        .filter(Boolean)
+    ),
+  ].sort((left, right) => right.length - left.length);
+  if (normalizedLabels.length === 0) return;
+  const pattern = new RegExp(
+    `(^|\\s)@(${normalizedLabels.map(escapeMentionPattern).join('|')})(?=$|[\\s.,!?;:)\\]])`,
+    'gi'
+  );
+  const walker = document.createTreeWalker(document.body, 4);
+  const textNodes: Text[] = [];
+  let current = walker.nextNode();
+  while (current) {
+    const parent = current.parentElement;
+    if (
+      parent &&
+      !parent.closest(
+        '[data-type="mention"], .mention, a, code, pre, [data-url]'
+      )
+    ) {
+      textNodes.push(current as Text);
+    }
+    current = walker.nextNode();
+  }
+  for (const textNode of textNodes) {
+    const text = textNode.data;
+    pattern.lastIndex = 0;
+    if (!pattern.test(text)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const match of text.matchAll(pattern)) {
+      const index = match.index ?? 0;
+      const leadingSpace = match[1] || '';
+      if (index > cursor) fragment.append(text.slice(cursor, index));
+      if (leadingSpace) fragment.append(leadingSpace);
+      const mention = document.createElement('span');
+      const normalizedLabel = match[2].toLowerCase();
+      const isSpecial =
+        normalizedLabel === 'everyone' ||
+        normalizedLabel === 'here' ||
+        normalizedLabel === 'no-access';
+      mention.className = isSpecial
+        ? 'mention'
+        : 'mention reticulum-user-mention';
+      mention.dataset.type = 'mention';
+      mention.dataset.label = match[2];
+      mention.textContent = `@${match[2]}`;
+      fragment.append(mention);
+      cursor = index + match[0].length;
+    }
+    if (cursor < text.length) fragment.append(text.slice(cursor));
+    textNode.replaceWith(fragment);
   }
 };
 
@@ -150,6 +230,7 @@ export const MessageDisplay = ({
   mentionedAddresses,
   mentionUsers,
   myAddress,
+  reticulumChannelLinkAccess,
   textColor,
 }: {
   htmlContent: unknown;
@@ -157,6 +238,7 @@ export const MessageDisplay = ({
   mentionedAddresses?: string[];
   mentionUsers?: Record<string, MentionUser>;
   myAddress?: string;
+  reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   textColor?: string;
 }) => {
   const theme = useTheme();
@@ -174,7 +256,7 @@ export const MessageDisplay = ({
   );
 
   const sanitizedContent = useMemo(() => {
-    return DOMPurify.sanitize(linkify(safeHtmlContent), {
+    const sanitized = DOMPurify.sanitize(linkify(safeHtmlContent), {
       ALLOWED_TAGS: [
         'a',
         'b',
@@ -233,7 +315,58 @@ export const MessageDisplay = ({
       /<span[^>]*data-url="qortal:\/\/use-embed\/[^"]*"[^>]*>.*?<\/span>/g,
       ''
     );
-  }, [safeHtmlContent]);
+    if (typeof DOMParser === 'undefined') {
+      return sanitized;
+    }
+    const document = new DOMParser().parseFromString(sanitized, 'text/html');
+    const userMentionLabels = new Set<string>();
+    for (const [label, user] of Object.entries(mentionUsers || {})) {
+      userMentionLabels.add(label.trim().replace(/^@/, '').toLowerCase());
+      if (user.address) userMentionLabels.add(user.address.toLowerCase());
+      if (user.name) userMentionLabels.add(user.name.trim().toLowerCase());
+    }
+    if (reticulumChannelLinkAccess) {
+      decorateStaticReticulumMentions(document, Object.keys(mentionUsers || {}));
+    }
+    for (const node of document.querySelectorAll<HTMLElement>(
+      '[data-type="mention"][data-id], .mention[data-id]'
+    )) {
+      const link = parseReticulumChatLinkMentionId(
+        String(node.dataset.id || '').trim()
+      );
+      if (!link) {
+        const label = String(
+          node.dataset.label || node.dataset.id || node.textContent || ''
+        )
+          .trim()
+          .replace(/^@/, '')
+          .toLowerCase();
+        if (userMentionLabels.has(label)) {
+          node.classList.add('reticulum-user-mention');
+        }
+        continue;
+      }
+      const visibleName =
+        reticulumChannelLinkAccess?.ready &&
+        link.groupId === reticulumChannelLinkAccess.groupId
+          ? reticulumChannelLinkAccess.visibleChannelNameById.get(
+              link.channelId
+            )
+          : undefined;
+      if (!visibleName) {
+        node.textContent = '@no-access';
+        node.dataset.label = 'no-access';
+        node.removeAttribute('data-id');
+        node.classList.remove('reticulum-chat-link');
+        continue;
+      }
+      node.classList.add('reticulum-chat-link');
+      if (link.kind === 'group') continue;
+      node.textContent = `@${visibleName}`;
+      node.dataset.label = visibleName;
+    }
+    return document.body.innerHTML;
+  }, [mentionUsers, reticulumChannelLinkAccess, safeHtmlContent]);
 
   const mentionUserByLabel = useMemo(() => {
     const map = new Map<string, MentionUser>();
@@ -250,7 +383,7 @@ export const MessageDisplay = ({
     (target: HTMLElement): boolean => {
       if (isReply) return false;
       const mention = target.closest?.(
-        '[data-type="mention"], .mention'
+        '.reticulum-user-mention'
       ) as HTMLElement | null;
       if (!mention) return false;
       const label = String(
@@ -287,7 +420,10 @@ export const MessageDisplay = ({
         top: 0,
       };
       const estimatedCardHeight = user.address === myAddress ? 250 : 340;
-      const cardWidth = Math.min(440, Math.max(280, boundary.right - boundary.left - 24));
+      const cardWidth = Math.min(
+        440,
+        Math.max(280, boundary.right - boundary.left - 24)
+      );
       const spaceBelow = boundary.bottom - mentionRect.bottom;
       const spaceAbove = mentionRect.top - boundary.top;
       const anchorPlacement =
@@ -369,6 +505,10 @@ export const MessageDisplay = ({
       e.stopPropagation();
       return;
     }
+    if (target.closest?.('[data-type="mention"], .mention')) {
+      e.stopPropagation();
+      return;
+    }
     if (target.tagName === 'A') {
       openHttpUrlExternally(target.getAttribute('href'));
     } else if (target.getAttribute('data-url')) {
@@ -446,6 +586,15 @@ export const MessageDisplay = ({
             ? theme.palette.primary.dark
             : theme.palette.primary.main,
         ...(textColor ? { '--text-primary': textColor } : {}),
+        '& .tiptap:not(.isReply) [data-type="mention"], & .tiptap:not(.isReply) .mention': {
+          cursor: 'default',
+        },
+        '& .tiptap:not(.isReply) [data-type="mention"].reticulum-chat-link, & .tiptap:not(.isReply) .mention.reticulum-chat-link': {
+          cursor: 'pointer',
+        },
+        '& .tiptap:not(.isReply) .reticulum-user-mention': {
+          cursor: 'pointer',
+        },
       }}
     >
       {embedLink && <Embed embedLink={embedData} />}

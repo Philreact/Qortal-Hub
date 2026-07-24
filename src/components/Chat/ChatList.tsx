@@ -1,6 +1,7 @@
 import { useCallback, useState, useEffect, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
+import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { Box, Button, Typography, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -83,6 +84,7 @@ type ChatListProps = {
     string,
     { address: string; name?: string; role?: 'admin' | 'owner' }
   >;
+  reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
@@ -128,6 +130,7 @@ export const ChatList = ({
   reticulumGroupAvatarOwnerName,
   reticulumGroupDisplayName,
   reticulumMentionUsers,
+  reticulumChannelLinkAccess,
   reticulumMemberJoinedByAddress,
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
@@ -1150,6 +1153,7 @@ export const ChatList = ({
                         }
                         reticulumGroupDisplayName={reticulumGroupDisplayName}
                         reticulumMentionUsers={reticulumMentionUsers}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                         reticulumMemberJoinedByAddress={
                           reticulumMemberJoinedByAddress
                         }

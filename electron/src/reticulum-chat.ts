@@ -5562,6 +5562,8 @@ export class ReticulumChatManager extends EventEmitter {
   private localNotifyTimer: ReturnType<typeof setTimeout> | null = null;
   private localNotifyScanInterval: ReturnType<typeof setInterval> | null = null;
   private seenLocalNotifyFiles = new Set<string>();
+  private readonly localNotifyManagerStartedAt = Date.now();
+  private localNotifyWatcherHasStarted = false;
 
   constructor(options: ReticulumChatManagerOptions = {}) {
     super();
@@ -18235,7 +18237,33 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.localNotifyWatcher) return;
     fs.mkdirSync(this.localNotifyDir, { recursive: true });
     this.cleanupOldLocalNotifications();
-    this.scanLocalNotifications();
+    const replayCutoff = this.localNotifyWatcherHasStarted
+      ? Date.now()
+      : this.localNotifyManagerStartedAt;
+    this.localNotifyWatcherHasStarted = true;
+    // Older files belong to a previous manager/watcher lifetime. The database
+    // supplies their history and unread state; replaying them here would turn
+    // recently read mentions into live alerts after an app restart. Files made
+    // after this manager started remain eligible, including startup races.
+    try {
+      for (const file of fs.readdirSync(this.localNotifyDir)) {
+        try {
+          const modifiedAt = fs.statSync(
+            path.join(this.localNotifyDir, file)
+          ).mtimeMs;
+          if (modifiedAt < replayCutoff) {
+            this.seenLocalNotifyFiles.add(file);
+          }
+        } catch {
+          // The scanner will retry files that change or disappear mid-snapshot.
+        }
+      }
+    } catch (err) {
+      loggerWarn(
+        '[ReticulumChat] Failed to initialize local event notifications:',
+        err
+      );
+    }
     if (!this.localNotifyScanInterval) {
       this.localNotifyScanInterval = setInterval(() => {
         this.scanLocalNotifications();

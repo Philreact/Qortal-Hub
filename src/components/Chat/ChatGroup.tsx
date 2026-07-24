@@ -2225,12 +2225,28 @@ export const ChatGroup = ({
     [reticulumChannelsForSelectedGroup]
   );
   const reticulumVisibleChannelNameById = useMemo(() => {
-    const entries = reticulumChannelsForSelectedGroup.map((channel) => [
-      normalizeReticulumChannelName(channel.channelId),
-      channel.name || channel.channelId,
-    ]);
+    const entries: Array<[string, string]> =
+      reticulumChannelsForSelectedGroup.map((channel) => [
+        normalizeReticulumChannelName(channel.channelId),
+        channel.name || channel.channelId,
+      ]);
     return new Map(entries);
   }, [reticulumChannelsForSelectedGroup]);
+  const reticulumChannelLinkAccess = useMemo(
+    () => ({
+      groupId: Number(selectedGroup),
+      ready:
+        Number.isInteger(Number(selectedGroup)) &&
+        Number(selectedGroup) > 0 &&
+        isReticulumChannelMetadataVisible,
+      visibleChannelNameById: reticulumVisibleChannelNameById,
+    }),
+    [
+      isReticulumChannelMetadataVisible,
+      reticulumVisibleChannelNameById,
+      selectedGroup,
+    ]
+  );
   const reticulumMemberNameByAddress = useMemo(() => {
     const entries = groupMentionMembers
       .filter((member) => member.address)
@@ -8707,6 +8723,7 @@ export const ChatGroup = ({
               reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
               reticulumGroupDisplayName={selectedGroupName}
               reticulumMentionUsers={reticulumMentionUsers}
+              reticulumChannelLinkAccess={reticulumChannelLinkAccess}
               reticulumMemberJoinedByAddress={reticulumMemberJoinedByAddress}
               reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
               reticulumMemberRolesReady={reticulumMemberRolesReady}
@@ -11800,6 +11817,7 @@ export const ChatGroup = ({
         reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
         reticulumMemberRolesReady={reticulumMemberRolesReady}
         reticulumMentionUsers={reticulumMentionUsers}
+        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
         selectedGroup={selectedGroup}
       />
 
