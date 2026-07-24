@@ -1943,6 +1943,17 @@ try {
           upToTimestamp,
           myAddress
         ) as Promise<{ success: boolean }>,
+      markGroupsRead: async (groupIds: number[], myAddress?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markGroupsRead',
+          groupIds,
+          myAddress
+        ) as Promise<{
+          success: boolean;
+          error?: string;
+          groupsMarked: number;
+          channelsMarked: number;
+        }>,
       getSubscriptions: async () =>
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
           number[]
@@ -2739,6 +2750,17 @@ try {
           upToTimestamp,
           myAddress
         ) as Promise<{ success: boolean }>,
+      markGroupsRead: async (groupIds: number[], myAddress?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markGroupsRead',
+          groupIds,
+          myAddress
+        ) as Promise<{
+          success: boolean;
+          error?: string;
+          groupsMarked: number;
+          channelsMarked: number;
+        }>,
       getSubscriptions: async () =>
         ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
           number[]

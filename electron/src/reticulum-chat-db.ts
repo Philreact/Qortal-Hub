@@ -290,6 +290,12 @@ export type ReticulumGroupChatSummary = {
   channels: ReticulumChatSummary[];
 };
 
+export type ReticulumChatReadTarget = {
+  groupId: number;
+  channelId: string;
+  timestamp: number;
+};
+
 export type ReticulumChatSearchResult = {
   event: ReticulumChatEvent;
   snippet: string;
@@ -8924,43 +8930,95 @@ export class ReticulumChatDatabase {
           ? upToTimestampOrAddress
           : myAddress
         : myAddress;
-    if (!Number.isFinite(timestamp) || timestamp <= 0) return;
-    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
-    const address =
-      typeof effectiveAddress === 'string' ? effectiveAddress.trim() : '';
-    const current = this.getReadWatermark(
-      groupId,
-      normalizedChannelId,
-      address
+    this.markChannelsRead(
+      [{ groupId, channelId, timestamp }],
+      effectiveAddress
     );
-    if (timestamp > current) {
+  }
+
+  markChannelsRead(
+    targets: ReticulumChatReadTarget[],
+    myAddress = ''
+  ): number {
+    const address =
+      typeof myAddress === 'string' ? myAddress.trim() : '';
+    const normalizedTargets = new Map<string, ReticulumChatReadTarget>();
+    for (const target of targets) {
+      const groupId = Number(target?.groupId);
+      const timestamp = Number(target?.timestamp);
+      if (
+        !Number.isInteger(groupId) ||
+        groupId <= 0 ||
+        !Number.isFinite(timestamp) ||
+        timestamp <= 0
+      ) {
+        continue;
+      }
+      const channelId = normalizeReticulumChatChannelId(target?.channelId);
+      const key = `${groupId}:${channelId}`;
+      const previous = normalizedTargets.get(key);
+      if (!previous || timestamp > previous.timestamp) {
+        normalizedTargets.set(key, { groupId, channelId, timestamp });
+      }
+    }
+    if (normalizedTargets.size === 0) return 0;
+
+    const readAt = Date.now();
+    const watermarkUpdates = [...normalizedTargets.values()].filter(
+      ({ groupId, channelId, timestamp }) =>
+        timestamp > this.getReadWatermark(groupId, channelId, address)
+    );
+    const transaction = this.db.transaction(() => {
+      for (const { groupId, channelId, timestamp } of watermarkUpdates) {
+        this.stmtUpsertWatermark.run(
+          groupId,
+          channelId,
+          address,
+          timestamp
+        );
+      }
+      if (address) {
+        for (const {
+          groupId,
+          channelId,
+          timestamp,
+        } of normalizedTargets.values()) {
+          this.stmtMarkMentionsRead.run(
+            readAt,
+            groupId,
+            channelId,
+            address,
+            timestamp
+          );
+        }
+      }
+    });
+    transaction();
+
+    for (const { groupId, channelId, timestamp } of watermarkUpdates) {
       this.memoryReadWatermarks.set(
-        this.readWatermarkKey(groupId, normalizedChannelId, address),
-        timestamp
-      );
-      this.stmtUpsertWatermark.run(
-        groupId,
-        normalizedChannelId,
-        address,
+        this.readWatermarkKey(groupId, channelId, address),
         timestamp
       );
     }
     if (address) {
-      this.stmtMarkMentionsRead.run(
-        Date.now(),
-        groupId,
-        normalizedChannelId,
-        address,
-        timestamp
+      const thresholds = new Map(
+        [...normalizedTargets.values()].map(
+          ({ groupId, channelId, timestamp }) => [
+            `${groupId}:${channelId}`,
+            timestamp,
+          ]
+        )
       );
-      const readAt = Date.now();
       for (const mentions of this.memoryMentions.values()) {
         for (const mention of mentions) {
+          const threshold = thresholds.get(
+            `${mention.groupId}:${mention.channelId}`
+          );
           if (
-            mention.groupId === groupId &&
-            mention.channelId === normalizedChannelId &&
             mention.mentionedAddress === address &&
-            mention.timestamp <= timestamp &&
+            threshold !== undefined &&
+            mention.timestamp <= threshold &&
             mention.readAt === 0
           ) {
             mention.readAt = readAt;
@@ -8968,6 +9026,7 @@ export class ReticulumChatDatabase {
         }
       }
     }
+    return normalizedTargets.size;
   }
 
   getReadWatermark(groupId: number, channelId: string, address = ''): number {

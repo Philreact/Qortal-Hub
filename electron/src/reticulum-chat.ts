@@ -9716,6 +9716,51 @@ export class ReticulumChatManager extends EventEmitter {
     this.emitSummaryChanged(groupId);
   }
 
+  markGroupsRead(
+    groupIds: number[],
+    myAddress = ''
+  ): { groupsMarked: number; channelsMarked: number } {
+    const requestedGroupIds = new Set(
+      groupIds
+        .map((groupId) => Number(groupId))
+        .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
+    );
+    if (requestedGroupIds.size === 0) {
+      return { groupsMarked: 0, channelsMarked: 0 };
+    }
+    for (const groupId of requestedGroupIds) {
+      this.assertLocalGroupMember(groupId);
+    }
+
+    const readTargets = this.getChatSummaries(myAddress).flatMap((summary) => {
+      if (!requestedGroupIds.has(summary.groupId)) return [];
+      return summary.channels
+        .filter(
+          (channel) =>
+            channel.unreadCount > 0 ||
+            channel.mentionCount > 0 ||
+            channel.hasUnreadMention
+        )
+        .map((channel) => ({
+          groupId: summary.groupId,
+          channelId: channel.channelId,
+          timestamp: Math.max(
+            Number(channel.lastEvent?.timestamp) || 0,
+            Number(channel.updatedAt) || 0
+          ),
+        }))
+        .filter((target) => target.timestamp > 0);
+    });
+    const channelsMarked = this.db.markChannelsRead(readTargets, myAddress);
+    const markedGroupIds = new Set(
+      readTargets.map((target) => target.groupId)
+    );
+    for (const groupId of markedGroupIds) {
+      this.emitSummaryChanged(groupId);
+    }
+    return { groupsMarked: markedGroupIds.size, channelsMarked };
+  }
+
   private peerKey(
     peerPresenceHash: string,
     senderDestinationHash = ''

@@ -856,6 +856,15 @@ declare global {
         upToTimestamp: number,
         myAddress?: string
       ) => Promise<{ success: boolean }>;
+      markGroupsRead: (
+        groupIds: number[],
+        myAddress?: string
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+        groupsMarked: number;
+        channelsMarked: number;
+      }>;
       getSubscriptions: () => Promise<number[]>;
       updateMentionBadge: (
         mentionCount: number

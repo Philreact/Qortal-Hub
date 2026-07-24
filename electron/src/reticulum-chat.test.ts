@@ -22337,6 +22337,85 @@ describe('reticulum chat manager', () => {
     reader.close();
   });
 
+  it('marks requested groups read atomically at their current channel boundaries', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const firstGroupId = 989;
+    const secondGroupId = 990;
+    const readerAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    manager.setLocalGroupMemberships([firstGroupId, secondGroupId]);
+
+    const firstGeneral = signedEvent({
+      eventId: 'mark-groups-read-first-general',
+      groupId: firstGroupId,
+      channelId: 'general',
+      timestamp: 100_000,
+      mentionAddressHashes: [
+        hashReticulumChatMentionAddress(readerAddress),
+      ],
+    });
+    const firstOther = signedEvent({
+      eventId: 'mark-groups-read-first-other',
+      groupId: firstGroupId,
+      channelId: 'other',
+      timestamp: 101_000,
+    });
+    const secondGeneral = signedEvent({
+      eventId: 'mark-groups-read-second-general',
+      groupId: secondGroupId,
+      channelId: 'general',
+      timestamp: 102_000,
+    });
+    for (const event of [firstGeneral, firstOther, secondGeneral]) {
+      expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    }
+
+    expect(manager.markGroupsRead([firstGroupId], readerAddress)).toEqual({
+      groupsMarked: 1,
+      channelsMarked: 2,
+    });
+    const afterFirstMark = manager.getChatSummaries(readerAddress);
+    expect(
+      afterFirstMark.find((summary) => summary.groupId === firstGroupId)
+    ).toMatchObject({ unreadCount: 0, mentionCount: 0 });
+    expect(
+      afterFirstMark.find((summary) => summary.groupId === secondGroupId)
+    ).toMatchObject({ unreadCount: 1 });
+
+    const newerEvent = signedEvent({
+      eventId: 'mark-groups-read-newer-event',
+      groupId: firstGroupId,
+      channelId: 'general',
+      timestamp: 103_000,
+    });
+    expect((manager as any).db.insertEvent(newerEvent, true)).toBe(true);
+    expect(
+      manager
+        .getChatSummaries(readerAddress)
+        .find((summary) => summary.groupId === firstGroupId)
+    ).toMatchObject({ unreadCount: 1 });
+
+    expect(
+      manager.markGroupsRead(
+        [firstGroupId, secondGroupId],
+        readerAddress
+      )
+    ).toEqual({ groupsMarked: 2, channelsMarked: 2 });
+    expect(
+      manager
+        .getChatSummaries(readerAddress)
+        .filter((summary) =>
+          [firstGroupId, secondGroupId].includes(summary.groupId)
+        )
+    ).toEqual([
+      expect.objectContaining({ unreadCount: 0, mentionCount: 0 }),
+      expect.objectContaining({ unreadCount: 0, mentionCount: 0 }),
+    ]);
+
+    manager.close();
+  });
+
   it('revokes renderer-facing cached group access after local membership is removed', async () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     const groupId = 991;
@@ -22376,6 +22455,7 @@ describe('reticulum chat manager', () => {
     expect(() => manager.markRead(groupId, 'general', 100_000)).toThrow(
       /not a member/i
     );
+    expect(() => manager.markGroupsRead([groupId])).toThrow(/not a member/i);
     await expect(
       manager.getMessageWindowAroundEvent(groupId, 'general', event.eventId)
     ).rejects.toThrow(/not a member/i);

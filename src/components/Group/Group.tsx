@@ -3350,9 +3350,50 @@ export const Group = ({
     openDirectChatFromInternal,
   ]);
 
+  const markReticulumGroupsRead = useCallback(
+    async (groupIds: Array<string | number>) => {
+      if (
+        !reticulumChatEnabled ||
+        !myAddress ||
+        typeof window.reticulumChat?.markGroupsRead !== 'function'
+      ) {
+        return;
+      }
+
+      const requestedGroupIds = [
+        ...new Set(
+          groupIds
+            .map((groupId) => Number(groupId))
+            .filter(
+              (groupId) => Number.isInteger(groupId) && groupId > 0
+            )
+        ),
+      ];
+      if (!requestedGroupIds.length) return;
+
+      try {
+        const result = await window.reticulumChat.markGroupsRead(
+          requestedGroupIds,
+          myAddress
+        );
+        if (result?.success !== true) {
+          throw new Error(result?.error || 'Reticulum chat is unavailable');
+        }
+        executeEvent('reticulum-chat-summaries-refresh', {});
+      } catch (error) {
+        console.error(
+          '[ReticulumChat] Failed to mark group chat as read:',
+          error
+        );
+      }
+    },
+    [myAddress, reticulumChatEnabled]
+  );
+
   const handleMarkAsRead = useCallback(
     (e) => {
       const { groupId } = e.detail;
+      void markReticulumGroupsRead([groupId]);
       window
         .sendMessage('addTimestampEnterChat', {
           timestamp: Date.now(),
@@ -3382,7 +3423,11 @@ export const Group = ({
         getTimestampEnterChat();
       }, 200);
     },
-    [getGroupAnnouncements, getTimestampEnterChat]
+    [
+      getGroupAnnouncements,
+      getTimestampEnterChat,
+      markReticulumGroupsRead,
+    ]
   );
 
   const handleMarkAllMemberGroupsRead = useCallback(() => {
@@ -3390,6 +3435,8 @@ export const Group = ({
       .map((g) => g?.groupId)
       .filter((id) => id != null && id !== '');
     if (!ids.length) return;
+
+    void markReticulumGroupsRead(ids);
 
     window
       .sendMessage('markAllMemberGroupsRead', { groupIds: ids })
@@ -3409,7 +3456,11 @@ export const Group = ({
       getGroupAnnouncements();
       getTimestampEnterChat();
     }, 200);
-  }, [getGroupAnnouncements, getTimestampEnterChat]);
+  }, [
+    getGroupAnnouncements,
+    getTimestampEnterChat,
+    markReticulumGroupsRead,
+  ]);
 
   useEffect(() => {
     subscribeToEvent('markAsRead', handleMarkAsRead);

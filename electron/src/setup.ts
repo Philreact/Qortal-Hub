@@ -5186,6 +5186,31 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle(
+  'reticulumChat:markGroupsRead',
+  async (_event, groupIds: number[], myAddress?: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return {
+        success: false,
+        error: 'Reticulum chat is unavailable',
+        groupsMarked: 0,
+        channelsMarked: 0,
+      };
+    }
+    const normalizedGroupIds = Array.isArray(groupIds)
+      ? groupIds
+          .map((groupId) => Number(groupId))
+          .filter(
+            (groupId) => Number.isInteger(groupId) && groupId > 0
+          )
+      : [];
+    const address = typeof myAddress === 'string' ? myAddress.trim() : '';
+    const result = manager.markGroupsRead(normalizedGroupIds, address);
+    return { success: true, ...result };
+  }
+);
+
 ipcMain.handle('reticulumChat:getSubscriptions', async () => {
   const manager = getReticulumChatManager();
   return manager ? manager.getSubscriptions() : [];
