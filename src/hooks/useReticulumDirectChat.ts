@@ -3,7 +3,7 @@ import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
 
-type ReticulumDmEvent = {
+export type ReticulumDmEvent = {
   eventId: string;
   conversationId: string;
   senderAddress: string;
@@ -21,6 +21,15 @@ type ReticulumDmEvent = {
   senderName?: string;
   localDeliveryStatus?: 'pending' | 'sent' | 'received';
   localDeliveryUpdatedAt?: number;
+};
+
+type ReticulumDmChatReference = {
+  deleted?: boolean;
+  edit?: ReturnType<typeof reticulumDmEventToChatMessage>;
+  reactions?: Record<
+    string,
+    Array<ReturnType<typeof reticulumDmEventToChatMessage>>
+  >;
 };
 
 const sha256Hex = async (value: string): Promise<string> => {
@@ -48,9 +57,9 @@ const parsePayload = (payload: string): any => {
 const hasPayloadData = (value: unknown): value is Record<string, unknown> =>
   Boolean(
     value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      Object.keys(value as Record<string, unknown>).length > 0
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length > 0
   );
 
 const randomDirectEventId = () => {
@@ -87,6 +96,7 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     text: payload.messageText || '',
     message: payload.messageText || '',
     unread: false,
+    reticulumChat: true,
     reticulumDirect: true,
     reticulumDeliveryStatus: event.localDeliveryStatus,
     reticulumDeliveryUpdatedAt: event.localDeliveryUpdatedAt,
@@ -98,6 +108,64 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
   };
 };
 
+export const projectReticulumDmEvents = (events: ReticulumDmEvent[]) => {
+  const ordered = [...events].sort(
+    (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
+  );
+  const originalMessages = new Map(
+    ordered
+      .filter((event) => event.eventType === 'message')
+      .map((event) => [event.eventId, event])
+  );
+  const chatReferences: Record<string, ReticulumDmChatReference> = {};
+
+  for (const event of ordered) {
+    if (event.eventType === 'message' || !event.targetEventId) continue;
+    const target = originalMessages.get(event.targetEventId);
+    if (!target || target.conversationId !== event.conversationId) continue;
+    const reference = (chatReferences[event.targetEventId] ||= {});
+
+    if (event.eventType === 'edit' || event.eventType === 'delete') {
+      if (target.senderAddress !== event.senderAddress) continue;
+      if (event.eventType === 'delete') {
+        reference.deleted = true;
+        continue;
+      }
+      reference.edit = reticulumDmEventToChatMessage(event);
+      continue;
+    }
+
+    if (
+      event.eventType !== 'reaction_add' &&
+      event.eventType !== 'reaction_remove'
+    ) {
+      continue;
+    }
+    const reactionEvent = reticulumDmEventToChatMessage(event);
+    const reaction = String(reactionEvent?.content || '').trim();
+    if (!reaction) continue;
+    const reactions = (reference.reactions ||= {});
+    const current = reactions[reaction] || [];
+    const withoutSender = current.filter(
+      (item) => item.sender !== event.senderAddress
+    );
+    if (event.eventType === 'reaction_add') {
+      withoutSender.push(reactionEvent);
+    }
+    if (withoutSender.length > 0) reactions[reaction] = withoutSender;
+    else delete reactions[reaction];
+  }
+
+  const messages = ordered
+    .filter(
+      (event) =>
+        event.eventType === 'message' &&
+        chatReferences[event.eventId]?.deleted !== true
+    )
+    .map(reticulumDmEventToChatMessage);
+  return { messages, chatReferences };
+};
+
 const addPrimaryNamesToDirectEvents = async (
   events: ReticulumDmEvent[],
   primaryNameCache: Map<string, string>
@@ -106,7 +174,10 @@ const addPrimaryNamesToDirectEvents = async (
     new Set(
       events
         .map((event) => event.senderAddress)
-        .filter((address): address is string => typeof address === 'string' && !!address)
+        .filter(
+          (address): address is string =>
+            typeof address === 'string' && !!address
+        )
     )
   );
   if (addresses.length === 0) return events;
@@ -122,7 +193,10 @@ const addPrimaryNamesToDirectEvents = async (
         primaryNameCache.set(address, primaryNames[address]?.trim() || '');
       }
     } catch (error) {
-      console.error('[useReticulumDirectChat] Failed to resolve primary names:', error);
+      console.error(
+        '[useReticulumDirectChat] Failed to resolve primary names:',
+        error
+      );
     }
   }
 
@@ -137,7 +211,10 @@ const addPrimaryNamesToDirectEvents = async (
   });
 };
 
-const mergeEvents = (prev: ReticulumDmEvent[], incoming: ReticulumDmEvent[]) => {
+const mergeEvents = (
+  prev: ReticulumDmEvent[],
+  incoming: ReticulumDmEvent[]
+) => {
   const byId = new Map(prev.map((event) => [event.eventId, event]));
   for (const event of incoming) byId.set(event.eventId, event);
   return [...byId.values()].sort(
@@ -145,7 +222,10 @@ const mergeEvents = (prev: ReticulumDmEvent[], incoming: ReticulumDmEvent[]) => 
   );
 };
 
-export function useReticulumDirectChat(myAddress?: string, peerAddress?: string) {
+export function useReticulumDirectChat(
+  myAddress?: string,
+  peerAddress?: string
+) {
   const [enabled, setEnabled] = useState(false);
   const [events, setEvents] = useState<ReticulumDmEvent[]>([]);
   const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState('');
@@ -159,7 +239,8 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
 
   const valid = Boolean(myAddress && peerAddress);
   const activeHistoryKey = valid ? `${myAddress}:${peerAddress}` : '';
-  const messages = useMemo(() => events.map(reticulumDmEventToChatMessage), [events]);
+  const projection = useMemo(() => projectReticulumDmEvents(events), [events]);
+  const messages = projection.messages;
 
   const flushPending = useCallback(() => {
     const pending = pendingRef.current;
@@ -225,11 +306,15 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     const historyVisibilityRevision = visibilityRevisionRef.current;
     let cancelled = false;
     let currentConversationId = '';
-    const currentConversationIdPromise = conversationIdFor(myAddress, peerAddress).then((conversationId) => {
+    const currentConversationIdPromise = conversationIdFor(
+      myAddress,
+      peerAddress
+    ).then((conversationId) => {
       if (!cancelled) currentConversationId = conversationId;
       return conversationId;
     });
-    void window.reticulumChat?.getDirectHistory?.(myAddress, peerAddress, 200)
+    void window.reticulumChat
+      ?.getDirectHistory?.(myAddress, peerAddress, 200)
       ?.then((history) => {
         if (cancelled || !Array.isArray(history)) return;
         void addPrimaryNamesToDirectEvents(
@@ -260,11 +345,13 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       if (
         candidate?.senderAddress !== myAddress &&
         candidate?.recipientAddress !== myAddress
-      ) return;
+      )
+        return;
       if (
         candidate?.senderAddress !== peerAddress &&
         candidate?.recipientAddress !== peerAddress
-      ) return;
+      )
+        return;
       enqueue(candidate);
     });
     const offTyping = window.reticulumChat?.onDirectTyping?.((payload) => {
@@ -313,11 +400,8 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
           return next;
         });
       }
-      void window.reticulumChat?.getDirectHistory?.(
-        myAddress,
-        peerAddress,
-        200
-      )
+      void window.reticulumChat
+        ?.getDirectHistory?.(myAddress, peerAddress, 200)
         ?.then((history) => {
           if (
             cancelled ||
@@ -375,11 +459,16 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       otherData?: Record<string, unknown>;
       peerAddressOverride?: string;
     }) => {
-      const actualPeerAddress = String(peerAddressOverride || peerAddress || '').trim();
+      const actualPeerAddress = String(
+        peerAddressOverride || peerAddress || ''
+      ).trim();
       if (!enabled || !myAddress || !actualPeerAddress) {
         return { success: false, error: 'Reticulum chat is disabled' };
       }
-      const conversationId = await conversationIdFor(myAddress, actualPeerAddress);
+      const conversationId = await conversationIdFor(
+        myAddress,
+        actualPeerAddress
+      );
       const timestamp = Date.now();
       const eventId = randomDirectEventId();
       const hasOtherData = hasPayloadData(otherData);
@@ -473,11 +562,13 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
       if (!enabled || !myAddress || !peerAddress) {
         return { success: false, error: 'Reticulum chat is disabled' };
       }
-      return window.reticulumChat?.sendDirectTyping?.(
-        myAddress,
-        peerAddress,
-        active
-      ) ?? { success: false, error: 'Reticulum chat is unavailable' };
+      return (
+        window.reticulumChat?.sendDirectTyping?.(
+          myAddress,
+          peerAddress,
+          active
+        ) ?? { success: false, error: 'Reticulum chat is unavailable' }
+      );
     },
     [enabled, myAddress, peerAddress]
   );
@@ -488,6 +579,7 @@ export function useReticulumDirectChat(myAddress?: string, peerAddress?: string)
     initialHistoryReady:
       activeHistoryKey !== '' && loadedInitialHistoryKey === activeHistoryKey,
     messages,
+    chatReferences: projection.chatReferences,
     typingUsers,
     publish,
     markRead,

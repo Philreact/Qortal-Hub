@@ -997,7 +997,9 @@ declare global {
     reticulumResources?: {
       getPathForFile: (file: File) => string;
       convertGifToWebp: (payload: {
-        filePath: string;
+        filePath?: string;
+        bytes?: Uint8Array;
+        fileName?: string;
         targetBytes?: number;
       }) => Promise<{
         success: boolean;

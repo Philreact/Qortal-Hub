@@ -4619,12 +4619,31 @@ function managedReticulumChatResourceNamespace(value: unknown): string | null {
 
 ipcMain.handle(
   'reticulumResource:convertGifToWebp',
-  async (_event, payload: { filePath?: string; targetBytes?: number }) => {
-    const inputPath =
+  async (
+    _event,
+    payload: {
+      filePath?: string;
+      bytes?: Uint8Array | ArrayBuffer;
+      fileName?: string;
+      targetBytes?: number;
+    }
+  ) => {
+    let inputPath =
       typeof payload?.filePath === 'string' && payload.filePath.trim()
         ? path.resolve(payload.filePath.trim())
         : '';
-    if (!inputPath) return { success: false, error: 'Invalid GIF file path' };
+    const byteView = ArrayBuffer.isView(payload?.bytes)
+      ? new Uint8Array(
+          payload.bytes.buffer,
+          payload.bytes.byteOffset,
+          payload.bytes.byteLength
+        )
+      : payload?.bytes instanceof ArrayBuffer
+        ? new Uint8Array(payload.bytes)
+        : null;
+    if (!inputPath && !byteView) {
+      return { success: false, error: 'Invalid GIF input' };
+    }
 
     const targetBytes = Math.min(
       4 * 1024 * 1024,
@@ -4638,7 +4657,42 @@ ipcMain.handle(
       outputDir,
       `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.webp`
     );
+    const requestedFileName =
+      typeof payload?.fileName === 'string' && payload.fileName.trim()
+        ? path.basename(payload.fileName.trim())
+        : '';
+    let stagedInputPath = '';
     try {
+      await fs.promises.mkdir(outputDir, { recursive: true });
+      if (!inputPath && byteView) {
+        if (
+          byteView.byteLength <= 0 ||
+          byteView.byteLength > 100 * 1024 * 1024
+        ) {
+          return {
+            success: false,
+            error: 'GIF must be between 1 byte and 100 MB',
+          };
+        }
+        const header = byteView.subarray(0, 6);
+        const isGif =
+          header.length === 6 &&
+          header[0] === 0x47 &&
+          header[1] === 0x49 &&
+          header[2] === 0x46 &&
+          header[3] === 0x38 &&
+          (header[4] === 0x37 || header[4] === 0x39) &&
+          header[5] === 0x61;
+        if (!isGif) {
+          return { success: false, error: 'Clipboard image is not a GIF' };
+        }
+        stagedInputPath = path.join(
+          outputDir,
+          `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.gif`
+        );
+        await fs.promises.writeFile(stagedInputPath, byteView);
+        inputPath = stagedInputPath;
+      }
       const stat = await fs.promises.stat(inputPath);
       if (!stat.isFile())
         return { success: false, error: 'Selected GIF is not a file' };
@@ -4648,7 +4702,6 @@ ipcMain.handle(
           error: 'GIF must be between 1 byte and 100 MB',
         };
       }
-      await fs.promises.mkdir(outputDir, { recursive: true });
       const result = await reticulumMediaWorkerPool.run({
         kind: 'gif_to_webp',
         inputPath,
@@ -4664,10 +4717,15 @@ ipcMain.handle(
             'Animated WebP conversion is unavailable',
         };
       }
+      const outputNameSource =
+        requestedFileName || (stagedInputPath ? 'animation.gif' : inputPath);
       return {
         success: true,
         filePath: result.outputPath,
-        fileName: `${path.basename(inputPath, path.extname(inputPath)) || 'animation'}.webp`,
+        fileName: `${
+          path.basename(outputNameSource, path.extname(outputNameSource)) ||
+          'animation'
+        }.webp`,
         mimeType: 'image/webp',
         originalSizeBytes: stat.size,
         sizeBytes: result.sizeBytes,
@@ -4685,6 +4743,10 @@ ipcMain.handle(
             ? err.message
             : 'Animated WebP conversion failed',
       };
+    } finally {
+      if (stagedInputPath) {
+        await fs.promises.unlink(stagedInputPath).catch(() => undefined);
+      }
     }
   }
 );

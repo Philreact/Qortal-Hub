@@ -987,7 +987,9 @@ try {
       }
     },
     convertGifToWebp: async (payload: {
-      filePath: string;
+      filePath?: string;
+      bytes?: Uint8Array;
+      fileName?: string;
       targetBytes?: number;
     }) =>
       ipcRenderer.invoke(

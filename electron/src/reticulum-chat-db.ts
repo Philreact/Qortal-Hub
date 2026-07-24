@@ -2669,8 +2669,15 @@ export class ReticulumChatDatabase {
     return !!this.db
       .prepare(
         `
-        SELECT 1 FROM rchat_dm_events
-        WHERE event_type = 'delete' AND target_event_id = ?
+        SELECT 1
+        FROM rchat_dm_events deletion
+        JOIN rchat_dm_events target
+          ON target.event_id = deletion.target_event_id
+        WHERE deletion.event_type = 'delete'
+          AND deletion.target_event_id = ?
+          AND deletion.conversation_id = target.conversation_id
+          AND deletion.sender_address = target.sender_address
+          AND target.event_type = 'message'
         LIMIT 1
       `
       )
@@ -8936,12 +8943,8 @@ export class ReticulumChatDatabase {
     );
   }
 
-  markChannelsRead(
-    targets: ReticulumChatReadTarget[],
-    myAddress = ''
-  ): number {
-    const address =
-      typeof myAddress === 'string' ? myAddress.trim() : '';
+  markChannelsRead(targets: ReticulumChatReadTarget[], myAddress = ''): number {
+    const address = typeof myAddress === 'string' ? myAddress.trim() : '';
     const normalizedTargets = new Map<string, ReticulumChatReadTarget>();
     for (const target of targets) {
       const groupId = Number(target?.groupId);
@@ -8970,12 +8973,7 @@ export class ReticulumChatDatabase {
     );
     const transaction = this.db.transaction(() => {
       for (const { groupId, channelId, timestamp } of watermarkUpdates) {
-        this.stmtUpsertWatermark.run(
-          groupId,
-          channelId,
-          address,
-          timestamp
-        );
+        this.stmtUpsertWatermark.run(groupId, channelId, address, timestamp);
       }
       if (address) {
         for (const {

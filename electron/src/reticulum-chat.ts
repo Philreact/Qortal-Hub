@@ -9758,9 +9758,7 @@ export class ReticulumChatManager extends EventEmitter {
         .filter((target) => target.timestamp > 0);
     });
     const channelsMarked = this.db.markChannelsRead(readTargets, myAddress);
-    const markedGroupIds = new Set(
-      readTargets.map((target) => target.groupId)
-    );
+    const markedGroupIds = new Set(readTargets.map((target) => target.groupId));
     for (const groupId of markedGroupIds) {
       this.emitSummaryChanged(groupId);
     }
@@ -22799,11 +22797,7 @@ export class ReticulumChatManager extends EventEmitter {
       return { ok: false, reason: 'size_mismatch' };
     if (
       eventId &&
-      !this.ensureDirectResourceReference(
-        manifest,
-        conversationId,
-        eventId
-      )
+      !this.ensureDirectResourceReference(manifest, conversationId, eventId)
     ) {
       return { ok: false, reason: 'no_live_reference' };
     }
@@ -23085,7 +23079,9 @@ export class ReticulumChatManager extends EventEmitter {
     const fileHash = query.f.toLowerCase();
     const requestedSizeBytes = Number(query.s);
     const eventId =
-      typeof query.e === 'string' && query.e.trim() ? query.e.trim() : undefined;
+      typeof query.e === 'string' && query.e.trim()
+        ? query.e.trim()
+        : undefined;
     const hop = query.h ?? 0;
     const maxHops = query.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS;
     if (!requestId || !conversationId) return;
@@ -24762,7 +24758,10 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     if (!this.resourceStore) return;
     if (event.eventType === 'delete') {
-      if (event.targetEventId) {
+      if (
+        event.targetEventId &&
+        this.db.isDirectEventDeleted(event.targetEventId)
+      ) {
         this.resourceStore.setReferenceState({
           scopeType: 'dm',
           scopeId: event.conversationId,
@@ -24773,6 +24772,19 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (event.eventType !== 'message' && event.eventType !== 'edit') return;
+    if (event.eventType === 'edit') {
+      const target = event.targetEventId
+        ? this.db.getDirectEvent(event.targetEventId)
+        : null;
+      if (
+        !target ||
+        target.eventType !== 'message' ||
+        target.conversationId !== event.conversationId ||
+        target.senderAddress !== event.senderAddress
+      ) {
+        return;
+      }
+    }
     const payload = this.resourceManifestsFromPayload(event.payload);
     if (!payload) return;
     const referenceEventId =
@@ -27615,10 +27627,7 @@ export class ReticulumChatManager extends EventEmitter {
       roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
-      statusFlags: Math.max(
-        0,
-        Math.min(3, Math.floor(Number(wire.v) || 0))
-      ),
+      statusFlags: Math.max(0, Math.min(3, Math.floor(Number(wire.v) || 0))),
       timestamp: Number.isFinite(Number(wire.ts))
         ? Number(wire.ts)
         : this.now(),

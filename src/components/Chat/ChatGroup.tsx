@@ -136,7 +136,12 @@ import {
   getGroupMembers,
   getPrimaryNamesForAddresses,
 } from '../Group/groupApi';
-import Compressor from 'compressorjs';
+import {
+  compressReticulumImageFile,
+  convertReticulumGifFile,
+  isReticulumCompressibleImage,
+  isReticulumGifFile,
+} from './reticulumImagePreparation';
 import {
   closestCenter,
   DndContext,
@@ -643,9 +648,6 @@ type QManagerAnchorRect = {
   width: number;
 };
 
-const isReticulumCompressibleImage = (file: File) =>
-  file.type?.startsWith('image/') === true && file.type !== 'image/gif';
-
 const formatReticulumFileSize = (bytes?: number) => {
   const size = Number(bytes || 0);
   if (!Number.isFinite(size) || size <= 0) return '0 bytes';
@@ -656,31 +658,6 @@ const formatReticulumFileSize = (bytes?: number) => {
   }
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
-
-const compressReticulumImageFile = (file: File): Promise<File> =>
-  new Promise((resolve) => {
-    new Compressor(file, {
-      quality: 0.6,
-      maxWidth: 1200,
-      mimeType: 'image/webp',
-      success(result) {
-        resolve(
-          new File(
-            [result],
-            `${file.name.replace(/\.[^.]+$/, '') || 'image'}.webp`,
-            {
-              type: 'image/webp',
-              lastModified: Date.now(),
-            }
-          )
-        );
-      },
-      error(err) {
-        console.error('Reticulum image compression error:', err);
-        resolve(file);
-      },
-    });
-  });
 
 const reticulumChannelDragId = (channelId: string) =>
   `${RETICULUM_CHANNEL_DRAG_PREFIX}${channelId}`;
@@ -6308,17 +6285,12 @@ export const ChatGroup = ({
         (typeof (file as File & { path?: unknown }).path === 'string'
           ? String((file as File & { path?: unknown }).path)
           : '');
-      if (file.type === 'image/gif' && filePath) {
+      if (await isReticulumGifFile(file)) {
         const conversionSequence = ++reticulumGifConversionSequenceRef.current;
         const conversionContext = reticulumGifConversionContextRef.current;
         setIsCompressingReticulumGif(true);
         try {
-          const converted = await window.reticulumResources?.convertGifToWebp?.(
-            {
-              filePath,
-              targetBytes: 500 * 1024,
-            }
-          );
+          const converted = await convertReticulumGifFile(file);
           if (
             converted?.success &&
             converted.filePath &&
@@ -6485,11 +6457,9 @@ export const ChatGroup = ({
           (typeof (file as File & { path?: unknown }).path === 'string'
             ? String((file as File & { path?: unknown }).path)
             : '');
-        if (file.type === 'image/gif' && filePath) {
+        if (await isReticulumGifFile(file)) {
           setIsCompressingReticulumDiscussionGif(true);
-          const converted = await window.reticulumResources?.convertGifToWebp?.(
-            { filePath, targetBytes: 500 * 1024 }
-          );
+          const converted = await convertReticulumGifFile(file);
           if (sequence !== reticulumDiscussionFileSequenceRef.current) {
             if (converted?.filePath) {
               void window.reticulumResources?.releaseConvertedMedia?.(
