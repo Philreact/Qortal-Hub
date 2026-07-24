@@ -14,6 +14,7 @@ type SingleFlightReadinessOptions = {
 
 export class SingleFlightReadiness {
   private activeStart: Promise<void> | null = null;
+  private generation = 0;
   private status: ReadinessStatus = { state: 'idle', revision: 0 };
 
   constructor(private readonly options: SingleFlightReadinessOptions) {}
@@ -31,15 +32,18 @@ export class SingleFlightReadiness {
     }
 
     this.setStatus({ state: 'starting' });
+    const generation = this.generation;
     const start = Promise.resolve()
       .then(() => this.options.start())
       .then(() => {
+        if (generation !== this.generation) return;
         if (!this.options.isReady()) {
           throw new Error('Readiness target did not start');
         }
         this.setStatus({ state: 'ready' });
       })
       .catch((error: unknown) => {
+        if (generation !== this.generation) throw error;
         if (this.options.isReady()) {
           this.setStatus({ state: 'ready' });
         } else {
@@ -57,6 +61,12 @@ export class SingleFlightReadiness {
       });
     this.activeStart = start;
     return start;
+  }
+
+  reset(): void {
+    this.generation += 1;
+    this.activeStart = null;
+    this.setStatus({ state: 'idle' });
   }
 
   private setStatus(status: Omit<ReadinessStatus, 'revision'>): void {

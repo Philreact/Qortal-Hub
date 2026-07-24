@@ -20,6 +20,7 @@ import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import ArrowBackIosNewRoundedIcon from '@mui/icons-material/ArrowBackIosNewRounded';
 import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
@@ -656,6 +657,8 @@ export function GlobalQortalNavBar({
   const { t } = useTranslation(['core', 'question']);
   const [selectedTab, setSelectedTab] = useState<SelectedTab>(null);
   const [inputValue, setInputValue] = useState('');
+  const [sessionMenuAnchor, setSessionMenuAnchor] =
+    useState<HTMLElement | null>(null);
   const [isInputHovered, setIsInputHovered] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isInputFocusedRef = useRef(false);
@@ -1773,7 +1776,7 @@ export function GlobalQortalNavBar({
                 </Box>
               )}
               <Tooltip
-                title={tooltipTitle(t('core:action.logout'))}
+                title={tooltipTitle('Lock or log out')}
                 placement="bottom"
                 arrow
                 slotProps={tooltipSlotProps}
@@ -1786,14 +1789,91 @@ export function GlobalQortalNavBar({
                 >
                   <IconButton
                     size="small"
-                    onClick={utilityNav.onLogout}
+                    onClick={(event) =>
+                      setSessionMenuAnchor(event.currentTarget)
+                    }
                     sx={utilityModuleButtonSx}
-                    aria-label={t('core:action.logout')}
+                    aria-label="Lock or log out"
+                    aria-haspopup="menu"
+                    aria-expanded={Boolean(sessionMenuAnchor)}
                   >
                     <LogoutRoundedIcon sx={utilityModuleIconSx} />
                   </IconButton>
                 </Box>
               </Tooltip>
+              <Popover
+                open={Boolean(sessionMenuAnchor)}
+                anchorEl={sessionMenuAnchor}
+                onClose={() => setSessionMenuAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                slotProps={{
+                  root: { role: 'menu', 'aria-label': 'Session options' },
+                  paper: {
+                    sx: {
+                      mt: 1,
+                      p: 0.75,
+                      width: 250,
+                      borderRadius: '14px',
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                      boxShadow: '0 16px 46px rgba(0, 0, 0, 0.34)',
+                    },
+                  },
+                }}
+              >
+                <ButtonBase
+                  role="menuitem"
+                  onClick={() => {
+                    setSessionMenuAnchor(null);
+                    utilityNav.onLock();
+                  }}
+                  sx={{
+                    width: '100%',
+                    gap: 1.5,
+                    p: 1.25,
+                    borderRadius: '10px',
+                    justifyContent: 'flex-start',
+                    textAlign: 'left',
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.primary.main, 0.1),
+                    },
+                  }}
+                >
+                  <LockRoundedIcon color="primary" />
+                  <Box>
+                    <Typography fontWeight={700}>Lock</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Keep chats and calls connected
+                    </Typography>
+                  </Box>
+                </ButtonBase>
+                <ButtonBase
+                  role="menuitem"
+                  onClick={() => {
+                    setSessionMenuAnchor(null);
+                    void utilityNav.onLogout();
+                  }}
+                  sx={{
+                    width: '100%',
+                    gap: 1.5,
+                    p: 1.25,
+                    borderRadius: '10px',
+                    justifyContent: 'flex-start',
+                    textAlign: 'left',
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.1),
+                    },
+                  }}
+                >
+                  <LogoutRoundedIcon color="error" />
+                  <Box>
+                    <Typography fontWeight={700}>Log out</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      End this signed-in session
+                    </Typography>
+                  </Box>
+                </ButtonBase>
+              </Popover>
             </Box>
           )}
         </Box>

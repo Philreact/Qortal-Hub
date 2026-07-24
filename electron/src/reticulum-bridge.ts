@@ -37,6 +37,7 @@ import {
   type ReticulumAudioFrame,
 } from './reticulum-audio-ipc';
 import { GC_RETICULUM_WIRE_BUILD_MARKER } from './group-call-wire-reticulum';
+import { isReticulumRuntimeEnabled } from './reticulum-runtime-state';
 
 const RETICULUM_AUDIO_QUEUED_AT_MS = Symbol.for(
   'qortal.reticulumAudioQueuedAtMs'
@@ -1978,9 +1979,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           ...(resp.error ? { error: resp.error } : {}),
         };
       }
-      const deliveredPeerHashes = Array.isArray(resp.payload?.deliveredPeerHashes)
+      const deliveredPeerHashes = Array.isArray(
+        resp.payload?.deliveredPeerHashes
+      )
         ? resp.payload.deliveredPeerHashes
-            .filter((peer): peer is string => typeof peer === 'string' && !!peer)
+            .filter(
+              (peer): peer is string => typeof peer === 'string' && !!peer
+            )
             .map((peer) => peer.trim().toLowerCase())
         : [];
       const failures = Array.isArray(resp.payload?.failures)
@@ -5256,14 +5261,26 @@ export function getReticulumBridge(): ReticulumBridge | null {
 }
 
 export async function startReticulumBridge(): Promise<ReticulumBridge> {
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
+  }
   if (bridgeStopPromise) {
     await bridgeStopPromise;
   }
-  if (!bridgeInstance) {
-    bridgeInstance = new ReticulumBridge();
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
   }
-  await bridgeInstance.start();
-  return bridgeInstance;
+  const bridge = bridgeInstance ?? new ReticulumBridge();
+  bridgeInstance = bridge;
+  await bridge.start();
+  if (!isReticulumRuntimeEnabled() || bridgeInstance !== bridge) {
+    if (bridgeInstance === bridge) {
+      bridgeInstance = null;
+      await bridge.stopAndWait();
+    }
+    throw new Error('Reticulum bridge startup was superseded');
+  }
+  return bridge;
 }
 
 export function stopReticulumBridge(): void {

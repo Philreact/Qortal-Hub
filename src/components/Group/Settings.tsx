@@ -28,7 +28,14 @@ import IconButton from '@mui/material/IconButton';
 import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import { useAtom } from 'jotai';
-import { ChangeEvent, Fragment, useCallback, useEffect, useState } from 'react';
+import {
+  ChangeEvent,
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
 import {
@@ -159,6 +166,11 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   const [checked, setChecked] = useState(false);
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
+  const [reticulumEnabled, setReticulumEnabled] = useState(true);
+  const [reticulumTransitionBusy, setReticulumTransitionBusy] = useState(false);
+  const [reticulumDisableConfirmOpen, setReticulumDisableConfirmOpen] =
+    useState(false);
+  const appSettingsRevisionRef = useRef(0);
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
   const [platform, setPlatform] = useState<string>('');
@@ -249,8 +261,11 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
 
   const loadAppSettings = useCallback(async () => {
     if (typeof window.electronAPI?.getAppSettings !== 'function') return;
+    const revision = appSettingsRevisionRef.current;
     const settings = await window.electronAPI.getAppSettings();
+    if (revision !== appSettingsRevisionRef.current) return;
     if (settings?.closeAction) setCloseAction(settings.closeAction);
+    setReticulumEnabled(settings?.reticulumEnabled !== false);
     setReticulumManagedConfigEnabled(
       settings?.reticulumManagedConfigEnabled === false ? false : true
     );
@@ -263,6 +278,18 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   useEffect(() => {
     if (window?.electronAPI) loadAppSettings();
   }, [loadAppSettings]);
+
+  useEffect(
+    () =>
+      window.electronAPI?.onAppSettingsChanged?.((settings) => {
+        appSettingsRevisionRef.current += 1;
+        setReticulumEnabled(settings?.reticulumEnabled !== false);
+        setReticulumManagedConfigEnabled(
+          settings?.reticulumManagedConfigEnabled !== false
+        );
+      }),
+    []
+  );
 
   const loadReticulumStatus = useCallback(async () => {
     if (typeof window.electronAPI?.reticulumGetStatus === 'function') {
@@ -348,7 +375,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   }, [loadReticulumStatus, setInfoSnackCustom, setOpenSnackGlobal]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !reticulumEnabled) return;
     if (
       typeof window.electronAPI?.reticulumGetStatus !== 'function' &&
       typeof window.electronAPI?.reticulumGetMeshStatus !== 'function'
@@ -362,7 +389,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
     return () => {
       window.clearInterval(timer);
     };
-  }, [loadReticulumStatus, open]);
+  }, [loadReticulumStatus, open, reticulumEnabled]);
 
   useEffect(() => {
     if (!open || reticulumOverlayPeers.length === 0) return;
@@ -381,6 +408,45 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
       await window.electronAPI.setAppSettings({ closeAction: value });
     }
   }, []);
+
+  const updateReticulumEnabled = useCallback(
+    async (enabled: boolean) => {
+      const previous = reticulumEnabled;
+      setReticulumEnabled(enabled);
+      setReticulumTransitionBusy(true);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumEnabled: enabled,
+        });
+      } catch {
+        setReticulumEnabled(previous);
+        setInfoSnackCustom({
+          type: 'error',
+          message: 'Could not update Reticulum right now.',
+        });
+        setOpenSnackGlobal(true);
+      } finally {
+        setReticulumTransitionBusy(false);
+      }
+    },
+    [reticulumEnabled, setInfoSnackCustom, setOpenSnackGlobal]
+  );
+
+  const handleReticulumEnabledChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      if (!event.target.checked) {
+        setReticulumDisableConfirmOpen(true);
+        return;
+      }
+      void updateReticulumEnabled(true);
+    },
+    [updateReticulumEnabled]
+  );
+
+  const confirmDisableReticulum = useCallback(() => {
+    setReticulumDisableConfirmOpen(false);
+    void updateReticulumEnabled(false);
+  }, [updateReticulumEnabled]);
 
   const handleReticulumManagedConfigChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -402,11 +468,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
         setOpenSnackGlobal(true);
       }
     },
-    [
-      reticulumManagedConfigEnabled,
-      setInfoSnackCustom,
-      setOpenSnackGlobal,
-    ]
+    [reticulumManagedConfigEnabled, setInfoSnackCustom, setOpenSnackGlobal]
   );
 
   return (
@@ -594,322 +656,368 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                 >
                   <Box>
                     <Typography variant="body2" color="text.secondary">
-                      Managed Reticulum config
+                      Enable Reticulum
                     </Typography>
                     <Typography variant="caption" color="text.disabled">
-                      Allow Qortal Hub to write its managed rnsd config on
-                      startup.
+                      Use Reticulum chat, calls, Qortal Land, and connected
+                      features on this device.
                     </Typography>
                   </Box>
                   <LocalNodeSwitch
-                    checked={reticulumManagedConfigEnabled}
-                    onChange={handleReticulumManagedConfigChange}
+                    checked={reticulumEnabled}
+                    disabled={reticulumTransitionBusy}
+                    onChange={handleReticulumEnabledChange}
                   />
                 </Box>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'stretch',
-                    gap: 1,
-                    px: 2,
-                    py: 1.25,
-                    borderBottom: 1,
-                    borderColor: 'divider',
-                  }}
-                >
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'flex-start',
-                      gap: 2,
-                      width: '100%',
-                    }}
-                  >
-                    <Typography variant="body2" color="text.secondary">
-                      Reticulum daemon
-                    </Typography>
-                    <Typography
-                      variant="body2"
+                {reticulumEnabled && (
+                  <>
+                    <Box
                       sx={{
-                        flexShrink: 0,
-                        color:
-                          reticulumStatus?.reachability === 'hub-connected'
-                            ? theme.palette.success.main
-                            : reticulumStatus?.running
-                              ? theme.palette.warning.main
-                              : theme.palette.warning.main,
-                        fontWeight: 600,
-                        textAlign: 'right',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 2,
+                        px: 2,
+                        py: 1.25,
+                        borderBottom: 1,
+                        borderColor: 'divider',
                       }}
                     >
-                      {formatReticulumReachability(reticulumStatus)}
-                    </Typography>
-                  </Box>
-                  <Typography
-                    variant="caption"
-                    component="div"
-                    color="text.disabled"
-                    sx={{
-                      wordBreak: 'break-word',
-                      overflowWrap: 'anywhere',
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {reticulumStatus?.running
-                      ? `Config: ${reticulumStatus.configDir}`
-                      : reticulumStatus?.reason || 'Not started'}
-                  </Typography>
-                  {reticulumStatus?.hubSummary ? (
-                    <Typography
-                      variant="caption"
-                      component="div"
-                      color="text.disabled"
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          Managed Reticulum config
+                        </Typography>
+                        <Typography variant="caption" color="text.disabled">
+                          Allow Qortal Hub to write its managed rnsd config on
+                          startup.
+                        </Typography>
+                      </Box>
+                      <LocalNodeSwitch
+                        checked={reticulumManagedConfigEnabled}
+                        onChange={handleReticulumManagedConfigChange}
+                      />
+                    </Box>
+                    <Box
                       sx={{
-                        wordBreak: 'break-word',
-                        overflowWrap: 'anywhere',
-                        lineHeight: 1.5,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'stretch',
+                        gap: 1,
+                        px: 2,
+                        py: 1.25,
+                        borderBottom: 1,
+                        borderColor: 'divider',
                       }}
                     >
-                      {reticulumStatus.hubSummary}
-                    </Typography>
-                  ) : null}
-                  <Typography
-                    variant="caption"
-                    component="div"
-                    color="text.disabled"
-                    sx={{ lineHeight: 1.6 }}
-                  >
-                    {reticulumStatus?.running ? 'Running' : 'Not running'}
-                    {reticulumStatus?.bridgeState
-                      ? ` · Bridge ${reticulumStatus.bridgeState}`
-                      : ''}
-                    {' · '}
-                    {formatReticulumMode(reticulumStatus)}
-                    {typeof reticulumStatus?.onlineHubInterfaces === 'number' &&
-                    typeof reticulumStatus?.configuredHubInterfaces === 'number'
-                      ? ` · Hubs ${reticulumStatus.onlineHubInterfaces}/${reticulumStatus.configuredHubInterfaces}`
-                      : ''}
-                    {typeof reticulumStatus?.onlineRemoteHubInterfaces ===
-                      'number' &&
-                    typeof reticulumStatus?.configuredRemoteHubInterfaces ===
-                      'number'
-                      ? ` · Remote hubs ${reticulumStatus.onlineRemoteHubInterfaces}/${reticulumStatus.configuredRemoteHubInterfaces}`
-                      : ''}
-                    {typeof reticulumStatus?.transportEnabled === 'boolean'
-                      ? ` · Transport ${reticulumStatus.transportEnabled ? 'on' : 'off'}`
-                      : ''}
-                    {typeof reticulumStatus?.overlayLinksConnected === 'number'
-                      ? ` · Overlay links ${reticulumStatus.overlayLinksConnected}`
-                      : ''}
-                    {typeof reticulumStatus?.p2pOutboundOverlayPeers ===
-                      'number' ||
-                    typeof reticulumStatus?.p2pInboundOverlayPeers === 'number'
-                      ? ` · Overlay out/in ${reticulumStatus.p2pOutboundOverlayPeers ?? 0}/${reticulumStatus.p2pInboundOverlayPeers ?? 0}`
-                      : ''}
-                    {reticulumStatus?.pid
-                      ? ` · PID ${reticulumStatus.pid}`
-                      : ''}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    component="div"
-                    color="text.disabled"
-                    sx={{
-                      mt: 0.5,
-                      fontFamily: 'monospace',
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    Destination hash:{' '}
-                    {reticulumLocalDestinationHash ?? 'Unavailable'}
-                  </Typography>
-                  <Box sx={{ mt: 1 }}>
-                    <Typography
-                      variant="caption"
-                      component="div"
-                      color="text.disabled"
-                    >
-                      Overlay peers
-                    </Typography>
-                    {reticulumOverlayPeers.length === 0 ? (
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'flex-start',
+                          gap: 2,
+                          width: '100%',
+                        }}
+                      >
+                        <Typography variant="body2" color="text.secondary">
+                          Reticulum daemon
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            flexShrink: 0,
+                            color:
+                              reticulumStatus?.reachability === 'hub-connected'
+                                ? theme.palette.success.main
+                                : reticulumStatus?.running
+                                  ? theme.palette.warning.main
+                                  : theme.palette.warning.main,
+                            fontWeight: 600,
+                            textAlign: 'right',
+                          }}
+                        >
+                          {formatReticulumReachability(reticulumStatus)}
+                        </Typography>
+                      </Box>
                       <Typography
                         variant="caption"
                         component="div"
                         color="text.disabled"
-                        sx={{ mt: 0.5 }}
-                      >
-                        No active overlay peers connected.
-                      </Typography>
-                    ) : (
-                      <TableContainer
                         sx={{
-                          mt: 0.75,
-                          border: 1,
-                          borderColor: alpha(theme.palette.divider, 0.4),
-                          borderRadius: 1.5,
-                          overflowX: 'auto',
+                          wordBreak: 'break-word',
+                          overflowWrap: 'anywhere',
+                          lineHeight: 1.5,
                         }}
                       >
-                        <Table size="small" aria-label="overlay peers table">
-                          <TableHead>
-                            <TableRow>
-                              <TableCell>Peer hash</TableCell>
-                              <TableCell>Address</TableCell>
-                              <TableCell>Initiated by</TableCell>
-                              <TableCell align="right">Connected</TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {reticulumOverlayPeers.map((peer) => (
-                              <TableRow key={peer.linkId}>
-                                <TableCell
-                                  sx={{
-                                    fontFamily: 'monospace',
-                                    fontSize: '0.75rem',
-                                    wordBreak: 'break-all',
-                                  }}
-                                >
-                                  {peer.peerPresenceHash}
-                                </TableCell>
-                                <TableCell
-                                  sx={{
-                                    fontFamily: peer.address
-                                      ? 'inherit'
-                                      : 'monospace',
-                                    fontSize: '0.75rem',
-                                    wordBreak: 'break-all',
-                                  }}
-                                >
-                                  {peer.address || 'Unknown'}
-                                </TableCell>
-                                <TableCell sx={{ fontSize: '0.75rem' }}>
-                                  {peer.incoming === true
-                                    ? 'Remote'
-                                    : peer.incoming === false
-                                      ? 'Local'
-                                      : '—'}
-                                </TableCell>
-                                <TableCell
-                                  align="right"
-                                  sx={{
-                                    whiteSpace: 'nowrap',
-                                    fontSize: '0.75rem',
-                                  }}
-                                >
-                                  {formatElapsedDuration(
-                                    peer.connectedAt,
-                                    overlayDurationNow
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
-                    )}
-                  </Box>
-                </Box>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'stretch',
-                    gap: 1,
-                    px: 2,
-                    py: 1.25,
-                    borderBottom: 1,
-                    borderColor: 'divider',
-                  }}
-                >
-                  <Typography variant="body2" color="text.secondary">
-                    Reticulum hub mesh (direct TCP)
-                  </Typography>
-                  {reticulumMeshStatus == null ? (
-                    <Typography variant="caption" color="text.disabled">
-                      Mesh status unavailable.
-                    </Typography>
-                  ) : !reticulumMeshStatus.enabled ? (
-                    <Typography variant="caption" color="text.disabled">
-                      Not available on secondary app instances.
-                    </Typography>
-                  ) : (
-                    <>
+                        {reticulumStatus?.running
+                          ? `Config: ${reticulumStatus.configDir}`
+                          : reticulumStatus?.reason || 'Not started'}
+                      </Typography>
+                      {reticulumStatus?.hubSummary ? (
+                        <Typography
+                          variant="caption"
+                          component="div"
+                          color="text.disabled"
+                          sx={{
+                            wordBreak: 'break-word',
+                            overflowWrap: 'anywhere',
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          {reticulumStatus.hubSummary}
+                        </Typography>
+                      ) : null}
                       <Typography
                         variant="caption"
                         component="div"
                         color="text.disabled"
                         sx={{ lineHeight: 1.6 }}
                       >
-                        Listen port {reticulumMeshStatus.listenPort}
-                        {reticulumMeshStatus.meshListenEnabled
-                          ? ' · listen enabled'
-                          : ' · listen disabled'}
-                        {reticulumMeshStatus.upnpMapped ? ' · UPnP mapped' : ''}
-                        {reticulumMeshStatus.meshDiscoveryClient
-                          ? ' · RNS interface discovery + autoconnect (LXMF included with the Hub Reticulum runtime; see Reticulum manual)'
+                        {reticulumStatus?.running ? 'Running' : 'Not running'}
+                        {reticulumStatus?.bridgeState
+                          ? ` · Bridge ${reticulumStatus.bridgeState}`
                           : ''}
-                        {reticulumMeshStatus.meshPrivateGateway
-                          ? ' · encrypted private gateway on mesh listen'
+                        {' · '}
+                        {formatReticulumMode(reticulumStatus)}
+                        {typeof reticulumStatus?.onlineHubInterfaces ===
+                          'number' &&
+                        typeof reticulumStatus?.configuredHubInterfaces ===
+                          'number'
+                          ? ` · Hubs ${reticulumStatus.onlineHubInterfaces}/${reticulumStatus.configuredHubInterfaces}`
+                          : ''}
+                        {typeof reticulumStatus?.onlineRemoteHubInterfaces ===
+                          'number' &&
+                        typeof reticulumStatus?.configuredRemoteHubInterfaces ===
+                          'number'
+                          ? ` · Remote hubs ${reticulumStatus.onlineRemoteHubInterfaces}/${reticulumStatus.configuredRemoteHubInterfaces}`
+                          : ''}
+                        {typeof reticulumStatus?.transportEnabled === 'boolean'
+                          ? ` · Transport ${reticulumStatus.transportEnabled ? 'on' : 'off'}`
+                          : ''}
+                        {typeof reticulumStatus?.overlayLinksConnected ===
+                        'number'
+                          ? ` · Overlay links ${reticulumStatus.overlayLinksConnected}`
+                          : ''}
+                        {typeof reticulumStatus?.p2pOutboundOverlayPeers ===
+                          'number' ||
+                        typeof reticulumStatus?.p2pInboundOverlayPeers ===
+                          'number'
+                          ? ` · Overlay out/in ${reticulumStatus.p2pOutboundOverlayPeers ?? 0}/${reticulumStatus.p2pInboundOverlayPeers ?? 0}`
+                          : ''}
+                        {reticulumStatus?.pid
+                          ? ` · PID ${reticulumStatus.pid}`
                           : ''}
                       </Typography>
-                      {reticulumMeshStatus.meshPrivateGateway &&
-                        reticulumMeshStatus.meshReachableOnEffective != null &&
-                        reticulumMeshStatus.meshReachableOnEffective !== '' && (
-                          <Typography
-                            variant="caption"
-                            component="div"
-                            color="text.disabled"
-                            sx={{ lineHeight: 1.5, mt: 0.25 }}
-                          >
-                            Discovery reachable_on:{' '}
-                            {reticulumMeshStatus.meshReachableOnEffective}
-                            {reticulumMeshStatus.meshReachableOnHost?.trim()
-                              ? ' (manual)'
-                              : reticulumMeshStatus.discoveryReachableHost
-                                ? ' (UPnP)'
-                                : ''}
-                          </Typography>
-                        )}
                       <Typography
                         variant="caption"
                         component="div"
                         color="text.disabled"
-                        sx={{ lineHeight: 1.5, mt: 0.5 }}
+                        sx={{
+                          mt: 0.5,
+                          fontFamily: 'monospace',
+                          wordBreak: 'break-all',
+                        }}
                       >
-                        Bootstrap hubs use the managed TCP client entries in
-                        Reticulum config. Community mesh peers are reached via
-                        RNS discovery (not app-level gossip). The mesh network
-                        identity used for encrypted discovery/private gateways
-                        is installed automatically; file path:{' '}
-                        <Box component="span" sx={{ wordBreak: 'break-all' }}>
-                          {reticulumMeshStatus.networkIdentityPath}
-                        </Box>
+                        Destination hash:{' '}
+                        {reticulumLocalDestinationHash ?? 'Unavailable'}
                       </Typography>
-                      {reticulumMeshStatus.meshListenEnabled &&
-                        !reticulumMeshStatus.meshPrivateGateway &&
-                        typeof window.electronAPI
-                          ?.reticulumEnsureMeshNetworkIdentity ===
-                          'function' && (
-                          <Box sx={{ mt: 1 }}>
-                            <Button
+                      <Box sx={{ mt: 1 }}>
+                        <Typography
+                          variant="caption"
+                          component="div"
+                          color="text.disabled"
+                        >
+                          Overlay peers
+                        </Typography>
+                        {reticulumOverlayPeers.length === 0 ? (
+                          <Typography
+                            variant="caption"
+                            component="div"
+                            color="text.disabled"
+                            sx={{ mt: 0.5 }}
+                          >
+                            No active overlay peers connected.
+                          </Typography>
+                        ) : (
+                          <TableContainer
+                            sx={{
+                              mt: 0.75,
+                              border: 1,
+                              borderColor: alpha(theme.palette.divider, 0.4),
+                              borderRadius: 1.5,
+                              overflowX: 'auto',
+                            }}
+                          >
+                            <Table
                               size="small"
-                              variant="outlined"
-                              disabled={meshIdentityBusy}
-                              onClick={() =>
-                                void handleEnsureMeshNetworkIdentity()
-                              }
+                              aria-label="overlay peers table"
                             >
-                              {meshIdentityBusy
-                                ? 'Installing…'
-                                : 'Install community mesh identity'}
-                            </Button>
-                          </Box>
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell>Peer hash</TableCell>
+                                  <TableCell>Address</TableCell>
+                                  <TableCell>Initiated by</TableCell>
+                                  <TableCell align="right">Connected</TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {reticulumOverlayPeers.map((peer) => (
+                                  <TableRow key={peer.linkId}>
+                                    <TableCell
+                                      sx={{
+                                        fontFamily: 'monospace',
+                                        fontSize: '0.75rem',
+                                        wordBreak: 'break-all',
+                                      }}
+                                    >
+                                      {peer.peerPresenceHash}
+                                    </TableCell>
+                                    <TableCell
+                                      sx={{
+                                        fontFamily: peer.address
+                                          ? 'inherit'
+                                          : 'monospace',
+                                        fontSize: '0.75rem',
+                                        wordBreak: 'break-all',
+                                      }}
+                                    >
+                                      {peer.address || 'Unknown'}
+                                    </TableCell>
+                                    <TableCell sx={{ fontSize: '0.75rem' }}>
+                                      {peer.incoming === true
+                                        ? 'Remote'
+                                        : peer.incoming === false
+                                          ? 'Local'
+                                          : '—'}
+                                    </TableCell>
+                                    <TableCell
+                                      align="right"
+                                      sx={{
+                                        whiteSpace: 'nowrap',
+                                        fontSize: '0.75rem',
+                                      }}
+                                    >
+                                      {formatElapsedDuration(
+                                        peer.connectedAt,
+                                        overlayDurationNow
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
                         )}
-                    </>
-                  )}
-                </Box>
+                      </Box>
+                    </Box>
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'stretch',
+                        gap: 1,
+                        px: 2,
+                        py: 1.25,
+                        borderBottom: 1,
+                        borderColor: 'divider',
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        Reticulum hub mesh (direct TCP)
+                      </Typography>
+                      {reticulumMeshStatus == null ? (
+                        <Typography variant="caption" color="text.disabled">
+                          Mesh status unavailable.
+                        </Typography>
+                      ) : !reticulumMeshStatus.enabled ? (
+                        <Typography variant="caption" color="text.disabled">
+                          Not available on secondary app instances.
+                        </Typography>
+                      ) : (
+                        <>
+                          <Typography
+                            variant="caption"
+                            component="div"
+                            color="text.disabled"
+                            sx={{ lineHeight: 1.6 }}
+                          >
+                            Listen port {reticulumMeshStatus.listenPort}
+                            {reticulumMeshStatus.meshListenEnabled
+                              ? ' · listen enabled'
+                              : ' · listen disabled'}
+                            {reticulumMeshStatus.upnpMapped
+                              ? ' · UPnP mapped'
+                              : ''}
+                            {reticulumMeshStatus.meshDiscoveryClient
+                              ? ' · RNS interface discovery + autoconnect (LXMF included with the Hub Reticulum runtime; see Reticulum manual)'
+                              : ''}
+                            {reticulumMeshStatus.meshPrivateGateway
+                              ? ' · encrypted private gateway on mesh listen'
+                              : ''}
+                          </Typography>
+                          {reticulumMeshStatus.meshPrivateGateway &&
+                            reticulumMeshStatus.meshReachableOnEffective !=
+                              null &&
+                            reticulumMeshStatus.meshReachableOnEffective !==
+                              '' && (
+                              <Typography
+                                variant="caption"
+                                component="div"
+                                color="text.disabled"
+                                sx={{ lineHeight: 1.5, mt: 0.25 }}
+                              >
+                                Discovery reachable_on:{' '}
+                                {reticulumMeshStatus.meshReachableOnEffective}
+                                {reticulumMeshStatus.meshReachableOnHost?.trim()
+                                  ? ' (manual)'
+                                  : reticulumMeshStatus.discoveryReachableHost
+                                    ? ' (UPnP)'
+                                    : ''}
+                              </Typography>
+                            )}
+                          <Typography
+                            variant="caption"
+                            component="div"
+                            color="text.disabled"
+                            sx={{ lineHeight: 1.5, mt: 0.5 }}
+                          >
+                            Bootstrap hubs use the managed TCP client entries in
+                            Reticulum config. Community mesh peers are reached
+                            via RNS discovery (not app-level gossip). The mesh
+                            network identity used for encrypted
+                            discovery/private gateways is installed
+                            automatically; file path:{' '}
+                            <Box
+                              component="span"
+                              sx={{ wordBreak: 'break-all' }}
+                            >
+                              {reticulumMeshStatus.networkIdentityPath}
+                            </Box>
+                          </Typography>
+                          {reticulumMeshStatus.meshListenEnabled &&
+                            !reticulumMeshStatus.meshPrivateGateway &&
+                            typeof window.electronAPI
+                              ?.reticulumEnsureMeshNetworkIdentity ===
+                              'function' && (
+                              <Box sx={{ mt: 1 }}>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  disabled={meshIdentityBusy}
+                                  onClick={() =>
+                                    void handleEnsureMeshNetworkIdentity()
+                                  }
+                                >
+                                  {meshIdentityBusy
+                                    ? 'Installing…'
+                                    : 'Install community mesh identity'}
+                                </Button>
+                              </Box>
+                            )}
+                        </>
+                      )}
+                    </Box>
+                  </>
+                )}
                 <Box
                   sx={{
                     display: 'flex',
@@ -988,6 +1096,32 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
             </Box>
           </Box>
         </Box>
+      </Dialog>
+      <Dialog
+        open={reticulumDisableConfirmOpen}
+        onClose={() => setReticulumDisableConfirmOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Disable Reticulum?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Q-Chat will use legacy chat. Calls and Qortal Land will be
+            unavailable until Reticulum is enabled again.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReticulumDisableConfirmOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            onClick={confirmDisableReticulum}
+            variant="contained"
+          >
+            Disable Reticulum
+          </Button>
+        </DialogActions>
       </Dialog>
     </Fragment>
   );

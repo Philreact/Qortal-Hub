@@ -63,6 +63,7 @@ export const reticulumDirectSummariesAtom = atomWithReset<Record<string, any>>(
   {}
 );
 export const reticulumChatEnabledAtom = atomWithReset(true);
+export const reticulumEnabledAtom = atomWithReset(true);
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);
@@ -121,49 +122,53 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
   const reticulumSummaries = get(reticulumChatSummariesAtom);
   const reticulumChatEnabled = get(reticulumChatEnabledAtom);
   if (!Array.isArray(groups) || !reticulumSummaries) return groups;
-  return groups.map((group: any) => {
-    const numericGroupId = Number(group?.groupId);
-    const groupId =
-      Number.isInteger(numericGroupId) && numericGroupId > 0
-        ? String(numericGroupId)
-        : String(group?.groupId ?? '');
-    const summary = reticulumSummaries[groupId];
-    const lastEvent = summary?.lastEvent;
-    const reticulumTimestamp =
-      typeof summary?.updatedAt === 'number'
-        ? summary.updatedAt
-        : typeof lastEvent?.timestamp === 'number'
-          ? lastEvent.timestamp
-          : 0;
-    if (reticulumChatEnabled) {
+  return groups
+    .map((group: any) => {
+      const numericGroupId = Number(group?.groupId);
+      const groupId =
+        Number.isInteger(numericGroupId) && numericGroupId > 0
+          ? String(numericGroupId)
+          : String(group?.groupId ?? '');
+      const summary = reticulumSummaries[groupId];
+      const lastEvent = summary?.lastEvent;
+      const reticulumTimestamp =
+        typeof summary?.updatedAt === 'number'
+          ? summary.updatedAt
+          : typeof lastEvent?.timestamp === 'number'
+            ? lastEvent.timestamp
+            : 0;
+      if (reticulumChatEnabled) {
+        return {
+          ...group,
+          data: reticulumTimestamp
+            ? lastEvent?.encryptedPayload || 'reticulum-chat'
+            : undefined,
+          reticulumChatSummary: summary,
+          sender: reticulumTimestamp ? lastEvent?.authorAddress : undefined,
+          timestamp: reticulumTimestamp || undefined,
+        };
+      }
+      const coreTimestamp =
+        typeof group?.timestamp === 'number' ? group.timestamp : 0;
+      if (!reticulumTimestamp || reticulumTimestamp < coreTimestamp) {
+        return summary ? { ...group, reticulumChatSummary: summary } : group;
+      }
       return {
         ...group,
-        data: reticulumTimestamp
-          ? lastEvent?.encryptedPayload || 'reticulum-chat'
-          : undefined,
+        data: lastEvent?.encryptedPayload || group?.data || 'reticulum-chat',
         reticulumChatSummary: summary,
-        sender: reticulumTimestamp ? lastEvent?.authorAddress : undefined,
-        timestamp: reticulumTimestamp || undefined,
+        sender: lastEvent?.authorAddress || group?.sender,
+        timestamp: reticulumTimestamp,
       };
-    }
-    const coreTimestamp =
-      typeof group?.timestamp === 'number' ? group.timestamp : 0;
-    if (!reticulumTimestamp || reticulumTimestamp < coreTimestamp) {
-      return summary ? { ...group, reticulumChatSummary: summary } : group;
-    }
-    return {
-      ...group,
-      data: lastEvent?.encryptedPayload || group?.data || 'reticulum-chat',
-      reticulumChatSummary: summary,
-      sender: lastEvent?.authorAddress || group?.sender,
-      timestamp: reticulumTimestamp,
-    };
-  }).sort((a: any, b: any) => {
-    const timestampA = typeof a?.timestamp === 'number' ? a.timestamp : 0;
-    const timestampB = typeof b?.timestamp === 'number' ? b.timestamp : 0;
-    if (timestampA !== timestampB) return timestampB - timestampA;
-    return String(a?.groupName || '').localeCompare(String(b?.groupName || ''));
-  });
+    })
+    .sort((a: any, b: any) => {
+      const timestampA = typeof a?.timestamp === 'number' ? a.timestamp : 0;
+      const timestampB = typeof b?.timestamp === 'number' ? b.timestamp : 0;
+      if (timestampA !== timestampB) return timestampB - timestampA;
+      return String(a?.groupName || '').localeCompare(
+        String(b?.groupName || '')
+      );
+    });
 });
 
 // When in Electron, use appStorage-backed persistence; otherwise Jotai uses localStorage (undefined = default).
@@ -171,11 +176,12 @@ const electronStorage = getElectronPersistentStorage();
 
 export type ReticulumChatTextScale = 'default' | 'medium' | 'high';
 /** Persisted, Reticulum-only chat reading size preference. */
-export const reticulumChatTextScaleAtom = atomWithStorage<ReticulumChatTextScale>(
-  'qortal_reticulum_chat_text_scale',
-  'default',
-  electronStorage as any
-);
+export const reticulumChatTextScaleAtom =
+  atomWithStorage<ReticulumChatTextScale>(
+    'qortal_reticulum_chat_text_scale',
+    'default',
+    electronStorage as any
+  );
 
 /** Persisted: true = Q-Wallets embedded workspace opens edge-to-edge. */
 export const qWalletsWorkspaceFullScreenAtom = atomWithStorage<boolean>(

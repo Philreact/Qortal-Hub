@@ -6,6 +6,7 @@ import {
 import type { MenuItemConstructorOptions } from 'electron';
 import {
   app,
+  BrowserWindow,
   MenuItem,
   dialog,
   powerMonitor,
@@ -40,7 +41,9 @@ import {
   ensureReticulumManagersStarted,
   notifyPresenceTransportReady,
   replayReticulumCachedPresence,
-  shutdownReticulumResourceStore,
+  startAppSettingsWatcher,
+  stopReticulumManagers,
+  subscribeToAppSettingsChanges,
   setLastP2POptions,
   startDecentralizedStunAfterP2P,
 } from './setup';
@@ -61,11 +64,7 @@ import {
   restartBundledReticulumDaemonAndWaitReady,
   stopSharedReticulumDaemon,
 } from './reticulum-daemon';
-import {
-  registerReticulumMeshIpcHandlers,
-  startReticulumMeshCoordinator,
-  stopReticulumMeshCoordinator,
-} from './reticulum-mesh';
+import { registerReticulumMeshIpcHandlers } from './reticulum-mesh';
 import { startReticulumForAppLaunch } from './reticulum-launch';
 import { runDevReticulumEnsureIfNeeded } from './reticulum-dev-ensure-loader';
 import {
@@ -78,6 +77,7 @@ import { getPresenceManager } from './presence';
 import { isDisabledLegacy } from './feature-flags';
 import { buildAudioSurfaceScheme } from './audio-window-policy';
 import { setAudioSurfaceHttpsInstanceIndex } from './audio-surface-https';
+import { isReticulumRuntimeEnabled } from './reticulum-runtime-state';
 
 import * as net from 'net';
 
@@ -138,6 +138,9 @@ export function setIsQuitting(value: boolean) {
 let shutdownHandled = false;
 let reticulumWakeRecovery: Promise<void> | null = null;
 let lastReticulumWakeRecoveryAt = 0;
+let reticulumGloballyEnabled = true;
+let reticulumGlobalTransition: Promise<void> = Promise.resolve();
+let reticulumGlobalTransitionFailed = false;
 
 const RETICULUM_WAKE_RECOVERY_DEBOUNCE_MS = 15_000;
 const RETICULUM_WAKE_RECOVERY_BRIDGE_ATTACH_WAIT_MS = 20_000;
@@ -146,6 +149,58 @@ const RETICULUM_WAKE_RECOVERY_BRIDGE_RETRY_MS = 1_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestAuthenticatedRendererLock(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
+    window.webContents.send('system:lock-requested');
+  }
+}
+
+function applyGlobalReticulumSetting(enabled: boolean): Promise<void> {
+  reticulumGlobalTransition = reticulumGlobalTransition
+    .catch(() => undefined)
+    .then(async () => {
+      if (
+        enabled === reticulumGloballyEnabled &&
+        !reticulumGlobalTransitionFailed
+      ) {
+        return;
+      }
+      reticulumGloballyEnabled = enabled;
+      if (!enabled) {
+        loggerLog('[Reticulum] Global setting disabled; stopping managers.');
+        stopReticulumManagers();
+        myCapacitorApp.updateReticulumChatMentionBadge(0);
+        await stopReticulumBridgeAndWait();
+        // Give other local Hub instances time to observe the shared setting
+        // and stop their per-instance bridges before the shared daemon exits.
+        await delay(1_000);
+        if (isReticulumRuntimeEnabled()) {
+          loggerLog(
+            '[Reticulum] Global shutdown was superseded; preserving shared daemon.'
+          );
+        } else {
+          stopSharedReticulumDaemon();
+        }
+        reticulumGlobalTransitionFailed = false;
+        loggerLog('[Reticulum] Global disable transition complete.');
+        return;
+      }
+
+      loggerLog('[Reticulum] Global setting enabled; starting Reticulum.');
+      await startReticulumForAppLaunch();
+      await ensureReticulumManagersStarted();
+      notifyPresenceTransportReady();
+      reticulumGlobalTransitionFailed = false;
+      loggerLog('[Reticulum] Global startup complete.');
+    })
+    .catch((error) => {
+      reticulumGlobalTransitionFailed = true;
+      loggerError('[Reticulum] Global lifecycle transition failed:', error);
+    });
+  return reticulumGlobalTransition;
 }
 
 function isReticulumDaemonRestartLockError(error: unknown): boolean {
@@ -228,8 +283,7 @@ function performAppShutdown(reason: string): void {
   }
   shutdownHandled = true;
   loggerLog(`[App] Shutdown reason=${reason}`);
-  shutdownReticulumResourceStore();
-  stopReticulumMeshCoordinator();
+  stopReticulumManagers();
   stopReticulumBridge();
   const quitPlan = planReticulumAppQuit();
   if (quitPlan.shouldStopSharedDaemon) {
@@ -244,7 +298,7 @@ function performAppShutdown(reason: string): void {
 }
 
 async function recoverReticulumAfterWake(source: string): Promise<void> {
-  if (isQuitting) {
+  if (isQuitting || !reticulumGloballyEnabled) {
     return;
   }
 
@@ -515,8 +569,16 @@ async function setupMultiInstanceUserData(
   registerReticulumAppInstance(instanceIndex);
 
   await app.whenReady();
+  const initialAppSettings = await readAppSettings();
+  reticulumGloballyEnabled = initialAppSettings.reticulumEnabled !== false;
+  subscribeToAppSettingsChanges((settings) =>
+    applyGlobalReticulumSetting(settings.reticulumEnabled !== false)
+  );
+  await startAppSettingsWatcher();
   loadPersistedAllowedDomainsAtStartup();
-  const reticulumDevEnsureOk = await runDevReticulumEnsureIfNeeded();
+  const reticulumDevEnsureOk = reticulumGloballyEnabled
+    ? await runDevReticulumEnsureIfNeeded()
+    : true;
   if (!reticulumDevEnsureOk) {
     return;
   }
@@ -550,18 +612,20 @@ async function setupMultiInstanceUserData(
 
   await myCapacitorApp.init(HUB_P2P_BOOTSTRAP_SEEDS);
 
-  try {
-    await startReticulumForAppLaunch();
-  } catch (error) {
-    loggerError(
-      '[Reticulum] Launch readiness wait failed; continuing with bridge startup:',
-      error
-    );
-  }
+  if (reticulumGloballyEnabled) {
+    try {
+      await startReticulumForAppLaunch();
+    } catch (error) {
+      loggerError(
+        '[Reticulum] Launch readiness wait failed; continuing with bridge startup:',
+        error
+      );
+    }
 
-  // Presence, direct calls, group calls, and the Reticulum bridge are no longer
-  // gated by the legacy P2P mesh setting.
-  await ensureReticulumManagersStarted();
+    await ensureReticulumManagersStarted();
+  } else {
+    loggerLog('[Reticulum] Global setting is disabled; startup skipped.');
+  }
 
   if (!isDisabledLegacy) {
     // Each instance gets a unique P2P and API port derived from its index so
@@ -622,7 +686,13 @@ async function setupMultiInstanceUserData(
 
   powerMonitor.on('resume', () => {
     void recoverReticulumAfterWake('powerMonitor:resume');
+    requestAuthenticatedRendererLock();
   });
+
+  // Lock before sleep where the platform exposes suspend, then repeat on
+  // resume in case the renderer was frozen before it received the first IPC.
+  powerMonitor.on('suspend', requestAuthenticatedRendererLock);
+  powerMonitor.on('lock-screen', requestAuthenticatedRendererLock);
 })();
 
 // Set isQuitting flag before the app quits

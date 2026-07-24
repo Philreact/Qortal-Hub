@@ -3,6 +3,7 @@ import { renderHook, act } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { extStateAtom, userInfoAtom } from '../atoms/global';
+import { appLockedAtom, isIdleAtom, myStatusAtom } from '../atoms/presence';
 import { buildPresenceSnapshot } from './usePresence';
 import { usePresence } from './usePresence';
 
@@ -89,7 +90,11 @@ describe('usePresence', () => {
         heartbeat,
         offline,
         startHeartbeatScheduler,
-        getStatus: vi.fn(async () => ({ online: false, lastSeen: null, sessions: [] })),
+        getStatus: vi.fn(async () => ({
+          online: false,
+          lastSeen: null,
+          sessions: [],
+        })),
         getOnlineAddresses: vi.fn(async () => []),
         getAllOnline: vi.fn(async () => []),
         onUpdateBatch: vi.fn(() => vi.fn()),
@@ -150,6 +155,60 @@ describe('usePresence', () => {
     });
 
     expect(heartbeat).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      store.set(appLockedAtom, true);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(store.get(isIdleAtom)).toBe(true);
+    expect((heartbeat.mock.lastCall?.[0] as any)?.payload?.status).toBe('idle');
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mousemove'));
+    });
+    expect(store.get(isIdleAtom)).toBe(true);
+
+    await act(async () => {
+      store.set(appLockedAtom, false);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(store.get(isIdleAtom)).toBe(false);
+    expect((heartbeat.mock.lastCall?.[0] as any)?.payload?.status).toBe(
+      'online'
+    );
+
+    await act(async () => {
+      store.set(myStatusAtom, 'offline');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(offline).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(offline).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      store.set(myStatusAtom, 'online');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(70_000);
+      await Promise.resolve();
+    });
+
+    expect(offline).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       unmount();

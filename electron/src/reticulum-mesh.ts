@@ -40,6 +40,7 @@ import {
   saveReticulumMeshState,
 } from './reticulum-mesh-store';
 import { readAppSettings } from './setup';
+import { isReticulumRuntimeEnabled } from './reticulum-runtime-state';
 
 let meshUpnpClient: unknown = null;
 let meshUpnpStopped = false;
@@ -75,7 +76,7 @@ async function refreshDiscoveryReachableHostFromUpnp(
  * After mesh identity / `reachable_on` / enable_transport change, rewrite managed config and restart rnsd + bridge if running.
  */
 export async function applyManagedMeshConfigAfterReachableUpdate(): Promise<void> {
-  if (getReticulumInstanceIndex() > 0) {
+  if (!isReticulumRuntimeEnabled() || getReticulumInstanceIndex() > 0) {
     return;
   }
   ensureMeshNetworkIdentityIfNeeded();
@@ -112,7 +113,10 @@ async function setupMeshUpnp(listenPort: number): Promise<void> {
   }
   meshUpnpStopped = false;
   const settings = await readAppSettings();
-  if (settings.reticulumMeshUpnpEnabled === false) {
+  if (
+    !isReticulumRuntimeEnabled() ||
+    settings.reticulumMeshUpnpEnabled === false
+  ) {
     loggerLog('[ReticulumMesh] UPnP disabled in app settings');
     return;
   }
@@ -121,7 +125,9 @@ async function setupMeshUpnp(listenPort: number): Promise<void> {
     return;
   }
   try {
-    const client = await createNatApiClient({ description: 'Qortal Hub Reticulum Mesh' });
+    const client = await createNatApiClient({
+      description: 'Qortal Hub Reticulum Mesh',
+    });
     if (meshUpnpStopped) {
       await destroyNatClient(client);
       return;
@@ -207,12 +213,18 @@ function getMeshStatus(): ReticulumMeshStatus {
 }
 
 export function registerReticulumMeshIpcHandlers(): void {
-  ipcMain.handle('reticulum:getMeshStatus', async (): Promise<ReticulumMeshStatus> => {
-    return getMeshStatus();
-  });
+  ipcMain.handle(
+    'reticulum:getMeshStatus',
+    async (): Promise<ReticulumMeshStatus> => {
+      return getMeshStatus();
+    }
+  );
   ipcMain.handle(
     'reticulum:ensureMeshNetworkIdentity',
     async (): Promise<EnsureMeshNetworkIdentityResult> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       if (getReticulumInstanceIndex() > 0) {
         return { ok: false, error: 'Not available on secondary app instances' };
       }
@@ -225,7 +237,10 @@ export function registerReticulumMeshIpcHandlers(): void {
         return passphrase;
       }
       await applyManagedMeshConfigAfterReachableUpdate();
-      return { ...r, created: r.created === true || passphrase.created === true };
+      return {
+        ...r,
+        created: r.created === true || passphrase.created === true,
+      };
     }
   );
 }
@@ -233,12 +248,10 @@ export function registerReticulumMeshIpcHandlers(): void {
 let meshCoordinatorStarted = false;
 
 export function startReticulumMeshCoordinator(
-  _bridge: ReturnType<
-    typeof import('./reticulum-bridge').getReticulumBridge
-  >
+  _bridge: ReturnType<typeof import('./reticulum-bridge').getReticulumBridge>
 ): void {
   void _bridge;
-  if (getReticulumInstanceIndex() > 0) {
+  if (!isReticulumRuntimeEnabled() || getReticulumInstanceIndex() > 0) {
     return;
   }
   if (meshCoordinatorStarted) return;

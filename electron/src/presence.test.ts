@@ -110,14 +110,75 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     };
 
     expect(
-      (manager as any).applyVerifiedPresenceEnvelope(newerHeartbeat, { kind: 'local' }, 2_000)
+      (manager as any).applyVerifiedPresenceEnvelope(
+        newerHeartbeat,
+        { kind: 'local' },
+        2_000
+      )
     ).toBe(true);
     expect(manager.isAddressOnline(address)).toBe(true);
 
     expect(
-      (manager as any).applyVerifiedPresenceEnvelope(olderOffline, { kind: 'local' }, 2_001)
+      (manager as any).applyVerifiedPresenceEnvelope(
+        olderOffline,
+        { kind: 'local' },
+        2_001
+      )
     ).toBe(false);
     expect(manager.isAddressOnline(address)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('does not let an older heartbeat revive a session after a newer offline envelope', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_001);
+    const manager = new PresenceManager();
+    const address = 'Q-session-offline-order';
+    const sessionId = 'session-offline-order';
+    const publicKey = 'pk-session-offline-order';
+
+    const newerOffline = {
+      id: 'offline-newer',
+      type: 'PRESENCE_OFFLINE',
+      senderAddress: address,
+      timestamp: 2_000,
+      payload: {
+        address,
+        publicKey,
+        sessionId,
+        status: 'offline',
+      },
+      signature: 'sig',
+    };
+    const olderHeartbeat = {
+      id: 'heartbeat-older',
+      type: 'PRESENCE_HEARTBEAT',
+      senderAddress: address,
+      timestamp: 1_999,
+      payload: {
+        address,
+        publicKey,
+        sessionId,
+        status: 'online',
+      },
+      signature: 'sig',
+    };
+
+    expect(
+      (manager as any).applyVerifiedPresenceEnvelope(
+        newerOffline,
+        { kind: 'local' },
+        2_000
+      )
+    ).toBe(true);
+    expect(
+      (manager as any).applyVerifiedPresenceEnvelope(
+        olderHeartbeat,
+        { kind: 'local' },
+        2_001
+      )
+    ).toBe(false);
+    expect(manager.isAddressOnline(address)).toBe(false);
     vi.useRealTimers();
   });
 
@@ -125,12 +186,20 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     const manager = new PresenceManager();
     (manager as any).promoteVerifiedReticulumPeer('peer-hash', 'Q-first', 1000);
     expect(
-      manager.getReticulumVerifiedPeers().find((p) => p.destinationHash === 'peer-hash')?.address
+      manager
+        .getReticulumVerifiedPeers()
+        .find((p) => p.destinationHash === 'peer-hash')?.address
     ).toBe('Q-first');
     const neighbors1 = manager.getReticulumVerifiedNeighborHashes();
-    (manager as any).promoteVerifiedReticulumPeer('peer-hash', 'Q-second', 2000);
+    (manager as any).promoteVerifiedReticulumPeer(
+      'peer-hash',
+      'Q-second',
+      2000
+    );
     expect(
-      manager.getReticulumVerifiedPeers().find((p) => p.destinationHash === 'peer-hash')?.address
+      manager
+        .getReticulumVerifiedPeers()
+        .find((p) => p.destinationHash === 'peer-hash')?.address
     ).toBe('Q-first');
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(neighbors1);
   });
@@ -173,16 +242,25 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
         lastSeen: now,
       },
     ]);
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(['origin-hash']);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
+      'origin-hash',
+    ]);
   });
 
   it('verifies an overlay peer from non-presence Qortal traffic without relatching', () => {
     const manager = new PresenceManager();
     const verifiedEvents: unknown[] = [];
-    manager.on('reticulum-peer-verified', (event) => verifiedEvents.push(event));
+    manager.on('reticulum-peer-verified', (event) =>
+      verifiedEvents.push(event)
+    );
 
     manager.noteReticulumCandidateDiscovered('origin-hash', 'announce', 1_000);
-    manager.markReticulumOverlayPeerVerified('origin-hash', 'group_signal', undefined, 2_000);
+    manager.markReticulumOverlayPeerVerified(
+      'origin-hash',
+      'group_signal',
+      undefined,
+      2_000
+    );
 
     expect(manager.getReticulumVerifiedPeers()).toEqual([
       {
@@ -191,10 +269,17 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
         lastSeen: 2_000,
       },
     ]);
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(['origin-hash']);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
+      'origin-hash',
+    ]);
     expect(verifiedEvents).toHaveLength(1);
 
-    manager.markReticulumOverlayPeerVerified('origin-hash', 'call_signal', undefined, 3_000);
+    manager.markReticulumOverlayPeerVerified(
+      'origin-hash',
+      'call_signal',
+      undefined,
+      3_000
+    );
 
     expect(manager.getReticulumVerifiedPeers()).toEqual([
       {
@@ -244,7 +329,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
         lastSeen: now + 1,
       },
     ]);
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(['origin-hash']);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
+      'origin-hash',
+    ]);
   });
 
   it('keeps delayed but valid Reticulum heartbeats alive from local receive time', () => {
@@ -297,7 +384,10 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
 
   it('keeps admitted verified peers stable after presence cleanup', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 2);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 2
+    );
 
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
       hashes.slice(0, RETICULUM_OVERLAY_MAX_NEIGHBORS)
@@ -308,34 +398,52 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
       hashes.slice(0, RETICULUM_OVERLAY_MAX_NEIGHBORS)
     );
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes
-    );
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes);
   });
 
   it('keeps verified fanout stable and uses latest announce candidates as backfill', () => {
     vi.useFakeTimers();
     vi.setSystemTime(10_100);
     const manager = new PresenceManager();
-    const verified = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS);
+    const verified = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS
+    );
 
-    manager.noteReticulumCandidateDiscovered('candidate-older', 'announce', 10_000);
-    manager.noteReticulumCandidateDiscovered('candidate-newer', 'announce', 10_100);
+    manager.noteReticulumCandidateDiscovered(
+      'candidate-older',
+      'announce',
+      10_000
+    );
+    manager.noteReticulumCandidateDiscovered(
+      'candidate-newer',
+      'announce',
+      10_100
+    );
 
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(verified);
     expect(manager.getReticulumActiveNeighborHashes()).toEqual(verified);
 
     manager.noteReticulumOverlayLinkClosed(verified[0], 'closed');
 
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(verified.slice(1));
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      verified.slice(1)
+    );
     expect(manager.getReticulumActiveNeighborHashes()).toEqual([
       ...verified.slice(1),
       'candidate-newer',
     ]);
 
-    manager.noteReticulumOverlayLinkClosed('candidate-newer', 'destination_closed');
+    manager.noteReticulumOverlayLinkClosed(
+      'candidate-newer',
+      'destination_closed'
+    );
 
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(verified.slice(1));
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      verified.slice(1)
+    );
     expect(manager.getReticulumActiveNeighborHashes()).toEqual([
       ...verified.slice(1),
       'candidate-older',
@@ -347,10 +455,21 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.useFakeTimers();
     vi.setSystemTime(20_100);
     const manager = new PresenceManager();
-    const verified = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 2);
+    const verified = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 2
+    );
 
-    manager.noteReticulumCandidateDiscovered('candidate-older', 'announce', 20_000);
-    manager.noteReticulumCandidateDiscovered('candidate-newer', 'announce', 20_100);
+    manager.noteReticulumCandidateDiscovered(
+      'candidate-older',
+      'announce',
+      20_000
+    );
+    manager.noteReticulumCandidateDiscovered(
+      'candidate-newer',
+      'announce',
+      20_100
+    );
 
     manager.noteReticulumOverlayLinkClosed(verified[0], 'closed');
     expect(manager.getReticulumActiveNeighborHashes()).toEqual([
@@ -386,15 +505,18 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
 
   it('keeps a recently closed verified peer retained but out of active fanout', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 1
+    );
 
     vi.useFakeTimers();
     vi.setSystemTime(9_999);
     manager.noteReticulumOverlayLinkClosed(hashes[0], 'closed');
 
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes
-    );
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
       ...hashes.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),
       hashes[RETICULUM_OVERLAY_MAX_NEIGHBORS],
@@ -405,7 +527,10 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
 
   it('removes a verified fanout peer from active fanout after a timeout with recent activity', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 1
+    );
 
     vi.useFakeTimers();
     vi.setSystemTime(9_999);
@@ -413,17 +538,22 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       lastActivityAgeMs: 1_041,
     });
 
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      hashes.slice(1)
     );
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(hashes.slice(1));
 
     vi.useRealTimers();
   });
 
   it('removes a verified fanout peer from active fanout after destination_closed with recent activity', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 1
+    );
 
     vi.useFakeTimers();
     vi.setSystemTime(9_999);
@@ -436,17 +566,22 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       }
     );
 
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      hashes.slice(1)
     );
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(hashes.slice(1));
 
     vi.useRealTimers();
   });
 
   it('does not clear link cooldown from relayed presence before cooldown expires', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 1
+    );
 
     vi.useFakeTimers();
     vi.setSystemTime(9_999);
@@ -459,26 +594,31 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       'presence-relayed'
     );
 
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
+      hashes.slice(1)
     );
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(hashes.slice(1));
 
     vi.useRealTimers();
   });
 
   it('releases a closed verified slot after the grace window expires', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 1
+    );
 
     vi.useFakeTimers();
     vi.setSystemTime(9_999);
     manager.noteReticulumOverlayLinkClosed(hashes[0], 'closed');
     vi.setSystemTime(9_999 + RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS + 1);
 
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes.slice(1)
-    );
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes.slice(1));
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
       ...hashes.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),
       hashes[RETICULUM_OVERLAY_MAX_NEIGHBORS],
@@ -489,18 +629,25 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
 
   it('clears close cooldown as soon as the peer is directly re-verified', () => {
     const manager = new PresenceManager();
-    const hashes = promoteVerifiedPeers(manager, RETICULUM_OVERLAY_MAX_NEIGHBORS + 1);
+    const hashes = promoteVerifiedPeers(
+      manager,
+      RETICULUM_OVERLAY_MAX_NEIGHBORS + 1
+    );
 
     vi.useFakeTimers();
     vi.setSystemTime(9_999);
     manager.noteReticulumOverlayLinkClosed(hashes[0], 'closed');
     vi.setSystemTime(10_100);
-    (manager as any).promoteVerifiedReticulumPeer(hashes[0], 'Q-address-00', 10_100);
+    (manager as any).promoteVerifiedReticulumPeer(
+      hashes[0],
+      'Q-address-00',
+      10_100
+    );
     vi.setSystemTime(10_100 + RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS + 1);
 
-    expect(manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)).toEqual(
-      hashes
-    );
+    expect(
+      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+    ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
       ...hashes.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),
       hashes[RETICULUM_OVERLAY_MAX_NEIGHBORS],

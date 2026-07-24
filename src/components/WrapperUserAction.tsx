@@ -21,7 +21,11 @@ import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { executeEvent } from '../utils/events';
 import { useBlockedAddresses } from '../hooks/useBlockUsers';
 import { useAtom, useAtomValue } from 'jotai';
-import { isRunningPublicNodeAtom, userInfoAtom } from '../atoms/global';
+import {
+  isRunningPublicNodeAtom,
+  reticulumEnabledAtom,
+  userInfoAtom,
+} from '../atoms/global';
 import { useTranslation } from 'react-i18next';
 import { CustomStyledMenu } from './ContextMenu';
 import { ReticulumUserCard } from './Chat/ReticulumUserCard';
@@ -48,10 +52,13 @@ export const WrapperUserAction = ({
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
   const userInfo = useAtomValue(userInfoAtom);
+  const reticulumEnabled = useAtomValue(reticulumEnabledAtom);
 
   const [anchorEl, setAnchorEl] = useState(null);
   const [cardAnchorEl, setCardAnchorEl] = useState(null);
-  const cardInstanceId = useRef(crypto.randomUUID?.() || `user-card-${Math.random()}`);
+  const cardInstanceId = useRef(
+    crypto.randomUUID?.() || `user-card-${Math.random()}`
+  );
 
   const handleOpen = (event) => {
     if (trigger === 'contextMenu') event.preventDefault();
@@ -87,7 +94,10 @@ export const WrapperUserAction = ({
 
     window.addEventListener('reticulum-user-card-open', closeOtherUserCards);
     return () => {
-      window.removeEventListener('reticulum-user-card-open', closeOtherUserCards);
+      window.removeEventListener(
+        'reticulum-user-card-open',
+        closeOtherUserCards
+      );
     };
   }, []);
 
@@ -102,9 +112,17 @@ export const WrapperUserAction = ({
   return (
     <>
       <Box
-        onClick={reticulumUserCard && trigger !== 'hover' ? handleCardOpen : trigger === 'click' ? handleOpen : undefined}
+        onClick={
+          reticulumUserCard && trigger !== 'hover'
+            ? handleCardOpen
+            : trigger === 'click'
+              ? handleOpen
+              : undefined
+        }
         onContextMenu={trigger === 'contextMenu' ? handleOpen : undefined}
-        onMouseEnter={reticulumUserCard && trigger === 'hover' ? handleCardOpen : undefined}
+        onMouseEnter={
+          reticulumUserCard && trigger === 'hover' ? handleCardOpen : undefined
+        }
         sx={{
           alignItems: 'center',
           alignSelf: fullWidth ? 'stretch' : 'flex-start',
@@ -131,8 +149,8 @@ export const WrapperUserAction = ({
       )}
 
       {/* Reticulum uses the same menu surface as the group controls. */}
-      {open && (
-        reticulumMenu ? (
+      {open &&
+        (reticulumMenu ? (
           <CustomStyledMenu
             id={id}
             reticulumMenu
@@ -158,16 +176,21 @@ export const WrapperUserAction = ({
                 onClick={() => {
                   handleClose();
                   setTimeout(() => {
-                    executeEvent('openDirectMessageInternal', { address, name });
+                    executeEvent('openDirectMessageInternal', {
+                      address,
+                      name,
+                    });
                   }, 200);
                 }}
                 sx={reticulumMenuItemSx}
               >
-                <ListItemIcon><ChatBubbleOutlineRoundedIcon /></ListItemIcon>
+                <ListItemIcon>
+                  <ChatBubbleOutlineRoundedIcon />
+                </ListItemIcon>
                 <ListItemText primary="Send Message" />
               </MenuItem>
 
-              {address && address !== userInfo?.address && (
+              {reticulumEnabled && address && address !== userInfo?.address && (
                 <MenuItem
                   onClick={() => {
                     handleClose();
@@ -178,7 +201,9 @@ export const WrapperUserAction = ({
                   }}
                   sx={reticulumMenuItemSx}
                 >
-                  <ListItemIcon><CallRoundedIcon /></ListItemIcon>
+                  <ListItemIcon>
+                    <CallRoundedIcon />
+                  </ListItemIcon>
                   <ListItemText primary="Start Voice Call" />
                 </MenuItem>
               )}
@@ -190,7 +215,9 @@ export const WrapperUserAction = ({
                 }}
                 sx={reticulumMenuItemSx}
               >
-                <ListItemIcon><AccountBalanceWalletRoundedIcon /></ListItemIcon>
+                <ListItemIcon>
+                  <AccountBalanceWalletRoundedIcon />
+                </ListItemIcon>
                 <ListItemText primary="Send QORT" />
               </MenuItem>
 
@@ -201,7 +228,9 @@ export const WrapperUserAction = ({
                 }}
                 sx={reticulumMenuItemSx}
               >
-                <ListItemIcon><ContentCopyRoundedIcon /></ListItemIcon>
+                <ListItemIcon>
+                  <ContentCopyRoundedIcon />
+                </ListItemIcon>
                 <ListItemText primary="Copy Address" />
               </MenuItem>
 
@@ -214,12 +243,16 @@ export const WrapperUserAction = ({
                 }}
                 sx={reticulumMenuItemSx}
               >
-                <ListItemIcon><PersonSearchRoundedIcon /></ListItemIcon>
+                <ListItemIcon>
+                  <PersonSearchRoundedIcon />
+                </ListItemIcon>
                 <ListItemText primary="User Details" />
               </MenuItem>
 
               {reticulumSilenceContext && (
-                <Divider sx={{ borderColor: theme.palette.divider, my: 0.45 }} />
+                <Divider
+                  sx={{ borderColor: theme.palette.divider, my: 0.45 }}
+                />
               )}
               {reticulumSilenceContext && (
                 <ReticulumHideUser
@@ -250,96 +283,95 @@ export const WrapperUserAction = ({
               },
             }}
           >
-          <Box
-            sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2 }}
-          >
-            {/* Option 1: Message */}
-            <Button
-              variant="text"
-              onClick={() => {
-                handleClose();
-                setTimeout(() => {
-                  executeEvent('openDirectMessageInternal', {
+            <Box
+              sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2 }}
+            >
+              {/* Option 1: Message */}
+              <Button
+                variant="text"
+                onClick={() => {
+                  handleClose();
+                  setTimeout(() => {
+                    executeEvent('openDirectMessageInternal', {
+                      address,
+                      name,
+                    });
+                  }, 200);
+                }}
+                sx={{
+                  color: theme.palette.text.primary,
+                  justifyContent: 'flex-start',
+                }}
+              >
+                {t('core:message.message', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Button>
+
+              {/* Option 2: Send QORT */}
+              <Button
+                variant="text"
+                onClick={() => {
+                  executeEvent('openPaymentInternal', {
                     address,
                     name,
                   });
-                }, 200);
-              }}
-              sx={{
-                color: theme.palette.text.primary,
-                justifyContent: 'flex-start',
-              }}
-            >
-              {t('core:message.message', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Button>
+                  handleClose();
+                }}
+                sx={{
+                  color: theme.palette.text.primary,
+                  justifyContent: 'flex-start',
+                }}
+              >
+                {t('core:action.send_qort', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Button>
 
-            {/* Option 2: Send QORT */}
-            <Button
-              variant="text"
-              onClick={() => {
-                executeEvent('openPaymentInternal', {
-                  address,
-                  name,
-                });
-                handleClose();
-              }}
-              sx={{
-                color: theme.palette.text.primary,
-                justifyContent: 'flex-start',
-              }}
-            >
-              {t('core:action.send_qort', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Button>
+              <Button
+                variant="text"
+                onClick={() => {
+                  navigator.clipboard.writeText(address || '');
+                  handleClose();
+                }}
+                sx={{
+                  color: theme.palette.text.primary,
+                  justifyContent: 'flex-start',
+                }}
+              >
+                {t('auth:action.copy_address', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Button>
 
-            <Button
-              variant="text"
-              onClick={() => {
-                navigator.clipboard.writeText(address || '');
-                handleClose();
-              }}
-              sx={{
-                color: theme.palette.text.primary,
-                justifyContent: 'flex-start',
-              }}
-            >
-              {t('auth:action.copy_address', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Button>
+              <Button
+                variant="text"
+                onClick={() => {
+                  executeEvent('openUserLookupDrawer', {
+                    addressOrName: name || address,
+                  });
+                  handleClose();
+                }}
+                sx={{
+                  color: theme.palette.text.primary,
+                  justifyContent: 'flex-start',
+                }}
+              >
+                {t('core:user_lookup', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Button>
 
-            <Button
-              variant="text"
-              onClick={() => {
-                executeEvent('openUserLookupDrawer', {
-                  addressOrName: name || address,
-                });
-                handleClose();
-              }}
-              sx={{
-                color: theme.palette.text.primary,
-                justifyContent: 'flex-start',
-              }}
-            >
-              {t('core:user_lookup', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Button>
-
-            {!isRunningPublicNode && (
-              <BlockUser
-                handleClose={handleClose}
-                address={address}
-                name={name}
-              />
-            )}
-          </Box>
+              {!isRunningPublicNode && (
+                <BlockUser
+                  handleClose={handleClose}
+                  address={address}
+                  name={name}
+                />
+              )}
+            </Box>
           </Popover>
-        )
-      )}
+        ))}
     </>
   );
 };
@@ -404,7 +436,11 @@ const BlockUser = ({ address, name, handleClose, reticulumMenu = false }) => {
         }}
       >
         <ListItemIcon>
-          {isLoading ? <CircularProgress color="error" size={17} /> : <BlockRoundedIcon />}
+          {isLoading ? (
+            <CircularProgress color="error" size={17} />
+          ) : (
+            <BlockRoundedIcon />
+          )}
         </ListItemIcon>
         <ListItemText primary={isAlreadyBlocked ? 'Unblock' : 'Block'} />
       </MenuItem>
@@ -527,9 +563,17 @@ const ReticulumHideUser = ({ address, context, handleClose }) => {
 
   if (silence?.active) {
     return (
-      <MenuItem disabled={isLoading} onClick={clearSilence} sx={reticulumMenuItemSx}>
+      <MenuItem
+        disabled={isLoading}
+        onClick={clearSilence}
+        sx={reticulumMenuItemSx}
+      >
         <ListItemIcon>
-          {isLoading ? <CircularProgress size={17} /> : <VisibilityRoundedIcon />}
+          {isLoading ? (
+            <CircularProgress size={17} />
+          ) : (
+            <VisibilityRoundedIcon />
+          )}
         </ListItemIcon>
         <ListItemText primary="Unhide" />
       </MenuItem>
@@ -546,7 +590,9 @@ const ReticulumHideUser = ({ address, context, handleClose }) => {
         }}
         sx={reticulumMenuItemSx}
       >
-        <ListItemIcon><VisibilityOffRoundedIcon /></ListItemIcon>
+        <ListItemIcon>
+          <VisibilityOffRoundedIcon />
+        </ListItemIcon>
         <ListItemText primary="Hide" />
       </MenuItem>
     );
@@ -554,17 +600,37 @@ const ReticulumHideUser = ({ address, context, handleClose }) => {
 
   return (
     <>
-      <MenuItem disabled={isLoading} onClick={() => applySilence(60 * 60 * 1000)} sx={reticulumMenuItemSx}>
-        <ListItemIcon><VisibilityOffRoundedIcon /></ListItemIcon>
+      <MenuItem
+        disabled={isLoading}
+        onClick={() => applySilence(60 * 60 * 1000)}
+        sx={reticulumMenuItemSx}
+      >
+        <ListItemIcon>
+          <VisibilityOffRoundedIcon />
+        </ListItemIcon>
         <ListItemText primary="Hide for 1 hour" />
       </MenuItem>
-      <MenuItem disabled={isLoading} onClick={() => applySilence(24 * 60 * 60 * 1000)} sx={reticulumMenuItemSx}>
-        <ListItemIcon><VisibilityOffRoundedIcon /></ListItemIcon>
+      <MenuItem
+        disabled={isLoading}
+        onClick={() => applySilence(24 * 60 * 60 * 1000)}
+        sx={reticulumMenuItemSx}
+      >
+        <ListItemIcon>
+          <VisibilityOffRoundedIcon />
+        </ListItemIcon>
         <ListItemText primary="Hide for 24 hours" />
       </MenuItem>
-      <MenuItem disabled={isLoading} onClick={() => applySilence(null)} sx={reticulumMenuItemSx}>
+      <MenuItem
+        disabled={isLoading}
+        onClick={() => applySilence(null)}
+        sx={reticulumMenuItemSx}
+      >
         <ListItemIcon>
-          {isLoading ? <CircularProgress size={17} /> : <VisibilityOffRoundedIcon />}
+          {isLoading ? (
+            <CircularProgress size={17} />
+          ) : (
+            <VisibilityOffRoundedIcon />
+          )}
         </ListItemIcon>
         <ListItemText primary="Hide until unhidden" />
       </MenuItem>

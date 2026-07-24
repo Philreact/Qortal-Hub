@@ -32,6 +32,7 @@ import {
   notificationSeenInAppKeyTimesAtom,
   notificationSeenInAppKeysAtom,
   paymentNotificationsAtom,
+  reticulumEnabledAtom,
 } from '../atoms/global';
 import LogoSelected from '../assets/svgs/LogoSelected.svg';
 import {
@@ -104,6 +105,7 @@ export const GeneralNotifications = ({
     Record<string, boolean>
   >({});
   const [qChatMentionsEnabled, setQChatMentionsEnabled] = useState(true);
+  const reticulumEnabled = useAtomValue(reticulumEnabledAtom);
   const notifications = useAtomValue(paymentNotificationsAtom);
   const setNotifications = useSetAtom(paymentNotificationsAtom);
   const customSubscriptions = useAtomValue(customWebsocketSubscriptionsAtom);
@@ -147,9 +149,10 @@ export const GeneralNotifications = ({
     () =>
       (notifications ?? []).filter(
         (item) =>
-          item?.event === RESOURCE_EVENT || isQChatMentionNotification(item)
+          item?.event === RESOURCE_EVENT ||
+          (reticulumEnabled && isQChatMentionNotification(item))
       ),
-    [notifications]
+    [notifications, reticulumEnabled]
   );
   const unseenCount = useMemo(() => {
     return resourceNotifications.reduce((count, notification) => {
@@ -712,92 +715,105 @@ export const GeneralNotifications = ({
                 {t('message.generic.loading', { defaultValue: 'Loading...' })}
               </Typography>
             ) : settingsSection === 'hub' ? (
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  backgroundColor: isDarkMode
-                    ? alpha('#FFFFFF', 0.026)
-                    : theme.palette.action.hover,
-                  border: `1px solid ${
-                    isDarkMode ? alpha('#A9BCD8', 0.12) : theme.palette.divider
-                  }`,
-                  borderRadius: '14px',
-                  display: 'flex',
-                  gap: 2,
-                  justifyContent: 'space-between',
-                  px: 1.7,
-                  py: 1.55,
-                }}
-              >
-                <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}>
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
-                      border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
-                      borderRadius: '10px',
-                      display: 'inline-flex',
-                      height: 34,
-                      justifyContent: 'center',
-                      overflow: 'hidden',
-                      width: 34,
-                    }}
-                  >
+              reticulumEnabled ? (
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor: isDarkMode
+                      ? alpha('#FFFFFF', 0.026)
+                      : theme.palette.action.hover,
+                    border: `1px solid ${
+                      isDarkMode
+                        ? alpha('#A9BCD8', 0.12)
+                        : theme.palette.divider
+                    }`,
+                    borderRadius: '14px',
+                    display: 'flex',
+                    gap: 2,
+                    justifyContent: 'space-between',
+                    px: 1.7,
+                    py: 1.55,
+                  }}
+                >
+                  <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}>
                     <Box
-                      alt="Q-Chat"
-                      component="img"
-                      src={LogoSelected}
-                      sx={{ height: 24, width: 24 }}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.12
+                        ),
+                        border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                        borderRadius: '10px',
+                        display: 'inline-flex',
+                        height: 34,
+                        justifyContent: 'center',
+                        overflow: 'hidden',
+                        width: 34,
+                      }}
+                    >
+                      <Box
+                        alt="Q-Chat"
+                        component="img"
+                        src={LogoSelected}
+                        sx={{ height: 24, width: 24 }}
+                      />
+                    </Box>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: '0.92rem',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Q-Chat
+                      </Typography>
+                      <Typography
+                        sx={{
+                          color: alpha(theme.palette.text.secondary, 0.76),
+                          fontSize: '0.76rem',
+                          lineHeight: 1.45,
+                          mt: 0.3,
+                        }}
+                      >
+                        Show Reticulum mention alerts in the Hub and on your
+                        desktop.
+                      </Typography>
+                    </Box>
+                  </Box>
+                  <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}>
+                    <Typography
+                      sx={{
+                        color: alpha(theme.palette.text.secondary, 0.82),
+                        fontSize: '0.78rem',
+                        fontWeight: 500,
+                      }}
+                    >
+                      Mentions
+                    </Typography>
+                    <Switch
+                      checked={qChatMentionsEnabled}
+                      inputProps={{
+                        'aria-label': 'Q-Chat mention notifications',
+                      }}
+                      onChange={(_, checked) => {
+                        setQChatMentionsEnabled(checked);
+                        void setQChatMentionNotificationsEnabled(checked).catch(
+                          () => setQChatMentionsEnabled(!checked)
+                        );
+                      }}
+                      size="small"
                     />
                   </Box>
-                  <Box sx={{ minWidth: 0 }}>
-                    <Typography
-                      sx={{
-                        color: theme.palette.text.primary,
-                        fontSize: '0.92rem',
-                        fontWeight: 600,
-                      }}
-                    >
-                      Q-Chat
-                    </Typography>
-                    <Typography
-                      sx={{
-                        color: alpha(theme.palette.text.secondary, 0.76),
-                        fontSize: '0.76rem',
-                        lineHeight: 1.45,
-                        mt: 0.3,
-                      }}
-                    >
-                      Show Reticulum mention alerts in the Hub and on your
-                      desktop.
-                    </Typography>
-                  </Box>
                 </Box>
-                <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}>
-                  <Typography
-                    sx={{
-                      color: alpha(theme.palette.text.secondary, 0.82),
-                      fontSize: '0.78rem',
-                      fontWeight: 500,
-                    }}
-                  >
-                    Mentions
-                  </Typography>
-                  <Switch
-                    checked={qChatMentionsEnabled}
-                    inputProps={{
-                      'aria-label': 'Q-Chat mention notifications',
-                    }}
-                    onChange={(_, checked) => {
-                      setQChatMentionsEnabled(checked);
-                      void setQChatMentionNotificationsEnabled(checked).catch(
-                        () => setQChatMentionsEnabled(!checked)
-                      );
-                    }}
-                    size="small"
-                  />
-                </Box>
-              </Box>
+              ) : (
+                <Typography
+                  sx={{ color: alpha(theme.palette.text.secondary, 0.82) }}
+                >
+                  No Hub notification settings are available.
+                </Typography>
+              )
             ) : (
               <>
                 {settingsApps.length === 0 ? (

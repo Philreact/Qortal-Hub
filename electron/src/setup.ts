@@ -141,6 +141,12 @@ import {
   type ReadinessStatus,
 } from './single-flight-readiness';
 import {
+  getReticulumRuntimeGeneration,
+  invalidateReticulumRuntimeGeneration,
+  isReticulumRuntimeEnabled,
+  setReticulumRuntimeEnabled,
+} from './reticulum-runtime-state';
+import {
   AUDIO_SURFACE_WINDOW_ROLE,
   AUDIO_SURFACE_ENTRY_PATH,
   MAIN_WINDOW_ROLE,
@@ -1722,6 +1728,8 @@ export interface AppSettings {
   closeAction?: CloseAction;
   /** When true, skip the intro audio played on the unauthenticated startup screen. */
   disableStartupSound?: boolean;
+  /** When true, becoming idle does not automatically lock the authenticated UI. */
+  disableAutoLockOnIdle?: boolean;
   /** Whether the Hub P2P network auto-starts on launch (default true). */
   p2pEnabled?: boolean;
   /**
@@ -1733,6 +1741,8 @@ export interface AppSettings {
   reticulumMeshUpnpEnabled?: boolean;
   /** When false, do not write/regenerate Qortal Hub's managed Reticulum config. */
   reticulumManagedConfigEnabled?: boolean;
+  /** Global Reticulum feature and process lifecycle switch (default true). */
+  reticulumEnabled?: boolean;
   /** Reticulum-backed group chat transport. Default true; users may opt out. */
   reticulumChatEnabled?: boolean;
   /** Maximum disk bytes used by Reticulum chat images and attachments. */
@@ -1742,9 +1752,11 @@ export interface AppSettings {
 const DEFAULT_APP_SETTINGS: AppSettings = {
   closeAction: 'ask',
   disableStartupSound: false,
+  disableAutoLockOnIdle: false,
   p2pEnabled: !isDisabledLegacy,
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
+  reticulumEnabled: true,
   reticulumChatEnabled: true,
   reticulumResourceLimitBytes: RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
 };
@@ -1764,6 +1776,7 @@ export async function readAppSettings(): Promise<AppSettings> {
           ? (parsed.closeAction as CloseAction)
           : DEFAULT_APP_SETTINGS.closeAction,
       disableStartupSound: parsed.disableStartupSound === true,
+      disableAutoLockOnIdle: parsed.disableAutoLockOnIdle === true,
       p2pEnabled: isDisabledLegacy
         ? false
         : parsed.p2pEnabled === false
@@ -1776,6 +1789,7 @@ export async function readAppSettings(): Promise<AppSettings> {
         parsed.reticulumMeshUpnpEnabled === false ? false : true,
       reticulumManagedConfigEnabled:
         parsed.reticulumManagedConfigEnabled === false ? false : true,
+      reticulumEnabled: parsed.reticulumEnabled === false ? false : true,
       reticulumChatEnabled:
         parsed.reticulumChatEnabled === false ? false : true,
       reticulumResourceLimitBytes: Math.max(
@@ -1794,13 +1808,57 @@ export async function readAppSettings(): Promise<AppSettings> {
   }
 }
 
+function isReticulumChatEffectivelyEnabled(settings: AppSettings): boolean {
+  return (
+    settings.reticulumEnabled !== false &&
+    settings.reticulumChatEnabled === true
+  );
+}
+
 async function writeAppSettings(settings: AppSettings): Promise<void> {
   const filePath = await getSharedSettingsFilePath(APP_SETTINGS_FILENAME);
-  await fs.promises.writeFile(
-    filePath,
-    JSON.stringify(settings, null, 2),
-    'utf-8'
-  );
+  await writeFileAtomic(filePath, JSON.stringify(settings, null, 2), {
+    encoding: 'utf8',
+  });
+}
+
+type AppSettingsChangeListener = (
+  settings: AppSettings
+) => void | Promise<void>;
+const appSettingsChangeListeners = new Set<AppSettingsChangeListener>();
+let lastObservedAppSettingsJson = '';
+
+async function notifyAppSettingsChanged(settings: AppSettings): Promise<void> {
+  setReticulumRuntimeEnabled(settings.reticulumEnabled !== false);
+  lastObservedAppSettingsJson = JSON.stringify(settings);
+  for (const window of BrowserWindow.getAllWindows()) {
+    sendToRenderer(window.webContents, 'appSettings:changed', settings);
+  }
+  for (const listener of appSettingsChangeListeners) {
+    await listener(settings);
+  }
+}
+
+export function subscribeToAppSettingsChanges(
+  listener: AppSettingsChangeListener
+): () => void {
+  appSettingsChangeListeners.add(listener);
+  return () => appSettingsChangeListeners.delete(listener);
+}
+
+export async function startAppSettingsWatcher(): Promise<() => void> {
+  const filePath = await getSharedSettingsFilePath(APP_SETTINGS_FILENAME);
+  const initialSettings = await readAppSettings();
+  setReticulumRuntimeEnabled(initialSettings.reticulumEnabled !== false);
+  lastObservedAppSettingsJson = JSON.stringify(initialSettings);
+  fs.watchFile(filePath, { interval: 750 }, () => {
+    void readAppSettings().then((settings) => {
+      const serialized = JSON.stringify(settings);
+      if (serialized === lastObservedAppSettingsJson) return;
+      void notifyAppSettingsChanged(settings);
+    });
+  });
+  return () => fs.unwatchFile(filePath);
 }
 
 // READ handler
@@ -1903,6 +1961,7 @@ ipcMain.handle(
         : {}),
     };
     await writeAppSettings(next);
+    await notifyAppSettingsChanged(next);
     if (reticulumResourceStore) {
       reticulumResourceStore.setStoragePolicy({
         limitBytes:
@@ -2536,6 +2595,14 @@ export async function startDecentralizedStunAfterP2P(
 }
 
 async function startReticulumManagers(): Promise<void> {
+  const lifecycleGeneration = getReticulumRuntimeGeneration();
+  const globalSettings = await readAppSettings();
+  if (
+    globalSettings.reticulumEnabled === false ||
+    !isReticulumRuntimeEnabled()
+  ) {
+    throw new Error('Reticulum is disabled');
+  }
   let bridgeTransport = getReticulumBridge();
   if (bridgeTransport) {
     try {
@@ -2556,10 +2623,44 @@ async function startReticulumManagers(): Promise<void> {
     }
   }
 
+  const latestGlobalSettings = await readAppSettings();
+  if (
+    latestGlobalSettings.reticulumEnabled === false ||
+    !isReticulumRuntimeEnabled() ||
+    lifecycleGeneration !== getReticulumRuntimeGeneration()
+  ) {
+    throw new Error('Reticulum was disabled during startup');
+  }
+
   if (bridgeTransport && bridgeTransport.getState() !== 'ready') {
     registerLateReticulumBridgeRecovery();
   }
   attachReticulumStatusBridgeEvents(bridgeTransport);
+
+  await registerReticulumResourceProtocol();
+  if (
+    !isReticulumRuntimeEnabled() ||
+    lifecycleGeneration !== getReticulumRuntimeGeneration()
+  ) {
+    if (!isReticulumRuntimeEnabled()) {
+      shutdownReticulumResourceStore();
+      attachReticulumStatusBridgeEvents(null);
+    }
+    throw new Error('Reticulum was disabled during startup');
+  }
+
+  const appSettings = await readAppSettings();
+  if (
+    appSettings.reticulumEnabled === false ||
+    !isReticulumRuntimeEnabled() ||
+    lifecycleGeneration !== getReticulumRuntimeGeneration()
+  ) {
+    if (!isReticulumRuntimeEnabled()) {
+      shutdownReticulumResourceStore();
+      attachReticulumStatusBridgeEvents(null);
+    }
+    throw new Error('Reticulum was disabled during startup');
+  }
 
   let pm = getPresenceManager();
   const transports = bridgeTransport ? [bridgeTransport] : [];
@@ -2570,7 +2671,6 @@ async function startReticulumManagers(): Promise<void> {
     pm = startPresenceManager(transports);
     attachPresenceListeners(pm);
   }
-  const appSettings = await readAppSettings();
   const resourceStore = getReticulumResourceStore();
   resourceStore.setStoragePolicy({
     limitBytes:
@@ -2634,9 +2734,42 @@ export function ensureReticulumManagersStarted(): Promise<void> {
   return reticulumChatReadiness.ensureReady();
 }
 
+export function stopReticulumManagers(): void {
+  invalidateReticulumRuntimeGeneration();
+  clearLateReticulumBridgeRecovery();
+  reticulumOverlaySyncSequence += 1;
+  reticulumOverlaySyncPending = false;
+  if (reticulumOverlaySyncRetryTimer) {
+    clearTimeout(reticulumOverlaySyncRetryTimer);
+    reticulumOverlaySyncRetryTimer = null;
+  }
+  if (reticulumOverlayMaintenanceTimer) {
+    clearInterval(reticulumOverlayMaintenanceTimer);
+    reticulumOverlayMaintenanceTimer = null;
+  }
+  if (reticulumChatSubscriptionReplayTimer) {
+    clearTimeout(reticulumChatSubscriptionReplayTimer);
+    reticulumChatSubscriptionReplayTimer = null;
+  }
+  stopPresenceMainHeartbeatScheduler();
+  stopReticulumMeshCoordinator();
+  stopGroupCallManager();
+  stopCallManager();
+  stopReticulumChatManager();
+  reticulumChatListenersAttached = false;
+  stopPresenceManager();
+  shutdownReticulumResourceStore();
+  attachReticulumStatusBridgeEvents(null);
+  reticulumChatReadiness.reset();
+}
+
 async function getReadyReticulumChatManager(): Promise<
   ReturnType<typeof getReticulumChatManager>
 > {
+  const settings = await readAppSettings();
+  if (!isReticulumChatEffectivelyEnabled(settings)) {
+    throw new Error('Reticulum chat is disabled');
+  }
   const existingManager = getReticulumChatManager();
   if (existingManager) {
     return existingManager;
@@ -2654,7 +2787,10 @@ ipcMain.handle('p2p:start', async (_event, options?: P2PNetworkOptions) => {
     const opts =
       options && Object.keys(options).length > 0 ? options : lastP2POptions;
     lastP2POptions = opts;
-    await ensureReticulumManagersStarted();
+    const settings = await readAppSettings();
+    if (settings.reticulumEnabled !== false) {
+      await ensureReticulumManagersStarted();
+    }
     const network = await startP2PNetwork(opts);
     attachP2PListeners(network);
     await startDecentralizedStunAfterP2P(network, opts);
@@ -3222,6 +3358,7 @@ export function registerLateReticulumBridgeRecovery(): void {
     if (recovered) return;
     recovered = true;
     clearLateReticulumBridgeRecovery();
+    if (!isReticulumRuntimeEnabled()) return;
 
     const currentBridge = getReticulumBridge();
     if (!currentBridge || currentBridge.getState() !== 'ready') {
@@ -3319,6 +3456,7 @@ export function registerLateReticulumBridgeRecovery(): void {
 async function handleLocalPresenceEnvelope(
   envelope: unknown
 ): Promise<boolean> {
+  if (!isReticulumRuntimeEnabled()) return false;
   const pm = getPresenceManager();
   if (!pm) {
     loggerLog(
@@ -3362,6 +3500,9 @@ ipcMain.handle('presence:offline', async (_event, envelope: unknown) => {
 });
 
 ipcMain.handle('presence:heartbeatSchedulerStart', async () => {
+  if (!isReticulumRuntimeEnabled()) {
+    return { success: false, error: 'Reticulum is disabled' };
+  }
   loggerLog('[Presence] Main heartbeat scheduler start requested');
   startPresenceMainHeartbeatScheduler();
   return { success: true };
@@ -3556,7 +3697,7 @@ export function attachReticulumChatListeners(
 
 ipcMain.handle('reticulumChat:isEnabled', async () => {
   const settings = await readAppSettings();
-  return settings.reticulumChatEnabled === true;
+  return isReticulumChatEffectivelyEnabled(settings);
 });
 
 ipcMain.handle('reticulumChat:getReadinessStatus', () =>
@@ -3649,7 +3790,7 @@ ipcMain.handle(
     if (!manager) {
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       manager.setLocalDmAddresses([]);
       return { success: false, error: 'Reticulum chat is disabled' };
     }
@@ -3764,7 +3905,7 @@ ipcMain.handle(
     if (!manager) {
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       manager.clearActiveDirectChats();
       return { success: false, error: 'Reticulum chat is disabled' };
     }
@@ -3777,7 +3918,7 @@ ipcMain.handle(
   'reticulumChat:publishDirectEvent',
   async (_event, event: unknown) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -3800,7 +3941,7 @@ ipcMain.handle(
     active: boolean
   ) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -3822,7 +3963,7 @@ ipcMain.handle(
   'reticulumChat:getDirectHistory',
   async (_event, myAddress: string, peerAddress: string, limit?: number) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) return [];
+    if (!isReticulumChatEffectivelyEnabled(settings)) return [];
     const manager = getReticulumChatManager();
     return manager
       ? manager.getDirectHistory(myAddress, peerAddress, limit)
@@ -3834,7 +3975,7 @@ ipcMain.handle(
   'reticulumChat:getDirectSummaries',
   async (_event, myAddress: string) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) return [];
+    if (!isReticulumChatEffectivelyEnabled(settings)) return [];
     const manager = getReticulumChatManager();
     if (!manager) return [];
     const address = typeof myAddress === 'string' ? myAddress.trim() : '';
@@ -3852,7 +3993,7 @@ ipcMain.handle(
     upToTimestamp: number
   ) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -3868,7 +4009,7 @@ ipcMain.handle(
   'reticulumChat:subscribeGroup',
   async (_event, groupId: number) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -3894,7 +4035,7 @@ ipcMain.handle(
   'reticulumChat:subscribeChannel',
   async (_event, groupId: number, channelId: string) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4020,7 +4161,7 @@ ipcMain.handle(
   'reticulumChat:publishEvent',
   async (ipcEvent, event: ReticulumChatEvent) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4115,7 +4256,7 @@ ipcMain.handle(
     activeMaybe?: boolean
   ) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4165,7 +4306,7 @@ ipcMain.handle(
     }
   ) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4189,7 +4330,7 @@ ipcMain.handle(
   'reticulumChat:sendLandChat',
   async (_event, message: unknown) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4233,7 +4374,7 @@ ipcMain.handle(
     }
   ) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4276,7 +4417,7 @@ ipcMain.handle(
     }
   ) => {
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4321,7 +4462,7 @@ ipcMain.handle(
         : 0;
     const shortHash = fileHash ? fileHash.slice(0, 12) : 'missing';
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4396,7 +4537,7 @@ ipcMain.handle(
         : 0;
     const shortHash = fileHash ? fileHash.slice(0, 12) : 'missing';
     const settings = await readAppSettings();
-    if (settings.reticulumChatEnabled !== true) {
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
     }
     const manager = getReticulumChatManager();
@@ -4594,6 +4735,10 @@ ipcMain.handle(
       metadata?: Record<string, unknown>;
     }
   ) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
     const base64 = normalizeBase64Payload(payload?.base64);
     if (!base64)
       return { success: false, error: 'Invalid base64 resource data' };
@@ -4663,6 +4808,10 @@ ipcMain.handle(
       metadata?: Record<string, unknown>;
     }
   ) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
     const sourcePath =
       typeof payload?.filePath === 'string' && payload.filePath.trim()
         ? path.resolve(payload.filePath.trim())
@@ -4714,6 +4863,10 @@ ipcMain.handle(
 );
 
 ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
+  const settings = await readAppSettings();
+  if (!isReticulumChatEffectivelyEnabled(settings)) {
+    return { success: false, error: 'Reticulum chat is disabled' };
+  }
   const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
   if (!hash) return { success: false, error: 'Invalid file hash' };
   try {
@@ -4743,6 +4896,9 @@ ipcMain.handle('reticulumResource:getUrl', async (_event, fileHash: string) => {
 ipcMain.handle('reticulumResource:getStorageStatus', async () => {
   try {
     const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
     const store = getReticulumResourceStore();
     store.setStoragePolicy({
       limitBytes:
@@ -4761,6 +4917,10 @@ ipcMain.handle('reticulumResource:getStorageStatus', async () => {
 
 ipcMain.handle('reticulumResource:cleanupStorage', async () => {
   try {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
     const store = getReticulumResourceStore();
     const result = await store.cleanupStorage('manual');
     return { success: true, result, status: store.getStorageStatus() };
@@ -4776,6 +4936,10 @@ ipcMain.handle('reticulumResource:cleanupStorage', async () => {
 ipcMain.handle(
   'reticulumResource:getStatus',
   async (_event, fileHash: string) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
     const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
     if (!hash) return { success: false, error: 'Invalid file hash' };
     try {
@@ -4827,6 +4991,10 @@ ipcMain.handle(
 ipcMain.handle(
   'reticulumResource:saveAs',
   async (_event, fileHash: string, suggestedFileName?: string) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
     const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
     if (!hash) return { success: false, error: 'Invalid file hash' };
     try {
@@ -5201,9 +5369,7 @@ ipcMain.handle(
     const normalizedGroupIds = Array.isArray(groupIds)
       ? groupIds
           .map((groupId) => Number(groupId))
-          .filter(
-            (groupId) => Number.isInteger(groupId) && groupId > 0
-          )
+          .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
       : [];
     const address = typeof myAddress === 'string' ? myAddress.trim() : '';
     const result = manager.markGroupsRead(normalizedGroupIds, address);

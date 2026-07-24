@@ -66,14 +66,15 @@ declare global {
         baseUrl: string,
         apiKey?: string
       ) => Promise<{ success: boolean; error?: string }>;
-      windowMinimize?: () => void;
+      windowMinimize?: () => Promise<void>;
       windowMaximize?: () => Promise<void>;
-      windowClose?: () => void;
+      windowClose?: () => Promise<void>;
       focusWindow?: () => Promise<void>;
       getWindowState?: () => Promise<{ isMaximized: boolean }>;
       onWindowStateChange?: (
         callback: (state: { isMaximized: boolean }) => void
       ) => () => void;
+      onSystemLockRequested?: (callback: () => void) => () => void;
       getPlatform?: () => Promise<string>;
       getSystemCallReadiness?: () => Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';
@@ -91,37 +92,51 @@ declare global {
         eventLoopLagMs: number;
         measuredAt: number;
       }>;
-      showAppMenu?: (x?: number, y?: number) => void;
+      showAppMenu?: (x?: number, y?: number) => Promise<void>;
       setDisableDevLogs?: (value: boolean) => Promise<boolean>;
       getAppSettings?: () => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumEnabled?: boolean;
         reticulumChatEnabled?: boolean;
         reticulumResourceLimitBytes?: number;
       }>;
       setAppSettings?: (settings: {
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumEnabled?: boolean;
         reticulumChatEnabled?: boolean;
         reticulumResourceLimitBytes?: number;
       }) => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumEnabled?: boolean;
         reticulumChatEnabled?: boolean;
         reticulumResourceLimitBytes?: number;
       }>;
+      onAppSettingsChanged?: (
+        callback: (settings: {
+          disableAutoLockOnIdle?: boolean;
+          reticulumEnabled?: boolean;
+          reticulumManagedConfigEnabled?: boolean;
+          reticulumChatEnabled?: boolean;
+        }) => void
+      ) => () => void;
       /** Reticulum (rnsd) child process status from main process. */
       reticulumGetStatus?: () => Promise<{
         running: boolean;

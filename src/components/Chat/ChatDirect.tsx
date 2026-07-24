@@ -149,8 +149,14 @@ const sha256Hex = async (value: string): Promise<string> => {
     .join('');
 };
 
-const reticulumDirectConversationId = async (addressA: string, addressB: string) => {
-  const [a, b] = [String(addressA || '').trim(), String(addressB || '').trim()].sort();
+const reticulumDirectConversationId = async (
+  addressA: string,
+  addressB: string
+) => {
+  const [a, b] = [
+    String(addressA || '').trim(),
+    String(addressB || '').trim(),
+  ].sort();
   if (!a || !b) return '';
   return sha256Hex(`rchat-dm-v1:${a}:${b}`);
 };
@@ -299,6 +305,7 @@ export const ChatDirect = ({
   close,
   setMobileViewModeKeepOpen,
   isActive = true,
+  reticulumEnabled = true,
   reticulumChatEnabled = false,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
@@ -468,8 +475,9 @@ export const ChatDirect = ({
   const [reticulumSilenceBusy, setReticulumSilenceBusy] = useState(false);
   const reticulumSilencePeerRef = useRef('');
   const reticulumDirectTypingActiveRef = useRef(false);
-  const reticulumDirectTypingStopTimerRef =
-    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reticulumDirectTypingStopTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
   const clearReticulumDirectTypingStopTimer = useCallback(() => {
     if (reticulumDirectTypingStopTimerRef.current) {
@@ -526,12 +534,7 @@ export const ChatDirect = ({
       cancelled = true;
       offSilence?.();
     };
-  }, [
-    isNewChat,
-    myAddress,
-    reticulumDirectUiEnabled,
-    selectedDirect?.address,
-  ]);
+  }, [isNewChat, myAddress, reticulumDirectUiEnabled, selectedDirect?.address]);
 
   const unsilenceReticulumDirectPeer = useCallback(async () => {
     const peerAddress = String(selectedDirect?.address || '').trim();
@@ -612,13 +615,11 @@ export const ChatDirect = ({
     }
     let cancelled = false;
     setReticulumDirectLinkActive(false);
-    void window.reticulumChat?.setActiveDirectChat?.(
-      myAddress,
-      selectedDirect.address,
-      true
-    )?.then((result) => {
-      if (!cancelled) setReticulumDirectLinkActive(result?.success === true);
-    });
+    void window.reticulumChat
+      ?.setActiveDirectChat?.(myAddress, selectedDirect.address, true)
+      ?.then((result) => {
+        if (!cancelled) setReticulumDirectLinkActive(result?.success === true);
+      });
     return () => {
       cancelled = true;
       clearReticulumDirectTypingStopTimer();
@@ -1590,11 +1591,14 @@ export const ChatDirect = ({
       try {
         const data = getQchatFileTransferData(message);
         if (!data?.transferId || !message?.sender) {
-          console.error('[QchatFileTransfer] accept aborted: missing transfer id or sender', {
-            hasTransferId: Boolean(data?.transferId),
-            hasSender: Boolean(message?.sender),
-            data,
-          });
+          console.error(
+            '[QchatFileTransfer] accept aborted: missing transfer id or sender',
+            {
+              hasTransferId: Boolean(data?.transferId),
+              hasSender: Boolean(message?.sender),
+              data,
+            }
+          );
           return;
         }
         console.log('[QchatFileTransfer] accept started', {
@@ -1622,20 +1626,26 @@ export const ChatDirect = ({
           throw new Error('File offer sender mismatch');
         }
         if (data.recipientAddress && data.recipientAddress !== myAddress) {
-          console.error('[QchatFileTransfer] accept aborted: recipient mismatch', {
-            transferId: data.transferId,
-            recipientAddress: data.recipientAddress,
-            myAddress,
-          });
+          console.error(
+            '[QchatFileTransfer] accept aborted: recipient mismatch',
+            {
+              transferId: data.transferId,
+              recipientAddress: data.recipientAddress,
+              myAddress,
+            }
+          );
           throw new Error('File offer is not addressed to this account');
         }
         const api = (window as any).electronAPI;
         if (!api?.qchatFileChooseSavePath || !api?.qchatFileAccept) {
-          console.error('[QchatFileTransfer] accept aborted: electron API unavailable', {
-            transferId: data.transferId,
-            hasChooseSavePath: Boolean(api?.qchatFileChooseSavePath),
-            hasAccept: Boolean(api?.qchatFileAccept),
-          });
+          console.error(
+            '[QchatFileTransfer] accept aborted: electron API unavailable',
+            {
+              transferId: data.transferId,
+              hasChooseSavePath: Boolean(api?.qchatFileChooseSavePath),
+              hasAccept: Boolean(api?.qchatFileAccept),
+            }
+          );
           throw new Error('Reticulum file transfer is unavailable');
         }
         console.log('[QchatFileTransfer] choosing save path', {
@@ -1646,10 +1656,13 @@ export const ChatDirect = ({
           data.fileName || 'received-file'
         );
         if (!save?.ok || !save.path) {
-          console.error('[QchatFileTransfer] accept aborted: save path not selected', {
-            transferId: data.transferId,
-            save,
-          });
+          console.error(
+            '[QchatFileTransfer] accept aborted: save path not selected',
+            {
+              transferId: data.transferId,
+              save,
+            }
+          );
           return;
         }
         console.log('[QchatFileTransfer] save path selected', {
@@ -1663,14 +1676,19 @@ export const ChatDirect = ({
         console.log('[QchatFileTransfer] local Reticulum identity ready', {
           transferId: data.transferId,
           destinationHash: reticulumIdentity.destinationHash,
-          hasIdentityPublicKey: Boolean(reticulumIdentity.identityPublicKeyBase64),
+          hasIdentityPublicKey: Boolean(
+            reticulumIdentity.identityPublicKeyBase64
+          ),
         });
         const authTimestamp = Date.now();
         const downloaderPublicKey = userInfo?.publicKey || '';
         if (!downloaderPublicKey) {
-          console.error('[QchatFileTransfer] accept aborted: missing local public key', {
-            transferId: data.transferId,
-          });
+          console.error(
+            '[QchatFileTransfer] accept aborted: missing local public key',
+            {
+              transferId: data.transferId,
+            }
+          );
           throw new Error('Missing local Qortal public key');
         }
         const authSignedFields = buildQchatFileLinkAuthSignedFields({
@@ -1701,7 +1719,9 @@ export const ChatDirect = ({
           transferId: data.transferId,
           fileName: data.fileName || 'received-file',
           size: Number(data.size || 0),
-          hasSenderDestinationHash: Boolean(data.senderReticulumDestinationHash),
+          hasSenderDestinationHash: Boolean(
+            data.senderReticulumDestinationHash
+          ),
           hasSenderIdentityPublicKey: Boolean(
             data.senderReticulumIdentityPublicKeyBase64
           ),
@@ -1726,10 +1746,13 @@ export const ChatDirect = ({
           accepted,
         });
         if (!accepted?.ok) {
-          console.error('[QchatFileTransfer] accept failed in electron/bridge', {
-            transferId: data.transferId,
-            accepted,
-          });
+          console.error(
+            '[QchatFileTransfer] accept failed in electron/bridge',
+            {
+              transferId: data.transferId,
+              accepted,
+            }
+          );
           qchatUserTransferIdsRef.current.delete(data.transferId);
           throw new Error(accepted?.error || 'Unable to accept file transfer');
         }
@@ -1821,9 +1844,7 @@ export const ChatDirect = ({
         });
         if (payload.status === 'sent' || payload.status === 'received') {
           if (payload.status === 'received') {
-            const offerMeta = qchatAcceptedOfferMetaRef.current.get(
-              transferId
-            );
+            const offerMeta = qchatAcceptedOfferMetaRef.current.get(transferId);
             setQchatCompletedTransfers((prev) => {
               const next = {
                 ...prev,
@@ -1902,7 +1923,8 @@ export const ChatDirect = ({
         return false;
       }
       const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
-      const base64 = isImage && !filePath ? await fileToBase64(file) : undefined;
+      const base64 =
+        isImage && !filePath ? await fileToBase64(file) : undefined;
       clearPendingReticulumFiles();
       setPendingReticulumFiles([
         {
@@ -1953,7 +1975,8 @@ export const ChatDirect = ({
             ? String((file as File & { path?: unknown }).path)
             : '');
         if (filePath) {
-          const conversionSequence = ++reticulumGifConversionSequenceRef.current;
+          const conversionSequence =
+            ++reticulumGifConversionSequenceRef.current;
           const conversionPeer = reticulumGifConversionPeerRef.current;
           setIsCompressingReticulumGif(true);
           try {
@@ -2168,7 +2191,8 @@ export const ChatDirect = ({
         if (
           (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') &&
           !hasPendingReticulumResources
-        ) return;
+        )
+          return;
         if (reticulumDirectUiEnabled) {
           setFormattingTrayResetKey((key) => key + 1);
         }
@@ -2187,10 +2211,9 @@ export const ChatDirect = ({
         }
         const chatReference = onEditMessage?.signature;
 
-        const reticulumResources =
-          hasPendingReticulumResources
-            ? await buildReticulumDirectResourcePayload()
-            : { images: [], attachments: [] };
+        const reticulumResources = hasPendingReticulumResources
+          ? await buildReticulumDirectResourcePayload()
+          : { images: [], attachments: [] };
 
         const otherData = {
           ...(onEditMessage?.decryptedData || {}),
@@ -2364,7 +2387,9 @@ export const ChatDirect = ({
                 whiteSpace: 'nowrap',
               }}
             >
-              {selectedDirect?.name || selectedDirect?.address || 'Direct Message'}
+              {selectedDirect?.name ||
+                selectedDirect?.address ||
+                'Direct Message'}
             </Typography>
             {selectedDirect?.name && selectedDirect?.address && (
               <Typography
@@ -2488,12 +2513,13 @@ export const ChatDirect = ({
                 </IconButton>
               </span>
             </Tooltip>
-            <Tooltip
-              title={
-                callMatchesThisDirect && callState === 'connected'
-                  ? 'In call'
-                  : callMatchesThisDirect && callState === 'calling'
-                    ? ''
+            {reticulumEnabled && (
+              <Tooltip
+                title={
+                  callMatchesThisDirect && callState === 'connected'
+                    ? 'In call'
+                    : callMatchesThisDirect && callState === 'calling'
+                      ? ''
                       : !peerOnline
                         ? t('core:presence.call_offline_tooltip')
                         : directVoiceBlockedByFriend
@@ -2501,49 +2527,50 @@ export const ChatDirect = ({
                           : directVoiceBlockedByP2p
                             ? p2pHealthBadTooltip
                             : 'Start voice call'
-              }
-            >
-              <span>
-                <IconButton
-                  size="small"
-                  disabled={
-                    !(
-                      (peerOnline &&
-                        !callMatchesThisDirect &&
-                        !directVoiceBlockedByFriend &&
-                        !directVoiceBlockedByP2p) ||
-                      (callMatchesThisDirect && callState === 'connected')
-                    )
-                  }
-                  onClick={
-                    callMatchesThisDirect && callState === 'connected'
-                      ? hangUp
-                      : handleStartDirectVoiceCall
-                  }
-                  sx={{
-                    color:
+                }
+              >
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={
+                      !(
+                        (peerOnline &&
+                          !callMatchesThisDirect &&
+                          !directVoiceBlockedByFriend &&
+                          !directVoiceBlockedByP2p) ||
+                        (callMatchesThisDirect && callState === 'connected')
+                      )
+                    }
+                    onClick={
                       callMatchesThisDirect && callState === 'connected'
-                        ? '#ef4444'
-                        : 'text.secondary',
-                    '&:hover': {
+                        ? hangUp
+                        : handleStartDirectVoiceCall
+                    }
+                    sx={{
                       color:
                         callMatchesThisDirect && callState === 'connected'
-                          ? '#dc2626'
-                          : 'text.primary',
-                    },
-                    '&.Mui-disabled': {
-                      color: theme.palette.action.disabled,
-                    },
-                  }}
-                >
-                  {callMatchesThisDirect && callState === 'connected' ? (
-                    <CallEndRoundedIcon sx={{ fontSize: 20 }} />
-                  ) : (
-                    <CallRoundedIcon sx={{ fontSize: 20 }} />
-                  )}
-                </IconButton>
-              </span>
-            </Tooltip>
+                          ? '#ef4444'
+                          : 'text.secondary',
+                      '&:hover': {
+                        color:
+                          callMatchesThisDirect && callState === 'connected'
+                            ? '#dc2626'
+                            : 'text.primary',
+                      },
+                      '&.Mui-disabled': {
+                        color: theme.palette.action.disabled,
+                      },
+                    }}
+                  >
+                    {callMatchesThisDirect && callState === 'connected' ? (
+                      <CallEndRoundedIcon sx={{ fontSize: 20 }} />
+                    ) : (
+                      <CallRoundedIcon sx={{ fontSize: 20 }} />
+                    )}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
           </Box>
         )}
       </Box>
@@ -3119,14 +3146,10 @@ export const ChatDirect = ({
             compactChat={reticulumDirectUiEnabled}
             collapseFormattingTraySignal={formattingTrayResetKey}
             placeholder={
-              reticulumDirectUiEnabled
-                ? 'Send message...'
-                : undefined
+              reticulumDirectUiEnabled ? 'Send message...' : undefined
             }
           />
-          {isCompressingReticulumGif && (
-            <ReticulumGifCompressionStatus />
-          )}
+          {isCompressingReticulumGif && <ReticulumGifCompressionStatus />}
           {pendingReticulumFiles.length > 0 && (
             <Box
               sx={{
@@ -3244,11 +3267,12 @@ export const ChatDirect = ({
             }}
             sx={{
               alignItems: 'center',
-              backgroundColor: isSending || isCompressingReticulumGif
-                ? theme.palette.action.disabledBackground
-                : reticulumDirectUiEnabled
-                  ? RETICULUM_ACTIVE_BLUE
-                  : theme.palette.background.paper,
+              backgroundColor:
+                isSending || isCompressingReticulumGif
+                  ? theme.palette.action.disabledBackground
+                  : reticulumDirectUiEnabled
+                    ? RETICULUM_ACTIVE_BLUE
+                    : theme.palette.background.paper,
               border: '1px solid',
               borderColor: reticulumDirectUiEnabled
                 ? RETICULUM_ACTIVE_BLUE
@@ -3273,15 +3297,15 @@ export const ChatDirect = ({
               transition: 'background-color 0.2s ease, border-color 0.2s ease',
               '&:hover':
                 isSending || isCompressingReticulumGif || reticulumDirectPending
-                ? {}
-                : {
-                    backgroundColor: reticulumDirectUiEnabled
-                      ? '#1e40af'
-                      : theme.palette.action.hover,
-                    borderColor: reticulumDirectUiEnabled
-                      ? '#1e40af'
-                      : theme.palette.divider,
-                  },
+                  ? {}
+                  : {
+                      backgroundColor: reticulumDirectUiEnabled
+                        ? '#1e40af'
+                        : theme.palette.action.hover,
+                      borderColor: reticulumDirectUiEnabled
+                        ? '#1e40af'
+                        : theme.palette.divider,
+                    },
               '& .MuiSvgIcon-root': {
                 color: reticulumDirectUiEnabled
                   ? theme.palette.common.white

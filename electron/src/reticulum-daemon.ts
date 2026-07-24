@@ -45,6 +45,10 @@ import {
 } from './reticulum-mesh-store';
 import { runEd25519VerifySync } from './ed25519-verify-common';
 import { sendToRenderer } from './renderer-delivery';
+import {
+  isReticulumRuntimeEnabled,
+  subscribeToReticulumRuntimeState,
+} from './reticulum-runtime-state';
 
 /**
  * Reticulum hub mesh: listen on the mesh port with optional private-gateway discovery.
@@ -3004,6 +3008,9 @@ export async function restartBundledReticulumDaemonAndWaitReady(
   timeoutMs = RETICULUM_SHARED_INSTANCE_READY_TIMEOUT_MS,
   options?: { forceKillOnStopTimeout?: boolean }
 ): Promise<void> {
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
+  }
   const releaseLock = acquireReticulumDaemonLock('restart');
   if (!releaseLock) {
     throw new Error('Timed out waiting for Reticulum daemon restart lock');
@@ -3058,6 +3065,9 @@ export async function restartBundledReticulumDaemonAndWaitReady(
       );
       cleanupOrphanedReticulumDaemonProcessesForConfig(activeAppPids);
     }
+    if (!isReticulumRuntimeEnabled()) {
+      throw new Error('Reticulum was disabled during restart');
+    }
     fs.mkdirSync(getReticulumConfigDir(), { recursive: true });
     ensureManagedReticulumConfig();
     startBundledReticulumDaemonLocked();
@@ -3074,6 +3084,10 @@ export async function restartBundledReticulumDaemonAndWaitReady(
  * Starts rnsd (frozen binary preferred). Disabled if QORTAL_RETICULUM_DISABLE=1.
  */
 export function startBundledReticulumDaemon(): void {
+  if (!isReticulumRuntimeEnabled()) {
+    loggerLog('[Reticulum] Skipped because Reticulum is disabled.');
+    return;
+  }
   if (process.env.QORTAL_RETICULUM_DISABLE === '1') {
     loggerLog('[Reticulum] Skipped (QORTAL_RETICULUM_DISABLE=1).');
     return;
@@ -3104,6 +3118,7 @@ export function startBundledReticulumDaemon(): void {
 }
 
 function startBundledReticulumDaemonLocked(): void {
+  if (!isReticulumRuntimeEnabled()) return;
   const startupAction = resolveReticulumDaemonStartupAction();
   if (startupAction === 'reuse-local') {
     return;
@@ -3246,6 +3261,7 @@ export function registerReticulumIpcHandlers(): void {
       expiresAt?: number;
     }) => Promise<{ ok: boolean; error?: string; reason?: string }>;
   }): Promise<void> => {
+    if (!isReticulumRuntimeEnabled()) return;
     if (qchatFileHydratedBridge === bridge) return;
     while (qchatFileHydrationPromise) {
       const hydratingBridge = qchatFileHydrationBridge;
@@ -3265,6 +3281,7 @@ export function registerReticulumIpcHandlers(): void {
         `[Reticulum] qchat file hydration start pending=${records.length}`
       );
       for (const record of records) {
+        if (!isReticulumRuntimeEnabled()) return;
         if (record.expiresAt <= now || !fs.existsSync(record.filePath)) {
           changed = true;
           loggerWarn(
@@ -3435,8 +3452,10 @@ export function registerReticulumIpcHandlers(): void {
     });
 
   const attachQchatFileBridgeEvents = async (): Promise<void> => {
+    if (!isReticulumRuntimeEnabled()) return;
     const { getReticulumBridge } =
       (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');
+    if (!isReticulumRuntimeEnabled()) return;
     const bridge = getReticulumBridge();
     if (!bridge) {
       scheduleQchatFileBridgeAttachRetry();
@@ -3561,9 +3580,10 @@ export function registerReticulumIpcHandlers(): void {
   };
 
   const scheduleQchatFileBridgeAttachRetry = (): void => {
-    if (qchatFileAttachRetryTimer) return;
+    if (!isReticulumRuntimeEnabled() || qchatFileAttachRetryTimer) return;
     qchatFileAttachRetryTimer = setTimeout(() => {
       qchatFileAttachRetryTimer = null;
+      if (!isReticulumRuntimeEnabled()) return;
       void attachQchatFileBridgeEvents().catch((error) => {
         loggerWarn(
           '[Reticulum] qchat file bridge event attach retry failed:',
@@ -3575,10 +3595,28 @@ export function registerReticulumIpcHandlers(): void {
     qchatFileAttachRetryTimer.unref?.();
   };
 
-  void attachQchatFileBridgeEvents().catch((error) => {
-    loggerWarn('[Reticulum] qchat file bridge event attach failed:', error);
-    scheduleQchatFileBridgeAttachRetry();
+  subscribeToReticulumRuntimeState((enabled) => {
+    if (!enabled) {
+      if (qchatFileAttachRetryTimer) {
+        clearTimeout(qchatFileAttachRetryTimer);
+        qchatFileAttachRetryTimer = null;
+      }
+      qchatFileAttachedBridge = null;
+      qchatFileHydratedBridge = null;
+      return;
+    }
+    void attachQchatFileBridgeEvents().catch((error) => {
+      loggerWarn('[Reticulum] qchat file bridge reattach failed:', error);
+      scheduleQchatFileBridgeAttachRetry();
+    });
   });
+
+  if (isReticulumRuntimeEnabled()) {
+    void attachQchatFileBridgeEvents().catch((error) => {
+      loggerWarn('[Reticulum] qchat file bridge event attach failed:', error);
+      scheduleQchatFileBridgeAttachRetry();
+    });
+  }
 
   ipcMain.handle(
     'reticulum:getStatus',
@@ -3597,6 +3635,13 @@ export function registerReticulumIpcHandlers(): void {
   ipcMain.handle(
     'reticulum:saveConfigEditorContents',
     async (_event, contents: string): Promise<ReticulumConfigEditorInfo> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return {
+          ...(await readReticulumConfigEditorInfo()),
+          ok: false,
+          error: 'Reticulum is disabled',
+        };
+      }
       return writeReticulumConfigFromEditor(contents);
     }
   );
@@ -3774,6 +3819,9 @@ export function registerReticulumIpcHandlers(): void {
       error?: string;
       file?: { path: string; name: string; size: number; sha256: string };
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const result = await dialog.showOpenDialog({
           properties: ['openFile'],
@@ -3814,6 +3862,9 @@ export function registerReticulumIpcHandlers(): void {
       error?: string;
       path?: string;
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const safeName = path.basename(String(fileName || 'received-file'));
         const result = await dialog.showSaveDialog({
@@ -3848,6 +3899,9 @@ export function registerReticulumIpcHandlers(): void {
         senderReticulumIdentityPublicKeyBase64?: string;
       }
     ): Promise<{ ok: boolean; error?: string }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const peerPresenceHash = String(
           payload?.senderReticulumDestinationHash || ''
@@ -3946,6 +4000,9 @@ export function registerReticulumIpcHandlers(): void {
         expiresAt?: number;
       }
     ): Promise<{ ok: boolean; error?: string }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const allowedRecipientAddress = String(
           payload?.allowedRecipientAddress || payload?.recipientAddress || ''
@@ -4041,6 +4098,9 @@ export function registerReticulumIpcHandlers(): void {
     async (): Promise<{
       destinationHash: string | null;
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { destinationHash: null };
+      }
       try {
         const { getReticulumBridge, startReticulumBridge } =
           (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');
@@ -4077,6 +4137,9 @@ export function registerReticulumIpcHandlers(): void {
     async (): Promise<{
       publicKeyBase64: string | null;
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { publicKeyBase64: null };
+      }
       try {
         const { getReticulumBridge, startReticulumBridge } =
           (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');

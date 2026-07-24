@@ -416,6 +416,11 @@ try {
         ipcRenderer.removeListener('window:state-changed', handler);
       };
     },
+    onSystemLockRequested: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('system:lock-requested', handler);
+      return () => ipcRenderer.removeListener('system:lock-requested', handler);
+    },
     getPlatform: () => ipcRenderer.invoke('window:getPlatform'),
     getSystemCallReadiness: () =>
       ipcRenderer.invoke('systemCallReadiness:getSnapshot') as Promise<{
@@ -443,13 +448,28 @@ try {
     setAppSettings: (settings: {
       closeAction?: 'ask' | 'minimizeToTray' | 'quit';
       disableStartupSound?: boolean;
+      disableAutoLockOnIdle?: boolean;
       p2pEnabled?: boolean;
       legacyPublicStunFallback?: boolean;
       reticulumMeshUpnpEnabled?: boolean;
       reticulumManagedConfigEnabled?: boolean;
+      reticulumEnabled?: boolean;
       reticulumChatEnabled?: boolean;
       reticulumResourceLimitBytes?: number;
     }) => ipcRenderer.invoke('appSettings:set', settings),
+    onAppSettingsChanged: (
+      callback: (settings: {
+        disableAutoLockOnIdle?: boolean;
+        reticulumEnabled?: boolean;
+        reticulumManagedConfigEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
+      }) => void
+    ) => {
+      const listener = (_event: Electron.IpcRendererEvent, settings: any) =>
+        callback(settings);
+      ipcRenderer.on('appSettings:changed', listener);
+      return () => ipcRenderer.removeListener('appSettings:changed', listener);
+    },
     reticulumGetStatus: () =>
       ipcRenderer.invoke('reticulum:getStatus') as Promise<{
         running: boolean;

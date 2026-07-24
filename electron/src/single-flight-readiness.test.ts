@@ -90,4 +90,20 @@ describe('SingleFlightReadiness', () => {
     );
     expect(readiness.getStatus()).toEqual({ state: 'ready', revision: 2 });
   });
+
+  it('ignores completion from a startup attempt that was reset', async () => {
+    const startup = deferred();
+    let ready = false;
+    const readiness = new SingleFlightReadiness({
+      isReady: () => ready,
+      start: () => startup.promise,
+    });
+
+    const pending = readiness.ensureReady();
+    readiness.reset();
+    startup.resolve();
+    await pending;
+
+    expect(readiness.getStatus()).toEqual({ state: 'idle', revision: 2 });
+  });
 });

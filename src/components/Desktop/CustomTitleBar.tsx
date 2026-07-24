@@ -23,22 +23,6 @@ export const appHeighOffsetPx = `${TITLE_BAR_HEIGHT}px`;
 export const appHeighOffset = TITLE_BAR_HEIGHT;
 export const appChromeOffsetPx = `${TITLE_BAR_HEIGHT + APP_NAV_BAR_HEIGHT}px`;
 export const appChromeOffset = TITLE_BAR_HEIGHT + APP_NAV_BAR_HEIGHT;
-declare global {
-  interface Window {
-    electronAPI?: {
-      windowMinimize?: () => Promise<void>;
-      windowMaximize?: () => Promise<void>;
-      windowClose?: () => Promise<void>;
-      getWindowState?: () => Promise<{ isMaximized: boolean }>;
-      onWindowStateChange?: (
-        callback: (state: { isMaximized: boolean }) => void
-      ) => () => void;
-      getPlatform?: () => Promise<string>;
-      showAppMenu?: (x?: number, y?: number) => Promise<void>;
-    };
-  }
-}
-
 export const titleBarIconButtonProps = {
   disableFocusRipple: true,
   tabIndex: -1,
@@ -52,6 +36,7 @@ export type CustomTitleBarRightNavProps = {
   onOpenSettings: () => void;
   onOpenDrawerLookup: () => void;
   onOpenWalletsApp: () => void;
+  onLock: () => void;
   onLogout: () => void;
   getUserInfo: (useTimer?: boolean) => Promise<void>;
   onOpenMinting: () => void;

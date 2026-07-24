@@ -29,6 +29,7 @@ import ErrorBoundary from './common/ErrorBoundary';
 import { AuthenticationForm } from './components/AuthenticationForm';
 import {
   BuyOrderRequestScreen,
+  AuthenticatedLockScreen,
   ConnectionRequestScreen,
   CountdownOverlay,
   CreateWalletView,
@@ -93,6 +94,7 @@ import {
   qortalGroupCallPrimaryNamesAtom,
   qortBalanceLoadingAtom,
   rawWalletAtom,
+  reticulumEnabledAtom,
   selectedNodeInfoAtom,
   userInfoAtom,
   walletToBeDecryptedErrorAtom,
@@ -137,6 +139,7 @@ import { GlobalQortalNavBar } from './components/Desktop/GlobalQortalNavBar.tsx'
 import type { AuthUnlockTransitionSnapshot } from './types/authTransition';
 import { openQWalletsTab } from './utils/openQWalletsTab';
 import { clearLastAuthenticatedWalletAddress } from './utils/lastAuthenticatedWallet';
+import { appLockedAtom, isIdleAtom } from './atoms/presence';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
@@ -264,6 +267,10 @@ function App() {
   } | null;
 
   const [extState, setExtstate] = useAtom(extStateAtom);
+  const [isAppLocked, setIsAppLocked] = useAtom(appLockedAtom);
+  const [isIdle, setIsIdle] = useAtom(isIdleAtom);
+  const [isIdleAutoLockDisabled, setIsIdleAutoLockDisabled] = useState(false);
+  const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
   const [qortBalanceLoading, setQortBalanceLoading] = useAtom(
@@ -272,6 +279,31 @@ function App() {
   const [requestConnection, setRequestConnection] = useState<any>(null);
   const [requestBuyOrder, setRequestBuyOrder] = useState<any>(null);
   const [userInfo, setUserInfo] = useAtom(userInfoAtom);
+  useEffect(() => {
+    let cancelled = false;
+    let settingsChangeReceived = false;
+    const applySettings = (settings?: {
+      disableAutoLockOnIdle?: boolean;
+      reticulumEnabled?: boolean;
+    }) => {
+      if (cancelled) return;
+      setReticulumEnabled(settings?.reticulumEnabled !== false);
+      setIsIdleAutoLockDisabled(settings?.disableAutoLockOnIdle === true);
+    };
+    const unsubscribe = window.electronAPI?.onAppSettingsChanged?.(
+      (settings) => {
+        settingsChangeReceived = true;
+        applySettings(settings);
+      }
+    );
+    void window.electronAPI?.getAppSettings?.().then((settings) => {
+      if (!settingsChangeReceived) applySettings(settings);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [setReticulumEnabled]);
   useEffect(() => {
     const w = window as Window & { __qortalCurrentAddress?: string | null };
     w.__qortalCurrentAddress = userInfo?.address ?? null;
@@ -410,6 +442,47 @@ function App() {
   } = useAuth();
   useBlockedAddressesLoader(extState === 'authenticated');
   const { sendOfflineBeforeLogout } = usePresence();
+
+  const lockApp = useCallback(() => {
+    if (extState !== 'authenticated' || !isMainWindow) return;
+    setIsIdle(true);
+    setIsAppLocked(true);
+  }, [extState, setIsAppLocked, setIsIdle]);
+
+  const unlockApp = useCallback(
+    async (password: string) => {
+      if (!rawWallet) throw new Error('Wallet data is unavailable');
+      await decryptStoredWallet(password, structuredClone(rawWallet));
+      // Clear idle before releasing the latch so the idle watcher cannot lock
+      // the app again between these state updates.
+      setIsIdle(false);
+      setIsAppLocked(false);
+    },
+    [rawWallet, setIsAppLocked, setIsIdle]
+  );
+
+  useEffect(() => {
+    if (extState !== 'authenticated') {
+      setIsIdle(false);
+      setIsAppLocked(false);
+      return;
+    }
+    if (isMainWindow && isIdle && !isAppLocked && !isIdleAutoLockDisabled) {
+      setIsAppLocked(true);
+    }
+  }, [
+    extState,
+    isAppLocked,
+    isIdle,
+    isIdleAutoLockDisabled,
+    setIsAppLocked,
+    setIsIdle,
+  ]);
+
+  useEffect(() => {
+    if (typeof window.electronAPI?.onSystemLockRequested !== 'function') return;
+    return window.electronAPI.onSystemLockRequested(lockApp);
+  }, [lockApp]);
 
   const useLocalNode = isLocalNodeUrl(selectedNode?.url);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1597,10 +1670,14 @@ function App() {
                         onBackupWallet={onBackupWallet}
                       />
                     </Box>
-                    <QortalGroupVoiceCallNavWidget />
-                    <DirectVoiceCallNavWidget />
-                    <QortalGroupVoiceCallStage />
-                    <DirectVoiceCallGlobalOverlay />
+                    {reticulumEnabled && (
+                      <>
+                        <QortalGroupVoiceCallNavWidget />
+                        <DirectVoiceCallNavWidget />
+                        <QortalGroupVoiceCallStage />
+                        <DirectVoiceCallGlobalOverlay />
+                      </>
+                    )}
                   </CallSwitchGuardProvider>
                 </VoiceCallProvider>
               </GroupCallProvider>
@@ -1890,6 +1967,7 @@ function App() {
           onOpenSettings,
           onOpenDrawerLookup,
           onOpenWalletsApp,
+          onLock: lockApp,
           onLogout: logoutFunc,
           getUserInfo,
           onOpenMinting,
@@ -2007,6 +2085,12 @@ function App() {
           mainContent
         )}
       </Box>
+      {isAuthenticated && isMainWindow && isAppLocked && (
+        <AuthenticatedLockScreen
+          accountLabel={userInfo?.name || address || null}
+          onUnlock={unlockApp}
+        />
+      )}
     </AppContainer>
   );
 }

@@ -94,6 +94,7 @@ import {
   reticulumDirectSummariesAtom,
   reticulumChatSummariesAtom,
   reticulumChatEnabledAtom,
+  reticulumEnabledAtom,
   selectedGroupIdAtom,
   timestampEnterDataAtom,
   userInfoAtom,
@@ -946,6 +947,7 @@ export const Group = ({
   const [reticulumChatEnabled, setReticulumChatEnabled] = useAtom(
     reticulumChatEnabledAtom
   );
+  const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [reticulumDirectSummaries, setReticulumDirectSummaries] = useAtom(
     reticulumDirectSummariesAtom
   );
@@ -971,6 +973,53 @@ export const Group = ({
     string,
     ReticulumNotificationSummary
   > | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let applySequence = 0;
+    let settingsChangeReceived = false;
+    const applySettings = async (settings?: {
+      reticulumEnabled?: boolean;
+      reticulumChatEnabled?: boolean;
+    }) => {
+      const sequence = ++applySequence;
+      const globallyEnabled = settings?.reticulumEnabled !== false;
+      if (cancelled) return;
+      setReticulumEnabled(globallyEnabled);
+      if (!globallyEnabled) {
+        setReticulumChatEnabled(false);
+        setReticulumChatSummaries({});
+        setReticulumDirectSummaries({});
+        void window.reticulumChat?.updateMentionBadge?.(0);
+        return;
+      }
+      const chatEnabled =
+        settings?.reticulumChatEnabled !== false &&
+        (await window.reticulumChat?.isEnabled?.()) === true;
+      if (!cancelled && sequence === applySequence) {
+        setReticulumChatEnabled(chatEnabled);
+      }
+    };
+
+    const unsubscribe = window.electronAPI?.onAppSettingsChanged?.(
+      (settings) => {
+        settingsChangeReceived = true;
+        void applySettings(settings);
+      }
+    );
+    void window.electronAPI?.getAppSettings?.().then((settings) => {
+      if (!settingsChangeReceived) void applySettings(settings);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [
+    setReticulumChatEnabled,
+    setReticulumChatSummaries,
+    setReticulumDirectSummaries,
+    setReticulumEnabled,
+  ]);
   const activeReticulumChannelIdRef = useRef('general');
   const bumpReticulumReadEntryToken = useCallback(() => {
     setReticulumReadEntryToken((token) => token + 1);
@@ -1450,15 +1499,10 @@ export const Group = ({
             ? channel
             : latest;
         }, undefined);
-        const mentionCount = Math.max(
-          0,
-          Number(summary?.mentionCount) || 0
-        );
+        const mentionCount = Math.max(0, Number(summary?.mentionCount) || 0);
         executeEvent('q-chat-mention-notification', {
           channelId: String(
-            latestMentionedChannel?.channelId ||
-              summary?.channelId ||
-              'general'
+            latestMentionedChannel?.channelId || summary?.channelId || 'general'
           ),
           groupId,
           groupName:
@@ -2531,10 +2575,7 @@ export const Group = ({
       const alreadyProcessed = hasProcessedReticulumBackgroundEvent(
         event.eventId
       );
-      if (
-        alreadyProcessed &&
-        options.recordMentionNotification !== true
-      ) {
+      if (alreadyProcessed && options.recordMentionNotification !== true) {
         return;
       }
 
@@ -2597,11 +2638,7 @@ export const Group = ({
         mentionedAddresses
       );
       if (options.recordMentionNotification === true) {
-        recordReticulumMentionNotification(
-          event,
-          groupId,
-          mentionedAddresses
-        );
+        recordReticulumMentionNotification(event, groupId, mentionedAddresses);
       }
       noteProcessedReticulumBackgroundEvent(event.eventId);
       scheduleReticulumChatSummariesRefresh();
@@ -3171,9 +3208,7 @@ export const Group = ({
         ...new Set(
           groupIds
             .map((groupId) => Number(groupId))
-            .filter(
-              (groupId) => Number.isInteger(groupId) && groupId > 0
-            )
+            .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
         ),
       ];
       if (!requestedGroupIds.length) return;
@@ -3230,11 +3265,7 @@ export const Group = ({
         getTimestampEnterChat();
       }, 200);
     },
-    [
-      getGroupAnnouncements,
-      getTimestampEnterChat,
-      markReticulumGroupsRead,
-    ]
+    [getGroupAnnouncements, getTimestampEnterChat, markReticulumGroupsRead]
   );
 
   const handleMarkAllMemberGroupsRead = useCallback(() => {
@@ -3263,11 +3294,7 @@ export const Group = ({
       getGroupAnnouncements();
       getTimestampEnterChat();
     }, 200);
-  }, [
-    getGroupAnnouncements,
-    getTimestampEnterChat,
-    markReticulumGroupsRead,
-  ]);
+  }, [getGroupAnnouncements, getTimestampEnterChat, markReticulumGroupsRead]);
 
   useEffect(() => {
     subscribeToEvent('markAsRead', handleMarkAsRead);
@@ -3961,6 +3988,7 @@ export const Group = ({
   const mountedReticulumSections =
     reticulumMountedGroupSections[selectedGroupIdKey] || [];
   const canMountQortalLand = Boolean(
+    reticulumEnabled &&
     selectedGroup &&
     triedToFetchSecretKey &&
     !notPartOfKeys &&
@@ -3969,6 +3997,7 @@ export const Group = ({
   const shouldMountGroupSection = useCallback(
     (section: string) => {
       if (section === 'land') {
+        if (!reticulumEnabled) return false;
         return (
           groupSection === section || mountedLandGroupId === selectedGroupIdKey
         );
@@ -3981,9 +4010,16 @@ export const Group = ({
       groupSection,
       mountedLandGroupId,
       mountedReticulumSections,
+      reticulumEnabled,
       selectedGroupIdKey,
     ]
   );
+
+  useEffect(() => {
+    if (!reticulumEnabled && groupSection === 'land') {
+      setGroupSection('chat');
+    }
+  }, [groupSection, reticulumEnabled]);
 
   const renderQChatTabContent = ({
     hide = false,
@@ -4081,6 +4117,7 @@ export const Group = ({
                 getTimestampEnterChat={getTimestampEnterChat}
                 close={closeChatDirect}
                 setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                reticulumEnabled={reticulumEnabled}
                 reticulumChatEnabled={reticulumChatEnabled}
               />
             </NewChatOverlay>
@@ -4160,11 +4197,13 @@ export const Group = ({
                   }
                   onChatClick={goToChat}
                   onGroupCallClick={
-                    gcallGroupNumericId !== null
+                    reticulumEnabled && gcallGroupNumericId !== null
                       ? handleGroupCallHeaderClick
                       : undefined
                   }
-                  onQortalLandClick={goToQortalLand}
+                  onQortalLandClick={
+                    reticulumEnabled ? goToQortalLand : undefined
+                  }
                   onThreadsClick={goToThreads}
                   groupCallInCall={
                     inThisGroupGcall && gcallRoomState === 'connected'
@@ -4212,11 +4251,13 @@ export const Group = ({
                 setGroupSection={setGroupSection}
                 isForum={groupSection === 'forum'}
                 onGroupCallClick={
-                  gcallGroupNumericId !== null
+                  reticulumEnabled && gcallGroupNumericId !== null
                     ? handleGroupCallHeaderClick
                     : undefined
                 }
-                onQortalLandClick={goToQortalLand}
+                onQortalLandClick={
+                  reticulumEnabled ? goToQortalLand : undefined
+                }
                 groupCallInCall={
                   inThisGroupGcall && gcallRoomState === 'connected'
                 }
@@ -4276,11 +4317,13 @@ export const Group = ({
                       notificationReticulumMessageId
                     }
                     onGroupCallClick={
-                      gcallGroupNumericId !== null
+                      reticulumEnabled && gcallGroupNumericId !== null
                         ? handleGroupCallHeaderClick
                         : undefined
                     }
-                    onQortalLandClick={goToQortalLand}
+                    onQortalLandClick={
+                      reticulumEnabled ? goToQortalLand : undefined
+                    }
                     onThreadsClick={goToThreads}
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}
@@ -4344,11 +4387,13 @@ export const Group = ({
                       notificationReticulumChannelId
                     }
                     onGroupCallClick={
-                      gcallGroupNumericId !== null
+                      reticulumEnabled && gcallGroupNumericId !== null
                         ? handleGroupCallHeaderClick
                         : undefined
                     }
-                    onQortalLandClick={goToQortalLand}
+                    onQortalLandClick={
+                      reticulumEnabled ? goToQortalLand : undefined
+                    }
                     onAnnouncementsClick={goToAnnouncements}
                     onThreadsClick={goToThreads}
                     onMembersClick={() => setGroupSection('members')}
@@ -4741,6 +4786,7 @@ export const Group = ({
                     close={closeChatDirect}
                     setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
                     isActive={isVisible && isReticulumDirectOverlayOpen}
+                    reticulumEnabled={reticulumEnabled}
                     reticulumChatEnabled={reticulumChatEnabled}
                   />
                 ) : selectedDirect ? (
@@ -4754,6 +4800,7 @@ export const Group = ({
                     close={closeChatDirect}
                     setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
                     isActive={isVisible && isReticulumDirectOverlayOpen}
+                    reticulumEnabled={reticulumEnabled}
                     reticulumChatEnabled={reticulumChatEnabled}
                   />
                 ) : (
@@ -4783,6 +4830,7 @@ export const Group = ({
                     close={closeChatDirect}
                     setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
                     isActive={isVisible && desktopSideView === 'directs'}
+                    reticulumEnabled={reticulumEnabled}
                     reticulumChatEnabled={reticulumChatEnabled}
                   />
                 </InnerChatBox>

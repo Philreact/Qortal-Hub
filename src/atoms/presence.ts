@@ -22,6 +22,13 @@ export type SelectableStatus = 'online' | 'busy' | 'offline';
 export const isIdleAtom = atom<boolean>(false);
 
 /**
+ * Keeps an authenticated idle session locked until the wallet password is
+ * verified. This is deliberately separate from `isIdleAtom`: activity may
+ * update the idle timer while locked, but it must never unlock the app.
+ */
+export const appLockedAtom = atom<boolean>(false);
+
+/**
  * Set of Qortal addresses that are currently online according to the
  * presence network. Updated in real-time by the usePresence hook.
  */
@@ -38,7 +45,9 @@ export const myStatusAtom = atom<SelectableStatus>('online');
  * Values include 'online', 'busy', and 'idle'.
  * Entries are removed when a peer goes offline.
  */
-export const statusMapAtom = atom<Map<string, UserStatus>>(new Map<string, UserStatus>());
+export const statusMapAtom = atom<Map<string, UserStatus>>(
+  new Map<string, UserStatus>()
+);
 
 /**
  * Derived atom family that returns a stable boolean for a single address.

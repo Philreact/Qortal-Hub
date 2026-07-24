@@ -3,6 +3,7 @@ import { unstable_batchedUpdates } from 'react-dom';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { extStateAtom, userInfoAtom } from '../atoms/global';
 import {
+  appLockedAtom,
   isIdleAtom,
   isOnlineAtomFamily,
   myStatusAtom,
@@ -16,12 +17,15 @@ import {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
-const IDLE_CHECK_INTERVAL_MS = 60_000;    // check once per minute
+const IDLE_CHECK_INTERVAL_MS = 60_000; // check once per minute
 const CLIENT_VERSION = '1.0.0';
 /** Wait for outbound Reticulum hubs (excludes local mesh listen) before first announce. */
 const REMOTE_RETICULUM_HUB_MIN_ONLINE = 2;
 const REMOTE_RETICULUM_HUB_POLL_MS = 500;
 const REMOTE_RETICULUM_HUB_MAX_WAIT_MS = 90_000;
+// Repeat an explicit offline envelope across most of the 95-second presence
+// liveness window so temporary route loss cannot leave a stale online session.
+const OFFLINE_PROPAGATION_RETRY_DELAYS_MS = [2_000, 10_000, 30_000, 70_000];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -99,9 +103,7 @@ export function statusDotColor(status: string | null): string {
   return '#23a55a'; // online or any non-null fallback
 }
 
-export function buildPresenceSnapshot(
-  sessions: PresenceSession[]
-): {
+export function buildPresenceSnapshot(sessions: PresenceSession[]): {
   onlineAddresses: Set<string>;
   statusMap: Map<string, UserStatus>;
 } {
@@ -148,13 +150,16 @@ export function buildPresenceSnapshot(
  *
  * Call this once at the App level.
  */
-export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } {
+export function usePresence(): {
+  sendOfflineBeforeLogout: () => Promise<void>;
+} {
   const extState = useAtomValue(extStateAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const setOnlineAddresses = useSetAtom(onlineAddressesAtom);
   const setStatusMap = useSetAtom(statusMapAtom);
   const [myStatus, setMyStatus] = useAtom(myStatusAtom);
   const setIsIdle = useSetAtom(isIdleAtom);
+  const appLocked = useAtomValue(appLockedAtom);
 
   const sessionIdRef = useRef<string | null>(null);
   const heartbeatActiveRef = useRef(false);
@@ -162,9 +167,13 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   const pendingPresenceBootstrapRef = useRef<Promise<boolean> | null>(null);
   const hasAnnouncedRef = useRef(false);
   const heartbeatInFlightRef = useRef(false);
+  const offlinePropagationTimersRef = useRef<
+    Array<ReturnType<typeof setTimeout>>
+  >([]);
   // Ref-only idle tracking — no state, no re-renders for the timer itself.
   const lastActivityRef = useRef<number>(Date.now());
   const isIdleRef = useRef<boolean>(false);
+  const appLockedRef = useRef<boolean>(appLocked);
   // Stable refs so all callbacks always read current values.
   const userInfoRef = useRef(userInfo);
   const myStatusRef = useRef<SelectableStatus>(myStatus);
@@ -173,9 +182,18 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
 
   const isAuthenticated = extState === 'authenticated';
 
-  useEffect(() => { userInfoRef.current = userInfo; }, [userInfo]);
-  useEffect(() => { myStatusRef.current = myStatus; }, [myStatus]);
-  useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
+  useEffect(() => {
+    userInfoRef.current = userInfo;
+  }, [userInfo]);
+  useEffect(() => {
+    myStatusRef.current = myStatus;
+  }, [myStatus]);
+  useEffect(() => {
+    isAuthenticatedRef.current = isAuthenticated;
+  }, [isAuthenticated]);
+  useEffect(() => {
+    appLockedRef.current = appLocked;
+  }, [appLocked]);
 
   // ── Effective status ──────────────────────────────────────────────────────
   //
@@ -198,10 +216,19 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     }
   }, []);
 
-  const sendOfflineCallback = useCallback(async () => {
+  const clearOfflinePropagationRetries = useCallback(() => {
+    for (const timer of offlinePropagationTimersRef.current) {
+      clearTimeout(timer);
+    }
+    offlinePropagationTimersRef.current = [];
+  }, []);
+
+  const sendOfflineCallback = useCallback(async (): Promise<void> => {
     const ui = userInfoRef.current;
     const sessionId = sessionIdRef.current;
-    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence) return;
+    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence) {
+      return;
+    }
     try {
       const timestamp = Date.now();
       const signedFields = {
@@ -218,20 +245,43 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
         sessionId,
         status: 'offline',
       };
-      await window.presence.offline(
+      const result = await window.presence.offline(
         buildEnvelope('PRESENCE_OFFLINE', payload, timestamp, signature)
       );
+      if (result?.success !== true) {
+        console.warn('[Presence] Offline propagation was not accepted.');
+      }
     } catch {
       // best-effort
     }
   }, []);
+
+  const scheduleOfflinePropagationRetries = useCallback(() => {
+    clearOfflinePropagationRetries();
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    offlinePropagationTimersRef.current =
+      OFFLINE_PROPAGATION_RETRY_DELAYS_MS.map((delayMs) =>
+        setTimeout(() => {
+          if (
+            !isAuthenticatedRef.current ||
+            myStatusRef.current !== 'offline' ||
+            sessionIdRef.current !== sessionId
+          ) {
+            return;
+          }
+          void sendOfflineCallback();
+        }, delayMs)
+      );
+  }, [clearOfflinePropagationRetries, sendOfflineCallback]);
 
   const sendAnnounce = useCallback(async (): Promise<boolean> => {
     const ui = userInfoRef.current;
     const sessionId = sessionIdRef.current;
     const statusVal = getEffectiveStatus();
     if (statusVal === 'offline') return false;
-    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence) return false;
+    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence)
+      return false;
     const status = statusVal;
     try {
       const timestamp = Date.now();
@@ -270,7 +320,8 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     const statusVal = getEffectiveStatus();
     if (statusVal === 'offline') return false;
     if (!hasAnnouncedRef.current) return false;
-    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence) return false;
+    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence)
+      return false;
     const status = statusVal;
     heartbeatInFlightRef.current = true;
     try {
@@ -361,6 +412,11 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   // a React re-render, keeping this completely free of spurious updates.
 
   const onActivity = useCallback(() => {
+    if (appLockedRef.current) {
+      // Activity on the password screen must never wake or unlock the session.
+      lastActivityRef.current = Date.now();
+      return;
+    }
     if (isIdleRef.current) {
       // Returning from idle: update timestamp and wake up.
       lastActivityRef.current = Date.now();
@@ -377,10 +433,37 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     }
   }, [sendHeartbeat, setIsIdle]);
 
+  // Locking forces the public presence to Idle. Unlocking starts a fresh idle
+  // period and restores the user's chosen Online/Busy presence.
+  useEffect(() => {
+    appLockedRef.current = appLocked;
+    if (!isAuthenticated || myStatusRef.current === 'offline') return;
+
+    lastActivityRef.current = Date.now();
+    if (appLocked) {
+      if (!isIdleRef.current) {
+        isIdleRef.current = true;
+        setIsIdle(true);
+      }
+    } else if (isIdleRef.current) {
+      isIdleRef.current = false;
+      setIsIdle(false);
+    }
+    void sendHeartbeat();
+  }, [appLocked, isAuthenticated, sendHeartbeat, setIsIdle]);
+
   // DOM activity listeners — always active so we catch pre-auth activity too.
   useEffect(() => {
-    const EVENTS = ['mousemove', 'keydown', 'click', 'touchstart', 'wheel'] as const;
-    EVENTS.forEach((e) => document.addEventListener(e, onActivity, { passive: true }));
+    const EVENTS = [
+      'mousemove',
+      'keydown',
+      'click',
+      'touchstart',
+      'wheel',
+    ] as const;
+    EVENTS.forEach((e) =>
+      document.addEventListener(e, onActivity, { passive: true })
+    );
     return () => {
       EVENTS.forEach((e) => document.removeEventListener(e, onActivity));
     };
@@ -401,8 +484,8 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     }
 
     idleCheckRef.current = setInterval(() => {
-      if (isIdleRef.current) return;                          // already idle
-      if (myStatusRef.current === 'offline') return;          // appearing offline
+      if (isIdleRef.current) return; // already idle
+      if (myStatusRef.current === 'offline') return; // appearing offline
       if (Date.now() - lastActivityRef.current >= IDLE_TIMEOUT_MS) {
         isIdleRef.current = true;
         setIsIdle(true);
@@ -421,7 +504,12 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   // ── Announce / offline lifecycle ──────────────────────────────────────────
 
   useEffect(() => {
-    if (!isAuthenticated || !userInfo?.address || !userInfo?.publicKey || !window.presence) {
+    if (
+      !isAuthenticated ||
+      !userInfo?.address ||
+      !userInfo?.publicKey ||
+      !window.presence
+    ) {
       // On logout, reset the atom to 'online' so the next login starts clean.
       // The status-change effect guards against sending an announce because
       // isAuthenticatedRef.current is already false by the time that effect runs.
@@ -474,9 +562,9 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     return () => {
       cancelled = true;
       stopHeartbeat();
-      sendOfflineCallback();
+      clearOfflinePropagationRetries();
+      void sendOfflineCallback();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, userInfo?.address, userInfo?.publicKey]);
 
   // ── React to explicit status changes from the picker ─────────────────────
@@ -489,22 +577,23 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
         isAppearedOfflineRef.current = true;
         hasAnnouncedRef.current = false;
         stopHeartbeat();
-        sendOfflineCallback();
+        void sendOfflineCallback();
+        scheduleOfflinePropagationRetries();
       }
     } else if (isAppearedOfflineRef.current) {
+      clearOfflinePropagationRetries();
       void (async () => {
         const announced = await announceWhenRemoteHubsReady(
-          () =>
-            !isAuthenticatedRef.current || myStatusRef.current === 'offline'
+          () => !isAuthenticatedRef.current || myStatusRef.current === 'offline'
         );
         if (!announced) return;
         isAppearedOfflineRef.current = false;
       })();
     } else {
+      clearOfflinePropagationRetries();
       const timer = setTimeout(sendHeartbeat, 300);
       return () => clearTimeout(timer);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myStatus]);
 
   // ── Persist / clear 'offline' status keyed by address ────────────────────
@@ -535,7 +624,11 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     });
 
     const applyPresenceUpdates = (
-      updates: Array<{ address: string; online: boolean; status: UserStatus | null }>
+      updates: Array<{
+        address: string;
+        online: boolean;
+        status: UserStatus | null;
+      }>
     ) => {
       if (updates.length === 0) return;
       unstable_batchedUpdates(() => {
@@ -574,8 +667,7 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     const unsubscribeStarted = window.presence.onStarted?.(() => {
       if (!isAuthenticatedRef.current) return;
       void announceWhenRemoteHubsReady(
-        () =>
-          !isAuthenticatedRef.current || myStatusRef.current === 'offline'
+        () => !isAuthenticatedRef.current || myStatusRef.current === 'offline'
       );
     });
 
@@ -584,7 +676,6 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
       unsubscribeCleared?.();
       unsubscribeStarted?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { sendOfflineBeforeLogout: sendOfflineCallback };
@@ -599,7 +690,9 @@ export function useIsOnline(address: string | null | undefined): boolean {
   return isOnline;
 }
 
-export function useStatus(address: string | null | undefined): UserStatus | null {
+export function useStatus(
+  address: string | null | undefined
+): UserStatus | null {
   const atom = statusAtomFamily(address ?? '');
   const status = useAtomValue(atom);
   if (!address) return null;
@@ -610,6 +703,9 @@ export function useOnlineAddresses(): Set<string> {
   return useAtomValue(onlineAddressesAtom);
 }
 
-export function useMyStatus(): [SelectableStatus, (s: SelectableStatus) => void] {
+export function useMyStatus(): [
+  SelectableStatus,
+  (s: SelectableStatus) => void,
+] {
   return useAtom(myStatusAtom);
 }
