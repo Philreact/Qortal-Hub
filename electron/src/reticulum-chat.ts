@@ -5119,6 +5119,7 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   private activeDmLinkPruneTimer: ReturnType<typeof setTimeout> | null = null;
   private subscribedGroups = new Set<number>();
+  private pendingGroupSubscriptions = new Set<number>();
   private peerSubscriptions = new Map<string, Map<number, number>>();
   private groupMemberValidationCache = new Map<
     string,
@@ -5581,7 +5582,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.directResourceTransfer = this.createDirectResourceTransfer();
     fs.mkdirSync(this.localNotifyDir, { recursive: true });
     this.attachBridge(this.bridge);
-    this.restorePersistedGroupSubscriptions();
+    // Persisted group history is not proof that the authenticated account is
+    // still a member. Networking starts only after membership sync and an
+    // explicit subscription for the current account.
     for (const target of this.db.getChannelExpiryReconciliationTargets()) {
       this.enqueueChannelExpiryReconciliation(target.groupId, target.channelId);
     }
@@ -6538,6 +6541,18 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.subscribedGroups.size === 0) {
       this.stopSubscriptionRefreshTimer();
       this.clearSubscriptionFanoutQueue();
+    }
+    const pendingSubscriptions = [...this.pendingGroupSubscriptions];
+    this.pendingGroupSubscriptions.clear();
+    for (const groupId of pendingSubscriptions) {
+      if (!this.localGroupIds.has(groupId)) {
+        this.activeChannelSubscriptions.delete(groupId);
+        continue;
+      }
+      this.subscribeGroup(groupId);
+      if ((this.activeChannelSubscriptions.get(groupId)?.size ?? 0) > 0) {
+        this.announceActiveGroupSubscription(groupId);
+      }
     }
     if (
       nextGroupIds.length <= RETICULUM_CHAT_MEMBERSHIP_SYNCHRONOUS_GROUP_LIMIT
@@ -7694,24 +7709,13 @@ export class ReticulumChatManager extends EventEmitter {
     return [...this.subscribedGroups].sort((a, b) => a - b);
   }
 
-  private restorePersistedGroupSubscriptions(): void {
-    const groupIds = this.db.getKnownGroupIds();
-    if (groupIds.length === 0) return;
-    for (const groupId of groupIds) {
-      this.localGroupIds.add(groupId);
-      this.subscribedGroups.add(groupId);
-      this.queueChannelMetadataProjectionRepair(groupId);
-    }
-    this.startLocalNotificationWatcher();
-    this.startSubscriptionRefreshTimer();
-    this.enqueueSubscriptionFanouts([this.buildHelloWire()]);
-    this.refreshSubscriptions();
-  }
-
   subscribeGroup(groupId: number): void {
     this.assertGroupId(groupId);
-    if (this.localGroupMembershipsInitialized)
-      this.assertLocalGroupMember(groupId);
+    if (!this.localGroupMembershipsInitialized) {
+      this.deferGroupSubscriptionUntilMembershipSync(groupId);
+      return;
+    }
+    this.assertLocalGroupMember(groupId);
     const alreadySubscribed = this.ensureGroupSubscribed(groupId);
     this.queueChannelMetadataProjectionRepair(groupId);
     if (!this.db.getLatestMetadataSnapshot(groupId)) {
@@ -7723,21 +7727,19 @@ export class ReticulumChatManager extends EventEmitter {
 
   private ensureGroupSubscribed(groupId: number): boolean {
     this.assertGroupId(groupId);
+    this.assertLocalGroupMember(groupId);
     const alreadySubscribed = this.subscribedGroups.has(groupId);
-    if (!this.localGroupIds.has(groupId)) {
-      if (this.localGroupMembershipsInitialized) {
-        throw new Error('Local user is not a member of this group');
-      }
-      loggerWarn(
-        `[ReticulumChat] Subscribing group=${groupId} before membership sync completed; adding local group hint`
-      );
-      this.localGroupIds.add(groupId);
-    }
     this.markGroupHistoryObserved(groupId);
     this.subscribedGroups.add(groupId);
     this.startLocalNotificationWatcher();
     this.startSubscriptionRefreshTimer();
     return alreadySubscribed;
+  }
+
+  private deferGroupSubscriptionUntilMembershipSync(groupId: number): void {
+    this.assertGroupId(groupId);
+    this.localGroupIds.add(groupId);
+    this.pendingGroupSubscriptions.add(groupId);
   }
 
   reannounceSubscriptions(): void {
@@ -7777,7 +7779,11 @@ export class ReticulumChatManager extends EventEmitter {
 
   unsubscribeGroup(groupId: number): void {
     this.assertGroupId(groupId);
-    this.subscribedGroups.delete(groupId);
+    this.pendingGroupSubscriptions.delete(groupId);
+    if (!this.localGroupMembershipsInitialized) {
+      this.localGroupIds.delete(groupId);
+    }
+    const wasSubscribed = this.subscribedGroups.delete(groupId);
     this.activeChannelSubscriptions.delete(groupId);
     this.clearDeferredMetadataSnapshotsForGroup(groupId);
     this.clearAuthorTreeGroupState(groupId);
@@ -7794,7 +7800,9 @@ export class ReticulumChatManager extends EventEmitter {
       this.stopSubscriptionRefreshTimer();
       this.clearSubscriptionFanoutQueue();
     }
-    void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
+    if (wasSubscribed) {
+      void this.fanout({ t: 'RCHAT', k: 'unsub', g: groupId });
+    }
   }
 
   subscribeChannel(groupId: number, channelId: string): void {
@@ -7802,12 +7810,16 @@ export class ReticulumChatManager extends EventEmitter {
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const channel = this.db.getChannel(groupId, normalizedChannelId);
     if (!channel || channel.archived) return;
-    this.ensureGroupSubscribed(groupId);
     const activeChannels =
       this.activeChannelSubscriptions.get(groupId) ?? new Set<string>();
     const alreadyActive = activeChannels.has(normalizedChannelId);
     activeChannels.add(normalizedChannelId);
     this.activeChannelSubscriptions.set(groupId, activeChannels);
+    if (!this.localGroupMembershipsInitialized) {
+      this.deferGroupSubscriptionUntilMembershipSync(groupId);
+      return;
+    }
+    this.ensureGroupSubscribed(groupId);
     if (!alreadyActive) this.announceActiveGroupSubscription(groupId);
   }
 
@@ -19877,6 +19889,7 @@ export class ReticulumChatManager extends EventEmitter {
     digest: unknown,
     peerHash: string
   ): void {
+    if (!this.canExchangeSubscribedGroupState(groupId)) return;
     if (!digest || typeof digest !== 'object' || Array.isArray(digest)) return;
     const state = digest as Partial<ReticulumChatGroupStateDigestWire>;
     const remotePublicMetadataHash =
@@ -20062,7 +20075,13 @@ export class ReticulumChatManager extends EventEmitter {
     force = false
   ): void {
     const peer = peerHash.trim().toLowerCase();
-    if (!peer || !Number.isInteger(groupId) || groupId <= 0) return;
+    if (
+      !peer ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !this.canExchangeSubscribedGroupState(groupId)
+    )
+      return;
     const normalizedHash = snapshotHash.trim().toLowerCase();
     const key = `${peer}:${groupId}:${normalizedHash || 'latest'}`;
     const now = this.now();
@@ -20100,6 +20119,32 @@ export class ReticulumChatManager extends EventEmitter {
         return null;
       });
       if (!signed) {
+        this.recentMetadataSnapshotRequests.delete(key);
+        return;
+      }
+      if (!this.canExchangeSubscribedGroupState(groupId)) {
+        this.recentMetadataSnapshotRequests.delete(key);
+        return;
+      }
+      const expectedAddress = this.localGroupAddresses.get(groupId)?.trim();
+      if (expectedAddress && signed.authorAddress !== expectedAddress) {
+        this.recentMetadataSnapshotRequests.delete(key);
+        return;
+      }
+      const isCurrentMember = await this.isValidatedGroupMember(
+        groupId,
+        signed.authorAddress
+      );
+      const currentExpectedAddress = this.localGroupAddresses
+        .get(groupId)
+        ?.trim();
+      if (
+        isCurrentMember !== true ||
+        !this.canExchangeSubscribedGroupState(groupId) ||
+        currentExpectedAddress !== expectedAddress ||
+        (currentExpectedAddress &&
+          signed.authorAddress !== currentExpectedAddress)
+      ) {
         this.recentMetadataSnapshotRequests.delete(key);
         return;
       }
@@ -20145,6 +20190,14 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     void this.sendToPeer(peer, wire);
+  }
+
+  private canExchangeSubscribedGroupState(groupId: number): boolean {
+    return (
+      this.localGroupMembershipsInitialized &&
+      this.localGroupIds.has(groupId) &&
+      this.subscribedGroups.has(groupId)
+    );
   }
 
   private async handleStateHeadsReq(

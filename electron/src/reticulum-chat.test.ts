@@ -14296,10 +14296,11 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('restores persisted groups as background subscriptions on startup', async () => {
-    const knownGroups = vi
-      .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
-      .mockReturnValue([58]);
+  it('does not trust persisted group history as a current subscription', async () => {
+    const dbPath = tempDbPath();
+    const persistedDb = new ReticulumChatDatabase(dbPath);
+    persistedDb.insertEvent(signedEvent({ groupId: 58 }), false);
+    persistedDb.close();
     const direct: Record<string, unknown>[] = [];
     const fanout: Record<string, unknown>[] = [];
     const bridge = {
@@ -14319,13 +14320,60 @@ describe('reticulum chat manager', () => {
         return { ok: true as const };
       },
     };
+    const localSigner = createReticulumChatTestSigner();
+    const localIdentity = await localSigner({});
+    if (!localIdentity) throw new Error('Expected test signer identity');
     const manager = new ReticulumChatManager({
-      dbPath: tempDbPath(),
+      dbPath,
       bridge: bridge as any,
       now: () => 60_000,
+      signLocalFields: localSigner,
+      validateGroupMember: async () => true,
     });
 
     try {
+      expect(manager.getSubscriptions()).toEqual([]);
+      expect(fanout).toEqual([]);
+
+      manager.subscribeGroup(58);
+      manager.subscribeChannel(58, 'general');
+      await flushQueuedWork();
+      expect(manager.getSubscriptions()).toEqual([]);
+      expect(fanout).toEqual([]);
+
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          v: 3,
+          k: 'group_state_digest_v3',
+          g: 58,
+          d: { metadataSnapshotHash: 'a'.repeat(64) },
+        },
+        'peer'
+      );
+      await flushQueuedWork();
+      expect(direct).toEqual([]);
+
+      manager.setLocalGroupMemberships([]);
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          v: 3,
+          k: 'group_state_digest_v3',
+          g: 58,
+          d: { metadataSnapshotHash: 'a'.repeat(64) },
+        },
+        'peer'
+      );
+      await flushQueuedWork();
+      expect(direct).toEqual([]);
+
+      manager.setLocalGroupMemberships([
+        { groupId: 58, localAddress: 'QdifferentAccount' },
+      ]);
+      expect(manager.getSubscriptions()).toEqual([]);
+      manager.subscribeGroup(58);
+      await flushQueuedWork();
       expect(manager.getSubscriptions()).toEqual([58]);
       expect(fanout).toContainEqual({
         t: 'RCHAT',
@@ -14333,6 +14381,48 @@ describe('reticulum chat manager', () => {
         groups: [58],
         mode: 'summary',
       });
+
+      direct.length = 0;
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          v: 3,
+          k: 'group_state_digest_v3',
+          g: 58,
+          d: { metadataSnapshotHash: 'a'.repeat(64) },
+        },
+        'peer'
+      );
+      await flushQueuedWork();
+      expect(direct).toEqual([]);
+
+      manager.setLocalGroupMemberships([
+        { groupId: 58, localAddress: localIdentity.authorAddress },
+      ]);
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          v: 3,
+          k: 'group_state_digest_v3',
+          g: 58,
+          d: { metadataSnapshotHash: 'a'.repeat(64) },
+        },
+        'peer'
+      );
+      await vi.waitUntil(
+        () => direct.some((wire) => wire.k === 'metadata_snapshot_req_v3'),
+        { timeout: 1_000 }
+      );
+      expect(direct).toContainEqual(
+        expect.objectContaining({
+          t: 'RCHAT',
+          v: 3,
+          k: 'metadata_snapshot_req_v3',
+          g: 58,
+        })
+      );
+
+      direct.length = 0;
       manager.handleWire(
         { t: 'RCHAT', k: 'group_sub', groups: [58], mode: 'summary' },
         'peer'
@@ -14354,8 +14444,41 @@ describe('reticulum chat manager', () => {
       );
     } finally {
       manager.close();
-      knownGroups.mockRestore();
     }
+  });
+
+  it('promotes a pre-sync subscription only after membership confirms it', async () => {
+    const fanout: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 60_000,
+    });
+
+    manager.subscribeGroup(58);
+    await flushQueuedWork();
+    expect(manager.getSubscriptions()).toEqual([]);
+    expect(fanout).toEqual([]);
+
+    manager.setLocalGroupMemberships([58]);
+    await flushQueuedWork();
+    expect(manager.getSubscriptions()).toEqual([58]);
+    expect(fanout).toContainEqual({
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [58],
+      mode: 'summary',
+    });
+    manager.close();
   });
 
   it('active channel subscription still emits digest, not before/after sync requests', async () => {
@@ -14551,10 +14674,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('reopening an already-restored channel still sends one active digest', async () => {
-    const knownGroups = vi
-      .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
-      .mockReturnValue([716]);
+  it('reopening an already-subscribed channel still sends one active digest', async () => {
     let now = 80_000;
     const sent: Record<string, unknown>[] = [];
     const bridge = {
@@ -14574,6 +14694,9 @@ describe('reticulum chat manager', () => {
     });
 
     try {
+      manager.setLocalGroupMemberships([716]);
+      manager.subscribeGroup(716);
+      await flushQueuedWork();
       expect(manager.getSubscriptions()).toEqual([716]);
       sent.length = 0;
       now += 31_000;
@@ -14597,15 +14720,11 @@ describe('reticulum chat manager', () => {
       );
     } finally {
       manager.close();
-      knownGroups.mockRestore();
     }
   });
 
   it('rotates background digest refreshes beyond the first digest page', async () => {
     const groupIds = Array.from({ length: 25 }, (_value, index) => index + 1);
-    const knownGroups = vi
-      .spyOn(ReticulumChatDatabase.prototype, 'getKnownGroupIds')
-      .mockReturnValue(groupIds);
     let now = 80_000;
     const sent: Record<string, unknown>[] = [];
     const bridge = {
@@ -14625,6 +14744,10 @@ describe('reticulum chat manager', () => {
     });
 
     try {
+      manager.setLocalGroupMemberships(groupIds);
+      for (const groupId of groupIds) manager.subscribeGroup(groupId);
+      (manager as any).activeDigestGroups.clear();
+      manager.reannounceSubscriptions();
       await vi.waitFor(
         () => {
           const digestGroupIds = new Set(
@@ -14660,7 +14783,6 @@ describe('reticulum chat manager', () => {
       );
     } finally {
       manager.close();
-      knownGroups.mockRestore();
     }
   });
 
@@ -20466,6 +20588,9 @@ describe('reticulum chat manager', () => {
       receiver.getCategories(74).map((category) => category.categoryId)
     ).toContain('cat-devs');
     const adminRequests: ReticulumChatWire[] = [];
+    const adminSigner = createReticulumChatTestSigner();
+    const adminIdentity = await adminSigner({});
+    if (!adminIdentity) throw new Error('Expected test signer identity');
     const adminReceiver = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -20480,7 +20605,7 @@ describe('reticulum chat manager', () => {
         },
       } as any,
       now: () => 100_000,
-      signLocalFields: createReticulumChatTestSigner(),
+      signLocalFields: adminSigner,
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => true,
     });
@@ -20488,7 +20613,7 @@ describe('reticulum chat manager', () => {
       {
         groupId: 74,
         isAdmin: true,
-        localAddress: 'QadminReceiver',
+        localAddress: adminIdentity.authorAddress,
       },
     ]);
     adminReceiver.subscribeGroup(74);

@@ -1772,7 +1772,21 @@ export const Group = ({
         if (cancelled) return;
         setReticulumMembershipsAppliedKey(reticulumMembershipsKey);
         const nextIds = new Set(groupIds);
-        const previousIds = reticulumSubscribedGroupIdsRef.current;
+        const activeSubscriptionIds =
+          typeof window.reticulumChat?.getSubscriptions === 'function'
+            ? await window.reticulumChat
+                .getSubscriptions()
+                .catch(() => [] as number[])
+            : [];
+        if (cancelled) return;
+        const previousIds = new Set(
+          (Array.isArray(activeSubscriptionIds)
+            ? activeSubscriptionIds
+            : []
+          ).filter(
+            (groupId) => Number.isInteger(groupId) && groupId > 0
+          )
+        );
         for (const groupId of previousIds) {
           if (!nextIds.has(groupId)) {
             void window.reticulumChat?.unsubscribeGroup?.(groupId);
