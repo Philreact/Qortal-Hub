@@ -76,6 +76,9 @@ export const ManageMembers = ({
   isAdmin,
   isOwner,
   reticulumSidebar = false,
+  isPrivate = false,
+  joinRequestCount = 0,
+  onJoinRequestCountChange,
 }) => {
   const [membersWithNames, setMembersWithNames] = useState([]);
   const [value, setValue] = useState(0);
@@ -97,6 +100,8 @@ export const ManageMembers = ({
   ]);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const setTxList = useSetAtom(txListAtom);
+  const canReviewJoinRequests =
+    reticulumSidebar && isPrivate && (isAdmin || isOwner);
 
   const handleClose = () => {
     setOpen(false);
@@ -204,32 +209,43 @@ export const ManageMembers = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (!canReviewJoinRequests && value === 4) {
+      setValue(0);
+    }
+  }, [canReviewJoinRequests, value]);
+
   if (inline && reticulumSidebar) {
     const iconTabs = [
       {
         icon: <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />,
-        label: t('core:list.members', { postProcess: 'capitalizeFirstChar' }),
+        label: 'Members',
+        showNotificationDot: false,
       },
       {
         icon: <AddRoundedIcon sx={{ fontSize: 20 }} />,
-        label: t('core:action.invite_member', {
-          postProcess: 'capitalizeFirstChar',
-        }),
+        label: 'Invite Member',
+        showNotificationDot: false,
       },
       {
         icon: <FormatListBulletedRoundedIcon sx={{ fontSize: 19 }} />,
-        label: t('core:list.invites', { postProcess: 'capitalizeFirstChar' }),
+        label: 'Invites',
+        showNotificationDot: false,
       },
       {
         icon: <BlockRoundedIcon sx={{ fontSize: 19 }} />,
-        label: t('core:list.bans', { postProcess: 'capitalizeFirstChar' }),
+        label: 'Bans',
+        showNotificationDot: false,
       },
-      {
-        icon: <CheckCircleRoundedIcon sx={{ fontSize: 19 }} />,
-        label: t('group:join_requests', {
-          postProcess: 'capitalizeFirstChar',
-        }),
-      },
+      ...(canReviewJoinRequests
+        ? [
+            {
+              icon: <CheckCircleRoundedIcon sx={{ fontSize: 19 }} />,
+              label: 'Join Requests',
+              showNotificationDot: joinRequestCount > 0,
+            },
+          ]
+        : []),
     ];
 
     const panelContentSx = {
@@ -275,7 +291,37 @@ export const ManageMembers = ({
           {iconTabs.map((tab, index) => (
             <Tab
               key={tab.label}
-              icon={<Tooltip title={tab.label}>{tab.icon}</Tooltip>}
+              icon={
+                <Tooltip title={tab.label}>
+                  <Box
+                    component="span"
+                    sx={{
+                      display: 'inline-flex',
+                      position: 'relative',
+                    }}
+                  >
+                    {tab.icon}
+                    {tab.showNotificationDot && (
+                      <Box
+                        aria-hidden
+                        component="span"
+                        sx={{
+                          backgroundColor: '#f23f42',
+                          border: `2px solid ${theme.palette.background.surface}`,
+                          borderRadius: '50%',
+                          bottom: -3,
+                          boxSizing: 'content-box',
+                          height: 7,
+                          left: -4,
+                          pointerEvents: 'none',
+                          position: 'absolute',
+                          width: 7,
+                        }}
+                      />
+                    )}
+                  </Box>
+                </Tooltip>
+              }
               aria-label={tab.label}
               {...a11yProps(index)}
             />
@@ -330,6 +376,7 @@ export const ManageMembers = ({
               setOpenSnack={setOpenSnack}
               setInfoSnack={setInfoSnack}
               groupId={selectedGroup?.groupId}
+              onCountChange={onJoinRequestCountChange}
             />
           )}
         </Box>

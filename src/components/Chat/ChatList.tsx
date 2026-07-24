@@ -79,7 +79,10 @@ type ChatListProps = {
   reticulumInitialHistoryReady?: boolean;
   reticulumGroupAvatarOwnerName?: string;
   reticulumGroupDisplayName?: string;
-  reticulumMentionUsers?: Record<string, { address: string; name?: string }>;
+  reticulumMentionUsers?: Record<
+    string,
+    { address: string; name?: string; role?: 'admin' | 'owner' }
+  >;
   reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
@@ -946,6 +949,7 @@ export const ChatList = ({
             flexGrow: 1,
             height: '0px',
             overflow: 'auto',
+            overflowX: reticulumChatEnabled ? 'hidden' : undefined,
             position: 'relative',
             visibility:
               reticulumChatEnabled &&

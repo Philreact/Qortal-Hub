@@ -121,6 +121,7 @@ const normalizeHtmlContent = (value) => {
 type MentionUser = {
   address: string;
   name?: string;
+  role?: 'admin' | 'owner';
 };
 
 export const MessageDisplay = ({
@@ -291,6 +292,7 @@ export const MessageDisplay = ({
           isMinterResolved: false,
           isOwn: user.address === myAddress,
           name: user.name || label,
+          role: user.role,
           status: null,
         },
       });

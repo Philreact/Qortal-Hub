@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -65,6 +65,7 @@ export const ListOfJoinRequests = ({
   setOpenSnack,
   show,
   compact = false,
+  onCountChange,
 }) => {
   const [invites, setInvites] = useState([]);
   const [txList, setTxList] = useAtom(txListAtom);
@@ -96,6 +97,24 @@ export const ListOfJoinRequests = ({
       getInvites(groupId);
     }
   }, [groupId]);
+
+  const visibleInvites = useMemo(
+    () =>
+      invites.filter(
+        (member) =>
+          !txList?.some(
+            (tx) =>
+              tx?.groupId === groupId &&
+              tx?.qortalAddress === member?.joiner &&
+              tx?.type === 'join-request-accept'
+          )
+      ),
+    [groupId, invites, txList]
+  );
+
+  useEffect(() => {
+    onCountChange?.(visibleInvites.length);
+  }, [onCountChange, visibleInvites.length]);
 
   const handlePopoverOpen = (event, index) => {
     setPopoverAnchor(event.currentTarget);
@@ -191,15 +210,7 @@ export const ListOfJoinRequests = ({
   };
 
   const rowRenderer = ({ index, key, parent, style }) => {
-    const member = invites[index];
-    const findJoinRequestInTxList = txList?.find(
-      (tx) =>
-        tx?.groupId === groupId &&
-        tx?.qortalAddress === member?.joiner &&
-        tx?.type === 'join-request-accept'
-    );
-
-    if (findJoinRequestInTxList) return null;
+    const member = visibleInvites[index];
 
     const displayName = member?.name || member?.joiner || '';
     const hasUnsafeDisplayName = Boolean(
@@ -432,7 +443,7 @@ export const ListOfJoinRequests = ({
               ref={listRef}
               width={width}
               height={height}
-              rowCount={invites.length}
+              rowCount={visibleInvites.length}
               rowHeight={compact ? 48 : cache.rowHeight}
               rowRenderer={rowRenderer}
               deferredMeasurementCache={compact ? undefined : cache}

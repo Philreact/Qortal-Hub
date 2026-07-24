@@ -35,6 +35,7 @@ import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
+import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
 
 import {
   clearAllQueues,
@@ -562,6 +563,7 @@ function ReticulumGroupSectionHeader({
   groupCallJoining,
   groupCallTooltip,
   membersPanelOpen,
+  membersNotificationCount,
   onChatClick,
   onGroupCallClick,
   onMembersClick,
@@ -576,6 +578,7 @@ function ReticulumGroupSectionHeader({
   groupCallJoining?: boolean;
   groupCallTooltip?: string;
   membersPanelOpen?: boolean;
+  membersNotificationCount?: number;
   onChatClick?: () => void;
   onGroupCallClick?: () => void;
   onMembersClick?: () => void;
@@ -729,7 +732,7 @@ function ReticulumGroupSectionHeader({
           label: groupCallJoining
             ? 'Joining'
             : groupCallInCall
-              ? 'Leave call'
+              ? 'Leave Call'
               : 'Group Call',
           icon: groupCallJoining ? (
             <CircularProgress size={17} sx={{ color: 'inherit' }} />
@@ -798,33 +801,64 @@ function ReticulumGroupSectionHeader({
             });
           },
         })}
-        <Tooltip title={membersPanelOpen ? 'Hide members' : 'Members'}>
-          <IconButton
-            onClick={onMembersClick}
-            size="small"
+        <Tooltip title={membersPanelOpen ? 'Hide Members' : 'Members'}>
+          <Box
+            component="span"
             sx={{
-              backgroundColor: membersPanelOpen
-                ? RETICULUM_ACTIVE_BLUE
-                : 'transparent',
-              borderRadius: '8px',
-              color: membersPanelOpen ? 'common.white' : 'text.secondary',
+              display: 'inline-flex',
               flexShrink: 0,
-              height: 36,
-              width: 36,
-              '&:hover': {
-                backgroundColor: membersPanelOpen
-                  ? RETICULUM_ACTIVE_BLUE
-                  : theme.palette.action.hover,
-                color: membersPanelOpen
-                  ? 'common.white'
-                  : theme.palette.text.primary,
-              },
+              overflow: 'visible',
+              position: 'relative',
             }}
           >
-            <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
-          </IconButton>
+            <IconButton
+              aria-label={
+                membersNotificationCount && membersNotificationCount > 0
+                  ? `Members, ${membersNotificationCount} pending join ${
+                      membersNotificationCount === 1 ? 'request' : 'requests'
+                    }`
+                  : 'Members'
+              }
+              onClick={onMembersClick}
+              size="small"
+              sx={{
+                backgroundColor: membersPanelOpen
+                  ? RETICULUM_ACTIVE_BLUE
+                  : 'transparent',
+                borderRadius: '8px',
+                color: membersPanelOpen ? 'common.white' : 'text.secondary',
+                flexShrink: 0,
+                height: 36,
+                width: 36,
+                '&:hover': {
+                  backgroundColor: membersPanelOpen
+                    ? RETICULUM_ACTIVE_BLUE
+                    : theme.palette.action.hover,
+                  color: membersPanelOpen
+                    ? 'common.white'
+                    : theme.palette.text.primary,
+                },
+              }}
+            >
+              <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
+            </IconButton>
+            {!!membersNotificationCount && membersNotificationCount > 0 && (
+              <ReticulumUnreadCountBadge
+                count={membersNotificationCount}
+                outlineColor={theme.palette.background.surface}
+                size={13}
+                fontSize={8}
+                sx={{
+                  position: 'absolute',
+                  right: -4,
+                  top: -4,
+                  zIndex: 2,
+                }}
+              />
+            )}
+          </Box>
         </Tooltip>
-        <Tooltip title="Search chat">
+        <Tooltip title="Search Chat">
           <IconButton
             onClick={() => executeEvent('openReticulumChatSearch', {})}
             size="small"
@@ -927,6 +961,8 @@ export const Group = ({
   );
   const [reticulumMembersPanelOpen, setReticulumMembersPanelOpen] =
     useState(false);
+  const [reticulumJoinRequestCount, setReticulumJoinRequestCount] =
+    useState(0);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
@@ -3999,6 +4035,64 @@ export const Group = ({
     admins.includes(myAddress) ||
     groupOwner?.owner === myAddress
   );
+  useEffect(() => {
+    if (
+      !reticulumChatEnabled ||
+      isPrivate !== true ||
+      !canManageReticulumGroup ||
+      !selectedGroupIdKey
+    ) {
+      setReticulumJoinRequestCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    const refreshJoinRequestCount = async () => {
+      try {
+        const response = await fetch(
+          `${getBaseApiReact()}/groups/joinrequests/${selectedGroupIdKey}?limit=0`
+        );
+        if (!response.ok) {
+          throw new Error(`Unable to load join requests (${response.status})`);
+        }
+        const requests = await response.json();
+        if (!cancelled) {
+          setReticulumJoinRequestCount(
+            Array.isArray(requests) ? requests.length : 0
+          );
+        }
+      } catch (error) {
+        console.error(
+          '[ReticulumChat] Failed to refresh selected-group join requests:',
+          error
+        );
+      }
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshJoinRequestCount();
+      }
+    };
+
+    void refreshJoinRequestCount();
+    const refreshTimer = window.setInterval(refreshJoinRequestCount, 30_000);
+    window.addEventListener('focus', refreshJoinRequestCount);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshTimer);
+      window.removeEventListener('focus', refreshJoinRequestCount);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [
+    canManageReticulumGroup,
+    isPrivate,
+    reticulumChatEnabled,
+    selectedGroupIdKey,
+  ]);
+  const handleReticulumJoinRequestCountChange = useCallback((count: number) => {
+    setReticulumJoinRequestCount(Math.max(0, Number(count) || 0));
+  }, []);
   const mountedReticulumSections =
     reticulumMountedGroupSections[selectedGroupIdKey] || [];
   const canMountQortalLand = Boolean(
@@ -4232,6 +4326,7 @@ export const Group = ({
                       : ''
                   }
                   membersPanelOpen={reticulumMembersPanelOpen}
+                  membersNotificationCount={reticulumJoinRequestCount}
                   onMembersClick={toggleReticulumMembersPanel}
                 />
               </Box>
@@ -4341,6 +4436,7 @@ export const Group = ({
                     onThreadsClick={goToThreads}
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}
+                    membersNotificationCount={reticulumJoinRequestCount}
                     groupCallInCall={
                       inThisGroupGcall && gcallRoomState === 'connected'
                     }
@@ -4713,6 +4809,11 @@ export const Group = ({
                         setOpen={setOpenManageMembers}
                         isAdmin={admins.includes(myAddress)}
                         isOwner={groupOwner?.owner === myAddress}
+                        isPrivate={isPrivate === true}
+                        joinRequestCount={reticulumJoinRequestCount}
+                        onJoinRequestCountChange={
+                          handleReticulumJoinRequestCountChange
+                        }
                       />
                     )}
                   </Suspense>
