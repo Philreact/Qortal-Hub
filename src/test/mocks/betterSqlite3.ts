@@ -485,6 +485,15 @@ class Statement {
       return [...this.store.reticulumResources];
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
+      if (this.sql.includes('privileged_mention_status = 2')) {
+        const limit = Number(args[0]) || Infinity;
+        return this.store.reticulumChatEvents
+          .filter((row) => row.privileged_mention_status === 2)
+          .sort(
+            (a, b) => Number(a.accepted_at || 0) - Number(b.accepted_at || 0)
+          )
+          .slice(0, limit);
+      }
       if (
         this.sql.includes("event_type IN ('message', 'attachment_manifest')") &&
         this.sql.includes('timestamp > ?')
@@ -982,6 +991,9 @@ class Statement {
           (item) => item.event_id === eventId
         );
         if (!row) return undefined;
+        if (this.sql.includes('privileged_mention_status AS status')) {
+          return { status: Number(row.privileged_mention_status || 0) };
+        }
         return this.sql.includes('SELECT 1') ? { 1: 1 } : row;
       }
       if (this.sql.includes('MAX(author_seq) AS seq')) {
@@ -1987,6 +1999,20 @@ class Statement {
         (item) => item.event_id === eventId
       );
       if (row) row.last_served_at = lastServedAt;
+      return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (
+      this.sql.includes(
+        'UPDATE reticulum_chat_events SET privileged_mention_status = ?'
+      )
+    ) {
+      const [status, eventId] = Array.isArray(params)
+        ? params
+        : [params, second];
+      const row = this.store.reticulumChatEvents.find(
+        (item) => item.event_id === eventId
+      );
+      if (row) row.privileged_mention_status = status;
       return { changes: row ? 1 : 0, lastInsertRowid: 0 };
     }
     if (

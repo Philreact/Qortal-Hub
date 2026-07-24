@@ -527,7 +527,7 @@ export type MentionSuggestionItem = {
   id: string;
   label: string;
   section: 'people' | 'special' | 'channels';
-  kind: 'person' | 'here' | 'everyone' | 'channel';
+  kind: 'person' | 'here' | 'everyone' | 'group' | 'channel';
   description: string;
   iconText?: string;
 };

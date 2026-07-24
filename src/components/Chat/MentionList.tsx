@@ -132,7 +132,8 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
                         {item.kind === 'person' ? (
                           <PersonRoundedIcon />
                         ) : item.kind === 'here' ||
-                          item.kind === 'everyone' ? (
+                          item.kind === 'everyone' ||
+                          item.kind === 'group' ? (
                           <GroupsRoundedIcon />
                         ) : (
                           <span>{item.iconText || '@'}</span>

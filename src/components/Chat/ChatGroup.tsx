@@ -1199,30 +1199,25 @@ const normalizeChatHtmlContent = (raw: unknown): string => {
   return '<p></p>';
 };
 
-const mentionTextFromHtml = (html: string): string =>
-  html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const escapeMentionRegExp = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const textHasMentionToken = (text: string, label: string): boolean => {
-  const normalized = String(label || '').trim();
-  if (!normalized) return false;
-  return new RegExp(
-    `(^|\\s)@${escapeMentionRegExp(normalized)}(?=$|\\s|[.,!?;:)\\]])`,
-    'i'
-  ).test(text);
+const mentionNodeIdsFromHtml = (html: string): Set<string> => {
+  if (!html || typeof DOMParser === 'undefined') return new Set();
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  return new Set(
+    [...document.querySelectorAll('[data-type="mention"][data-id]')]
+      .map((node) => node.getAttribute('data-id')?.trim().toLowerCase() || '')
+      .filter(Boolean)
+  );
 };
 
-const normalizeMentionTargetLabel = (value: unknown): string =>
-  String(value || '')
-    .trim()
-    .slice(0, 120);
+const reticulumGroupLinkMentionId = (
+  groupId: number,
+  channelId = DEFAULT_RETICULUM_CHANNEL_ID
+): string => `reticulum-group:${groupId}:${encodeURIComponent(channelId)}`;
+
+const reticulumChannelLinkMentionId = (
+  groupId: number,
+  channelId: string
+): string => `reticulum-channel:${groupId}:${encodeURIComponent(channelId)}`;
 
 const mentionedAddressesFromPayload = (payload: unknown): string[] => {
   if (!payload || typeof payload !== 'object') return [];
@@ -2724,18 +2719,29 @@ export const ChatGroup = ({
 
   const resolveMentionedAddresses = useCallback(
     (html: string): string[] => {
-      const rawText = mentionTextFromHtml(html);
-      const text = rawText.toLowerCase();
-      if (!rawText) return [];
+      if (!html || typeof DOMParser === 'undefined') return [];
+      const document = new DOMParser().parseFromString(html, 'text/html');
       const mentioned = new Set<string>();
-      for (const [name, address] of mentionNameToAddress.entries()) {
-        if (!name || !address) continue;
-        if (text.includes(`@${name}`)) mentioned.add(address);
-      }
-      const addressMatches =
-        rawText.match(/@Q[1-9A-HJ-NP-Za-km-z]{20,}/g) || [];
-      for (const match of addressMatches) {
-        mentioned.add(match.slice(1));
+      for (const node of document.querySelectorAll(
+        '[data-type="mention"][data-id]'
+      )) {
+        const id = node.getAttribute('data-id')?.trim() || '';
+        if (
+          !id ||
+          id === 'here' ||
+          id === 'everyone' ||
+          id.startsWith('reticulum-group:') ||
+          id.startsWith('reticulum-channel:')
+        )
+          continue;
+        if (/^Q[1-9A-HJ-NP-Za-km-z]{20,}$/.test(id)) {
+          mentioned.add(id);
+          continue;
+        }
+        const label =
+          node.getAttribute('data-label')?.trim().replace(/^@/, '') || id;
+        const address = mentionNameToAddress.get(label.toLowerCase());
+        if (address) mentioned.add(address);
       }
       return [...mentioned];
     },
@@ -2825,19 +2831,31 @@ export const ChatGroup = ({
         ]
       : [];
 
+    const groupLink: MentionSuggestionItem[] = selectedGroupName
+      ? [
+          {
+            id: reticulumGroupLinkMentionId(Number(selectedGroup)),
+            label: selectedGroupName,
+            section: 'channels',
+            kind: 'group',
+            description: 'Open group chat',
+            iconText: '@',
+          },
+        ]
+      : [];
+
     const channels: MentionSuggestionItem[] =
       reticulumChannelsForSelectedGroup
-        .filter(
-          (channel) =>
-            channel.readMode !== RETICULUM_CHANNEL_READ_MODE_ADMINS
-        )
         .sort(
           (left, right) =>
             left.position - right.position ||
             left.name.localeCompare(right.name)
         )
         .map((channel) => ({
-          id: channel.channelId,
+          id: reticulumChannelLinkMentionId(
+            Number(selectedGroup),
+            channel.channelId
+          ),
           label: channel.name,
           section: 'channels',
           kind: 'channel',
@@ -2848,7 +2866,7 @@ export const ChatGroup = ({
             )?.[0] || '@',
         }));
 
-    return [...people, ...special, ...channels];
+    return [...people, ...special, ...groupLink, ...channels];
   }, [
     groupMentionMembers,
     isReticulumChannelAdmin,
@@ -2856,6 +2874,8 @@ export const ChatGroup = ({
     myName,
     reticulumChannelsForSelectedGroup,
     reticulumChatEnabled,
+    selectedGroup,
+    selectedGroupName,
   ]);
 
   const reticulumTypingText = useMemo(() => {
@@ -2884,12 +2904,17 @@ export const ChatGroup = ({
 
   const resolveMentionTargets = useCallback(
     (html: string) => {
-      const rawText = mentionTextFromHtml(html);
+      const mentionNodeIds = mentionNodeIdsFromHtml(html);
       const groupId = Number(selectedGroup);
       const channelId =
         normalizeReticulumChannelName(selectedReticulumChannelId) ||
         DEFAULT_RETICULUM_CHANNEL_ID;
-      if (!rawText || !Number.isInteger(groupId) || groupId <= 0) return [];
+      if (
+        mentionNodeIds.size === 0 ||
+        !Number.isInteger(groupId) ||
+        groupId <= 0
+      )
+        return [];
 
       const targets = [];
       const seen = new Set<string>();
@@ -2900,7 +2925,7 @@ export const ChatGroup = ({
         targets.push(target);
       };
 
-      if (textHasMentionToken(rawText, 'here')) {
+      if (mentionNodeIds.has('here')) {
         addTarget({
           type: 'here',
           groupId,
@@ -2908,44 +2933,12 @@ export const ChatGroup = ({
           createdAt: Date.now(),
         });
       }
-      if (textHasMentionToken(rawText, 'everyone')) {
+      if (mentionNodeIds.has('everyone')) {
         addTarget({ type: 'everyone', groupId });
       }
-      const groupName = normalizeMentionTargetLabel(selectedGroupName);
-      if (groupName && textHasMentionToken(rawText, groupName)) {
-        addTarget({
-          type: 'group',
-          groupId,
-          groupName,
-        });
-      }
-      for (const channel of reticulumChannelsForSelectedGroup) {
-        const targetChannelId =
-          normalizeReticulumChannelName(channel?.channelId) ||
-          DEFAULT_RETICULUM_CHANNEL_ID;
-        const channelName = normalizeMentionTargetLabel(channel?.name);
-        const channelIdLabel = normalizeMentionTargetLabel(channel?.channelId);
-        if (
-          (channelName && textHasMentionToken(rawText, channelName)) ||
-          (channelIdLabel && textHasMentionToken(rawText, channelIdLabel))
-        ) {
-          addTarget({
-            type: 'channel',
-            groupId,
-            channelId: targetChannelId,
-            ...(channelName ? { channelName } : {}),
-          });
-        }
-      }
-
       return targets;
     },
-    [
-      reticulumChannelsForSelectedGroup,
-      selectedGroup,
-      selectedGroupName,
-      selectedReticulumChannelId,
-    ]
+    [selectedGroup, selectedReticulumChannelId]
   );
 
   const setEditorRef = (editorInstance) => {

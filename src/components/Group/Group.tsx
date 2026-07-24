@@ -202,9 +202,13 @@ type ReticulumBackgroundEvent = {
   eventId?: string;
   eventType?: string;
   groupId?: number;
+  mentionTargets?: Array<Record<string, unknown>>;
+  privilegedMentionAuthorized?: boolean;
   targetEventId?: string;
   timestamp?: number;
 };
+
+const RETICULUM_RENDERER_ONLINE_SINCE_MS = Date.now();
 
 type ReticulumNotificationSummary = {
   groupId?: number;
@@ -428,22 +432,88 @@ const reticulumMentionedAddressesFromPayload = (payload: unknown): string[] => {
   ];
 };
 
-const resolveReticulumMentionAddresses = (
-  text: string,
+const resolveReticulumMentionAddressesFromPayload = (
+  payload: unknown,
   nameToAddress: Map<string, string>
 ): string[] => {
-  const rawText = String(text || '');
-  const lowerText = rawText.toLowerCase();
   const mentioned = new Set<string>();
-  for (const [name, address] of nameToAddress.entries()) {
-    if (!name || !address) continue;
-    if (lowerText.includes(`@${name}`)) mentioned.add(address);
-  }
-  const addressMatches = rawText.match(/@Q[1-9A-HJ-NP-Za-km-z]{20,}/g) || [];
-  for (const match of addressMatches) {
-    mentioned.add(match.slice(1));
-  }
+  const inspectHtml = (html: string) => {
+    if (
+      typeof DOMParser === 'undefined' ||
+      !html.includes('data-type=') ||
+      !html.includes('mention')
+    )
+      return;
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    for (const node of document.querySelectorAll(
+      '[data-type="mention"][data-id]'
+    )) {
+      const id = node.getAttribute('data-id')?.trim() || '';
+      if (
+        !id ||
+        id === 'here' ||
+        id === 'everyone' ||
+        id.startsWith('reticulum-group:') ||
+        id.startsWith('reticulum-channel:')
+      )
+        continue;
+      if (/^Q[1-9A-HJ-NP-Za-km-z]{20,}$/.test(id)) {
+        mentioned.add(id);
+        continue;
+      }
+      const label =
+        node.getAttribute('data-label')?.trim().replace(/^@/, '') || id;
+      const address = nameToAddress.get(label.toLowerCase());
+      if (address) mentioned.add(address);
+    }
+  };
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      inspectHtml(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(
+      value as Record<string, unknown>
+    )) {
+      if (key === 'mentionedAddresses') continue;
+      if (
+        key === 'data' ||
+        key === 'message' ||
+        key === 'messageText' ||
+        key === 'text' ||
+        key === 'htmlContent'
+      ) {
+        visit(child);
+      }
+    }
+  };
+  visit(payload);
   return [...mentioned];
+};
+
+const authorizedReticulumBroadcastApplies = (
+  event: ReticulumBackgroundEvent
+): boolean => {
+  if (event.privilegedMentionAuthorized !== true) return false;
+  const groupId = Number(event.groupId);
+  const eventChannelId = String(event.channelId || 'general');
+  for (const target of event.mentionTargets || []) {
+    if (Number(target?.groupId) !== groupId) continue;
+    if (target?.type === 'everyone') return true;
+    if (
+      target?.type === 'here' &&
+      String(target?.channelId || eventChannelId) === eventChannelId &&
+      Number(event.timestamp || 0) >= RETICULUM_RENDERER_ONLINE_SINCE_MS
+    ) {
+      return true;
+    }
+  }
+  return false;
 };
 
 /** Subscribes to memberGroupsAtom and runs effects (Group does not subscribe). */
@@ -2680,7 +2750,7 @@ export const Group = ({
       const mentionedAddresses = [
         ...new Set([
           ...reticulumMentionedAddressesFromPayload(payload),
-          ...resolveReticulumMentionAddresses(text, mentionMap),
+          ...resolveReticulumMentionAddressesFromPayload(payload, mentionMap),
         ]),
       ];
       await window.reticulumChat?.replaceMentions?.(
@@ -2688,7 +2758,15 @@ export const Group = ({
         mentionedAddresses
       );
       if (options.recordMentionNotification === true) {
-        recordReticulumMentionNotification(event, groupId, mentionedAddresses);
+        const notificationMentionedAddresses =
+          authorizedReticulumBroadcastApplies(event) && myAddressRef.current
+            ? [...new Set([...mentionedAddresses, myAddressRef.current])]
+            : mentionedAddresses;
+        recordReticulumMentionNotification(
+          event,
+          groupId,
+          notificationMentionedAddresses
+        );
       }
       noteProcessedReticulumBackgroundEvent(event.eventId);
       scheduleReticulumChatSummariesRefresh();

@@ -124,6 +124,26 @@ type MentionUser = {
   role?: 'admin' | 'owner';
 };
 
+const parseReticulumChatLinkMention = (
+  target: HTMLElement
+): { groupId: number; channelId: string } | null => {
+  const mention = target.closest?.(
+    '[data-type="mention"], .mention'
+  ) as HTMLElement | null;
+  if (!mention) return null;
+  const id = String(mention.dataset.id || '').trim();
+  const match = id.match(/^reticulum-(?:group|channel):(\d+):(.+)$/);
+  if (!match) return null;
+  const groupId = Number(match[1]);
+  if (!Number.isInteger(groupId) || groupId <= 0) return null;
+  try {
+    const channelId = decodeURIComponent(match[2]).trim();
+    return channelId ? { groupId, channelId } : null;
+  } catch {
+    return null;
+  }
+};
+
 export const MessageDisplay = ({
   htmlContent,
   isReply = false,
@@ -336,6 +356,15 @@ export const MessageDisplay = ({
     e.preventDefault();
 
     const target = e.target as HTMLElement;
+    const reticulumChatLink = parseReticulumChatLinkMention(target);
+    if (reticulumChatLink) {
+      e.stopPropagation();
+      executeEvent('openGroupMessage', {
+        channelId: reticulumChatLink.channelId,
+        from: reticulumChatLink.groupId,
+      });
+      return;
+    }
     if (openMentionCard(target)) {
       e.stopPropagation();
       return;

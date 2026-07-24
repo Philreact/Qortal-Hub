@@ -2495,6 +2495,14 @@ export function normalizeReticulumChatMentionTargets(
   return targets.slice(0, 32);
 }
 
+function hasPrivilegedReticulumMentionTarget(
+  event: ReticulumChatEvent
+): boolean {
+  return normalizeReticulumChatMentionTargets(event.mentionTargets, event).some(
+    (target) => target.type === 'here' || target.type === 'everyone'
+  );
+}
+
 export function hashReticulumChatPayload(encryptedPayload: string): string {
   return nodeCrypto
     .createHash('sha256')
@@ -5475,6 +5483,14 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private pendingPrivilegedMentionValidationEvents = new Map<
+    string,
+    ReticulumChatEvent
+  >();
+  private privilegedMentionValidationRetryTimer: ReturnType<
+    typeof setTimeout
+  > | null = null;
+  private privilegedMentionValidationRetryActive = false;
   private channelMetadataProjectionActive = false;
   private channelMetadataProjectionRepairGroups = new Set<number>();
   private membershipInitializationQueue: number[] = [];
@@ -5587,6 +5603,9 @@ export class ReticulumChatManager extends EventEmitter {
     // explicit subscription for the current account.
     for (const target of this.db.getChannelExpiryReconciliationTargets()) {
       this.enqueueChannelExpiryReconciliation(target.groupId, target.channelId);
+    }
+    for (const event of this.db.getPendingPrivilegedMentionEvents()) {
+      this.schedulePrivilegedMentionValidationRetry(event);
     }
   }
 
@@ -6243,6 +6262,19 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (validateGroupAdminChanged) {
       this.groupAdminValidationCache.clear();
+      if (this.validateGroupAdmin) {
+        for (const event of this.db.getPendingPrivilegedMentionEvents()) {
+          this.pendingPrivilegedMentionValidationEvents.set(
+            event.eventId,
+            event
+          );
+        }
+        if (this.privilegedMentionValidationRetryTimer) {
+          clearTimeout(this.privilegedMentionValidationRetryTimer);
+          this.privilegedMentionValidationRetryTimer = null;
+        }
+        void this.retryPendingPrivilegedMentionValidations();
+      }
     }
     if (this.signLocalFields) this.retryPendingSignedResourceAuthOffers();
   }
@@ -6384,6 +6416,12 @@ export class ReticulumChatManager extends EventEmitter {
       clearTimeout(timer);
     }
     this.channelMetadataProjectionRetryTimers.clear();
+    if (this.privilegedMentionValidationRetryTimer) {
+      clearTimeout(this.privilegedMentionValidationRetryTimer);
+      this.privilegedMentionValidationRetryTimer = null;
+    }
+    this.pendingPrivilegedMentionValidationEvents.clear();
+    this.privilegedMentionValidationRetryActive = false;
     this.channelMetadataProjectionQueue = [];
     this.channelMetadataProjectionQueuedIds.clear();
     this.channelMetadataProjectionAttemptedIds.clear();
@@ -7879,7 +7917,25 @@ export class ReticulumChatManager extends EventEmitter {
       };
     }
     this.localGroupIds.add(event.groupId);
-    const accepted = this.acceptEvent(event, true);
+    if (hasPrivilegedReticulumMentionTarget(event)) {
+      const adminStatus = this.validateGroupAdmin
+        ? await this.getValidatedGroupAdminStatus(
+            event.groupId,
+            event.authorAddress
+          )
+        : 'unknown';
+      if (adminStatus !== 'admin') {
+        return {
+          ok: false,
+          reason: 'send-command-failed',
+          error:
+            adminStatus === 'unknown'
+              ? 'Cannot send @here or @everyone while admin status is unavailable'
+              : 'Only group admins can use @here or @everyone',
+        };
+      }
+    }
+    const accepted = await this.acceptEvent(event, true);
     if (!accepted) {
       return {
         ok: false,
@@ -9195,14 +9251,28 @@ export class ReticulumChatManager extends EventEmitter {
 
   private eventForRenderer(
     event: ReticulumChatEvent
-  ): ReticulumChatEvent & { replyTargetDeleted?: true } {
-    if (
-      !event.replyToEventId ||
-      !this.db.isEventPayloadScrubbed(event.replyToEventId)
-    ) {
-      return event;
-    }
-    return { ...event, replyTargetDeleted: true };
+  ): ReticulumChatEvent & {
+    privilegedMentionAuthorized?: true;
+    replyTargetDeleted?: true;
+  } {
+    const privilegedMentionAuthorized =
+      hasPrivilegedReticulumMentionTarget(event) &&
+      this.db.getPrivilegedMentionStatus(event.eventId) === 1;
+    const replyTargetDeleted =
+      !!event.replyToEventId &&
+      this.db.isEventPayloadScrubbed(event.replyToEventId);
+    const rendererEvent = {
+      ...event,
+      privilegedMentionAuthorized: undefined,
+      replyTargetDeleted: undefined,
+    };
+    return {
+      ...rendererEvent,
+      ...(privilegedMentionAuthorized
+        ? { privilegedMentionAuthorized: true as const }
+        : {}),
+      ...(replyTargetDeleted ? { replyTargetDeleted: true as const } : {}),
+    };
   }
 
   private groupEventIsSilenced(event: ReticulumChatEvent): boolean {
@@ -15346,7 +15416,7 @@ export class ReticulumChatManager extends EventEmitter {
       validWindowEvents.push(event);
       this.noteEventSourcePeer(event.eventId, peerHash);
       this.requestMissingAuthorRangeBeforeAccept(event, peerHash);
-      const inserted = this.acceptEvent(event, false);
+      const inserted = await this.acceptEvent(event, false);
       if (inserted) {
         this.pendingEventPulls.delete(
           this.eventPullKey(event.groupId, event.eventId)
@@ -16974,7 +17044,10 @@ export class ReticulumChatManager extends EventEmitter {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 
-  private acceptEvent(candidate: unknown, ownEvent: boolean): boolean {
+  private acceptEvent(
+    candidate: unknown,
+    ownEvent: boolean
+  ): boolean | Promise<boolean> {
     const now = this.now();
     if (!validateReticulumChatEventShape(candidate, now)) return false;
     const event = candidate;
@@ -17031,10 +17104,38 @@ export class ReticulumChatManager extends EventEmitter {
     event: ReticulumChatEvent,
     ownEvent: boolean,
     options: { emitSummary?: boolean } = {}
+  ): boolean | Promise<boolean> {
+    if (this.db.hasEvent(event.eventId)) return false;
+    if (hasPrivilegedReticulumMentionTarget(event)) {
+      return this.privilegedMentionStatusForEvent(event).then(
+        (privilegedMentionStatus) =>
+          this.storeValidatedEvent(
+            event,
+            ownEvent,
+            options,
+            privilegedMentionStatus
+          )
+      );
+    }
+    return this.storeValidatedEvent(event, ownEvent, options, 0);
+  }
+
+  private storeValidatedEvent(
+    event: ReticulumChatEvent,
+    ownEvent: boolean,
+    options: { emitSummary?: boolean },
+    privilegedMentionStatus: 0 | 1 | 2
   ): boolean {
     if (this.db.hasEvent(event.eventId)) return false;
-    const inserted = this.db.insertEvent(event, ownEvent);
+    const inserted = this.db.insertEvent(
+      event,
+      ownEvent,
+      privilegedMentionStatus
+    );
     if (inserted) {
+      if (privilegedMentionStatus === 2) {
+        this.schedulePrivilegedMentionValidationRetry(event);
+      }
       this.syncGroupResourceReferences(event, ownEvent);
       this.invalidateGroupDigestSnapshot(event.groupId);
       this.updateAuthorTreeCacheForEvent(event);
@@ -17055,6 +17156,80 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     return inserted;
+  }
+
+  private async privilegedMentionStatusForEvent(
+    event: ReticulumChatEvent
+  ): Promise<0 | 1 | 2> {
+    if (!hasPrivilegedReticulumMentionTarget(event)) return 0;
+    if (!this.validateGroupAdmin) return 2;
+    const status = await this.getValidatedGroupAdminStatus(
+      event.groupId,
+      event.authorAddress
+    );
+    return status === 'admin' ? 1 : status === 'unknown' ? 2 : 0;
+  }
+
+  private schedulePrivilegedMentionValidationRetry(
+    event: ReticulumChatEvent
+  ): void {
+    if (this.isClosed) return;
+    this.pendingPrivilegedMentionValidationEvents.set(event.eventId, event);
+    if (this.privilegedMentionValidationRetryTimer) return;
+    this.privilegedMentionValidationRetryTimer = setTimeout(() => {
+      this.privilegedMentionValidationRetryTimer = null;
+      void this.retryPendingPrivilegedMentionValidations();
+    }, RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS);
+    this.privilegedMentionValidationRetryTimer.unref?.();
+  }
+
+  private async retryPendingPrivilegedMentionValidations(): Promise<void> {
+    if (this.isClosed || this.privilegedMentionValidationRetryActive) return;
+    this.privilegedMentionValidationRetryActive = true;
+    try {
+      const batch = [
+        ...this.pendingPrivilegedMentionValidationEvents.values(),
+      ].slice(0, 100);
+      const statusByAuthor = new Map<string, 0 | 1 | 2>();
+      for (const event of batch) {
+        if (this.isClosed) return;
+        if (!this.db.hasEvent(event.eventId)) {
+          this.pendingPrivilegedMentionValidationEvents.delete(event.eventId);
+          continue;
+        }
+        const authorKey = `${event.groupId}:${event.authorAddress}`;
+        let status = statusByAuthor.get(authorKey);
+        if (status === undefined) {
+          status = await this.privilegedMentionStatusForEvent(event);
+          if (this.isClosed) return;
+          statusByAuthor.set(authorKey, status);
+        }
+        if (status === 2) continue;
+        this.pendingPrivilegedMentionValidationEvents.delete(event.eventId);
+        if (this.db.updatePrivilegedMentionStatus(event.eventId, status)) {
+          this.emitSummaryChanged(event.groupId, event);
+        }
+      }
+      if (this.pendingPrivilegedMentionValidationEvents.size === 0) {
+        for (const event of this.db.getPendingPrivilegedMentionEvents()) {
+          this.pendingPrivilegedMentionValidationEvents.set(
+            event.eventId,
+            event
+          );
+        }
+      }
+    } finally {
+      this.privilegedMentionValidationRetryActive = false;
+      if (
+        !this.isClosed &&
+        this.pendingPrivilegedMentionValidationEvents.size > 0
+      ) {
+        const next = this.pendingPrivilegedMentionValidationEvents
+          .values()
+          .next().value as ReticulumChatEvent | undefined;
+        if (next) this.schedulePrivilegedMentionValidationRetry(next);
+      }
+    }
   }
 
   async applyChannelMetadataEvent(
@@ -26200,7 +26375,11 @@ export class ReticulumChatManager extends EventEmitter {
         validWindowEvents.push(event);
         this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
-        if (this.acceptValidatedEvent(event, false, { emitSummary: false })) {
+        if (
+          await this.acceptValidatedEvent(event, false, {
+            emitSummary: false,
+          })
+        ) {
           insertedCount += 1;
           if (
             repairRange &&
@@ -26534,7 +26713,7 @@ export class ReticulumChatManager extends EventEmitter {
       const sourcePeerHash =
         offer.sourcePeerHash || payload.peerPresenceHash || '';
       this.requestMissingAuthorRangeBeforeAccept(event, sourcePeerHash);
-      if (this.acceptEvent(parsed, false)) {
+      if (await this.acceptEvent(parsed, false)) {
         this.noteEventSourcePeer(event.eventId, sourcePeerHash);
         this.pendingEventPulls.delete(
           this.eventPullKey(event.groupId, event.eventId)

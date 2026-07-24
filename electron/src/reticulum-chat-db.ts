@@ -476,6 +476,7 @@ type EventRow = {
   scrubbed_at?: number | null;
   expires_at?: number | null;
   message_expiry_duration_ms?: number | null;
+  privileged_mention_status?: number;
 };
 
 type ChannelExpiryReconciliationRow = {
@@ -1004,7 +1005,8 @@ function mentionTargetAppliesTo(
   myAddress: string,
   channelId: string,
   onlineSince: number,
-  myMentionHash: string
+  myMentionHash: string,
+  privilegedMentionAuthorized: boolean
 ): boolean {
   if (!myAddress || event.authorAddress === myAddress) return false;
   const targets = sanitizeMentionTargets(event.mentionTargets);
@@ -1018,13 +1020,12 @@ function mentionTargetAppliesTo(
       continue;
     }
     if (target.groupId !== event.groupId) continue;
-    if (target.type === 'everyone' || target.type === 'group') return true;
-    if (target.type === 'channel') {
-      // Today all group members can see all channels. When private/admin-only
-      // channel visibility exists, this is the place to gate by visibility.
-      return true;
-    }
+    if (target.type === 'everyone') return privilegedMentionAuthorized;
+    // Older clients signed group and channel targets as mentions. They now
+    // represent navigation only and must never create unread notifications.
+    if (target.type === 'group' || target.type === 'channel') continue;
     if (target.type === 'here') {
+      if (!privilegedMentionAuthorized) continue;
       if (normalizeReticulumChatChannelId(target.channelId) !== eventChannelId)
         continue;
       if (eventChannelId !== summaryChannelId) continue;
@@ -1340,6 +1341,8 @@ export class ReticulumChatDatabase {
   private stmtCountUnreadDisplayEvents: Statement;
   private stmtGetLastProjectedMessage: Statement;
   private stmtGetUnreadMentionTargetEvents: Statement;
+  private stmtGetPrivilegedMentionStatus: Statement;
+  private stmtUpdatePrivilegedMentionStatus: Statement;
   private stmtGetWatermark: Statement;
   private stmtUpsertWatermark: Statement;
   private stmtUpsertMention: Statement;
@@ -1443,13 +1446,13 @@ export class ReticulumChatDatabase {
          timestamp, feed_timestamp, event_type, target_event_id, reply_to_event_id,
          encrypted_payload, payload_hash, mention_address_hashes, mention_targets, signature, own_event,
          last_served_at, stored_at, accepted_at, wire_bytes, channel_id, expires_at,
-         message_expiry_duration_ms)
+         message_expiry_duration_ms, privileged_mention_status)
       VALUES
         (@event_id, @group_id, @author_address, @author_public_key, @author_stream_id, @author_seq,
          @timestamp, @feed_timestamp, @event_type, @target_event_id, @reply_to_event_id,
          @encrypted_payload, @payload_hash, @mention_address_hashes, @mention_targets, @signature, @own_event,
          @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id, @expires_at,
-         @message_expiry_duration_ms)
+         @message_expiry_duration_ms, @privileged_mention_status)
     `);
     this.stmtInsertEventHeaderV2 = this.db.prepare(`
       INSERT OR IGNORE INTO rchat_event_headers
@@ -1847,6 +1850,12 @@ export class ReticulumChatDatabase {
         )
       ORDER BY timestamp ASC, event_id ASC
     `);
+    this.stmtGetPrivilegedMentionStatus = this.db.prepare(
+      'SELECT privileged_mention_status AS status FROM reticulum_chat_events WHERE event_id = ? LIMIT 1'
+    );
+    this.stmtUpdatePrivilegedMentionStatus = this.db.prepare(
+      'UPDATE reticulum_chat_events SET privileged_mention_status = ? WHERE event_id = ?'
+    );
     this.stmtGetWatermark = this.db.prepare(
       'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ? AND channel_id = ? AND address = ?'
     );
@@ -3377,7 +3386,11 @@ export class ReticulumChatDatabase {
       );
   }
 
-  insertEvent(event: ReticulumChatEvent, ownEvent: boolean): boolean {
+  insertEvent(
+    event: ReticulumChatEvent,
+    ownEvent: boolean,
+    privilegedMentionStatus = 0
+  ): boolean {
     const authorStreamId = normalizeReticulumChatAuthorStreamId(
       event.authorStreamId
     );
@@ -3423,6 +3436,12 @@ export class ReticulumChatDatabase {
       wire_bytes: eventWireBytes(event),
       expires_at: expiresAt,
       message_expiry_duration_ms: messageExpiryDurationMs ?? null,
+      privileged_mention_status:
+        privilegedMentionStatus === 1
+          ? 1
+          : privilegedMentionStatus === 2
+            ? 2
+            : 0,
     });
     const inserted = result.changes > 0;
     if (inserted) {
@@ -3478,6 +3497,32 @@ export class ReticulumChatDatabase {
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return inserted;
+  }
+
+  getPrivilegedMentionStatus(eventId: string): 0 | 1 | 2 {
+    const row = this.stmtGetPrivilegedMentionStatus.get(eventId) as
+      | { status?: number }
+      | undefined;
+    return row?.status === 1 ? 1 : row?.status === 2 ? 2 : 0;
+  }
+
+  updatePrivilegedMentionStatus(eventId: string, status: 0 | 1): boolean {
+    return (
+      this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0
+    );
+  }
+
+  getPendingPrivilegedMentionEvents(limit = 500): ReticulumChatEvent[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM reticulum_chat_events
+           WHERE privileged_mention_status = 2
+           ORDER BY accepted_at ASC
+           LIMIT ?`
+        )
+        .all(Math.max(1, Math.min(5000, Math.floor(limit)))) as EventRow[]
+    ).map(rowToEvent);
   }
 
   reserveAuthorSequence(
@@ -8797,7 +8842,8 @@ export class ReticulumChatDatabase {
           myAddress,
           normalizedChannelId,
           onlineSince,
-          myMentionHash
+          myMentionHash,
+          this.getPrivilegedMentionStatus(event.eventId) === 1
         )
       ) {
         return;
@@ -8873,7 +8919,8 @@ export class ReticulumChatDatabase {
             myAddress,
             normalizedChannelId,
             onlineSince,
-            myMentionHash
+            myMentionHash,
+            this.getPrivilegedMentionStatus(event.eventId) === 1
           )
         ) {
           eventMentionTargetCount += 1;
@@ -9497,7 +9544,8 @@ export class ReticulumChatDatabase {
         wire_bytes INTEGER NOT NULL,
         scrubbed_at INTEGER,
         expires_at INTEGER,
-        message_expiry_duration_ms INTEGER
+        message_expiry_duration_ms INTEGER,
+        privileged_mention_status INTEGER NOT NULL DEFAULT 0
       );
       DROP INDEX IF EXISTS reticulum_chat_author_seq_idx;
       CREATE TABLE IF NOT EXISTS rchat_author_streams (
@@ -10197,6 +10245,10 @@ export class ReticulumChatDatabase {
         run: () => this.migrateEventMentionTargetsSchema(),
       },
       {
+        name: 'privileged-mention-authorization',
+        run: () => this.migratePrivilegedMentionAuthorizationSchema(),
+      },
+      {
         name: 'event-scrubbed-at',
         run: () => this.migrateEventScrubbedAtSchema(),
       },
@@ -10264,6 +10316,7 @@ export class ReticulumChatDatabase {
           'channel_id',
           'author_stream_id',
           'mention_targets',
+          'privileged_mention_status',
           'scrubbed_at',
           'expires_at',
           'message_expiry_duration_ms',
@@ -10603,6 +10656,17 @@ export class ReticulumChatDatabase {
       `
       ALTER TABLE reticulum_chat_events
         ADD COLUMN mention_targets TEXT NOT NULL DEFAULT '[]'
+      `
+    );
+  }
+
+  private migratePrivilegedMentionAuthorizationSchema(): void {
+    this.ensureColumn(
+      'reticulum_chat_events',
+      'privileged_mention_status',
+      `
+      ALTER TABLE reticulum_chat_events
+        ADD COLUMN privileged_mention_status INTEGER NOT NULL DEFAULT 0
       `
     );
   }

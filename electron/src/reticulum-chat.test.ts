@@ -3208,7 +3208,7 @@ describe('reticulum chat database', () => {
     });
   });
 
-  it('tracks semantic @everyone and @group mention targets', () => {
+  it('tracks authorized semantic @everyone mention targets', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
     const mentionedAddress = deriveAddressFromPublicKey(
@@ -3221,10 +3221,36 @@ describe('reticulum chat database', () => {
     });
     expect(validateReticulumChatEventShape(event)).toBe(true);
     expect(verifyReticulumChatEvent(event)).toBe(true);
-    db.insertEvent(event, true);
+    expect(db.insertEvent(event, true, 1)).toBe(true);
+    expect(db.getPrivilegedMentionStatus(event.eventId)).toBe(1);
 
     expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
       groupId: 166,
+      mentionCount: 1,
+      hasUnreadMention: true,
+    });
+  });
+
+  it('fails closed until a privileged mention is locally authorized', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-semantic-everyone-pending',
+      groupId: 266,
+      mentionTargets: [{ type: 'everyone', groupId: 266 }],
+    });
+    expect(db.insertEvent(event, false, 2)).toBe(true);
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+
+    expect(db.updatePrivilegedMentionStatus(event.eventId, 1)).toBe(true);
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
       mentionCount: 1,
       hasUnreadMention: true,
     });
@@ -3265,8 +3291,8 @@ describe('reticulum chat database', () => {
         },
       ],
     });
-    db.insertEvent(beforeOnline, true);
-    db.insertEvent(afterOnline, true);
+    db.insertEvent(beforeOnline, true, 1);
+    db.insertEvent(afterOnline, true, 1);
 
     expect(db.getChatSummaries(mentionedAddress, onlineSince)[0]).toMatchObject(
       {
@@ -3300,9 +3326,7 @@ describe('reticulum chat database', () => {
           timestamp: baseTimestamp + 1,
           eventType: 'edit',
           targetEventId: 'event-semantic-edit-original',
-          mentionTargets: [
-            { type: 'group', groupId: 168, groupName: 'test-group' },
-          ],
+          mentionTargets: [{ type: 'everyone', groupId: 168 }],
         },
         {
           eventId: 'event-semantic-edit-removes',
@@ -3315,7 +3339,7 @@ describe('reticulum chat database', () => {
         },
       ]);
     db.insertEvent(original, true);
-    db.insertEvent(editAddsEveryone, true);
+    db.insertEvent(editAddsEveryone, true, 1);
     expect(
       db
         .getChatSummaries(mentionedAddress)
@@ -3335,7 +3359,7 @@ describe('reticulum chat database', () => {
     });
   });
 
-  it('tracks semantic channel mention targets while all channels are visible', () => {
+  it('does not count legacy group or channel targets as mentions', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
     const mentionedAddress = deriveAddressFromPublicKey(
@@ -3346,6 +3370,11 @@ describe('reticulum chat database', () => {
       groupId: 169,
       channelId: 'general',
       mentionTargets: [
+        {
+          type: 'group',
+          groupId: 169,
+          groupName: 'test-group',
+        },
         {
           type: 'channel',
           groupId: 169,
@@ -3358,8 +3387,8 @@ describe('reticulum chat database', () => {
 
     expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
       groupId: 169,
-      mentionCount: 1,
-      hasUnreadMention: true,
+      mentionCount: 0,
+      hasUnreadMention: false,
     });
   });
 
@@ -3377,7 +3406,7 @@ describe('reticulum chat database', () => {
       timestamp: baseTimestamp,
       mentionTargets: [{ type: 'everyone', groupId: 170 }],
     });
-    db.insertEvent(semanticMention, true);
+    db.insertEvent(semanticMention, true, 1);
 
     const fillerTemplate = signedEvent({
       eventId: 'event-semantic-window-filler-template',
@@ -6857,6 +6886,50 @@ describe('reticulum chat manager', () => {
     expect(manager.getHistory(52, 10).map((item) => item.eventId)).toContain(
       event.eventId
     );
+    manager.close();
+  });
+
+  it('refuses privileged mentions from non-admin senders', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupAdmin: async () => false,
+    });
+    const event = signedEvent({
+      groupId: 252,
+      mentionTargets: [{ type: 'everyone', groupId: 252 }],
+    });
+    manager.setLocalGroupMemberships([252]);
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: false,
+      error: 'Only group admins can use @here or @everyone',
+    });
+    expect(manager.getHistory(252, 10)).toHaveLength(0);
+    manager.close();
+  });
+
+  it('exposes privileged mention authorization to the renderer only from local state', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const event = signedEvent({
+      groupId: 253,
+      mentionTargets: [{ type: 'everyone', groupId: 253 }],
+    });
+    manager.setLocalGroupMemberships([253]);
+    expect((manager as any).db.insertEvent(event, false, 0)).toBe(true);
+
+    expect(
+      (manager as any).eventForRenderer({
+        ...event,
+        privilegedMentionAuthorized: true,
+      }).privilegedMentionAuthorized
+    ).toBeUndefined();
+
+    expect(
+      (manager as any).db.updatePrivilegedMentionStatus(event.eventId, 1)
+    ).toBe(true);
+    expect(
+      (manager as any).eventForRenderer(event).privilegedMentionAuthorized
+    ).toBe(true);
     manager.close();
   });
 
@@ -17534,7 +17607,7 @@ describe('reticulum chat manager', () => {
       },
     });
     manager.setLocalGroupMemberships([80]);
-    expect((manager as any).acceptEvent(event, false)).toBe(true);
+    expect(await (manager as any).acceptEvent(event, false)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(
       manager.getChannels(80, true).map((channel) => channel.channelId)
@@ -18361,7 +18434,7 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([80]);
 
-    expect((manager as any).acceptEvent(event, false)).toBe(true);
+    expect(await (manager as any).acceptEvent(event, false)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(manager.getChannels(80, true)).toContainEqual(
@@ -19516,8 +19589,8 @@ describe('reticulum chat manager', () => {
       timestamp: now,
     });
 
-    expect((manager as any).acceptEvent(newerEvent, false)).toBe(true);
-    expect((manager as any).acceptEvent(olderEvent, false)).toBe(true);
+    expect(await (manager as any).acceptEvent(newerEvent, false)).toBe(true);
+    expect(await (manager as any).acceptEvent(olderEvent, false)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(manager.getChannels(83, true)).toContainEqual(
@@ -19565,8 +19638,8 @@ describe('reticulum chat manager', () => {
       timestamp: now,
     });
 
-    expect((manager as any).acceptEvent(newerDelete, false)).toBe(true);
-    expect((manager as any).acceptEvent(olderCreate, false)).toBe(true);
+    expect(await (manager as any).acceptEvent(newerDelete, false)).toBe(true);
+    expect(await (manager as any).acceptEvent(olderCreate, false)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(

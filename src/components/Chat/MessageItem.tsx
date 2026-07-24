@@ -1686,40 +1686,13 @@ export const MessageItemComponent = ({
       ? message.decryptedData.data.mentionedAddresses
       : []),
   ];
-  const mentionTargets = [
-    ...(Array.isArray(message?.mentionTargets) ? message.mentionTargets : []),
-    ...(Array.isArray(message?.decryptedData?.mentionTargets)
-      ? message.decryptedData.mentionTargets
-      : []),
-    ...(Array.isArray(message?.decryptedData?.data?.mentionTargets)
-      ? message.decryptedData.data.mentionTargets
-      : []),
-  ];
-  const mentionSourceText = String(
-    message?.decryptedData?.data?.message ??
-      message?.decryptedData?.data?.messageText ??
-      message?.decryptedData?.message ??
-      message?.decryptedData?.messageText ??
-      message?.messageText ??
-      message?.text ??
-      ''
-  )
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/gi, ' ');
-  const hasBroadMention =
-    mentionTargets.some((target) => {
-      const type = String(target?.type || '').trim().toLowerCase();
-      return type === 'here' || type === 'everyone';
-    }) ||
-    /(^|\s)@(here|everyone)(?=$|[\s.,!?;:])/i.test(mentionSourceText);
   const isCurrentUserMentioned =
     reticulumChatEnabled &&
     !isOwn &&
     Boolean(myAddress) &&
-    (hasBroadMention ||
-      mentionedAddresses.some(
-        (address) => String(address).trim() === myAddress
-      ));
+    mentionedAddresses.some(
+      (address) => String(address).trim() === myAddress
+    );
   const isOwnReticulumDeletable =
     isOwn &&
     !isOfficialGroupWelcome &&
