@@ -16,15 +16,19 @@ import {
   getPermission,
 } from '../../qortal/qortal-requests';
 import LogoSelected from '../../assets/svgs/LogoSelected.svg';
-
-const QCHAT_NOTIFICATION_APP_NAME = 'q-chat';
+import {
+  getQChatMentionNotificationsEnabled,
+  QCHAT_MENTION_NOTIFICATION_APP_NAME,
+  QCHAT_MENTION_NOTIFICATION_EVENT,
+  QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+} from '../../utils/qChatMentionNotifications';
 
 const isQChatMentionNotification = (notification: any) =>
-  notification?.event === 'RESOURCE_PUBLISHED' &&
-  notification?.appName === QCHAT_NOTIFICATION_APP_NAME &&
+  notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
   notification?.data?.qChatMention === true;
 
 const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+const QCHAT_MENTION_OS_NOTIFICATION_MAX_TRACKED = 500;
 
 const getNotificationCreatorTimestamp = (notification: {
   data?: { created?: number; timestamp?: number };
@@ -96,6 +100,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   );
   const listOfMyNamesRef = useRef<string[]>([]);
   const initWebsocketRef = useRef<(() => Promise<void>) | null>(null);
+  const qChatMentionOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
 
   const forceCloseWebSocket = () => {
     clearTimeout(historyRequestTimeoutRef.current);
@@ -156,23 +161,15 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       const eventId = String(detail?.eventId || '');
       const groupId = Number(detail?.groupId);
       const isUnreadCountSync = detail?.syncUnreadCount === true;
-      if (
-        (!eventId && !isUnreadCountSync) ||
-        !Number.isFinite(groupId)
-      ) {
+      if ((!eventId && !isUnreadCountSync) || !Number.isFinite(groupId)) {
         return;
       }
-      const permission = await getPermission(
-        getNotificationPermissionKey(QCHAT_NOTIFICATION_APP_NAME)
-      );
-      if (permission !== true) return;
+      if (!(await getQChatMentionNotificationsEnabled())) return;
 
       const timestamp = Number(detail?.timestamp || Date.now());
       const groupName =
         String(detail?.groupName || '').trim() || `Group ${groupId}`;
       const channelId = String(detail?.channelId || 'general');
-      let notificationForPush: any = null;
-
       setPaymentNotifications((previous) => {
         const trimmed = trimNotificationsToLast3Days(previous);
         const existing = trimmed.find(
@@ -181,10 +178,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             Number(notification?.data?.groupId) === groupId
         );
         if (isUnreadCountSync) {
-          const mentionCount = Math.max(
-            0,
-            Number(detail?.mentionCount) || 0
-          );
+          const mentionCount = Math.max(0, Number(detail?.mentionCount) || 0);
           if (mentionCount === 0) {
             return trimmed.filter(
               (notification) =>
@@ -195,8 +189,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             );
           }
           const syncedNotification = {
-            appName: QCHAT_NOTIFICATION_APP_NAME,
-            appService: 'APP',
+            appName: QCHAT_MENTION_NOTIFICATION_APP_NAME,
+            appService: 'INTERNAL',
             data: {
               channelId,
               created: timestamp,
@@ -208,13 +202,10 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
               mentionCount,
               qChatMention: true,
             },
-            event: 'RESOURCE_PUBLISHED',
+            event: QCHAT_MENTION_NOTIFICATION_EVENT,
             image: '',
             message: {
-              en:
-                mentionCount === 1
-                  ? '1 mention'
-                  : `${mentionCount} mentions`,
+              en: mentionCount === 1 ? '1 mention' : `${mentionCount} mentions`,
             },
             notificationId: `q-chat-mention-${groupId}`,
           };
@@ -242,8 +233,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           Number(existing?.data?.mentionCount) || 0
         );
         const nextNotification = {
-          appName: QCHAT_NOTIFICATION_APP_NAME,
-          appService: 'APP',
+          appName: QCHAT_MENTION_NOTIFICATION_APP_NAME,
+          appService: 'INTERNAL',
           data: {
             channelId,
             created: timestamp,
@@ -255,17 +246,13 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             mentionCount,
             qChatMention: true,
           },
-          event: 'RESOURCE_PUBLISHED',
+          event: QCHAT_MENTION_NOTIFICATION_EVENT,
           image: '',
           message: {
-            en:
-              mentionCount === 1
-                ? '1 mention'
-                : `${mentionCount} mentions`,
+            en: mentionCount === 1 ? '1 mention' : `${mentionCount} mentions`,
           },
           notificationId: `q-chat-mention-${groupId}`,
         };
-        notificationForPush = nextNotification;
         return [
           nextNotification,
           ...trimmed.filter(
@@ -278,11 +265,32 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         ];
       });
 
-      if (notificationForPush) {
+      // Unread-count synchronization rebuilds the Hub notification state and
+      // must not replay old mentions as OS notifications.
+      if (
+        !isUnreadCountSync &&
+        !qChatMentionOsNotifiedEventIdsRef.current.has(eventId)
+      ) {
+        qChatMentionOsNotifiedEventIdsRef.current.add(eventId);
+        if (
+          qChatMentionOsNotifiedEventIdsRef.current.size >
+          QCHAT_MENTION_OS_NOTIFICATION_MAX_TRACKED
+        ) {
+          const oldestEventId = qChatMentionOsNotifiedEventIdsRef.current
+            .values()
+            .next().value;
+          if (oldestEventId) {
+            qChatMentionOsNotifiedEventIdsRef.current.delete(oldestEventId);
+          }
+        }
         void fireOsNotificationPayment(
-          notificationForPush,
-          groupName,
-          '1 mention',
+          {
+            appName: QCHAT_MENTION_NOTIFICATION_APP_NAME,
+            appService: 'INTERNAL',
+            event: QCHAT_MENTION_NOTIFICATION_EVENT,
+          },
+          `Mention in ${groupName}`,
+          `You were mentioned in #${channelId}`,
           LogoSelected,
           undefined,
           {
@@ -295,18 +303,10 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       }
     };
 
-    const handlePermissionUpdated = (
-      event: CustomEvent<{ key?: string; value?: boolean }>
+    const handleMentionSettingUpdated = (
+      event: CustomEvent<{ enabled?: boolean }>
     ) => {
-      const qChatPermissionKey = getNotificationPermissionKey(
-        QCHAT_NOTIFICATION_APP_NAME
-      );
-      if (
-        event.detail?.key !== qChatPermissionKey ||
-        event.detail?.value !== false
-      ) {
-        return;
-      }
+      if (event.detail?.enabled !== false) return;
       setPaymentNotifications((previous) =>
         previous.filter(
           (notification) => !isQChatMentionNotification(notification)
@@ -319,17 +319,25 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       handleQChatMention as EventListener
     );
     subscribeToEvent(
-      'notification-permission-updated',
-      handlePermissionUpdated as EventListener
+      QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+      handleMentionSettingUpdated as EventListener
     );
+    void getQChatMentionNotificationsEnabled().then((enabled) => {
+      if (enabled) return;
+      setPaymentNotifications((previous) =>
+        previous.filter(
+          (notification) => !isQChatMentionNotification(notification)
+        )
+      );
+    });
     return () => {
       unsubscribeFromEvent(
         'q-chat-mention-notification',
         handleQChatMention as EventListener
       );
       unsubscribeFromEvent(
-        'notification-permission-updated',
-        handlePermissionUpdated as EventListener
+        QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+        handleMentionSettingUpdated as EventListener
       );
     };
   }, [setPaymentNotifications]);

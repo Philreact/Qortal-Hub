@@ -2998,6 +2998,8 @@ export const ChatGroup = ({
     if (!reticulumChatEnabled) return;
     setMessages([]);
     setChatReferences({});
+    setReticulumSearchScrollTarget(null);
+    lastReticulumNotificationScrollTargetRef.current = '';
     appliedReticulumEventIdsRef.current.clear();
     processingReticulumEventIdsRef.current.clear();
   }, [reticulumChatEnabled, selectedGroup, selectedReticulumChannelId]);

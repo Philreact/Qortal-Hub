@@ -140,7 +140,6 @@ export function getProtocol(url) {
 
 export const gateways = [EXT_NODE_QORTAL_LINK];
 
-let lastGroupNotification;
 export const groupApi = 'https://' + EXT_NODE_QORTAL_LINK;
 export const groupApiSocket = 'wss://' + EXT_NODE_QORTAL_LINK;
 export const groupApiLocal = getDefaultLocalNodeUrl();
@@ -426,32 +425,6 @@ export function isUpdateMsg(data) {
   return isUpdateMessage;
 }
 
-async function checkWebviewFocus() {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      resolve(false); // No response within 1 second, assume not focused
-    }, 1000);
-    const targetOrigin = window.location.origin;
-    // Send a message to check focus
-    window.postMessage({ action: 'CHECK_FOCUS' }, targetOrigin);
-
-    // Listen for the response
-    const handleMessage = (event) => {
-      if (event.origin !== window.location.origin || event.source !== window) {
-        return;
-      }
-
-      if (event.data?.action === 'CHECK_FOCUS_RESPONSE') {
-        clearTimeout(timeout);
-        window.removeEventListener('message', handleMessage); // Clean up listener
-        resolve(event.data.isFocused); // Resolve with the response
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-  });
-}
-
 const worker = new ChatComputePowWorker();
 
 export async function performPowTask(chatBytes, difficulty) {
@@ -476,127 +449,6 @@ export async function performPowTask(chatBytes, difficulty) {
     });
   });
 }
-
-const handleNotificationDirect = async (directs) => {
-  let isFocused;
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  const isDisableNotifications =
-    (await getUserSettings({ key: 'disable-push-notifications' })) || false;
-  const dataDirects = directs.filter((direct) => direct?.sender !== address);
-  try {
-    if (isDisableNotifications) return;
-    if (!dataDirects || dataDirects?.length === 0) return;
-    isFocused = await checkWebviewFocus();
-
-    if (isFocused) {
-      throw new Error('isFocused');
-    }
-    const newActiveChats = dataDirects;
-    const oldActiveChats = await getChatHeadsDirect();
-
-    if (newActiveChats?.length === 0) return;
-
-    let newestLatestTimestamp = null;
-    let oldestLatestTimestamp = null;
-    // Find the latest timestamp from newActiveChats
-    newActiveChats?.forEach((newChat) => {
-      if (
-        !newestLatestTimestamp ||
-        newChat?.timestamp > newestLatestTimestamp?.timestamp
-      ) {
-        newestLatestTimestamp = newChat;
-      }
-    });
-
-    // Find the latest timestamp from oldActiveChats
-    oldActiveChats?.forEach((oldChat) => {
-      if (
-        !oldestLatestTimestamp ||
-        oldChat?.timestamp > oldestLatestTimestamp?.timestamp
-      ) {
-        oldestLatestTimestamp = oldChat;
-      }
-    });
-
-    if (
-      (checkDifference(newestLatestTimestamp.timestamp) &&
-        !oldestLatestTimestamp) ||
-      (newestLatestTimestamp &&
-        newestLatestTimestamp?.timestamp > oldestLatestTimestamp?.timestamp)
-    ) {
-      // Create the notification and assign the onclick handler
-      const title = `New Direct message! ${
-        newestLatestTimestamp?.name ? `from ${newestLatestTimestamp.name}` : ''
-      }`;
-      const body = 'You have received a new direct message';
-      const notificationId = encodeURIComponent(
-        'chat_notification_' +
-          Date.now() +
-          '_type=direct' +
-          `_from=${newestLatestTimestamp.address}`
-      );
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Set up the onclick event to call the handler function
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close();
-      };
-
-      setTimeout(() => {
-        notification.close();
-      }, 10000);
-    }
-  } catch (error) {
-    if (!isFocused) {
-      window
-        .sendMessage('notification', {})
-        .then((response) => {
-          if (!response?.error) {
-            // Handle success if needed
-          }
-        })
-        .catch((error) => {
-          console.error(
-            'Failed to send notification:',
-            error.message || 'An error occurred'
-          );
-        });
-
-      // Create a unique notification ID with type and sender information
-      const notificationId = encodeURIComponent(
-        'chat_notification_' + Date.now() + '_type=direct' + `_from=""`
-      );
-
-      const title = 'New Direct message!';
-      const body = 'You have received a new direct message';
-
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Handle notification click with specific actions based on `notificationId`
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close(); // Clean up the notification on click
-      };
-
-      // Automatically close the notification after 5 seconds if not clicked
-      setTimeout(() => {
-        notification.close();
-      }, 10000); // Close after 5 seconds
-    }
-  } finally {
-    setChatHeadsDirect(dataDirects);
-  }
-};
 
 async function getThreadActivity(): Promise<any | null> {
   const wallet = await getSaveWallet();
@@ -685,149 +537,6 @@ export function updateThreadActivity({
     localStorage.setItem(key, JSON.stringify(threads));
   });
 }
-
-const handleNotification = async (groups) => {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  const isDisableNotifications =
-    (await getUserSettings({ key: 'disable-push-notifications' })) || false;
-
-  let mutedGroups = (await getUserSettings({ key: 'mutedGroups' })) || [];
-  if (!isArray(mutedGroups)) mutedGroups = [];
-  mutedGroups.push('0');
-  let isFocused;
-  const data = groups.filter(
-    (group) => group?.sender !== address && !mutedGroups.includes(group.groupId)
-  );
-  const dataWithUpdates = groups.filter(
-    (group) => group?.sender !== address && !mutedGroups.includes(group.groupId)
-  );
-
-  try {
-    if (isDisableNotifications) return;
-    if (!data || data?.length === 0) return;
-    isFocused = await checkWebviewFocus();
-
-    if (isFocused) {
-      throw new Error('isFocused');
-    }
-    const newActiveChats = data;
-    const oldActiveChats = await getChatHeads();
-
-    let newestLatestTimestamp = null;
-    let oldestLatestTimestamp = null;
-    // Find the latest timestamp from newActiveChats
-    newActiveChats?.forEach((newChat) => {
-      if (
-        !newestLatestTimestamp ||
-        newChat?.timestamp > newestLatestTimestamp?.timestamp
-      ) {
-        newestLatestTimestamp = newChat;
-      }
-    });
-
-    // Find the latest timestamp from oldActiveChats
-    oldActiveChats?.forEach((oldChat) => {
-      if (
-        !oldestLatestTimestamp ||
-        oldChat?.timestamp > oldestLatestTimestamp?.timestamp
-      ) {
-        oldestLatestTimestamp = oldChat;
-      }
-    });
-
-    if (
-      (checkDifference(newestLatestTimestamp.timestamp) &&
-        !oldestLatestTimestamp) ||
-      (newestLatestTimestamp &&
-        newestLatestTimestamp?.timestamp > oldestLatestTimestamp?.timestamp)
-    ) {
-      if (
-        !lastGroupNotification ||
-        Date.now() - lastGroupNotification >= 120000
-      ) {
-        if (!newestLatestTimestamp?.data) return;
-
-        // Create a unique notification ID with type and group information
-        const notificationId = encodeURIComponent(
-          'chat_notification_' +
-            Date.now() +
-            '_type=group' +
-            `_from=${newestLatestTimestamp.groupId}`
-        );
-
-        const title = 'New Group Message!';
-        const body = `You have received a new message from ${newestLatestTimestamp?.groupName}`;
-
-        const notification = new window.Notification(title, {
-          body,
-          icon: window.location.origin + '/qortal192.png',
-          data: { id: notificationId },
-        });
-
-        // Handle notification click with specific actions based on `notificationId`
-        notification.onclick = () => {
-          handleNotificationClick(notificationId);
-          notification.close(); // Clean up the notification on click
-        };
-
-        // Automatically close the notification after 5 seconds if not clicked
-        setTimeout(() => {
-          notification.close();
-        }, 10000); // Close after 5 seconds
-
-        lastGroupNotification = Date.now();
-      }
-    }
-  } catch (error) {
-    if (!isFocused) {
-      window
-        .sendMessage('notification', {})
-        .then((response) => {
-          if (!response?.error) {
-            // Handle success if needed
-          }
-        })
-        .catch((error) => {
-          console.error(
-            'Failed to send notification:',
-            error.message || 'An error occurred'
-          );
-        });
-
-      // Generate a unique notification ID
-      const notificationId = encodeURIComponent(
-        'chat_notification_' + Date.now()
-      );
-
-      const title = 'New Group Message!';
-      const body = 'You have received a new message from one of your groups';
-
-      // Create and show the notification immediately
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Handle notification click, allowing specific actions based on `notificationId`
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close(); // Clean up the notification on click
-      };
-
-      // Automatically close the notification after 5 seconds if it’s not clicked
-      setTimeout(() => {
-        notification.close();
-      }, 10000); // Close after 5 seconds
-
-      lastGroupNotification = Date.now();
-    }
-  } finally {
-    if (!data || data?.length === 0) return;
-    setChatHeads(dataWithUpdates);
-  }
-};
 
 const forceCloseWebSocket = () => {
   if (socket) {
@@ -1518,8 +1227,6 @@ export async function handleActiveGroupDataFromSocket({ groups, directs }) {
       targetOrigin
     );
 
-    groups = groups;
-    directs = directs;
     const activeData = {
       groups: groups || [], // Your groups data here
       directs: directs || [], // Your directs data here
@@ -1528,13 +1235,6 @@ export async function handleActiveGroupDataFromSocket({ groups, directs }) {
     storeData('active-groups-directs', activeData).catch((error) => {
       console.error('Error saving data:', error);
     });
-
-    try {
-      handleNotification(groups);
-      handleNotificationDirect(directs);
-    } catch (error) {
-      console.log(error);
-    }
   } catch (error) {
     console.log(error);
   }
@@ -2871,18 +2571,6 @@ export function removeDuplicateWindow(popupUrl) {
   // );
 }
 
-export async function setChatHeads(data) {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  return await new Promise((resolve, reject) => {
-    storeData(`chatheads-${address}`, data)
-      .then(() => resolve(true))
-      .catch((error) => {
-        reject(new Error(error.message || 'Error saving data'));
-      });
-  });
-}
-
 export async function checkLocalFunc() {
   const apiKey = await getApiKeyFromStorage();
   return !!apiKey;
@@ -2941,18 +2629,6 @@ export async function saveTempPublish({ data, key }) {
   return await new Promise((resolve, reject) => {
     storeData(`tempPublish-${address}`, newTemp)
       .then(() => resolve(newTemp[key]))
-      .catch((error) => {
-        reject(new Error(error.message || 'Error saving data'));
-      });
-  });
-}
-
-async function setChatHeadsDirect(data) {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  return await new Promise((resolve, reject) => {
-    storeData(`chatheads-direct-${address}`, data)
-      .then(() => resolve(true))
       .catch((error) => {
         reject(new Error(error.message || 'Error saving data'));
       });
@@ -3201,32 +2877,6 @@ export async function notifyAdminRegenerateSecretKey({
     messageText: `<p>Member ${nameOrAddress} has requested that you regenerate the group's secret key. Group: ${groupName}</p>`,
   });
   return true;
-}
-
-async function getChatHeads() {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  const key = `chatheads-${address}`;
-  const res = await getData<any>(key).catch(() => null);
-  if (res) {
-    const parsedData = res;
-    return parsedData;
-  } else {
-    throw new Error('No Chatheads saved');
-  }
-}
-
-async function getChatHeadsDirect() {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  const key = `chatheads-direct-${address}`;
-  const res = await getData<any>(key).catch(() => null);
-  if (res) {
-    const parsedData = res;
-    return parsedData;
-  } else {
-    throw new Error('No Chatheads saved');
-  }
 }
 
 function setupMessageListener() {

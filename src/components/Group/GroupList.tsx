@@ -90,14 +90,11 @@ import { getNameInfo } from './groupApi';
 import { requestQueueMemberNames } from './groupQueues';
 import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
 import {
-  getNotificationPermissionKey,
-  getPermission,
-  setPermission,
-} from '../../qortal/qortal-requests';
-import {
-  subscribeToEvent,
-  unsubscribeFromEvent,
-} from '../../utils/events';
+  getQChatMentionNotificationsEnabled,
+  QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+  setQChatMentionNotificationsEnabled,
+} from '../../utils/qChatMentionNotifications';
+import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import {
   ReticulumUnreadCountBadge,
   RETICULUM_NOTIFICATION_RED,
@@ -443,34 +440,31 @@ const ReticulumChatSettingsDialog = ({
   >('accessibility');
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
   const [mentionNotificationsEnabled, setMentionNotificationsEnabled] =
-    useState(false);
-  const qChatNotificationPermissionKey =
-    getNotificationPermissionKey('Q-Chat');
+    useState(true);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    void getPermission(qChatNotificationPermissionKey).then((permission) => {
-      if (!cancelled) setMentionNotificationsEnabled(permission === true);
+    void getQChatMentionNotificationsEnabled().then((enabled) => {
+      if (!cancelled) setMentionNotificationsEnabled(enabled);
     });
-    const handlePermissionUpdated = (
-      event: CustomEvent<{ key?: string; value?: boolean }>
+    const handleSettingUpdated = (
+      event: CustomEvent<{ enabled?: boolean }>
     ) => {
-      if (event.detail?.key !== qChatNotificationPermissionKey) return;
-      setMentionNotificationsEnabled(event.detail.value === true);
+      setMentionNotificationsEnabled(event.detail?.enabled === true);
     };
     subscribeToEvent(
-      'notification-permission-updated',
-      handlePermissionUpdated as EventListener
+      QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+      handleSettingUpdated as EventListener
     );
     return () => {
       cancelled = true;
       unsubscribeFromEvent(
-        'notification-permission-updated',
-        handlePermissionUpdated as EventListener
+        QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+        handleSettingUpdated as EventListener
       );
     };
-  }, [open, qChatNotificationPermissionKey]);
+  }, [open]);
   const navButtonSx = (selected: boolean) => ({
     alignItems: 'center',
     backgroundColor: selected ? theme.palette.action.hover : 'transparent',
@@ -759,17 +753,16 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Add a notification when someone mentions you in a channel.
+                    Alert me when someone mentions me in a channel.
                   </Typography>
                 </Box>
                 <Switch
                   checked={mentionNotificationsEnabled === true}
                   inputProps={{ 'aria-label': 'Mention notifications' }}
                   onChange={(_, checked) => {
-                    setMentionNotificationsEnabled(checked)
-                    void setPermission(
-                      qChatNotificationPermissionKey,
-                      checked
+                    setMentionNotificationsEnabled(checked);
+                    void setQChatMentionNotificationsEnabled(checked).catch(
+                      () => setMentionNotificationsEnabled(!checked)
                     );
                   }}
                 />
@@ -1956,9 +1949,7 @@ const GroupItem = memo(
                         timeDifferenceForNotificationChats) ||
                       timestampEnterData < group?.timestamp))) && (
                   <ReticulumUnreadCountBadge
-                    count={
-                      hasReticulumUnread ? reticulumUnreadCount : null
-                    }
+                    count={hasReticulumUnread ? reticulumUnreadCount : null}
                     outlineColor={theme.palette.background.surface}
                     sx={{
                       bottom: -2,

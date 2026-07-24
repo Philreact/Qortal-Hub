@@ -124,12 +124,6 @@ import { useWebsocketStatus } from './useWebsocketStatus';
 import { DirectsSidebar } from './DirectsSidebar';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
-import { getNotificationPermission } from '../../qortal/get';
-import {
-  getNotificationPermissionKey,
-  getPermission,
-  setPermission,
-} from '../../qortal/qortal-requests';
 import {
   AdminRowBox,
   CenterBox,
@@ -148,7 +142,6 @@ import {
 } from './Group.styles';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
-const qChatNotificationPermissionRequests = new Map<string, Promise<void>>();
 
 // Keeps the Reticulum chat tree out of unrelated Group-shell re-renders. The
 // legacy ChatGroup instance below deliberately retains its existing behavior.
@@ -301,11 +294,6 @@ const getReticulumMentionBadgeStateForRefresh = (
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX = 10_000;
 const RETICULUM_DIRECT_NAME_RETRY_DELAY_MS = 5 * 60_000;
-const RETICULUM_OS_NOTIFICATION_EVENT_TYPES = new Set([
-  'message',
-  'attachment_manifest',
-]);
-const RETICULUM_OS_NOTIFICATION_MAX_TRACKED = 500;
 
 const getGroupIdFromGroupLike = (group: unknown): number | null => {
   if (!group || typeof group !== 'object') return null;
@@ -979,14 +967,10 @@ export const Group = ({
   const reticulumDirectSummariesRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const previousReticulumSummariesRef = useRef<Record<string, any> | null>(
-    null
-  );
   const reticulumMentionBadgeSummariesRef = useRef<Record<
     string,
     ReticulumNotificationSummary
   > | null>(null);
-  const notifiedReticulumEventIdsRef = useRef<Set<string>>(new Set());
   const activeReticulumChannelIdRef = useRef('general');
   const bumpReticulumReadEntryToken = useCallback(() => {
     setReticulumReadEntryToken((token) => token + 1);
@@ -1445,176 +1429,6 @@ export const Group = ({
     }
   }, []);
 
-  const fireReticulumChatNotification = useCallback(
-    async ({
-      channelId,
-      event,
-      groupId,
-      hasMention,
-    }: {
-      channelId: string;
-      event: ReticulumBackgroundEvent;
-      groupId: number;
-      hasMention: boolean;
-    }) => {
-      if (typeof window === 'undefined' || !('Notification' in window)) return;
-      const disabled = await window
-        .sendMessage('getUserSettings', {
-          key: 'disable-push-notifications',
-        })
-        .catch(() => false);
-      if (disabled) return;
-      if (window.Notification.permission === 'default') {
-        await window.Notification.requestPermission().catch(() => null);
-      }
-      if (window.Notification.permission !== 'granted') return;
-
-      const group = memberGroupsRef.current?.find(
-        (item: any) => Number(item?.groupId) === groupId
-      );
-      const groupName =
-        group?.groupName || group?.name || `Group ${String(groupId)}`;
-      const channelName = reticulumChannelDisplayName(channelId);
-      const author =
-        event.authorPrimaryName ||
-        event.authorAddress ||
-        (hasMention ? 'Someone' : 'New message');
-      const payload = parseReticulumPublicPayload(event.encryptedPayload);
-      const preview = reticulumTextFromPayload(payload).slice(0, 140);
-      const title = hasMention
-        ? `Mention in ${groupName} / ${channelName}`
-        : `New message in ${groupName} / ${channelName}`;
-      const body = preview
-        ? `${author}: ${preview}`
-        : hasMention
-          ? `You were mentioned in ${groupName}`
-          : `You have a new message in ${groupName}`;
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { groupId, channelId, eventId: event.eventId },
-      });
-      notification.onclick = () => {
-        if (typeof window?.electronAPI?.focusWindow === 'function') {
-          window.electronAPI.focusWindow();
-        }
-        setNotificationReticulumChannelId(channelId);
-        executeEvent('openGroupMessage', {
-          from: groupId,
-          channelId,
-          eventId: event.eventId,
-        });
-        notification.close();
-      };
-      setTimeout(() => notification.close(), 10000);
-    },
-    []
-  );
-
-  const maybeFireReticulumChatNotification = useCallback(
-    async (previous: Record<string, any> | null, next: Record<string, any>) => {
-      if (!previous || !myAddressRef.current) return;
-      const muted = Array.isArray(mutedGroups)
-        ? mutedGroups.map((groupId) => String(groupId))
-        : [];
-      const candidates: Array<{
-        channelId: string;
-        event: ReticulumBackgroundEvent;
-        groupId: number;
-        hasMention: boolean;
-        timestamp: number;
-      }> = [];
-      for (const summary of Object.values(
-        next
-      ) as ReticulumNotificationSummary[]) {
-        const groupId = Number(summary?.groupId);
-        if (!Number.isInteger(groupId) || groupId <= 0) continue;
-        if (muted.includes(String(groupId))) continue;
-        const previousSummary = previous[String(groupId)] as
-          | ReticulumNotificationSummary
-          | undefined;
-        const previousChannels = Array.isArray(previousSummary?.channels)
-          ? previousSummary.channels
-          : [];
-        const channels = Array.isArray(summary?.channels)
-          ? summary.channels
-          : summary?.channelId
-            ? [summary]
-            : [];
-        for (const channel of channels) {
-          const event = channel?.lastEvent;
-          const eventId =
-            typeof event?.eventId === 'string' ? event.eventId : '';
-          const eventType =
-            typeof event?.eventType === 'string' ? event.eventType : '';
-          const channelId = String(
-            channel?.channelId || event?.channelId || 'general'
-          );
-          if (
-            !eventId ||
-            !RETICULUM_OS_NOTIFICATION_EVENT_TYPES.has(eventType)
-          ) {
-            continue;
-          }
-          if (event?.authorAddress === myAddressRef.current) continue;
-          if (notifiedReticulumEventIdsRef.current.has(eventId)) continue;
-          const previousChannel =
-            previousChannels.find(
-              (item) => String(item?.channelId || 'general') === channelId
-            ) ||
-            (String(previousSummary?.channelId || '') === channelId
-              ? previousSummary
-              : null);
-          if (previousChannel?.lastEvent?.eventId === eventId) continue;
-          const unreadCount = Math.max(0, Number(channel?.unreadCount) || 0);
-          const previousUnreadCount = Math.max(
-            0,
-            Number(previousChannel?.unreadCount) || 0
-          );
-          const mentionCount = Math.max(0, Number(channel?.mentionCount) || 0);
-          const previousMentionCount = Math.max(
-            0,
-            Number(previousChannel?.mentionCount) || 0
-          );
-          if (
-            unreadCount <= 0 ||
-            (unreadCount <= previousUnreadCount &&
-              mentionCount <= previousMentionCount)
-          ) {
-            continue;
-          }
-          const isViewingThisChannel =
-            Number(selectedGroupRef.current?.groupId) === groupId &&
-            groupSectionRef.current === 'chat' &&
-            activeReticulumChannelIdRef.current === channelId &&
-            (desktopViewModeRef.current === 'chat' ||
-              qChatTabActiveRef.current ||
-              mobileViewModeRef.current === 'chat');
-          if (isViewingThisChannel) continue;
-          candidates.push({
-            channelId,
-            event,
-            groupId,
-            hasMention: mentionCount > previousMentionCount,
-            timestamp: Number(event?.timestamp || channel?.updatedAt || 0),
-          });
-        }
-      }
-      const newest = candidates.sort((a, b) => b.timestamp - a.timestamp)[0];
-      if (!newest?.event?.eventId) return;
-      notifiedReticulumEventIdsRef.current.add(newest.event.eventId);
-      if (
-        notifiedReticulumEventIdsRef.current.size >
-        RETICULUM_OS_NOTIFICATION_MAX_TRACKED
-      ) {
-        const [oldest] = notifiedReticulumEventIdsRef.current;
-        if (oldest) notifiedReticulumEventIdsRef.current.delete(oldest);
-      }
-      await fireReticulumChatNotification(newest);
-    },
-    [fireReticulumChatNotification, mutedGroups]
-  );
-
   const syncReticulumMentionNotifications = useCallback(
     (summaries: Record<string, ReticulumNotificationSummary>) => {
       for (const group of memberGroupsRef.current || []) {
@@ -1674,7 +1488,6 @@ export const Group = ({
         const enabled = await window.reticulumChat?.isEnabled?.();
         setReticulumChatEnabled(enabled === true);
         if (!enabled) {
-          previousReticulumSummariesRef.current = null;
           reticulumMentionBadgeSummariesRef.current = null;
           setReticulumChatSummaries({});
           void window.reticulumChat?.updateMentionBadge?.(0);
@@ -1706,8 +1519,6 @@ export const Group = ({
           },
           {} as Record<string, any>
         );
-        const previous = previousReticulumSummariesRef.current;
-        previousReticulumSummariesRef.current = next;
         setReticulumChatSummaries(next);
         syncReticulumMentionNotifications(next);
         const badgeState = getReticulumMentionBadgeStateForRefresh(
@@ -1718,7 +1529,6 @@ export const Group = ({
         );
         reticulumMentionBadgeSummariesRef.current = badgeState.summaries;
         void window.reticulumChat?.updateMentionBadge?.(badgeState.count);
-        void maybeFireReticulumChatNotification(previous, next);
         return true;
       } catch (error) {
         console.error(
@@ -1728,7 +1538,6 @@ export const Group = ({
         return false;
       }
     }, [
-      maybeFireReticulumChatNotification,
       myAddress,
       setReticulumChatEnabled,
       setReticulumChatSummaries,
@@ -1750,8 +1559,6 @@ export const Group = ({
     setReticulumAdminGroupsLoadedAddress('');
     setReticulumMembershipsAppliedKey('');
     setReticulumSummariesLoadedMembershipKey('');
-    previousReticulumSummariesRef.current = null;
-    notifiedReticulumEventIdsRef.current.clear();
     if (!myAddress) {
       reticulumMentionBadgeSummariesRef.current = null;
       void window.reticulumChat?.updateMentionBadge?.(0);
@@ -3678,38 +3485,6 @@ export const Group = ({
     if (!reticulumChatEnabled) return undefined;
     return startReticulumGroupScoreScheduler();
   }, [reticulumChatEnabled]);
-
-  useEffect(() => {
-    if (
-      !isQChatTabActive ||
-      !reticulumChatEnabled ||
-      !myAddress
-    ) {
-      return;
-    }
-    const permissionKey = getNotificationPermissionKey('Q-Chat', myAddress);
-    if (qChatNotificationPermissionRequests.has(permissionKey)) return;
-    const request = (async () => {
-      const storedPermission = await getPermission(permissionKey);
-      if (storedPermission !== null) return;
-      try {
-        await getNotificationPermission({
-          appInfo: { name: 'Q-Chat' },
-        });
-      } catch {
-        // The standard Q-App flow only persists acceptance. Persisting a
-        // decline prevents Q-Chat from asking again on every mount.
-        await setPermission(permissionKey, false);
-      }
-    })().finally(() => {
-      qChatNotificationPermissionRequests.delete(permissionKey);
-    });
-    qChatNotificationPermissionRequests.set(permissionKey, request);
-  }, [
-    isQChatTabActive,
-    myAddress,
-    reticulumChatEnabled,
-  ]);
 
   useEffect(() => {
     subscribeToEvent('open-group-discovery', openGroupDiscovery);

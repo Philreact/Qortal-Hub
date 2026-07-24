@@ -584,10 +584,20 @@ export const ChatList = ({
           }
         }
         if (isInitialLoad) {
-          if (scrollToMessageId) {
+          if (scrollToMessageId && !reticulumChatEnabled) {
             hasLoadedInitialRef.current = true;
             return;
           }
+          const reticulumScrollTargetIndex =
+            reticulumChatEnabled && scrollToMessageId
+              ? totalMessages.findIndex(
+                  (message) =>
+                    message.signature === scrollToMessageId ||
+                    message.tempSignature === scrollToMessageId ||
+                    message.identifier === scrollToMessageId ||
+                    message.message?.signature === scrollToMessageId
+                )
+              : -1;
           const findDivideIndex = totalMessages.findIndex(
             (item) => !!item?.divide
           );
@@ -604,7 +614,13 @@ export const ChatList = ({
             pendingInitialReticulumUnreadIndexRef.current = null;
             pendingInitialReticulumBottomRef.current = false;
             window.requestAnimationFrame(() => {
-              if (typeof unreadIndex === 'number') {
+              if (reticulumScrollTargetIndex >= 0) {
+                scrollToIndexAfterMeasurements(
+                  reticulumScrollTargetIndex,
+                  'start',
+                  [30, 60]
+                );
+              } else if (typeof unreadIndex === 'number') {
                 scrollToIndexAfterMeasurements(unreadIndex, 'start', [30, 60]);
               } else {
                 // Let the virtualizer keep the final row targeted while its
