@@ -36,7 +36,7 @@ import ImageResize from 'tiptap-extension-resize-image'; // Import the ResizeIma
 import tippy from 'tippy.js';
 import 'tippy.js/dist/tippy.css';
 import { ReactRenderer } from '@tiptap/react';
-import MentionList from './MentionList.jsx';
+import MentionList from './MentionList';
 import { isDisabledEditorEnterAtom } from '../../atoms/global.js';
 import { Box, Checkbox, Tooltip, Typography, useTheme } from '@mui/material';
 import { useAtom } from 'jotai';
@@ -513,6 +513,7 @@ type TiptapProps = {
   setIsFocusedParent: React.Dispatch<React.SetStateAction<boolean>>;
   isFocusedParent: boolean;
   membersWithNames?: unknown[];
+  mentionSuggestions?: MentionSuggestionItem[];
   enableMentions?: boolean;
   insertImage?: (image: any) => void;
   insertFiles?: (files: File[]) => void | Promise<void>;
@@ -520,6 +521,15 @@ type TiptapProps = {
   compactActions?: ReactNode;
   placeholder?: string;
   collapseFormattingTraySignal?: number;
+};
+
+export type MentionSuggestionItem = {
+  id: string;
+  label: string;
+  section: 'people' | 'special' | 'channels';
+  kind: 'person' | 'here' | 'everyone' | 'channel';
+  description: string;
+  iconText?: string;
 };
 
 const Tiptap = ({
@@ -536,6 +546,7 @@ const Tiptap = ({
   overrideMobile,
   customEditorHeight,
   membersWithNames = [],
+  mentionSuggestions,
   enableMentions,
   insertImage,
   insertFiles,
@@ -615,13 +626,18 @@ const Tiptap = ({
   );
 
   const users = useMemo(() => {
+    if (mentionSuggestions) return mentionSuggestions;
     return (membersWithNames || [])?.map((item) => {
+      const label = String(item || '').trim();
       return {
-        id: item,
-        label: item,
+        id: label,
+        label,
+        section: 'people' as const,
+        kind: 'person' as const,
+        description: 'Member',
       };
-    });
-  }, [membersWithNames]);
+    }).filter((item) => item.label);
+  }, [membersWithNames, mentionSuggestions]);
 
   const usersRef = useRef([]);
   useEffect(() => {
@@ -642,12 +658,42 @@ const Tiptap = ({
         HTMLAttributes: {
           class: 'mention',
         },
-        suggestion: {
-          items: ({ query }) => {
-            if (!query) return usersRef?.current;
-            return usersRef?.current?.filter((user) =>
-              user.label.toLowerCase().includes(query.toLowerCase())
-            );
+          suggestion: {
+            items: ({ query }) => {
+            const normalizedQuery = query.trim().toLowerCase();
+            if (!normalizedQuery) return usersRef.current;
+            const sectionOrder: Record<
+              MentionSuggestionItem['section'],
+              number
+            > = {
+              people: 0,
+              special: 1,
+              channels: 2,
+            };
+            const matchRank = (label: string) => {
+              const normalizedLabel = label.toLowerCase();
+              if (normalizedLabel === normalizedQuery) return 0;
+              if (normalizedLabel.startsWith(normalizedQuery)) return 1;
+              if (
+                normalizedLabel
+                  .split(/[\s_-]+/)
+                  .some((part) => part.startsWith(normalizedQuery))
+              ) {
+                return 2;
+              }
+              return normalizedLabel.includes(normalizedQuery) ? 3 : -1;
+            };
+            return usersRef.current
+              .map((item) => ({ item, rank: matchRank(item.label) }))
+              .filter(({ rank }) => rank >= 0)
+              .sort(
+                (left, right) =>
+                  sectionOrder[left.item.section] -
+                    sectionOrder[right.item.section] ||
+                  left.rank - right.rank ||
+                  left.item.label.localeCompare(right.item.label)
+              )
+              .map(({ item }) => item);
           },
           render: () => {
             let popup; // Reference to the Tippy.js instance
@@ -671,7 +717,10 @@ const Tiptap = ({
                   showOnCreate: true,
                   interactive: true,
                   trigger: 'manual',
-                  placement: 'bottom-start',
+                  placement: 'top-start',
+                  offset: [0, 16],
+                  maxWidth: 'none',
+                  theme: 'qchat-mention',
                 });
               },
 

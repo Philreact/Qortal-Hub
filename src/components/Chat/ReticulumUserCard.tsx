@@ -23,6 +23,7 @@ import { executeEvent } from '../../utils/events';
 import { statusDotColor } from '../../hooks/usePresence';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
+import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 
 export type ReticulumUserCardData = {
   address: string;
@@ -315,27 +316,29 @@ export const ReticulumUserCard = ({
           </Box>
 
           <Box sx={{ minWidth: 0, pt: 0.15 }}>
-            <Typography
-              sx={{
-                color: data.roleColor || theme.palette.text.primary,
-                fontSize: 21,
-                fontWeight: 750,
-                lineHeight: '26px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {displayName}
+            <Box sx={{ alignItems: 'center', display: 'flex', gap: 1, minWidth: 0 }}>
+              <Typography
+                sx={{
+                  color: data.roleColor || theme.palette.text.primary,
+                  fontSize: 21,
+                  fontWeight: 750,
+                  lineHeight: '26px',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {displayName}
+              </Typography>
               {data.role && (
-                <Box
-                  component="span"
-                  sx={{ color: data.roleColor, fontSize: 12, fontWeight: 500, ml: 0.7 }}
-                >
-                  ({data.role === 'owner' ? 'Owner' : 'Admin'})
-                </Box>
+                <ReticulumRoleBadge
+                  color={data.roleColor}
+                  role={data.role}
+                  size="card"
+                />
               )}
-            </Typography>
+            </Box>
             <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.85, mt: 0.45 }}>
               <Box
                 aria-hidden

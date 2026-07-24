@@ -17,7 +17,7 @@ import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { MAX_SIZE_MESSAGE } from '../../constants/constants';
-import Tiptap from './TipTap';
+import Tiptap, { type MentionSuggestionItem } from './TipTap';
 import { MessageItem } from './MessageItem';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
@@ -50,6 +50,7 @@ type ReticulumDiscussionDialogProps = {
   files: ReticulumDiscussionFile[];
   loading: boolean;
   membersWithNames: unknown[];
+  mentionSuggestions?: MentionSuggestionItem[];
   messages: any[];
   myAddress: string;
   onClose: () => void;
@@ -79,6 +80,7 @@ export const ReticulumDiscussionDialog = ({
   files,
   loading,
   membersWithNames,
+  mentionSuggestions,
   messages,
   myAddress,
   onClose,
@@ -188,55 +190,78 @@ export const ReticulumDiscussionDialog = ({
       open={open}
       PaperProps={{
         sx: {
-          backgroundColor: theme.palette.background.default,
-          backgroundImage: 'none',
+          background:
+            theme.palette.mode === 'dark'
+              ? 'linear-gradient(180deg, rgba(15, 19, 27, 0.98) 0%, rgba(9, 12, 18, 0.98) 100%)'
+              : 'linear-gradient(180deg, rgba(250, 251, 253, 0.98) 0%, rgba(242, 245, 249, 0.98) 100%)',
           border: '1px solid',
-          borderColor: alpha(theme.palette.divider, 0.9),
-          borderRadius: '12px',
-          boxShadow: '0 26px 80px rgba(0,0,0,0.58)',
-          height: { xs: '88vh', sm: '80vh' },
-          m: { xs: 1, sm: 2.5 },
-          maxWidth: 720,
+          borderColor:
+            theme.palette.mode === 'dark'
+              ? 'rgba(126, 139, 166, 0.2)'
+              : 'rgba(38, 52, 74, 0.16)',
+          borderRadius: '14px',
+          boxShadow:
+            theme.palette.mode === 'dark'
+              ? '0 22px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.02)'
+              : '0 22px 70px rgba(27, 39, 58, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.72)',
+          height: 'min(782px, calc(100vh - 24px))',
+          m: { xs: 1, sm: 1.5 },
+          maxWidth: 935,
           overflow: 'hidden',
-          width: { xs: 'calc(100vw - 16px)', sm: 'min(720px, 62vw)' },
+          width: 'min(935px, calc(100vw - 32px))',
         },
       }}
     >
       <Box
         sx={{
           alignItems: 'center',
-          backgroundColor: alpha(theme.palette.background.paper, 0.72),
           borderBottom: '1px solid',
           borderColor: 'divider',
           display: 'flex',
           justifyContent: 'space-between',
-          minHeight: 62,
-          px: 2,
+          minHeight: 92,
+          px: '22px',
+          pb: '15px',
+          pt: '18px',
         }}
       >
-        <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.15 }}>
+        <Box sx={{ alignItems: 'center', display: 'flex', gap: 2 }}>
           <Box
             sx={{
               alignItems: 'center',
-              backgroundColor: alpha(RETICULUM_BLUE, 0.14),
-              border: `1px solid ${alpha(RETICULUM_BLUE, 0.32)}`,
-              borderRadius: '9px',
-              color: RETICULUM_BLUE,
+              backgroundColor: alpha(theme.palette.text.primary, 0.06),
+              border: `1px solid ${alpha(theme.palette.text.primary, 0.12)}`,
+              borderRadius: '12px',
+              color: alpha(theme.palette.text.primary, 0.58),
               display: 'flex',
-              height: 36,
+              height: 42,
               justifyContent: 'center',
-              width: 36,
+              width: 42,
             }}
           >
-            <ForumRoundedIcon sx={{ fontSize: 20 }} />
+            <ForumRoundedIcon sx={{ fontSize: 22 }} />
           </Box>
           <Box>
             <Typography
-              sx={{ fontSize: 16, fontWeight: 750, lineHeight: 1.25 }}
+              sx={{
+                color: 'text.primary',
+                fontSize: 24,
+                fontWeight: 700,
+                letterSpacing: '-0.025em',
+                lineHeight: '30px',
+              }}
             >
               Discussion
             </Typography>
-            <Typography sx={{ color: 'text.secondary', fontSize: 12 }}>
+            <Typography
+              sx={{
+                color: 'text.secondary',
+                fontSize: 14,
+                fontWeight: 500,
+                lineHeight: '18px',
+                mt: '2px',
+              }}
+            >
               {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
             </Typography>
           </Box>
@@ -246,7 +271,16 @@ export const ReticulumDiscussionDialog = ({
           disabled={closeDisabled}
           onClick={closeDisabled ? undefined : onClose}
           size="small"
-          sx={{ color: 'text.secondary' }}
+          sx={{
+            backgroundColor: alpha(theme.palette.text.primary, 0.025),
+            border: `1px solid ${alpha(theme.palette.text.primary, 0.14)}`,
+            color: 'text.primary',
+            height: 40,
+            width: 40,
+            '&:hover': {
+              backgroundColor: alpha(theme.palette.text.primary, 0.07),
+            },
+          }}
         >
           <CloseRoundedIcon />
         </IconButton>
@@ -255,7 +289,14 @@ export const ReticulumDiscussionDialog = ({
       <Box
         data-reticulum-chat-root="true"
         ref={scrollRef}
-        sx={{ flex: 1, minHeight: 0, overflowY: 'auto', py: 1 }}
+        sx={{
+          '--discussion-body-text-color': theme.palette.text.primary,
+          flex: 1,
+          minHeight: 0,
+          overflowX: 'hidden',
+          overflowY: 'auto',
+          py: 0,
+        }}
       >
         {loading ? (
           <Box sx={{ display: 'grid', height: '100%', placeItems: 'center' }}>
@@ -287,51 +328,102 @@ export const ReticulumDiscussionDialog = ({
                   key={virtualRow.key}
                   ref={rowVirtualizer.measureElement}
                   sx={{
-                    borderLeft:
-                      index === 0 ? `2px solid ${RETICULUM_BLUE}` : undefined,
+                    boxSizing: 'border-box',
                     left: 0,
+                    maxWidth: '100%',
+                    overflow: 'hidden',
+                    px: '22px',
+                    pb: index === 0 ? '24px' : '10px',
+                    pt: index === 0 ? '20px' : 0,
                     position: 'absolute',
                     top: 0,
                     transform: `translateY(${virtualRow.start}px)`,
                     width: '100%',
                   }}
                 >
-                  <MessageItem
-                    handleReaction={() => undefined}
-                    isLast={index === messages.length - 1}
-                    isPrivate={false}
-                    isTemp={false}
-                    isUpdating={false}
-                    lastSignature={String(messages.at(-1)?.signature || '')}
-                    message={message}
-                    myAddress={myAddress}
-                    onDelete={() => undefined}
-                    onEdit={() => undefined}
-                    onReply={() => undefined}
-                    onSeen={() => undefined}
-                    reactions={null}
-                    reply={reply}
-                    replyIndex={0}
-                    reticulumChatEnabled
-                    reticulumDiscussionRootId={String(
-                      rootMessage?.signature || ''
-                    )}
-                    reticulumDiscussionView
-                    reticulumGroupAvatarOwnerName={
-                      reticulumGroupAvatarOwnerName
-                    }
-                    reticulumGroupDisplayName={reticulumGroupDisplayName}
-                    reticulumMemberJoinedByAddress={
-                      reticulumMemberJoinedByAddress
-                    }
-                    reticulumMemberRolesByAddress={
-                      reticulumMemberRolesByAddress
-                    }
-                    reticulumMemberRolesReady={reticulumMemberRolesReady}
-                    reticulumMentionUsers={reticulumMentionUsers}
-                    scrollToItem={() => undefined}
-                    selectedGroup={selectedGroup}
-                  />
+                  {(index === 0 || index === 1) && (
+                    <Typography
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: 12,
+                        fontWeight: 700,
+                        letterSpacing: '0.11em',
+                        lineHeight: '16px',
+                        mb: '14px',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {index === 0 ? 'Initial Post' : 'Replies:'}
+                    </Typography>
+                  )}
+                  <Box
+                    className={`reticulum-discussion-message ${
+                      index === 0
+                        ? 'reticulum-discussion-message--initial'
+                        : 'reticulum-discussion-message--reply'
+                    }`}
+                    sx={{
+                      backgroundColor:
+                        index === 0
+                          ? theme.palette.mode === 'dark'
+                            ? '#1b1f27'
+                            : '#eef2f6'
+                          : theme.palette.mode === 'dark'
+                            ? '#171a21'
+                            : '#f5f7fa',
+                      border: '1px solid',
+                      borderColor:
+                        index === 0
+                          ? alpha(theme.palette.primary.main, 0.22)
+                          : alpha(theme.palette.text.primary, 0.08),
+                      borderRadius: '14px',
+                      boxShadow:
+                        index === 0
+                          ? 'inset 0 1px 0 rgba(255, 255, 255, 0.02)'
+                          : 'none',
+                      maxWidth: '100%',
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      p: index === 0 ? '18px' : '16px 18px',
+                    }}
+                  >
+                    <MessageItem
+                      handleReaction={() => undefined}
+                      isLast={index === messages.length - 1}
+                      isPrivate={false}
+                      isTemp={false}
+                      isUpdating={false}
+                      lastSignature={String(messages.at(-1)?.signature || '')}
+                      message={message}
+                      myAddress={myAddress}
+                      onDelete={() => undefined}
+                      onEdit={() => undefined}
+                      onReply={() => undefined}
+                      onSeen={() => undefined}
+                      reactions={null}
+                      reply={reply}
+                      replyIndex={0}
+                      reticulumChatEnabled
+                      reticulumDiscussionRootId={String(
+                        rootMessage?.signature || ''
+                      )}
+                      reticulumDiscussionView
+                      reticulumGroupAvatarOwnerName={
+                        reticulumGroupAvatarOwnerName
+                      }
+                      reticulumGroupDisplayName={reticulumGroupDisplayName}
+                      reticulumMemberJoinedByAddress={
+                        reticulumMemberJoinedByAddress
+                      }
+                      reticulumMemberRolesByAddress={
+                        reticulumMemberRolesByAddress
+                      }
+                      reticulumMemberRolesReady={reticulumMemberRolesReady}
+                      reticulumMentionUsers={reticulumMentionUsers}
+                      scrollToItem={() => undefined}
+                      selectedGroup={selectedGroup}
+                    />
+                  </Box>
                 </Box>
               );
             })}
@@ -340,11 +432,21 @@ export const ReticulumDiscussionDialog = ({
       </Box>
 
       <Box
+        className="reticulum-discussion-composer"
         sx={{
-          backgroundColor: alpha(theme.palette.background.paper, 0.72),
+          '--discussion-composer-field-bg':
+            theme.palette.mode === 'dark' ? '#131720' : '#ffffff',
+          '--discussion-composer-field-border': alpha(
+            theme.palette.text.primary,
+            0.16
+          ),
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? 'rgba(15, 18, 25, 0.82)'
+              : 'rgba(247, 249, 252, 0.94)',
           borderTop: '1px solid',
           borderColor: 'divider',
-          p: 1.25,
+          p: '16px 18px',
         }}
       >
         {(files.length > 0 || preparingFile) && (
@@ -427,18 +529,9 @@ export const ReticulumDiscussionDialog = ({
           </Box>
         )}
 
-        <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
+        <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.25 }}>
           <Tiptap
             collapseFormattingTraySignal={formattingResetKey}
-            compactActions={
-              <ReticulumMessageExpiryButton
-                channelExpiryDurationMs={channelExpiryDurationMs}
-                disabled={loading || closeDisabled}
-                disabledReason="Wait until the discussion is ready"
-                onChange={setExpiryDurationMs}
-                value={expiryDurationMs}
-              />
-            }
             compactChat
             disableEnter={!canWrite || loading || closeDisabled}
             enableMentions
@@ -446,6 +539,7 @@ export const ReticulumDiscussionDialog = ({
             isChat
             isFocusedParent={focused}
             membersWithNames={membersWithNames}
+            mentionSuggestions={mentionSuggestions}
             onContentUpdate={(nextEditor) => {
               setMessageSize(JSON.stringify(nextEditor.getJSON()).length + 300);
               onTypingChange(Boolean(nextEditor.getText().trim()));
@@ -454,6 +548,13 @@ export const ReticulumDiscussionDialog = ({
             placeholder="Reply to discussion..."
             setEditorRef={setEditor}
             setIsFocusedParent={setFocused}
+          />
+          <ReticulumMessageExpiryButton
+            channelExpiryDurationMs={channelExpiryDurationMs}
+            disabled={loading || closeDisabled}
+            disabledReason="Wait until the discussion is ready"
+            onChange={setExpiryDurationMs}
+            value={expiryDurationMs}
           />
           <Button
             disabled={sendDisabled}
@@ -467,13 +568,13 @@ export const ReticulumDiscussionDialog = ({
             }
             sx={{
               backgroundColor: RETICULUM_BLUE,
-              borderRadius: '8px',
+              borderRadius: '10px',
               color: 'common.white',
               flexShrink: 0,
               fontWeight: 650,
-              minHeight: 38,
-              minWidth: 82,
-              px: 1.5,
+              height: 44,
+              minWidth: 92,
+              px: '18px',
               textTransform: 'none',
               '&:hover': { backgroundColor: '#1e40af' },
             }}

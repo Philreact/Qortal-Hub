@@ -296,6 +296,150 @@
   opacity: 1;
 }
 
+/* Reticulum in-message reply cards keep compact, recognizable mention pills. */
+.reticulum-inline-reply-card .tiptap.isReply {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.reticulum-inline-reply-card .tiptap.isReply p {
+  color: var(--text-secondary);
+  font-size: 14px !important;
+  line-height: 1.35;
+}
+
+.reticulum-inline-reply-card .tiptap.isReply [data-type='mention'],
+.reticulum-inline-reply-card .tiptap.isReply .mention {
+  background: color-mix(
+    in srgb,
+    var(--primary-main, #5f9ea0) 14%,
+    transparent
+  ) !important;
+  border-radius: 6px;
+  color: var(--primary-main, var(--text-secondary)) !important;
+  font-weight: 650;
+  padding: 2px 7px;
+}
+
+/* Discussion messages always remain inside the modal, including unbroken text. */
+.reticulum-discussion-message,
+.reticulum-discussion-message .message-item-row,
+.reticulum-discussion-message .tiptap,
+.reticulum-discussion-message .tiptap p {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.reticulum-discussion-message .tiptap,
+.reticulum-discussion-message .tiptap p,
+.reticulum-discussion-message .tiptap li,
+.reticulum-discussion-message .tiptap a,
+.reticulum-discussion-message .tiptap span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.reticulum-discussion-message .tiptap pre {
+  max-width: 100%;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+}
+
+.reticulum-discussion-message .message-item-row {
+  gap: 16px;
+  padding: 0;
+}
+
+.reticulum-discussion-message .message-item-row > div:last-child {
+  gap: 12px;
+}
+
+.reticulum-discussion-message .tiptap p,
+.reticulum-discussion-message .tiptap li {
+  color: var(--discussion-body-text-color, var(--text-primary));
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 24px;
+}
+
+.reticulum-discussion-message--initial .tiptap p,
+.reticulum-discussion-message--initial .tiptap li {
+  line-height: 26px;
+}
+
+/* Reticulum rows must never widen the chat viewport. Legacy Q-Chat is
+   intentionally excluded from these wrapping rules. */
+[data-reticulum-chat-root='true'] .message-item-row,
+[data-reticulum-chat-root='true'] .message-item-row > div:last-child,
+[data-reticulum-chat-root='true'] .message-item-row .tiptap,
+[data-reticulum-chat-root='true'] .message-item-row .tiptap p {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+
+[data-reticulum-chat-root='true'] .message-item-row .tiptap,
+[data-reticulum-chat-root='true'] .message-item-row .tiptap p,
+[data-reticulum-chat-root='true'] .message-item-row .tiptap li,
+[data-reticulum-chat-root='true'] .message-item-row .tiptap a,
+[data-reticulum-chat-root='true'] .message-item-row .tiptap span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-reticulum-chat-root='true'] .message-item-row .tiptap pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+}
+
+.reticulum-discussion-composer
+  .tiptap-chat-composer--compact
+  > .MuiBox-root {
+  gap: 8px;
+  min-height: 56px;
+}
+
+.reticulum-discussion-composer
+  .tiptap-chat-composer--compact
+  .MuiIconButton-root,
+.reticulum-discussion-composer > .MuiBox-root > span .MuiIconButton-root {
+  border-radius: 10px;
+  height: 44px;
+  width: 44px;
+}
+
+.reticulum-discussion-composer
+  .tiptap-chat-composer--compact
+  .tiptap-prosemirror {
+  background: var(--discussion-composer-field-bg);
+  border: 1px solid var(--discussion-composer-field-border);
+  border-radius: 12px;
+  box-sizing: border-box;
+  min-height: 56px;
+  padding: 15px 18px;
+}
+
+.reticulum-discussion-composer
+  .tiptap-chat-composer--compact
+  .tiptap
+  p {
+  color: #f3f5f9;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+}
+
+.reticulum-discussion-composer
+  .tiptap-chat-composer--compact
+  .tiptap
+  p.is-editor-empty:first-child::before {
+  color: rgba(170, 180, 197, 0.58);
+}
+
 /* @mentions — class survives DOMPurify; data-type may be stripped */
 .tiptap [data-type='mention'],
 .tiptap .mention {
@@ -414,32 +558,223 @@
   opacity: 0.7;
 }
 
-.mention-item {
-  cursor: pointer;
+.tippy-box[data-theme~='qchat-mention'] {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: #f3f5f8;
 }
 
-.dropdown-menu {
+.tippy-box[data-theme~='qchat-mention'] > .tippy-content {
+  padding: 0;
+}
+
+.qchat-mention-menu {
+  background: rgba(14, 20, 32, 0.97);
+  border: 1px solid rgba(102, 124, 170, 0.28);
+  border-radius: 11px;
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  box-sizing: border-box;
+  color: #f3f5f8;
+  padding: 8px 0 10px;
+  position: relative;
+  width: min(332px, calc(100vw - 24px));
+}
+
+.qchat-mention-menu::after {
+  background: rgb(14, 20, 32);
+  border-bottom: 1px solid rgba(102, 124, 170, 0.28);
+  border-right: 1px solid rgba(102, 124, 170, 0.28);
+  bottom: -6px;
+  content: '';
+  height: 10px;
+  left: 18px;
+  position: absolute;
+  transform: rotate(45deg);
+  width: 10px;
+}
+
+.qchat-mention-menu__scroll {
+  max-height: min(494px, calc(100vh - 130px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(142, 155, 181, 0.48) transparent;
+  scrollbar-width: thin;
+}
+
+.qchat-mention-menu__scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.qchat-mention-menu__scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.qchat-mention-menu__scroll::-webkit-scrollbar-thumb {
+  background: rgba(142, 155, 181, 0.42);
+  border-radius: 999px;
+}
+
+.qchat-mention-menu__scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(160, 173, 199, 0.58);
+}
+
+.qchat-mention-menu__section {
+  margin-top: 14px;
+}
+
+.qchat-mention-menu__section:first-child {
+  margin-top: 3px;
+}
+
+.qchat-mention-menu__section-label {
+  color: rgba(176, 185, 202, 0.72);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  line-height: 14px;
+  margin: 0 0 5px;
+  padding: 0 14px;
+  text-transform: uppercase;
+}
+
+.qchat-mention-menu__row {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  box-sizing: border-box;
+  color: #f3f5f8;
+  column-gap: 13px;
+  cursor: pointer;
+  display: grid;
+  font-family: inherit;
+  grid-template-columns: 38px minmax(0, 1fr) 28px;
+  margin: 1px 8px;
+  min-height: 58px;
+  padding: 9px 12px;
+  text-align: left;
+  width: calc(100% - 16px);
+}
+
+.qchat-mention-menu__row--here,
+.qchat-mention-menu__row--everyone {
+  min-height: 62px;
+}
+
+.qchat-mention-menu__row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.qchat-mention-menu__row.is-selected {
+  background: rgba(61, 103, 190, 0.46);
+  border-color: rgba(105, 148, 235, 0.52);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.qchat-mention-menu__row.is-selected .qchat-mention-menu__primary {
+  color: rgba(250, 252, 255, 0.98);
+}
+
+.qchat-mention-menu__row.is-selected .qchat-mention-menu__secondary {
+  color: rgba(218, 225, 239, 0.84);
+}
+
+.qchat-mention-menu__icon {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.qchat-mention-menu__icon svg {
+  font-size: 15px;
+}
+
+.qchat-mention-menu__icon--person {
+  background: linear-gradient(180deg, #4777d5 0%, #355db7 100%);
+  border-radius: 50%;
+  color: #fff;
+}
+
+.qchat-mention-menu__icon--here {
+  background: linear-gradient(180deg, #6855c0 0%, #5846a8 100%);
+  border-radius: 7px;
+  color: #fff;
+}
+
+.qchat-mention-menu__icon--everyone {
+  background: linear-gradient(180deg, #3b9b5e 0%, #307c4c 100%);
+  border-radius: 7px;
+  color: #fff;
+}
+
+.qchat-mention-menu__icon--channel {
+  background: rgba(67, 84, 116, 0.3);
+  border: 1px solid rgba(114, 130, 165, 0.2);
+  border-radius: 7px;
+  color: #d8dee8;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.qchat-mention-menu__copy {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
-  padding: 0.4rem;
-  position: relative;
-  max-height: 200px;
-  overflow: auto;
+  justify-content: center;
+  min-width: 0;
+}
 
-  button {
-    align-items: center;
-    background-color: transparent;
-    display: flex;
-    gap: 0.25rem;
-    text-align: left;
-    font-size: 16px;
-    width: 100%;
-    border: none;
-    color: var(--text-primary);
-    &:hover,
-    &:hover.is-selected {
-      background-color: var(--background-default);
-    }
-  }
+.qchat-mention-menu__primary,
+.qchat-mention-menu__secondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qchat-mention-menu__primary {
+  color: #f3f5f8;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 19px;
+}
+
+.qchat-mention-menu__secondary {
+  color: rgba(190, 198, 214, 0.78);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  margin-top: 3px;
+}
+
+.qchat-mention-menu__accept {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.065);
+  border-radius: 7px;
+  color: rgba(245, 248, 255, 0.92);
+  display: flex;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.qchat-mention-menu__accept:empty {
+  background: transparent;
+}
+
+.qchat-mention-menu__accept svg {
+  font-size: 14px;
+}
+
+.qchat-mention-menu__empty {
+  color: rgba(170, 180, 198, 0.88);
+  font-size: 11px;
+  padding: 17px 16px 20px;
+  text-align: center;
 }

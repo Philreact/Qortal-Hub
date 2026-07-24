@@ -27,7 +27,7 @@ import {
 } from '../../qdn/encryption/group-encryption';
 import { ChatList } from './ChatList';
 import { AdminSpaceInner } from './AdminSpaceInner';
-import Tiptap from './TipTap';
+import Tiptap, { type MentionSuggestionItem } from './TipTap';
 import './chat.css';
 import { CustomButton } from '../../styles/App-styles';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -119,6 +119,7 @@ import {
   useReticulumGroupChat,
 } from '../../hooks/useReticulumGroupChat';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
+import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
 import {
   ReticulumDiscussionDialog,
   type ReticulumDiscussionDraft,
@@ -1325,6 +1326,7 @@ export const ChatGroup = ({
   onThreadsClick,
   onMembersClick,
   membersPanelOpen = false,
+  membersNotificationCount = 0,
   groupCallInCall = false,
   groupCallJoining = false,
   groupCallDisabled = false,
@@ -2269,7 +2271,10 @@ export const ChatGroup = ({
   }, [groupMentionMembers, myAddress, myName]);
 
   const reticulumMentionUsers = useMemo(() => {
-    const users: Record<string, { address: string; name?: string }> = {};
+    const users: Record<
+      string,
+      { address: string; name?: string; role?: 'admin' | 'owner' }
+    > = {};
     for (const member of groupMentionMembers) {
       if (!member.address) continue;
       const displayName =
@@ -2277,21 +2282,28 @@ export const ChatGroup = ({
       users[displayName.toLowerCase()] = {
         address: member.address,
         name: displayName,
+        role: member.role,
       };
       users[member.address.toLowerCase()] = {
         address: member.address,
         name: displayName,
+        role: member.role,
       };
     }
     if (myAddress) {
       const displayName = myName || shortenReticulumAddress(myAddress);
+      const role = groupMentionMembers.find(
+        (member) => member.address === myAddress
+      )?.role;
       users[displayName.toLowerCase()] = {
         address: myAddress,
         name: displayName,
+        role,
       };
       users[myAddress.toLowerCase()] = {
         address: myAddress,
         name: displayName,
+        role,
       };
     }
     return users;
@@ -2780,6 +2792,93 @@ export const ChatGroup = ({
     messages,
     reticulumChannelsForSelectedGroup,
     selectedGroupName,
+  ]);
+
+  const reticulumMentionSuggestions = useMemo<MentionSuggestionItem[]>(() => {
+    if (!reticulumChatEnabled) return [];
+
+    const peopleByAddress = new Map<
+      string,
+      { address: string; name: string; role: 'Member' | 'Admin' }
+    >();
+    for (const member of groupMentionMembers) {
+      if (!member.address) continue;
+      peopleByAddress.set(member.address, {
+        address: member.address,
+        name: member.name || shortenReticulumAddress(member.address),
+        role: member.role === 'admin' || member.role === 'owner'
+          ? 'Admin'
+          : 'Member',
+      });
+    }
+    if (myAddress && !peopleByAddress.has(myAddress)) {
+      peopleByAddress.set(myAddress, {
+        address: myAddress,
+        name: myName || shortenReticulumAddress(myAddress),
+        role: isReticulumChannelAdmin ? 'Admin' : 'Member',
+      });
+    }
+
+    const people: MentionSuggestionItem[] = [...peopleByAddress.values()]
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map((member) => ({
+        id: member.address,
+        label: member.name,
+        section: 'people',
+        kind: 'person',
+        description: member.role,
+      }));
+
+    const special: MentionSuggestionItem[] = isReticulumChannelAdmin
+      ? [
+          {
+            id: 'here',
+            label: 'here',
+            section: 'special',
+            kind: 'here',
+            description: 'Notify members currently online',
+          },
+          {
+            id: 'everyone',
+            label: 'everyone',
+            section: 'special',
+            kind: 'everyone',
+            description: 'Notify all members in this space',
+          },
+        ]
+      : [];
+
+    const channels: MentionSuggestionItem[] =
+      reticulumChannelsForSelectedGroup
+        .filter(
+          (channel) =>
+            channel.readMode !== RETICULUM_CHANNEL_READ_MODE_ADMINS
+        )
+        .sort(
+          (left, right) =>
+            left.position - right.position ||
+            left.name.localeCompare(right.name)
+        )
+        .map((channel) => ({
+          id: channel.channelId,
+          label: channel.name,
+          section: 'channels',
+          kind: 'channel',
+          description: 'Channel',
+          iconText:
+            channel.name.match(
+              /\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?/u
+            )?.[0] || '@',
+        }));
+
+    return [...people, ...special, ...channels];
+  }, [
+    groupMentionMembers,
+    isReticulumChannelAdmin,
+    myAddress,
+    myName,
+    reticulumChannelsForSelectedGroup,
+    reticulumChatEnabled,
   ]);
 
   const reticulumTypingText = useMemo(() => {
@@ -8498,7 +8597,7 @@ export const ChatGroup = ({
                   label: groupCallJoining
                     ? 'Joining'
                     : groupCallInCall
-                      ? 'Leave call'
+                      ? 'Leave Call'
                       : 'Group Call',
                   icon: groupCallJoining ? (
                     <CircularProgress size={17} sx={{ color: 'inherit' }} />
@@ -8539,35 +8638,68 @@ export const ChatGroup = ({
                   icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: toggleQManager,
                 })}
-                <Tooltip title={membersPanelOpen ? 'Hide members' : 'Members'}>
-                  <IconButton
-                    onClick={onMembersClick}
-                    size="small"
+                <Tooltip title={membersPanelOpen ? 'Hide Members' : 'Members'}>
+                  <Box
+                    component="span"
                     sx={{
-                      backgroundColor: membersPanelOpen
-                        ? RETICULUM_ACTIVE_BLUE
-                        : 'transparent',
-                      borderRadius: '8px',
-                      color: membersPanelOpen
-                        ? 'common.white'
-                        : 'text.secondary',
+                      display: 'inline-flex',
                       flexShrink: 0,
-                      height: 36,
-                      width: 36,
-                      '&:hover': {
-                        backgroundColor: membersPanelOpen
-                          ? RETICULUM_ACTIVE_BLUE
-                          : theme.palette.action.hover,
-                        color: membersPanelOpen
-                          ? 'common.white'
-                          : theme.palette.text.primary,
-                      },
+                      overflow: 'visible',
+                      position: 'relative',
                     }}
                   >
-                    <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
-                  </IconButton>
+                    <IconButton
+                      aria-label={
+                        membersNotificationCount > 0
+                          ? `Members, ${membersNotificationCount} pending join ${
+                              membersNotificationCount === 1
+                                ? 'request'
+                                : 'requests'
+                            }`
+                          : 'Members'
+                      }
+                      onClick={onMembersClick}
+                      size="small"
+                      sx={{
+                        backgroundColor: membersPanelOpen
+                          ? RETICULUM_ACTIVE_BLUE
+                          : 'transparent',
+                        borderRadius: '8px',
+                        color: membersPanelOpen
+                          ? 'common.white'
+                          : 'text.secondary',
+                        flexShrink: 0,
+                        height: 36,
+                        width: 36,
+                        '&:hover': {
+                          backgroundColor: membersPanelOpen
+                            ? RETICULUM_ACTIVE_BLUE
+                            : theme.palette.action.hover,
+                          color: membersPanelOpen
+                            ? 'common.white'
+                            : theme.palette.text.primary,
+                        },
+                      }}
+                    >
+                      <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
+                    </IconButton>
+                    {membersNotificationCount > 0 && (
+                      <ReticulumUnreadCountBadge
+                        count={membersNotificationCount}
+                        outlineColor={theme.palette.background.surface}
+                        size={13}
+                        fontSize={8}
+                        sx={{
+                          position: 'absolute',
+                          right: -4,
+                          top: -4,
+                          zIndex: 2,
+                        }}
+                      />
+                    )}
+                  </Box>
                 </Tooltip>
-                <Tooltip title="Search chat">
+                <Tooltip title="Search Chat">
                   <IconButton
                     onClick={() => setReticulumSearchOpen(true)}
                     size="small"
@@ -8995,6 +9127,11 @@ export const ChatGroup = ({
 
                   <Tiptap
                     enableMentions
+                    mentionSuggestions={
+                      reticulumChatEnabled
+                        ? reticulumMentionSuggestions
+                        : undefined
+                    }
                     setEditorRef={setEditorRef}
                     onEnter={sendMessage}
                     onKeyDown={handleComposerKeyDown}
@@ -11681,6 +11818,7 @@ export const ChatGroup = ({
         files={reticulumDiscussionFiles}
         loading={isReticulumDiscussionLoading}
         membersWithNames={members}
+        mentionSuggestions={reticulumMentionSuggestions}
         messages={reticulumDiscussionMessages}
         myAddress={myAddress}
         onClose={closeReticulumDiscussion}

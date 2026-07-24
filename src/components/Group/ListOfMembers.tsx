@@ -103,27 +103,28 @@ const ListOfMembers = ({
 
     const labelForMember = (member) =>
       (member?.primaryName || member?.name || member?.member || '').toString();
-    const sortAlphabetically = (left, right) =>
-      labelForMember(left).localeCompare(labelForMember(right), undefined, {
+    const sortByPresenceThenName = (left, right) => {
+      const leftIsPresent =
+        onlineAddresses.has(left?.member) || statusMap.has(left?.member);
+      const rightIsPresent =
+        onlineAddresses.has(right?.member) || statusMap.has(right?.member);
+      if (leftIsPresent !== rightIsPresent) return leftIsPresent ? -1 : 1;
+      return labelForMember(left).localeCompare(labelForMember(right), undefined, {
         sensitivity: 'base',
       });
+    };
     const admins = [...(members || [])]
       .filter(
         (member) =>
           member?.member === ownerAddress || Boolean(member?.isAdmin)
       )
-      .sort((left, right) => {
-        const leftIsOwner = left?.member === ownerAddress;
-        const rightIsOwner = right?.member === ownerAddress;
-        if (leftIsOwner !== rightIsOwner) return leftIsOwner ? -1 : 1;
-        return sortAlphabetically(left, right);
-      });
+      .sort(sortByPresenceThenName);
     const regularMembers = [...(members || [])]
       .filter(
         (member) =>
           member?.member !== ownerAddress && !Boolean(member?.isAdmin)
       )
-      .sort(sortAlphabetically);
+      .sort(sortByPresenceThenName);
 
     return [
       {
@@ -154,8 +155,10 @@ const ListOfMembers = ({
     expandedSections.admins,
     expandedSections.members,
     members,
+    onlineAddresses,
     ownerAddress,
     sortedMembers,
+    statusMap,
   ]);
 
   const handlePopoverOpen = (event, index) => {

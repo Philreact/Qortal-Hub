@@ -117,16 +117,24 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
           onlineAddresses.has(member.member) && !presenceByAddress.has(member.member)
       )
       .map((member) => ({ member, presence: null }));
-    const sortByName = (
+    const sortByPresenceThenName = (
       left: { member: GroupMember },
       right: { member: GroupMember }
-    ) =>
-      displayName(left.member).localeCompare(displayName(right.member), undefined, {
+    ) => {
+      const leftIsPresent =
+        presenceByAddress.has(left.member.member) ||
+        onlineAddresses.has(left.member.member);
+      const rightIsPresent =
+        presenceByAddress.has(right.member.member) ||
+        onlineAddresses.has(right.member.member);
+      if (leftIsPresent !== rightIsPresent) return leftIsPresent ? -1 : 1;
+      return displayName(left.member).localeCompare(displayName(right.member), undefined, {
         sensitivity: 'base',
       });
-    lounge.sort(sortByName);
-    park.sort(sortByName);
-    online.sort(sortByName);
+    };
+    lounge.sort(sortByPresenceThenName);
+    park.sort(sortByPresenceThenName);
+    online.sort(sortByPresenceThenName);
     return { lounge, park, online };
   }, [knownMembers, onlineAddresses, presenceByAddress]);
 

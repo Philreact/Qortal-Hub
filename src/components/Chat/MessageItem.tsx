@@ -78,6 +78,8 @@ import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { ReticulumImageViewer } from './ReticulumImageViewer';
 import { ReticulumGroupInvitePreviews } from './ReticulumGroupInvitePreview';
 import { CustomStyledMenu } from '../ContextMenu';
+import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
+import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
@@ -91,6 +93,7 @@ const RETICULUM_INLINE_IMAGE_MAX_WIDTH = 640;
 const RETICULUM_INLINE_IMAGE_MAX_HEIGHT = 360;
 const RETICULUM_INLINE_IMAGE_FALLBACK_WIDTH = 480;
 const RETICULUM_INLINE_IMAGE_FALLBACK_ASPECT_RATIO = '4 / 3';
+const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
 
 const reticulumImageResourceRequestTimes = new Map<string, number>();
 const reticulumMintershipCache = new Map<string, boolean>();
@@ -316,7 +319,7 @@ type MessageItemProps = {
   reticulumGroupDisplayName?: string;
   reticulumMentionUsers?: Record<
     string,
-    { address: string; name?: string }
+    { address: string; name?: string; role?: 'admin' | 'owner' }
   >;
   reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
@@ -1634,6 +1637,34 @@ export const MessageItemComponent = ({
     }
     return 'not downloaded';
   })();
+  const fileResourceStatusLabel = (() => {
+    if (fileResourceStatus === 'ready') return 'Downloaded';
+    if (fileResourceStatus === 'saving') return 'Saving...';
+    if (fileResourceUnavailableNoPeers) return 'File unavailable';
+    if (fileResourceFailureReason === 'verification_failed') {
+      return 'Verification failed';
+    }
+    if (fileResourceStatus === 'error') return 'Download failed';
+    if (fileResourceStatus === 'downloading') {
+      return fileResourceProgress === null
+        ? 'Downloading...'
+        : `Downloading ${fileResourceProgress}%`;
+    }
+    return 'Not downloaded';
+  })();
+  const fileResourceActionLabel =
+    fileResourceStatus === 'downloading' && !fileResourceUnavailableNoPeers
+      ? 'Cancel'
+      : fileResourceUnavailableNoPeers || fileResourceStatus === 'error'
+        ? 'Try again'
+        : fileResourceStatus === 'ready'
+          ? 'Save'
+          : fileResourceStatus === 'saving'
+            ? 'Saving...'
+            : 'Download';
+  const fileResourceActionAriaLabel = `${fileResourceActionLabel} ${reticulumFileName}, ${formatQchatFileSize(
+    reticulumFileSize
+  )}`;
   const hasNoMessage =
     !qchatFileTransfer &&
     !reticulumDownloadAttachment &&
@@ -1655,13 +1686,40 @@ export const MessageItemComponent = ({
       ? message.decryptedData.data.mentionedAddresses
       : []),
   ];
+  const mentionTargets = [
+    ...(Array.isArray(message?.mentionTargets) ? message.mentionTargets : []),
+    ...(Array.isArray(message?.decryptedData?.mentionTargets)
+      ? message.decryptedData.mentionTargets
+      : []),
+    ...(Array.isArray(message?.decryptedData?.data?.mentionTargets)
+      ? message.decryptedData.data.mentionTargets
+      : []),
+  ];
+  const mentionSourceText = String(
+    message?.decryptedData?.data?.message ??
+      message?.decryptedData?.data?.messageText ??
+      message?.decryptedData?.message ??
+      message?.decryptedData?.messageText ??
+      message?.messageText ??
+      message?.text ??
+      ''
+  )
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ');
+  const hasBroadMention =
+    mentionTargets.some((target) => {
+      const type = String(target?.type || '').trim().toLowerCase();
+      return type === 'here' || type === 'everyone';
+    }) ||
+    /(^|\s)@(here|everyone)(?=$|[\s.,!?;:])/i.test(mentionSourceText);
   const isCurrentUserMentioned =
     reticulumChatEnabled &&
     !isOwn &&
     Boolean(myAddress) &&
-    mentionedAddresses.some(
-      (address) => String(address).trim() === myAddress
-    );
+    (hasBroadMention ||
+      mentionedAddresses.some(
+        (address) => String(address).trim() === myAddress
+      ));
   const isOwnReticulumDeletable =
     isOwn &&
     !isOfficialGroupWelcome &&
@@ -2096,9 +2154,12 @@ export const MessageItemComponent = ({
                           ? theme.palette.primary.main
                           : theme.palette.text.primary,
                       fontFamily: 'Inter',
-                      fontSize: '15.5px',
-                      fontWeight: 600,
-                      lineHeight: 1.3,
+                      fontSize: reticulumDiscussionView ? '18px' : '15.5px',
+                      fontWeight: reticulumDiscussionView ? 700 : 600,
+                      lineHeight: reticulumDiscussionView ? '22px' : 1.3,
+                      letterSpacing: reticulumDiscussionView
+                        ? '-0.015em'
+                        : undefined,
                       maxWidth: reticulumChatEnabled
                         ? { xs: 170, sm: 260, md: 360 }
                         : undefined,
@@ -2121,18 +2182,11 @@ export const MessageItemComponent = ({
                 {reticulumChatEnabled &&
                   !isOfficialGroupWelcome &&
                   reticulumMemberRole && (
-                  <Typography
-                    sx={{
-                      color: reticulumMemberRoleColor,
-                      flexShrink: 0,
-                      fontFamily: 'Inter',
-                      fontSize: '12px',
-                      fontWeight: 400,
-                      lineHeight: 1.2,
-                    }}
-                  >
-                    ({reticulumMemberRole === 'owner' ? 'Owner' : 'Admin'})
-                  </Typography>
+                    <ReticulumRoleBadge
+                      color={reticulumMemberRoleColor}
+                      role={reticulumMemberRole}
+                      size={reticulumDiscussionView ? 'card' : 'message'}
+                    />
                 )}
 
                 {!isUpdating && !isTemp && (
@@ -2141,8 +2195,9 @@ export const MessageItemComponent = ({
                       color: theme.palette.text.secondary,
                       flexShrink: 0,
                       fontFamily: 'Inter',
-                      fontSize: '11px',
-                      lineHeight: 1,
+                      fontSize: reticulumDiscussionView ? '13px' : '11px',
+                      fontWeight: reticulumDiscussionView ? 400 : undefined,
+                      lineHeight: reticulumDiscussionView ? '18px' : 1,
                     }}
                   >
                     {displayTimestamp}
@@ -2157,6 +2212,25 @@ export const MessageItemComponent = ({
                           ? 'reply'
                           : 'replies'
                       }`}
+                      slotProps={{
+                        tooltip: {
+                          sx: {
+                            backgroundColor:
+                              theme.palette.mode === 'light'
+                                ? '#f8fafc'
+                                : undefined,
+                            border:
+                              theme.palette.mode === 'light'
+                                ? '1px solid rgba(15, 23, 42, 0.16)'
+                                : undefined,
+                            color:
+                              theme.palette.mode === 'light'
+                                ? '#111827'
+                                : undefined,
+                            fontWeight: 600,
+                          },
+                        },
+                      }}
                     >
                       <ButtonBase
                         aria-label={`View ${reticulumDiscussionReplyCount} ${
@@ -2167,12 +2241,19 @@ export const MessageItemComponent = ({
                         onClick={() => onOpenReticulumDiscussion(message)}
                         sx={{
                           alignItems: 'center',
-                          backgroundColor: alpha(
-                            theme.palette.primary.main,
-                            0.12
-                          ),
+                          backgroundColor:
+                            theme.palette.mode === 'light'
+                              ? alpha('#174ea6', 0.14)
+                              : alpha(theme.palette.primary.main, 0.12),
+                          border:
+                            theme.palette.mode === 'light'
+                              ? '1px solid rgba(23, 78, 166, 0.24)'
+                              : '1px solid transparent',
                           borderRadius: '50%',
-                          color: theme.palette.primary.main,
+                          color:
+                            theme.palette.mode === 'light'
+                              ? '#174ea6'
+                              : theme.palette.primary.main,
                           display: 'inline-flex',
                           flexShrink: 0,
                           fontSize: '10px',
@@ -2183,10 +2264,10 @@ export const MessageItemComponent = ({
                           minWidth: 24,
                           px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
                           '&:hover': {
-                            backgroundColor: alpha(
-                              theme.palette.primary.main,
-                              0.2
-                            ),
+                            backgroundColor:
+                              theme.palette.mode === 'light'
+                                ? alpha('#174ea6', 0.22)
+                                : alpha(theme.palette.primary.main, 0.2),
                           },
                         }}
                       >
@@ -2232,7 +2313,7 @@ export const MessageItemComponent = ({
                   }}
                 >
                   {reticulumChatEnabled &&
-                    ['👍', '💯', '😂'].map((emoji) => (
+                    RETICULUM_QUICK_REACTIONS.map((emoji) => (
                       <Tooltip key={emoji} title={`React with ${emoji}`} disableFocusListener>
                         <ButtonBase
                           aria-label={`React with ${emoji}`}
@@ -2341,42 +2422,92 @@ export const MessageItemComponent = ({
 
             {/* Reply preview - active reply */}
             {showReplyPreview && reply && (
-              <Box
+              <ButtonBase
+                className={
+                  reticulumChatEnabled ? 'reticulum-inline-reply-card' : undefined
+                }
                 sx={{
-                  borderLeft: isRepliedToMe
-                    ? `2px solid ${theme.palette.warning.main}`
-                    : `2px solid ${alpha(theme.palette.primary.main, 0.5)}`,
-                  backgroundColor: isRepliedToMe
-                    ? alpha(theme.palette.warning.main, 0.06)
-                    : 'transparent',
-                  borderRadius: '0 6px 6px 0',
+                  borderLeft: reticulumChatEnabled
+                    ? `4px solid ${theme.palette.warning.main}`
+                    : isRepliedToMe
+                      ? `2px solid ${theme.palette.warning.main}`
+                      : `2px solid ${alpha(theme.palette.primary.main, 0.5)}`,
+                  backgroundColor: reticulumChatEnabled
+                    ? theme.palette.mode === 'dark'
+                      ? '#17181d'
+                      : theme.palette.background.paper
+                    : isRepliedToMe
+                      ? alpha(theme.palette.warning.main, 0.06)
+                      : 'transparent',
+                  borderRadius: reticulumChatEnabled
+                    ? '9px'
+                    : '0 6px 6px 0',
+                  ...(reticulumChatEnabled
+                    ? {
+                        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
+                        borderRight: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
+                        borderTop: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
+                      }
+                    : {}),
                   cursor: 'pointer',
                   display: 'flex',
                   flexDirection: 'row',
-                  marginTop: '4px',
-                  marginBottom: '6px',
+                  justifyContent: 'flex-start',
+                  marginTop: reticulumChatEnabled ? '5px' : '4px',
+                  marginBottom: reticulumChatEnabled ? '8px' : '6px',
                   marginLeft: '2px',
-                  height: isRepliedToMe ? '72px' : undefined,
-                  maxHeight: '72px',
-                  minWidth: 0,
+                  height:
+                    !reticulumChatEnabled && isRepliedToMe ? '72px' : undefined,
+                  maxHeight: reticulumChatEnabled ? '92px' : '72px',
+                  minHeight: reticulumChatEnabled ? '72px' : undefined,
+                  minWidth: reticulumChatEnabled
+                    ? 'min(540px, 100%)'
+                    : 0,
+                  maxWidth: '100%',
                   overflow: 'hidden',
-                  padding: '4px 0 4px 10px',
-                  transition: 'opacity 0.1s ease',
-                  width: 'auto',
-                  alignSelf: 'stretch',
+                  padding: reticulumChatEnabled
+                    ? '10px 100px 10px 14px'
+                    : '4px 0 4px 10px',
+                  position: 'relative',
+                  textAlign: 'left',
+                  transition:
+                    'background-color 0.15s ease, border-color 0.15s ease, opacity 0.1s ease',
+                  width: reticulumChatEnabled ? 'fit-content' : 'auto',
+                  alignSelf: reticulumChatEnabled ? 'flex-start' : 'stretch',
                   boxSizing: 'border-box',
-                  opacity: isRepliedToMe ? 1 : 0.72,
+                  opacity: reticulumChatEnabled ? 1 : isRepliedToMe ? 1 : 0.72,
                   '& *': {
                     cursor: 'pointer',
                   },
                   '&:hover': {
                     opacity: 1,
+                    ...(reticulumChatEnabled
+                      ? {
+                          backgroundColor: alpha(
+                            theme.palette.text.primary,
+                            theme.palette.mode === 'dark' ? 0.055 : 0.035
+                          ),
+                          borderColor: alpha(theme.palette.warning.main, 0.36),
+                        }
+                      : {}),
                   },
                 }}
                 onClick={() => {
                   scrollToItem(replyIndex);
                 }}
               >
+                {reticulumChatEnabled && (
+                  <FormatQuoteRoundedIcon
+                    aria-hidden
+                    sx={{
+                      color: alpha(theme.palette.text.secondary, 0.7),
+                      fontSize: '24px',
+                      position: 'absolute',
+                      right: 16,
+                      top: 10,
+                    }}
+                  />
+                )}
                 <Box sx={{ minWidth: 0, overflow: 'hidden', width: '100%' }}>
                   <Box
                     sx={{
@@ -2393,7 +2524,7 @@ export const MessageItemComponent = ({
                           : theme.palette.mode === 'light'
                             ? theme.palette.text.primary
                             : theme.palette.primary.main,
-                        fontSize: '14px',
+                        fontSize: reticulumChatEnabled ? '17px' : '14px',
                         flexShrink: 0,
                       }}
                     />
@@ -2404,8 +2535,12 @@ export const MessageItemComponent = ({
                           : theme.palette.mode === 'light'
                             ? theme.palette.text.primary
                             : theme.palette.primary.main,
-                        fontSize: '13px',
-                        fontWeight: isRepliedToMe ? 600 : 500,
+                        fontSize: reticulumChatEnabled ? '14px' : '13px',
+                        fontWeight: reticulumChatEnabled
+                          ? 650
+                          : isRepliedToMe
+                            ? 600
+                            : 500,
                         ...(hasUnsafeReplyName
                           ? {
                               textDecorationLine: 'line-through',
@@ -2415,14 +2550,22 @@ export const MessageItemComponent = ({
                           : {}),
                       }}
                     >
-                      {isRepliedToMe
-                        ? t('core:message.generic.replied_to_you', {
-                            postProcess: 'capitalizeFirstChar',
-                          })
-                        : t('core:message.generic.replied_to', {
-                            person: reply?.senderName || reply?.senderAddress,
-                            postProcess: 'capitalizeFirstChar',
-                          })}
+                      {reticulumChatEnabled
+                        ? isRepliedToMe
+                          ? 'Replying to you'
+                          : `Replying to ${
+                              reply?.senderName ||
+                              reply?.senderAddress ||
+                              'message'
+                            }`
+                        : isRepliedToMe
+                          ? t('core:message.generic.replied_to_you', {
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                          : t('core:message.generic.replied_to', {
+                              person: reply?.senderName || reply?.senderAddress,
+                              postProcess: 'capitalizeFirstChar',
+                            })}
                     </Typography>
                   </Box>
 
@@ -2453,7 +2596,7 @@ export const MessageItemComponent = ({
                     </>
                   )}
                 </Box>
-              </Box>
+              </ButtonBase>
             )}
 
             {/* Reply preview - expired/missing reply */}
@@ -2875,76 +3018,230 @@ export const MessageItemComponent = ({
               <Box
                 sx={{
                   alignItems: 'center',
+                  backgroundColor:
+                    theme.palette.mode === 'dark'
+                      ? alpha(theme.palette.common.white, 0.035)
+                      : alpha(theme.palette.common.black, 0.025),
                   border: '1px solid',
-                  borderColor: theme.palette.divider,
-                  borderRadius: '8px',
+                  borderColor:
+                    theme.palette.mode === 'dark'
+                      ? alpha(theme.palette.text.secondary, 0.23)
+                      : alpha(theme.palette.text.primary, 0.16),
+                  borderRadius: '12px',
                   boxSizing: 'border-box',
-                  display: 'flex',
-                  gap: '10px',
-                  height: '72px',
-                  marginTop: '8px',
-                  maxWidth: 640,
+                  boxShadow:
+                    theme.palette.mode === 'dark'
+                      ? '0 8px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.018)'
+                      : '0 8px 24px rgba(32, 42, 58, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.45)',
+                  columnGap: '18px',
+                  display: 'grid',
+                  gridTemplateColumns: '56px minmax(0, 1fr) auto',
+                  marginTop: '4px',
+                  maxWidth: '540px',
+                  minHeight: '100px',
                   overflow: 'hidden',
-                  p: 1.25,
-                  width: 'min(100%, 640px)',
+                  padding: '18px 20px',
+                  position: 'relative',
+                  transition:
+                    'background-color 150ms ease, border-color 150ms ease',
+                  width: 'min(100%, 540px)',
+                  '&:hover': {
+                    backgroundColor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.common.white, 0.055)
+                        : alpha(theme.palette.primary.main, 0.045),
+                    borderColor: alpha(theme.palette.primary.main, 0.38),
+                  },
+                  '@media (max-width: 600px)': {
+                    columnGap: '14px',
+                    gridTemplateColumns: '48px minmax(0, 1fr) auto',
+                    padding: '15px',
+                  },
+                  '@media (max-width: 460px)': {
+                    gridTemplateColumns: '48px minmax(0, 1fr)',
+                  },
                 }}
               >
-                <InsertDriveFileRoundedIcon
-                  sx={{ color: theme.palette.text.secondary, flexShrink: 0 }}
-                />
-                <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography
+                <Box
+                  aria-hidden="true"
+                  sx={{
+                    alignItems: 'center',
+                    alignSelf: 'center',
+                    backgroundColor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.text.secondary, 0.13)
+                        : alpha(theme.palette.text.primary, 0.07),
+                    border: '1px solid',
+                    borderColor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.text.secondary, 0.12)
+                        : alpha(theme.palette.text.primary, 0.09),
+                    borderRadius: '10px',
+                    display: 'flex',
+                    height: '56px',
+                    justifyContent: 'center',
+                    width: '56px',
+                    '@media (max-width: 600px)': {
+                      height: '48px',
+                      width: '48px',
+                    },
+                  }}
+                >
+                  <InsertDriveFileRoundedIcon
                     sx={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      color: theme.palette.text.secondary,
+                      fontSize: '30px',
+                      '@media (max-width: 600px)': {
+                        fontSize: '26px',
+                      },
+                    }}
+                  />
+                </Box>
+                <Box
+                  sx={{
+                    alignSelf: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'center',
+                    minWidth: 0,
+                  }}
+                >
+                  <Tooltip
+                    arrow
+                    disableFocusListener={false}
+                    title={reticulumFileName}
+                  >
+                    <Typography
+                      component="span"
+                      tabIndex={0}
+                      sx={{
+                        color: theme.palette.text.primary,
+                        fontSize: '17px',
+                        fontWeight: 700,
+                        letterSpacing: '-0.018em',
+                        lineHeight: '22px',
+                        outline: 'none',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        '&:focus-visible': {
+                          borderRadius: '3px',
+                          boxShadow: `0 0 0 2px ${alpha(
+                            theme.palette.primary.main,
+                            0.65
+                          )}`,
+                        },
+                      }}
+                    >
+                      {reticulumFileName}
+                    </Typography>
+                  </Tooltip>
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '10px',
+                      marginTop: '6px',
+                      minWidth: 0,
                     }}
                   >
-                    {reticulumFileName}
-                  </Typography>
-                  <Typography
-                    sx={{
-                      color:
-                        fileResourceStatus === 'error'
-                          ? theme.palette.error.main
-                          : fileResourceFailureReason === 'verification_failed'
-                            ? theme.palette.warning.main
-                          : theme.palette.text.secondary,
-                      fontSize: 12,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                    title={`${formatQchatFileSize(reticulumFileSize)} · ${fileResourceStatusText}`}
-                  >
-                    {formatQchatFileSize(reticulumFileSize)} · {fileResourceStatusText}
-                  </Typography>
-                  <Box sx={{ height: '10px', overflow: 'hidden' }}>
-                    {(fileResourceStatus === 'downloading' ||
-                      fileResourceStatus === 'saving') && (
-                      <LinearProgress
-                        variant={
-                          fileResourceProgress !== null ? 'determinate' : 'indeterminate'
-                        }
-                        value={fileResourceProgress ?? undefined}
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '13.5px',
+                        fontWeight: 400,
+                        lineHeight: '18px',
+                      }}
+                    >
+                      {formatQchatFileSize(reticulumFileSize)}
+                    </Typography>
+                    <Box
+                      aria-hidden="true"
+                      sx={{
+                        backgroundColor: theme.palette.text.disabled,
+                        borderRadius: '50%',
+                        height: '3px',
+                        width: '3px',
+                      }}
+                    />
+                    <Box
+                      aria-label={fileResourceStatusLabel}
+                      title={fileResourceStatusText}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.common.white, 0.055)
+                            : alpha(theme.palette.common.black, 0.045),
+                        border: '1px solid',
+                        borderColor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.common.white, 0.055)
+                            : alpha(theme.palette.common.black, 0.055),
+                        borderRadius: '999px',
+                        color:
+                          fileResourceStatus === 'error' ||
+                          fileResourceUnavailableNoPeers ||
+                          fileResourceFailureReason === 'verification_failed'
+                            ? theme.palette.error.main
+                            : theme.palette.text.secondary,
+                        display: 'inline-flex',
+                        fontSize: '13px',
+                        fontWeight: 400,
+                        gap: '8px',
+                        height: '26px',
+                        lineHeight: 1,
+                        maxWidth: '100%',
+                        padding: '0 12px',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <Box
+                        aria-hidden="true"
                         sx={{
-                          mt: 0.75,
-                          height: 4,
-                          borderRadius: 1,
+                          backgroundColor:
+                            fileResourceStatus === 'ready'
+                              ? theme.palette.success.main
+                              : fileResourceStatus === 'downloading' ||
+                                  fileResourceStatus === 'saving'
+                                ? theme.palette.primary.main
+                                : fileResourceStatus === 'error' ||
+                                    fileResourceUnavailableNoPeers ||
+                                    fileResourceFailureReason ===
+                                      'verification_failed'
+                                  ? theme.palette.error.main
+                                  : theme.palette.text.disabled,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          height: '7px',
+                          width: '7px',
                         }}
                       />
-                    )}
+                      <Box
+                        component="span"
+                        sx={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {fileResourceStatusLabel}
+                      </Box>
+                    </Box>
                   </Box>
                 </Box>
                 <Box
                   sx={{
                     alignItems: 'center',
+                    alignSelf: 'center',
                     display: 'flex',
                     flexShrink: 0,
                     justifyContent: 'flex-end',
-                    width: '112px',
+                    '@media (max-width: 460px)': {
+                      gridColumn: '1 / -1',
+                      marginTop: '12px',
+                      width: '100%',
+                    },
                   }}
                 >
                   {fileResourceStatus === 'downloading' &&
@@ -2957,7 +3254,23 @@ export const MessageItemComponent = ({
                       onClick={() => {
                         void cancelReticulumFileResource();
                       }}
-                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                      aria-label={fileResourceActionAriaLabel}
+                      sx={{
+                        borderRadius: '9px',
+                        flexShrink: 0,
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        height: '42px',
+                        minWidth: '128px',
+                        padding: '0 18px',
+                        textTransform: 'none',
+                        '@media (max-width: 600px)': {
+                          minWidth: '108px',
+                        },
+                        '@media (max-width: 460px)': {
+                          width: '100%',
+                        },
+                      }}
                     >
                       Cancel
                     </Button>
@@ -2974,18 +3287,83 @@ export const MessageItemComponent = ({
                         }
                         void saveReticulumFileResource();
                       }}
-                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                      aria-label={fileResourceActionAriaLabel}
+                      sx={{
+                        background:
+                          'linear-gradient(180deg, #5b96ee 0%, #3f7ed8 100%)',
+                        border: '1px solid #69a4f2',
+                        borderRadius: '9px',
+                        boxShadow:
+                          '0 4px 12px rgba(46, 111, 207, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.14)',
+                        color: '#ffffff',
+                        flexShrink: 0,
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        height: '42px',
+                        letterSpacing: '-0.005em',
+                        lineHeight: 1,
+                        minWidth: '128px',
+                        padding: '0 18px',
+                        textTransform: 'none',
+                        '& .MuiButton-startIcon svg': {
+                          fontSize: '20px',
+                        },
+                        '&:hover': {
+                          background:
+                            'linear-gradient(180deg, #68a1f5 0%, #4a88e3 100%)',
+                          borderColor: '#82b5f6',
+                          boxShadow:
+                            '0 5px 14px rgba(46, 111, 207, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.16)',
+                        },
+                        '&:active': {
+                          background: '#3772ca',
+                          boxShadow: 'none',
+                        },
+                        '&:focus-visible': {
+                          outline: `3px solid ${alpha(
+                            theme.palette.primary.light,
+                            0.55
+                          )}`,
+                          outlineOffset: '2px',
+                        },
+                        '&.Mui-disabled': {
+                          background:
+                            'linear-gradient(180deg, #5b96ee 0%, #3f7ed8 100%)',
+                          color: '#ffffff',
+                          opacity: 0.55,
+                        },
+                        '@media (max-width: 600px)': {
+                          minWidth: '108px',
+                        },
+                        '@media (max-width: 460px)': {
+                          width: '100%',
+                        },
+                      }}
                     >
-                      {fileResourceUnavailableNoPeers
-                        ? 'Retry'
-                        : fileResourceStatus === 'ready'
-                        ? 'Save'
-                        : fileResourceStatus === 'error'
-                          ? 'Retry'
-                          : 'Download'}
+                      {fileResourceActionLabel}
                     </Button>
                   )}
                 </Box>
+                {(fileResourceStatus === 'downloading' ||
+                  fileResourceStatus === 'saving') && (
+                  <LinearProgress
+                    aria-hidden="true"
+                    variant={
+                      fileResourceProgress !== null ? 'determinate' : 'indeterminate'
+                    }
+                    value={fileResourceProgress ?? undefined}
+                    sx={{
+                      bottom: 0,
+                      height: '2px',
+                      left: 0,
+                      position: 'absolute',
+                      right: 0,
+                      '& .MuiLinearProgress-bar': {
+                        backgroundColor: theme.palette.primary.main,
+                      },
+                    }}
+                  />
+                )}
               </Box>
             )}
 
@@ -3321,69 +3699,138 @@ export const MessageItemComponent = ({
         slotProps={{
           paper: {
             sx: {
-              backgroundColor: `${theme.palette.background.surface} !important`,
+              backgroundColor: 'transparent !important',
+              border: 'none !important',
+              borderRadius: '0 !important',
+              boxShadow: 'none !important',
               minWidth: '190px !important',
+              padding: '0 !important',
             },
           },
         }}
+        MenuListProps={{
+          sx: {
+            padding: 0,
+          },
+        }}
       >
-        <MenuItem
-          onClick={() => {
-            setReticulumMessageMenuPosition(null);
-            void copyReticulumMessage();
+        <Box
+          aria-label="Quick reactions"
+          role="group"
+          sx={{
+            alignItems: 'center',
+            backgroundColor: theme.palette.background.surface,
+            border: '1px solid',
+            borderColor: theme.palette.divider,
+            borderRadius: '8px',
+            boxShadow: '0 12px 28px rgba(0, 0, 0, 0.28)',
+            display: 'flex',
+            gap: '8px',
+            justifyContent: 'center',
+            minWidth: '190px',
+            padding: '7px 10px',
           }}
         >
-          <ListItemIcon sx={{ minWidth: '32px' }}>
-            <ContentCopyRoundedIcon fontSize="small" />
-          </ListItemIcon>
-          <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-            Copy Message
-          </Typography>
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            setReticulumMessageMenuPosition(null);
-            onReply(message);
+          {RETICULUM_QUICK_REACTIONS.map((emoji) => (
+            <Tooltip
+              key={emoji}
+              title={`React with ${emoji}`}
+              disableFocusListener
+            >
+              <ButtonBase
+                aria-label={`React with ${emoji}`}
+                sx={{
+                  borderRadius: '6px',
+                  fontSize: '20px',
+                  lineHeight: 1,
+                  padding: '5px 8px',
+                  '&:hover': {
+                    backgroundColor: theme.palette.action.hover,
+                  },
+                }}
+                onClick={() => {
+                  const hasReacted = reactions?.[emoji]?.some(
+                    (item) => item?.sender === myAddress
+                  );
+                  setReticulumMessageMenuPosition(null);
+                  handleReaction(emoji, message, !hasReacted);
+                }}
+              >
+                {emoji}
+              </ButtonBase>
+            </Tooltip>
+          ))}
+        </Box>
+        <Box
+          sx={{
+            backgroundColor: theme.palette.background.surface,
+            border: '1px solid',
+            borderColor: theme.palette.divider,
+            borderRadius: '8px',
+            boxShadow: '0 12px 28px rgba(0, 0, 0, 0.28)',
+            marginTop: '6px',
+            minWidth: '190px',
+            padding: '5px',
           }}
         >
-          <ListItemIcon sx={{ minWidth: '32px' }}>
-            <ReplyIcon fontSize="small" />
-          </ListItemIcon>
-          <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-            Reply Message
-          </Typography>
-        </MenuItem>
-        {isOwnReticulumEditable && (
           <MenuItem
             onClick={() => {
               setReticulumMessageMenuPosition(null);
-              onEdit(message);
+              void copyReticulumMessage();
             }}
           >
             <ListItemIcon sx={{ minWidth: '32px' }}>
-              <EditIcon fontSize="small" />
+              <ContentCopyRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Edit Message
+              Copy Message
             </Typography>
           </MenuItem>
-        )}
-        {isOwnReticulumDeletable && (
           <MenuItem
             onClick={() => {
               setReticulumMessageMenuPosition(null);
-              onDelete(message);
+              onReply(message);
             }}
-            sx={{ color: 'error.main' }}
           >
-            <ListItemIcon sx={{ color: 'inherit', minWidth: '32px' }}>
-              <DeleteOutlineIcon fontSize="small" />
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <ReplyIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Delete Message
+              Reply Message
             </Typography>
           </MenuItem>
-        )}
+          {isOwnReticulumEditable && (
+            <MenuItem
+              onClick={() => {
+                setReticulumMessageMenuPosition(null);
+                onEdit(message);
+              }}
+            >
+              <ListItemIcon sx={{ minWidth: '32px' }}>
+                <EditIcon fontSize="small" />
+              </ListItemIcon>
+              <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+                Edit Message
+              </Typography>
+            </MenuItem>
+          )}
+          {isOwnReticulumDeletable && (
+            <MenuItem
+              onClick={() => {
+                setReticulumMessageMenuPosition(null);
+                onDelete(message);
+              }}
+              sx={{ color: 'error.main' }}
+            >
+              <ListItemIcon sx={{ color: 'inherit', minWidth: '32px' }}>
+                <DeleteOutlineIcon fontSize="small" />
+              </ListItemIcon>
+              <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+                Delete Message
+              </Typography>
+            </MenuItem>
+          )}
+        </Box>
       </CustomStyledMenu>
     </>
   );
