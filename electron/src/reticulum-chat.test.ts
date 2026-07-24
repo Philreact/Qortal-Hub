@@ -1453,6 +1453,7 @@ describe('reticulum chat protocol', () => {
         a: requester.address,
         b: peer.address,
         f: manifest.fileHash,
+        e: 'dm-resource-event-id',
       });
       expect(fanout).toHaveLength(0);
       expect(accepts).toHaveLength(0);
@@ -4631,6 +4632,150 @@ describe('reticulum chat manager', () => {
       byteLengthUtf8JsonWithBridgeSender(sent[0].wire)
     ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
     manager.close();
+  });
+
+  it('records outgoing DM attachment references from the nested message payload', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const conversationId = reticulumDmConversationId(
+      sender.address,
+      recipient.address
+    );
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-dm-nested-resource-reference-')
+    );
+    const sourcePath = path.join(tempRoot, 'image.png');
+    fs.writeFileSync(sourcePath, Buffer.from('nested DM image'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+    });
+    const manifest = resourceStore.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-dm-resource',
+      ownerId: `dm:${conversationId}:${sender.address}`,
+      fileName: 'image.png',
+      mimeType: 'image/png',
+      encrypted: false,
+      metadata: {
+        conversationId,
+        senderAddress: sender.address,
+        recipientAddress: recipient.address,
+      },
+    });
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dmnestedresource1',
+      senderSeq: Date.now() * 1000,
+      timestamp: Date.now(),
+      payload: JSON.stringify({
+        messageText: '<p>image</p>',
+        otherData: { images: [manifest] },
+      }),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      resourceStore,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+    });
+    manager.setLocalDmAddresses([sender.address]);
+
+    await expect(manager.publishDirectEvent(event)).resolves.toEqual({
+      ok: true,
+    });
+    expect(
+      resourceStore.hasLiveReference(
+        manifest.fileHash,
+        'dm',
+        conversationId,
+        event.eventId
+      )
+    ).toBe(true);
+
+    manager.close();
+    resourceStore.close();
+  });
+
+  it('repairs a missing DM attachment reference before advertising the file', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const conversationId = reticulumDmConversationId(
+      sender.address,
+      recipient.address
+    );
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-dm-resource-reference-repair-')
+    );
+    const sourcePath = path.join(tempRoot, 'image.png');
+    fs.writeFileSync(sourcePath, Buffer.from('recoverable DM image'));
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(tempRoot, 'resources.db'),
+      rootDir: path.join(tempRoot, 'resources'),
+    });
+    const manifest = resourceStore.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-dm-resource',
+      ownerId: `dm:${conversationId}:${sender.address}`,
+      fileName: 'image.png',
+      mimeType: 'image/png',
+      encrypted: false,
+      metadata: {
+        conversationId,
+        senderAddress: sender.address,
+        recipientAddress: recipient.address,
+      },
+    });
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dmrepairresource1',
+      senderSeq: Date.now() * 1000,
+      timestamp: Date.now(),
+      payload: JSON.stringify({
+        messageText: '<p>image</p>',
+        otherData: { images: [manifest] },
+      }),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      resourceStore,
+      bridge: { on: () => undefined, off: () => undefined } as any,
+    });
+    manager.setLocalDmAddresses([sender.address]);
+    expect((manager as any).db.insertDirectEvent(event, true)).toBe(true);
+    expect(
+      resourceStore.hasLiveReference(
+        manifest.fileHash,
+        'dm',
+        conversationId,
+        event.eventId
+      )
+    ).toBe(false);
+
+    await expect(
+      (manager as any).checkLocalDirectResourceServeAvailability(
+        conversationId,
+        manifest.fileHash,
+        manifest.sizeBytes,
+        event.eventId
+      )
+    ).resolves.toEqual({ ok: true });
+    expect(
+      resourceStore.hasLiveReference(
+        manifest.fileHash,
+        'dm',
+        conversationId,
+        event.eventId
+      )
+    ).toBe(true);
+
+    manager.close();
+    resourceStore.close();
   });
 
   it('still fanouts direct DM notify when the direct peer send has no route', async () => {

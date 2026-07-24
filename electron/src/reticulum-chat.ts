@@ -978,6 +978,7 @@ export type ReticulumDmResourceFindWire = {
   b: string;
   q: string;
   f: string;
+  e?: string;
   s?: number;
   h?: number;
   m?: number;
@@ -5722,28 +5723,32 @@ export class ReticulumChatManager extends EventEmitter {
           const conversationId = normalizeReticulumDmConversationId(
             request.conversationId
           );
-          if (
-            !conversationId ||
-            !this.resourceManifestBelongsToDirectConversation(
-              manifest,
-              conversationId
-            )
-          ) {
+          if (!conversationId) {
             loggerWarn(
-              `[ReticulumChat] Refusing DM resource ${fileHash}: resource is not for conversation=${conversationId || 'unknown'}`
+              `[ReticulumChat] Refusing DM resource ${fileHash}: resource is not for conversation=unknown`
             );
             return false;
           }
           if (
-            !this.resourceStore?.hasLiveReference(
-              fileHash,
-              'dm',
+            !this.ensureDirectResourceReference(
+              manifest,
               conversationId,
               request.eventId
             )
           ) {
             loggerWarn(
               `[ReticulumChat] Refusing DM resource ${fileHash}: no live message reference${request.eventId ? ` for event ${request.eventId}` : ''}`
+            );
+            return false;
+          }
+          if (
+            !this.resourceManifestBelongsToDirectConversation(
+              manifest,
+              conversationId
+            )
+          ) {
+            loggerWarn(
+              `[ReticulumChat] Refusing DM resource ${fileHash}: resource is not for conversation=${conversationId}`
             );
             return false;
           }
@@ -9026,6 +9031,7 @@ export class ReticulumChatManager extends EventEmitter {
       remoteAddress,
       manifest,
       candidatePeers,
+      eventId,
       true
     );
     return { ok: true };
@@ -22123,7 +22129,8 @@ export class ReticulumChatManager extends EventEmitter {
   private async buildSignedDirectResourceFindWire(
     conversationId: string,
     peerAddress: string,
-    manifest: ReticulumResourceManifest
+    manifest: ReticulumResourceManifest,
+    eventId?: string
   ): Promise<Extract<ReticulumChatWire, { k: 'dm_resource_find' }> | null> {
     const fileHash = manifest.fileHash.toLowerCase();
     if (!this.signLocalFields) {
@@ -22181,6 +22188,7 @@ export class ReticulumChatManager extends EventEmitter {
         b: peerAddress,
         q: requestId,
         f: fileHash,
+        ...(eventId ? { e: eventId } : {}),
         x: expiresAt,
       },
     };
@@ -22208,6 +22216,7 @@ export class ReticulumChatManager extends EventEmitter {
     peerAddress: string,
     manifest: ReticulumResourceManifest,
     candidatePeers: string[],
+    eventId?: string,
     force = false
   ): Promise<void> {
     const normalizedConversationId =
@@ -22230,7 +22239,8 @@ export class ReticulumChatManager extends EventEmitter {
     const wire = await this.buildSignedDirectResourceFindWire(
       normalizedConversationId,
       peerAddress,
-      manifest
+      manifest,
+      eventId
     );
     if (!wire) {
       loggerWarn(
@@ -22778,7 +22788,8 @@ export class ReticulumChatManager extends EventEmitter {
   private async checkLocalDirectResourceServeAvailability(
     conversationId: string,
     fileHash: string,
-    sizeBytes?: number
+    sizeBytes?: number,
+    eventId?: string
   ): Promise<ReticulumChatResourceServeCheck> {
     const manifest = this.resourceStore?.getManifest(fileHash);
     if (!manifest) return { ok: false, reason: 'manifest_missing' };
@@ -22786,6 +22797,16 @@ export class ReticulumChatManager extends EventEmitter {
       return { ok: false, reason: 'hash_mismatch' };
     if (sizeBytes != null && manifest.sizeBytes !== sizeBytes)
       return { ok: false, reason: 'size_mismatch' };
+    if (
+      eventId &&
+      !this.ensureDirectResourceReference(
+        manifest,
+        conversationId,
+        eventId
+      )
+    ) {
+      return { ok: false, reason: 'no_live_reference' };
+    }
     if (
       !this.resourceManifestBelongsToDirectConversation(
         manifest,
@@ -23063,6 +23084,8 @@ export class ReticulumChatManager extends EventEmitter {
       reticulumDmConversationId(requesterAddress, peerAddress);
     const fileHash = query.f.toLowerCase();
     const requestedSizeBytes = Number(query.s);
+    const eventId =
+      typeof query.e === 'string' && query.e.trim() ? query.e.trim() : undefined;
     const hop = query.h ?? 0;
     const maxHops = query.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS;
     if (!requestId || !conversationId) return;
@@ -23097,7 +23120,8 @@ export class ReticulumChatManager extends EventEmitter {
       fileHash,
       Number.isInteger(requestedSizeBytes) && requestedSizeBytes > 0
         ? requestedSizeBytes
-        : undefined
+        : undefined,
+      eventId
     );
     const localManifest = this.resourceStore?.getManifest(fileHash);
     const sizeBytes = localManifest?.sizeBytes ?? requestedSizeBytes;
@@ -24632,20 +24656,29 @@ export class ReticulumChatManager extends EventEmitter {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
       return null;
     const record = parsed as Record<string, unknown>;
+    const nestedOtherData =
+      record.otherData &&
+      typeof record.otherData === 'object' &&
+      !Array.isArray(record.otherData)
+        ? (record.otherData as Record<string, unknown>)
+        : null;
     const manifests = new Map<string, ReticulumResourceManifest>();
-    for (const collection of [record.images, record.attachments]) {
-      if (!Array.isArray(collection)) continue;
-      for (const candidate of collection) {
-        if (!this.isValidReticulumResourceManifest(candidate)) continue;
-        if (
-          candidate.namespace !== 'reticulum-group-resource' &&
-          candidate.namespace !== 'reticulum-dm-resource'
-        )
-          continue;
-        manifests.set(candidate.fileHash.toLowerCase(), {
-          ...candidate,
-          fileHash: candidate.fileHash.toLowerCase(),
-        });
+    for (const container of [record, nestedOtherData]) {
+      if (!container) continue;
+      for (const collection of [container.images, container.attachments]) {
+        if (!Array.isArray(collection)) continue;
+        for (const candidate of collection) {
+          if (!this.isValidReticulumResourceManifest(candidate)) continue;
+          if (
+            candidate.namespace !== 'reticulum-group-resource' &&
+            candidate.namespace !== 'reticulum-dm-resource'
+          )
+            continue;
+          manifests.set(candidate.fileHash.toLowerCase(), {
+            ...candidate,
+            fileHash: candidate.fileHash.toLowerCase(),
+          });
+        }
       }
     }
     const expiresInMs = normalizeReticulumChatExpiryDurationMs(
@@ -24780,6 +24813,43 @@ export class ReticulumChatManager extends EventEmitter {
         createdAt: event.timestamp,
       });
     }
+  }
+
+  private ensureDirectResourceReference(
+    manifest: ReticulumResourceManifest,
+    conversationId: string,
+    eventId?: string
+  ): boolean {
+    if (!this.resourceStore) return false;
+    if (!eventId) {
+      return this.resourceStore.hasLiveReference(
+        manifest.fileHash,
+        'dm',
+        conversationId
+      );
+    }
+    if (
+      this.resourceStore.hasLiveReference(
+        manifest.fileHash,
+        'dm',
+        conversationId,
+        eventId
+      )
+    ) {
+      return true;
+    }
+    const event = this.db.getDirectEvent(eventId);
+    if (!event || event.conversationId !== conversationId) return false;
+    this.syncDirectResourceReferences(
+      event,
+      this.localDmAddresses.has(event.senderAddress)
+    );
+    return this.resourceStore.hasLiveReference(
+      manifest.fileHash,
+      'dm',
+      conversationId,
+      eventId
+    );
   }
 
   private resourceManifestBelongsToGroup(
