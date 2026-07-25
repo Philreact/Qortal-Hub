@@ -616,12 +616,12 @@ function PersistentSectionLayer({
         left: 0,
         minHeight: 0,
         minWidth: 0,
+        opacity: active ? 1 : 0,
         overflow: 'hidden',
         pointerEvents: active ? 'auto' : 'none',
         position: 'absolute',
         right: 0,
         top: topOffset,
-        visibility: active ? 'visible' : 'hidden',
         width: '100%',
         zIndex: active ? 1 : 0,
       }}
@@ -1030,8 +1030,6 @@ export const Group = ({
   const [activeReticulumChannelId, setActiveReticulumChannelId] =
     useState('general');
   const [reticulumReadEntryToken, setReticulumReadEntryToken] = useState(0);
-  const [reticulumMountedGroupSections, setReticulumMountedGroupSections] =
-    useState<Record<string, string[]>>({});
   const [mountedLandGroupId, setMountedLandGroupId] = useState<string | null>(
     null
   );
@@ -1414,24 +1412,6 @@ export const Group = ({
   useEffect(() => {
     setMountedLandGroupId(null);
   }, [selectedGroup?.groupId]);
-
-  useEffect(() => {
-    if (!reticulumChatEnabled || !selectedGroup?.groupId) return;
-    if (
-      !['announcement', 'forum', 'members', 'adminSpace'].includes(groupSection)
-    ) {
-      return;
-    }
-    const groupId = String(selectedGroup.groupId);
-    setReticulumMountedGroupSections((current) => {
-      const mounted = current[groupId] || [];
-      if (mounted.includes(groupSection)) return current;
-      return {
-        ...current,
-        [groupId]: [...mounted, groupSection],
-      };
-    });
-  }, [groupSection, reticulumChatEnabled, selectedGroup?.groupId]);
 
   useEffect(() => {
     secretKeyRef.current = secretKey;
@@ -4219,8 +4199,6 @@ export const Group = ({
   const handleReticulumJoinRequestCountChange = useCallback((count: number) => {
     setReticulumJoinRequestCount(Math.max(0, Number(count) || 0));
   }, []);
-  const mountedReticulumSections =
-    reticulumMountedGroupSections[selectedGroupIdKey] || [];
   const canMountQortalLand = Boolean(
     reticulumEnabled &&
     selectedGroup &&
@@ -4236,14 +4214,11 @@ export const Group = ({
           groupSection === section || mountedLandGroupId === selectedGroupIdKey
         );
       }
-      return (
-        groupSection === section || mountedReticulumSections.includes(section)
-      );
+      return groupSection === section;
     },
     [
       groupSection,
       mountedLandGroupId,
-      mountedReticulumSections,
       reticulumEnabled,
       selectedGroupIdKey,
     ]
@@ -4779,7 +4754,7 @@ export const Group = ({
                 isPrivate &&
                 triedToFetchSecretKey ? null : !triedToFetchSecretKey ? null : reticulumChatEnabled ? (
                 <>
-                  {shouldMountGroupSection('forum') && (
+                  {groupSection === 'forum' && (
                     <PersistentSectionLayer
                       active={groupSection === 'forum'}
                       topOffset={50}

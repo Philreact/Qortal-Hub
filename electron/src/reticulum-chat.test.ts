@@ -246,8 +246,14 @@ function createLandAuthSigner() {
     roomId?: string;
     direction?: string;
     movement?: string;
+    afk?: boolean;
+    dnd?: boolean;
+    skinId?: number;
     timestamp: number;
   }) => {
+    const afk = input.afk === true;
+    const dnd = input.dnd === true;
+    const skinId = input.skinId ?? 1;
     const fields = buildReticulumLandStateSignedFields({
       groupId: input.groupId,
       authorAddress: identity.address,
@@ -258,6 +264,9 @@ function createLandAuthSigner() {
       roomId: input.roomId ?? '',
       direction: input.direction ?? '',
       movement: input.movement ?? '',
+      afk,
+      dnd,
+      skinId,
       timestamp: input.timestamp,
     });
     const signature = nacl.sign.detached(
@@ -276,6 +285,9 @@ function createLandAuthSigner() {
       ...(input.roomId ? { u: input.roomId } : {}),
       ...(input.direction ? { d: input.direction } : {}),
       ...(input.movement ? { m: input.movement } : {}),
+      ...(afk ? { af: 1 as const } : {}),
+      ...(dnd ? { dn: 1 as const } : {}),
+      i: skinId,
       ts: input.timestamp,
       z: base58Encode(signature),
     };
@@ -8966,6 +8978,9 @@ describe('reticulum chat manager', () => {
         roomId: 'skyline',
         direction: 'r',
         movement: 'walk',
+        afk: true,
+        dnd: false,
+        skinId: 4,
         timestamp: 100_000,
       }),
       peerC
@@ -8986,6 +9001,9 @@ describe('reticulum chat manager', () => {
         roomId: 'skyline',
         direction: 'r',
         movement: 'walk',
+        afk: true,
+        dnd: false,
+        skinId: 4,
       })
     );
 
@@ -9000,6 +9018,8 @@ describe('reticulum chat manager', () => {
           s: 'session-1',
           q: 7,
           u: 'skyline',
+          af: 1,
+          i: 4,
           o: peerC,
           h: 1,
         }),
@@ -9746,6 +9766,9 @@ describe('reticulum chat manager', () => {
       roomId: 'club',
       direction: 'r',
       movement: 'walk',
+      afk: true,
+      dnd: false,
+      skinId: 4,
     });
     await flushQueuedWork();
     const outboundWires = [...direct.map(({ wire }) => wire), ...fanout];
@@ -9767,6 +9790,9 @@ describe('reticulum chat manager', () => {
               roomId: 'club',
               direction: 'r',
               movement: 'walk',
+              afk: true,
+              dnd: false,
+              skinId: 4,
               timestamp: Number(stateWire?.ts),
             })
           )
@@ -9775,6 +9801,10 @@ describe('reticulum chat manager', () => {
         new Uint8Array(base58Decode(String(authWire?.e)))
       )
     ).toBe(true);
+    expect(stateWire).toEqual(
+      expect.objectContaining({ af: 1, i: 4 })
+    );
+    expect(stateWire).not.toHaveProperty('dn');
     direct.length = 0;
     fanout.length = 0;
 

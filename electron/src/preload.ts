@@ -1761,7 +1761,9 @@ try {
           roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
-          statusFlags?: unknown;
+          afk?: unknown;
+          dnd?: unknown;
+          skinId?: unknown;
         }
       ) =>
         ipcRenderer.invoke(
@@ -2170,7 +2172,9 @@ try {
           y: number;
           direction?: string;
           movement?: string;
-          statusFlags?: number;
+          afk?: boolean;
+          dnd?: boolean;
+          skinId?: number;
           timestamp?: number;
         }) => void
       ) => {
@@ -2185,7 +2189,9 @@ try {
               y: number;
               direction?: string;
               movement?: string;
-              statusFlags?: number;
+              afk?: boolean;
+              dnd?: boolean;
+              skinId?: number;
               timestamp?: number;
             }
           );
@@ -2568,7 +2574,9 @@ try {
           roomId?: unknown;
           direction?: unknown;
           movement?: unknown;
-          statusFlags?: unknown;
+          afk?: unknown;
+          dnd?: unknown;
+          skinId?: unknown;
         }
       ) =>
         ipcRenderer.invoke(
@@ -2977,7 +2985,9 @@ try {
           y: number;
           direction?: string;
           movement?: string;
-          statusFlags?: number;
+          afk?: boolean;
+          dnd?: boolean;
+          skinId?: number;
           timestamp?: number;
         }) => void
       ) => {
@@ -2992,7 +3002,9 @@ try {
               y: number;
               direction?: string;
               movement?: string;
-              statusFlags?: number;
+              afk?: boolean;
+              dnd?: boolean;
+              skinId?: number;
               timestamp?: number;
             }
           );

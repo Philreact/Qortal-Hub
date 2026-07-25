@@ -256,9 +256,6 @@ const QORTAL_LAND_CHARACTER_PREVIEW_FACINGS: QortalLandCharacterPreviewFacing[] 
 const LAND_SEND_INTERVAL_MS = 200;
 const LAND_AFK_TIMEOUT_MS = 2 * 60 * 1000;
 const LAND_AFK_CHECK_INTERVAL_MS = 5_000;
-const LAND_STATUS_AFK = 1;
-const LAND_STATUS_DND = 2;
-const LAND_STATUS_SKIN_SHIFT = 2;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
 const LAND_REMOTE_INTERPOLATION_BUFFER_MS = 180;
@@ -319,17 +316,6 @@ const qortalLandSkinAnimationKey = (
 const qortalLandSkinForId = (skinId: unknown) =>
   QORTAL_LAND_CHARACTER_SKINS[normalizeQortalLandSkinId(skinId) - 1];
 
-const buildLandStatusFlags = (
-  afk: boolean,
-  dnd: boolean,
-  skinId: QortalLandSkinId
-): number =>
-  (afk ? LAND_STATUS_AFK : 0) |
-  (dnd ? LAND_STATUS_DND : 0) |
-  ((skinId - 1) << LAND_STATUS_SKIN_SHIFT);
-
-const skinIdFromLandStatusFlags = (statusFlags: number): QortalLandSkinId =>
-  normalizeQortalLandSkinId((statusFlags >> LAND_STATUS_SKIN_SHIFT) + 1);
 const LAND_CHARACTER_FRAME_SIZE = 320;
 const LAND_CHARACTER_FRAMES_PER_DIRECTION = 7;
 const LAND_CHARACTER_FEET_BASELINE = 292;
@@ -3021,11 +3007,9 @@ export function QortalLand({
           sequence: sequenceRef.current,
           ...localStateRef.current,
           movement: 'leave',
-          statusFlags: buildLandStatusFlags(
-            localStateRef.current.afk,
-            localStateRef.current.dnd,
-            localStateRef.current.skinId
-          ),
+          afk: localStateRef.current.afk,
+          dnd: localStateRef.current.dnd,
+          skinId: localStateRef.current.skinId,
         });
       }
     } else {
@@ -4446,10 +4430,6 @@ export function QortalLand({
       const existing = remotePlayersRef.current.get(key);
       const now = Date.now();
       const roomId = normalizeLandRoomId(payload.roomId);
-      const statusFlags = Math.max(
-        0,
-        Math.min(3, Math.floor(Number(payload.statusFlags) || 0))
-      );
       if (payload.movement === 'leave') {
         if (!existing || payload.sequence >= existing.sequence) {
           remotePlayersRef.current.delete(key);
@@ -4496,9 +4476,9 @@ export function QortalLand({
       const timelineAt = roomChanged || !existing
         ? now
         : Math.max(fromTimelineAt + LAND_REMOTE_RECONCILE_MS, mappedTimelineAt);
-      const afk = (statusFlags & LAND_STATUS_AFK) !== 0;
-      const dnd = (statusFlags & LAND_STATUS_DND) !== 0;
-      const skinId = skinIdFromLandStatusFlags(statusFlags);
+      const afk = payload.afk === true;
+      const dnd = payload.dnd === true;
+      const skinId = normalizeQortalLandSkinId(payload.skinId);
       const availabilityChanged =
         !existing ||
         existing.roomId !== roomId ||
@@ -4548,11 +4528,9 @@ export function QortalLand({
         sequence: sequenceRef.current + 1,
         ...localStateRef.current,
         movement: 'leave',
-        statusFlags: buildLandStatusFlags(
-          localStateRef.current.afk,
-          localStateRef.current.dnd,
-          localStateRef.current.skinId
-        ),
+        afk: localStateRef.current.afk,
+        dnd: localStateRef.current.dnd,
+        skinId: localStateRef.current.skinId,
       });
     };
   }, [
@@ -4885,11 +4863,9 @@ export function QortalLand({
         sessionId,
         sequence: sequenceRef.current,
         ...current,
-        statusFlags: buildLandStatusFlags(
-          current.afk,
-          current.dnd,
-          current.skinId
-        ),
+        afk: current.afk,
+        dnd: current.dnd,
+        skinId: current.skinId,
       });
     }, LAND_SEND_INTERVAL_MS);
     return () => window.clearInterval(interval);

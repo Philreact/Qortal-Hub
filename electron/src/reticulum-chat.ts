@@ -1306,7 +1306,9 @@ export type ReticulumChatWire =
       u?: string;
       d?: string;
       m?: string;
-      v?: number;
+      af?: 1;
+      dn?: 1;
+      i: number;
       ts: number;
       z: string;
       o?: string;
@@ -2075,6 +2077,9 @@ export function buildReticulumLandStateSignedFields(input: {
   roomId?: string;
   direction?: string;
   movement?: string;
+  afk: boolean;
+  dnd: boolean;
+  skinId: number;
   timestamp: number;
 }): Record<string, unknown> {
   return {
@@ -2082,6 +2087,9 @@ export function buildReticulumLandStateSignedFields(input: {
     direction: input.direction ?? '',
     groupId: input.groupId,
     movement: input.movement ?? '',
+    afk: input.afk,
+    dnd: input.dnd,
+    skinId: input.skinId,
     roomId: input.roomId ?? '',
     sequence: input.sequence,
     sessionId: input.sessionId,
@@ -8412,7 +8420,9 @@ export class ReticulumChatManager extends EventEmitter {
       roomId?: unknown;
       direction?: unknown;
       movement?: unknown;
-      statusFlags?: unknown;
+      afk?: unknown;
+      dnd?: unknown;
+      skinId?: unknown;
     }
   ): Promise<void> {
     this.assertLocalGroupMember(groupId);
@@ -8441,9 +8451,11 @@ export class ReticulumChatManager extends EventEmitter {
       typeof state.movement === 'string'
         ? state.movement.trim().slice(0, 8)
         : '';
-    const statusFlags = Math.max(
-      0,
-      Math.min(31, Math.floor(Number(state.statusFlags) || 0))
+    const afk = state.afk === true;
+    const dnd = state.dnd === true;
+    const skinId = Math.max(
+      1,
+      Math.min(31, Math.floor(Number(state.skinId) || 1))
     );
     if (!address || !sessionId) {
       throw new Error('Invalid QortalLand state');
@@ -8500,6 +8512,9 @@ export class ReticulumChatManager extends EventEmitter {
             roomId,
             direction,
             movement,
+            afk,
+            dnd,
+            skinId,
             timestamp,
           })
         )
@@ -8520,7 +8535,9 @@ export class ReticulumChatManager extends EventEmitter {
       ...(roomId ? { u: roomId } : {}),
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
-      ...(statusFlags ? { v: statusFlags } : {}),
+      ...(afk ? { af: 1 as const } : {}),
+      ...(dnd ? { dn: 1 as const } : {}),
+      i: skinId,
       ts: timestamp,
       z: base58Encode(signature),
     };
@@ -14291,6 +14308,12 @@ export class ReticulumChatManager extends EventEmitter {
               roomId: typeof wire.u === 'string' ? wire.u : '',
               direction: typeof wire.d === 'string' ? wire.d : '',
               movement: typeof wire.m === 'string' ? wire.m : '',
+              afk: wire.af === 1,
+              dnd: wire.dn === 1,
+              skinId: Math.max(
+                1,
+                Math.min(31, Math.floor(Number(wire.i) || 1))
+              ),
               timestamp,
             })
           )
@@ -27956,7 +27979,9 @@ export class ReticulumChatManager extends EventEmitter {
       roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
-      statusFlags: Math.max(0, Math.min(31, Math.floor(Number(wire.v) || 0))),
+      afk: wire.af === 1,
+      dnd: wire.dn === 1,
+      skinId: Math.max(1, Math.min(31, Math.floor(Number(wire.i) || 1))),
       timestamp: Number.isFinite(Number(wire.ts))
         ? Number(wire.ts)
         : this.now(),

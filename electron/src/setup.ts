@@ -4357,7 +4357,9 @@ ipcMain.handle(
       roomId?: unknown;
       direction?: unknown;
       movement?: unknown;
-      statusFlags?: unknown;
+      afk?: unknown;
+      dnd?: unknown;
+      skinId?: unknown;
     }
   ) => {
     const settings = await readAppSettings();
