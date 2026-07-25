@@ -250,11 +250,15 @@ function createLandAuthSigner() {
     movement?: string;
     afk?: boolean;
     dnd?: boolean;
+    voiceEnabled?: boolean;
+    voiceMuted?: boolean;
     skinId?: number;
     timestamp: number;
   }) => {
     const afk = input.afk === true;
     const dnd = input.dnd === true;
+    const voiceEnabled = input.voiceEnabled === true;
+    const voiceMuted = voiceEnabled && input.voiceMuted === true;
     const skinId = input.skinId ?? 1;
     const fields = buildReticulumLandStateSignedFields({
       groupId: input.groupId,
@@ -268,6 +272,7 @@ function createLandAuthSigner() {
       movement: input.movement ?? '',
       afk,
       dnd,
+      ...(voiceEnabled || voiceMuted ? { voiceEnabled, voiceMuted } : {}),
       skinId,
       timestamp: input.timestamp,
     });
@@ -287,7 +292,15 @@ function createLandAuthSigner() {
       ...(input.roomId ? { u: input.roomId } : {}),
       ...(input.direction ? { d: input.direction } : {}),
       ...(input.movement ? { m: input.movement } : {}),
-      ...(afk || dnd ? { v: (afk ? 1 : 0) | (dnd ? 2 : 0) } : {}),
+      ...(afk || dnd || voiceEnabled || voiceMuted
+        ? {
+            v:
+              (afk ? 1 : 0) |
+              (dnd ? 2 : 0) |
+              (voiceEnabled ? 4 : 0) |
+              (voiceMuted ? 8 : 0),
+          }
+        : {}),
       i: skinId,
       ts: input.timestamp,
       z: base58Encode(signature),
@@ -9013,6 +9026,8 @@ describe('reticulum chat manager', () => {
         movement: 'walk',
         afk: true,
         dnd: false,
+        voiceEnabled: true,
+        voiceMuted: false,
         skinId: 4,
         timestamp: 100_000,
       }),
@@ -9036,6 +9051,8 @@ describe('reticulum chat manager', () => {
         movement: 'walk',
         afk: true,
         dnd: false,
+        voiceEnabled: true,
+        voiceMuted: false,
         skinId: 4,
       })
     );
@@ -9051,7 +9068,7 @@ describe('reticulum chat manager', () => {
           s: 'session-1',
           q: 7,
           u: 'skyline',
-          v: 1,
+          v: 5,
           i: 4,
           o: peerC,
           h: 1,

@@ -1763,6 +1763,8 @@ try {
           movement?: unknown;
           afk?: unknown;
           dnd?: unknown;
+          voiceEnabled?: unknown;
+          voiceMuted?: unknown;
           skinId?: unknown;
         }
       ) =>
@@ -2174,6 +2176,8 @@ try {
           movement?: string;
           afk?: boolean;
           dnd?: boolean;
+          voiceEnabled?: boolean;
+          voiceMuted?: boolean;
           skinId?: number;
           timestamp?: number;
         }) => void
@@ -2191,6 +2195,8 @@ try {
               movement?: string;
               afk?: boolean;
               dnd?: boolean;
+              voiceEnabled?: boolean;
+              voiceMuted?: boolean;
               skinId?: number;
               timestamp?: number;
             }
@@ -2576,6 +2582,8 @@ try {
           movement?: unknown;
           afk?: unknown;
           dnd?: unknown;
+          voiceEnabled?: unknown;
+          voiceMuted?: unknown;
           skinId?: unknown;
         }
       ) =>
@@ -2987,6 +2995,8 @@ try {
           movement?: string;
           afk?: boolean;
           dnd?: boolean;
+          voiceEnabled?: boolean;
+          voiceMuted?: boolean;
           skinId?: number;
           timestamp?: number;
         }) => void
@@ -3004,6 +3014,8 @@ try {
               movement?: string;
               afk?: boolean;
               dnd?: boolean;
+              voiceEnabled?: boolean;
+              voiceMuted?: boolean;
               skinId?: number;
               timestamp?: number;
             }

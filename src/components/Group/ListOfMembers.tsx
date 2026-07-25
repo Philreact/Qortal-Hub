@@ -14,7 +14,9 @@ import {
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import Groups2RoundedIcon from '@mui/icons-material/Groups2Rounded';
-import { useMemo, useRef, useState } from 'react';
+import LocalFloristRoundedIcon from '@mui/icons-material/LocalFloristRounded';
+import NightlifeRoundedIcon from '@mui/icons-material/NightlifeRounded';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { LoadingButton } from '@mui/lab';
 import { getFee } from '../../background/background.ts';
@@ -28,8 +30,14 @@ import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { getFallbackAvatarOutlineSx } from '../Chat/clickableAvatarStyles';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { WrapperUserAction } from '../WrapperUserAction';
+import {
+  QORTAL_LAND_PRESENCE_EVENT,
+  getQortalLandPresence,
+} from '../QortalLand/qortalLandPresence';
+import { QortalLandAvailabilityTags } from '../QortalLand/QortalLandAvailabilityTags';
 
 const MEMBER_ROW_HEIGHT = 64;
+const QORTAL_LAND_REMOTE_TTL_MS = 30_000;
 
 const ListOfMembers = ({
   members,
@@ -51,8 +59,14 @@ const ListOfMembers = ({
   const [isLoadingRemoveAdmin, setIsLoadingRemoveAdmin] = useState(false);
   const [expandedSections, setExpandedSections] = useState({
     admins: true,
+    lounge: true,
+    park: true,
     members: true,
   });
+  const [landPresence, setLandPresence] = useState(
+    () => getQortalLandPresence(Number(groupId))?.members ?? []
+  );
+  const landSessionsRef = useRef(new Map());
   const theme = useTheme();
   const { t } = useTranslation([
     'auth',
@@ -78,6 +92,128 @@ const ListOfMembers = ({
       : reticulumTextScale === 'medium'
         ? 57
         : 52;
+  const categorizedReticulumMembers = compact && reticulumUserCards;
+
+  useEffect(() => {
+    if (!categorizedReticulumMembers) return;
+    const numericGroupId = Number(groupId);
+    if (!Number.isInteger(numericGroupId) || numericGroupId <= 0) return;
+
+    const initialMembers =
+      getQortalLandPresence(numericGroupId)?.members ?? [];
+    landSessionsRef.current = new Map(
+      initialMembers.map((presence) => [
+        `${presence.address}:snapshot`,
+        {
+          ...presence,
+          sequence: 0,
+          sessionId: 'snapshot',
+        },
+      ])
+    );
+    setLandPresence(initialMembers);
+
+    const publishCurrentPresence = () => {
+      const now = Date.now();
+      const newestByAddress = new Map();
+      for (const [key, presence] of landSessionsRef.current.entries()) {
+        if (now - presence.lastSeenAt > QORTAL_LAND_REMOTE_TTL_MS) {
+          landSessionsRef.current.delete(key);
+          continue;
+        }
+        const previous = newestByAddress.get(presence.address);
+        if (!previous || presence.lastSeenAt > previous.lastSeenAt) {
+          newestByAddress.set(presence.address, presence);
+        }
+      }
+      const nextMembers = [...newestByAddress.values()].map(
+        ({ sequence: _sequence, sessionId: _sessionId, ...presence }) =>
+          presence
+      );
+      setLandPresence(nextMembers);
+    };
+
+    void window.reticulumChat?.subscribeGroup?.(numericGroupId);
+    void window.reticulumChat?.subscribeChannel?.(
+      numericGroupId,
+      'qortal-land'
+    );
+    const unsubscribe = window.reticulumChat?.onLandState?.((payload) => {
+      if (payload.groupId !== numericGroupId || !payload.authorAddress) return;
+      // The mounted QortalLand view is the authoritative source for our own
+      // presence. Treating its echoed network state as a remote session can
+      // resurrect the local user after leaving or let an old echo outlive the
+      // shared snapshot.
+      if (payload.authorAddress === currentAddress) return;
+      const sessionId = payload.sessionId || 'default';
+      const key = `${payload.authorAddress}:${sessionId}`;
+      const previous = landSessionsRef.current.get(key);
+      if (payload.movement === 'leave') {
+        if (!previous || payload.sequence >= previous.sequence) {
+          landSessionsRef.current.delete(key);
+          publishCurrentPresence();
+        }
+        return;
+      }
+      if (previous && payload.sequence < previous.sequence) return;
+      landSessionsRef.current.delete(`${payload.authorAddress}:snapshot`);
+      landSessionsRef.current.set(key, {
+        address: payload.authorAddress,
+        afk: payload.afk === true,
+        dnd: payload.dnd === true,
+        voiceEnabled: payload.voiceEnabled === true,
+        voiceMuted:
+          payload.voiceEnabled === true && payload.voiceMuted === true,
+        lastSeenAt: Date.now(),
+        roomId: payload.roomId === 'park' ? 'park' : 'club',
+        sequence: payload.sequence,
+        sessionId,
+      });
+      publishCurrentPresence();
+    });
+    const pruneTimer = window.setInterval(
+      publishCurrentPresence,
+      Math.min(5_000, QORTAL_LAND_REMOTE_TTL_MS)
+    );
+    const onSharedPresence = (event) => {
+      const snapshot = event.detail;
+      if (snapshot?.groupId !== numericGroupId) return;
+      for (const key of landSessionsRef.current.keys()) {
+        if (key.endsWith(':shared')) {
+          landSessionsRef.current.delete(key);
+        }
+      }
+      for (const presence of snapshot.members || []) {
+        const key = `${presence.address}:shared`;
+        landSessionsRef.current.set(key, {
+          ...presence,
+          sequence: 0,
+          sessionId: 'shared',
+        });
+      }
+      setLandPresence(snapshot.members || []);
+    };
+    window.addEventListener(QORTAL_LAND_PRESENCE_EVENT, onSharedPresence);
+    return () => {
+      unsubscribe?.();
+      window.clearInterval(pruneTimer);
+      window.removeEventListener(
+        QORTAL_LAND_PRESENCE_EVENT,
+        onSharedPresence
+      );
+    };
+  }, [categorizedReticulumMembers, currentAddress, groupId]);
+
+  const landPresenceByAddress = useMemo(() => {
+    const byAddress = new Map();
+    for (const presence of landPresence) {
+      const previous = byAddress.get(presence.address);
+      if (!previous || presence.lastSeenAt > previous.lastSeenAt) {
+        byAddress.set(presence.address, presence);
+      }
+    }
+    return byAddress;
+  }, [landPresence]);
   const sortedMembers = useMemo(() => {
     return [...(members || [])].sort((a, b) => {
       const aIsOwner = a?.member === ownerAddress;
@@ -95,7 +231,6 @@ const ListOfMembers = ({
       });
     });
   }, [members, ownerAddress]);
-  const categorizedReticulumMembers = compact && reticulumUserCards;
   const categorizedRows = useMemo(() => {
     if (!categorizedReticulumMembers) {
       return sortedMembers.map((member) => ({ member, type: 'member' }));
@@ -113,16 +248,46 @@ const ListOfMembers = ({
         sensitivity: 'base',
       });
     };
-    const admins = [...(members || [])]
+    const memberByAddress = new Map(
+      (members || []).map((member) => [member?.member, member])
+    );
+    for (const address of landPresenceByAddress.keys()) {
+      if (!memberByAddress.has(address)) {
+        memberByAddress.set(address, { member: address });
+      }
+    }
+    const allMembers = [...memberByAddress.values()].filter(
+      (member) => member?.member
+    );
+    const admins = allMembers
       .filter(
         (member) =>
           member?.member === ownerAddress || Boolean(member?.isAdmin)
       )
       .sort(sortByPresenceThenName);
-    const regularMembers = [...(members || [])]
+    const regularMembers = allMembers
       .filter(
         (member) =>
           member?.member !== ownerAddress && !Boolean(member?.isAdmin)
+      );
+    const loungeMembers = regularMembers
+      .filter(
+        (member) =>
+          landPresenceByAddress.has(member.member) &&
+          landPresenceByAddress.get(member.member)?.roomId !== 'park'
+      )
+      .sort(sortByPresenceThenName);
+    const parkMembers = regularMembers
+      .filter(
+        (member) =>
+          landPresenceByAddress.get(member.member)?.roomId === 'park'
+      )
+      .sort(sortByPresenceThenName);
+    const onlineMembers = regularMembers
+      .filter(
+        (member) =>
+          !landPresenceByAddress.has(member.member) &&
+          (onlineAddresses.has(member.member) || statusMap.has(member.member))
       )
       .sort(sortByPresenceThenName);
 
@@ -139,7 +304,29 @@ const ListOfMembers = ({
         ? admins.map((member) => ({ member, type: 'member' }))
         : []),
       {
-        count: regularMembers.length,
+        count: loungeMembers.length,
+        expanded: expandedSections.lounge,
+        first: false,
+        label: 'Lounge',
+        section: 'lounge',
+        type: 'section',
+      },
+      ...(expandedSections.lounge
+        ? loungeMembers.map((member) => ({ member, type: 'member' }))
+        : []),
+      {
+        count: parkMembers.length,
+        expanded: expandedSections.park,
+        first: false,
+        label: 'Park',
+        section: 'park',
+        type: 'section',
+      },
+      ...(expandedSections.park
+        ? parkMembers.map((member) => ({ member, type: 'member' }))
+        : []),
+      {
+        count: onlineMembers.length,
         expanded: expandedSections.members,
         first: false,
         label: 'Members',
@@ -147,13 +334,16 @@ const ListOfMembers = ({
         type: 'section',
       },
       ...(expandedSections.members
-        ? regularMembers.map((member) => ({ member, type: 'member' }))
+        ? onlineMembers.map((member) => ({ member, type: 'member' }))
         : []),
     ];
   }, [
     categorizedReticulumMembers,
     expandedSections.admins,
+    expandedSections.lounge,
     expandedSections.members,
+    expandedSections.park,
+    landPresenceByAddress,
     members,
     onlineAddresses,
     ownerAddress,
@@ -411,7 +601,11 @@ const ListOfMembers = ({
       const SectionIcon =
         row.section === 'admins'
           ? AdminPanelSettingsRoundedIcon
-          : Groups2RoundedIcon;
+          : row.section === 'lounge'
+            ? NightlifeRoundedIcon
+            : row.section === 'park'
+              ? LocalFloristRoundedIcon
+              : Groups2RoundedIcon;
       return (
         <div key={key} style={style}>
           <Box
@@ -483,6 +677,7 @@ const ListOfMembers = ({
       popoverAnchor?.getBoundingClientRect?.().width || (compact ? 240 : 325);
     const memberRole =
       member?.member === ownerAddress ? 'Owner' : member?.isAdmin ? 'Admin' : null;
+    const memberLandPresence = landPresenceByAddress.get(member?.member) ?? null;
     const memberRoleColor =
       memberRole === 'Owner'
         ? theme.palette.mode === 'dark'
@@ -519,8 +714,15 @@ const ListOfMembers = ({
       <>
         <ListItemAvatar sx={{ minWidth: compact ? 42 : undefined }}>
           <PresenceStatusBadge
-            online={onlineAddresses.has(member?.member)}
-            status={statusMap.get(member?.member) ?? null}
+            online={
+              onlineAddresses.has(member?.member) ||
+              Boolean(memberLandPresence)
+            }
+            status={
+              memberLandPresence?.afk
+                ? 'idle'
+                : statusMap.get(member?.member) ?? null
+            }
           >
             <Avatar
               alt={memberLabel}
@@ -566,25 +768,28 @@ const ListOfMembers = ({
               >
                 {memberLabel}
               </Box>
-              {memberRole && (
+              {memberRole && memberLandPresence && (
                 <Box
                   component="span"
                   sx={{
-                    color: memberRoleColor,
+                    backgroundColor: alpha('#20c7d9', 0.13),
+                    border: `1px solid ${alpha('#20c7d9', 0.52)}`,
+                    borderRadius: '4px',
+                    color: theme.palette.mode === 'dark' ? '#55dcea' : '#087b88',
                     flexShrink: 0,
-                    fontSize:
-                      compact && reticulumUserCards
-                        ? Math.max(11, compactTextSize - 3)
-                        : compact
-                          ? 10
-                          : 11,
-                    fontWeight: 400,
-                    lineHeight: 1.2,
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: '0.035em',
+                    lineHeight: '14px',
+                    px: 0.55,
                   }}
                 >
-                  ({memberRole})
+                  Q-LAND
                 </Box>
               )}
+              <QortalLandAvailabilityTags
+                availability={memberLandPresence}
+              />
             </Box>
           }
           primaryTypographyProps={{
@@ -820,6 +1025,8 @@ const ListOfMembers = ({
                     : MEMBER_ROW_HEIGHT
               }
               rowRenderer={rowRenderer}
+              style={{ outline: 'none' }}
+              tabIndex={-1}
               width={width}
             />
           )}

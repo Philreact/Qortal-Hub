@@ -3,6 +3,8 @@ export const QORTAL_LAND_PRESENCE_EVENT = 'qortal-land:presence';
 export type QortalLandAvailability = {
   afk: boolean;
   dnd: boolean;
+  voiceEnabled?: boolean;
+  voiceMuted?: boolean;
 };
 
 export type QortalLandPresenceMember = QortalLandAvailability & {

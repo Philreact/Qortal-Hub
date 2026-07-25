@@ -8950,9 +8950,14 @@ export const ChatGroup = ({
               display: 'flex',
               flex: 1,
               flexDirection: 'column',
+              mr:
+                reticulumChatEnabled && membersPanelOpen
+                  ? '280px'
+                  : 0,
               minHeight: 0,
               minWidth: 0,
               position: 'relative',
+              transition: 'margin-right 160ms ease',
             }}
           >
             {!shouldSuppressLegacyGroupChat && (

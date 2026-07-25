@@ -749,6 +749,8 @@ declare global {
           movement?: unknown;
           afk?: unknown;
           dnd?: unknown;
+          voiceEnabled?: unknown;
+          voiceMuted?: unknown;
           skinId?: unknown;
         }
       ) => Promise<{ success: boolean; error?: string }>;
@@ -937,6 +939,8 @@ declare global {
           movement?: string;
           afk?: boolean;
           dnd?: boolean;
+          voiceEnabled?: boolean;
+          voiceMuted?: boolean;
           skinId?: number;
           timestamp?: number;
         }) => void
