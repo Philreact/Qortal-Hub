@@ -144,9 +144,12 @@ const getReticulumMintership = (address: string): Promise<boolean> => {
     .then(async (response) => {
       if (!response.ok) return false;
       const data = await response.json();
-      const groups = Array.isArray(data) ? data : data?.groups ?? [];
+      const groups = Array.isArray(data) ? data : (data?.groups ?? []);
       return groups.some(
-        (group) => String(group?.groupName ?? '').trim().toUpperCase() === 'MINTER'
+        (group) =>
+          String(group?.groupName ?? '')
+            .trim()
+            .toUpperCase() === 'MINTER'
       );
     })
     .catch(() => false)
@@ -171,7 +174,10 @@ const shouldRequestReticulumImageResource = (key: string, nowMs: number) => {
     return false;
   }
   reticulumImageResourceRequestTimes.set(key, nowMs);
-  if (reticulumImageResourceRequestTimes.size > RETICULUM_IMAGE_REQUEST_TRACK_LIMIT) {
+  if (
+    reticulumImageResourceRequestTimes.size >
+    RETICULUM_IMAGE_REQUEST_TRACK_LIMIT
+  ) {
     const oldestKey = reticulumImageResourceRequestTimes.keys().next().value;
     if (oldestKey) {
       reticulumImageResourceRequestTimes.delete(oldestKey);
@@ -376,7 +382,8 @@ export const MessageItemComponent = ({
   const [userInfo, setUserInfo] = useState(null);
   const [isUserInfoResolved, setIsUserInfoResolved] = useState(false);
   const [isReticulumMinter, setIsReticulumMinter] = useState(false);
-  const [isReticulumMinterResolved, setIsReticulumMinterResolved] = useState(false);
+  const [isReticulumMinterResolved, setIsReticulumMinterResolved] =
+    useState(false);
   const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState(null);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
@@ -523,8 +530,7 @@ export const MessageItemComponent = ({
       groupWelcomeSystem?.groupId
     ) {
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-        reticulumGroupAvatarOwnerName ||
-          groupWelcomeSystem.groupAvatarOwnerName
+        reticulumGroupAvatarOwnerName || groupWelcomeSystem.groupAvatarOwnerName
       )}/qortal_group_avatar_${groupWelcomeSystem.groupId}?async=true`;
     }
     return message?.senderName
@@ -603,31 +609,29 @@ export const MessageItemComponent = ({
   );
   const hasUnsafeExpiredReplyName = Boolean(
     replyExpiredMeta?.senderName &&
-      hasInvisibleCharacters(replyExpiredMeta.senderName)
+    hasInvisibleCharacters(replyExpiredMeta.senderName)
   );
 
   const qchatFileTransfer = getQchatFileTransfer(message);
   const isReticulumMessageWithResources =
     message?.reticulumChat === true || message?.reticulumDirect === true;
   const isReticulumDirectResourceMessage = message?.reticulumDirect === true;
-  const reticulumDirectPeerAddress =
-    isReticulumDirectResourceMessage
-      ? message?.sender === myAddress
-        ? typeof message?.recipientAddress === 'string'
-          ? message.recipientAddress
-          : ''
-        : typeof message?.sender === 'string'
-          ? message.sender
-          : ''
-      : '';
+  const reticulumDirectPeerAddress = isReticulumDirectResourceMessage
+    ? message?.sender === myAddress
+      ? typeof message?.recipientAddress === 'string'
+        ? message.recipientAddress
+        : ''
+      : typeof message?.sender === 'string'
+        ? message.sender
+        : ''
+    : '';
   const isReticulumResourceImage =
     isReticulumMessageWithResources &&
     message?.images?.[0]?.reticulumResource === true &&
     typeof message?.images?.[0]?.fileHash === 'string';
-  const imageResourceId =
-    isReticulumResourceImage
-      ? message.images[0].fileHash
-      : '';
+  const imageResourceId = isReticulumResourceImage
+    ? message.images[0].fileHash
+    : '';
   const imageResourceManifest =
     isReticulumResourceImage &&
     message?.images?.[0] &&
@@ -644,7 +648,8 @@ export const MessageItemComponent = ({
       : 0;
   const shouldAutoDownloadReticulumImage =
     isReticulumResourceImage &&
-    (!imageResourceSize || imageResourceSize < RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES);
+    (!imageResourceSize ||
+      imageResourceSize < RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES);
   const largeReticulumImageAttachment =
     isReticulumResourceImage && !shouldAutoDownloadReticulumImage
       ? imageResourceManifest
@@ -652,7 +657,8 @@ export const MessageItemComponent = ({
   const imageResourceMetadataWidth = (() => {
     const direct = Number(imageResourceManifest?.width);
     const metadata = Number(
-      (imageResourceManifest?.metadata as Record<string, unknown> | undefined)?.width
+      (imageResourceManifest?.metadata as Record<string, unknown> | undefined)
+        ?.width
     );
     const value = Number.isFinite(direct) && direct > 0 ? direct : metadata;
     return Number.isFinite(value) && value > 0 ? value : null;
@@ -660,7 +666,8 @@ export const MessageItemComponent = ({
   const imageResourceMetadataHeight = (() => {
     const direct = Number(imageResourceManifest?.height);
     const metadata = Number(
-      (imageResourceManifest?.metadata as Record<string, unknown> | undefined)?.height
+      (imageResourceManifest?.metadata as Record<string, unknown> | undefined)
+        ?.height
     );
     const value = Number.isFinite(direct) && direct > 0 ? direct : metadata;
     return Number.isFinite(value) && value > 0 ? value : null;
@@ -677,8 +684,7 @@ export const MessageItemComponent = ({
     imageResourceWidth,
     imageResourceHeight
   );
-  const imageResourceAspectRatio =
-    imageResourceDisplaySize.aspectRatio;
+  const imageResourceAspectRatio = imageResourceDisplaySize.aspectRatio;
   const imageResourceDisplayWidth = imageResourceDisplaySize.width;
   const reticulumFileAttachment =
     isReticulumMessageWithResources && Array.isArray(message?.attachments)
@@ -735,10 +741,7 @@ export const MessageItemComponent = ({
         selectedGroup
     );
     if (!Number.isInteger(groupId) || groupId <= 0) return undefined;
-    if (
-      myAddress === message?.sender &&
-      reticulumMemberRole !== 'owner'
-    ) {
+    if (myAddress === message?.sender && reticulumMemberRole !== 'owner') {
       return undefined;
     }
     return {
@@ -766,9 +769,14 @@ export const MessageItemComponent = ({
   const imageEmbedLink = messageHasImage(message)
     ? buildImageEmbedLink(message.images[0])
     : null;
-  const [localResourceImageUrl, setLocalResourceImageUrl] = useState<string | null>(null);
-  const [isReticulumImageViewerOpen, setIsReticulumImageViewerOpen] = useState(false);
-  const [reticulumImageViewerSrc, setReticulumImageViewerSrc] = useState<string | null>(null);
+  const [localResourceImageUrl, setLocalResourceImageUrl] = useState<
+    string | null
+  >(null);
+  const [isReticulumImageViewerOpen, setIsReticulumImageViewerOpen] =
+    useState(false);
+  const [reticulumImageViewerSrc, setReticulumImageViewerSrc] = useState<
+    string | null
+  >(null);
   const [reticulumImageViewerContainer, setReticulumImageViewerContainer] =
     useState<HTMLElement | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
@@ -790,12 +798,11 @@ export const MessageItemComponent = ({
     reticulumChatEnabled &&
     Boolean(
       displayImageUrl &&
-        (localResourceImageUrl || displayImageUrl.startsWith('data:image/'))
+      (localResourceImageUrl || displayImageUrl.startsWith('data:image/'))
     );
   const [resourceReloadNonce, setResourceReloadNonce] = useState(0);
-  const [reticulumImageDownloadIssue, setReticulumImageDownloadIssue] = useState<
-    'unavailable' | 'error' | null
-  >(null);
+  const [reticulumImageDownloadIssue, setReticulumImageDownloadIssue] =
+    useState<'unavailable' | 'error' | null>(null);
   const reticulumImageRequestKey =
     isReticulumResourceImage && imageResourceId
       ? isReticulumDirectResourceMessage
@@ -852,14 +859,22 @@ export const MessageItemComponent = ({
   const [fileResourceFailureReason, setFileResourceFailureReason] = useState<
     'verification_failed' | null
   >(null);
-  const [fileResourceProgress, setFileResourceProgress] = useState<number | null>(null);
+  const [fileResourceProgress, setFileResourceProgress] = useState<
+    number | null
+  >(null);
   const [fileResourceBytes, setFileResourceBytes] = useState<{
     received: number;
     total: number;
   } | null>(null);
-  const [fileResourceLastChunkAt, setFileResourceLastChunkAt] = useState<number | null>(null);
-  const [fileResourceCheckedAt, setFileResourceCheckedAt] = useState<number | null>(null);
-  const [fileResourceStartedAt, setFileResourceStartedAt] = useState<number | null>(null);
+  const [fileResourceLastChunkAt, setFileResourceLastChunkAt] = useState<
+    number | null
+  >(null);
+  const [fileResourceCheckedAt, setFileResourceCheckedAt] = useState<
+    number | null
+  >(null);
+  const [fileResourceStartedAt, setFileResourceStartedAt] = useState<
+    number | null
+  >(null);
   const [fileResourceRuntime, setFileResourceRuntime] = useState<{
     active?: boolean;
     peerCount?: number;
@@ -902,35 +917,40 @@ export const MessageItemComponent = ({
     };
     const scheduleAvailabilityCheck = (delayMs: number) => {
       clearAvailabilityTimer();
-      availabilityTimer = window.setTimeout(() => {
-        availabilityTimer = null;
-        void window.reticulumResources
-          ?.getStatus?.(imageResourceId)
-          .then((status) => {
-            if (cancelled) return;
-            if (status?.success && status.complete) {
-              reticulumImageResourceRequestTimes.delete(key);
-              setReticulumImageDownloadIssue(null);
-              setResourceReloadNonce((value) => value + 1);
-              return;
-            }
+      availabilityTimer = window.setTimeout(
+        () => {
+          availabilityTimer = null;
+          void window.reticulumResources
+            ?.getStatus?.(imageResourceId)
+            .then((status) => {
+              if (cancelled) return;
+              if (status?.success && status.complete) {
+                reticulumImageResourceRequestTimes.delete(key);
+                setReticulumImageDownloadIssue(null);
+                setResourceReloadNonce((value) => value + 1);
+                return;
+              }
 
-            const runtime = status?.runtime;
-            const hasActiveTransfer = Boolean(
-              (runtime?.activeTransfers ?? 0) > 0 ||
+              const runtime = status?.runtime;
+              const hasActiveTransfer = Boolean(
+                (runtime?.activeTransfers ?? 0) > 0 ||
                 (runtime?.pendingTransfers ?? 0) > 0 ||
                 (runtime?.inFlightRangeCount ?? 0) > 0
-            );
-            if (hasActiveTransfer) {
-              scheduleAvailabilityCheck(RETICULUM_IMAGE_AVAILABILITY_RECHECK_MS);
-              return;
-            }
-            setReticulumImageDownloadIssue('unavailable');
-          })
-          .catch(() => {
-            if (!cancelled) setReticulumImageDownloadIssue('error');
-          });
-      }, Math.max(0, delayMs));
+              );
+              if (hasActiveTransfer) {
+                scheduleAvailabilityCheck(
+                  RETICULUM_IMAGE_AVAILABILITY_RECHECK_MS
+                );
+                return;
+              }
+              setReticulumImageDownloadIssue('unavailable');
+            })
+            .catch(() => {
+              if (!cancelled) setReticulumImageDownloadIssue('error');
+            });
+        },
+        Math.max(0, delayMs)
+      );
     };
 
     if (!requestAllowed) {
@@ -950,7 +970,8 @@ export const MessageItemComponent = ({
     scheduleAvailabilityCheck(RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS);
     void (async () => {
       try {
-        const status = await window.reticulumResources?.getStatus?.(imageResourceId);
+        const status =
+          await window.reticulumResources?.getStatus?.(imageResourceId);
         if (cancelled) return;
         if (status?.success && status.complete) {
           clearAvailabilityTimer();
@@ -1024,7 +1045,10 @@ export const MessageItemComponent = ({
     : qchatTransferState?.status || qchatFileData?.status || 'offer';
   const qchatProgress =
     typeof qchatTransferState?.progress === 'number'
-      ? Math.max(0, Math.min(100, Math.round(qchatTransferState.progress * 100)))
+      ? Math.max(
+          0,
+          Math.min(100, Math.round(qchatTransferState.progress * 100))
+        )
       : null;
   const qchatTransferBusy =
     qchatDisplayStatus === 'accepted' ||
@@ -1051,7 +1075,10 @@ export const MessageItemComponent = ({
         ? message.timestamp + QCHAT_FILE_TRANSFER_TTL_MS
         : null;
   const qchatMsLeft =
-    qchatShowOfferExpiry && qchatExpiresAt && !qchatTransferDone && !qchatTransferError
+    qchatShowOfferExpiry &&
+    qchatExpiresAt &&
+    !qchatTransferDone &&
+    !qchatTransferError
       ? Math.max(0, qchatExpiresAt - nowMs)
       : null;
   const qchatOfferExpired =
@@ -1092,7 +1119,9 @@ export const MessageItemComponent = ({
       case 'authorized':
         return 'authorized';
       case 'sending':
-        return qchatProgress !== null ? `uploading ${qchatProgress}%` : 'uploading';
+        return qchatProgress !== null
+          ? `uploading ${qchatProgress}%`
+          : 'uploading';
       case 'receiving':
         return qchatProgress !== null
           ? `downloading ${qchatProgress}%`
@@ -1164,12 +1193,17 @@ export const MessageItemComponent = ({
                     : typeof manifest.metadata?.originalMimeType === 'string'
                       ? manifest.metadata.originalMimeType
                       : 'image/webp';
-                setLocalResourceImageUrl(`data:${mimeType};base64,${imageBase64}`);
+                setLocalResourceImageUrl(
+                  `data:${mimeType};base64,${imageBase64}`
+                );
                 return;
               }
             }
           } catch (error) {
-            console.error('[ReticulumResource] Failed to load encrypted image:', error);
+            console.error(
+              '[ReticulumResource] Failed to load encrypted image:',
+              error
+            );
           }
         }
         if (!manifest?.encrypted) {
@@ -1220,7 +1254,8 @@ export const MessageItemComponent = ({
       } | null;
     }) => {
       if (!payload) return;
-      const verificationFailed = payload.failureReason === 'verification_failed';
+      const verificationFailed =
+        payload.failureReason === 'verification_failed';
       if (verificationFailed) {
         const restartedAt = Date.now();
         setFileResourceFailureReason('verification_failed');
@@ -1253,7 +1288,9 @@ export const MessageItemComponent = ({
           Math.min(maximumProgress, Math.round(payload.progress * 100))
         );
         setFileResourceProgress((progress) =>
-          typeof progress === 'number' ? Math.max(progress, nextProgress) : nextProgress
+          typeof progress === 'number'
+            ? Math.max(progress, nextProgress)
+            : nextProgress
         );
         if (nextProgress > 0) {
           setFileResourceLastChunkAt(Date.now());
@@ -1264,7 +1301,10 @@ export const MessageItemComponent = ({
         typeof payload.totalBytes === 'number' &&
         payload.totalBytes > 0
       ) {
-        const received = Math.max(0, Math.min(payload.bytesTransferred, payload.totalBytes));
+        const received = Math.max(
+          0,
+          Math.min(payload.bytesTransferred, payload.totalBytes)
+        );
         const byteProgress = Math.max(
           0,
           Math.min(
@@ -1280,13 +1320,18 @@ export const MessageItemComponent = ({
           total: payload.totalBytes,
         }));
         setFileResourceProgress((progress) =>
-          typeof progress === 'number' ? Math.max(progress, byteProgress) : byteProgress
+          typeof progress === 'number'
+            ? Math.max(progress, byteProgress)
+            : byteProgress
         );
         if (received > 0) {
           setFileResourceLastChunkAt(Date.now());
         }
       }
-      if (typeof payload.latestRangeUpdatedAt === 'number' && payload.latestRangeUpdatedAt > 0) {
+      if (
+        typeof payload.latestRangeUpdatedAt === 'number' &&
+        payload.latestRangeUpdatedAt > 0
+      ) {
         setFileResourceLastChunkAt(payload.latestRangeUpdatedAt);
       }
       if (payload.canceled) {
@@ -1314,7 +1359,9 @@ export const MessageItemComponent = ({
 
   const markFileResourceReadyIfComplete = useCallback(async () => {
     if (!reticulumFileResourceId) return false;
-    const status = await window.reticulumResources?.getStatus?.(reticulumFileResourceId);
+    const status = await window.reticulumResources?.getStatus?.(
+      reticulumFileResourceId
+    );
     if (!status?.success) return false;
     applyFileResourceStatus(status);
     return status.complete === true;
@@ -1466,32 +1513,31 @@ export const MessageItemComponent = ({
       setFileResourceBytes(null);
       return;
     }
-    void window.reticulumResources?.getStatus?.(reticulumFileResourceId).then((result) => {
-      if (cancelled) return;
-      if (result?.success && result.complete) {
-        applyFileResourceStatus(result);
-      } else {
-        setFileResourceStatus('idle');
-        setFileResourceFailureReason(null);
-        setFileResourceProgress(null);
-        setFileResourceBytes(null);
-        setFileResourceLastChunkAt(null);
-        setFileResourceCheckedAt(null);
-        setFileResourceStartedAt(null);
-        setFileResourceRuntime(null);
-      }
-    });
+    void window.reticulumResources
+      ?.getStatus?.(reticulumFileResourceId)
+      .then((result) => {
+        if (cancelled) return;
+        if (result?.success && result.complete) {
+          applyFileResourceStatus(result);
+        } else {
+          setFileResourceStatus('idle');
+          setFileResourceFailureReason(null);
+          setFileResourceProgress(null);
+          setFileResourceBytes(null);
+          setFileResourceLastChunkAt(null);
+          setFileResourceCheckedAt(null);
+          setFileResourceStartedAt(null);
+          setFileResourceRuntime(null);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [
-    applyFileResourceStatus,
-    reticulumFileResourceId,
-    resourceReloadNonce,
-  ]);
+  }, [applyFileResourceStatus, reticulumFileResourceId, resourceReloadNonce]);
 
   useEffect(() => {
-    if (!reticulumFileResourceId || fileResourceStatus !== 'downloading') return;
+    if (!reticulumFileResourceId || fileResourceStatus !== 'downloading')
+      return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       void window.reticulumResources
@@ -1508,11 +1554,7 @@ export const MessageItemComponent = ({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [
-    applyFileResourceStatus,
-    fileResourceStatus,
-    reticulumFileResourceId,
-  ]);
+  }, [applyFileResourceStatus, fileResourceStatus, reticulumFileResourceId]);
   useEffect(() => {
     if (!qchatFileTransfer) return;
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -1529,7 +1571,12 @@ export const MessageItemComponent = ({
     if (!referenceAt) return;
     if (Date.now() - referenceAt < RETICULUM_FILE_DOWNLOAD_STALL_MS) return;
     setFileResourceStatus('error');
-  }, [fileResourceLastChunkAt, fileResourceStartedAt, fileResourceStatus, nowMs]);
+  }, [
+    fileResourceLastChunkAt,
+    fileResourceStartedAt,
+    fileResourceStatus,
+    nowMs,
+  ]);
   const fileResourceActivityText = (() => {
     if (fileResourceStatus !== 'downloading') return '';
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
@@ -1556,8 +1603,12 @@ export const MessageItemComponent = ({
       return '';
     }
     const peerCount = Number(fileResourceRuntime.peerCount || 0);
-    const candidatePeerCount = Number(fileResourceRuntime.candidatePeerCount || 0);
-    const advertisedPeerCount = Number(fileResourceRuntime.advertisedPeerCount || 0);
+    const candidatePeerCount = Number(
+      fileResourceRuntime.candidatePeerCount || 0
+    );
+    const advertisedPeerCount = Number(
+      fileResourceRuntime.advertisedPeerCount || 0
+    );
     const activeTransfers = Number(fileResourceRuntime.activeTransfers || 0);
     const pendingTransfers = Number(fileResourceRuntime.pendingTransfers || 0);
     const currentSpeedText = formatQchatFileSpeed(
@@ -1591,7 +1642,8 @@ export const MessageItemComponent = ({
   })();
   const fileResourceUnavailableNoPeers = (() => {
     if (
-      (fileResourceStatus !== 'downloading' && fileResourceStatus !== 'error') ||
+      (fileResourceStatus !== 'downloading' &&
+        fileResourceStatus !== 'error') ||
       !fileResourceStartedAt ||
       nowMs - fileResourceStartedAt < RETICULUM_FILE_UNAVAILABLE_TIMEOUT_MS ||
       fileResourceBytes?.received
@@ -1632,9 +1684,7 @@ export const MessageItemComponent = ({
         .join(' · ');
       return `downloading ${fileResourceProgress}%${
         bytesText ? ` · ${bytesText}` : ''
-      }${
-        details ? ` · ${details}` : ''
-      }`;
+      }${details ? ` · ${details}` : ''}`;
     }
     if (fileResourceStatus === 'error') {
       if (!fileResourceBytes?.received) return 'download failed';
@@ -1695,9 +1745,11 @@ export const MessageItemComponent = ({
     reticulumChatEnabled &&
     !isOwn &&
     Boolean(myAddress) &&
-    mentionedAddresses.some(
-      (address) => String(address).trim() === myAddress
-    );
+    (message?.reticulumChat
+      ? message?.directMentionAuthorized === true
+      : mentionedAddresses.some(
+          (address) => String(address).trim() === myAddress
+        ));
   const isOwnReticulumDeletable =
     isOwn &&
     !isOfficialGroupWelcome &&
@@ -1715,7 +1767,10 @@ export const MessageItemComponent = ({
         message?.text ??
         ''
     );
-    const text = html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').trim();
+    const text = html
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .trim();
     if (!text || !navigator.clipboard?.writeText) return;
     await navigator.clipboard.writeText(text);
   }, [message]);
@@ -1742,27 +1797,33 @@ export const MessageItemComponent = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOwnReticulumDeletable, isOwnReticulumMessageHovered, message, onDelete]);
+  }, [
+    isOwnReticulumDeletable,
+    isOwnReticulumMessageHovered,
+    message,
+    onDelete,
+  ]);
 
   const senderStatus = useStatus(message?.sender);
   const reticulumUserCard =
     reticulumChatEnabled && message?.sender && !isOfficialGroupWelcome
-    ? {
-        address: message.sender,
-        avatarUrl: userAvatarUrl,
-        isMinterResolved: isReticulumMinterResolved && isUserInfoResolved,
-        isOwn,
-        minterLevel:
-          isReticulumMinterResolved && isUserInfoResolved
-            ? reticulumMinterLevel
-            : undefined,
-        name: message.senderName,
-        onAvatarPreview: (event, src) => handleAvatarPreview(event, src, false),
-        role: reticulumMemberRole,
-        roleColor: reticulumMemberRoleColor,
-        status: senderStatus,
-      }
-    : undefined;
+      ? {
+          address: message.sender,
+          avatarUrl: userAvatarUrl,
+          isMinterResolved: isReticulumMinterResolved && isUserInfoResolved,
+          isOwn,
+          minterLevel:
+            isReticulumMinterResolved && isUserInfoResolved
+              ? reticulumMinterLevel
+              : undefined,
+          name: message.senderName,
+          onAvatarPreview: (event, src) =>
+            handleAvatarPreview(event, src, false),
+          role: reticulumMemberRole,
+          roleColor: reticulumMemberRoleColor,
+          status: senderStatus,
+        }
+      : undefined;
   const isRepliedToMe =
     reply?.sender === myAddress || replyExpiredMeta?.sender === myAddress;
   const isQchatFileOffer = qchatFileTransfer?.data?.status === 'offer';
@@ -1770,7 +1831,8 @@ export const MessageItemComponent = ({
     ? (() => {
         const timestamp = Number(message?.timestamp);
         if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
-        const timestampMs = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+        const timestampMs =
+          timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
         const date = new Date(timestampMs);
         const now = new Date();
         const isToday =
@@ -1859,7 +1921,11 @@ export const MessageItemComponent = ({
                   ? '1px 14px 2px'
                   : '5px 14px 6px'
                 : '8px 16px 10px',
-            marginBottom: isShowingAsReply ? 0 : reticulumChatEnabled ? 0 : '3px',
+            marginBottom: isShowingAsReply
+              ? 0
+              : reticulumChatEnabled
+                ? 0
+                : '3px',
             position: 'relative',
             transition: 'background-color 0.1s ease',
             width: '100%',
@@ -1991,9 +2057,7 @@ export const MessageItemComponent = ({
                 ) : reticulumMinterLevel !== null ? (
                   <MinterAvatarOrnament
                     accentColor={
-                      reticulumMemberRole
-                        ? reticulumMemberRoleColor
-                        : undefined
+                      reticulumMemberRole ? reticulumMemberRoleColor : undefined
                     }
                     level={reticulumMinterLevel}
                   >
@@ -2003,7 +2067,10 @@ export const MessageItemComponent = ({
                     >
                       <Avatar
                         sx={{
-                          backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                          backgroundColor: alpha(
+                            theme.palette.text.primary,
+                            0.06
+                          ),
                           color: theme.palette.text.primary,
                           height: '38px',
                           width: '38px',
@@ -2016,7 +2083,9 @@ export const MessageItemComponent = ({
                         }}
                         alt={message?.senderName}
                         src={userAvatarUrl}
-                        onClick={reticulumChatEnabled ? undefined : handleAvatarPreview}
+                        onClick={
+                          reticulumChatEnabled ? undefined : handleAvatarPreview
+                        }
                         imgProps={{
                           onLoad: () => {
                             setIsAvatarLoaded(true);
@@ -2037,7 +2106,10 @@ export const MessageItemComponent = ({
                   >
                     <Avatar
                       sx={{
-                        backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                        backgroundColor: alpha(
+                          theme.palette.text.primary,
+                          0.06
+                        ),
                         color: theme.palette.text.primary,
                         height: '38px',
                         width: '38px',
@@ -2050,7 +2122,9 @@ export const MessageItemComponent = ({
                       }}
                       alt={message?.senderName}
                       src={userAvatarUrl}
-                      onClick={reticulumChatEnabled ? undefined : handleAvatarPreview}
+                      onClick={
+                        reticulumChatEnabled ? undefined : handleAvatarPreview
+                      }
                       imgProps={{
                         onLoad: () => {
                           setIsAvatarLoaded(true);
@@ -2073,7 +2147,7 @@ export const MessageItemComponent = ({
           <Box
             sx={{
               display: 'flex',
-            flexDirection: 'column',
+              flexDirection: 'column',
               gap: isGroupedWithPrevious ? 0 : '4px',
               height: isShowingAsReply ? '40px' : undefined,
               minWidth: 0,
@@ -2112,7 +2186,7 @@ export const MessageItemComponent = ({
                   display: collapseGroupedHeader ? 'none' : 'flex',
                 }}
               >
-              <WrapperUserAction
+                <WrapperUserAction
                   disabled={
                     isOfficialGroupWelcome ||
                     (!reticulumChatEnabled && myAddress === message?.sender)
@@ -2146,7 +2220,9 @@ export const MessageItemComponent = ({
                         ? { xs: 170, sm: 260, md: 360 }
                         : undefined,
                       overflow: reticulumChatEnabled ? 'hidden' : undefined,
-                      textOverflow: reticulumChatEnabled ? 'ellipsis' : undefined,
+                      textOverflow: reticulumChatEnabled
+                        ? 'ellipsis'
+                        : undefined,
                       whiteSpace: reticulumChatEnabled ? 'nowrap' : undefined,
                       ...(hasUnsafeSenderName
                         ? {
@@ -2169,7 +2245,7 @@ export const MessageItemComponent = ({
                       role={reticulumMemberRole}
                       size={reticulumDiscussionView ? 'card' : 'message'}
                     />
-                )}
+                  )}
 
                 {!isUpdating && !isTemp && (
                   <Typography
@@ -2186,77 +2262,74 @@ export const MessageItemComponent = ({
                   </Typography>
                 )}
 
-                {hasReticulumDiscussion &&
-                  onOpenReticulumDiscussion && (
-                    <Tooltip
-                      title={`View ${reticulumDiscussionReplyCount} ${
+                {hasReticulumDiscussion && onOpenReticulumDiscussion && (
+                  <Tooltip
+                    title={`View ${reticulumDiscussionReplyCount} ${
+                      reticulumDiscussionReplyCount === 1 ? 'reply' : 'replies'
+                    }`}
+                    slotProps={{
+                      tooltip: {
+                        sx: {
+                          backgroundColor:
+                            theme.palette.mode === 'light'
+                              ? '#f8fafc'
+                              : undefined,
+                          border:
+                            theme.palette.mode === 'light'
+                              ? '1px solid rgba(15, 23, 42, 0.16)'
+                              : undefined,
+                          color:
+                            theme.palette.mode === 'light'
+                              ? '#111827'
+                              : undefined,
+                          fontWeight: 600,
+                        },
+                      },
+                    }}
+                  >
+                    <ButtonBase
+                      aria-label={`View ${reticulumDiscussionReplyCount} ${
                         reticulumDiscussionReplyCount === 1
                           ? 'reply'
                           : 'replies'
                       }`}
-                      slotProps={{
-                        tooltip: {
-                          sx: {
-                            backgroundColor:
-                              theme.palette.mode === 'light'
-                                ? '#f8fafc'
-                                : undefined,
-                            border:
-                              theme.palette.mode === 'light'
-                                ? '1px solid rgba(15, 23, 42, 0.16)'
-                                : undefined,
-                            color:
-                              theme.palette.mode === 'light'
-                                ? '#111827'
-                                : undefined,
-                            fontWeight: 600,
-                          },
+                      onClick={() => onOpenReticulumDiscussion(message)}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor:
+                          theme.palette.mode === 'light'
+                            ? alpha('#174ea6', 0.14)
+                            : alpha(theme.palette.primary.main, 0.12),
+                        border:
+                          theme.palette.mode === 'light'
+                            ? '1px solid rgba(23, 78, 166, 0.24)'
+                            : '1px solid transparent',
+                        borderRadius: '50%',
+                        color:
+                          theme.palette.mode === 'light'
+                            ? '#174ea6'
+                            : theme.palette.primary.main,
+                        display: 'inline-flex',
+                        flexShrink: 0,
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        height: 24,
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                        minWidth: 24,
+                        px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
+                        '&:hover': {
+                          backgroundColor:
+                            theme.palette.mode === 'light'
+                              ? alpha('#174ea6', 0.22)
+                              : alpha(theme.palette.primary.main, 0.2),
                         },
                       }}
                     >
-                      <ButtonBase
-                        aria-label={`View ${reticulumDiscussionReplyCount} ${
-                          reticulumDiscussionReplyCount === 1
-                            ? 'reply'
-                            : 'replies'
-                        }`}
-                        onClick={() => onOpenReticulumDiscussion(message)}
-                        sx={{
-                          alignItems: 'center',
-                          backgroundColor:
-                            theme.palette.mode === 'light'
-                              ? alpha('#174ea6', 0.14)
-                              : alpha(theme.palette.primary.main, 0.12),
-                          border:
-                            theme.palette.mode === 'light'
-                              ? '1px solid rgba(23, 78, 166, 0.24)'
-                              : '1px solid transparent',
-                          borderRadius: '50%',
-                          color:
-                            theme.palette.mode === 'light'
-                              ? '#174ea6'
-                              : theme.palette.primary.main,
-                          display: 'inline-flex',
-                          flexShrink: 0,
-                          fontSize: '10px',
-                          fontWeight: 700,
-                          height: 24,
-                          justifyContent: 'center',
-                          lineHeight: 1,
-                          minWidth: 24,
-                          px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
-                          '&:hover': {
-                            backgroundColor:
-                              theme.palette.mode === 'light'
-                                ? alpha('#174ea6', 0.22)
-                                : alpha(theme.palette.primary.main, 0.2),
-                          },
-                        }}
-                      >
-                        +{reticulumDiscussionReplyCount}
-                      </ButtonBase>
-                    </Tooltip>
-                  )}
+                      +{reticulumDiscussionReplyCount}
+                    </ButtonBase>
+                  </Tooltip>
+                )}
 
                 {message?.isEdit && !isUpdating && !isTemp && (
                   <Typography
@@ -2296,7 +2369,11 @@ export const MessageItemComponent = ({
                 >
                   {reticulumChatEnabled &&
                     RETICULUM_QUICK_REACTIONS.map((emoji) => (
-                      <Tooltip key={emoji} title={`React with ${emoji}`} disableFocusListener>
+                      <Tooltip
+                        key={emoji}
+                        title={`React with ${emoji}`}
+                        disableFocusListener
+                      >
                         <ButtonBase
                           aria-label={`React with ${emoji}`}
                           sx={{
@@ -2327,7 +2404,9 @@ export const MessageItemComponent = ({
                         if (
                           reactions &&
                           reactions[val] &&
-                          reactions[val]?.find((item) => item?.sender === myAddress)
+                          reactions[val]?.find(
+                            (item) => item?.sender === myAddress
+                          )
                         ) {
                           handleReaction(val, message, false);
                         } else {
@@ -2338,25 +2417,25 @@ export const MessageItemComponent = ({
                   )}
 
                   {isOwnReticulumEditable && (
-                      <Tooltip title="Edit" disableFocusListener>
-                        <ButtonBase
-                          sx={{
-                            borderRadius: '6px',
-                            color: theme.palette.text.secondary,
-                            padding: '4px',
-                            '&:hover': {
-                              backgroundColor: theme.palette.action.hover,
-                              color: theme.palette.text.primary,
-                            },
-                          }}
-                          onClick={() => {
-                            onEdit(message);
-                          }}
-                        >
-                          <EditIcon sx={{ fontSize: '18px' }} />
-                        </ButtonBase>
-                      </Tooltip>
-                    )}
+                    <Tooltip title="Edit" disableFocusListener>
+                      <ButtonBase
+                        sx={{
+                          borderRadius: '6px',
+                          color: theme.palette.text.secondary,
+                          padding: '4px',
+                          '&:hover': {
+                            backgroundColor: theme.palette.action.hover,
+                            color: theme.palette.text.primary,
+                          },
+                        }}
+                        onClick={() => {
+                          onEdit(message);
+                        }}
+                      >
+                        <EditIcon sx={{ fontSize: '18px' }} />
+                      </ButtonBase>
+                    </Tooltip>
+                  )}
 
                   <Tooltip title="Reply" disableFocusListener>
                     <ButtonBase
@@ -2397,7 +2476,6 @@ export const MessageItemComponent = ({
                       </ButtonBase>
                     </Tooltip>
                   )}
-
                 </Box>
               )}
             </Box>
@@ -2406,7 +2484,9 @@ export const MessageItemComponent = ({
             {showReplyPreview && reply && (
               <ButtonBase
                 className={
-                  reticulumChatEnabled ? 'reticulum-inline-reply-card' : undefined
+                  reticulumChatEnabled
+                    ? 'reticulum-inline-reply-card'
+                    : undefined
                 }
                 sx={{
                   borderLeft: reticulumChatEnabled
@@ -2421,9 +2501,7 @@ export const MessageItemComponent = ({
                     : isRepliedToMe
                       ? alpha(theme.palette.warning.main, 0.06)
                       : 'transparent',
-                  borderRadius: reticulumChatEnabled
-                    ? '9px'
-                    : '0 6px 6px 0',
+                  borderRadius: reticulumChatEnabled ? '9px' : '0 6px 6px 0',
                   ...(reticulumChatEnabled
                     ? {
                         borderBottom: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
@@ -2442,9 +2520,7 @@ export const MessageItemComponent = ({
                     !reticulumChatEnabled && isRepliedToMe ? '72px' : undefined,
                   maxHeight: reticulumChatEnabled ? '92px' : '72px',
                   minHeight: reticulumChatEnabled ? '72px' : undefined,
-                  minWidth: reticulumChatEnabled
-                    ? 'min(540px, 100%)'
-                    : 0,
+                  minWidth: reticulumChatEnabled ? 'min(540px, 100%)' : 0,
                   maxWidth: '100%',
                   overflow: 'hidden',
                   padding: reticulumChatEnabled
@@ -2556,18 +2632,27 @@ export const MessageItemComponent = ({
                       <MessageDisplay
                         isReply
                         htmlContent={htmlReply}
+                        privilegedMentionAuthorized={
+                          reply?.privilegedMentionAuthorized === true
+                        }
                         reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                       />
                     ) : reply?.decryptedData?.type === 'notification' ? (
                       <MessageDisplay
                         isReply
                         htmlContent={reply.decryptedData?.data?.message}
+                        privilegedMentionAuthorized={
+                          reply?.privilegedMentionAuthorized === true
+                        }
                         reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                       />
                     ) : reply?.text ? (
                       <MessageDisplay
                         isReply
                         htmlContent={reply.text}
+                        privilegedMentionAuthorized={
+                          reply?.privilegedMentionAuthorized === true
+                        }
                         reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                       />
                     ) : null
@@ -2594,121 +2679,132 @@ export const MessageItemComponent = ({
             {showReplyPreview &&
               !reply &&
               (replyExpiredMeta || message?.repliedTo) && (
-              <Box
-                sx={{
-                  borderLeft: isRepliedToMe
-                    ? `2px solid ${theme.palette.warning.main}`
-                    : `2px solid ${alpha(theme.palette.text.secondary, 0.4)}`,
-                  backgroundColor: isRepliedToMe
-                    ? alpha(theme.palette.warning.main, 0.06)
-                    : 'transparent',
-                  borderRadius: '0 6px 6px 0',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  flexDirection: 'row',
-                  marginTop: '4px',
-                  marginBottom: '6px',
-                  marginLeft: '2px',
-                  height: isRepliedToMe ? '72px' : undefined,
-                  maxHeight: '72px',
-                  minWidth: 0,
-                  overflow: 'hidden',
-                  padding: '4px 0 4px 10px',
-                  width: 'auto',
-                  alignSelf: 'stretch',
-                  boxSizing: 'border-box',
-                  opacity: isRepliedToMe ? 1 : 0.6,
-                  '& *': {
+                <Box
+                  sx={{
+                    borderLeft: isRepliedToMe
+                      ? `2px solid ${theme.palette.warning.main}`
+                      : `2px solid ${alpha(theme.palette.text.secondary, 0.4)}`,
+                    backgroundColor: isRepliedToMe
+                      ? alpha(theme.palette.warning.main, 0.06)
+                      : 'transparent',
+                    borderRadius: '0 6px 6px 0',
                     cursor: 'pointer',
-                  },
-                }}
-              >
-                <Box sx={{ minWidth: 0, overflow: 'hidden', width: '100%' }}>
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: '6px',
-                      marginBottom: '2px',
-                    }}
-                  >
-                    <ReplyIcon
+                    display: 'flex',
+                    flexDirection: 'row',
+                    marginTop: '4px',
+                    marginBottom: '6px',
+                    marginLeft: '2px',
+                    height: isRepliedToMe ? '72px' : undefined,
+                    maxHeight: '72px',
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    padding: '4px 0 4px 10px',
+                    width: 'auto',
+                    alignSelf: 'stretch',
+                    boxSizing: 'border-box',
+                    opacity: isRepliedToMe ? 1 : 0.6,
+                    '& *': {
+                      cursor: 'pointer',
+                    },
+                  }}
+                >
+                  <Box sx={{ minWidth: 0, overflow: 'hidden', width: '100%' }}>
+                    <Box
                       sx={{
-                        color:
-                          theme.palette.mode === 'light'
-                            ? theme.palette.text.primary
-                            : theme.palette.text.secondary,
-                        fontSize: '14px',
-                        flexShrink: 0,
-                      }}
-                    />
-                    <Typography
-                      sx={{
-                        color:
-                          theme.palette.mode === 'light'
-                            ? theme.palette.text.primary
-                            : theme.palette.text.secondary,
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        ...(hasUnsafeExpiredReplyName
-                          ? {
-                              textDecorationLine: 'line-through',
-                              textDecorationThickness: '2px',
-                              textDecorationColor: theme.palette.error.main,
-                            }
-                          : {}),
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: '6px',
+                        marginBottom: '2px',
                       }}
                     >
-                      {replyExpiredMeta?.deleted === true
-                        ? t('core:message.generic.replied_to_deleted_message', {
-                            defaultValue: 'Replied to deleted message',
-                          })
-                        : replyExpiredMeta?.senderName || replyExpiredMeta?.sender
-                        ? t('core:message.generic.replied_to', {
-                            person:
-                              replyExpiredMeta?.senderName ||
-                              replyExpiredMeta?.sender,
-                            postProcess: 'capitalizeFirstChar',
-                          })
-                        : t('core:message.generic.replied_to', {
-                            person: t('core:message.error.missing_fields', {
-                              fields: t('core:message.message'),
-                            }),
-                            postProcess: 'capitalizeFirstChar',
-                          })}
-                    </Typography>
-                  </Box>
+                      <ReplyIcon
+                        sx={{
+                          color:
+                            theme.palette.mode === 'light'
+                              ? theme.palette.text.primary
+                              : theme.palette.text.secondary,
+                          fontSize: '14px',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <Typography
+                        sx={{
+                          color:
+                            theme.palette.mode === 'light'
+                              ? theme.palette.text.primary
+                              : theme.palette.text.secondary,
+                          fontSize: '13px',
+                          fontWeight: 500,
+                          ...(hasUnsafeExpiredReplyName
+                            ? {
+                                textDecorationLine: 'line-through',
+                                textDecorationThickness: '2px',
+                                textDecorationColor: theme.palette.error.main,
+                              }
+                            : {}),
+                        }}
+                      >
+                        {replyExpiredMeta?.deleted === true
+                          ? t(
+                              'core:message.generic.replied_to_deleted_message',
+                              {
+                                defaultValue: 'Replied to deleted message',
+                              }
+                            )
+                          : replyExpiredMeta?.senderName ||
+                              replyExpiredMeta?.sender
+                            ? t('core:message.generic.replied_to', {
+                                person:
+                                  replyExpiredMeta?.senderName ||
+                                  replyExpiredMeta?.sender,
+                                postProcess: 'capitalizeFirstChar',
+                              })
+                            : t('core:message.generic.replied_to', {
+                                person: t('core:message.error.missing_fields', {
+                                  fields: t('core:message.message'),
+                                }),
+                                postProcess: 'capitalizeFirstChar',
+                              })}
+                      </Typography>
+                    </Box>
 
-                  {reticulumChatEnabled ? (
-                    htmlReplyExpired ? (
-                      <MessageDisplay
-                        isReply
-                        htmlContent={htmlReplyExpired}
-                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                      />
-                    ) : replyExpiredMeta?.text ? (
-                      <MessageDisplay
-                        isReply
-                        htmlContent={replyExpiredMeta.text}
-                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                      />
-                    ) : null
-                  ) : (
-                    <>
-                      {replyExpiredMeta?.messageText && (
-                        <MessageDisplay isReply htmlContent={htmlReplyExpired} />
-                      )}
-                      {replyExpiredMeta?.text && (
+                    {reticulumChatEnabled ? (
+                      htmlReplyExpired ? (
+                        <MessageDisplay
+                          isReply
+                          htmlContent={htmlReplyExpired}
+                          reticulumChannelLinkAccess={
+                            reticulumChannelLinkAccess
+                          }
+                        />
+                      ) : replyExpiredMeta?.text ? (
                         <MessageDisplay
                           isReply
                           htmlContent={replyExpiredMeta.text}
+                          reticulumChannelLinkAccess={
+                            reticulumChannelLinkAccess
+                          }
                         />
-                      )}
-                    </>
-                  )}
+                      ) : null
+                    ) : (
+                      <>
+                        {replyExpiredMeta?.messageText && (
+                          <MessageDisplay
+                            isReply
+                            htmlContent={htmlReplyExpired}
+                          />
+                        )}
+                        {replyExpiredMeta?.text && (
+                          <MessageDisplay
+                            isReply
+                            htmlContent={replyExpiredMeta.text}
+                          />
+                        )}
+                      </>
+                    )}
+                  </Box>
                 </Box>
-              </Box>
-            )}
+              )}
 
             {reticulumChatEnabled && reticulumInviteSource && (
               <ReticulumGroupInvitePreviews source={reticulumInviteSource} />
@@ -2751,7 +2847,8 @@ export const MessageItemComponent = ({
                       fontSize: 12,
                     }}
                   >
-                    {formatQchatFileSize(qchatFileData?.size)} · {qchatStatusText}
+                    {formatQchatFileSize(qchatFileData?.size)} ·{' '}
+                    {qchatStatusText}
                   </Typography>
                   {qchatExpiryText && (
                     <Typography
@@ -2771,21 +2868,23 @@ export const MessageItemComponent = ({
                     qchatTransferBusy ||
                     (qchatTransferDone && !qchatDownloaded)) &&
                     !qchatTransferError && (
-                    <LinearProgress
-                      variant={qchatProgress !== null ? 'determinate' : 'indeterminate'}
-                      value={
-                        qchatTransferDone
-                          ? 100
-                          : qchatProgress ?? undefined
-                      }
-                      color="primary"
-                      sx={{
-                        mt: 0.75,
-                        height: 4,
-                        borderRadius: 1,
-                      }}
-                    />
-                  )}
+                      <LinearProgress
+                        variant={
+                          qchatProgress !== null
+                            ? 'determinate'
+                            : 'indeterminate'
+                        }
+                        value={
+                          qchatTransferDone ? 100 : (qchatProgress ?? undefined)
+                        }
+                        color="primary"
+                        sx={{
+                          mt: 0.75,
+                          height: 4,
+                          borderRadius: 1,
+                        }}
+                      />
+                    )}
                 </Box>
                 {!isOwn && isQchatFileOffer && onAcceptQchatFileTransfer && (
                   <Button
@@ -2814,6 +2913,9 @@ export const MessageItemComponent = ({
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
+                privilegedMentionAuthorized={
+                  message?.privilegedMentionAuthorized === true
+                }
                 reticulumChannelLinkAccess={reticulumChannelLinkAccess}
               />
             ) : hasNoMessage ? null : htmlText ? (
@@ -2822,6 +2924,9 @@ export const MessageItemComponent = ({
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
+                privilegedMentionAuthorized={
+                  message?.privilegedMentionAuthorized === true
+                }
                 reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 textColor={
                   isOfficialGroupWelcome
@@ -2837,6 +2942,9 @@ export const MessageItemComponent = ({
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
+                privilegedMentionAuthorized={
+                  message?.privilegedMentionAuthorized === true
+                }
                 reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 textColor={
                   isOfficialGroupWelcome
@@ -2871,7 +2979,8 @@ export const MessageItemComponent = ({
             {(displayImageUrl ||
               (isReticulumResourceImage && shouldAutoDownloadReticulumImage)) &&
               (displayImageUrl &&
-              (localResourceImageUrl || displayImageUrl.startsWith('data:image/')) ? (
+              (localResourceImageUrl ||
+                displayImageUrl.startsWith('data:image/')) ? (
                 <Box
                   sx={{
                     aspectRatio: imageResourceAspectRatio,
@@ -2900,13 +3009,18 @@ export const MessageItemComponent = ({
                       }
                     }}
                     onError={() => {
-                      if (!isReticulumResourceImage || !localResourceImageUrl) return;
+                      if (!isReticulumResourceImage || !localResourceImageUrl)
+                        return;
                       setLocalResourceImageUrl(null);
                       setResourceReloadNonce((value) => value + 1);
                     }}
                     onLoad={(event) => {
-                      const width = Number(event.currentTarget.naturalWidth || 0);
-                      const height = Number(event.currentTarget.naturalHeight || 0);
+                      const width = Number(
+                        event.currentTarget.naturalWidth || 0
+                      );
+                      const height = Number(
+                        event.currentTarget.naturalHeight || 0
+                      );
                       if (
                         !Number.isFinite(width) ||
                         !Number.isFinite(height) ||
@@ -2932,7 +3046,8 @@ export const MessageItemComponent = ({
                 </Box>
               ) : imageEmbedLink ? (
                 <Embed embedLink={imageEmbedLink} />
-              ) : isReticulumResourceImage && shouldAutoDownloadReticulumImage ? (
+              ) : isReticulumResourceImage &&
+                shouldAutoDownloadReticulumImage ? (
                 <Box
                   sx={{
                     alignItems: 'center',
@@ -2979,7 +3094,10 @@ export const MessageItemComponent = ({
                         size="small"
                         onClick={retryReticulumImageDownload}
                         sx={{
-                          backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                          backgroundColor: alpha(
+                            theme.palette.primary.main,
+                            0.1
+                          ),
                           borderRadius: '999px',
                           fontSize: '12px',
                           fontWeight: 600,
@@ -2988,7 +3106,10 @@ export const MessageItemComponent = ({
                           padding: '7px 14px',
                           textTransform: 'none',
                           '&:hover': {
-                            backgroundColor: alpha(theme.palette.primary.main, 0.17),
+                            backgroundColor: alpha(
+                              theme.palette.primary.main,
+                              0.17
+                            ),
                           },
                         }}
                       >
@@ -3348,7 +3469,9 @@ export const MessageItemComponent = ({
                   <LinearProgress
                     aria-hidden="true"
                     variant={
-                      fileResourceProgress !== null ? 'determinate' : 'indeterminate'
+                      fileResourceProgress !== null
+                        ? 'determinate'
+                        : 'indeterminate'
                     }
                     value={fileResourceProgress ?? undefined}
                     sx={{
@@ -3409,17 +3532,19 @@ export const MessageItemComponent = ({
                     marginTop: '4px',
                   }}
                 >
-                  {message?.isNotEncrypted && isPrivate && !reticulumChatEnabled && (
-                    <Tooltip title="Unencrypted" disableFocusListener>
-                      <KeyOffIcon
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '16px',
-                          mr: '4px',
-                        }}
-                      />
-                    </Tooltip>
-                  )}
+                  {message?.isNotEncrypted &&
+                    isPrivate &&
+                    !reticulumChatEnabled && (
+                      <Tooltip title="Unencrypted" disableFocusListener>
+                        <KeyOffIcon
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '16px',
+                            mr: '4px',
+                          }}
+                        />
+                      </Tooltip>
+                    )}
 
                   {Object.keys(reactions).map((reaction) => {
                     const numberOfReactions = reactions[reaction]?.length;
@@ -3581,7 +3706,7 @@ export const MessageItemComponent = ({
                     {reactions[selectedReaction]?.map((reactionItem) => {
                       const hasUnsafeReactionName = Boolean(
                         reactionItem.senderName &&
-                          hasInvisibleCharacters(reactionItem.senderName)
+                        hasInvisibleCharacters(reactionItem.senderName)
                       );
 
                       return (

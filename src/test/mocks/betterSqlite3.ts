@@ -812,6 +812,12 @@ class Statement {
       );
     }
     if (this.sql.includes('FROM rchat_message_projection')) {
+      if (this.sql.includes('SELECT current_event_id AS event_id')) {
+        const row = this.store.reticulumChatMessages.find(
+          (message) => message.root_event_id === args[0]
+        );
+        return row ? { event_id: row.current_event_id } : undefined;
+      }
       if (this.sql.includes('COUNT(*) AS cnt')) {
         return { cnt: this.store.reticulumChatMessages.length };
       }

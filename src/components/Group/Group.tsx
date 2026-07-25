@@ -203,6 +203,7 @@ type ReticulumBackgroundEvent = {
   authorAddress?: string;
   authorPrimaryName?: string;
   channelId?: string;
+  directMentionAuthorized?: boolean;
   encryptedPayload?: string;
   eventId?: string;
   eventType?: string;
@@ -1036,8 +1037,7 @@ export const Group = ({
   );
   const [reticulumMembersPanelOpen, setReticulumMembersPanelOpen] =
     useState(false);
-  const [reticulumJoinRequestCount, setReticulumJoinRequestCount] =
-    useState(0);
+  const [reticulumJoinRequestCount, setReticulumJoinRequestCount] = useState(0);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
   const [isQChatTabActive, setIsQChatTabActive] = useState(false);
@@ -1894,9 +1894,7 @@ export const Group = ({
           (Array.isArray(activeSubscriptionIds)
             ? activeSubscriptionIds
             : []
-          ).filter(
-            (groupId) => Number.isInteger(groupId) && groupId > 0
-          )
+          ).filter((groupId) => Number.isInteger(groupId) && groupId > 0)
         );
         for (const groupId of previousIds) {
           if (!nextIds.has(groupId)) {
@@ -2763,10 +2761,13 @@ export const Group = ({
         mentionedAddresses
       );
       if (options.recordMentionNotification === true) {
+        const localAddress = myAddressRef.current || '';
+        const authorizedBroadcast = authorizedReticulumBroadcastApplies(event);
+        const directMention = event.directMentionAuthorized === true;
         const notificationMentionedAddresses =
-          authorizedReticulumBroadcastApplies(event) && myAddressRef.current
-            ? [...new Set([...mentionedAddresses, myAddressRef.current])]
-            : mentionedAddresses;
+          localAddress && (authorizedBroadcast || directMention)
+            ? [localAddress]
+            : [];
         recordReticulumMentionNotification(
           event,
           groupId,

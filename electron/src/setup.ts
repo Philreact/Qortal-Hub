@@ -3145,6 +3145,89 @@ async function validateQortalGroupMember(
   }
 }
 
+type PendingGroupAdminValidation = {
+  address: string;
+  resolve: (isAdmin: boolean) => void;
+  reject: (error: unknown) => void;
+};
+
+const pendingGroupAdminValidations = new Map<
+  number,
+  {
+    requests: PendingGroupAdminValidation[];
+  }
+>();
+
+async function resolveQortalGroupAdminBatch(
+  groupId: number,
+  addresses: string[]
+): Promise<Map<string, boolean>> {
+  const main = myCapacitorApp.getMainWindow();
+  if (!main || main.isDestroyed()) {
+    throw new Error('No renderer available for group admin validation');
+  }
+  const payloadJson = JSON.stringify({
+    groupId,
+    addresses,
+  });
+  const rows = await main.webContents.executeJavaScript(
+    `(async () => {
+      const payload = ${payloadJson};
+      const rows = await window.sendMessage(
+        'validateGroupAdmins',
+        { groupId: payload.groupId, addresses: payload.addresses },
+        10000
+      );
+      if (!Array.isArray(rows)) {
+        throw new Error('Invalid group admin validation response');
+      }
+      return rows;
+    })()`,
+    true
+  );
+  if (!Array.isArray(rows)) {
+    throw new Error('Invalid group admin validation response');
+  }
+  const statusByAddress = new Map(addresses.map((address) => [address, false]));
+  for (const row of rows) {
+    if (
+      row &&
+      typeof row === 'object' &&
+      typeof row.address === 'string' &&
+      statusByAddress.has(row.address)
+    ) {
+      statusByAddress.set(row.address, row.isAdmin === true);
+    }
+  }
+  return statusByAddress;
+}
+
+function flushQortalGroupAdminBatch(groupId: number): void {
+  const batch = pendingGroupAdminValidations.get(groupId);
+  if (!batch) return;
+  pendingGroupAdminValidations.delete(groupId);
+  const addresses = [
+    ...new Set(batch.requests.map((request) => request.address)),
+  ];
+  void resolveQortalGroupAdminBatch(groupId, addresses)
+    .then((statusByAddress) => {
+      for (const request of batch.requests) {
+        const isAdmin = statusByAddress.get(request.address) === true;
+        loggerLog(
+          `[ReticulumChat] group_admin_validation_result group=${groupId} address=${request.address} isAdmin=${isAdmin}`
+        );
+        request.resolve(isAdmin);
+      }
+    })
+    .catch((error) => {
+      loggerWarn(
+        `[ReticulumChat] group_admin_validation_failed group=${groupId}:`,
+        error
+      );
+      for (const request of batch.requests) request.reject(error);
+    });
+}
+
 async function validateQortalGroupAdmin(
   groupId: number,
   address: string
@@ -3153,46 +3236,18 @@ async function validateQortalGroupAdmin(
   if (!Number.isInteger(groupId) || groupId <= 0 || !normalizedAddress) {
     return false;
   }
-  const main = myCapacitorApp.getMainWindow();
-  if (!main || main.isDestroyed()) {
-    throw new Error('No renderer available for group admin validation');
-  }
-  const payloadJson = JSON.stringify({
-    groupId,
-    address: normalizedAddress,
+  return new Promise<boolean>((resolve, reject) => {
+    const existing = pendingGroupAdminValidations.get(groupId);
+    if (existing) {
+      existing.requests.push({ address: normalizedAddress, resolve, reject });
+      return;
+    }
+    const timer = setTimeout(() => flushQortalGroupAdminBatch(groupId), 10);
+    timer.unref?.();
+    pendingGroupAdminValidations.set(groupId, {
+      requests: [{ address: normalizedAddress, resolve, reject }],
+    });
   });
-  try {
-    const result = await main.webContents.executeJavaScript(
-      `(async () => {
-        const payload = ${payloadJson};
-        const rows = await window.sendMessage(
-          'validateGroupAdmins',
-          { groupId: payload.groupId, addresses: [payload.address] },
-          10000
-        );
-        if (!Array.isArray(rows)) {
-          throw new Error('Invalid group admin validation response');
-        }
-        return Array.isArray(rows) && rows.some((item) =>
-          item &&
-          typeof item === 'object' &&
-          item.address === payload.address &&
-          item.isAdmin === true
-        );
-      })()`,
-      true
-    );
-    loggerLog(
-      `[ReticulumChat] group_admin_validation_result group=${groupId} address=${normalizedAddress} isAdmin=${result === true}`
-    );
-    return result === true;
-  } catch (err) {
-    loggerWarn(
-      `[ReticulumChat] group_admin_validation_failed group=${groupId} address=${normalizedAddress}:`,
-      err
-    );
-    throw err;
-  }
 }
 
 function startReticulumOverlayMaintenanceSync(): void {

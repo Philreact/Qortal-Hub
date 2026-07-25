@@ -81,6 +81,7 @@ function eventPassesAuthorExclusion(
 }
 
 const RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS = 60 * 1000;
+const RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES = 32;
 const RETICULUM_CHAT_VISIBLE_EVENT_SQL =
   "(expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)";
 
@@ -929,6 +930,61 @@ function parseMentionTargets(value: unknown): ReticulumChatMentionTarget[] {
   }
 }
 
+export function reticulumChatPayloadHasPrivilegedMention(
+  encryptedPayload: string
+): boolean {
+  const containsPrivilegedMentionMarkup = (value: string): boolean =>
+    /<(?:span|a)\b(?=[^>]*(?:data-type\s*=\s*["']mention["']|class\s*=\s*["'][^"']*\bmention\b[^"']*["']))(?=[^>]*data-(?:id|label)\s*=\s*["'](?:@)?(?:everyone|here)["'])[^>]*>/iu.test(
+      value
+    ) ||
+    /<(?:span|a)\b(?=[^>]*(?:data-type\s*=\s*["']mention["']|class\s*=\s*["'][^"']*\bmention\b[^"']*["']))[^>]*>[^<]{0,128}@(?:everyone|here)\b/iu.test(
+      value
+    );
+  const raw = String(encryptedPayload || '');
+  if (containsPrivilegedMentionMarkup(raw)) {
+    return true;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  const pending: unknown[] = [payload];
+  let visited = 0;
+  while (pending.length > 0) {
+    if (visited >= 4096) {
+      // Treat excessive structured content as privileged. This keeps parsing
+      // bounded and fails closed instead of allowing a complexity bypass.
+      return true;
+    }
+    visited += 1;
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      if (containsPrivilegedMentionMarkup(value)) return true;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      pending.push(...value);
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    const record = value as Record<string, unknown>;
+    if (record.type === 'mention' && record.attrs && typeof record.attrs === 'object') {
+      const attrs = record.attrs as Record<string, unknown>;
+      for (const candidate of [attrs.id, attrs.label]) {
+        const token = String(candidate || '')
+          .trim()
+          .replace(/^@/, '')
+          .toLowerCase();
+        if (token === 'everyone' || token === 'here') return true;
+      }
+    }
+    pending.push(...Object.values(record));
+  }
+  return false;
+}
+
 function serializeMentionTargets(value: unknown): string {
   return JSON.stringify(sanitizeMentionTargets(value));
 }
@@ -1340,6 +1396,7 @@ export class ReticulumChatDatabase {
   private stmtGetLastDisplayEvent: Statement;
   private stmtCountUnreadDisplayEvents: Statement;
   private stmtGetLastProjectedMessage: Statement;
+  private stmtGetCurrentProjectedEventId: Statement;
   private stmtGetUnreadMentionTargetEvents: Statement;
   private stmtGetPrivilegedMentionStatus: Statement;
   private stmtUpdatePrivilegedMentionStatus: Statement;
@@ -1347,7 +1404,7 @@ export class ReticulumChatDatabase {
   private stmtUpsertWatermark: Statement;
   private stmtUpsertMention: Statement;
   private stmtDeleteMentionsForEvent: Statement;
-  private stmtCountUnreadMentions: Statement;
+  private stmtGetUnreadMentionRecords: Statement;
   private stmtMarkMentionsRead: Statement;
   private stmtMarkServed: Statement;
   private stmtTotalCacheBytes: Statement;
@@ -1836,6 +1893,9 @@ export class ReticulumChatDatabase {
       ORDER BY created_at DESC, root_event_id DESC
       LIMIT 1
     `);
+    this.stmtGetCurrentProjectedEventId = this.db.prepare(
+      'SELECT current_event_id AS event_id FROM rchat_message_projection WHERE root_event_id = ? LIMIT 1'
+    );
     this.stmtGetUnreadMentionTargetEvents = this.db.prepare(`
       SELECT *
       FROM reticulum_chat_events
@@ -1876,15 +1936,30 @@ export class ReticulumChatDatabase {
     this.stmtDeleteMentionsForEvent = this.db.prepare(
       'DELETE FROM reticulum_chat_mentions WHERE event_id = ?'
     );
-    this.stmtCountUnreadMentions = this.db.prepare(`
-      SELECT COUNT(*) AS cnt
-      FROM reticulum_chat_mentions
-      WHERE group_id = ?
-        AND channel_id = ?
-        AND mentioned_address = ?
-        AND author_address != ?
-        AND timestamp > ?
-        AND read_at = 0
+    this.stmtGetUnreadMentionRecords = this.db.prepare(`
+      SELECT
+        mention.event_id,
+        mention.author_address,
+        mention.timestamp,
+        projection.author_address AS projection_author_address,
+        projection.mention_address_hashes,
+        projection.mention_targets,
+        projection.encrypted_payload,
+        current_event.privileged_mention_status
+      FROM reticulum_chat_mentions AS mention
+      JOIN rchat_message_projection AS projection
+        ON projection.root_event_id = mention.event_id
+      JOIN reticulum_chat_events AS current_event
+        ON current_event.event_id = projection.current_event_id
+      WHERE mention.group_id = ?
+        AND mention.channel_id = ?
+        AND mention.mentioned_address = ?
+        AND mention.author_address != ?
+        AND mention.timestamp > ?
+        AND mention.read_at = 0
+        AND projection.mention_address_hashes LIKE ?
+        AND projection.deleted_at IS NULL
+        AND (projection.expires_at IS NULL OR projection.expires_at > ?)
     `);
     this.stmtMarkMentionsRead = this.db.prepare(`
       UPDATE reticulum_chat_mentions
@@ -3506,6 +3581,16 @@ export class ReticulumChatDatabase {
     return row?.status === 1 ? 1 : row?.status === 2 ? 2 : 0;
   }
 
+  getCurrentProjectedEventId(rootEventId: string): string | null {
+    if (typeof rootEventId !== 'string' || !rootEventId) return null;
+    const row = this.stmtGetCurrentProjectedEventId.get(rootEventId) as
+      | { event_id?: string }
+      | undefined;
+    return typeof row?.event_id === 'string' && row.event_id
+      ? row.event_id
+      : null;
+  }
+
   updatePrivilegedMentionStatus(eventId: string, status: 0 | 1): boolean {
     return (
       this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0
@@ -4850,11 +4935,28 @@ export class ReticulumChatDatabase {
     const projection = this.currentMessageProjectionForIndexEvent(event);
     if (!projection) return false;
     const rootEventId = projection.root_event_id;
+    const mentionTargets = parseMentionTargets(projection.mention_targets);
+    const hasPrivilegedTarget = mentionTargets.some(
+      (target) => target.type === 'everyone' || target.type === 'here'
+    ) || reticulumChatPayloadHasPrivilegedMention(projection.encrypted_payload);
+    const privilegedMentionAuthorized =
+      this.getPrivilegedMentionStatus(projection.current_event_id) === 1;
+    const signedMentionHashes = new Set(
+      parseMentionAddressHashes(projection.mention_address_hashes).slice(
+        0,
+        RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES
+      )
+    );
     const uniqueMentionedAddresses = [
       ...new Set(
         mentionedAddresses
           .map((address) => (typeof address === 'string' ? address.trim() : ''))
-          .filter(Boolean)
+          .filter(
+            (address) =>
+              !!address &&
+              (!hasPrivilegedTarget || privilegedMentionAuthorized) &&
+              signedMentionHashes.has(hashReticulumChatMentionAddress(address))
+          )
       ),
     ];
     this.memoryMentions.set(
@@ -8697,6 +8799,67 @@ export class ReticulumChatDatabase {
     return [...channels];
   }
 
+  private countValidatedStoredUnreadMentions(
+    groupId: number,
+    channelId: string,
+    myAddress: string,
+    watermark: number,
+    now: number,
+    activeSilencedAuthors: ReadonlySet<string>,
+    ignoredThroughByAuthor: ReadonlyMap<string, number>
+  ): number {
+    const myMentionHash = hashReticulumChatMentionAddress(myAddress);
+    const rows = this.stmtGetUnreadMentionRecords.all(
+      groupId,
+      channelId,
+      myAddress,
+      myAddress,
+      watermark,
+      `%${myMentionHash}%`,
+      now
+    ) as Array<{
+      author_address?: string;
+      encrypted_payload?: string;
+      mention_address_hashes?: string;
+      mention_targets?: string;
+      privileged_mention_status?: number;
+      projection_author_address?: string;
+      timestamp?: number;
+    }>;
+    let count = 0;
+    for (const row of rows) {
+      const authorAddress = String(row.projection_author_address || '');
+      const timestamp = Number(row.timestamp || 0);
+      if (
+        !authorAddress ||
+        row.author_address !== authorAddress ||
+        activeSilencedAuthors.has(authorAddress) ||
+        timestamp <= (ignoredThroughByAuthor.get(authorAddress) ?? 0)
+      ) {
+        continue;
+      }
+      const signedHashes = parseMentionAddressHashes(
+        row.mention_address_hashes
+      ).slice(0, RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES);
+      if (!signedHashes.includes(myMentionHash)) continue;
+      const hasPrivilegedMention =
+        parseMentionTargets(row.mention_targets).some(
+          (target) => target.type === 'everyone' || target.type === 'here'
+        ) ||
+        reticulumChatPayloadHasPrivilegedMention(
+          String(row.encrypted_payload || '')
+        );
+      if (
+        hasPrivilegedMention &&
+        Number(row.privileged_mention_status) !== 1
+      ) {
+        continue;
+      }
+      count += 1;
+    }
+    return count;
+  }
+
   private getChannelSummary(
     groupId: number,
     channelId: string,
@@ -8739,56 +8902,17 @@ export class ReticulumChatDatabase {
                 (ignoredThroughByAuthor.get(event.authorAddress) ?? 0)
           ).length
         : 0;
-    const mentionRow =
-      myAddress && !suppressUnreadState
-        ? activeSilencedAuthors.size > 0 || ignoredThroughByAuthor.size > 0
-          ? (this.db
-              .prepare(
-                `
-                  SELECT COUNT(*) AS cnt
-                  FROM reticulum_chat_mentions mention
-                  WHERE mention.group_id = ?
-                    AND mention.channel_id = ?
-                    AND mention.mentioned_address = ?
-                    AND mention.author_address != ?
-                    AND mention.timestamp > ?
-                    AND mention.read_at = 0
-                    AND NOT EXISTS (
-                      SELECT 1
-                      FROM rchat_silences silence
-                      WHERE silence.owner_address = ?
-                        AND silence.target_address = mention.author_address
-                        AND silence.scope_type = 'group'
-                        AND silence.scope_id = ?
-                        AND (
-                          silence.expires_at IS NULL
-                          OR silence.expires_at > ?
-                          OR mention.timestamp <= silence.ignored_through
-                        )
-                    )
-                `
-              )
-              .get(
-                groupId,
-                normalizedChannelId,
-                myAddress,
-                myAddress,
-                watermark,
-                myAddress,
-                String(groupId),
-                now
-              ) as { cnt?: number } | undefined)
-          : (this.stmtCountUnreadMentions.get(
-              groupId,
-              normalizedChannelId,
-              myAddress,
-              myAddress,
-              watermark
-            ) as { cnt?: number } | undefined)
-        : undefined;
     const mentionCount =
-      typeof mentionRow?.cnt === 'number' && Number.isFinite(mentionRow.cnt)
-        ? mentionRow.cnt
+      myAddress && !suppressUnreadState
+        ? this.countValidatedStoredUnreadMentions(
+            groupId,
+            normalizedChannelId,
+            myAddress,
+            watermark,
+            now,
+            activeSilencedAuthors,
+            ignoredThroughByAuthor
+          )
         : 0;
     let memoryMentionCount = 0;
     const myMentionHash = myAddress
@@ -8852,7 +8976,19 @@ export class ReticulumChatDatabase {
     };
     if (!suppressUnreadState) {
       for (const event of effectiveMentionEvents.values()) {
-        if (event.mentionAddressHashes?.includes(myMentionHash)) {
+        const hasPrivilegedTarget = sanitizeMentionTargets(
+          event.mentionTargets
+        ).some(
+          (target) => target.type === 'everyone' || target.type === 'here'
+        ) || reticulumChatPayloadHasPrivilegedMention(event.encryptedPayload);
+        const privilegedMentionAuthorized =
+          this.getPrivilegedMentionStatus(event.eventId) === 1;
+        if (
+          event.mentionAddressHashes
+            ?.slice(0, RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES)
+            .includes(myMentionHash) &&
+          (!hasPrivilegedTarget || privilegedMentionAuthorized)
+        ) {
           countEventMentionHash(event);
         } else {
           countEventMentionTarget(event);
@@ -10669,6 +10805,11 @@ export class ReticulumChatDatabase {
         ADD COLUMN privileged_mention_status INTEGER NOT NULL DEFAULT 0
       `
     );
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_rchat_pending_privileged_mentions
+        ON reticulum_chat_events (accepted_at, event_id)
+        WHERE privileged_mention_status = 2;
+    `);
   }
 
   private migrateEventScrubbedAtSchema(): void {

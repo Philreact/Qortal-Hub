@@ -220,6 +220,40 @@ describe('useReticulumGroupChat', () => {
     });
   });
 
+  it('replaces a pending event when local privileged validation succeeds', async () => {
+    getMessageHistory.mockResolvedValue([
+      {
+        ...event('pending-mention', 'general', 450),
+        privilegedMentionAuthorized: undefined,
+      },
+    ]);
+    const { result } = renderHook(() =>
+      useReticulumGroupChat(42, 'general')
+    );
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+
+    act(() => {
+      listeners[0]({
+        event: {
+          ...event('pending-mention', 'general', 450),
+          privilegedMentionAuthorized: true,
+        },
+      });
+    });
+
+    await waitFor(
+      () => {
+        expect(result.current.events).toEqual([
+          expect.objectContaining({
+            eventId: 'pending-mention',
+            privilegedMentionAuthorized: true,
+          }),
+        ]);
+      },
+      { timeout: 1200 }
+    );
+  });
+
   it('does not restore stale history after a silence change', async () => {
     const staleHistory = deferred<unknown[]>();
     getMessageHistory

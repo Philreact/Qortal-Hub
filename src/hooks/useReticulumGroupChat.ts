@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 
 const RETICULUM_CHAT_EVENT_BATCH_MS = 400;
@@ -32,21 +38,32 @@ const mergeReticulumEvents = (
   prev: unknown[],
   incoming: ReticulumChatHookEvent[]
 ): unknown[] => {
-  const knownIds = new Set(
-    prev
-      .map((item) => (item as { eventId?: unknown })?.eventId)
-      .filter((id): id is string => typeof id === 'string' && !!id)
-  );
-  let added = false;
+  const indexById = new Map<string, number>();
+  prev.forEach((item, index) => {
+    const eventId = (item as { eventId?: unknown })?.eventId;
+    if (typeof eventId === 'string' && eventId) indexById.set(eventId, index);
+  });
+  let changed = false;
   const next = [...prev];
   for (const event of incoming) {
     const eventId = typeof event.eventId === 'string' ? event.eventId : '';
-    if (eventId && knownIds.has(eventId)) continue;
-    if (eventId) knownIds.add(eventId);
+    const existingIndex = eventId ? indexById.get(eventId) : undefined;
+    if (existingIndex !== undefined) {
+      const existing = next[existingIndex] as ReticulumChatHookEvent;
+      const authorizationChanged =
+        existing.privilegedMentionAuthorized !==
+        event.privilegedMentionAuthorized;
+      if (authorizationChanged) {
+        next[existingIndex] = { ...existing, ...event };
+        changed = true;
+      }
+      continue;
+    }
+    if (eventId) indexById.set(eventId, next.length);
     next.push(event);
-    added = true;
+    changed = true;
   }
-  if (!added) return prev;
+  if (!changed) return prev;
   return next.sort((a, b) => {
     const at = Number((a as { timestamp?: unknown }).timestamp || 0);
     const bt = Number((b as { timestamp?: unknown }).timestamp || 0);
@@ -62,7 +79,10 @@ const addPrimaryNamesToEvents = async (
     new Set(
       events
         .map((event) => event.authorAddress)
-        .filter((address): address is string => typeof address === 'string' && !!address)
+        .filter(
+          (address): address is string =>
+            typeof address === 'string' && !!address
+        )
     )
   );
   if (addresses.length === 0) return events;
@@ -80,14 +100,19 @@ const addPrimaryNamesToEvents = async (
         if (primaryName) primaryNameCache.set(address, primaryName);
       }
     } catch (error) {
-      console.error('[useReticulumGroupChat] Failed to resolve primary names:', error);
+      console.error(
+        '[useReticulumGroupChat] Failed to resolve primary names:',
+        error
+      );
     }
   }
 
   return events.map((event) => {
     const authorAddress =
       typeof event.authorAddress === 'string' ? event.authorAddress : '';
-    const primaryName = authorAddress ? primaryNameCache.get(authorAddress)?.trim() : '';
+    const primaryName = authorAddress
+      ? primaryNameCache.get(authorAddress)?.trim()
+      : '';
     if (!primaryName) return event;
     return {
       ...event,
@@ -134,35 +159,41 @@ export function useReticulumGroupChat(
       replyCounts: {},
       rootByEventId: {},
     });
-  const activeChatKey = enabled && validGroupId != null
-    ? `${validGroupId}:${normalizedChannelId}`
-    : '';
+  const activeChatKey =
+    enabled && validGroupId != null
+      ? `${validGroupId}:${normalizedChannelId}`
+      : '';
   useLayoutEffect(() => {
     activeChatKeyRef.current = activeChatKey;
     return () => {
-      if (activeChatKeyRef.current === activeChatKey) activeChatKeyRef.current = '';
+      if (activeChatKeyRef.current === activeChatKey)
+        activeChatKeyRef.current = '';
     };
   }, [activeChatKey]);
 
-  const mergeEvents = useCallback((incoming: ReticulumChatHookEvent[], expectedChatKey: string) => {
-    if (!expectedChatKey || activeChatKeyRef.current !== expectedChatKey) return 0;
-    const previous = eventsRef.current;
-    const knownIds = new Set(
-      previous
-        .map((item) => (item as { eventId?: unknown })?.eventId)
-        .filter((id): id is string => typeof id === 'string' && !!id)
-    );
-    const added = incoming.reduce((count, event) => {
-      const eventId = typeof event.eventId === 'string' ? event.eventId : '';
-      if (!eventId || knownIds.has(eventId)) return count;
-      knownIds.add(eventId);
-      return count + 1;
-    }, 0);
-    const merged = mergeReticulumEvents(previous, incoming);
-    eventsRef.current = merged;
-    setEvents(merged);
-    return added;
-  }, []);
+  const mergeEvents = useCallback(
+    (incoming: ReticulumChatHookEvent[], expectedChatKey: string) => {
+      if (!expectedChatKey || activeChatKeyRef.current !== expectedChatKey)
+        return 0;
+      const previous = eventsRef.current;
+      const knownIds = new Set(
+        previous
+          .map((item) => (item as { eventId?: unknown })?.eventId)
+          .filter((id): id is string => typeof id === 'string' && !!id)
+      );
+      const added = incoming.reduce((count, event) => {
+        const eventId = typeof event.eventId === 'string' ? event.eventId : '';
+        if (!eventId || knownIds.has(eventId)) return count;
+        knownIds.add(eventId);
+        return count + 1;
+      }, 0);
+      const merged = mergeReticulumEvents(previous, incoming);
+      eventsRef.current = merged;
+      setEvents(merged);
+      return added;
+    },
+    []
+  );
 
   const enrichVisibleEvents = useCallback(
     async (incoming: ReticulumChatHookEvent[], expectedChatKey: string) => {
@@ -170,10 +201,13 @@ export function useReticulumGroupChat(
         incoming,
         primaryNameCacheRef.current
       );
-      if (!expectedChatKey || activeChatKeyRef.current !== expectedChatKey) return;
+      if (!expectedChatKey || activeChatKeyRef.current !== expectedChatKey)
+        return;
       const enrichedById = new Map(
         enriched
-          .filter((event) => typeof event.eventId === 'string' && !!event.eventId)
+          .filter(
+            (event) => typeof event.eventId === 'string' && !!event.eventId
+          )
           .map((event) => [event.eventId as string, event])
       );
       if (enrichedById.size === 0) return;
@@ -260,7 +294,10 @@ export function useReticulumGroupChat(
     let cancelled = false;
     const expectedChatKey = `${validGroupId}:${normalizedChannelId}`;
     void window.reticulumChat?.subscribeGroup?.(validGroupId);
-    void window.reticulumChat?.subscribeChannel?.(validGroupId, normalizedChannelId);
+    void window.reticulumChat?.subscribeChannel?.(
+      validGroupId,
+      normalizedChannelId
+    );
     eventsRef.current = [];
     setEvents([]);
     setVisibilityChange(null);
@@ -307,7 +344,8 @@ export function useReticulumGroupChat(
     const offEvent = window.reticulumChat?.onEvent?.((payload) => {
       const event = payload?.event as ReticulumChatHookEvent;
       if (!event || event.groupId !== validGroupId) return;
-      const eventType = typeof event.eventType === 'string' ? event.eventType : '';
+      const eventType =
+        typeof event.eventType === 'string' ? event.eventType : '';
       if (
         !eventType.startsWith('channel_') &&
         !eventType.startsWith('category_') &&
@@ -323,7 +361,10 @@ export function useReticulumGroupChat(
       : window.reticulumChat?.onTyping?.((payload) => {
           if (payload.groupId !== validGroupId) return;
           if (payload.channelId !== normalizedChannelId) return;
-          if (typeof payload.authorAddress !== 'string' || !payload.authorAddress) {
+          if (
+            typeof payload.authorAddress !== 'string' ||
+            !payload.authorAddress
+          ) {
             return;
           }
           setTyping((prev) => {
@@ -375,12 +416,13 @@ export function useReticulumGroupChat(
         active: payload.active,
         revision: silenceVisibilityRevision,
       });
-      void window.reticulumChat?.getMessageHistory?.(
-        validGroupId,
-        normalizedChannelId,
-        RETICULUM_CHAT_INITIAL_HISTORY_LIMIT,
-        { repairNetwork: false }
-      )
+      void window.reticulumChat
+        ?.getMessageHistory?.(
+          validGroupId,
+          normalizedChannelId,
+          RETICULUM_CHAT_INITIAL_HISTORY_LIMIT,
+          { repairNetwork: false }
+        )
         ?.then((history) => {
           if (
             cancelled ||
@@ -415,7 +457,10 @@ export function useReticulumGroupChat(
       offEvent?.();
       offTyping?.();
       offSilence?.();
-      void window.reticulumChat?.unsubscribeChannel?.(validGroupId, normalizedChannelId);
+      void window.reticulumChat?.unsubscribeChannel?.(
+        validGroupId,
+        normalizedChannelId
+      );
     };
   }, [
     enabled,
@@ -435,13 +480,13 @@ export function useReticulumGroupChat(
       return;
     }
 
-    const unresolvedEvents = (eventsRef.current as ReticulumChatHookEvent[]).filter(
-      (event) => {
-        const address =
-          typeof event.authorAddress === 'string' ? event.authorAddress : '';
-        return address && !primaryNameCacheRef.current.get(address)?.trim();
-      }
-    );
+    const unresolvedEvents = (
+      eventsRef.current as ReticulumChatHookEvent[]
+    ).filter((event) => {
+      const address =
+        typeof event.authorAddress === 'string' ? event.authorAddress : '';
+      return address && !primaryNameCacheRef.current.get(address)?.trim();
+    });
     if (unresolvedEvents.length === 0) return;
 
     const expectedChatKey = `${validGroupId}:${normalizedChannelId}`;
@@ -468,11 +513,10 @@ export function useReticulumGroupChat(
         return { success: false, error: 'Reticulum chat is disabled' };
       }
       const expectedChatKey = `${validGroupId}:${normalizedChannelId}`;
-      const result =
-        (await window.reticulumChat?.publishEvent?.(event)) ?? {
-          success: false,
-          error: 'Reticulum chat API unavailable',
-        };
+      const result = (await window.reticulumChat?.publishEvent?.(event)) ?? {
+        success: false,
+        error: 'Reticulum chat API unavailable',
+      };
       if (activeChatKeyRef.current !== expectedChatKey) return result;
       if (result?.success) {
         const chatEvent = event as ReticulumChatHookEvent;
@@ -489,7 +533,13 @@ export function useReticulumGroupChat(
       }
       return result;
     },
-    [enabled, enrichVisibleEvents, mergeEvents, normalizedChannelId, validGroupId]
+    [
+      enabled,
+      enrichVisibleEvents,
+      mergeEvents,
+      normalizedChannelId,
+      validGroupId,
+    ]
   );
 
   const loadOlder = useCallback(async () => {
@@ -549,7 +599,10 @@ export function useReticulumGroupChat(
         retryOlderAfterRef.current =
           Date.now() + RETICULUM_CHAT_EMPTY_OLDER_RETRY_MS;
       }
-      console.warn('[useReticulumGroupChat] Failed to load older messages:', error);
+      console.warn(
+        '[useReticulumGroupChat] Failed to load older messages:',
+        error
+      );
       return { added: 0 };
     } finally {
       if (activeChatKeyRef.current === expectedChatKey) {

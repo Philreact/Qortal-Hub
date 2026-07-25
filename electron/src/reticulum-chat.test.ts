@@ -66,6 +66,7 @@ import {
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
+  reticulumChatPayloadHasPrivilegedMention,
   reticulumDmConversationId,
 } from './reticulum-chat-db';
 import {
@@ -3088,6 +3089,9 @@ describe('reticulum chat database', () => {
       eventId: 'event-mention-target',
       groupId: 63,
       authorAddress: 'Qauthor',
+      mentionAddressHashes: [
+        hashReticulumChatMentionAddress('Qmentioned'),
+      ],
     });
     db.insertEvent(event, true);
 
@@ -3208,6 +3212,34 @@ describe('reticulum chat database', () => {
     });
   });
 
+  it('stores events while bounding effective direct mention hashes', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-bounded-direct-mention-hashes',
+      groupId: 266,
+      mentionAddressHashes: [
+        ...Array.from({ length: 32 }, (_, index) =>
+          nodeCrypto
+            .createHash('sha256')
+            .update(`other-mention-${index}`)
+            .digest('hex')
+        ),
+        hashReticulumChatMentionAddress(mentionedAddress),
+      ],
+    });
+
+    expect(validateReticulumChatEventShape(event)).toBe(true);
+    expect(db.insertEvent(event, false)).toBe(true);
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+  });
+
   it('tracks authorized semantic @everyone mention targets', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -3254,6 +3286,134 @@ describe('reticulum chat database', () => {
       mentionCount: 1,
       hasUnreadMention: true,
     });
+  });
+
+  it('does not let direct hashes bypass rejected privileged mentions', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-rejected-everyone-with-direct-hash',
+      groupId: 267,
+      mentionAddressHashes: [hashReticulumChatMentionAddress(mentionedAddress)],
+      mentionTargets: [{ type: 'everyone', groupId: 267 }],
+    });
+    expect(db.insertEvent(event, false, 0)).toBe(true);
+    expect(db.replaceMentionsForEvent(event.eventId, [mentionedAddress])).toBe(
+      true
+    );
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+  });
+
+  it('does not trust legacy persisted mention rows without signed local authorization', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const authorAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const row = {
+      author_address: authorAddress,
+      encrypted_payload: 'ciphertext',
+      mention_address_hashes: JSON.stringify([
+        hashReticulumChatMentionAddress(mentionedAddress),
+      ]),
+      mention_targets: JSON.stringify([
+        { type: 'everyone', groupId: 267 },
+      ]),
+      privileged_mention_status: 0,
+      projection_author_address: authorAddress,
+      timestamp: Date.now(),
+    };
+    (db as any).stmtGetUnreadMentionRecords = {
+      all: () => [row],
+    };
+
+    const countStoredMentions = () =>
+      (db as any).countValidatedStoredUnreadMentions(
+        267,
+        'general',
+        mentionedAddress,
+        0,
+        Date.now(),
+        new Set(),
+        new Map()
+      );
+
+    expect(countStoredMentions()).toBe(0);
+    row.privileged_mention_status = 1;
+    expect(countStoredMentions()).toBe(1);
+    row.mention_address_hashes = '[]';
+    expect(countStoredMentions()).toBe(0);
+  });
+
+  it('detects privileged markup even when a modified sender omits semantic targets', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const event = signedEvent({
+      eventId: 'event-privileged-markup-without-target',
+      groupId: 268,
+      encryptedPayload: JSON.stringify({
+        messageText:
+          '<p><span class="mention" data-type="mention" data-id="ordinary-user">@everyone</span></p>',
+      }),
+      mentionAddressHashes: [hashReticulumChatMentionAddress(mentionedAddress)],
+      mentionTargets: [],
+    });
+    expect(db.insertEvent(event, false, 0)).toBe(true);
+    expect(db.replaceMentionsForEvent(event.eventId, [mentionedAddress])).toBe(
+      true
+    );
+
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      mentionCount: 0,
+      hasUnreadMention: false,
+    });
+  });
+
+  it('detects a structured privileged label even when its mention id is forged', () => {
+    expect(
+      reticulumChatPayloadHasPrivilegedMention(
+        JSON.stringify({
+          type: 'doc',
+          content: [
+            {
+              type: 'mention',
+              attrs: { id: 'ordinary-user', label: 'everyone' },
+            },
+          ],
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('does not treat unrelated HTML metadata as a privileged mention', () => {
+    expect(
+      reticulumChatPayloadHasPrivilegedMention(
+        JSON.stringify({
+          messageText: '<div data-label="everyone">ordinary content</div>',
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('fails closed for excessively complex structured mention payloads', () => {
+    expect(
+      reticulumChatPayloadHasPrivilegedMention(
+        JSON.stringify({ content: Array.from({ length: 4096 }, () => null) })
+      )
+    ).toBe(true);
   });
 
   it('only applies @here targets for messages created during this app session', () => {
@@ -3527,23 +3687,26 @@ describe('reticulum chat database', () => {
     expect(deletedSummary?.hasUnreadMention ?? false).toBe(false);
   });
 
-  it('replaces and deletes mentions for edited or deleted messages', () => {
+  it('does not let renderer mention rows replace signed mention metadata', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
     const event = signedEvent({
       eventId: 'event-mention-replace',
       groupId: 64,
       authorAddress: 'Qauthor',
+      mentionAddressHashes: [
+        hashReticulumChatMentionAddress('Qfirst'),
+      ],
     });
     db.insertEvent(event, true);
 
     db.replaceMentionsForEvent(event.eventId, ['Qfirst']);
     expect(db.getChatSummaries('Qfirst')[0]?.mentionCount).toBe(1);
     db.replaceMentionsForEvent(event.eventId, ['Qsecond']);
-    expect(db.getChatSummaries('Qfirst')[0]?.mentionCount ?? 0).toBe(0);
-    expect(db.getChatSummaries('Qsecond')[0]?.mentionCount).toBe(1);
-    db.deleteMentionsForEvent(event.eventId);
+    expect(db.getChatSummaries('Qfirst')[0]?.mentionCount).toBe(1);
     expect(db.getChatSummaries('Qsecond')[0]?.mentionCount ?? 0).toBe(0);
+    db.deleteMentionsForEvent(event.eventId);
+    expect(db.getChatSummaries('Qfirst')[0]?.mentionCount).toBe(1);
   });
 
   it('does not let stale rendered edits overwrite projected mentions', () => {
@@ -3575,7 +3738,9 @@ describe('reticulum chat database', () => {
       timestamp: root.timestamp + 2,
       eventType: 'edit',
       targetEventId: root.eventId,
-      mentionAddressHashes: [],
+      mentionAddressHashes: [
+        hashReticulumChatMentionAddress('QnewerMention'),
+      ],
     });
 
     db.insertEvent(root, true);
@@ -6908,6 +7073,52 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps an already validated local privileged mention authorized', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupAdmin: async () => true,
+    });
+    const event = signedEvent({
+      groupId: 252,
+      mentionTargets: [{ type: 'everyone', groupId: 252 }],
+    });
+    manager.setLocalGroupMemberships([252]);
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect((manager as any).db.getPrivilegedMentionStatus(event.eventId)).toBe(
+      1
+    );
+    expect((manager as any).eventForRenderer(event)).toMatchObject({
+      privilegedMentionAuthorized: true,
+    });
+    manager.close();
+  });
+
+  it('refuses privileged markup when a modified sender omits mention targets', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupAdmin: async () => false,
+    });
+    const event = signedEvent({
+      groupId: 255,
+      encryptedPayload: JSON.stringify({
+        messageText:
+          '<p><span class="mention" data-type="mention" data-id="ordinary-user">@here</span></p>',
+      }),
+      mentionTargets: [],
+    });
+    manager.setLocalGroupMemberships([255]);
+
+    await expect(manager.publishEvent(event)).resolves.toMatchObject({
+      ok: false,
+      error: 'Only group admins can use @here or @everyone',
+    });
+    expect(manager.getHistory(255, 10)).toHaveLength(0);
+    manager.close();
+  });
+
   it('exposes privileged mention authorization to the renderer only from local state', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     const event = signedEvent({
@@ -6930,6 +7141,82 @@ describe('reticulum chat manager', () => {
     expect(
       (manager as any).eventForRenderer(event).privilegedMentionAuthorized
     ).toBe(true);
+    manager.close();
+  });
+
+  it('uses the current edit authorization when rendering projected history', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const [root, edit] = signedAuthorEvents([
+      {
+        eventId: 'event-projected-mention-root',
+        groupId: 256,
+        authorSeq: 1,
+        timestamp: 1_784_961_005_000,
+      },
+      {
+        eventId: 'event-projected-mention-edit',
+        groupId: 256,
+        authorSeq: 2,
+        timestamp: 1_784_961_005_001,
+        eventType: 'edit',
+        targetEventId: 'event-projected-mention-root',
+        mentionTargets: [{ type: 'everyone', groupId: 256 }],
+      },
+    ]);
+    manager.setLocalGroupMemberships([256]);
+    expect((manager as any).db.insertEvent(root, false, 0)).toBe(true);
+    expect((manager as any).db.insertEvent(edit, false, 1)).toBe(true);
+    expect(
+      (manager as any).db.getCurrentProjectedEventId(root.eventId)
+    ).toBe(edit.eventId);
+    expect((manager as any).db.getPrivilegedMentionStatus(edit.eventId)).toBe(
+      1
+    );
+
+    expect(manager.getMessageHistory(256, 'general', 10)).toContainEqual(
+      expect.objectContaining({
+        eventId: root.eventId,
+        privilegedMentionAuthorized: true,
+      })
+    );
+    manager.close();
+  });
+
+  it('stores privileged messages before admin validation and updates renderer state after validation', async () => {
+    let resolveValidation: ((value: boolean) => void) | undefined;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupAdmin: () =>
+        new Promise<boolean>((resolve) => {
+          resolveValidation = resolve;
+        }),
+    });
+    const event = signedEvent({
+      eventId: 'event-pending-everyone-validation',
+      groupId: 254,
+      mentionTargets: [{ type: 'everyone', groupId: 254 }],
+    });
+    manager.setLocalGroupMemberships([254]);
+
+    expect((manager as any).acceptEvent(event, false)).toBe(true);
+    expect(manager.getHistory(254, 10)).toContainEqual(
+      expect.objectContaining({
+        eventId: event.eventId,
+        privilegedMentionAuthorized: undefined,
+      })
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(resolveValidation).toBeTypeOf('function');
+    resolveValidation?.(true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(manager.getHistory(254, 10)).toContainEqual(
+      expect.objectContaining({
+        eventId: event.eventId,
+        privilegedMentionAuthorized: true,
+      })
+    );
     manager.close();
   });
 

@@ -163,12 +163,21 @@ const escapeMentionPattern = (value: string): string =>
 
 const decorateStaticReticulumMentions = (
   document: Document,
-  labels: string[]
+  labels: string[],
+  privilegedMentionAuthorized?: boolean
 ): void => {
+  const specialLabels =
+    privilegedMentionAuthorized === false
+      ? ['no-access']
+      : ['everyone', 'here', 'no-access'];
   const normalizedLabels = [
     ...new Set(
-      ['everyone', 'here', 'no-access', ...labels]
-        .map((label) => String(label || '').trim().replace(/^@/, ''))
+      [...specialLabels, ...labels]
+        .map((label) =>
+          String(label || '')
+            .trim()
+            .replace(/^@/, '')
+        )
         .filter(Boolean)
     ),
   ].sort((left, right) => right.length - left.length);
@@ -230,6 +239,7 @@ export const MessageDisplay = ({
   mentionedAddresses,
   mentionUsers,
   myAddress,
+  privilegedMentionAuthorized,
   reticulumChannelLinkAccess,
   textColor,
 }: {
@@ -238,6 +248,7 @@ export const MessageDisplay = ({
   mentionedAddresses?: string[];
   mentionUsers?: Record<string, MentionUser>;
   myAddress?: string;
+  privilegedMentionAuthorized?: boolean;
   reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   textColor?: string;
 }) => {
@@ -326,7 +337,35 @@ export const MessageDisplay = ({
       if (user.name) userMentionLabels.add(user.name.trim().toLowerCase());
     }
     if (reticulumChannelLinkAccess) {
-      decorateStaticReticulumMentions(document, Object.keys(mentionUsers || {}));
+      decorateStaticReticulumMentions(
+        document,
+        Object.keys(mentionUsers || {}),
+        privilegedMentionAuthorized
+      );
+    }
+    if (privilegedMentionAuthorized === false) {
+      for (const node of document.querySelectorAll<HTMLElement>(
+        '[data-type="mention"], .mention'
+      )) {
+        const id = String(node.dataset.id || '')
+          .trim()
+          .replace(/^@/, '')
+          .toLowerCase();
+        const label = String(
+          node.dataset.label || node.textContent || ''
+        )
+          .trim()
+          .replace(/^@/, '')
+          .toLowerCase();
+        const privilegedToken =
+          id === 'everyone' ||
+          id === 'here' ||
+          label === 'everyone' ||
+          label === 'here';
+        if (privilegedToken) {
+          node.replaceWith(document.createTextNode(`@${label || id}`));
+        }
+      }
     }
     for (const node of document.querySelectorAll<HTMLElement>(
       '[data-type="mention"][data-id], .mention[data-id]'
@@ -366,7 +405,12 @@ export const MessageDisplay = ({
       node.dataset.label = visibleName;
     }
     return document.body.innerHTML;
-  }, [mentionUsers, reticulumChannelLinkAccess, safeHtmlContent]);
+  }, [
+    mentionUsers,
+    privilegedMentionAuthorized,
+    reticulumChannelLinkAccess,
+    safeHtmlContent,
+  ]);
 
   const mentionUserByLabel = useMemo(() => {
     const map = new Map<string, MentionUser>();
@@ -387,10 +431,7 @@ export const MessageDisplay = ({
       ) as HTMLElement | null;
       if (!mention) return false;
       const label = String(
-        mention.dataset.label ||
-          mention.dataset.id ||
-          mention.textContent ||
-          ''
+        mention.dataset.label || mention.dataset.id || mention.textContent || ''
       )
         .trim()
         .replace(/^@/, '');
@@ -586,12 +627,14 @@ export const MessageDisplay = ({
             ? theme.palette.primary.dark
             : theme.palette.primary.main,
         ...(textColor ? { '--text-primary': textColor } : {}),
-        '& .tiptap:not(.isReply) [data-type="mention"], & .tiptap:not(.isReply) .mention': {
-          cursor: 'default',
-        },
-        '& .tiptap:not(.isReply) [data-type="mention"].reticulum-chat-link, & .tiptap:not(.isReply) .mention.reticulum-chat-link': {
-          cursor: 'pointer',
-        },
+        '& .tiptap:not(.isReply) [data-type="mention"], & .tiptap:not(.isReply) .mention':
+          {
+            cursor: 'default',
+          },
+        '& .tiptap:not(.isReply) [data-type="mention"].reticulum-chat-link, & .tiptap:not(.isReply) .mention.reticulum-chat-link':
+          {
+            cursor: 'pointer',
+          },
         '& .tiptap:not(.isReply) .reticulum-user-mention': {
           cursor: 'pointer',
         },

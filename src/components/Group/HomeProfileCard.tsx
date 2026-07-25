@@ -704,11 +704,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         html[data-hub-ui-animations="off"] *,
         html[data-hub-ui-animations="off"] *::before,
         html[data-hub-ui-animations="off"] *::after {
-          animation-duration: 0.01ms !important;
-          animation-iteration-count: 1 !important;
+          animation: none !important;
           scroll-behavior: auto !important;
-          transition-delay: 0ms !important;
-          transition-duration: 0.01ms !important;
+          transition: none !important;
         }
       `;
   }, [areUiAnimationsEnabled]);
