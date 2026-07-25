@@ -5140,7 +5140,6 @@ export const ChatGroup = ({
           messageId: event.eventId,
           nonce: (current?.nonce ?? 0) + 1,
         }));
-        setReticulumSearchOpen(false);
       } catch (error) {
         console.error('[ReticulumChat] search result window failed', error);
         setInfoSnack({
@@ -6359,6 +6358,19 @@ export const ChatGroup = ({
     });
   }, [reticulumAdminAnchorEl, reticulumAdminAnchorPosition]);
 
+  useEffect(() => {
+    executeEvent('reticulumChatSearchOpenState', {
+      open: reticulumSearchOpen,
+    });
+  }, [reticulumSearchOpen]);
+
+  useEffect(
+    () => () => {
+      executeEvent('reticulumChatSearchOpenState', { open: false });
+    },
+    []
+  );
+
   const toggleReticulumAdminPopover = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
       if (!isReticulumChannelAdmin) return;
@@ -6417,7 +6429,12 @@ export const ChatGroup = ({
 
   useEffect(() => {
     if (!reticulumChatEnabled) return;
-    const openSearch = () => setReticulumSearchOpen(true);
+    const openSearch = (event: any) => {
+      const shouldToggle = Boolean(
+        event?.detail?.toggle ?? event?.toggle
+      );
+      setReticulumSearchOpen((open) => (shouldToggle ? !open : true));
+    };
     subscribeToEvent('openReticulumChatSearch', openSearch);
     subscribeToEvent('openReticulumQManager', openQManager);
     subscribeToEvent('toggleReticulumAdminKeys', toggleReticulumAdminFromEvent);
@@ -8920,24 +8937,12 @@ export const ChatGroup = ({
                     )}
                   </Box>
                 </Tooltip>
-                <Tooltip title="Search Chat">
-                  <IconButton
-                    onClick={() => setReticulumSearchOpen(true)}
-                    size="small"
-                    sx={{
-                      color: 'text.secondary',
-                      flexShrink: 0,
-                      height: 36,
-                      width: 36,
-                      '&:hover': {
-                        backgroundColor: theme.palette.action.hover,
-                        color: theme.palette.text.primary,
-                      },
-                    }}
-                  >
-                    <SearchRoundedIcon sx={{ fontSize: 18 }} />
-                  </IconButton>
-                </Tooltip>
+                {renderReticulumHeaderAction({
+                  active: reticulumSearchOpen,
+                  label: 'Search Chat',
+                  icon: <SearchRoundedIcon sx={{ fontSize: 18 }} />,
+                  onClick: () => setReticulumSearchOpen((open) => !open),
+                })}
               </Box>
             </Box>
           )}
@@ -9636,12 +9641,6 @@ export const ChatGroup = ({
                 Search Results
               </Typography>
             </Box>
-            <IconButton
-              onClick={() => setReticulumSearchOpen(false)}
-              size="small"
-            >
-              <CloseIcon fontSize="small" />
-            </IconButton>
           </Box>
           <Box
             sx={{

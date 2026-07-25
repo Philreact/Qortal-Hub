@@ -598,6 +598,7 @@ const GroupListInner = ({
   setDesktopSideView,
   desktopSideView,
   directChatHasUnread,
+  directChatUnreadCount,
   chatMode,
   selectedGroup,
   getUserSettings,
@@ -762,28 +763,23 @@ const GroupListInner = ({
             }}
           >
             {directChatHasUnread && (
-              <Box
-                aria-hidden
+              <ReticulumUnreadCountBadge
+                count={directChatUnreadCount}
+                outlineColor={theme.palette.background.surface}
                 sx={{
-                  backgroundColor: theme.palette.primary.main,
-                  border: `2px solid ${theme.palette.background.surface}`,
-                  borderRadius: '50%',
-                  height: 12,
+                  bottom: -2,
                   position: 'absolute',
-                  right: 4,
-                  top: 4,
-                  width: 12,
+                  right: -2,
+                  zIndex: 2,
                 }}
               />
             )}
             <ReticulumDmMorphIcon
               active={desktopSideView === 'directs'}
               color={
-                directChatHasUnread
-                  ? theme.palette.primary.main
-                  : desktopSideView === 'directs'
-                    ? theme.palette.text.primary
-                    : theme.palette.text.secondary
+                desktopSideView === 'directs'
+                  ? theme.palette.text.primary
+                  : theme.palette.text.secondary
               }
             />
           </ButtonBase>

@@ -665,6 +665,7 @@ function ReticulumGroupSectionHeader({
   const theme = useTheme();
   const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false);
   const [isQManagerOpen, setIsQManagerOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   useEffect(() => {
     const syncAdminMenu = (event: any) => {
@@ -673,11 +674,16 @@ function ReticulumGroupSectionHeader({
     const syncQManager = (event: any) => {
       setIsQManagerOpen(Boolean(event?.detail?.open ?? event?.open));
     };
+    const syncSearch = (event: any) => {
+      setIsSearchOpen(Boolean(event?.detail?.open ?? event?.open));
+    };
     subscribeToEvent('reticulumAdminKeysOpenState', syncAdminMenu);
     subscribeToEvent('reticulumQManagerOpenState', syncQManager);
+    subscribeToEvent('reticulumChatSearchOpenState', syncSearch);
     return () => {
       unsubscribeFromEvent('reticulumAdminKeysOpenState', syncAdminMenu);
       unsubscribeFromEvent('reticulumQManagerOpenState', syncQManager);
+      unsubscribeFromEvent('reticulumChatSearchOpenState', syncSearch);
     };
   }, []);
   const actionSx = (active?: boolean, showLabel?: boolean) => ({
@@ -934,24 +940,14 @@ function ReticulumGroupSectionHeader({
             )}
           </Box>
         </Tooltip>
-        <Tooltip title="Search Chat">
-          <IconButton
-            onClick={() => executeEvent('openReticulumChatSearch', {})}
-            size="small"
-            sx={{
-              color: 'text.secondary',
-              flexShrink: 0,
-              height: 36,
-              width: 36,
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
-          >
-            <SearchRoundedIcon sx={{ fontSize: 18 }} />
-          </IconButton>
-        </Tooltip>
+        {renderAction({
+          active: activeSection !== 'land' && isSearchOpen,
+          disabled: activeSection === 'land',
+          label: 'Search Chat',
+          icon: <SearchRoundedIcon sx={{ fontSize: 18 }} />,
+          onClick: () =>
+            executeEvent('openReticulumChatSearch', { toggle: true }),
+        })}
       </Box>
     </Box>
   );
@@ -2319,6 +2315,14 @@ export const Group = ({
     });
     return hasUnread;
   }, [timestampEnterData, mergedDirectRows, myAddress, reticulumChatEnabled]);
+
+  const reticulumDirectUnreadCount = useMemo(() => {
+    if (!reticulumChatEnabled) return 0;
+    return mergedDirectRows.reduce(
+      (total, direct) => total + Math.max(0, Number(direct?.unreadCount || 0)),
+      0
+    );
+  }, [mergedDirectRows, reticulumChatEnabled]);
 
   const displayDirects = useMemo(() => {
     if (reticulumChatEnabled) {
@@ -4374,6 +4378,7 @@ export const Group = ({
             setDesktopSideView={setDesktopSideViewFromRail}
             desktopSideView={desktopSideView}
             directChatHasUnread={directChatHasUnread}
+            directChatUnreadCount={reticulumDirectUnreadCount}
             chatMode={chatMode}
             selectedGroup={selectedGroup}
             getUserSettings={getUserSettings}
