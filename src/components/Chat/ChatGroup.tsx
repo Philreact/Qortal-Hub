@@ -29,6 +29,7 @@ import {
 import { ChatList } from './ChatList';
 import { AdminSpaceInner } from './AdminSpaceInner';
 import Tiptap, { type MentionSuggestionItem } from './TipTap';
+import { normalizeExactReticulumMentions } from './reticulumMentionNormalization';
 import './chat.css';
 import { CustomButton } from '../../styles/App-styles';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -5509,6 +5510,19 @@ export const ChatGroup = ({
       stopReticulumTyping();
       if (editorRef.current) {
         let htmlContent = editorRef.current.getHTML();
+        if (reticulumChatEnabled) {
+          const normalizedMentions = normalizeExactReticulumMentions(
+            editorRef.current.getJSON() as Record<string, unknown>,
+            reticulumMentionSuggestions
+          );
+          if (normalizedMentions.changed) {
+            editorRef.current.commands.setContent(
+              normalizedMentions.document,
+              false
+            );
+            htmlContent = editorRef.current.getHTML();
+          }
+        }
         const deleteImage =
           onEditMessage && isDeleteImage && messageHasImage(onEditMessage);
 

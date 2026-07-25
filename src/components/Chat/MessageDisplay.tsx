@@ -224,7 +224,7 @@ const decorateStaticReticulumMentions = (
         : 'mention reticulum-user-mention';
       mention.dataset.type = 'mention';
       mention.dataset.label = match[2];
-      mention.textContent = `@${match[2]}`;
+      mention.textContent = match[2];
       fragment.append(mention);
       cursor = index + match[0].length;
     }
@@ -368,6 +368,19 @@ export const MessageDisplay = ({
       }
     }
     for (const node of document.querySelectorAll<HTMLElement>(
+      '[data-type="mention"], .mention'
+    )) {
+      const cleanLabel = String(
+        node.dataset.label || node.textContent || node.dataset.id || ''
+      )
+        .trim()
+        .replace(/^@/, '');
+      if (cleanLabel) {
+        node.textContent = cleanLabel;
+        node.dataset.label = cleanLabel;
+      }
+    }
+    for (const node of document.querySelectorAll<HTMLElement>(
       '[data-type="mention"][data-id], .mention[data-id]'
     )) {
       const link = parseReticulumChatLinkMentionId(
@@ -393,7 +406,7 @@ export const MessageDisplay = ({
             )
           : undefined;
       if (!visibleName) {
-        node.textContent = '@no-access';
+        node.textContent = 'no-access';
         node.dataset.label = 'no-access';
         node.removeAttribute('data-id');
         node.classList.remove('reticulum-chat-link');
@@ -401,7 +414,7 @@ export const MessageDisplay = ({
       }
       node.classList.add('reticulum-chat-link');
       if (link.kind === 'group') continue;
-      node.textContent = `@${visibleName}`;
+      node.textContent = visibleName;
       node.dataset.label = visibleName;
     }
     return document.body.innerHTML;
