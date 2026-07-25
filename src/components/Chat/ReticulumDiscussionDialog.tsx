@@ -18,6 +18,7 @@ import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRound
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { MAX_SIZE_MESSAGE } from '../../constants/constants';
 import Tiptap, { type MentionSuggestionItem } from './TipTap';
+import { normalizeExactReticulumMentions } from './reticulumMentionNormalization';
 import { MessageItem } from './MessageItem';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
@@ -146,6 +147,13 @@ export const ReticulumDiscussionDialog = ({
 
   const send = async () => {
     if (!canWrite || !editor || sending || preparingFile || loading) return;
+    const normalizedMentions = normalizeExactReticulumMentions(
+      editor.getJSON() as Record<string, unknown>,
+      mentionSuggestions
+    );
+    if (normalizedMentions.changed) {
+      editor.commands.setContent(normalizedMentions.document, false);
+    }
     const htmlContent = editor.getHTML();
     const hasText = Boolean(editor.getText().trim());
     if (!hasText && files.length === 0) return;

@@ -31,7 +31,7 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
 import Compressor from 'compressorjs';
-import Mention from '@tiptap/extension-mention';
+import Mention, { MentionPluginKey } from '@tiptap/extension-mention';
 import ImageResize from 'tiptap-extension-resize-image'; // Import the ResizeImage extension
 import tippy from 'tippy.js';
 import 'tippy.js/dist/tippy.css';
@@ -532,6 +532,10 @@ export type MentionSuggestionItem = {
   iconText?: string;
 };
 
+const renderMentionLabel = (node: { attrs: Record<string, unknown> }) => {
+  return String(node.attrs.label ?? node.attrs.id ?? '').replace(/^@/, '');
+};
+
 const Tiptap = ({
   setEditorRef,
   onEnter,
@@ -658,6 +662,12 @@ const Tiptap = ({
         HTMLAttributes: {
           class: 'mention',
         },
+        renderText: ({ node }) => renderMentionLabel(node),
+        renderHTML: ({ options, node }) => [
+          'span',
+          options.HTMLAttributes,
+          renderMentionLabel(node),
+        ],
           suggestion: {
             items: ({ query }) => {
             const normalizedQuery = query.trim().toLowerCase();
@@ -821,6 +831,19 @@ const Tiptap = ({
             : `overflow: auto; max-height: 250px`,
         },
         handleKeyDown(view, event) {
+          const mentionSuggestionActive =
+            mentionSuggestions !== undefined &&
+            Boolean(MentionPluginKey.getState(view.state)?.active);
+          if (
+            mentionSuggestionActive &&
+            ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'].includes(
+              event.key
+            )
+          ) {
+            // Let the mention suggestion plugin navigate, dismiss, or accept
+            // its highlighted row before chat-level shortcuts can send/edit.
+            return false;
+          }
           if (typeof onKeyDown === 'function') {
             const editor = editorRef.current;
             if (editor) {

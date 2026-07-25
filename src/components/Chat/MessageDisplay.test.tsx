@@ -126,6 +126,19 @@ describe('Reticulum privileged mention rendering', () => {
       />
     );
 
-    expect(container.querySelector('.mention')?.textContent).toBe('@everyone');
+    expect(container.querySelector('.mention')?.textContent).toBe('everyone');
+  });
+
+  it('renders an authorized label-only mention without the trigger character', () => {
+    const { container } = render(
+      <MessageDisplay
+        htmlContent={
+          '<p><span class="mention" data-label="here">@here</span></p>'
+        }
+        privilegedMentionAuthorized
+      />
+    );
+
+    expect(container.querySelector('.mention')?.textContent).toBe('here');
   });
 });

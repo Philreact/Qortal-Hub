@@ -7353,7 +7353,9 @@ export function QortalLand({
             this.lightSweep.fillEllipse(520, 470, 360, 70);
             return;
           }
-          if (!shouldShowQortalLandProceduralClubShell()) return;
+          // Disco lighting belongs to the PNG room as well as the optional
+          // procedural shell. Keep the animated lights when that legacy shell
+          // is hidden.
           const layout = roomLayoutForRoom(QORTAL_LAND_DEFAULT_ROOM_ID);
           const sweepX = 260 + ((time / 18) % 1280);
           const pulse = 0.5 + Math.sin(time / 180) * 0.5;
