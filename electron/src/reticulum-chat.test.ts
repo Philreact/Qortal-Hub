@@ -72,7 +72,9 @@ import {
 import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
   byteLengthUtf8JsonWithBridgeSender,
+  byteLengthUtf8JsonWithBridgeSenderOnly,
   wireFitsReticulum,
+  wireFitsReticulumChat,
 } from './reticulum-wire-size';
 import {
   ReticulumResourceStore,
@@ -285,8 +287,7 @@ function createLandAuthSigner() {
       ...(input.roomId ? { u: input.roomId } : {}),
       ...(input.direction ? { d: input.direction } : {}),
       ...(input.movement ? { m: input.movement } : {}),
-      ...(afk ? { af: 1 as const } : {}),
-      ...(dnd ? { dn: 1 as const } : {}),
+      ...(afk || dnd ? { v: (afk ? 1 : 0) | (dnd ? 2 : 0) } : {}),
       i: skinId,
       ts: input.timestamp,
       z: base58Encode(signature),
@@ -4221,6 +4222,38 @@ describe('reticulum chat database', () => {
     db.upsertGroupKey(key);
     expect(db.getActiveGroupKey(91)).toMatchObject(key);
     expect(db.getGroupKey(91, 1, key.keyId)).toMatchObject(key);
+  });
+});
+
+describe('QortalLand state wire sizing', () => {
+  it('fits a fully populated routed state inside the encrypted MDU', () => {
+    const signer = createLandAuthSigner();
+    const wire = {
+      ...signer.landStateWire({
+        groupId: 2_147_483_647,
+        sessionId: '0123456789abcdef',
+        sequence: 0xffff_ffff,
+        x: 4095,
+        y: 2047,
+        roomId: 'skywalk',
+        direction: 'r',
+        movement: 'leave',
+        afk: true,
+        dnd: true,
+        skinId: 31,
+        timestamp: 9_999_999_999_999,
+      }),
+      o: '0123456789abcdef012345',
+      h: 9,
+    };
+
+    expect(wire).toMatchObject({ v: 3, i: 31 });
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(wire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    expect(wireFitsReticulumChat(wire)).toBe(true);
+    const { o: _origin, h: _hops, ...unroutedWire } = wire;
+    expect(wireFitsReticulum(unroutedWire)).toBe(true);
   });
 });
 
@@ -9018,7 +9051,7 @@ describe('reticulum chat manager', () => {
           s: 'session-1',
           q: 7,
           u: 'skyline',
-          af: 1,
+          v: 1,
           i: 4,
           o: peerC,
           h: 1,
@@ -9036,10 +9069,10 @@ describe('reticulum chat manager', () => {
     const actionId = '123e4567-e89b-42d3-a456-426614174000';
     const compactActionId = Buffer.from(actionId.replace(/-/g, ''), 'hex')
       .toString('base64url');
-    const sourceSessionId = 'a'.repeat(24);
+    const sourceSessionId = 'a'.repeat(16);
     const compactSourceSessionId = Buffer.from(sourceSessionId, 'hex')
       .toString('base64url');
-    const targetSessionId = 'b'.repeat(24);
+    const targetSessionId = 'b'.repeat(16);
     const compactTargetSessionId = Buffer.from(targetSessionId, 'hex')
       .toString('base64url');
     const manager = new ReticulumChatManager({
@@ -9802,8 +9835,9 @@ describe('reticulum chat manager', () => {
       )
     ).toBe(true);
     expect(stateWire).toEqual(
-      expect.objectContaining({ af: 1, i: 4 })
+      expect.objectContaining({ v: 1, i: 4 })
     );
+    expect(stateWire).not.toHaveProperty('af');
     expect(stateWire).not.toHaveProperty('dn');
     direct.length = 0;
     fanout.length = 0;

@@ -11587,7 +11587,7 @@ def _configure_land_state_forwarding(
                     or group_id <= 0
                     or not author
                     or not session_id
-                    or len(session_id) > 24
+                    or len(session_id) > 16
                     or len(public_key) != 32
                     or expires_at <= now
                 ):
@@ -11643,7 +11643,10 @@ def _land_state_sequence_int(value: Any) -> Optional[int]:
         return None
     if not math.isfinite(numeric):
         return None
-    return max(0, min(2**53 - 1, int(math.floor(numeric))))
+    sequence = int(math.floor(numeric))
+    if sequence > 2**32 - 1:
+        return None
+    return max(0, sequence)
 
 
 def _land_state_verification_fields(message: Dict[str, Any]) -> Optional[Tuple[Tuple[int, str, str], int, bytes]]:
@@ -11656,13 +11659,26 @@ def _land_state_verification_fields(message: Dict[str, Any]) -> Optional[Tuple[T
         or group_id <= 0
         or not author
         or not session_id
-        or len(session_id) > 24
+        or len(session_id) > 16
     ):
         return None
     sequence = _land_state_sequence_int(message.get("q"))
     x = _land_state_normalized_int(message.get("x"), 0, 4095)
     y = _land_state_normalized_int(message.get("y"), 0, 2047)
     if sequence is None or x is None or y is None:
+        return None
+    availability = message.get("v", 0)
+    skin_id = message.get("i")
+    if (
+        isinstance(availability, bool)
+        or not isinstance(availability, int)
+        or availability < 0
+        or availability > 3
+        or isinstance(skin_id, bool)
+        or not isinstance(skin_id, int)
+        or skin_id < 1
+        or skin_id > 31
+    ):
         return None
     try:
         timestamp_number = float(message.get("ts"))
@@ -11680,13 +11696,16 @@ def _land_state_verification_fields(message: Dict[str, Any]) -> Optional[Tuple[T
         int(timestamp_number) if timestamp_number.is_integer() else timestamp_number
     )
     signed_fields = {
+        "afk": bool(availability & 1),
         "authorAddress": author,
         "direction": str(message.get("d") or ""),
+        "dnd": bool(availability & 2),
         "groupId": group_id,
         "movement": str(message.get("m") or ""),
         "roomId": str(message.get("u") or ""),
         "sequence": sequence,
         "sessionId": session_id,
+        "skinId": skin_id,
         "timestamp": timestamp,
         "type": "QORTAL_LAND_STATE",
         "x": x,

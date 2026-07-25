@@ -17,7 +17,24 @@ const BRIDGE_SENDER_HASH_PLACEHOLDER = '0'.repeat(32);
 const OVERLAY_MESSAGE_ID_PLACEHOLDER = 'overlay000000';
 
 /**
- * UTF-8 byte length of JSON after Python adds `r` (same width as real destination hash hex).
+ * Exact UTF-8 byte length after Python adds only `r`. Reticulum chat uses this
+ * form because its routing metadata is already present in the supplied object.
+ */
+export function byteLengthUtf8JsonWithBridgeSenderOnly(
+  obj: Record<string, unknown>
+): number {
+  return Buffer.byteLength(
+    JSON.stringify({
+      ...obj,
+      r: BRIDGE_SENDER_HASH_PLACEHOLDER,
+    }),
+    'utf8'
+  );
+}
+
+/**
+ * Conservative size used by call encoders before their overlay layer attaches
+ * the `X` message id and `L` hop count.
  */
 export function byteLengthUtf8JsonWithBridgeSender(
   obj: Record<string, unknown>
@@ -51,4 +68,8 @@ export function byteLengthUtf8JsonWithBridgeSenderAndTarget(
 
 export function wireFitsReticulum(obj: Record<string, unknown>): boolean {
   return byteLengthUtf8JsonWithBridgeSender(obj) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES;
+}
+
+export function wireFitsReticulumChat(obj: Record<string, unknown>): boolean {
+  return byteLengthUtf8JsonWithBridgeSenderOnly(obj) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES;
 }

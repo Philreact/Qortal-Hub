@@ -2911,7 +2911,7 @@ export function QortalLand({
   const [developmentLookSettings, setDevelopmentLookSettings] = useState(() =>
     readQortalLandDevelopmentLookSettings()
   );
-  const sessionId = useMemo(() => createSessionId(), []);
+  const sessionId = useMemo(() => createSessionId().slice(0, 16), []);
   const qortBalance = useMemo(() => normalizeQortBalance(balance), [balance]);
   const publishLandPresenceSnapshot = useCallback(() => {
     const byAddress = new Map<

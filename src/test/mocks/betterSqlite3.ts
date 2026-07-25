@@ -1352,6 +1352,19 @@ class Statement {
         lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumChatChannels.length,
       };
     }
+    if (this.sql.includes('DELETE FROM reticulum_chat_channels')) {
+      const [groupId, channelId] = args;
+      const before = this.store.reticulumChatChannels.length;
+      this.store.reticulumChatChannels =
+        this.store.reticulumChatChannels.filter(
+          (row) =>
+            !(row.group_id === groupId && row.channel_id === channelId)
+        );
+      return {
+        changes: before - this.store.reticulumChatChannels.length,
+        lastInsertRowid: 0,
+      };
+    }
     if (this.sql.includes('DELETE FROM rchat_author_sequence_leases')) {
       const values = args;
       const before = this.store.reticulumChatAuthorSequenceLeases.length;

@@ -85,8 +85,10 @@ import {
 } from './logger';
 import {
   byteLengthUtf8JsonWithBridgeSender,
+  byteLengthUtf8JsonWithBridgeSenderOnly,
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
   wireFitsReticulum,
+  wireFitsReticulumChat,
 } from './reticulum-wire-size';
 import {
   ED25519_SIGNATURE_BYTES,
@@ -1306,8 +1308,7 @@ export type ReticulumChatWire =
       u?: string;
       d?: string;
       m?: string;
-      af?: 1;
-      dn?: 1;
+      v?: number;
       i: number;
       ts: number;
       z: string;
@@ -1432,6 +1433,8 @@ const RETICULUM_LAND_SOCIAL_ACTION_RATE_MAX = 5;
 const RETICULUM_LAND_SOCIAL_ACTION_RATE_KEYS_MAX = 2_048;
 const RETICULUM_LAND_ACTION_PENDING_TTL_MS = 5_000;
 const RETICULUM_LAND_ACTION_PENDING_MAX = 128;
+const RETICULUM_LAND_SESSION_ID_MAX_LENGTH = 16;
+const RETICULUM_LAND_STATE_SEQUENCE_VALUE_MAX = 0xffff_ffff;
 const isDisabledTyping = false;
 export const isDisabledRelayCache = true;
 const RETICULUM_CHAT_PROTOCOL_VERSION = 3;
@@ -2100,6 +2103,23 @@ export function buildReticulumLandStateSignedFields(input: {
   };
 }
 
+function encodeReticulumLandAvailability(afk: boolean, dnd: boolean): number {
+  return (afk ? 1 : 0) | (dnd ? 2 : 0);
+}
+
+function decodeReticulumLandAvailability(value: unknown): {
+  afk: boolean;
+  dnd: boolean;
+} | null {
+  const availability = value == null ? 0 : Number(value);
+  if (!Number.isInteger(availability) || availability < 0 || availability > 3)
+    return null;
+  return {
+    afk: (availability & 1) !== 0,
+    dnd: (availability & 2) !== 0,
+  };
+}
+
 export const RETICULUM_LAND_SOCIAL_ACTIONS = [
   'buzz',
   'love',
@@ -2193,7 +2213,7 @@ function decodeLandActionType(actionType: unknown): string {
 
 function compactLandSessionIdForWire(sessionId: string): string {
   const normalized = sessionId.trim().toLowerCase();
-  if (!/^[0-9a-f]{24}$/.test(normalized)) return sessionId;
+  if (!/^[0-9a-f]{16}$/.test(normalized)) return sessionId;
   return Buffer.from(normalized, 'hex')
     .toString('base64')
     .replace(/\+/g, '-')
@@ -2203,13 +2223,13 @@ function compactLandSessionIdForWire(sessionId: string): string {
 
 function expandLandSessionIdFromWire(sessionId: unknown): string {
   const value = typeof sessionId === 'string' ? sessionId.trim() : '';
-  if (!/^[A-Za-z0-9_-]{16}$/.test(value)) return value;
+  if (!/^[A-Za-z0-9_-]{11}$/.test(value)) return value;
   try {
     const bytes = Buffer.from(
       `${value.replace(/-/g, '+').replace(/_/g, '/')}${'='.repeat((4 - (value.length % 4)) % 4)}`,
       'base64'
     );
-    return bytes.length === 12 ? bytes.toString('hex') : value;
+    return bytes.length === 8 ? bytes.toString('hex') : value;
   } catch {
     return value;
   }
@@ -4181,7 +4201,12 @@ export function verifyReticulumLandAuthWire(
     const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
     const authorAddress = deriveAddressFromPublicKey(authorPublicKey);
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
-    if (!authorAddress || !sessionId || sessionId.length > 24) return false;
+    if (
+      !authorAddress ||
+      !sessionId ||
+      sessionId.length > RETICULUM_LAND_SESSION_ID_MAX_LENGTH
+    )
+      return false;
     if (!Number.isFinite(timestamp)) return false;
     if (timestamp > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS)
       return false;
@@ -8435,7 +8460,10 @@ export class ReticulumChatManager extends EventEmitter {
       typeof state.sessionId === 'string' ? state.sessionId.trim() : '';
     const sequence = Math.max(
       0,
-      Math.min(Number.MAX_SAFE_INTEGER, Math.floor(Number(state.sequence) || 0))
+      Math.min(
+        RETICULUM_LAND_STATE_SEQUENCE_VALUE_MAX,
+        Math.floor(Number(state.sequence) || 0)
+      )
     );
     const x = Math.max(0, Math.min(4095, Math.round(Number(state.x) || 0)));
     const y = Math.max(0, Math.min(2047, Math.round(Number(state.y) || 0)));
@@ -8460,7 +8488,10 @@ export class ReticulumChatManager extends EventEmitter {
     if (!address || !sessionId) {
       throw new Error('Invalid QortalLand state');
     }
-    const compactSessionId = sessionId.slice(0, 24);
+    const compactSessionId = sessionId.slice(
+      0,
+      RETICULUM_LAND_SESSION_ID_MAX_LENGTH
+    );
     const authKey = this.landAuthSessionKey(groupId, address, compactSessionId);
     const now = this.now();
     const existingLocalSession = this.localLandAuthSessions.get(authKey);
@@ -8535,8 +8566,9 @@ export class ReticulumChatManager extends EventEmitter {
       ...(roomId ? { u: roomId } : {}),
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
-      ...(afk ? { af: 1 as const } : {}),
-      ...(dnd ? { dn: 1 as const } : {}),
+      ...(afk || dnd
+        ? { v: encodeReticulumLandAvailability(afk, dnd) }
+        : {}),
       i: skinId,
       ts: timestamp,
       z: base58Encode(signature),
@@ -8599,14 +8631,18 @@ export class ReticulumChatManager extends EventEmitter {
       typeof action.fromAddress === 'string' ? action.fromAddress.trim() : '';
     const sourceSessionId =
       typeof action.sourceSessionId === 'string'
-        ? action.sourceSessionId.trim().slice(0, 24)
+        ? action.sourceSessionId
+            .trim()
+            .slice(0, RETICULUM_LAND_SESSION_ID_MAX_LENGTH)
         : '';
     const sequence = Math.floor(Number(action.sequence) || 0);
     const toAddress =
       typeof action.toAddress === 'string' ? action.toAddress.trim() : '';
     const targetSessionId =
       typeof action.targetSessionId === 'string'
-        ? action.targetSessionId.trim().slice(0, 24)
+        ? action.targetSessionId
+            .trim()
+            .slice(0, RETICULUM_LAND_SESSION_ID_MAX_LENGTH)
         : '';
     const numericAmount = Number(action.amount) || 0;
     const amount = Math.max(0, Math.min(1_000_000_000, numericAmount));
@@ -13695,7 +13731,7 @@ export class ReticulumChatManager extends EventEmitter {
       groupId <= 0 ||
       !authorAddress ||
       !sessionId ||
-      sessionId.length > 24
+      sessionId.length > RETICULUM_LAND_SESSION_ID_MAX_LENGTH
     ) {
       return;
     }
@@ -14285,9 +14321,20 @@ export class ReticulumChatManager extends EventEmitter {
       const y = Math.max(0, Math.min(2047, Math.round(Number(wire.y) || 0)));
       const timestamp = Number(wire.ts);
       const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
+      const skinId = Number(wire.i);
       const now = this.now();
       if (!Number.isInteger(groupId) || groupId <= 0) return null;
-      if (!authorAddress || !sessionId || sessionId.length > 24) return null;
+      if (
+        !Number.isInteger(Number(wire.q)) ||
+        sequence > RETICULUM_LAND_STATE_SEQUENCE_VALUE_MAX
+      )
+        return null;
+      if (
+        !authorAddress ||
+        !sessionId ||
+        sessionId.length > RETICULUM_LAND_SESSION_ID_MAX_LENGTH
+      )
+        return null;
       if (!Number.isFinite(timestamp)) return null;
       if (timestamp > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS)
         return null;
@@ -14295,6 +14342,9 @@ export class ReticulumChatManager extends EventEmitter {
       if (ephemeralPublicKeyBytes.length !== 32 || !signature) return null;
       const signatureBytes = new Uint8Array(base58Decode(signature));
       if (signatureBytes.length !== ED25519_SIGNATURE_BYTES) return null;
+      const availability = decodeReticulumLandAvailability(wire.v);
+      if (!availability) return null;
+      if (!Number.isInteger(skinId) || skinId < 1 || skinId > 31) return null;
       return {
         signedBytes: new Uint8Array(
           canonicalizeForSigning(
@@ -14308,12 +14358,9 @@ export class ReticulumChatManager extends EventEmitter {
               roomId: typeof wire.u === 'string' ? wire.u : '',
               direction: typeof wire.d === 'string' ? wire.d : '',
               movement: typeof wire.m === 'string' ? wire.m : '',
-              afk: wire.af === 1,
-              dnd: wire.dn === 1,
-              skinId: Math.max(
-                1,
-                Math.min(31, Math.floor(Number(wire.i) || 1))
-              ),
+              afk: availability.afk,
+              dnd: availability.dnd,
+              skinId,
               timestamp,
             })
           )
@@ -27950,6 +27997,8 @@ export class ReticulumChatManager extends EventEmitter {
     const x = Math.max(0, Math.min(4095, Math.round(Number(wire.x) || 0)));
     const y = Math.max(0, Math.min(2047, Math.round(Number(wire.y) || 0)));
     if (!authorAddress || !sessionId) return;
+    const availability = decodeReticulumLandAvailability(wire.v);
+    if (!availability) return;
     const diagnosticKey = this.landAuthSessionKey(
       groupId,
       authorAddress,
@@ -27979,8 +28028,8 @@ export class ReticulumChatManager extends EventEmitter {
       roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
-      afk: wire.af === 1,
-      dnd: wire.dn === 1,
+      afk: availability.afk,
+      dnd: availability.dnd,
       skinId: Math.max(1, Math.min(31, Math.floor(Number(wire.i) || 1))),
       timestamp: Number.isFinite(Number(wire.ts))
         ? Number(wire.ts)
@@ -28522,11 +28571,18 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<ReticulumSendResult> {
     if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
     for (const wire of wires) {
-      if (!wireFitsReticulum(wire)) {
+      const isLandState = wire.k === 'land_state';
+      const fits = isLandState
+        ? wireFitsReticulumChat(wire)
+        : wireFitsReticulum(wire);
+      if (!fits) {
+        const bytes = isLandState
+          ? byteLengthUtf8JsonWithBridgeSenderOnly(wire)
+          : byteLengthUtf8JsonWithBridgeSender(wire);
         return {
           ok: false,
           reason: 'wire-too-large',
-          error: `Reticulum chat wire ${byteLengthUtf8JsonWithBridgeSender(wire)} bytes exceeds ${RT_RETICULUM_MAX_WIRE_JSON_BYTES}`,
+          error: `Reticulum chat wire ${bytes} bytes exceeds ${RT_RETICULUM_MAX_WIRE_JSON_BYTES}`,
         };
       }
     }
@@ -28567,11 +28623,18 @@ export class ReticulumChatManager extends EventEmitter {
     const key = peerHash.trim().toLowerCase();
     if (!key || !this.bridge)
       return { ok: false, reason: 'unknown-peer-presence-hash' };
-    if (!wireFitsReticulum(wire)) {
+    const isLandState = wire.k === 'land_state';
+    const fits = isLandState
+      ? wireFitsReticulumChat(wire)
+      : wireFitsReticulum(wire);
+    if (!fits) {
+      const bytes = isLandState
+        ? byteLengthUtf8JsonWithBridgeSenderOnly(wire)
+        : byteLengthUtf8JsonWithBridgeSender(wire);
       return {
         ok: false,
         reason: 'wire-too-large',
-        error: `Reticulum chat wire ${byteLengthUtf8JsonWithBridgeSender(wire)} bytes exceeds ${RT_RETICULUM_MAX_WIRE_JSON_BYTES}`,
+        error: `Reticulum chat wire ${bytes} bytes exceeds ${RT_RETICULUM_MAX_WIRE_JSON_BYTES}`,
       };
     }
     if (typeof this.bridge.sendReticulumChatDetailed !== 'function') {

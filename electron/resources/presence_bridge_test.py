@@ -178,13 +178,16 @@ class PresenceBridgeLandStateFastPathTest(unittest.TestCase):
     def state(self, sequence=1, signature=None):
         timestamp = int(time.time() * 1000)
         fields = {
+            "afk": True,
             "authorAddress": self.author,
             "direction": "r",
+            "dnd": True,
             "groupId": self.group_id,
             "movement": "walk",
             "roomId": "room",
             "sequence": sequence,
             "sessionId": self.session_id,
+            "skinId": 4,
             "timestamp": timestamp,
             "type": "QORTAL_LAND_STATE",
             "x": 50,
@@ -213,6 +216,8 @@ class PresenceBridgeLandStateFastPathTest(unittest.TestCase):
             "u": "room",
             "d": "r",
             "m": "walk",
+            "v": 3,
+            "i": 4,
             "ts": timestamp,
             "z": encoded_signature,
             "o": self.origin,
@@ -252,6 +257,8 @@ class PresenceBridgeLandStateFastPathTest(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         forwarded = json.loads(sent[0][1].decode("utf-8"))
         self.assertEqual(forwarded["o"], self.origin)
+        self.assertEqual(forwarded["v"], 3)
+        self.assertEqual(forwarded["i"], 4)
         self.assertTrue(emitted[0][1]["land_state_fast_forwarded"])
         self.assertEqual(emitted[0][1]["land_state_forwarding_revision"], 7)
 
