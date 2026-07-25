@@ -3,7 +3,7 @@ import GraphicEqRoundedIcon from '@mui/icons-material/GraphicEqRounded';
 import MicNoneRoundedIcon from '@mui/icons-material/MicNoneRounded';
 import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
-import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
+import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
 import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
 import {
   Avatar,
@@ -14,11 +14,16 @@ import {
   Popover,
   Select,
   Slider,
+  Tooltip,
   Typography,
   alpha,
 } from '@mui/material';
-import { useEffect, useState } from 'react';
-import type { ProximityPeer, ProximityVoiceMode, ProximityVoiceState } from './useQortalLandProximityVoice';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type {
+  ProximityPeer,
+  ProximityVoiceMode,
+  ProximityVoiceState,
+} from './useQortalLandProximityVoice';
 
 type Props = {
   state: ProximityVoiceState;
@@ -40,6 +45,10 @@ type Props = {
   onOutputDevice: (deviceId: string) => void;
   onMasterVolume: (volume: number) => void;
   onPeerPolicy: (address: string, muted: boolean, volume: number) => void;
+  availableVoiceAddresses?: string[];
+  openRequest?: number;
+  focusAddress?: string;
+  onPresenceChange?: (enabled: boolean, muted: boolean) => void;
 };
 
 type VoicePopoverPosition = {
@@ -47,8 +56,7 @@ type VoicePopoverPosition = {
   top: number;
 };
 
-const PROXIMITY_VOICE_PANEL_WIDTH = 340;
-
+const PROXIMITY_VOICE_PANEL_WIDTH = 680;
 const inactiveStates = new Set<ProximityVoiceState>([
   'off',
   'unavailable',
@@ -68,7 +76,18 @@ const panelSx = {
 const initialsForName = (name: string) => {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return '?';
-  return parts.slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('');
+  return parts
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('');
+};
+
+const distanceLabel = (peer: ProximityPeer) => {
+  const distance = peer.distance;
+  if (distance == null) return { label: 'Nearby', color: '#91a0b6' };
+  if (distance <= 180) return { label: 'Near', color: '#32d99c' };
+  if (distance <= 420) return { label: 'Medium', color: '#ffc857' };
+  return { label: 'Far', color: '#7f8ca0' };
 };
 
 export function ProximityVoiceControl(props: Props) {
@@ -89,59 +108,136 @@ export function ProximityVoiceControl(props: Props) {
     onInputDevice,
     onOutputDevice,
     onMasterVolume,
+    onPeerPolicy,
+    availableVoiceAddresses = [],
+    openRequest = 0,
+    focusAddress = '',
+    onPresenceChange,
   } = props;
-  const [popoverPosition, setPopoverPosition] = useState<VoicePopoverPosition | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const handledOpenRequestRef = useRef(openRequest);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const peerRowRefs = useRef(new Map<string, HTMLDivElement>());
+  const [popoverPosition, setPopoverPosition] =
+    useState<VoicePopoverPosition | null>(null);
   const [pausedByUser, setPausedByUser] = useState(false);
+  const [sessionStarted, setSessionStarted] = useState(false);
+  const [focusedAddress, setFocusedAddress] = useState('');
   const active = !inactiveStates.has(state);
-  const microphoneMuted = pausedByUser;
-  const voiceActive = active && !pausedByUser && mode === 'open-mic';
-  const hasVoiceSession = active || pausedByUser;
   const busy = state === 'authorizing' || state === 'reconnecting';
+  const hasVoiceSession = sessionStarted || active || pausedByUser;
+  const voiceConnected = active && !pausedByUser;
+  const nearbyPeers = peers.filter((peer) => peer.state !== 'left');
+  const nearbyVoiceCount = new Set([
+    ...availableVoiceAddresses,
+    ...nearbyPeers.map((peer) => peer.address),
+  ]).size;
+
   const deviceSelectSx = {
-    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    backgroundColor: 'rgba(255, 255, 255, 0.045)',
     color: '#edf4ff',
-    marginTop: 0.8,
-    '& .MuiSelect-icon': {
-      color: 'rgba(226, 235, 248, 0.78)',
-    },
+    height: 38,
+    width: '100%',
+    '& .MuiSelect-icon': { color: 'rgba(226, 235, 248, 0.78)' },
     '& .MuiSelect-select': {
       alignItems: 'center',
       color: '#edf4ff',
       display: 'flex',
-      fontSize: 12,
+      fontSize: 11.5,
+      paddingY: 0.8,
     },
     '& .MuiOutlinedInput-notchedOutline': {
-      borderColor: 'rgba(184, 201, 224, 0.28)',
+      borderColor: 'rgba(184, 201, 224, 0.23)',
     },
     '&:hover .MuiOutlinedInput-notchedOutline': {
-      borderColor: 'rgba(44, 248, 255, 0.5)',
+      borderColor: 'rgba(44, 248, 255, 0.48)',
     },
     '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
       borderColor: '#2cf8ff',
     },
   } as const;
 
-  const close = () => {
-    setPopoverPosition(null);
-    setSettingsOpen(false);
-  };
+  const openPanel = useCallback(() => {
+    const trigger = buttonRef.current;
+    const chatPanel = trigger?.closest<HTMLElement>(
+      '[data-qortalland-chat-panel="true"]'
+    );
+    const bounds = (chatPanel ?? trigger)?.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const desiredWidth = Math.min(
+      PROXIMITY_VOICE_PANEL_WIDTH,
+      viewportWidth - 24
+    );
+    const left = bounds
+      ? Math.max(12, Math.min(bounds.left, viewportWidth - desiredWidth - 12))
+      : 12;
+    const top = bounds ? Math.max(12, bounds.top - 10) : 12;
+    setPopoverPosition({ left, top });
+  }, []);
+
+  useEffect(() => {
+    if (openRequest === handledOpenRequestRef.current) return;
+    handledOpenRequestRef.current = openRequest;
+    openPanel();
+    setFocusedAddress(focusAddress);
+    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    if (focusAddress) {
+      window.setTimeout(() => {
+        peerRowRefs.current
+          .get(focusAddress)
+          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }, 60);
+      focusTimerRef.current = setTimeout(() => {
+        setFocusedAddress((current) =>
+          current === focusAddress ? '' : current
+        );
+      }, 1800);
+    }
+  }, [focusAddress, openPanel, openRequest]);
+
+  useEffect(
+    () => () => {
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (active) setSessionStarted(true);
+  }, [active]);
+
+  useEffect(() => {
+    if (
+      !pausedByUser &&
+      (state === 'permission-denied' || state === 'unavailable')
+    ) {
+      setSessionStarted(false);
+    }
+  }, [pausedByUser, state]);
+
+  useEffect(() => {
+    onPresenceChange?.(hasVoiceSession, hasVoiceSession && pausedByUser);
+  }, [hasVoiceSession, onPresenceChange, pausedByUser]);
 
   useEffect(() => {
     if (!popoverPosition) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setPopoverPosition(null);
-      setSettingsOpen(false);
+      if (event.key === 'Escape') setPopoverPosition(null);
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [popoverPosition]);
 
   const enableVoice = async () => {
+    setSessionStarted(true);
     onMode('open-mic');
-    await onEnable();
-    setPausedByUser(false);
+    try {
+      await onEnable();
+      setPausedByUser(false);
+    } catch (cause) {
+      setSessionStarted(false);
+      throw cause;
+    }
   };
 
   const toggleMute = async () => {
@@ -151,7 +247,6 @@ export function ProximityVoiceControl(props: Props) {
       setPausedByUser(false);
       return;
     }
-
     setPausedByUser(true);
     try {
       await onDisable();
@@ -161,51 +256,109 @@ export function ProximityVoiceControl(props: Props) {
     }
   };
 
+  const voiceTooltip = hasVoiceSession || nearbyVoiceCount > 0
+    ? `Proximity Voice\n${nearbyVoiceCount} player${
+        nearbyVoiceCount === 1 ? '' : 's'
+      } nearby`
+    : 'Proximity Voice\nVoice is off';
+
   return (
     <>
-      <IconButton
-        aria-label="Proximity voice"
-        aria-haspopup="dialog"
-        aria-expanded={Boolean(popoverPosition)}
-        onClick={(event) => {
-          const chatPanel = event.currentTarget.closest<HTMLElement>('[data-qortalland-chat-panel="true"]');
-          const bounds = (chatPanel ?? event.currentTarget).getBoundingClientRect();
-          setPopoverPosition({
-            left: Math.max(12, bounds.right - PROXIMITY_VOICE_PANEL_WIDTH),
-            top: Math.max(12, bounds.top - 10),
-          });
-        }}
-        size="small"
-        sx={{
-          backgroundColor: voiceActive ? 'rgba(44, 248, 255, 0.1)' : 'transparent',
-          border: `1px solid ${alpha('#2cf8ff', popoverPosition || voiceActive ? 0.48 : 0.18)}`,
-          borderRadius: '50%',
-          boxShadow: voiceActive ? '0 0 11px rgba(44, 248, 255, 0.22)' : 'none',
-          color: transmitting ? '#4dffb8' : voiceActive ? '#2cf8ff' : 'rgba(220, 232, 242, 0.58)',
-          height: 31,
-          padding: 0,
-          transition: 'background-color 160ms ease, border-color 160ms ease, color 160ms ease, filter 160ms ease',
-          width: 31,
-          '&:hover': {
-            backgroundColor: 'rgba(44, 248, 255, 0.1)',
-            borderColor: 'rgba(44, 248, 255, 0.58)',
-            color: '#72fbff',
-            filter: 'drop-shadow(0 0 6px rgba(44, 248, 255, 0.36))',
-          },
-        }}
+      <Tooltip
+        arrow
+        placement="top"
+        title={
+          <Box>
+            {voiceTooltip.split('\n').map((line) => (
+              <Typography
+                key={line}
+                sx={{ fontSize: 11.5, lineHeight: 1.45 }}
+              >
+                {line}
+              </Typography>
+            ))}
+          </Box>
+        }
       >
-        {transmitting ? (
-          <GraphicEqRoundedIcon sx={{ fontSize: 19 }} />
-        ) : (
-          <MicNoneRoundedIcon sx={{ fontSize: 19 }} />
-        )}
-      </IconButton>
+        <Box sx={{ display: 'inline-flex', position: 'relative' }}>
+          <IconButton
+            ref={buttonRef}
+            aria-label={`Proximity Voice, ${nearbyVoiceCount} nearby`}
+            aria-haspopup="dialog"
+            aria-expanded={Boolean(popoverPosition)}
+            onClick={openPanel}
+            size="small"
+            sx={{
+              backgroundColor: voiceConnected
+                ? 'rgba(44, 248, 255, 0.1)'
+                : 'transparent',
+              border: `1px solid ${alpha(
+                '#2cf8ff',
+                popoverPosition || voiceConnected ? 0.48 : 0.18
+              )}`,
+              borderRadius: '50%',
+              boxShadow: voiceConnected
+                ? '0 0 11px rgba(44, 248, 255, 0.22)'
+                : 'none',
+              color: transmitting
+                ? '#4dffb8'
+                : pausedByUser
+                  ? '#8d98aa'
+                  : voiceConnected
+                    ? '#2cf8ff'
+                    : 'rgba(220, 232, 242, 0.58)',
+              height: 31,
+              padding: 0,
+              width: 31,
+              '&:hover': {
+                backgroundColor: 'rgba(44, 248, 255, 0.1)',
+                borderColor: 'rgba(44, 248, 255, 0.58)',
+                color: '#72fbff',
+              },
+            }}
+          >
+            {pausedByUser ? (
+              <MicOffRoundedIcon sx={{ fontSize: 18 }} />
+            ) : transmitting ? (
+              <GraphicEqRoundedIcon sx={{ fontSize: 19 }} />
+            ) : (
+              <MicNoneRoundedIcon sx={{ fontSize: 19 }} />
+            )}
+          </IconButton>
+          {nearbyVoiceCount > 0 && (
+            <Box
+              aria-hidden="true"
+              sx={{
+                alignItems: 'center',
+                backgroundColor: '#16d7df',
+                border: '2px solid rgba(5, 12, 22, 0.96)',
+                borderRadius: 999,
+                color: '#031118',
+                display: 'flex',
+                fontSize: 9,
+                fontWeight: 900,
+                height: 15,
+                justifyContent: 'center',
+                minWidth: 15,
+                padding: '0 3px',
+                pointerEvents: 'none',
+                position: 'absolute',
+                right: -6,
+                top: -6,
+                zIndex: 2,
+              }}
+            >
+              {nearbyVoiceCount > 9 ? '9+' : nearbyVoiceCount}
+            </Box>
+          )}
+        </Box>
+      </Tooltip>
 
       <Popover
         anchorPosition={popoverPosition ?? { left: 12, top: 12 }}
         anchorReference="anchorPosition"
         open={Boolean(popoverPosition)}
-        onClose={close}
+        onClose={() => setPopoverPosition(null)}
         transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         slotProps={{
           paper: {
@@ -223,28 +376,36 @@ export function ProximityVoiceControl(props: Props) {
           role="dialog"
           aria-label="Proximity voice"
           sx={{
-            display: 'block',
-            maxWidth: '100%',
-            position: 'relative',
-            width: PROXIMITY_VOICE_PANEL_WIDTH,
+            ...panelSx,
+            display: 'grid',
+            gridTemplateColumns: {
+              xs: 'minmax(0, 1fr)',
+              sm: '270px minmax(320px, 1fr)',
+            },
+            maxWidth: 'calc(100vw - 24px)',
+            overflow: 'hidden',
+            width: {
+              xs: 'min(430px, calc(100vw - 24px))',
+              sm: PROXIMITY_VOICE_PANEL_WIDTH,
+            },
           }}
         >
           <Box
             sx={{
-              ...panelSx,
-              flex: `0 0 ${PROXIMITY_VOICE_PANEL_WIDTH}px`,
-              overflow: 'hidden',
-              width: PROXIMITY_VOICE_PANEL_WIDTH,
+              borderRight: {
+                xs: 'none',
+                sm: '1px solid rgba(255, 255, 255, 0.09)',
+              },
+              padding: '16px',
             }}
           >
             <Box
               sx={{
                 alignItems: 'center',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.09)',
                 display: 'grid',
-                gap: 1.15,
-                gridTemplateColumns: '44px minmax(0, 1fr) 32px',
-                padding: '16px 18px 15px',
+                gap: 1.1,
+                gridTemplateColumns: '40px minmax(0, 1fr)',
+                marginBottom: 1.5,
               }}
             >
               <Box
@@ -252,276 +413,410 @@ export function ProximityVoiceControl(props: Props) {
                   alignItems: 'center',
                   backgroundColor: 'rgba(44, 248, 255, 0.08)',
                   borderRadius: '50%',
-                  color: '#2cf8ff',
+                  color: transmitting ? '#4dffb8' : '#2cf8ff',
                   display: 'flex',
-                  height: 42,
+                  height: 38,
                   justifyContent: 'center',
-                  width: 42,
+                  width: 38,
                 }}
               >
-                <MicNoneRoundedIcon sx={{ fontSize: 25 }} />
-              </Box>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography sx={{ fontSize: 16, fontWeight: 800, lineHeight: 1.2 }}>
-                  Proximity voice
-                </Typography>
-                {hasVoiceSession ? (
-                  <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.75, marginTop: 0.55 }}>
-                    <Box
-                      sx={{
-                        backgroundColor: busy ? '#ffc857' : microphoneMuted ? '#8995a8' : '#32d99c',
-                        borderRadius: '50%',
-                        height: 9,
-                        width: 9,
-                      }}
-                    />
-                    <Typography sx={{ color: busy ? '#ffc857' : microphoneMuted ? 'text.secondary' : '#2cf8ff', fontSize: 11.5 }}>
-                      {busy ? 'Connecting voice' : microphoneMuted ? 'Voice paused' : 'Voice active'}
-                    </Typography>
-                  </Box>
+                {pausedByUser ? (
+                  <MicOffRoundedIcon sx={{ fontSize: 22 }} />
+                ) : transmitting ? (
+                  <GraphicEqRoundedIcon sx={{ fontSize: 23 }} />
                 ) : (
-                  <Typography sx={{ color: 'rgba(205, 214, 229, 0.68)', fontSize: 11.5, marginTop: 0.4 }}>
-                    Talk with players near you.
-                  </Typography>
+                  <MicNoneRoundedIcon sx={{ fontSize: 23 }} />
                 )}
               </Box>
-              <IconButton
-                aria-label="Open voice settings"
-                onClick={() => setSettingsOpen((open) => !open)}
+              <Box>
+                <Typography sx={{ fontSize: 15, fontWeight: 800 }}>
+                  Proximity voice
+                </Typography>
+                <Typography
+                  sx={{
+                    color: voiceConnected
+                      ? '#2cf8ff'
+                      : 'rgba(205, 214, 229, 0.64)',
+                    fontSize: 11,
+                    marginTop: 0.2,
+                  }}
+                >
+                  {busy
+                    ? 'Connecting voice'
+                    : pausedByUser
+                      ? 'Voice muted'
+                      : voiceConnected
+                        ? 'Talk with players near you.'
+                        : 'Voice is off'}
+                </Typography>
+              </Box>
+            </Box>
+
+            {!hasVoiceSession ? (
+              <Button
+                disabled={busy}
+                fullWidth
+                onClick={() => void enableVoice().catch(() => {})}
+                startIcon={<MicNoneRoundedIcon />}
                 sx={{
-                  color: settingsOpen ? '#2cf8ff' : 'rgba(216, 225, 239, 0.72)',
-                  '&:hover': { backgroundColor: 'rgba(44, 248, 255, 0.09)', color: '#2cf8ff' },
+                  background: 'linear-gradient(100deg, #13cde1, #25eef0)',
+                  borderRadius: '8px',
+                  color: '#041019',
+                  fontSize: 12.5,
+                  fontWeight: 800,
+                  height: 40,
+                  textTransform: 'none',
+                  '&:hover': {
+                    background:
+                      'linear-gradient(100deg, #20d9e9, #48f7f5)',
+                  },
                 }}
               >
-                <SettingsRoundedIcon sx={{ fontSize: 22 }} />
+                Enable voice
+              </Button>
+            ) : (
+              <Button
+                disabled={busy}
+                fullWidth
+                onClick={() => void toggleMute().catch(() => {})}
+                startIcon={
+                  pausedByUser ? (
+                    <MicNoneRoundedIcon />
+                  ) : (
+                    <MicOffRoundedIcon />
+                  )
+                }
+                sx={{
+                  border: '1px solid rgba(188, 204, 226, 0.26)',
+                  borderRadius: '8px',
+                  color: '#2cf8ff',
+                  fontSize: 12.5,
+                  fontWeight: 800,
+                  height: 40,
+                  textTransform: 'none',
+                  '&:hover': {
+                    backgroundColor: 'rgba(44, 248, 255, 0.07)',
+                    borderColor: 'rgba(44, 248, 255, 0.46)',
+                  },
+                }}
+              >
+                {pausedByUser ? 'Unmute microphone' : 'Mute microphone'}
+              </Button>
+            )}
+
+            <Typography
+              sx={{
+                color: 'rgba(174, 189, 211, 0.64)',
+                fontSize: 9.5,
+                fontWeight: 800,
+                letterSpacing: '0.08em',
+                marginTop: 1.45,
+                textTransform: 'uppercase',
+              }}
+            >
+              Output
+            </Typography>
+            <Select
+              displayEmpty
+              onChange={(event) => onOutputDevice(String(event.target.value))}
+              size="small"
+              sx={deviceSelectSx}
+              value={outputDeviceId}
+            >
+              <MenuItem value="">System default</MenuItem>
+              {devices
+                .filter((device) => device.kind === 'audiooutput')
+                .map((device) => (
+                  <MenuItem key={device.deviceId} value={device.deviceId}>
+                    {device.label || 'Speaker'}
+                  </MenuItem>
+                ))}
+            </Select>
+
+            <Typography
+              sx={{
+                color: 'rgba(174, 189, 211, 0.64)',
+                fontSize: 9.5,
+                fontWeight: 800,
+                letterSpacing: '0.08em',
+                marginTop: 1.15,
+                textTransform: 'uppercase',
+              }}
+            >
+              Microphone
+            </Typography>
+            <Select
+              displayEmpty
+              onChange={(event) => onInputDevice(String(event.target.value))}
+              size="small"
+              sx={deviceSelectSx}
+              value={inputDeviceId}
+            >
+              <MenuItem value="">System default</MenuItem>
+              {devices
+                .filter((device) => device.kind === 'audioinput')
+                .map((device) => (
+                  <MenuItem key={device.deviceId} value={device.deviceId}>
+                    {device.label || 'Microphone'}
+                  </MenuItem>
+                ))}
+            </Select>
+
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'grid',
+                gap: 1,
+                gridTemplateColumns: '20px 1fr 34px',
+                marginTop: 1.35,
+              }}
+            >
+              <VolumeUpRoundedIcon
+                sx={{ color: 'rgba(224, 233, 245, 0.72)', fontSize: 18 }}
+              />
+              <Slider
+                aria-label="Proximity voice volume"
+                max={1}
+                min={0}
+                onChange={(_event, value) =>
+                  onMasterVolume(Array.isArray(value) ? value[0] : value)
+                }
+                size="small"
+                step={0.01}
+                value={masterVolume}
+              />
+              <Typography
+                sx={{
+                  color: 'rgba(208, 219, 235, 0.72)',
+                  fontSize: 10.5,
+                  textAlign: 'right',
+                }}
+              >
+                {Math.round(masterVolume * 100)}%
+              </Typography>
+            </Box>
+            {error && (
+              <Typography sx={{ color: '#ff7a8d', fontSize: 10.5, mt: 0.7 }}>
+                {error}
+              </Typography>
+            )}
+          </Box>
+
+          <Box sx={{ minWidth: 0, padding: '15px 14px 14px' }}>
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginBottom: 1,
+              }}
+            >
+              <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.75 }}>
+                <PeopleAltRoundedIcon
+                  sx={{ color: 'rgba(190, 204, 225, 0.62)', fontSize: 17 }}
+                />
+                <Typography
+                  sx={{
+                    color: 'rgba(190, 204, 225, 0.7)',
+                    fontSize: 10,
+                    fontWeight: 800,
+                    letterSpacing: '0.07em',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  Nearby on voice · {nearbyVoiceCount}
+                </Typography>
+              </Box>
+              <IconButton
+                aria-label="Close proximity voice"
+                onClick={() => setPopoverPosition(null)}
+                size="small"
+                sx={{
+                  color: 'rgba(210, 221, 238, 0.62)',
+                  '&:hover': {
+                    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                    color: '#fff',
+                  },
+                }}
+              >
+                <CloseRoundedIcon sx={{ fontSize: 18 }} />
               </IconButton>
             </Box>
 
-            <Box sx={{ padding: '15px 18px 17px' }}>
-              {!active && !pausedByUser ? (
-                <Button
-                  aria-label="Enable proximity voice"
-                  disabled={busy}
-                  fullWidth
-                  onClick={() => void enableVoice().catch(() => {})}
-                  startIcon={<MicNoneRoundedIcon />}
-                  sx={{
-                    background: 'linear-gradient(100deg, #13cde1, #25eef0)',
-                    borderRadius: '9px',
-                    color: '#041019',
-                    fontSize: 13,
-                    fontWeight: 800,
-                    height: 44,
-                    textTransform: 'none',
-                    '&:hover': {
-                      background: 'linear-gradient(100deg, #24dff0, #53f7f2)',
-                      boxShadow: '0 0 20px rgba(44, 248, 255, 0.24)',
-                    },
-                  }}
-                >
-                  Enable voice
-                </Button>
-              ) : (
-                <Button
-                  aria-label={microphoneMuted ? 'Unmute microphone' : 'Mute microphone'}
-                  disabled={busy}
-                  fullWidth
-                  onClick={() => void toggleMute().catch(() => {})}
-                  startIcon={microphoneMuted ? <MicNoneRoundedIcon /> : <MicOffRoundedIcon />}
-                  variant="outlined"
-                  sx={{
-                    borderColor: 'rgba(213, 225, 241, 0.28)',
-                    borderRadius: '9px',
-                    color: '#2cf8ff',
-                    fontSize: 13,
-                    fontWeight: 700,
-                    height: 44,
-                    textTransform: 'none',
-                    '&:hover': {
-                      backgroundColor: 'rgba(44, 248, 255, 0.07)',
-                      borderColor: 'rgba(44, 248, 255, 0.48)',
-                    },
-                  }}
-                >
-                  {microphoneMuted ? 'Unmute microphone' : 'Mute microphone'}
-                </Button>
-              )}
-
-              {error && (
-                <Typography role="alert" sx={{ color: 'error.light', fontSize: 11, marginTop: 1.25 }}>
-                  {error}
-                </Typography>
-              )}
-
-              <Typography
-                sx={{
-                  color: 'rgba(191, 203, 222, 0.62)',
-                  fontSize: 11,
-                  fontWeight: 800,
-                  letterSpacing: '.11em',
-                  marginTop: 2.2,
-                  textTransform: 'uppercase',
-                }}
-              >
-                Nearby
-              </Typography>
+            {nearbyPeers.length === 0 ? (
               <Box
                 sx={{
-                  marginTop: 1.15,
-                  maxHeight: 144,
-                  overflowY: peers.length > 3 ? 'auto' : 'hidden',
-                  paddingRight: peers.length > 3 ? 0.75 : 0,
-                  scrollbarColor: 'rgba(44, 248, 255, 0.5) transparent',
+                  alignItems: 'center',
+                  color: 'rgba(180, 194, 215, 0.56)',
+                  display: 'flex',
+                  gap: 1,
+                  justifyContent: 'center',
+                  minHeight: 150,
+                }}
+              >
+                <PeopleAltRoundedIcon sx={{ fontSize: 18 }} />
+                <Typography sx={{ fontSize: 11.5 }}>
+                  {nearbyVoiceCount > 0
+                    ? `${nearbyVoiceCount} player${
+                        nearbyVoiceCount === 1 ? '' : 's'
+                      } available`
+                    : 'Nobody nearby'}
+                </Typography>
+              </Box>
+            ) : (
+              <Box
+                sx={{
+                  maxHeight: 198,
+                  overflowY: nearbyPeers.length > 3 ? 'auto' : 'hidden',
+                  paddingRight: nearbyPeers.length > 3 ? 0.5 : 0,
+                  scrollbarColor: 'rgba(44, 248, 255, 0.35) transparent',
                   scrollbarWidth: 'thin',
                 }}
               >
-                {peers.length === 0 ? (
-                  <Box sx={{ alignItems: 'center', color: 'rgba(191, 203, 222, 0.58)', display: 'flex', gap: 1.1, minHeight: 38 }}>
-                    <PeopleAltRoundedIcon sx={{ fontSize: 20 }} />
-                    <Typography sx={{ fontSize: 11.5 }}>Nobody nearby</Typography>
-                  </Box>
-                ) : (
-                  peers.map((peer) => {
-                    const name = resolveName(peer.address);
-                    return (
-                      <Box
-                        key={peer.address}
+                {nearbyPeers.map((peer) => {
+                  const name = resolveName(peer.address);
+                  const range = distanceLabel(peer);
+                  return (
+                    <Box
+                      key={peer.address}
+                      ref={(node: HTMLDivElement | null) => {
+                        if (node) peerRowRefs.current.set(peer.address, node);
+                        else peerRowRefs.current.delete(peer.address);
+                      }}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor:
+                          focusedAddress === peer.address
+                            ? 'rgba(44, 248, 255, 0.09)'
+                            : 'transparent',
+                        borderBottom:
+                          '1px solid rgba(255, 255, 255, 0.065)',
+                        borderRadius: '8px',
+                        display: 'grid',
+                        gap: 1,
+                        gridTemplateColumns:
+                          '38px minmax(80px, 1fr) 58px 20px 92px 30px',
+                        minHeight: 64,
+                        padding: '7px 4px',
+                        transition: 'background-color 160ms ease',
+                      }}
+                    >
+                      <Avatar
                         sx={{
-                          alignItems: 'center',
-                          display: 'grid',
-                          gap: 1.15,
-                          gridTemplateColumns: '42px minmax(0, 1fr)',
-                          minHeight: 48,
+                          bgcolor: 'rgba(44, 248, 255, 0.1)',
+                          border: `1px solid ${
+                            peer.speaking
+                              ? '#32d99c'
+                              : 'rgba(44, 248, 255, 0.28)'
+                          }`,
+                          fontSize: 12,
+                          height: 34,
+                          width: 34,
                         }}
                       >
-                        <Box sx={{ position: 'relative' }}>
-                          <Avatar
-                            sx={{
-                              background: 'linear-gradient(145deg, rgba(44,248,255,.26), rgba(255,43,214,.3))',
-                              border: '1px solid rgba(44, 248, 255, 0.42)',
-                              fontSize: 13,
-                              fontWeight: 800,
-                              height: 34,
-                              width: 34,
-                            }}
-                          >
-                            {initialsForName(name)}
-                          </Avatar>
+                        {initialsForName(name)}
+                      </Avatar>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          noWrap
+                          sx={{ fontSize: 12, fontWeight: 750 }}
+                        >
+                          {name}
+                        </Typography>
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 0.55,
+                            marginTop: 0.2,
+                          }}
+                        >
                           <Box
                             sx={{
-                              backgroundColor: peer.audible ? '#32d99c' : '#738096',
-                              border: '2px solid #071321',
+                              backgroundColor: peer.speaking
+                                ? '#32d99c'
+                                : '#2cf8ff',
                               borderRadius: '50%',
-                              bottom: -1,
-                              height: 11,
-                              position: 'absolute',
-                              right: 1,
-                              width: 11,
+                              height: 6,
+                              width: 6,
                             }}
                           />
-                        </Box>
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography noWrap sx={{ color: peer.speaking ? '#4dffb8' : '#f8fbff', fontSize: 12.5, fontWeight: 700 }}>
-                            {name}
-                          </Typography>
-                          <Typography sx={{ color: 'rgba(191, 203, 222, 0.58)', fontSize: 10 }}>
-                            Near you
+                          <Typography
+                            sx={{
+                              color: peer.speaking
+                                ? '#32d99c'
+                                : 'rgba(192, 205, 224, 0.66)',
+                              fontSize: 9.5,
+                            }}
+                          >
+                            {peer.speaking ? 'Speaking' : 'On voice'}
                           </Typography>
                         </Box>
                       </Box>
-                    );
-                  })
-                )}
+                      <Typography
+                        sx={{
+                          color: range.color,
+                          fontSize: 10,
+                          textAlign: 'right',
+                        }}
+                      >
+                        {range.label}
+                      </Typography>
+                      <VolumeUpRoundedIcon
+                        sx={{
+                          color: 'rgba(214, 224, 239, 0.64)',
+                          fontSize: 17,
+                        }}
+                      />
+                      <Slider
+                        aria-label={`${name} volume`}
+                        max={1}
+                        min={0}
+                        onChange={(_event, value) =>
+                          onPeerPolicy(
+                            peer.address,
+                            peer.muted,
+                            Array.isArray(value) ? value[0] : value
+                          )
+                        }
+                        size="small"
+                        step={0.01}
+                        value={peer.volume}
+                      />
+                      <Tooltip
+                        title={peer.muted ? 'Unmute player' : 'Mute player'}
+                      >
+                        <IconButton
+                          aria-label={
+                            peer.muted ? `Unmute ${name}` : `Mute ${name}`
+                          }
+                          onClick={() =>
+                            onPeerPolicy(
+                              peer.address,
+                              !peer.muted,
+                              peer.volume
+                            )
+                          }
+                          size="small"
+                          sx={{
+                            color: peer.muted
+                              ? '#ff8092'
+                              : 'rgba(205, 216, 232, 0.62)',
+                          }}
+                        >
+                          {peer.muted ? (
+                            <VolumeOffRoundedIcon sx={{ fontSize: 17 }} />
+                          ) : (
+                            <MicOffRoundedIcon sx={{ fontSize: 17 }} />
+                          )}
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
+                  );
+                })}
               </Box>
-            </Box>
+            )}
           </Box>
-
-          {settingsOpen && (
-            <Box
-              aria-label="Voice settings"
-              sx={{
-                ...panelSx,
-                left: `calc(100% + 12px)`,
-                padding: '20px',
-                position: 'absolute',
-                top: 0,
-                width: 300,
-              }}
-            >
-              <Box sx={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between', marginBottom: 2.2 }}>
-                <Typography sx={{ fontSize: 16, fontWeight: 800 }}>Voice settings</Typography>
-                <IconButton
-                  aria-label="Close voice settings"
-                  onClick={() => setSettingsOpen(false)}
-                  size="small"
-                  sx={{ color: 'rgba(216, 225, 239, 0.7)' }}
-                >
-                  <CloseRoundedIcon sx={{ fontSize: 20 }} />
-                </IconButton>
-              </Box>
-
-              <Typography sx={{ color: 'rgba(191, 203, 222, 0.58)', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
-                Microphone
-              </Typography>
-              <Select
-                aria-label="Proximity microphone"
-                displayEmpty
-                fullWidth
-                inputProps={{ 'aria-label': 'Proximity microphone' }}
-                size="small"
-                value={inputDeviceId}
-                onChange={(event) => onInputDevice(event.target.value)}
-                sx={{ ...deviceSelectSx, marginBottom: 2 }}
-              >
-                <MenuItem value="">System default</MenuItem>
-                {devices.filter((device) => device.kind === 'audioinput').map((device, index) => (
-                  <MenuItem key={device.deviceId} value={device.deviceId}>{device.label || `Microphone ${index + 1}`}</MenuItem>
-                ))}
-              </Select>
-
-              <Typography sx={{ color: 'rgba(191, 203, 222, 0.58)', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
-                Speaker
-              </Typography>
-              <Select
-                aria-label="Proximity speaker"
-                displayEmpty
-                fullWidth
-                inputProps={{ 'aria-label': 'Proximity speaker' }}
-                size="small"
-                value={outputDeviceId}
-                onChange={(event) => onOutputDevice(event.target.value)}
-                sx={{ ...deviceSelectSx, marginBottom: 2.25 }}
-              >
-                <MenuItem value="">System default</MenuItem>
-                {devices.filter((device) => device.kind === 'audiooutput').map((device, index) => (
-                  <MenuItem key={device.deviceId} value={device.deviceId}>{device.label || `Speaker ${index + 1}`}</MenuItem>
-                ))}
-              </Select>
-
-              <Typography sx={{ color: 'rgba(191, 203, 222, 0.58)', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase' }}>
-                Voice volume
-              </Typography>
-              <Box sx={{ alignItems: 'center', display: 'grid', gap: 1, gridTemplateColumns: '24px 1fr 38px', marginTop: 1.3 }}>
-                <VolumeUpRoundedIcon sx={{ color: 'rgba(216, 225, 239, 0.72)', fontSize: 20 }} />
-                <Slider
-                  aria-label="Proximity master volume"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={Math.min(1, masterVolume)}
-                  onChange={(_, value) => onMasterVolume(Number(value))}
-                  size="small"
-                  sx={{ color: '#2cf8ff' }}
-                />
-                <Typography sx={{ color: 'rgba(216, 225, 239, 0.72)', fontSize: 12, textAlign: 'right' }}>
-                  {Math.round(masterVolume * 100)}%
-                </Typography>
-              </Box>
-              <Typography sx={{ color: 'rgba(191, 203, 222, 0.5)', fontSize: 11, lineHeight: 1.5, marginTop: 1.1 }}>
-                Adjust how loud nearby players sound.
-              </Typography>
-            </Box>
-          )}
         </Box>
       </Popover>
     </>

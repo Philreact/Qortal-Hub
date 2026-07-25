@@ -11673,7 +11673,7 @@ def _land_state_verification_fields(message: Dict[str, Any]) -> Optional[Tuple[T
         isinstance(availability, bool)
         or not isinstance(availability, int)
         or availability < 0
-        or availability > 3
+        or availability > 15
         or isinstance(skin_id, bool)
         or not isinstance(skin_id, int)
         or skin_id < 1
@@ -11711,6 +11711,9 @@ def _land_state_verification_fields(message: Dict[str, Any]) -> Optional[Tuple[T
         "x": x,
         "y": y,
     }
+    if availability & 12:
+        signed_fields["voiceEnabled"] = bool(availability & 4)
+        signed_fields["voiceMuted"] = bool(availability & 8)
     signed_bytes = json.dumps(
         signed_fields,
         ensure_ascii=False,

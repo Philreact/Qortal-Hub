@@ -79,6 +79,8 @@ type LandPlayerState = {
   velocityY: number;
   afk: boolean;
   dnd: boolean;
+  voiceEnabled: boolean;
+  voiceMuted: boolean;
   skinId: QortalLandSkinId;
 };
 
@@ -90,6 +92,8 @@ type LocalLandState = {
   movement: string;
   afk: boolean;
   dnd: boolean;
+  voiceEnabled: boolean;
+  voiceMuted: boolean;
   skinId: QortalLandSkinId;
 };
 
@@ -2795,6 +2799,7 @@ export function QortalLand({
   const landCallPresenceRef = useRef<Map<string, LandCallPresence>>(new Map());
   const landGamePresenceRef = useRef<Map<string, LandGamePresence>>(new Map());
   const proximitySpeakingAddressesRef = useRef<Set<string>>(new Set());
+  const proximityVoicePanelRequestRef = useRef(0);
   const landCallPeerPublicKeysRef = useRef<Map<string, string>>(new Map());
   const landCallPeersRef = useRef<Map<string, { peerAddress: string; chatId: string }>>(new Map());
   const landCallListenersRef = useRef<Set<(event: string, payload: unknown) => void>>(new Set());
@@ -2821,6 +2826,8 @@ export function QortalLand({
     movement: 'idle',
     afk: false,
     dnd: false,
+    voiceEnabled: false,
+    voiceMuted: false,
     skinId: initialSkinIdRef.current,
   });
   const lastSentRef = useRef<LocalLandState & { sentAt: number }>({
@@ -2840,6 +2847,8 @@ export function QortalLand({
   const [loadingRoomAssets, setLoadingRoomAssets] = useState<LandRoomId | null>(null);
   const [isLandAfk, setIsLandAfk] = useState(false);
   const [isLandDnd, setIsLandDnd] = useState(false);
+  const [proximityVoicePanelRequest, setProximityVoicePanelRequest] = useState(0);
+  const [proximityVoicePanelTarget, setProximityVoicePanelTarget] = useState('');
   const [chatText, setChatText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -2921,6 +2930,8 @@ export function QortalLand({
         roomId: string;
         afk: boolean;
         dnd: boolean;
+        voiceEnabled: boolean;
+        voiceMuted: boolean;
         lastSeenAt: number;
       }
     >();
@@ -2930,6 +2941,8 @@ export function QortalLand({
         roomId: localStateRef.current.roomId,
         afk: localStateRef.current.afk,
         dnd: localStateRef.current.dnd,
+        voiceEnabled: localStateRef.current.voiceEnabled,
+        voiceMuted: localStateRef.current.voiceMuted,
         lastSeenAt: Date.now(),
       });
     }
@@ -2941,6 +2954,8 @@ export function QortalLand({
           roomId: player.roomId,
           afk: player.afk,
           dnd: player.dnd,
+          voiceEnabled: player.voiceEnabled,
+          voiceMuted: player.voiceMuted,
           lastSeenAt: player.lastSeenAt,
         });
       }
@@ -2973,6 +2988,27 @@ export function QortalLand({
     }
   }, [setLocalLandAvailability]);
 
+  const setLocalProximityVoicePresence = useCallback(
+    (voiceEnabled: boolean, voiceMuted: boolean) => {
+      const current = localStateRef.current;
+      const normalizedMuted = voiceEnabled && voiceMuted;
+      if (
+        current.voiceEnabled === voiceEnabled &&
+        current.voiceMuted === normalizedMuted
+      ) {
+        return;
+      }
+      localStateRef.current = {
+        ...current,
+        voiceEnabled,
+        voiceMuted: normalizedMuted,
+      };
+      lastSentRef.current = { ...lastSentRef.current, sentAt: 0 };
+      publishLandPresenceSnapshot();
+    },
+    [publishLandPresenceSnapshot]
+  );
+
   useEffect(() => {
     recordLandActivityRef.current = recordLandActivity;
   }, [recordLandActivity]);
@@ -2992,7 +3028,12 @@ export function QortalLand({
 
   useEffect(() => {
     publishLandPresenceSnapshot();
-  }, [isLandAfk, isLandDnd, landGameRoomId, publishLandPresenceSnapshot]);
+  }, [
+    isLandAfk,
+    isLandDnd,
+    landGameRoomId,
+    publishLandPresenceSnapshot,
+  ]);
 
   useEffect(() => {
     isActiveRef.current = isActive;
@@ -3009,6 +3050,8 @@ export function QortalLand({
           movement: 'leave',
           afk: localStateRef.current.afk,
           dnd: localStateRef.current.dnd,
+          voiceEnabled: localStateRef.current.voiceEnabled,
+          voiceMuted: localStateRef.current.voiceMuted,
           skinId: localStateRef.current.skinId,
         });
       }
@@ -3792,6 +3835,20 @@ export function QortalLand({
       groupCall.roomState === 'connected',
     getPosition: getProximityPosition,
   });
+  const availableProximityVoiceAddresses = useMemo(() => {
+    void landAvailabilityVersion;
+    const addresses = new Set<string>();
+    for (const player of remotePlayersRef.current.values()) {
+      if (
+        player.roomId === landGameRoomId &&
+        player.voiceEnabled &&
+        player.authorAddress !== myAddress
+      ) {
+        addresses.add(player.authorAddress);
+      }
+    }
+    return [...addresses];
+  }, [landAvailabilityVersion, landGameRoomId, myAddress]);
 
   useEffect(() => {
     const speaking = new Set(
@@ -4486,12 +4543,16 @@ export function QortalLand({
         : Math.max(fromTimelineAt + LAND_REMOTE_RECONCILE_MS, mappedTimelineAt);
       const afk = payload.afk === true;
       const dnd = payload.dnd === true;
+      const voiceEnabled = payload.voiceEnabled === true;
+      const voiceMuted = voiceEnabled && payload.voiceMuted === true;
       const skinId = normalizeQortalLandSkinId(payload.skinId);
       const availabilityChanged =
         !existing ||
         existing.roomId !== roomId ||
         existing.afk !== afk ||
-        existing.dnd !== dnd;
+        existing.dnd !== dnd ||
+        existing.voiceEnabled !== voiceEnabled ||
+        existing.voiceMuted !== voiceMuted;
       remotePlayersRef.current.set(key, {
         authorAddress: payload.authorAddress,
         sessionId: payload.sessionId,
@@ -4521,6 +4582,8 @@ export function QortalLand({
         velocityY,
         afk,
         dnd,
+        voiceEnabled,
+        voiceMuted,
         skinId,
       });
       if (availabilityChanged) {
@@ -4538,6 +4601,8 @@ export function QortalLand({
         movement: 'leave',
         afk: localStateRef.current.afk,
         dnd: localStateRef.current.dnd,
+        voiceEnabled: localStateRef.current.voiceEnabled,
+        voiceMuted: localStateRef.current.voiceMuted,
         skinId: localStateRef.current.skinId,
       });
     };
@@ -4863,6 +4928,8 @@ export function QortalLand({
         current.movement !== previous.movement ||
         current.afk !== previous.afk ||
         current.dnd !== previous.dnd ||
+        current.voiceEnabled !== previous.voiceEnabled ||
+        current.voiceMuted !== previous.voiceMuted ||
         current.skinId !== previous.skinId;
       if (!moved && now - previous.sentAt < LAND_HEARTBEAT_MS) return;
       sequenceRef.current += 1;
@@ -5074,8 +5141,11 @@ export function QortalLand({
         private gameIndicators = new Map<string, { container: any; badge: any; gamepad: any }>();
         private proximityVoiceIndicators = new Map<string, {
           container: any;
-          primaryNote: any;
-          secondaryNote: any;
+          glyph: any;
+          tooltip: any;
+          tooltipBackground: any;
+          tooltipTitle: any;
+          tooltipBody: any;
         }>();
         private pendingRoomTransition: QortalLandRoomTransitionTarget | null = null;
         private roomAssetLoadCallbacks = new Map<LandRoomId, Array<() => void>>();
@@ -8101,38 +8171,102 @@ export function QortalLand({
 
         private createProximityVoiceIndicator() {
           const container = this.add.container(0, 0);
-          const primaryNote = this.add.text(-5, 5, '\u266a', {
-            color: '#4dffb8',
-            fontFamily: 'Inter, Segoe UI Symbol, Arial, sans-serif',
-            fontSize: '25px',
+          const glyph = this.add.graphics();
+          const tooltip = this.add.container(24, -45).setVisible(false);
+          const tooltipBackground = this.add.graphics();
+          tooltipBackground.fillStyle(0x040b14, 0.97);
+          tooltipBackground.lineStyle(1, 0x35445b, 0.9);
+          tooltipBackground.fillRoundedRect(0, 0, 174, 58, 8);
+          tooltipBackground.strokeRoundedRect(0, 0, 174, 58, 8);
+          const tooltipTitle = this.add.text(12, 10, 'Proximity Voice On', {
+            color: '#f5f8fd',
+            fontFamily: 'Inter, Arial, sans-serif',
+            fontSize: '11px',
             fontStyle: 'bold',
-            stroke: '#041019',
-            strokeThickness: 3,
-          }).setOrigin(0.5);
-          const secondaryNote = this.add.text(14, -12, '\u266b', {
-            color: '#2cf8ff',
-            fontFamily: 'Inter, Segoe UI Symbol, Arial, sans-serif',
-            fontSize: '20px',
-            fontStyle: 'bold',
-            stroke: '#041019',
-            strokeThickness: 3,
-          }).setOrigin(0.5);
-          primaryNote.setRotation(-0.12);
-          secondaryNote.setRotation(0.1);
-          container.add([primaryNote, secondaryNote]);
+          });
+          const tooltipBody = this.add.text(
+            12,
+            31,
+            'Connected to nearby players.',
+            {
+              color: '#9ca9ba',
+              fontFamily: 'Inter, Arial, sans-serif',
+              fontSize: '9px',
+            }
+          );
+          tooltip.add([
+            tooltipBackground,
+            tooltipTitle,
+            tooltipBody,
+          ]);
+          container.add([glyph, tooltip]);
+          container.setSize(32, 32);
+          container.setInteractive(
+            new Phaser.Geom.Circle(0, 0, 16),
+            Phaser.Geom.Circle.Contains
+          );
+          container.input.cursor = 'pointer';
+          container.on('pointerover', () => tooltip.setVisible(true));
+          container.on('pointerout', () => tooltip.setVisible(false));
+          container.on('pointerdown', (_pointer: any, _x: number, _y: number, event: any) => {
+            event?.stopPropagation?.();
+            setProximityVoicePanelTarget(
+              String(container.getData('voiceAddress') || '')
+            );
+            proximityVoicePanelRequestRef.current += 1;
+            setProximityVoicePanelRequest(proximityVoicePanelRequestRef.current);
+          });
           container.setDepth(12950);
-          return { container, primaryNote, secondaryNote };
+          return {
+            container,
+            glyph,
+            tooltip,
+            tooltipBackground,
+            tooltipTitle,
+            tooltipBody,
+          };
         }
 
         private updateProximityVoiceIndicators() {
-          const active = new Map<string, any>();
-          if (this.localAvatar && proximitySpeakingAddressesRef.current.has(myAddress)) {
-            active.set(`local:${myAddress}`, this.localAvatar);
+          const active = new Map<
+            string,
+            {
+              address: string;
+              avatar: any;
+              label: any;
+              muted: boolean;
+              speaking: boolean;
+            }
+          >();
+          if (this.localAvatar && localStateRef.current.voiceEnabled) {
+            active.set(`local:${myAddress}`, {
+              address: myAddress,
+              avatar: this.localAvatar,
+              label: this.localLabel,
+              muted: localStateRef.current.voiceMuted,
+              speaking:
+                !localStateRef.current.voiceMuted &&
+                proximitySpeakingAddressesRef.current.has(myAddress),
+            });
           }
           for (const [key, player] of remotePlayersRef.current.entries()) {
             const avatar = this.remotes.get(key);
-            if (avatar && player.roomId === currentRoomRef.current && proximitySpeakingAddressesRef.current.has(player.authorAddress)) {
-              active.set(`remote:${key}`, avatar);
+            if (
+              avatar &&
+              player.roomId === currentRoomRef.current &&
+              player.voiceEnabled
+            ) {
+              active.set(`remote:${key}`, {
+                address: player.authorAddress,
+                avatar,
+                label: this.remoteLabels.get(key),
+                muted: player.voiceMuted,
+                speaking:
+                  !player.voiceMuted &&
+                  proximitySpeakingAddressesRef.current.has(
+                    player.authorAddress
+                  ),
+              });
             }
           }
           for (const [key, indicator] of this.proximityVoiceIndicators.entries()) {
@@ -8140,38 +8274,59 @@ export function QortalLand({
             this.proximityVoiceIndicators.delete(key);
             indicator.container?.destroy(true);
           }
-          for (const [key, avatar] of active.entries()) {
+          for (const [key, voice] of active.entries()) {
             let indicator = this.proximityVoiceIndicators.get(key);
             if (!indicator) {
               indicator = this.createProximityVoiceIndicator();
               this.proximityVoiceIndicators.set(key, indicator);
             }
+            const { address, avatar, label, muted, speaking } = voice;
+            indicator.container.setData('voiceAddress', address);
             const scale = Math.abs(avatar.scaleY || 1);
             const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
-            const indicatorScale = Math.max(0.82, Math.min(1.15, scale * 1.22));
+            const indicatorScale = Math.max(0.72, Math.min(1, scale));
+            const labelWidth = Number(label?.width) || 42;
             indicator.container.setPosition(
-              avatar.x + 44 * scale,
-              avatar.y - 184 * scale
+              (label?.x ?? avatar.x) - labelWidth / 2 - 18,
+              label?.y ?? avatar.y - LAND_CHARACTER_LABEL_OFFSET * scale
             );
             indicator.container.setScale(indicatorScale);
-            indicator.container.setAlpha(0.96);
-            if (reduceMotion) {
-              indicator.primaryNote.setPosition(-5, 5).setAlpha(0.9);
-              indicator.secondaryNote.setPosition(14, -12).setAlpha(0.72);
-              continue;
+            indicator.container.setDepth((label?.depth ?? avatar.depth) + 10);
+            indicator.glyph.clear();
+            const color = muted ? 0x8b96a8 : speaking ? 0x4dffb8 : 0x2cf8ff;
+            const pulse = speaking && !reduceMotion
+              ? 0.5 + ((Math.sin(this.time.now / 150) + 1) / 2) * 0.5
+              : 0.55;
+            indicator.glyph.fillStyle(0x03101c, 0.92);
+            indicator.glyph.fillCircle(0, 0, 15);
+            indicator.glyph.lineStyle(1.5, color, muted ? 0.55 : 0.92);
+            indicator.glyph.strokeCircle(0, 0, 14);
+            indicator.glyph.lineStyle(2, color, 0.95);
+            if (muted) {
+              indicator.glyph.strokeRoundedRect(-3.5, -7, 7, 12, 4);
+              indicator.glyph.lineBetween(-8, -8, 8, 8);
+            } else {
+              indicator.glyph.strokeRoundedRect(-3.5, -7, 7, 12, 4);
+              indicator.glyph.beginPath();
+              indicator.glyph.arc(0, 1, 8, 0.18, Math.PI - 0.18, false);
+              indicator.glyph.strokePath();
+              indicator.glyph.lineBetween(0, 9, 0, 12);
+              indicator.glyph.lineBetween(-5, 12, 5, 12);
+              if (speaking) {
+                indicator.glyph.lineStyle(1.4, color, pulse);
+                indicator.glyph.strokeCircle(0, 0, 18);
+                indicator.glyph.lineStyle(1.2, color, pulse * 0.55);
+                indicator.glyph.strokeCircle(0, 0, 22);
+              }
             }
-
-            const primaryPhase = (Math.sin(this.time.now / 210) + 1) / 2;
-            const secondaryPhase =
-              (Math.sin(this.time.now / 210 + Math.PI) + 1) / 2;
-            indicator.primaryNote
-              .setPosition(-5 + primaryPhase * 3, 7 - primaryPhase * 8)
-              .setAlpha(0.42 + primaryPhase * 0.55)
-              .setScale(0.92 + primaryPhase * 0.12);
-            indicator.secondaryNote
-              .setPosition(12 + secondaryPhase * 4, -8 - secondaryPhase * 9)
-              .setAlpha(0.38 + secondaryPhase * 0.58)
-              .setScale(0.9 + secondaryPhase * 0.13);
+            indicator.tooltipTitle.setText(
+              muted ? 'Proximity Voice Muted' : 'Proximity Voice On'
+            );
+            indicator.tooltipBody.setText(
+              muted
+                ? 'Click to open voice controls.'
+                : 'Connected to nearby players.'
+            );
           }
         }
 
@@ -9159,6 +9314,10 @@ export function QortalLand({
                       onOutputDevice={proximityVoice.setOutputDeviceId}
                       onMasterVolume={proximityVoice.setMasterVolume}
                       onPeerPolicy={proximityVoice.setPeerPolicy}
+                      availableVoiceAddresses={availableProximityVoiceAddresses}
+                      openRequest={proximityVoicePanelRequest}
+                      focusAddress={proximityVoicePanelTarget}
+                      onPresenceChange={setLocalProximityVoicePresence}
                     />
                   </Box>
                 )}

@@ -2082,10 +2082,12 @@ export function buildReticulumLandStateSignedFields(input: {
   movement?: string;
   afk: boolean;
   dnd: boolean;
+  voiceEnabled?: boolean;
+  voiceMuted?: boolean;
   skinId: number;
   timestamp: number;
 }): Record<string, unknown> {
-  return {
+  const signedFields: Record<string, unknown> = {
     authorAddress: input.authorAddress,
     direction: input.direction ?? '',
     groupId: input.groupId,
@@ -2101,22 +2103,44 @@ export function buildReticulumLandStateSignedFields(input: {
     x: input.x,
     y: input.y,
   };
+  if (
+    typeof input.voiceEnabled === 'boolean' ||
+    typeof input.voiceMuted === 'boolean'
+  ) {
+    signedFields.voiceEnabled = input.voiceEnabled === true;
+    signedFields.voiceMuted = input.voiceMuted === true;
+  }
+  return signedFields;
 }
 
-function encodeReticulumLandAvailability(afk: boolean, dnd: boolean): number {
-  return (afk ? 1 : 0) | (dnd ? 2 : 0);
+function encodeReticulumLandAvailability(
+  afk: boolean,
+  dnd: boolean,
+  voiceEnabled: boolean,
+  voiceMuted: boolean
+): number {
+  return (
+    (afk ? 1 : 0) |
+    (dnd ? 2 : 0) |
+    (voiceEnabled ? 4 : 0) |
+    (voiceMuted ? 8 : 0)
+  );
 }
 
 function decodeReticulumLandAvailability(value: unknown): {
   afk: boolean;
   dnd: boolean;
+  voiceEnabled: boolean;
+  voiceMuted: boolean;
 } | null {
   const availability = value == null ? 0 : Number(value);
-  if (!Number.isInteger(availability) || availability < 0 || availability > 3)
+  if (!Number.isInteger(availability) || availability < 0 || availability > 15)
     return null;
   return {
     afk: (availability & 1) !== 0,
     dnd: (availability & 2) !== 0,
+    voiceEnabled: (availability & 4) !== 0,
+    voiceMuted: (availability & 8) !== 0,
   };
 }
 
@@ -8447,6 +8471,8 @@ export class ReticulumChatManager extends EventEmitter {
       movement?: unknown;
       afk?: unknown;
       dnd?: unknown;
+      voiceEnabled?: unknown;
+      voiceMuted?: unknown;
       skinId?: unknown;
     }
   ): Promise<void> {
@@ -8481,6 +8507,8 @@ export class ReticulumChatManager extends EventEmitter {
         : '';
     const afk = state.afk === true;
     const dnd = state.dnd === true;
+    const voiceEnabled = state.voiceEnabled === true;
+    const voiceMuted = voiceEnabled && state.voiceMuted === true;
     const skinId = Math.max(
       1,
       Math.min(31, Math.floor(Number(state.skinId) || 1))
@@ -8545,6 +8573,9 @@ export class ReticulumChatManager extends EventEmitter {
             movement,
             afk,
             dnd,
+            ...(voiceEnabled || voiceMuted
+              ? { voiceEnabled, voiceMuted }
+              : {}),
             skinId,
             timestamp,
           })
@@ -8566,8 +8597,15 @@ export class ReticulumChatManager extends EventEmitter {
       ...(roomId ? { u: roomId } : {}),
       ...(direction ? { d: direction } : {}),
       ...(movement ? { m: movement } : {}),
-      ...(afk || dnd
-        ? { v: encodeReticulumLandAvailability(afk, dnd) }
+      ...(afk || dnd || voiceEnabled || voiceMuted
+        ? {
+            v: encodeReticulumLandAvailability(
+              afk,
+              dnd,
+              voiceEnabled,
+              voiceMuted
+            ),
+          }
         : {}),
       i: skinId,
       ts: timestamp,
@@ -14370,6 +14408,12 @@ export class ReticulumChatManager extends EventEmitter {
               movement: typeof wire.m === 'string' ? wire.m : '',
               afk: availability.afk,
               dnd: availability.dnd,
+              ...((Number(wire.v) & 12) !== 0
+                ? {
+                    voiceEnabled: availability.voiceEnabled,
+                    voiceMuted: availability.voiceMuted,
+                  }
+                : {}),
               skinId,
               timestamp,
             })
@@ -28040,6 +28084,8 @@ export class ReticulumChatManager extends EventEmitter {
       movement: typeof wire.m === 'string' ? wire.m : '',
       afk: availability.afk,
       dnd: availability.dnd,
+      voiceEnabled: availability.voiceEnabled,
+      voiceMuted: availability.voiceMuted,
       skinId: Math.max(1, Math.min(31, Math.floor(Number(wire.i) || 1))),
       timestamp: Number.isFinite(Number(wire.ts))
         ? Number(wire.ts)

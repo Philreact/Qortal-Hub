@@ -161,6 +161,9 @@ const ListOfMembers = ({
         address: payload.authorAddress,
         afk: payload.afk === true,
         dnd: payload.dnd === true,
+        voiceEnabled: payload.voiceEnabled === true,
+        voiceMuted:
+          payload.voiceEnabled === true && payload.voiceMuted === true,
         lastSeenAt: Date.now(),
         roomId: payload.roomId === 'park' ? 'park' : 'club',
         sequence: payload.sequence,
@@ -1022,6 +1025,8 @@ const ListOfMembers = ({
                     : MEMBER_ROW_HEIGHT
               }
               rowRenderer={rowRenderer}
+              style={{ outline: 'none' }}
+              tabIndex={-1}
               width={width}
             />
           )}

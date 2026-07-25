@@ -682,9 +682,30 @@ export function useQortalLandProximityVoice(options: Options) {
   useEffect(() => () => { void disableRef.current(); }, []);
 
   const setPeerPolicy = useCallback((peerAddress: string, muted: boolean, volume: number) => {
-    send('SET_PROXIMITY_PEER_POLICY', { address: peerAddress, muted, volume });
-    receiverRef.current?.setSourceSpatial(peerAddress, muted ? 0 : (peers[peerAddress]?.gain ?? 0) * volume, peers[peerAddress]?.pan ?? 0);
-  }, [peers, send]);
+    const normalizedVolume = Math.max(0, Math.min(1, volume));
+    send('SET_PROXIMITY_PEER_POLICY', {
+      address: peerAddress,
+      muted,
+      volume: normalizedVolume,
+    });
+    setPeers((current) => {
+      const peer = current[peerAddress];
+      if (!peer) return current;
+      receiverRef.current?.setSourceSpatial(
+        peerAddress,
+        muted ? 0 : peer.gain * normalizedVolume,
+        peer.pan
+      );
+      return {
+        ...current,
+        [peerAddress]: {
+          ...peer,
+          muted,
+          volume: normalizedVolume,
+        },
+      };
+    });
+  }, [send]);
 
   return useMemo(() => ({
     state, mode, pttKey, peers: Object.values(peers), error, transmitting,
