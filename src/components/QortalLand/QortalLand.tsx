@@ -6458,7 +6458,7 @@ export function QortalLand({
         private createInteractionPrompt() {
           const hotspot = roomLayoutForRoom(QORTAL_LAND_DEFAULT_ROOM_ID).interactions?.djBooth;
           const background = this.add.graphics();
-          const text = this.add.text(0, 0, '[E] Interact', {
+          const text = this.add.text(0, 0, 'Work in Progress', {
             color: '#f8fbff',
             fontFamily: 'Inter, Arial, sans-serif',
             fontSize: '13px',
