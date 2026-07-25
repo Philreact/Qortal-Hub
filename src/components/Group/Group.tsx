@@ -69,6 +69,11 @@ import {
 import { timeDifferenceForNotificationChats } from './groupConstants';
 import { decryptResource } from './groupDataPublishes';
 import { requestQueueMemberNames } from './groupQueues';
+import {
+  groupSectionUsesSecretKey,
+  shouldLoadSecretKeyForSection,
+  shouldLoadSecretKeyOnGroupEntry,
+} from './groupSecretKeyPolicy';
 import type { GroupProps } from './groupTypes';
 import { areKeysEqual, validateSecretKey } from './groupValidation';
 import { useMessageQueue } from '../../messaging/MessageQueueContext';
@@ -1000,6 +1005,7 @@ export const Group = ({
   const [isLoadingNotifyAdmin, setIsLoadingNotifyAdmin] = useState(false);
   const [isLoadingGroups, setIsLoadingGroups] = useState(true);
   const [isLoadingGroup, setIsLoadingGroup] = useState(false);
+  const [isLoadingThreadKey, setIsLoadingThreadKey] = useState(false);
   const [firstSecretKeyInCreation, setFirstSecretKeyInCreation] =
     useState(false);
   const [groupSection, setGroupSection] = useState('home');
@@ -1046,6 +1052,7 @@ export const Group = ({
   const groupSectionRef = useRef(null);
   const isLoadingOpenSectionFromNotification = useRef(false);
   const settimeoutForRefetchSecretKey = useRef(null);
+  const threadKeyLoadRef = useRef<{ groupId: string } | null>(null);
   const secretKeyRef = useRef(null);
   const { clearStatesMessageQueueProvider } = useMessageQueue();
   const initiatedGetMembers = useRef(false);
@@ -1411,6 +1418,12 @@ export const Group = ({
 
   useEffect(() => {
     setMountedLandGroupId(null);
+    setIsLoadingThreadKey(false);
+    threadKeyLoadRef.current = null;
+    if (settimeoutForRefetchSecretKey.current) {
+      clearTimeout(settimeoutForRefetchSecretKey.current);
+      settimeoutForRefetchSecretKey.current = null;
+    }
   }, [selectedGroup?.groupId]);
 
   useEffect(() => {
@@ -2138,6 +2151,12 @@ export const Group = ({
       const data = await response.json();
 
       const name = await getNameInfo(data?.owner);
+      if (
+        String(selectedGroupRef.current?.groupId || '') !==
+        String(groupId || '')
+      ) {
+        return;
+      }
       if (name) {
         data.name = name;
       }
@@ -2371,13 +2390,16 @@ export const Group = ({
 
   const getSecretKey = useCallback(
     async (loadingGroupParam?: boolean, secretKeyToPublish?: boolean) => {
+      const useLegacyGroupKeyLoading = !reticulumChatEnabled;
       try {
-        setIsLoadingGroupMessage(
-          t('auth:message.generic.locating_encryption_keys', {
-            postProcess: 'capitalizeFirstChar',
-          })
-        );
-        pauseAllQueues();
+        if (useLegacyGroupKeyLoading) {
+          setIsLoadingGroupMessage(
+            t('auth:message.generic.locating_encryption_keys', {
+              postProcess: 'capitalizeFirstChar',
+            })
+          );
+          pauseAllQueues();
+        }
 
         let dataFromStorage;
         let publishFromStorage;
@@ -2393,7 +2415,7 @@ export const Group = ({
           return secretKeyRef.current;
         }
 
-        if (loadingGroupParam) {
+        if (loadingGroupParam && useLegacyGroupKeyLoading) {
           setIsLoadingGroup(true);
         }
 
@@ -2405,9 +2427,13 @@ export const Group = ({
         }
 
         const prevGroupId = selectedGroupRef.current.groupId;
+        const selectedGroupIsCurrent = () =>
+          String(selectedGroupRef.current?.groupId || '') ===
+          String(prevGroupId || '');
 
         const { names, addresses, both } =
           adminsFromStorage || (await getGroupAdmins(selectedGroup?.groupId));
+        if (!selectedGroupIsCurrent()) return;
         setAdmins(addresses);
         setAdminsWithNames(both);
 
@@ -2417,7 +2443,7 @@ export const Group = ({
           publishFromStorage ||
           (await getPublishesFromAdmins(names, selectedGroup?.groupId));
 
-        if (prevGroupId !== selectedGroupRef.current.groupId) {
+        if (!selectedGroupIsCurrent()) {
           if (settimeoutForRefetchSecretKey.current) {
             clearTimeout(settimeoutForRefetchSecretKey.current);
           }
@@ -2426,9 +2452,16 @@ export const Group = ({
 
         if (publish === false) {
           setTriedToFetchSecretKey(true);
-          settimeoutForRefetchSecretKey.current = setTimeout(() => {
-            getSecretKey();
-          }, TIME_MINUTES_2_IN_MILLISECONDS);
+          if (
+            groupSectionUsesSecretKey(
+              reticulumChatEnabled,
+              groupSectionRef.current || ''
+            )
+          ) {
+            settimeoutForRefetchSecretKey.current = setTimeout(() => {
+              getSecretKey();
+            }, TIME_MINUTES_2_IN_MILLISECONDS);
+          }
           return false;
         }
 
@@ -2438,11 +2471,13 @@ export const Group = ({
         if (dataFromStorage) {
           data = dataFromStorage;
         } else {
-          setIsLoadingGroupMessage(
-            t('auth:message.generic.downloading_encryption_keys', {
-              postProcess: 'capitalizeFirstChar',
-            })
-          );
+          if (useLegacyGroupKeyLoading) {
+            setIsLoadingGroupMessage(
+              t('auth:message.generic.downloading_encryption_keys', {
+                postProcess: 'capitalizeFirstChar',
+              })
+            );
+          }
           const res = await fetch(
             `${getBaseApiReact()}/arbitrary/DOCUMENT_PRIVATE/${publish.name}/${publish.identifier}?encoding=base64&rebuild=true`
           );
@@ -2456,6 +2491,7 @@ export const Group = ({
         if (!validateSecretKey(decryptedKeyToObject)) {
           throw new Error('SecretKey is not valid');
         }
+        if (!selectedGroupIsCurrent()) return;
 
         setSecretKeyDetails(publish);
         setSecretKey(decryptedKeyToObject);
@@ -2489,14 +2525,23 @@ export const Group = ({
           error === 'Unable to decrypt'
         ) {
           setTriedToFetchSecretKey(true);
-          settimeoutForRefetchSecretKey.current = setTimeout(() => {
-            getSecretKey();
-          }, TIME_MINUTES_2_IN_MILLISECONDS);
+          if (
+            groupSectionUsesSecretKey(
+              reticulumChatEnabled,
+              groupSectionRef.current || ''
+            )
+          ) {
+            settimeoutForRefetchSecretKey.current = setTimeout(() => {
+              getSecretKey();
+            }, TIME_MINUTES_2_IN_MILLISECONDS);
+          }
         }
       } finally {
-        setIsLoadingGroup(false);
-        setIsLoadingGroupMessage('');
-        resumeAllQueues();
+        if (useLegacyGroupKeyLoading) {
+          setIsLoadingGroup(false);
+          setIsLoadingGroupMessage('');
+          resumeAllQueues();
+        }
       }
     },
     [
@@ -2511,6 +2556,7 @@ export const Group = ({
       setAdmins,
       setAdminsWithNames,
       setSecretKeyPublishDate,
+      reticulumChatEnabled,
     ]
   );
 
@@ -2826,11 +2872,16 @@ export const Group = ({
     processReticulumBackgroundEvent,
   ]);
 
-  const getAdminsForPublic = useCallback(async (selectedGroup) => {
+  const getAdminsForGroup = useCallback(async (selectedGroup) => {
     try {
-      const { names, addresses, both } = await getGroupAdmins(
-        selectedGroup?.groupId
-      );
+      const groupId = selectedGroup?.groupId;
+      const { names, addresses, both } = await getGroupAdmins(groupId);
+      if (
+        String(selectedGroupRef.current?.groupId || '') !==
+        String(groupId || '')
+      ) {
+        return;
+      }
       setAdmins(addresses);
       setAdminsWithNames(both);
     } catch (error) {
@@ -2841,8 +2892,15 @@ export const Group = ({
   useEffect(() => {
     if (selectedGroup && isPrivate !== null) {
       if (isPrivate) {
-        setTriedToFetchSecretKey(false);
-        getSecretKey(true);
+        if (shouldLoadSecretKeyOnGroupEntry(reticulumChatEnabled, isPrivate)) {
+          setTriedToFetchSecretKey(false);
+          getSecretKey(true);
+        } else {
+          // Reticulum group chat authorizes private-group access through Core
+          // membership. Load role metadata here, but leave the legacy group key
+          // to the Threads view that still needs it.
+          getAdminsForGroup(selectedGroup);
+        }
       }
 
       getGroupOwner(selectedGroup?.groupId);
@@ -2850,16 +2908,62 @@ export const Group = ({
     if (isPrivate === false) {
       setTriedToFetchSecretKey(true);
       if (selectedGroup?.groupId !== '0') {
-        getAdminsForPublic(selectedGroup);
+        getAdminsForGroup(selectedGroup);
       }
     }
   }, [
     selectedGroup,
     isPrivate,
+    reticulumChatEnabled,
     getSecretKey,
     getGroupOwner,
-    getAdminsForPublic,
+    getAdminsForGroup,
   ]);
+
+  useEffect(() => {
+    if (
+      !shouldLoadSecretKeyForSection(
+        reticulumChatEnabled,
+        isPrivate === true,
+        groupSection
+      ) ||
+      !selectedGroup?.groupId ||
+      secretKey
+    ) {
+      return;
+    }
+
+    const groupId = String(selectedGroup.groupId);
+    if (threadKeyLoadRef.current?.groupId === groupId) return;
+    const request = { groupId };
+    threadKeyLoadRef.current = request;
+    setTriedToFetchSecretKey(false);
+    setIsLoadingThreadKey(true);
+
+    void getSecretKey(false).finally(() => {
+      if (threadKeyLoadRef.current !== request) return;
+      if (String(selectedGroupRef.current?.groupId || '') === groupId) {
+        setTriedToFetchSecretKey(true);
+        setIsLoadingThreadKey(false);
+      }
+      threadKeyLoadRef.current = null;
+    });
+  }, [
+    getSecretKey,
+    groupSection,
+    isPrivate,
+    reticulumChatEnabled,
+    secretKey,
+    selectedGroup?.groupId,
+  ]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || groupSection === 'forum') return;
+    if (settimeoutForRefetchSecretKey.current) {
+      clearTimeout(settimeoutForRefetchSecretKey.current);
+      settimeoutForRefetchSecretKey.current = null;
+    }
+  }, [groupSection, reticulumChatEnabled]);
 
   const getCountNewMesg = async (groupId, after) => {
     try {
@@ -3462,6 +3566,7 @@ export const Group = ({
     setIsLoadingNotifyAdmin(false);
     setIsLoadingGroups(false);
     setIsLoadingGroup(false);
+    setIsLoadingThreadKey(false);
     setFirstSecretKeyInCreation(false);
     setMountedLandGroupId(null);
     setReticulumMountedGroupSections({});
@@ -3481,6 +3586,7 @@ export const Group = ({
     qChatTabActiveRef.current = false;
     isLoadingOpenSectionFromNotification.current = false;
     settimeoutForRefetchSecretKey.current = null;
+    threadKeyLoadRef.current = null;
     initiatedGetMembers.current = false;
     setDesktopViewMode('home');
   }, []);
@@ -4029,11 +4135,16 @@ export const Group = ({
       triedToFetchSecretKey
     );
   }, [isPrivate, admins, myAddress, secretKey, triedToFetchSecretKey]);
+  const activeSectionUsesSecretKey = groupSectionUsesSecretKey(
+    reticulumChatEnabled,
+    groupSection
+  );
 
   const closeChatDirect = useCallback(() => {
     setSelectedDirect(null);
     setNewChat(false);
   }, []);
+  const getNoReticulumGroupSecretKey = useCallback(async () => null, []);
 
   const isReticulumDirectOverlayOpen =
     reticulumChatEnabled && desktopSideView === 'directs';
@@ -4073,6 +4184,8 @@ export const Group = ({
       setUserInfoForLevels({});
       setSecretKey(null);
       secretKeyRef.current = null;
+      threadKeyLoadRef.current = null;
+      setIsLoadingThreadKey(false);
       lastFetchedSecretKey.current = null;
       setSecretKeyPublishDate(null);
       setAdmins([]);
@@ -4202,9 +4315,10 @@ export const Group = ({
   const canMountQortalLand = Boolean(
     reticulumEnabled &&
     selectedGroup &&
-    triedToFetchSecretKey &&
-    !notPartOfKeys &&
-    !(admins.includes(myAddress) && !secretKey && isPrivate)
+    (reticulumChatEnabled ||
+      (triedToFetchSecretKey &&
+        !notPartOfKeys &&
+        !(admins.includes(myAddress) && !secretKey && isPrivate)))
   );
   const shouldMountGroupSection = useCallback(
     (section: string) => {
@@ -4216,12 +4330,7 @@ export const Group = ({
       }
       return groupSection === section;
     },
-    [
-      groupSection,
-      mountedLandGroupId,
-      reticulumEnabled,
-      selectedGroupIdKey,
-    ]
+    [groupSection, mountedLandGroupId, reticulumEnabled, selectedGroupIdKey]
   );
 
   useEffect(() => {
@@ -4498,15 +4607,14 @@ export const Group = ({
                     selectedGroupName={
                       selectedGroup?.groupName || selectedGroup?.name || ''
                     }
-                    getSecretKey={getSecretKey}
-                    secretKey={secretKey}
+                    getSecretKey={getNoReticulumGroupSecretKey}
+                    secretKey={null}
                     isPrivate={isPrivate}
                     isActive={
                       isVisible &&
                       groupSection === 'chat' &&
                       !isReticulumDirectOverlayOpen
                     }
-                    setSecretKey={setSecretKey}
                     handleNewEncryptionNotification={
                       setNewEncryptionNotification
                     }
@@ -4518,7 +4626,7 @@ export const Group = ({
                     handleSecretKeyCreationInProgress={
                       handleSecretKeyCreationInProgress
                     }
-                    triedToFetchSecretKey={triedToFetchSecretKey}
+                    triedToFetchSecretKey={true}
                     getTimestampEnterChatParent={getTimestampEnterChat}
                     notificationReticulumChannelId={
                       notificationReticulumChannelId
@@ -4643,6 +4751,7 @@ export const Group = ({
                 </PersistentSectionLayer>
               )}
               {isPrivate &&
+                activeSectionUsesSecretKey &&
                 firstSecretKeyInCreation &&
                 triedToFetchSecretKey &&
                 !secretKeyPublishDate && (
@@ -4655,7 +4764,27 @@ export const Group = ({
                   </EncryptionKeyMessageDiv>
                 )}
 
-              {notPartOfKeys ? (
+              {reticulumChatEnabled &&
+                groupSection === 'forum' &&
+                isPrivate &&
+                isLoadingThreadKey && (
+                  <PersistentSectionLayer active topOffset={50}>
+                    <CenterBox
+                      sx={{
+                        backgroundColor: 'background.default',
+                        flexDirection: 'column',
+                        gap: 1.5,
+                      }}
+                    >
+                      <CircularProgress size={28} />
+                      <Typography color="text.secondary" variant="body2">
+                        Preparing Threads…
+                      </Typography>
+                    </CenterBox>
+                  </PersistentSectionLayer>
+                )}
+
+              {notPartOfKeys && activeSectionUsesSecretKey ? (
                 <>
                   {secretKeyPublishDate ||
                   (!secretKeyPublishDate && !firstSecretKeyInCreation) ? (
@@ -4885,31 +5014,32 @@ export const Group = ({
                 )}
 
               <FloatingButtonContainerBox>
-                {((isPrivate &&
-                  admins.includes(myAddress) &&
-                  shouldReEncrypt &&
-                  triedToFetchSecretKey &&
-                  !firstSecretKeyInCreation &&
-                  !hideCommonKeyPopup) ||
-                  isForceShowCreationKeyPopup) && (
-                  <CreateCommonSecret
-                    isForceShowCreationKeyPopup={isForceShowCreationKeyPopup}
-                    setHideCommonKeyPopup={setHideCommonKeyPopup}
-                    groupId={selectedGroup?.groupId}
-                    secretKey={secretKey}
-                    secretKeyDetails={secretKeyDetails}
-                    myAddress={myAddress}
-                    isOwner={groupOwner?.owner === myAddress}
-                    setIsForceShowCreationKeyPopup={
-                      setIsForceShowCreationKeyPopup
-                    }
-                    noSecretKey={
-                      admins.includes(myAddress) &&
-                      !secretKey &&
-                      triedToFetchSecretKey
-                    }
-                  />
-                )}
+                {activeSectionUsesSecretKey &&
+                  ((isPrivate &&
+                    admins.includes(myAddress) &&
+                    shouldReEncrypt &&
+                    triedToFetchSecretKey &&
+                    !firstSecretKeyInCreation &&
+                    !hideCommonKeyPopup) ||
+                    isForceShowCreationKeyPopup) && (
+                    <CreateCommonSecret
+                      isForceShowCreationKeyPopup={isForceShowCreationKeyPopup}
+                      setHideCommonKeyPopup={setHideCommonKeyPopup}
+                      groupId={selectedGroup?.groupId}
+                      secretKey={secretKey}
+                      secretKeyDetails={secretKeyDetails}
+                      myAddress={myAddress}
+                      isOwner={groupOwner?.owner === myAddress}
+                      setIsForceShowCreationKeyPopup={
+                        setIsForceShowCreationKeyPopup
+                      }
+                      noSecretKey={
+                        admins.includes(myAddress) &&
+                        !secretKey &&
+                        triedToFetchSecretKey
+                      }
+                    />
+                  )}
               </FloatingButtonContainerBox>
             </ChatContentBox>
 
