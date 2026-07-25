@@ -49,7 +49,12 @@ export function useAppMessageHandler(
         });
       } else if (message.action === 'NOTIFICATION_OPEN_APP') {
         const payload = message.payload;
-        if (payload?.qChatMention) {
+        if (payload?.reticulumDirectMessage) {
+          executeEvent('openDirectMessageInternal', {
+            address: payload.from,
+            name: payload.name,
+          });
+        } else if (payload?.qChatMention) {
           executeEvent('openGroupMessage', {
             channelId: payload.channelId,
             eventId: payload.eventId,

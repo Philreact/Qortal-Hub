@@ -7,8 +7,10 @@ import {
   extStateAtom,
   paymentNotificationsAtom,
   customWebsocketSubscriptionsAtom,
+  dmFriendsByAddressAtom,
   notificationSeenInAppKeysAtom,
   filterSeenInAppKeysByRules,
+  reticulumChatEnabledAtom,
 } from '../../atoms/global';
 import { fireOsNotificationPayment } from '../../background/background';
 import {
@@ -22,6 +24,10 @@ import {
   QCHAT_MENTION_NOTIFICATION_EVENT,
   QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
 } from '../../utils/qChatMentionNotifications';
+import {
+  isHubBeingViewed,
+  shouldNotifyForReticulumDm,
+} from '../../utils/reticulumDmNotifications';
 
 const isQChatMentionNotification = (notification: any) =>
   notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
@@ -29,6 +35,7 @@ const isQChatMentionNotification = (notification: any) =>
 
 const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const QCHAT_MENTION_OS_NOTIFICATION_MAX_TRACKED = 500;
+const RETICULUM_DM_OS_NOTIFICATION_MAX_TRACKED = 500;
 
 const getNotificationCreatorTimestamp = (notification: {
   data?: { created?: number; timestamp?: number };
@@ -83,6 +90,10 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   const extState = useAtomValue(extStateAtom);
   const extStateRef = useRef(extState);
   extStateRef.current = extState;
+  const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
+  const dmFriendsByAddressRef = useRef(dmFriendsByAddress);
+  dmFriendsByAddressRef.current = dmFriendsByAddress;
+  const reticulumChatEnabled = useAtomValue(reticulumChatEnabledAtom);
   const myAddressRef = useRef(myAddress);
   myAddressRef.current = myAddress;
   const setPaymentNotifications = useSetAtom(paymentNotificationsAtom);
@@ -101,6 +112,73 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   const listOfMyNamesRef = useRef<string[]>([]);
   const initWebsocketRef = useRef<(() => Promise<void>) | null>(null);
   const qChatMentionOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
+  const reticulumDmOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !myAddress) return;
+    const listeningSince = Date.now();
+    reticulumDmOsNotifiedEventIdsRef.current.clear();
+    const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
+      if (!event || typeof event !== 'object') return;
+      const directEvent = event as {
+        eventId?: string;
+        eventType?: string;
+        senderAddress?: string;
+        recipientAddress?: string;
+        timestamp?: number;
+      };
+      const eventId = String(directEvent.eventId || '');
+      if (
+        !eventId ||
+        reticulumDmOsNotifiedEventIdsRef.current.has(eventId) ||
+        !shouldNotifyForReticulumDm({
+          event: directEvent,
+          friendsByAddress: dmFriendsByAddressRef.current,
+          listeningSince,
+          myAddress,
+          hubIsBeingViewed: isHubBeingViewed(),
+        })
+      ) {
+        return;
+      }
+
+      reticulumDmOsNotifiedEventIdsRef.current.add(eventId);
+      if (
+        reticulumDmOsNotifiedEventIdsRef.current.size >
+        RETICULUM_DM_OS_NOTIFICATION_MAX_TRACKED
+      ) {
+        const oldestEventId = reticulumDmOsNotifiedEventIdsRef.current
+          .values()
+          .next().value;
+        if (oldestEventId) {
+          reticulumDmOsNotifiedEventIdsRef.current.delete(oldestEventId);
+        }
+      }
+
+      const friend = dmFriendsByAddressRef.current[directEvent.senderAddress!];
+      const senderName = friend?.name?.trim() || 'a friend';
+      void fireOsNotificationPayment(
+        {
+          appName: 'Q-Chat',
+          appService: 'INTERNAL',
+          event: 'RETICULUM_DM_MESSAGE',
+        },
+        `New message from ${senderName}`,
+        'Open Q-Chat to view it.',
+        LogoSelected,
+        undefined,
+        {
+          from: directEvent.senderAddress,
+          name: friend?.name,
+          reticulumDirectMessage: true,
+        }
+      );
+    });
+
+    return () => {
+      off?.();
+    };
+  }, [myAddress, reticulumChatEnabled]);
 
   const forceCloseWebSocket = () => {
     clearTimeout(historyRequestTimeoutRef.current);
