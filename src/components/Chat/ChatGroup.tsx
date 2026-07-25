@@ -146,6 +146,7 @@ import {
   isReticulumCompressibleImage,
   isReticulumGifFile,
 } from './reticulumImagePreparation';
+import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 import {
   closestCenter,
   DndContext,
@@ -1499,6 +1500,14 @@ export const ChatGroup = ({
     null
   );
   const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
+  useEffect(() => {
+    executeEvent('reticulumSearchOverlayOpenState', {
+      open: reticulumSearchOpen,
+    });
+    return () => {
+      executeEvent('reticulumSearchOverlayOpenState', { open: false });
+    };
+  }, [reticulumSearchOpen]);
   const [qManagerAnchorRect, setQManagerAnchorRect] =
     useState<QManagerAnchorRect | null>(null);
   const [reticulumSearchQuery, setReticulumSearchQuery] = useState('');
@@ -9629,7 +9638,7 @@ export const ChatGroup = ({
             flexDirection: 'column',
             position: 'absolute',
             right: 0,
-            top: 0,
+            top: 50,
             width: { xs: '100%', sm: 390 },
             zIndex: 12,
           }}
@@ -10471,42 +10480,16 @@ export const ChatGroup = ({
         </Box>
       )}
 
-      <Dialog
+      <ReticulumLargeImageDialog
         open={Boolean(reticulumLargeImageChoice)}
         onClose={closeReticulumLargeImageChoice}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Send large image</DialogTitle>
-        <DialogContent>
-          <Typography sx={{ fontSize: '14px', mb: 1 }}>
-            This image is{' '}
-            {formatReticulumFileSize(reticulumLargeImageChoice?.file.size)}.
-          </Typography>
-          <Typography
-            sx={{ color: theme.palette.text.secondary, fontSize: '13px' }}
-          >
-            Compress it for inline chat display, or send the original image as a
-            downloadable attachment.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={useReticulumImageAsAttachment}
-            disabled={isCompressingReticulumImage}
-          >
-            As attachment
-          </Button>
-          <Button
-            onClick={useReticulumCompressedImage}
-            disabled={isCompressingReticulumImage}
-            variant="contained"
-            autoFocus
-          >
-            {isCompressingReticulumImage ? 'Compressing...' : 'Compress'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        fileSize={formatReticulumFileSize(
+          reticulumLargeImageChoice?.file.size
+        )}
+        loading={isCompressingReticulumImage}
+        onCompress={useReticulumCompressedImage}
+        onUseAsAttachment={useReticulumImageAsAttachment}
+      />
 
       <Dialog
         open={isCreateReticulumChannelOpen}
@@ -10636,9 +10619,15 @@ export const ChatGroup = ({
               aria-labelledby="reticulum-channel-type-label"
               role="radiogroup"
               sx={{
-                backgroundColor: '#0c0e13',
+                backgroundColor:
+                  theme.palette.mode === 'dark'
+                    ? '#0c0e13'
+                    : theme.palette.background.default,
                 border: '1px solid',
-                borderColor: 'rgba(0, 0, 0, 0.72)',
+                borderColor:
+                  theme.palette.mode === 'dark'
+                    ? 'rgba(0, 0, 0, 0.72)'
+                    : alpha(theme.palette.text.primary, 0.42),
                 borderRadius: '10px',
                 display: 'grid',
                 gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
@@ -10665,13 +10654,22 @@ export const ChatGroup = ({
                     sx={{
                       alignItems: 'center',
                       backgroundColor: selected
-                        ? 'rgba(37, 99, 235, 0.12)'
+                        ? alpha(
+                            theme.palette.primary.main,
+                            theme.palette.mode === 'dark' ? 0.12 : 0.14
+                          )
                         : 'background.default',
                       borderColor: selected
                         ? RETICULUM_ACTIVE_BLUE
                         : 'rgba(0, 0, 0, 0.72)',
                       borderLeft:
-                        index === 0 ? 'none' : '1px solid rgba(0, 0, 0, 0.72)',
+                        index === 0
+                          ? 'none'
+                          : `1px solid ${
+                              theme.palette.mode === 'dark'
+                                ? 'rgba(0, 0, 0, 0.72)'
+                                : alpha(theme.palette.text.primary, 0.42)
+                            }`,
                       borderRadius:
                         index === 0
                           ? '9px 0 0 9px'
@@ -10682,7 +10680,12 @@ export const ChatGroup = ({
                       boxShadow: selected
                         ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}`
                         : 'none',
-                      color: selected ? 'common.white' : 'text.primary',
+                      color:
+                        selected && theme.palette.mode === 'dark'
+                          ? 'common.white'
+                          : selected
+                            ? 'primary.dark'
+                            : 'text.primary',
                       display: 'flex',
                       flexDirection: 'column',
                       gap: 0.75,
@@ -10695,7 +10698,10 @@ export const ChatGroup = ({
                         'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
                       '&:hover': {
                         backgroundColor: selected
-                          ? 'rgba(37, 99, 235, 0.16)'
+                          ? alpha(
+                              theme.palette.primary.main,
+                              theme.palette.mode === 'dark' ? 0.16 : 0.2
+                            )
                           : 'action.hover',
                         borderColor: selected
                           ? RETICULUM_ACTIVE_BLUE
@@ -11107,9 +11113,15 @@ export const ChatGroup = ({
                   aria-labelledby="reticulum-channel-settings-type-label"
                   role="radiogroup"
                   sx={{
-                    backgroundColor: '#0c0e13',
+                    backgroundColor:
+                      theme.palette.mode === 'dark'
+                        ? '#0c0e13'
+                        : theme.palette.background.default,
                     border: '1px solid',
-                    borderColor: 'rgba(0, 0, 0, 0.72)',
+                    borderColor:
+                      theme.palette.mode === 'dark'
+                        ? 'rgba(0, 0, 0, 0.72)'
+                        : alpha(theme.palette.text.primary, 0.42),
                     borderRadius: '10px',
                     display: 'grid',
                     gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
@@ -11150,9 +11162,12 @@ export const ChatGroup = ({
                         sx={{
                           alignItems: 'center',
                           backgroundColor: selected
-                            ? 'rgba(37, 99, 235, 0.12)'
+                            ? alpha(
+                                theme.palette.primary.main,
+                                theme.palette.mode === 'dark' ? 0.12 : 0.14
+                              )
                             : disabled
-                              ? 'rgba(255, 255, 255, 0.025)'
+                              ? alpha(theme.palette.text.primary, 0.025)
                             : 'background.default',
                           borderColor: selected
                             ? RETICULUM_ACTIVE_BLUE
@@ -11160,7 +11175,11 @@ export const ChatGroup = ({
                           borderLeft:
                             index === 0
                               ? 'none'
-                              : '1px solid rgba(0, 0, 0, 0.72)',
+                              : `1px solid ${
+                                  theme.palette.mode === 'dark'
+                                    ? 'rgba(0, 0, 0, 0.72)'
+                                    : alpha(theme.palette.text.primary, 0.42)
+                                }`,
                           borderRadius:
                             index === 0
                               ? '9px 0 0 9px'
@@ -11174,9 +11193,11 @@ export const ChatGroup = ({
                             : 'none',
                           color: disabled
                             ? 'text.disabled'
-                            : selected
+                            : selected && theme.palette.mode === 'dark'
                               ? 'common.white'
-                              : 'text.primary',
+                              : selected
+                                ? 'primary.dark'
+                                : 'text.primary',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 0.75,
@@ -11189,7 +11210,10 @@ export const ChatGroup = ({
                             'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
                           '&:hover': {
                             backgroundColor: selected
-                              ? 'rgba(37, 99, 235, 0.16)'
+                              ? alpha(
+                                  theme.palette.primary.main,
+                                  theme.palette.mode === 'dark' ? 0.16 : 0.2
+                                )
                               : 'action.hover',
                             borderColor: selected
                               ? RETICULUM_ACTIVE_BLUE
@@ -11227,9 +11251,11 @@ export const ChatGroup = ({
                           sx={{
                             color: disabled
                               ? 'text.disabled'
-                              : selected
+                              : selected && theme.palette.mode === 'dark'
                                 ? 'common.white'
-                                : 'text.secondary',
+                                : selected
+                                  ? 'primary.dark'
+                                  : 'text.secondary',
                             fontSize: 26,
                             transition: 'color 140ms ease',
                           }}
@@ -11238,9 +11264,11 @@ export const ChatGroup = ({
                           sx={{
                             color: disabled
                               ? 'text.disabled'
-                              : selected
+                              : selected && theme.palette.mode === 'dark'
                                 ? 'common.white'
-                                : 'text.primary',
+                                : selected
+                                  ? 'primary.dark'
+                                  : 'text.primary',
                             fontSize: 15,
                             fontWeight: 800,
                             lineHeight: '18px',

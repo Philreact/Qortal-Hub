@@ -382,7 +382,16 @@ export const ReticulumUserCard = ({
           </Tooltip>
         </Box>
 
-        <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.075)', mb: 0.5, mt: 2.75 }} />
+        <Divider
+          sx={{
+            borderColor:
+              theme.palette.mode === 'dark'
+                ? 'rgba(255, 255, 255, 0.075)'
+                : alpha(theme.palette.text.primary, 0.2),
+            mb: 0.5,
+            mt: 2.75,
+          }}
+        />
 
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', minHeight: 64 }}>
           <CardStat label="QORT BALANCE" value={isLoading ? 'Loading...' : wholeBalance === null ? 'N/A' : `${wholeBalance} QORT`} />
@@ -395,7 +404,16 @@ export const ReticulumUserCard = ({
 
         {!isOwnCard && (
           <>
-            <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.075)', mb: 1.75, mt: 0.5 }} />
+            <Divider
+              sx={{
+                borderColor:
+                  theme.palette.mode === 'dark'
+                    ? 'rgba(255, 255,255, 0.075)'
+                    : alpha(theme.palette.text.primary, 0.2),
+                mb: 1.75,
+                mt: 0.5,
+              }}
+            />
             <Box sx={{ display: 'grid', gap: 1.75, gridTemplateColumns: '146px minmax(0, 1fr) 48px' }}>
               <Button variant="contained" startIcon={<ChatBubbleOutlineRoundedIcon />} onClick={handleMessage} sx={primaryActionSx}>
                 Message
@@ -432,7 +450,7 @@ const CardStat = ({
 }) => {
   const theme = useTheme();
   return (
-    <Box sx={{ alignSelf: bordered ? 'center' : undefined, borderLeft: bordered ? '1px solid rgba(255, 255, 255, 0.075)' : undefined, display: 'flex', flexDirection: 'column', height: bordered ? '70%' : undefined, justifyContent: 'center', minWidth: 0, pl: bordered ? 2 : 1.25, pr: 1.25 }}>
+    <Box sx={{ alignSelf: bordered ? 'center' : undefined, borderLeft: bordered ? `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.075)' : alpha(theme.palette.text.primary, 0.2)}` : undefined, display: 'flex', flexDirection: 'column', height: bordered ? '70%' : undefined, justifyContent: 'center', minWidth: 0, pl: bordered ? 2 : 1.25, pr: 1.25 }}>
       <Typography sx={{ ...cardLabelSx, mt: 0, whiteSpace: 'nowrap' }}>
         {label}
       </Typography>

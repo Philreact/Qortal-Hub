@@ -1038,6 +1038,8 @@ export const Group = ({
     reticulumLandMembersPanelOpen,
     setReticulumLandMembersPanelOpen,
   ] = useState(false);
+  const [reticulumSearchOverlayOpen, setReticulumSearchOverlayOpen] =
+    useState(false);
   const [reticulumJoinRequestCount, setReticulumJoinRequestCount] = useState(0);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
@@ -4110,6 +4112,23 @@ export const Group = ({
       unsubscribeFromEvent('closeReticulumMembersPanel', closeMembersPanel);
   }, [groupSection, reticulumChatEnabled]);
 
+  useEffect(() => {
+    const syncSearchOverlayState = (event: any) => {
+      setReticulumSearchOverlayOpen(
+        Boolean(event?.detail?.open ?? event?.open)
+      );
+    };
+    subscribeToEvent(
+      'reticulumSearchOverlayOpenState',
+      syncSearchOverlayState
+    );
+    return () =>
+      unsubscribeFromEvent(
+        'reticulumSearchOverlayOpenState',
+        syncSearchOverlayState
+      );
+  }, []);
+
   const loadingGroupSnackbarInfo = useMemo(
     () => ({
       message:
@@ -5066,7 +5085,7 @@ export const Group = ({
                     right: 0,
                     top: 50,
                     width: 280,
-                    zIndex: 8,
+                    zIndex: reticulumSearchOverlayOpen ? 0 : 8,
                   }}
                 >
                   <Suspense fallback={null}>

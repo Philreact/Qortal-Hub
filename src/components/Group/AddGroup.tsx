@@ -35,11 +35,11 @@ const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const GROUP_DESCRIPTION_MAX_LENGTH = 300;
 const GROUP_MODAL_CONTROL_SX = {
   '& .MuiOutlinedInput-root': {
-    backgroundColor: '#0D0F14',
+    backgroundColor: 'background.default',
     borderRadius: '8px',
     color: 'text.primary',
     '&:hover .MuiOutlinedInput-notchedOutline': {
-      borderColor: 'rgba(255, 255, 255, 0.2)',
+      borderColor: 'text.secondary',
     },
     '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
       borderColor: RETICULUM_ACTIVE_BLUE,
@@ -47,7 +47,7 @@ const GROUP_MODAL_CONTROL_SX = {
     },
   },
   '& .MuiOutlinedInput-notchedOutline': {
-    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderColor: 'divider',
   },
 } as const;
 
@@ -256,9 +256,10 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
         maxWidth={false}
         PaperProps={{
           sx: {
-            backgroundColor: '#1D2028',
+            backgroundColor: 'background.paper',
             backgroundImage: 'none',
-            border: '1px solid rgba(255, 255, 255, 0.13)',
+            border: '1px solid',
+            borderColor: 'divider',
             borderRadius: '12px',
             boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
             display: 'flex',
@@ -482,8 +483,9 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                   aria-labelledby="reticulum-group-access-label"
                   role="radiogroup"
                   sx={{
-                    backgroundColor: '#0D0F14',
-                    border: '1px solid rgba(0, 0, 0, 0.72)',
+                    backgroundColor: 'background.default',
+                    border: '1px solid',
+                    borderColor: 'divider',
                     borderRadius: '10px',
                     display: 'grid',
                     gridTemplateColumns: {
@@ -521,13 +523,13 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                             : 'transparent',
                           borderColor: selected
                             ? RETICULUM_ACTIVE_BLUE
-                            : 'rgba(0, 0, 0, 0.72)',
+                            : 'divider',
                           borderLeft: {
                             xs: 'none',
                             sm:
                               index === 0
                                 ? 'none'
-                                : '1px solid rgba(0, 0, 0, 0.72)',
+                                : '1px solid',
                           },
                           borderRadius: {
                             xs: index === 0 ? '9px 9px 0 0' : '0 0 9px 9px',
@@ -537,13 +539,13 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                             xs:
                               index === 0
                                 ? 'none'
-                                : '1px solid rgba(0, 0, 0, 0.72)',
+                                : '1px solid',
                             sm: 'none',
                           },
                           boxShadow: selected
                             ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}`
                             : 'none',
-                          color: selected ? 'common.white' : 'text.primary',
+                          color: selected ? 'primary.main' : 'text.primary',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 0.5,
@@ -572,7 +574,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         )}
                         <Icon
                           sx={{
-                            color: selected ? 'common.white' : 'text.secondary',
+                            color: selected ? 'primary.main' : 'text.secondary',
                             fontSize: 25,
                           }}
                         />
@@ -608,15 +610,16 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                   onClick={() => setOpenAdvance((previous) => !previous)}
                   startIcon={<TuneRoundedIcon sx={{ fontSize: 18 }} />}
                   sx={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.055)',
-                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    backgroundColor: 'action.hover',
+                    border: '1px solid',
+                    borderColor: 'divider',
                     borderRadius: '8px',
                     color: 'text.primary',
                     justifyContent: 'flex-start',
                     minHeight: 42,
                     px: 1.5,
                     textTransform: 'none',
-                    '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.08)' },
+                    '&:hover': { backgroundColor: 'action.selected' },
                   }}
                 >
                   <Typography
@@ -758,8 +761,9 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     <Box
                       sx={{
                         alignItems: 'center',
-                        backgroundColor: '#0D0F14',
-                        border: '1px solid rgba(255, 255, 255, 0.06)',
+                        backgroundColor: 'background.default',
+                        border: '1px solid',
+                        borderColor: 'divider',
                         borderRadius: '8px',
                         color: 'text.secondary',
                         display: 'flex',

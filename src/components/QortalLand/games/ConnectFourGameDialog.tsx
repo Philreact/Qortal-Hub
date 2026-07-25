@@ -32,6 +32,14 @@ import {
 import { GameSessionChat, type GameChatMessage } from './GameSessionChat';
 import { GameInvitationSentDialog } from './GameInvitationSentDialog';
 import { friendlyGameStatus } from './gameDialogText';
+import {
+  gameModalActionsSx,
+  gameModalDangerButtonSx,
+  gameModalDividerSx,
+  gameModalPaperSx,
+  gameModalPrimaryButtonSx,
+  gameModalSecondaryButtonSx,
+} from './gameModalStyles';
 
 export type ConnectFourGamePhase =
   | 'idle'
@@ -451,9 +459,7 @@ export function ConnectFourGameDialog({
         gameTitle="Connect Four"
         now={now}
         onCancel={onClose}
-        onToggleSound={toggleMuted}
         opponentName={opponentName}
-        soundMuted={muted}
       />
     );
   }
@@ -471,32 +477,34 @@ export function ConnectFourGameDialog({
       sx={{ '& .MuiDialog-container': { alignItems: 'center', boxSizing: 'border-box', pb: '12px', pt: { xs: '72px', md: '92px' } } }}
       PaperProps={{
         sx: {
-          background: '#071421', border: `1px solid ${alpha('#1aced6', 0.48)}`, borderRadius: '7px', color: '#f4f6f8', display: 'flex',
+          ...(canShowBoard ? { background: '#071421', border: `1px solid ${alpha('#1aced6', 0.48)}`, borderRadius: '7px' } : gameModalPaperSx),
+          color: '#f4f6f8', display: 'flex',
           height: canShowBoard ? { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' } : 'auto', m: 0,
           maxHeight: { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' }, overflow: 'hidden',
-          width: canShowBoard ? 'min(1320px, calc(100vw - 28px))' : 'min(600px, calc(100vw - 28px))',
+          width: canShowBoard ? 'min(1320px, calc(100vw - 28px))' : gameModalPaperSx.width,
         },
       }}
     >
       {match && (
         <>
-          <DialogTitle sx={{ flex: '0 0 auto', px: { xs: 2.5, md: '34px' }, pb: '12px', pt: { xs: 2.5, md: '30px' } }}>
+          <DialogTitle sx={{ flex: '0 0 auto', px: canShowBoard ? { xs: 2.5, md: '34px' } : { xs: 2.5, sm: '26px' }, pb: canShowBoard ? '12px' : '14px', pt: canShowBoard ? { xs: 2.5, md: '30px' } : { xs: 2.25, sm: '24px' } }}>
             <Box sx={{ alignItems: 'center', display: 'flex' }}>
               <SportsEsportsRoundedIcon sx={{ color: '#22d8e4', height: 18, mr: '10px', width: 18 }} />
-              <Typography component="div" sx={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Connect Four</Typography>
+              <Typography component="div" sx={{ fontSize: canShowBoard ? 21 : 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Connect Four</Typography>
               <Box sx={{ flex: 1 }} />
-              <Tooltip title={muted ? 'Turn game sounds on' : 'Mute game sounds'}>
+              {canShowBoard && <Tooltip title={muted ? 'Turn game sounds on' : 'Mute game sounds'}>
                 <IconButton aria-label={muted ? 'Turn game sounds on' : 'Mute game sounds'} onClick={toggleMuted} size="small" sx={{ color: '#8d99a8' }}>
                   {muted ? <VolumeOffRoundedIcon fontSize="small" /> : <VolumeUpRoundedIcon fontSize="small" />}
                 </IconButton>
-              </Tooltip>
+              </Tooltip>}
             </Box>
             {liveMessage && (canShowBoard || match.phase !== 'finished') && <Typography aria-live="polite" sx={{ color: ['active', 'reconnecting'].includes(match.phase) ? '#22d8e4' : '#f4f6f8', fontSize: 18, fontWeight: 700, lineHeight: '22px', mt: '9px' }}>{liveMessage.replace(/\.$/, '')}</Typography>}
+            {!canShowBoard && <Box aria-hidden sx={gameModalDividerSx} />}
           </DialogTitle>
 
-          <DialogContent sx={{ alignContent: canShowBoard ? undefined : 'center', alignItems: canShowBoard ? undefined : 'center', display: 'grid', flex: '1 1 auto', gap: '24px', gridTemplateColumns: canShowChat ? { xs: '1fr', lg: 'minmax(0, 1fr) clamp(300px, 27%, 380px)' } : '1fr', gridTemplateRows: { xs: 'auto', lg: canShowBoard ? 'minmax(0, 1fr)' : 'auto' }, justifyItems: canShowBoard ? undefined : 'center', minHeight: 0, overflowX: 'hidden', overflowY: { xs: 'auto', lg: 'hidden' }, px: { xs: 2.5, md: '34px' }, pb: '10px !important', pt: '0 !important' }}>
+          <DialogContent sx={{ alignContent: canShowBoard ? undefined : 'center', alignItems: canShowBoard ? undefined : 'center', display: 'grid', flex: '1 1 auto', gap: '24px', gridTemplateColumns: canShowChat ? { xs: '1fr', lg: 'minmax(0, 1fr) clamp(300px, 27%, 380px)' } : '1fr', gridTemplateRows: { xs: 'auto', lg: canShowBoard ? 'minmax(0, 1fr)' : 'auto' }, justifyItems: canShowBoard ? undefined : 'center', minHeight: 0, overflowX: 'hidden', overflowY: { xs: 'auto', lg: 'hidden' }, px: canShowBoard ? { xs: 2.5, md: '34px' } : { xs: 2.5, sm: '26px' }, pb: canShowBoard ? '10px !important' : '20px !important', pt: canShowBoard ? '0 !important' : '4px !important' }}>
             <Box aria-live="polite" sx={{ height: 0, overflow: 'hidden', position: 'absolute', width: 0 }}>{liveMessage}</Box>
-            <Box sx={{ height: canShowBoard ? '100%' : 'auto', minHeight: 0, minWidth: 0, textAlign: canShowBoard ? undefined : 'center', width: canShowBoard ? '100%' : 'min(100%, 440px)' }}>
+            <Box sx={{ height: canShowBoard ? '100%' : 'auto', minHeight: 0, minWidth: 0, textAlign: canShowBoard ? undefined : 'center', width: canShowBoard ? '100%' : '100%' }}>
 
             {match.phase === 'opening' && (
               <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
@@ -721,14 +729,14 @@ export function ConnectFourGameDialog({
             )}
           </DialogContent>
 
-          <DialogActions sx={{ flex: '0 0 auto', minHeight: 42, px: { xs: 2.5, md: '34px' }, pb: '14px', pt: 0 }}>
+          <DialogActions sx={canShowBoard ? { flex: '0 0 auto', minHeight: 42, px: { xs: 2.5, md: '34px' }, pb: '14px', pt: 0 } : gameModalActionsSx}>
             {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
               <>
-                <Button onClick={() => onRespond(false)}>Decline</Button>
-                <Button variant="contained" onClick={() => onRespond(true)}>Accept</Button>
+                <Button onClick={() => onRespond(false)} sx={gameModalSecondaryButtonSx}>Decline</Button>
+                <Button variant="contained" onClick={() => onRespond(true)} sx={gameModalPrimaryButtonSx}>Accept</Button>
               </>
             )}
-            {(match.phase === 'opening' || match.phase === 'waiting' || match.phase === 'round-waiting') && <Button onClick={onClose}>Cancel</Button>}
+            {(match.phase === 'opening' || match.phase === 'waiting' || match.phase === 'round-waiting') && <Button onClick={onClose} sx={gameModalSecondaryButtonSx}>Cancel</Button>}
             {match.phase === 'active' && <Button onClick={() => setResignConfirmationOpen(true)} sx={{ background: 'transparent', color: '#ff4e4e', fontSize: 13, fontWeight: 600, letterSpacing: '0.02em', p: 1 }}>RESIGN</Button>}
             {match.phase === 'finished' && (
               <>
@@ -737,16 +745,16 @@ export function ConnectFourGameDialog({
                     Rematch
                   </Button>
                 )}
-                <Button onClick={onClose}>Close</Button>
+                <Button onClick={onClose} sx={canShowBoard ? undefined : gameModalSecondaryButtonSx}>Close</Button>
               </>
             )}
           </DialogActions>
         </>
       )}
     </Dialog>
-    <Dialog open={resignConfirmationOpen} onClose={() => setResignConfirmationOpen(false)} aria-labelledby="connect-four-resign-title" PaperProps={{ sx: { backgroundColor: '#0b1927', border: `1px solid ${alpha('#63869d', 0.36)}`, borderRadius: '8px', color: '#f4f6f8', width: 'min(360px, calc(100vw - 32px))' } }}>
-      <DialogTitle id="connect-four-resign-title" sx={{ fontSize: 18, fontWeight: 700, pb: 1 }}>Resign this game?</DialogTitle>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}><Button onClick={() => setResignConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" onClick={() => { setResignConfirmationOpen(false); onResign(); }}>Resign</Button></DialogActions>
+    <Dialog open={resignConfirmationOpen} onClose={() => setResignConfirmationOpen(false)} aria-labelledby="connect-four-resign-title" PaperProps={{ sx: gameModalPaperSx }}>
+      <DialogTitle id="connect-four-resign-title" sx={{ px: { xs: 2.5, sm: '26px' }, pb: '14px', pt: { xs: 2.25, sm: '24px' } }}><Typography sx={{ fontSize: 19, fontWeight: 700 }}>Resign this game?</Typography><Box aria-hidden sx={gameModalDividerSx} /></DialogTitle>
+      <DialogActions sx={gameModalActionsSx}><Button onClick={() => setResignConfirmationOpen(false)} sx={gameModalSecondaryButtonSx}>Cancel</Button><Button color="error" variant="contained" sx={gameModalDangerButtonSx} onClick={() => { setResignConfirmationOpen(false); onResign(); }}>Resign</Button></DialogActions>
     </Dialog>
     </>
   );

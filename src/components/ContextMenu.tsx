@@ -545,14 +545,31 @@ export const ContextMenu = ({
               });
             }}
             sx={{
-              backgroundColor: 'rgba(76, 141, 255, 0.12)',
-              color: '#d7e6ff',
+              backgroundColor:
+                theme.palette.mode === 'dark'
+                  ? 'rgba(76, 141, 255, 0.12)'
+                  : 'rgba(37, 99, 235, 0.1)',
+              color:
+                theme.palette.mode === 'dark'
+                  ? '#d7e6ff'
+                  : '#1e40af',
               '&:hover': {
-                backgroundColor: 'rgba(76, 141, 255, 0.2)',
+                backgroundColor:
+                  theme.palette.mode === 'dark'
+                    ? 'rgba(76, 141, 255, 0.2)'
+                    : 'rgba(37, 99, 235, 0.16)',
               },
             }}
           >
-            <ListItemIcon sx={{ color: '#a9c9ff', minWidth: '32px' }}>
+            <ListItemIcon
+              sx={{
+                color:
+                  theme.palette.mode === 'dark'
+                    ? '#a9c9ff'
+                    : '#1e40af',
+                minWidth: '32px',
+              }}
+            >
               <InfoOutlinedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>

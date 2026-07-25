@@ -964,9 +964,13 @@ export const ChatList = ({
             reticulumChatEnabled
               ? {
                   scrollbarColor: 'transparent transparent',
-                  scrollbarWidth: 'auto',
-                  '&::-webkit-scrollbar': { width: '8px' },
-                  '&::-webkit-scrollbar-button': { display: 'none', height: 0 },
+                  scrollbarWidth: 'thin',
+                  '&::-webkit-scrollbar': { width: '6px' },
+                  '&::-webkit-scrollbar-button, &::-webkit-scrollbar-button:single-button': {
+                    display: 'none',
+                    height: 0,
+                    width: 0,
+                  },
                   '&::-webkit-scrollbar-track': {
                     backgroundColor: 'transparent',
                   },
@@ -974,22 +978,22 @@ export const ChatList = ({
                     backgroundColor: 'transparent',
                     backgroundClip: 'padding-box',
                     border: '1px solid transparent',
-                    borderRadius: '8px',
+                    borderRadius: '999px',
                     minHeight: '40px',
                   },
                   '&:hover': {
-                    scrollbarColor: `${alpha(theme.palette.text.secondary, 0.52)} transparent`,
+                    scrollbarColor: `${alpha(theme.palette.text.secondary, 0.42)} transparent`,
                     '&::-webkit-scrollbar-thumb': {
                       backgroundColor: alpha(
                         theme.palette.text.secondary,
-                        0.52
+                        0.42
                       ),
                       backgroundClip: 'padding-box',
                     },
                     '&::-webkit-scrollbar-thumb:hover': {
                       backgroundColor: alpha(
                         theme.palette.text.secondary,
-                        0.74
+                        0.59
                       ),
                       backgroundClip: 'padding-box',
                     },

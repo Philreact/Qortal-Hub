@@ -25,6 +25,14 @@ import {
 import { GameSessionChat } from './GameSessionChat';
 import { GameInvitationSentDialog } from './GameInvitationSentDialog';
 import { friendlyGameStatus } from './gameDialogText';
+import {
+  gameModalActionsSx,
+  gameModalDangerButtonSx,
+  gameModalDividerSx,
+  gameModalPaperSx,
+  gameModalPrimaryButtonSx,
+  gameModalSecondaryButtonSx,
+} from './gameModalStyles';
 import type { QortalLandGameMatchView } from './useQortalLandGame';
 
 type Props = {
@@ -212,29 +220,31 @@ export function CheckersGameDialog({
       maxWidth={false}
       sx={{ '& .MuiDialog-container': { alignItems: 'center', boxSizing: 'border-box', pb: '12px', pt: { xs: '72px', md: '92px' } } }}
       PaperProps={{ sx: {
-        background: '#071421', border: `1px solid ${alpha('#1aced6', 0.48)}`, borderRadius: '7px', color: '#f4f6f8',
+        ...(canShowBoard ? { background: '#071421', border: `1px solid ${alpha('#1aced6', 0.48)}`, borderRadius: '7px' } : gameModalPaperSx),
+        color: '#f4f6f8',
         display: 'flex',
         height: canShowBoard ? { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' } : 'auto', m: 0,
         maxHeight: { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' }, overflow: 'hidden',
-        width: canShowBoard ? 'min(1320px, calc(100vw - 28px))' : 'min(600px, calc(100vw - 28px))',
+        width: canShowBoard ? 'min(1320px, calc(100vw - 28px))' : gameModalPaperSx.width,
       } }}
     >
-      <DialogTitle sx={{ flex: '0 0 auto', px: { xs: 2.5, md: '34px' }, pb: '12px', pt: { xs: 2.5, md: '30px' } }}>
+      <DialogTitle sx={{ flex: '0 0 auto', px: canShowBoard ? { xs: 2.5, md: '34px' } : { xs: 2.5, sm: '26px' }, pb: canShowBoard ? '12px' : '14px', pt: canShowBoard ? { xs: 2.5, md: '30px' } : { xs: 2.25, sm: '24px' } }}>
         <Box sx={{ alignItems: 'center', display: 'flex' }}>
           <SportsEsportsRoundedIcon sx={{ color: '#22d8e4', height: 18, mr: '10px', width: 18 }} />
-          <Typography sx={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Checkers</Typography>
+          <Typography sx={{ fontSize: canShowBoard ? 21 : 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Checkers</Typography>
         </Box>
         {turnStatus && (canShowBoard || match.phase !== 'finished') && <Typography aria-live="polite" sx={{ color: ['active', 'reconnecting'].includes(match.phase) ? '#22d8e4' : '#f4f6f8', fontSize: 18, fontWeight: 700, lineHeight: '22px', mt: '9px' }}>{turnStatus}</Typography>}
+        {!canShowBoard && <Box aria-hidden sx={gameModalDividerSx} />}
       </DialogTitle>
-      <DialogContent sx={{ display: 'flex', flex: 1, flexDirection: 'column', justifyContent: canShowBoard ? undefined : 'center', minHeight: 0, overflow: 'hidden', px: { xs: 2.5, md: '34px' }, pb: '10px !important', pt: '0 !important' }}>
+      <DialogContent sx={{ display: 'flex', flex: 1, flexDirection: 'column', justifyContent: canShowBoard ? undefined : 'center', minHeight: 0, overflow: 'hidden', px: canShowBoard ? { xs: 2.5, md: '34px' } : { xs: 2.5, sm: '26px' }, pb: canShowBoard ? '10px !important' : '20px !important', pt: canShowBoard ? '0 !important' : '4px !important' }}>
         {match.error && canShowBoard && <Alert severity="warning" sx={{ flex: '0 0 auto', mb: 1 }}>{friendlyGameStatus(match.error)}</Alert>}
-        {!canShowBoard && <Box sx={{ alignSelf: 'center', minHeight: 0, overflowY: 'auto', py: 2, textAlign: 'center', width: 'min(100%, 440px)' }}>
+        {!canShowBoard && <Box sx={{ alignSelf: 'center', minHeight: 0, overflowY: 'auto', py: 1, textAlign: 'center', width: '100%' }}>
           {match.phase === 'opening' && <><Typography>Preparing the Checkers game…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
           {match.phase === 'waiting' && <><Typography>Waiting for {opponentName || 'the other player'} to respond…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
           {match.phase === 'round-waiting' && <><Typography>Waiting for {opponentName} to accept Checkers…</Typography><LinearProgress sx={{ mt: 2 }} /></>}
           {(match.phase === 'incoming' || match.phase === 'round-incoming') && (
             <Stack alignItems="center" spacing={1.5}>
-              <Typography sx={{ fontWeight: 800 }}>{match.phase === 'round-incoming' ? `${opponentName} would like to play Checkers.` : `${resolvePlayerName?.(match.requesterAddress) || match.requesterName || shortAddress(match.requesterAddress)} invited you to Checkers.`}</Typography>
+              <Typography sx={{ fontSize: 15, fontWeight: 700 }}>{match.phase === 'round-incoming' ? `${opponentName} would like to play Checkers.` : `${resolvePlayerName?.(match.requesterAddress) || match.requesterName || shortAddress(match.requesterAddress)} invited you to Checkers.`}</Typography>
               {match.phase === 'incoming' && <Typography sx={{ color: alpha('#fff', 0.6), fontSize: 13 }}>Invitation expires in {expiresIn}s</Typography>}
             </Stack>
           )}
@@ -315,16 +325,16 @@ export function CheckersGameDialog({
           </Box>
         )}
       </DialogContent>
-      <DialogActions sx={{ flex: '0 0 auto', minHeight: 42, px: { xs: 2.5, md: '34px' }, pb: '14px', pt: 0 }}>
-        {(match.phase === 'incoming' || match.phase === 'round-incoming') && <><Button onClick={() => onRespond(false)}>Decline</Button><Button variant="contained" onClick={() => onRespond(true)}>Accept</Button></>}
-        {['opening', 'waiting', 'round-waiting'].includes(match.phase) && <Button onClick={onClose}>Cancel</Button>}
+      <DialogActions sx={canShowBoard ? { flex: '0 0 auto', minHeight: 42, px: { xs: 2.5, md: '34px' }, pb: '14px', pt: 0 } : gameModalActionsSx}>
+        {(match.phase === 'incoming' || match.phase === 'round-incoming') && <><Button onClick={() => onRespond(false)} sx={gameModalSecondaryButtonSx}>Decline</Button><Button variant="contained" onClick={() => onRespond(true)} sx={gameModalPrimaryButtonSx}>Accept</Button></>}
+        {['opening', 'waiting', 'round-waiting'].includes(match.phase) && <Button onClick={onClose} sx={gameModalSecondaryButtonSx}>Cancel</Button>}
         {match.phase === 'active' && <Button onClick={() => setResignConfirmationOpen(true)} sx={{ background: 'transparent', color: '#ff4e4e', fontSize: 13, fontWeight: 600, letterSpacing: '0.02em', p: 1 }}>RESIGN</Button>}
-        {match.phase === 'finished' && <><Button onClick={onClose}>Leave</Button>{state && !match.sessionClosed && <Button variant="contained" onClick={onRematch} sx={{ '@keyframes checkersRematchPulse': { '0%, 100%': { boxShadow: `0 0 0 0 ${alpha('#22d8e4', 0.08)}` }, '50%': { boxShadow: `0 0 14px 3px ${alpha('#22d8e4', 0.32)}` } }, animation: 'checkersRematchPulse 1.8s ease-in-out infinite' }}>Rematch</Button>}</>}
+        {match.phase === 'finished' && <><Button onClick={onClose} sx={canShowBoard ? undefined : gameModalSecondaryButtonSx}>Leave</Button>{state && !match.sessionClosed && <Button variant="contained" onClick={onRematch} sx={{ '@keyframes checkersRematchPulse': { '0%, 100%': { boxShadow: `0 0 0 0 ${alpha('#22d8e4', 0.08)}` }, '50%': { boxShadow: `0 0 14px 3px ${alpha('#22d8e4', 0.32)}` } }, animation: 'checkersRematchPulse 1.8s ease-in-out infinite' }}>Rematch</Button>}</>}
       </DialogActions>
     </Dialog>
-    <Dialog open={resignConfirmationOpen} onClose={() => setResignConfirmationOpen(false)} aria-labelledby="checkers-resign-title" PaperProps={{ sx: { backgroundColor: '#0b1927', border: `1px solid ${alpha('#63869d', 0.36)}`, borderRadius: '8px', color: '#f4f6f8', width: 'min(360px, calc(100vw - 32px))' } }}>
-      <DialogTitle id="checkers-resign-title" sx={{ fontSize: 18, fontWeight: 700, pb: 1 }}>Resign this game?</DialogTitle>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}><Button onClick={() => setResignConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" onClick={() => { setResignConfirmationOpen(false); onResign(); }}>Resign</Button></DialogActions>
+    <Dialog open={resignConfirmationOpen} onClose={() => setResignConfirmationOpen(false)} aria-labelledby="checkers-resign-title" PaperProps={{ sx: gameModalPaperSx }}>
+      <DialogTitle id="checkers-resign-title" sx={{ px: { xs: 2.5, sm: '26px' }, pb: '14px', pt: { xs: 2.25, sm: '24px' } }}><Typography sx={{ fontSize: 19, fontWeight: 700 }}>Resign this game?</Typography><Box aria-hidden sx={gameModalDividerSx} /></DialogTitle>
+      <DialogActions sx={gameModalActionsSx}><Button onClick={() => setResignConfirmationOpen(false)} sx={gameModalSecondaryButtonSx}>Cancel</Button><Button color="error" variant="contained" sx={gameModalDangerButtonSx} onClick={() => { setResignConfirmationOpen(false); onResign(); }}>Resign</Button></DialogActions>
     </Dialog>
     </>
   );

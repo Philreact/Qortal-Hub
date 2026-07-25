@@ -46,9 +46,10 @@ export function FindGroupModal({ open, setOpen }: FindGroupModalProps) {
         open={open}
         PaperProps={{
           sx: {
-            backgroundColor: '#1D2028',
+            backgroundColor: 'background.paper',
             backgroundImage: 'none',
-            border: '1px solid rgba(255, 255, 255, 0.13)',
+            border: '1px solid',
+            borderColor: 'divider',
             borderRadius: '12px',
             boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
             display: 'flex',

@@ -14,18 +14,13 @@ import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineR
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import PersonSearchRoundedIcon from '@mui/icons-material/PersonSearchRounded';
-import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { executeEvent } from '../utils/events';
 import { useBlockedAddresses } from '../hooks/useBlockUsers';
-import { useAtom, useAtomValue } from 'jotai';
-import {
-  isRunningPublicNodeAtom,
-  reticulumEnabledAtom,
-  userInfoAtom,
-} from '../atoms/global';
+import { useAtom } from 'jotai';
+import { isRunningPublicNodeAtom } from '../atoms/global';
 import { useTranslation } from 'react-i18next';
 import { CustomStyledMenu } from './ContextMenu';
 import { ReticulumUserCard } from './Chat/ReticulumUserCard';
@@ -51,9 +46,6 @@ export const WrapperUserAction = ({
     'tutorial',
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
-  const userInfo = useAtomValue(userInfoAtom);
-  const reticulumEnabled = useAtomValue(reticulumEnabledAtom);
-
   const [anchorEl, setAnchorEl] = useState(null);
   const [cardAnchorEl, setCardAnchorEl] = useState(null);
   const cardInstanceId = useRef(
@@ -189,24 +181,6 @@ export const WrapperUserAction = ({
                 </ListItemIcon>
                 <ListItemText primary="Send Message" />
               </MenuItem>
-
-              {reticulumEnabled && address && address !== userInfo?.address && (
-                <MenuItem
-                  onClick={() => {
-                    handleClose();
-                    executeEvent('startReticulumDirectVoiceCall', {
-                      address,
-                      name,
-                    });
-                  }}
-                  sx={reticulumMenuItemSx}
-                >
-                  <ListItemIcon>
-                    <CallRoundedIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Start Voice Call" />
-                </MenuItem>
-              )}
 
               <MenuItem
                 onClick={() => {
