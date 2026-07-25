@@ -283,11 +283,9 @@ const ListOfMembers = ({
           landPresenceByAddress.get(member.member)?.roomId === 'park'
       )
       .sort(sortByPresenceThenName);
-    const onlineMembers = regularMembers
+    const remainingMembers = regularMembers
       .filter(
-        (member) =>
-          !landPresenceByAddress.has(member.member) &&
-          (onlineAddresses.has(member.member) || statusMap.has(member.member))
+        (member) => !landPresenceByAddress.has(member.member)
       )
       .sort(sortByPresenceThenName);
 
@@ -326,7 +324,7 @@ const ListOfMembers = ({
         ? parkMembers.map((member) => ({ member, type: 'member' }))
         : []),
       {
-        count: onlineMembers.length,
+        count: remainingMembers.length,
         expanded: expandedSections.members,
         first: false,
         label: 'Members',
@@ -334,7 +332,7 @@ const ListOfMembers = ({
         type: 'section',
       },
       ...(expandedSections.members
-        ? onlineMembers.map((member) => ({ member, type: 'member' }))
+        ? remainingMembers.map((member) => ({ member, type: 'member' }))
         : []),
     ];
   }, [
