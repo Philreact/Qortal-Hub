@@ -127,6 +127,10 @@ import { DirectsSidebar } from './DirectsSidebar';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
 import {
+  orderReticulumGroups,
+  readReticulumGroupOrder,
+} from './reticulumGroupRail';
+import {
   AdminRowBox,
   CenterBox,
   ChatContentBox,
@@ -166,8 +170,9 @@ const LazyQortalLandMembers = lazy(() =>
 const LazyBlockedUsersModal = lazy(() =>
   import('./BlockedUsersModal').then((m) => ({ default: m.BlockedUsersModal }))
 );
+const loadQortalLandModule = () => import('../QortalLand/QortalLand');
 const LazyQortalLand = lazy(() =>
-  import('../QortalLand/QortalLand').then((m) => ({ default: m.QortalLand }))
+  loadQortalLandModule().then((m) => ({ default: m.QortalLand }))
 );
 
 // Re-export for backward compatibility with existing imports from Group.tsx
@@ -4105,6 +4110,48 @@ export const Group = ({
     [bumpReticulumReadEntryToken]
   );
 
+  const openTopGroupQortalLand = useCallback(() => {
+    if (!reticulumEnabled) {
+      executeEvent('openGlobalSnackBar', {
+        message: 'Enable Reticulum to enter QortalLand.',
+        type: 'info',
+        duration: 4800,
+      });
+      return;
+    }
+
+    const availableGroups =
+      memberGroupsWithReticulumActivity.length > 0
+        ? memberGroupsWithReticulumActivity
+        : memberGroupsForReticulum;
+    const [topGroup] = orderReticulumGroups(
+      availableGroups,
+      readReticulumGroupOrder()
+    );
+
+    if (!topGroup?.groupId) {
+      executeEvent('openGlobalSnackBar', {
+        message: 'Join a Q-Chat group to enter QortalLand.',
+        type: 'info',
+        duration: 4800,
+      });
+      return;
+    }
+
+    // Begin downloading the game bundle while Q-Chat resolves the selected
+    // group's membership/key state instead of waiting for that work to finish.
+    void loadQortalLandModule();
+    selectGroupFunc(topGroup);
+    setMountedLandGroupId(String(topGroup.groupId));
+    setGroupSection('land');
+    openQChatTab();
+  }, [
+    memberGroupsForReticulum,
+    memberGroupsWithReticulumActivity,
+    reticulumEnabled,
+    selectGroupFunc,
+  ]);
+
   const selectedGroupIdKey = selectedGroup?.groupId
     ? String(selectedGroup.groupId)
     : '';
@@ -4374,7 +4421,7 @@ export const Group = ({
                   canManageReticulumGroup={canManageReticulumGroup}
                   sectionLabel={
                     groupSection === 'land'
-                      ? 'QortalLand'
+                      ? `QortalLand - ${selectedGroup?.groupName || 'Group'}`
                       : groupSection === 'forum'
                         ? 'Threads'
                         : groupSection === 'members'
@@ -4808,7 +4855,22 @@ export const Group = ({
                   active={groupSection === 'land'}
                   topOffset={reticulumChatEnabled ? 50 : 0}
                 >
-                  <Suspense fallback={null}>
+                  <Suspense
+                    fallback={
+                      <CenterBox
+                        sx={{
+                          backgroundColor: 'background.default',
+                          flexDirection: 'column',
+                          gap: 1.5,
+                        }}
+                      >
+                        <CircularProgress size={28} />
+                        <Typography color="text.secondary" variant="body2">
+                          Entering QortalLand…
+                        </Typography>
+                      </CenterBox>
+                    }
+                  >
                     <LazyQortalLand
                       key={selectedGroup?.groupId}
                       groupId={Number(selectedGroup?.groupId)}
@@ -4823,6 +4885,28 @@ export const Group = ({
                   </Suspense>
                 </PersistentSectionLayer>
               )}
+
+              {!canMountQortalLand &&
+                groupSection === 'land' &&
+                selectedGroup && (
+                  <PersistentSectionLayer
+                    active
+                    topOffset={reticulumChatEnabled ? 50 : 0}
+                  >
+                    <CenterBox
+                      sx={{
+                        backgroundColor: 'background.default',
+                        flexDirection: 'column',
+                        gap: 1.5,
+                      }}
+                    >
+                      <CircularProgress size={28} />
+                      <Typography color="text.secondary" variant="body2">
+                        Preparing QortalLand…
+                      </Typography>
+                    </CenterBox>
+                  </PersistentSectionLayer>
+                )}
 
               <FloatingButtonContainerBox>
                 {((isPrivate &&
@@ -5132,6 +5216,7 @@ export const Group = ({
             setMobileViewMode={setMobileViewMode}
             setDesktopViewMode={setDesktopViewMode}
             desktopViewMode={desktopViewMode}
+            onOpenQortalLand={openTopGroupQortalLand}
           />
         </MainContentBox>
 

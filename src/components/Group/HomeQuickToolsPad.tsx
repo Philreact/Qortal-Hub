@@ -10,12 +10,12 @@ import { useTranslation } from 'react-i18next';
 import { Box, ButtonBase, Tooltip, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 import NotificationsOffRoundedIcon from '@mui/icons-material/NotificationsOffRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SpaRoundedIcon from '@mui/icons-material/SpaRounded';
+import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import { AppsIcon } from '../../assets/Icons/AppsIcon';
 import { MessagingIconFilled } from '../../assets/Icons/MessagingIconFilled';
 import { executeEvent } from '../../utils/events';
@@ -31,6 +31,7 @@ type HomeQuickToolsPadProps = {
   fillHeight?: boolean;
   onOpenApps?: () => void;
   onOpenChat?: () => void;
+  onOpenQortalLand?: () => void;
   onOpenSettings?: () => void;
 };
 
@@ -68,7 +69,7 @@ const QUICK_TOOL_GRID_PLACEMENT: Record<
   'backup-wallet': { gridColumn: '1', gridRow: '2' },
   minting: { gridColumn: '2', gridRow: '2' },
   notifications: { gridColumn: '3', gridRow: '2' },
-  'qortino-sandbox': { gridColumn: '4', gridRow: '2' },
+  'qortal-land': { gridColumn: '4', gridRow: '2' },
 };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -100,6 +101,7 @@ export const HomeQuickToolsPad = ({
   fillHeight = false,
   onOpenApps,
   onOpenChat,
+  onOpenQortalLand,
 }: HomeQuickToolsPadProps) => {
   const theme = useTheme();
   const { t } = useTranslation('core');
@@ -305,16 +307,18 @@ export const HomeQuickToolsPad = ({
       },
       {
         accent: QUICK_TOOL_LED_COLOR,
-        iconScale: 1.1,
-        key: 'qortino-sandbox',
-        label: t('quick_tools_pad.extras'),
-        onAction: () => {},
+        iconScale: 1.04,
+        key: 'qortal-land',
+        label: 'QortalLand',
+        onAction: () => {
+          onOpenQortalLand?.();
+        },
         renderIcon: () => (
-          <AddRoundedIcon sx={{ fontSize: QUICK_TOOL_ICON_SIZE }} />
+          <SportsEsportsIcon sx={{ fontSize: QUICK_TOOL_ICON_SIZE }} />
         ),
       },
     ],
-    [notificationsMuted, onOpenApps, onOpenChat, t]
+    [notificationsMuted, onOpenApps, onOpenChat, onOpenQortalLand, t]
   );
 
   return (

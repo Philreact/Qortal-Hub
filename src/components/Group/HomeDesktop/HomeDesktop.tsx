@@ -95,6 +95,7 @@ export const HomeDesktop = ({
   setDesktopViewMode,
   desktopViewMode,
   onOpenSettings,
+  onOpenQortalLand,
 }) => {
   const groupActivityPanelRef = useDashboardPanelMouseLight<HTMLDivElement>();
   const groupActivityCardHeightRef = useRef<HTMLDivElement | null>(null);
@@ -749,6 +750,7 @@ export const HomeDesktop = ({
                               fillHeight={false}
                               onOpenApps={handleOpenAppsPanel}
                               onOpenChat={handleOpenQChatPanel}
+                              onOpenQortalLand={onOpenQortalLand}
                               onOpenSettings={onOpenSettings}
                             />
                           </Box>
@@ -876,6 +878,7 @@ export const HomeDesktop = ({
                               fillHeight={false}
                               onOpenApps={handleOpenAppsPanel}
                               onOpenChat={handleOpenQChatPanel}
+                              onOpenQortalLand={onOpenQortalLand}
                               onOpenSettings={onOpenSettings}
                             />
                           </Box>
