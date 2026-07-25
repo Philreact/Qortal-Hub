@@ -1,6 +1,4 @@
 import SportsEsportsRoundedIcon from '@mui/icons-material/SportsEsportsRounded';
-import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
-import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
 import {
   Box,
   Button,
@@ -8,21 +6,24 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  IconButton,
-  Tooltip,
   Typography,
   alpha,
   useMediaQuery,
 } from '@mui/material';
+import {
+  gameModalActionsSx,
+  gameModalDividerSx,
+  gameModalPaperSx,
+  gameModalSecondaryButtonSx,
+  gameModalTitleSx,
+} from './gameModalStyles';
 
 type Props = {
   expiresAt?: number;
   gameTitle: string;
   now: number;
   onCancel: () => void;
-  onToggleSound?: () => void;
   opponentName: string;
-  soundMuted?: boolean;
 };
 
 const INVITATION_DURATION_MS = 60_000;
@@ -36,9 +37,7 @@ export function GameInvitationSentDialog({
   gameTitle,
   now,
   onCancel,
-  onToggleSound,
   opponentName,
-  soundMuted,
 }: Props) {
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const remainingMs = expiresAt === undefined
@@ -70,38 +69,21 @@ export function GameInvitationSentDialog({
       }}
       PaperProps={{
         sx: {
-          background: `radial-gradient(circle at 50% 45%, ${alpha('#083156', 0.42)} 0%, ${alpha('#071421', 0.98)} 48%, #06111d 100%)`,
-          border: `1px solid ${alpha('#22d8e4', 0.72)}`,
-          borderRadius: { xs: '14px', sm: '18px' },
-          boxShadow: `0 24px 70px ${alpha('#000', 0.52)}, inset 0 1px 0 ${alpha('#8efbff', 0.06)}`,
-          color: '#f4f6f8',
+          ...gameModalPaperSx,
           display: 'flex',
           maxHeight: { xs: 'calc(100dvh - 84px)', md: 'calc(100dvh - 104px)' },
-          minHeight: { xs: 'min(320px, calc(100dvh - 84px))', sm: 'min(350px, calc(100dvh - 104px))' },
-          m: 0,
-          overflow: 'hidden',
-          width: 'min(90vw, 640px)',
         },
       }}
     >
-      <DialogTitle sx={{ px: { xs: 2.5, sm: 3.5 }, pb: 0, pt: { xs: 2.25, sm: 3 } }}>
+      <DialogTitle sx={gameModalTitleSx}>
         <Box sx={{ alignItems: 'center', display: 'flex', minHeight: 36 }}>
-          <SportsEsportsRoundedIcon sx={{ color: '#2de7ef', height: { xs: 22, sm: 25 }, mr: 1.25, width: { xs: 22, sm: 25 } }} />
-          <Typography component="span" sx={{ fontSize: { xs: 20, sm: 24 }, fontWeight: 750, letterSpacing: '-0.025em', lineHeight: 1.1 }}>
+          <Box sx={{ alignItems: 'center', backgroundColor: alpha('#82afea', 0.08), border: `1px solid ${alpha('#82afea', 0.28)}`, borderRadius: '8px', display: 'flex', height: 38, justifyContent: 'center', mr: 1.5, width: 38 }}>
+            <SportsEsportsRoundedIcon sx={{ color: '#82afea', height: 20, width: 20 }} />
+          </Box>
+          <Typography component="span" sx={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.018em', lineHeight: 1.2 }}>
             {gameTitle}
           </Typography>
-          <Box sx={{ flex: 1 }} />
-          {onToggleSound && (
-            <Tooltip title={soundMuted ? 'Turn game sounds on' : 'Mute game sounds'}>
-              <IconButton
-                aria-label={soundMuted ? 'Turn game sounds on' : 'Mute game sounds'}
-                onClick={onToggleSound}
-                sx={{ color: '#92a2b4', height: 36, width: 36, '&:hover': { backgroundColor: alpha('#22d8e4', 0.08), color: '#d9e8f4' } }}
-              >
-                {soundMuted ? <VolumeOffRoundedIcon /> : <VolumeUpRoundedIcon />}
-              </IconButton>
-            </Tooltip>
-          )}
+          <Box sx={{ ...gameModalDividerSx, flex: 1, ml: 1.75, mt: 0 }} />
         </Box>
       </DialogTitle>
 
@@ -113,8 +95,9 @@ export function GameInvitationSentDialog({
           flexDirection: 'column',
           justifyContent: 'center',
           overflowY: 'auto',
-          px: { xs: 2.5, sm: 3.5 },
-          py: { xs: 1.5, sm: 2 },
+          px: { xs: 2.5, sm: '26px' },
+          pb: '20px',
+          pt: '6px',
           textAlign: 'center',
         }}
       >
@@ -130,10 +113,10 @@ export function GameInvitationSentDialog({
               '50%': { filter: 'drop-shadow(0 0 17px rgba(34,216,228,.34))', transform: 'scale(1.025)' },
             },
             animation: reducedMotion ? 'none' : 'qortalLandInvitationBreathe 2.4s ease-in-out infinite',
-            height: { xs: 84, sm: 96 },
-            mb: { xs: 1.5, sm: 1.75 },
+            height: 70,
+            mb: 1.5,
             position: 'relative',
-            width: { xs: 84, sm: 96 },
+            width: 70,
           }}
         >
           <Box component="svg" viewBox="0 0 150 150" sx={{ display: 'block', height: '100%', transform: 'rotate(-90deg)', width: '100%' }}>
@@ -153,41 +136,30 @@ export function GameInvitationSentDialog({
               style={{ transition: reducedMotion ? 'none' : 'stroke-dashoffset 700ms linear' }}
             />
           </Box>
-          <SportsEsportsRoundedIcon sx={{ color: '#2de7ef', height: { xs: 25, sm: 29 }, left: '50%', position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)', width: { xs: 25, sm: 29 } }} />
+           <SportsEsportsRoundedIcon sx={{ color: '#2de7ef', height: 24, left: '50%', position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)', width: 24 }} />
         </Box>
 
-        <Typography id={titleId} sx={{ fontSize: { xs: 25, sm: 29 }, fontWeight: 750, letterSpacing: '-0.035em', lineHeight: 1.08 }}>
+        <Typography id={titleId} sx={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.2 }}>
           Invitation sent
         </Typography>
-        <Typography id={descriptionId} sx={{ color: '#a9b5c4', fontSize: { xs: 14, sm: 16 }, lineHeight: 1.35, mt: 1 }}>
+        <Typography id={descriptionId} sx={{ color: '#a9b5c4', fontSize: 14, lineHeight: 1.4, mt: 0.75 }}>
           Waiting for {opponentName || 'the other player'} to respond...
         </Typography>
-        <Box aria-hidden sx={{ alignItems: 'center', display: 'flex', my: { xs: 1.5, sm: 1.75 }, width: 'min(100%, 300px)' }}>
+        <Box aria-hidden sx={{ alignItems: 'center', display: 'flex', my: 1.5, width: 'min(100%, 250px)' }}>
           <Box sx={{ background: `linear-gradient(90deg, transparent, ${alpha('#22d8e4', 0.8)})`, height: '1px', flex: 1 }} />
           <Box sx={{ backgroundColor: '#22d8e4', borderRadius: '50%', boxShadow: `0 0 10px ${alpha('#22d8e4', 0.85)}`, height: 5, mx: 0.5, width: 5 }} />
           <Box sx={{ background: `linear-gradient(90deg, ${alpha('#22d8e4', 0.8)}, transparent)`, height: '1px', flex: 1 }} />
         </Box>
-        <Typography sx={{ color: '#9aa8b8', fontSize: { xs: 12, sm: 14 }, lineHeight: 1.4 }}>
+        <Typography sx={{ color: '#9aa8b8', fontSize: 12.5, lineHeight: 1.4 }}>
           Invitation expires automatically after 60 seconds.
         </Typography>
       </DialogContent>
 
-      <DialogActions sx={{ justifyContent: 'flex-end', px: { xs: 2.5, sm: 3.5 }, pb: { xs: 2.25, sm: 3 }, pt: 0 }}>
+      <DialogActions sx={gameModalActionsSx}>
         <Button
           autoFocus
           onClick={onCancel}
-          variant="outlined"
-          sx={{
-            borderColor: alpha('#43bde9', 0.48),
-            borderRadius: '999px',
-            color: '#80cfff',
-            fontSize: { xs: 13, sm: 14 },
-            fontWeight: 650,
-            height: { xs: 40, sm: 44 },
-            minWidth: { xs: 120, sm: 138 },
-            px: 3,
-            '&:hover': { backgroundColor: alpha('#2da7dd', 0.08), borderColor: alpha('#58c9f5', 0.78) },
-          }}
+          sx={gameModalSecondaryButtonSx}
         >
           Cancel
         </Button>

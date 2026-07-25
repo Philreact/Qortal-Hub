@@ -5145,7 +5145,6 @@ export function QortalLand({
           tooltip: any;
           tooltipBackground: any;
           tooltipTitle: any;
-          tooltipBody: any;
         }>();
         private pendingRoomTransition: QortalLandRoomTransitionTarget | null = null;
         private roomAssetLoadCallbacks = new Map<LandRoomId, Array<() => void>>();
@@ -8172,37 +8171,23 @@ export function QortalLand({
         private createProximityVoiceIndicator() {
           const container = this.add.container(0, 0);
           const glyph = this.add.graphics();
-          const tooltip = this.add.container(24, -45).setVisible(false);
+          const tooltip = this.add.container(24, -38).setVisible(false);
           const tooltipBackground = this.add.graphics();
-          tooltipBackground.fillStyle(0x040b14, 0.97);
-          tooltipBackground.lineStyle(1, 0x35445b, 0.9);
-          tooltipBackground.fillRoundedRect(0, 0, 174, 58, 8);
-          tooltipBackground.strokeRoundedRect(0, 0, 174, 58, 8);
-          const tooltipTitle = this.add.text(12, 10, 'Proximity Voice On', {
+          tooltipBackground.fillStyle(0x111827, 0.98);
+          tooltipBackground.lineStyle(1, 0x566176, 0.9);
+          tooltipBackground.fillRoundedRect(0, 0, 148, 34, 7);
+          tooltipBackground.strokeRoundedRect(0, 0, 148, 34, 7);
+          const tooltipTitle = this.add.text(12, 9, 'Proximity Voice On', {
             color: '#f5f8fd',
             fontFamily: 'Inter, Arial, sans-serif',
-            fontSize: '11px',
+            fontSize: '12px',
             fontStyle: 'bold',
           });
-          const tooltipBody = this.add.text(
-            12,
-            31,
-            'Connected to nearby players.',
-            {
-              color: '#9ca9ba',
-              fontFamily: 'Inter, Arial, sans-serif',
-              fontSize: '9px',
-            }
-          );
-          tooltip.add([
-            tooltipBackground,
-            tooltipTitle,
-            tooltipBody,
-          ]);
+          tooltip.add([tooltipBackground, tooltipTitle]);
           container.add([glyph, tooltip]);
-          container.setSize(32, 32);
+          container.setSize(48, 48);
           container.setInteractive(
-            new Phaser.Geom.Circle(0, 0, 16),
+            new Phaser.Geom.Circle(0, 0, 24),
             Phaser.Geom.Circle.Contains
           );
           container.input.cursor = 'pointer';
@@ -8223,7 +8208,6 @@ export function QortalLand({
             tooltip,
             tooltipBackground,
             tooltipTitle,
-            tooltipBody,
           };
         }
 
@@ -8291,6 +8275,7 @@ export function QortalLand({
               label?.y ?? avatar.y - LAND_CHARACTER_LABEL_OFFSET * scale
             );
             indicator.container.setScale(indicatorScale);
+            indicator.tooltip.setScale(1 / indicatorScale);
             indicator.container.setDepth((label?.depth ?? avatar.depth) + 10);
             indicator.glyph.clear();
             const color = muted ? 0x8b96a8 : speaking ? 0x4dffb8 : 0x2cf8ff;
@@ -8321,11 +8306,6 @@ export function QortalLand({
             }
             indicator.tooltipTitle.setText(
               muted ? 'Proximity Voice Muted' : 'Proximity Voice On'
-            );
-            indicator.tooltipBody.setText(
-              muted
-                ? 'Click to open voice controls.'
-                : 'Connected to nearby players.'
             );
           }
         }

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Box, ClickAwayListener, Popper, Typography } from '@mui/material';
+import { Box, ClickAwayListener, Popper, Typography, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import BoltRoundedIcon from '@mui/icons-material/BoltRounded';
@@ -42,6 +42,7 @@ export const GroupScoreBadge = ({
   popoverAlign = 'start',
   triggerVariant = 'badge',
 }: GroupScoreBadgeProps) => {
+  const theme = useTheme();
   const badgeRef = useRef<HTMLButtonElement | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [open, setOpen] = useState(false);
@@ -225,7 +226,10 @@ export const GroupScoreBadge = ({
             onMouseLeave={scheduleClose}
             role="dialog"
             sx={{
-              background: 'linear-gradient(180deg, #12161b 0%, #0c0f13 100%)',
+              background:
+                theme.palette.mode === 'dark'
+                  ? 'linear-gradient(180deg, #12161b 0%, #0c0f13 100%)'
+                  : theme.palette.background.paper,
               border: `0.75px solid ${alpha(color, 0.82)}`,
               borderRadius: '10px',
               boxShadow: '0 14px 30px rgba(0,0,0,0.42)',
@@ -254,9 +258,9 @@ export const GroupScoreBadge = ({
               <br />
               into one score
             </Typography>
-            <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.1)', mt: 1.35 }} />
+            <Box sx={{ borderTop: `1px solid ${theme.palette.divider}`, mt: 1.35 }} />
             {rows.map((row) => (
-              <Box key={row.label} sx={{ alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.075)', display: 'grid', gap: 1, gridTemplateColumns: '23px minmax(0,1fr) auto', py: 1.05 }}>
+              <Box key={row.label} sx={{ alignItems: 'center', borderBottom: `1px solid ${theme.palette.divider}`, display: 'grid', gap: 1, gridTemplateColumns: '23px minmax(0,1fr) auto', py: 1.05 }}>
                 <Box sx={{ color: 'text.secondary' }}>{row.icon}</Box>
                 <Box sx={{ minWidth: 0 }}>
                   <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{row.label} · {row.weight}</Typography>

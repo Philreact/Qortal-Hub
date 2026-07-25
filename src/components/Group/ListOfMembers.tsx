@@ -12,7 +12,6 @@ import {
   useTheme,
 } from '@mui/material';
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded';
-import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import Groups2RoundedIcon from '@mui/icons-material/Groups2Rounded';
 import LocalFloristRoundedIcon from '@mui/icons-material/LocalFloristRounded';
 import NightlifeRoundedIcon from '@mui/icons-material/NightlifeRounded';
@@ -35,6 +34,7 @@ import {
   getQortalLandPresence,
 } from '../QortalLand/qortalLandPresence';
 import { QortalLandAvailabilityTags } from '../QortalLand/QortalLandAvailabilityTags';
+import { MemberCategoryHeader } from './MemberCategoryHeader';
 
 const MEMBER_ROW_HEIGHT = 64;
 const QORTAL_LAND_REMOTE_TTL_MS = 30_000;
@@ -608,59 +608,20 @@ const ListOfMembers = ({
               : Groups2RoundedIcon;
       return (
         <div key={key} style={style}>
-          <Box
-            onClick={() =>
+          <MemberCategoryHeader
+            count={row.count}
+            expanded={expanded}
+            first={row.first}
+            icon={<SectionIcon sx={{ fontSize: 17 }} />}
+            label={row.label}
+            onToggle={() =>
               setExpandedSections((current) => ({
                 ...current,
                 [row.section]: !current[row.section],
               }))
             }
-            sx={{
-              alignItems: 'center',
-              borderRadius: '7px',
-              cursor: 'pointer',
-              display: 'flex',
-              height: row.first ? '100%' : 'calc(100% - 6px)',
-              mt: row.first ? 0 : 0.75,
-              px: 0.75,
-              '&:hover': {
-                backgroundColor: alpha(theme.palette.text.primary, 0.055),
-              },
-            }}
-          >
-            <SectionIcon
-              sx={{ color: 'text.secondary', fontSize: 17, mr: 0.75 }}
-            />
-            <Typography
-              sx={{
-                flex: 1,
-                fontSize: 11,
-                fontWeight: 750,
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
-              }}
-            >
-              {row.label}
-            </Typography>
-            <Typography
-              sx={{ color: 'text.secondary', fontSize: 11, mr: 0.25 }}
-            >
-              {row.count}
-            </Typography>
-            <IconButton
-              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${row.label}`}
-              size="small"
-              sx={{
-                color: 'text.secondary',
-                p: 0.25,
-                pointerEvents: 'none',
-                transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-                transition: 'transform 140ms ease',
-              }}
-            >
-              <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Box>
+            type={row.section}
+          />
         </div>
       );
     }

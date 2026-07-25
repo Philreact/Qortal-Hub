@@ -9,7 +9,9 @@ import {
   Skeleton,
   Tooltip,
   Typography,
+  useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
@@ -93,6 +95,7 @@ const formatCreatedDate = (timestamp?: number | string) => {
 };
 
 export const ReticulumGroupAboutModal = () => {
+  const theme = useTheme();
   const userInfo = useAtomValue(userInfoAtom);
   const [requestedGroup, setRequestedGroup] = useState<any>(null);
   const [details, setDetails] = useState<any>(null);
@@ -176,10 +179,20 @@ export const ReticulumGroupAboutModal = () => {
       maxWidth={false}
       PaperProps={{
         sx: {
-          background: 'linear-gradient(180deg, #1b1e23 0%, #15181d 100%)',
-          border: '1px solid #343a44',
+          background:
+            theme.palette.mode === 'dark'
+              ? 'linear-gradient(180deg, #1b1e23 0%, #15181d 100%)'
+              : theme.palette.background.paper,
+          border: `1px solid ${
+            theme.palette.mode === 'dark'
+              ? '#343a44'
+              : alpha(theme.palette.text.primary, 0.2)
+          }`,
           borderRadius: '12px',
-          boxShadow: '0 22px 56px rgba(0, 0, 0, 0.5)',
+          boxShadow:
+            theme.palette.mode === 'dark'
+              ? '0 22px 56px rgba(0, 0, 0, 0.5)'
+              : '0 22px 56px rgba(0, 0, 0, 0.22)',
           maxHeight: 'calc(100vh - 32px)',
           m: 2,
           width: 'min(480px, calc(100vw - 32px))',
@@ -227,7 +240,7 @@ export const ReticulumGroupAboutModal = () => {
               </Tooltip>
             )}
 
-            <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.085)', display: 'grid', gap: 1.1, mt: 2, pt: 1.75 }}>
+            <Box sx={{ borderTop: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.085)' : alpha(theme.palette.text.primary, 0.16)}`, display: 'grid', gap: 1.1, mt: 2, pt: 1.75 }}>
               {statRows.map(([label, value]) => (
                 <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
                   <Typography sx={{ color: 'text.secondary', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{label}</Typography>
@@ -269,7 +282,7 @@ export const ReticulumGroupAboutModal = () => {
               ))}
             </Box>
 
-            <Box sx={{ alignItems: 'center', borderTop: '1px solid rgba(255,255,255,0.085)', display: 'flex', gap: 1, justifyContent: 'space-between', mt: 2, pt: 1.75 }}>
+            <Box sx={{ alignItems: 'center', borderTop: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.085)' : alpha(theme.palette.text.primary, 0.16)}`, display: 'flex', gap: 1, justifyContent: 'space-between', mt: 2, pt: 1.75 }}>
               <Box sx={{ minWidth: 0 }}>
                 <Typography sx={{ color: 'text.secondary', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em' }}>GROUP INVITE LINK</Typography>
                 <Typography title={inviteLink} sx={{ fontSize: 12, mt: 0.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncateInvite(inviteLink)}</Typography>

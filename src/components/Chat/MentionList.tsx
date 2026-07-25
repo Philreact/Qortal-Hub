@@ -8,6 +8,7 @@ import {
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
+import { useTheme } from '@mui/material';
 import type { MentionSuggestionItem } from './TipTap';
 
 type MentionListProps = {
@@ -37,6 +38,7 @@ const SECTION_ORDER: MentionSuggestionItem['section'][] = [
 
 const MentionList = forwardRef<MentionListHandle, MentionListProps>(
   ({ command, items }, ref) => {
+    const theme = useTheme();
     const [selectedIndex, setSelectedIndex] = useState(0);
 
     const groupedItems = useMemo(
@@ -90,6 +92,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
       <div
         aria-label="Mention suggestions"
         className="qchat-mention-menu"
+        data-color-mode={theme.palette.mode}
         role="listbox"
       >
         <div className="qchat-mention-menu__scroll">

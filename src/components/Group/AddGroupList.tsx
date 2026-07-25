@@ -518,7 +518,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               px: { xs: 1.25, sm: 1.75, md: 2.25 },
               py: 1.25,
               '&:hover': {
-                bgcolor: 'rgba(255,255,255,0.02)',
+                bgcolor: 'action.hover',
               },
               '&:focus-visible': {
                 boxShadow: 'inset 0 0 0 2px rgba(96,165,250,0.7)',
@@ -530,8 +530,8 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
               imgProps={{ loading: 'lazy' }}
               src={avatarUrl}
               sx={{
-                backgroundColor: '#0D1015',
-                border: '1px solid rgba(255,255,255,0.055)',
+                backgroundColor: 'background.default',
+                border: `1px solid ${theme.palette.divider}`,
                 flexShrink: 0,
                 height: { xs: 46, md: 52 },
                 width: { xs: 46, md: 52 },
@@ -952,17 +952,17 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
             sx={{
               '& .MuiOutlinedInput-root': {
                 borderRadius: '9px',
-                bgcolor: '#0D0F14',
+                bgcolor: 'background.default',
                 color: 'text.primary',
                 fontSize: 15,
                 height: 44,
                 letterSpacing: '-0.005em',
                 px: 2,
                 '& .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'rgba(255,255,255,0.16)',
+                  borderColor: 'divider',
                 },
                 '&:hover .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'rgba(255,255,255,0.24)',
+                  borderColor: 'text.secondary',
                 },
                 '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
                   borderColor: '#2563eb',
@@ -995,15 +995,15 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
             width: '100%',
             flexGrow: 1,
             minHeight: 0,
-            backgroundColor: '#14171D',
-            border: '1px solid rgba(255,255,255,0.075)',
+            backgroundColor: 'background.default',
+            border: `1px solid ${theme.palette.divider}`,
             borderRadius: '10px',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
           }}
         >
-          <Box sx={{ alignItems: 'center', backgroundColor: '#171A22', borderBottom: '1px solid rgba(255,255,255,0.075)', boxSizing: 'border-box', display: 'flex', flexShrink: 0, height: 44, justifyContent: 'space-between', px: 2 }}>
+          <Box sx={{ alignItems: 'center', backgroundColor: 'background.paper', borderBottom: `1px solid ${theme.palette.divider}`, boxSizing: 'border-box', display: 'flex', flexShrink: 0, height: 44, justifyContent: 'space-between', px: 2 }}>
             <Typography sx={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: '21px' }}>Groups</Typography>
             <Typography sx={{ color: 'text.secondary', fontSize: 13.5, fontWeight: 500 }}>{sortDescription}</Typography>
           </Box>

@@ -85,6 +85,7 @@ import {
   isReticulumCompressibleImage,
   isReticulumGifFile,
 } from './reticulumImagePreparation';
+import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 
 const uid = new ShortUniqueId({ length: 5 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
@@ -3540,40 +3541,14 @@ export const ChatDirect = ({
         </Box>
       </Box>
 
-      <Dialog
+      <ReticulumLargeImageDialog
         open={Boolean(reticulumImageChoice)}
         onClose={closeReticulumImageChoice}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Send image</DialogTitle>
-        <DialogContent>
-          <Typography sx={{ fontSize: '14px', mb: 1 }}>
-            This image is {formatQchatFileSize(reticulumImageChoice?.file.size)}
-            .
-          </Typography>
-          <Typography sx={{ color: 'text.secondary', fontSize: '13px' }}>
-            Compress it for chat display, or send the original image as an
-            attachment.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={useReticulumImageAsAttachment}
-            disabled={isCompressingReticulumImage}
-          >
-            As attachment
-          </Button>
-          <Button
-            onClick={useReticulumCompressedImage}
-            disabled={isCompressingReticulumImage}
-            variant="contained"
-            autoFocus
-          >
-            {isCompressingReticulumImage ? 'Compressing...' : 'Compress'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        fileSize={formatQchatFileSize(reticulumImageChoice?.file.size)}
+        loading={isCompressingReticulumImage}
+        onCompress={useReticulumCompressedImage}
+        onUseAsAttachment={useReticulumImageAsAttachment}
+      />
 
       <LoadingSnackbar
         open={!reticulumDirectUiEnabled && isLoading}

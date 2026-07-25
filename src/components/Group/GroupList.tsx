@@ -975,7 +975,7 @@ const GroupListInner = ({
               },
             }}
           >
-            v2.0.0
+            v3.0.0
           </ButtonBase>
         </Box>
         <ReticulumChatSettingsDialog
@@ -1500,16 +1500,33 @@ const GroupItem = memo(
           slotProps={{
             tooltip: {
               sx: {
-                backgroundColor: isOpenGroup
-                  ? 'rgba(27, 58, 112, 0.92)'
-                  : 'rgba(79, 27, 34, 0.94)',
+                backgroundColor:
+                  theme.palette.mode === 'dark'
+                    ? isOpenGroup
+                      ? 'rgba(27, 58, 112, 0.92)'
+                      : 'rgba(79, 27, 34, 0.94)'
+                    : theme.palette.background.paper,
                 border: `1px solid ${
-                  isOpenGroup
-                    ? 'rgba(107, 164, 255, 0.34)'
-                    : 'rgba(243, 126, 136, 0.3)'
+                  theme.palette.mode === 'dark'
+                    ? isOpenGroup
+                      ? 'rgba(107, 164, 255, 0.34)'
+                      : 'rgba(243, 126, 136, 0.3)'
+                    : isOpenGroup
+                      ? 'rgba(49, 93, 151, 0.3)'
+                      : 'rgba(147, 54, 66, 0.3)'
                 }`,
-                boxShadow: '0 8px 18px rgba(0, 0, 0, 0.3)',
-                color: isOpenGroup ? '#d7e6ff' : '#ffd8dc',
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0 8px 18px rgba(0, 0, 0, 0.3)'
+                    : '0 8px 18px rgba(20, 28, 42, 0.18)',
+                color:
+                  theme.palette.mode === 'dark'
+                    ? isOpenGroup
+                      ? '#d7e6ff'
+                      : '#ffd8dc'
+                    : isOpenGroup
+                      ? '#244f83'
+                      : '#822b37',
                 px: 0.85,
                 py: 0.6,
               },
