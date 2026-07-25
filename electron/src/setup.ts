@@ -35,6 +35,7 @@ import {
   isRendererMainFrameReady,
   sendToRenderer,
 } from './renderer-delivery';
+import { createRefcountedSubscriberSet } from './refcounted-subscriber-set';
 import { myCapacitorApp, isQuitting, setIsQuitting } from '.';
 import {
   bootstrap,
@@ -3605,7 +3606,8 @@ const chatReadSubscribers = new Set<Electron.WebContents>();
 const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
 const reticulumChatReadinessSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
-const reticulumChatLandStateSubscribers = new Set<Electron.WebContents>();
+const reticulumChatLandStateSubscription =
+  createRefcountedSubscriberSet<Electron.WebContents>();
 const reticulumChatLandChatSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandActionSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandCallSubscribers = new Set<Electron.WebContents>();
@@ -3669,13 +3671,15 @@ export function attachReticulumChatListeners(
     )
   );
 
-  manager.on('landState', (payload: unknown) =>
-    broadcastToSet(
-      reticulumChatLandStateSubscribers,
-      'reticulumChat:landState',
-      payload
-    )
-  );
+  manager.on('landState', (payload: unknown) => {
+    for (const wc of reticulumChatLandStateSubscription.subscribers) {
+      if (
+        sendToRenderer(wc, 'reticulumChat:landState', payload) === 'destroyed'
+      ) {
+        reticulumChatLandStateSubscription.drop(wc);
+      }
+    }
+  });
 
   manager.on('landChat', (payload: unknown) =>
     broadcastToSet(
@@ -5529,10 +5533,10 @@ ipcMain.on('reticulumChat:typing:unsubscribe', (event) => {
   reticulumChatTypingSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:landState:subscribe', (event) => {
-  reticulumChatLandStateSubscribers.add(event.sender);
+  reticulumChatLandStateSubscription.subscribe(event.sender);
 });
 ipcMain.on('reticulumChat:landState:unsubscribe', (event) => {
-  reticulumChatLandStateSubscribers.delete(event.sender);
+  reticulumChatLandStateSubscription.unsubscribe(event.sender);
 });
 ipcMain.on('reticulumChat:landChat:subscribe', (event) => {
   reticulumChatLandChatSubscribers.add(event.sender);
