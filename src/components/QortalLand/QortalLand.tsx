@@ -4276,14 +4276,9 @@ export function QortalLand({
   const sendSocialAction = useCallback(async (actionType: LandSocialActionType) => {
     const target = actionTarget;
     const now = Date.now();
-    const targetsLocalAvatar = Boolean(
-      target &&
-      target.authorAddress === myAddress &&
-      target.sessionId === sessionId
-    );
     if (
       !target ||
-      (!targetsLocalAvatar && reticulumReady !== true) ||
+      reticulumReady !== true ||
       sendingSocialAction ||
       socialActionCooldownUntil > now
     ) return;
@@ -4294,20 +4289,18 @@ export function QortalLand({
     const actionSequence = landActionSequenceRef.current + 1;
     landActionSequenceRef.current = actionSequence;
     try {
-      if (!targetsLocalAvatar) {
-        const result = await window.reticulumChat?.sendLandAction?.(groupId, {
-          actionId,
-          actionType,
-          fromAddress: myAddress,
-          sourceSessionId: sessionId,
-          sequence: actionSequence,
-          toAddress: target.authorAddress,
-          targetSessionId: target.sessionId,
-          roomId: target.roomId,
-        });
-        if (!result?.success) {
-          throw new Error(result?.error || 'The effect could not be sent');
-        }
+      const result = await window.reticulumChat?.sendLandAction?.(groupId, {
+        actionId,
+        actionType,
+        fromAddress: myAddress,
+        sourceSessionId: sessionId,
+        sequence: actionSequence,
+        toAddress: target.authorAddress,
+        targetSessionId: target.sessionId,
+        roomId: target.roomId,
+      });
+      if (!result?.success) {
+        throw new Error(result?.error || 'The effect could not be sent');
       }
       addLandActionAnimation({
         actionId,

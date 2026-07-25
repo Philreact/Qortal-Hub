@@ -9079,6 +9079,7 @@ describe('reticulum chat manager', () => {
   });
 
   it('signs outgoing QortalLand social actions with the active Land session key', async () => {
+    let now = 100_000;
     const sent: Array<Record<string, unknown>> = [];
     const emitted: Array<Record<string, unknown>> = [];
     const signer = createLandAuthSigner();
@@ -9112,7 +9113,7 @@ describe('reticulum chat manager', () => {
         },
         getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
       } as any,
-      now: () => 100_000,
+      now: () => now,
       signLocalFields: signer.signLocalFields,
       validateGroupMember: async (_groupId, address) =>
         address === signer.address || address === target.address,
@@ -9200,13 +9201,43 @@ describe('reticulum chat manager', () => {
       })
     );
 
+    now += 2_000;
+    sent.length = 0;
+    const selfMoodResult = await manager.sendLandAction(73, {
+      actionId: 'self-mood-action',
+      actionType: 'sunshine',
+      fromAddress: signer.address,
+      sourceSessionId,
+      sequence: 2,
+      toAddress: signer.address,
+      targetSessionId: sourceSessionId,
+      roomId: 'club',
+    });
+    expect(selfMoodResult.ok).toBe(true);
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        k: 'la',
+        a: signer.address,
+        s: compactSourceSessionId,
+      })
+    );
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        actionType: 'sunshine',
+        fromAddress: signer.address,
+        toAddress: signer.address,
+        sourceSessionId,
+        targetSessionId: sourceSessionId,
+      })
+    );
+
     sent.length = 0;
     const qortResult = await manager.sendLandAction(73, {
       actionId: 'legacy-qort-action',
       actionType: 'qort_received',
       fromAddress: signer.address,
       sourceSessionId,
-      sequence: 2,
+      sequence: 3,
       toAddress: target.address,
       targetSessionId,
       amount: 1.25,
@@ -9237,6 +9268,19 @@ describe('reticulum chat manager', () => {
         roomId: 'skyline',
       })
     );
+
+    await expect(
+      manager.sendLandAction(73, {
+        actionId: 'self-qort-action',
+        actionType: 'qort_received',
+        fromAddress: signer.address,
+        sourceSessionId,
+        sequence: 4,
+        toAddress: signer.address,
+        targetSessionId: sourceSessionId,
+        amount: 1,
+      })
+    ).resolves.toMatchObject({ ok: false });
 
     await expect(
       manager.sendLandAction(73, {
@@ -9331,12 +9375,38 @@ describe('reticulum chat manager', () => {
     await flushQueuedWork();
     expect(emitted).toHaveLength(1);
 
+    now += 2_000;
+    manager.handleWire(
+      signer.landActionWire({
+        groupId: 73,
+        actionId: 'action-inbound-self',
+        actionType: 'love',
+        sourceSessionId: 'session-source',
+        sequence: 2,
+        toAddress: signer.address,
+        targetSessionId: 'session-source',
+        timestamp: now,
+      }),
+      'peer-source'
+    );
+    await flushQueuedWork();
+    expect(emitted).toHaveLength(2);
+    expect(emitted[1]).toEqual(
+      expect.objectContaining({
+        actionType: 'love',
+        fromAddress: signer.address,
+        toAddress: signer.address,
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-source',
+      })
+    );
+
     const tampered = signer.landActionWire({
       groupId: 73,
       actionId: 'action-inbound-2',
       actionType: 'angel',
       sourceSessionId: 'session-source',
-      sequence: 2,
+      sequence: 3,
       toAddress: target.address,
       targetSessionId: 'session-target',
       timestamp: now,
@@ -9344,7 +9414,7 @@ describe('reticulum chat manager', () => {
     tampered.y = 'd';
     manager.handleWire(tampered, 'peer-source');
     await flushQueuedWork();
-    expect(emitted).toHaveLength(1);
+    expect(emitted).toHaveLength(2);
 
     now += 2_000;
     manager.handleWire(
@@ -9352,22 +9422,6 @@ describe('reticulum chat manager', () => {
         groupId: 73,
         actionId: 'action-inbound-3',
         actionType: 'rain',
-        sourceSessionId: 'session-source',
-        sequence: 3,
-        toAddress: target.address,
-        targetSessionId: 'session-target',
-        timestamp: now,
-      }),
-      'peer-source'
-    );
-    await flushQueuedWork();
-    expect(emitted).toHaveLength(2);
-
-    manager.handleWire(
-      signer.landActionWire({
-        groupId: 73,
-        actionId: 'action-inbound-4',
-        actionType: 'buzz',
         sourceSessionId: 'session-source',
         sequence: 4,
         toAddress: target.address,
@@ -9377,7 +9431,23 @@ describe('reticulum chat manager', () => {
       'peer-source'
     );
     await flushQueuedWork();
-    expect(emitted).toHaveLength(2);
+    expect(emitted).toHaveLength(3);
+
+    manager.handleWire(
+      signer.landActionWire({
+        groupId: 73,
+        actionId: 'action-inbound-4',
+        actionType: 'buzz',
+        sourceSessionId: 'session-source',
+        sequence: 5,
+        toAddress: target.address,
+        targetSessionId: 'session-target',
+        timestamp: now,
+      }),
+      'peer-source'
+    );
+    await flushQueuedWork();
+    expect(emitted).toHaveLength(3);
     manager.close();
   });
 

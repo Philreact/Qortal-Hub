@@ -8699,7 +8699,7 @@ export class ReticulumChatManager extends EventEmitter {
       !Number.isSafeInteger(sequence) ||
       sequence <= 0 ||
       !toAddress ||
-      toAddress === fromAddress ||
+      (!social && toAddress === fromAddress) ||
       !targetSessionId ||
       (actionType === 'qort_received'
         ? !Number.isFinite(numericAmount) || amount <= 0
@@ -14007,7 +14007,7 @@ export class ReticulumChatManager extends EventEmitter {
       !Number.isSafeInteger(sequence) ||
       sequence <= 0 ||
       !toAddress ||
-      toAddress === fromAddress ||
+      (!social && toAddress === fromAddress) ||
       !targetSessionId ||
       targetSessionId.length > 24 ||
       (actionType === 'qort_received'

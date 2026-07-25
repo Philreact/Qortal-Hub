@@ -2297,24 +2297,8 @@ export const Group = ({
   ]);
 
   const mergedDirectRows = useMemo(() => {
-    if (!reticulumChatEnabled) return directs;
-    const byAddress = new Map<string, any>();
-    for (const direct of directs || []) {
-      if (!direct?.address) continue;
-      byAddress.set(direct.address, {
-        address: direct.address,
-        name: direct.name || direct.address,
-      });
-    }
-    for (const direct of reticulumDirectRows) {
-      const existing = byAddress.get(direct.address);
-      byAddress.set(direct.address, {
-        ...(existing || {}),
-        ...direct,
-        name: direct.name || existing?.name || direct.address,
-      });
-    }
-    return [...byAddress.values()];
+    if (reticulumChatEnabled) return reticulumDirectRows;
+    return directs;
   }, [directs, reticulumChatEnabled, reticulumDirectRows]);
 
   const directChatHasUnread = useMemo(() => {
@@ -2337,21 +2321,23 @@ export const Group = ({
   }, [timestampEnterData, mergedDirectRows, myAddress, reticulumChatEnabled]);
 
   const displayDirects = useMemo(() => {
+    if (reticulumChatEnabled) {
+      return [...mergedDirectRows].sort((a: any, b: any) => {
+        const timestampA = Number(a?.timestamp || 0);
+        const timestampB = Number(b?.timestamp || 0);
+        if (timestampA !== timestampB) return timestampB - timestampA;
+        return String(a?.name || a?.address || '').localeCompare(
+          String(b?.name || b?.address || '')
+        );
+      });
+    }
     const merged = mergeDirectsWithFriends(
       mergedDirectRows,
       dmFriendsByAddress,
       myAddress,
       userInfo?.name
     );
-    if (!reticulumChatEnabled) return merged;
-    return [...merged].sort((a: any, b: any) => {
-      const timestampA = Number(a?.timestamp || 0);
-      const timestampB = Number(b?.timestamp || 0);
-      if (timestampA !== timestampB) return timestampB - timestampA;
-      return String(a?.name || a?.address || '').localeCompare(
-        String(b?.name || b?.address || '')
-      );
-    });
+    return merged;
   }, [
     mergedDirectRows,
     dmFriendsByAddress,
