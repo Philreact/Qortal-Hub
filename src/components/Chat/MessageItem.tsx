@@ -1817,9 +1817,13 @@ export const MessageItemComponent = ({
     reticulumChatEnabled && reticulumDiscussionReplyCount > 0;
   const collapseGroupedHeader =
     isGroupedWithPrevious && !hasReticulumDiscussion;
+  const isReticulumDiscussionInitialPost =
+    reticulumDiscussionView &&
+    String(message?.signature || '') === reticulumDiscussionRootId;
   const showReplyPreview =
-    !reticulumDiscussionView ||
-    String(message?.repliedTo || '') !== reticulumDiscussionRootId;
+    !isReticulumDiscussionInitialPost &&
+    (!reticulumDiscussionView ||
+      String(message?.repliedTo || '') !== reticulumDiscussionRootId);
 
   return (
     <>

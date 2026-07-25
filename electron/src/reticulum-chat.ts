@@ -8356,7 +8356,7 @@ export class ReticulumChatManager extends EventEmitter {
         : '';
     const statusFlags = Math.max(
       0,
-      Math.min(3, Math.floor(Number(state.statusFlags) || 0))
+      Math.min(31, Math.floor(Number(state.statusFlags) || 0))
     );
     if (!address || !sessionId) {
       throw new Error('Invalid QortalLand state');
@@ -27680,7 +27680,7 @@ export class ReticulumChatManager extends EventEmitter {
       roomId: typeof wire.u === 'string' ? wire.u : '',
       direction: typeof wire.d === 'string' ? wire.d : '',
       movement: typeof wire.m === 'string' ? wire.m : '',
-      statusFlags: Math.max(0, Math.min(3, Math.floor(Number(wire.v) || 0))),
+      statusFlags: Math.max(0, Math.min(31, Math.floor(Number(wire.v) || 0))),
       timestamp: Number.isFinite(Number(wire.ts))
         ? Number(wire.ts)
         : this.now(),

@@ -1,6 +1,8 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
 import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import PaidRoundedIcon from '@mui/icons-material/PaidRounded';
@@ -26,6 +28,17 @@ import { useAtomValue } from 'jotai';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { balanceAtom, userInfoAtom } from '../../atoms/global';
 import defaultCharacterSpritesheetUrl from '../../assets/qortalland/default-character-spritesheet.webp';
+import characterSkin1FaceUrl from '../../assets/qortalland/character-skin-1-face.webp';
+import characterSkin2Url from '../../assets/qortalland/character-skin-2.webp';
+import characterSkin2FaceUrl from '../../assets/qortalland/character-skin-2-face.webp';
+import characterSkin3Url from '../../assets/qortalland/character-skin-3.webp';
+import characterSkin3FaceUrl from '../../assets/qortalland/character-skin-3-face.webp';
+import characterSkin4Url from '../../assets/qortalland/character-skin-4.webp';
+import characterSkin4FaceUrl from '../../assets/qortalland/character-skin-4-face.webp';
+import characterSkin5Url from '../../assets/qortalland/character-skin-5.webp';
+import characterSkin5FaceUrl from '../../assets/qortalland/character-skin-5-face.webp';
+import characterSkin6Url from '../../assets/qortalland/character-skin-6.webp';
+import characterSkin6FaceUrl from '../../assets/qortalland/character-skin-6-face.webp';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useVoiceCall, type VoiceCallApi } from '../../hooks/useVoiceCall';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
@@ -38,6 +51,8 @@ import {
 } from './qortalLandOptimizedAssets';
 import { collectQortalLandRoomAssetIds } from './qortalLandRoomAssetPolicy';
 import { publishQortalLandPresence } from './qortalLandPresence';
+
+type QortalLandSkinId = 1 | 2 | 3 | 4 | 5 | 6;
 
 type LandPlayerState = {
   authorAddress: string;
@@ -64,6 +79,7 @@ type LandPlayerState = {
   velocityY: number;
   afk: boolean;
   dnd: boolean;
+  skinId: QortalLandSkinId;
 };
 
 type LocalLandState = {
@@ -74,6 +90,7 @@ type LocalLandState = {
   movement: string;
   afk: boolean;
   dnd: boolean;
+  skinId: QortalLandSkinId;
 };
 
 type LandChatBubble = {
@@ -160,6 +177,15 @@ const LAND_SOCIAL_ACTIONS: ReadonlyArray<{
   { type: 'sunshine', label: 'Sunshine', symbol: '☀', color: '#ffd45a' },
 ];
 
+const LAND_SOCIAL_ACTION_CARD_COLORS: Record<LandSocialActionType, string> = {
+  buzz: '#35c8ff',
+  love: '#ff6fae',
+  devil: '#a66cff',
+  angel: '#d6ad5c',
+  rain: '#5d9fff',
+  sunshine: '#e2ad32',
+};
+
 const isLandSocialActionType = (value: string): value is LandSocialActionType =>
   LAND_SOCIAL_ACTIONS.some((action) => action.type === value);
 
@@ -232,6 +258,7 @@ const LAND_AFK_TIMEOUT_MS = 2 * 60 * 1000;
 const LAND_AFK_CHECK_INTERVAL_MS = 5_000;
 const LAND_STATUS_AFK = 1;
 const LAND_STATUS_DND = 2;
+const LAND_STATUS_SKIN_SHIFT = 2;
 const LAND_HEARTBEAT_MS = 2000;
 const LAND_REMOTE_TTL_MS = 30000;
 const LAND_REMOTE_INTERPOLATION_BUFFER_MS = 180;
@@ -253,13 +280,56 @@ const LAND_ACTIONS_PER_AVATAR_MAX = 2;
 const LAND_CALL_STATUS_INTERVAL_MS = 10000;
 const LAND_CALL_STATUS_TTL_MS = 26000;
 const QORTAL_LAND_CHANNEL_ID = 'qortal-land';
-const LAND_CHARACTER_SPRITESHEET_KEY = 'qortalland-default-character';
-const LAND_CHARACTER_IDLE_SIDE_ANIM_KEY = 'qortalland-default-character-idle-side';
-const LAND_CHARACTER_WALK_SIDE_ANIM_KEY = 'qortalland-default-character-walk-side';
-const LAND_CHARACTER_IDLE_DOWN_ANIM_KEY = 'qortalland-default-character-idle-down';
-const LAND_CHARACTER_WALK_DOWN_ANIM_KEY = 'qortalland-default-character-walk-down';
-const LAND_CHARACTER_IDLE_UP_ANIM_KEY = 'qortalland-default-character-idle-up';
-const LAND_CHARACTER_WALK_UP_ANIM_KEY = 'qortalland-default-character-walk-up';
+const QORTAL_LAND_CHARACTER_SKIN_STORAGE_KEY = 'qortalland.characterSkin';
+const QORTAL_LAND_CHARACTER_SKINS: ReadonlyArray<{
+  id: QortalLandSkinId;
+  label: string;
+  spritesheetUrl: string;
+  faceUrl: string;
+}> = [
+  {
+    id: 1,
+    label: 'Original',
+    spritesheetUrl: defaultCharacterSpritesheetUrl,
+    faceUrl: characterSkin1FaceUrl,
+  },
+  { id: 2, label: 'Nova', spritesheetUrl: characterSkin2Url, faceUrl: characterSkin2FaceUrl },
+  { id: 3, label: 'Luna', spritesheetUrl: characterSkin3Url, faceUrl: characterSkin3FaceUrl },
+  { id: 4, label: 'Aqua', spritesheetUrl: characterSkin4Url, faceUrl: characterSkin4FaceUrl },
+  { id: 5, label: 'Amber', spritesheetUrl: characterSkin5Url, faceUrl: characterSkin5FaceUrl },
+  { id: 6, label: 'Frost', spritesheetUrl: characterSkin6Url, faceUrl: characterSkin6FaceUrl },
+];
+
+const normalizeQortalLandSkinId = (value: unknown): QortalLandSkinId => {
+  const numeric = Math.floor(Number(value));
+  return numeric >= 1 && numeric <= QORTAL_LAND_CHARACTER_SKINS.length
+    ? (numeric as QortalLandSkinId)
+    : 1;
+};
+
+const qortalLandSkinTextureKey = (skinId: QortalLandSkinId): string =>
+  `qortalland-character-skin-${skinId}`;
+
+const qortalLandSkinAnimationKey = (
+  skinId: QortalLandSkinId,
+  movement: 'idle' | 'walk',
+  facing: 'side' | 'down' | 'up'
+): string => `${qortalLandSkinTextureKey(skinId)}-${movement}-${facing}`;
+
+const qortalLandSkinForId = (skinId: unknown) =>
+  QORTAL_LAND_CHARACTER_SKINS[normalizeQortalLandSkinId(skinId) - 1];
+
+const buildLandStatusFlags = (
+  afk: boolean,
+  dnd: boolean,
+  skinId: QortalLandSkinId
+): number =>
+  (afk ? LAND_STATUS_AFK : 0) |
+  (dnd ? LAND_STATUS_DND : 0) |
+  ((skinId - 1) << LAND_STATUS_SKIN_SHIFT);
+
+const skinIdFromLandStatusFlags = (statusFlags: number): QortalLandSkinId =>
+  normalizeQortalLandSkinId((statusFlags >> LAND_STATUS_SKIN_SHIFT) + 1);
 const LAND_CHARACTER_FRAME_SIZE = 320;
 const LAND_CHARACTER_FRAMES_PER_DIRECTION = 7;
 const LAND_CHARACTER_FEET_BASELINE = 292;
@@ -273,7 +343,7 @@ const QORTAL_LAND_DEFAULT_ROOM_ID: LandRoomId = 'club';
 const QORTAL_LAND_SKYWALK_ROOM_ID: LandRoomId = 'skywalk';
 const QORTAL_LAND_MALL_ROOM_ID: LandRoomId = 'mall';
 const QORTAL_LAND_PARK_ROOM_ID: LandRoomId = 'park';
-const QORTAL_LAND_START_ROOM_ID: LandRoomId = QORTAL_LAND_PARK_ROOM_ID;
+const QORTAL_LAND_START_ROOM_ID: LandRoomId = QORTAL_LAND_DEFAULT_ROOM_ID;
 
 type QortalLandRoomFloorLayout = {
   topY: number;
@@ -812,6 +882,27 @@ const writeQortalLandDevelopmentLookSettings = (
 const qortalLandCharacterCustomizationStorageKey = (address: string): string =>
   `${QORTAL_LAND_CHARACTER_CUSTOMIZATION_STORAGE_KEY}.${address || 'local'}`;
 
+const qortalLandCharacterSkinStorageKey = (address: string): string =>
+  `${QORTAL_LAND_CHARACTER_SKIN_STORAGE_KEY}.${address || 'local'}`;
+
+const readQortalLandCharacterSkin = (address: string): QortalLandSkinId => {
+  if (typeof window === 'undefined') return 1;
+  return normalizeQortalLandSkinId(
+    window.localStorage.getItem(qortalLandCharacterSkinStorageKey(address))
+  );
+};
+
+const writeQortalLandCharacterSkin = (
+  address: string,
+  skinId: QortalLandSkinId
+): void => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(
+    qortalLandCharacterSkinStorageKey(address),
+    String(skinId)
+  );
+};
+
 const readQortalLandCharacterCustomization = (
   address: string
 ): QortalLandCharacterCustomization => {
@@ -939,8 +1030,8 @@ const shouldShowQortalLandDevelopmentPngProps = (): boolean => {
 };
 
 const shouldShowQortalLandProceduralClubShell = (): boolean => {
-  if (typeof window === 'undefined') return true;
-  return window.localStorage.getItem(QORTAL_LAND_DEV_PROCEDURAL_CLUB_SHELL_STORAGE_KEY) !== '0';
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem(QORTAL_LAND_DEV_PROCEDURAL_CLUB_SHELL_STORAGE_KEY) === '1';
 };
 
 const shouldShowQortalLandCollisionDebug = (): boolean => {
@@ -2459,6 +2550,9 @@ const floorScaleForRoomY = (roomId: LandRoomId, y: number): number => {
 };
 
 const characterScaleForRoomY = (roomId: LandRoomId, y: number): number => {
+  if (roomId === QORTAL_LAND_DEFAULT_ROOM_ID) {
+    return 1.14 * LAND_CHARACTER_RENDER_SCALE;
+  }
   return floorScaleForRoomY(roomId, y) * LAND_CHARACTER_RENDER_SCALE;
 };
 
@@ -2466,14 +2560,18 @@ const avatarScaleXForDirection = (direction: string, scale: number): number => {
   return direction === 'l' ? -scale : scale;
 };
 
-const avatarAnimationKeyForDirection = (direction: string, moving: boolean): string => {
+const avatarAnimationKeyForDirection = (
+  direction: string,
+  moving: boolean,
+  skinId: QortalLandSkinId
+): string => {
   if (direction === 'u') {
-    return moving ? LAND_CHARACTER_WALK_UP_ANIM_KEY : LAND_CHARACTER_IDLE_UP_ANIM_KEY;
+    return qortalLandSkinAnimationKey(skinId, moving ? 'walk' : 'idle', 'up');
   }
   if (direction === 'd') {
-    return moving ? LAND_CHARACTER_WALK_DOWN_ANIM_KEY : LAND_CHARACTER_IDLE_DOWN_ANIM_KEY;
+    return qortalLandSkinAnimationKey(skinId, moving ? 'walk' : 'idle', 'down');
   }
-  return moving ? LAND_CHARACTER_WALK_SIDE_ANIM_KEY : LAND_CHARACTER_IDLE_SIDE_ANIM_KEY;
+  return qortalLandSkinAnimationKey(skinId, moving ? 'walk' : 'idle', 'side');
 };
 
 const clampLandPosition = (
@@ -2728,12 +2826,16 @@ export function QortalLand({
   const pendingPrimaryNameLookupsRef = useRef<Set<string>>(new Set());
   const primaryNameLookupTimerRef = useRef<number | null>(null);
   const currentRoomRef = useRef<LandRoomId>(QORTAL_LAND_START_ROOM_ID);
+  const initialSkinIdRef = useRef<QortalLandSkinId>(
+    readQortalLandCharacterSkin(myAddress)
+  );
   const localStateRef = useRef<LocalLandState>({
     ...initialPositionForAddress(myAddress || ''),
     direction: 'r',
     movement: 'idle',
     afk: false,
     dnd: false,
+    skinId: initialSkinIdRef.current,
   });
   const lastSentRef = useRef<LocalLandState & { sentAt: number }>({
     ...localStateRef.current,
@@ -2780,6 +2882,13 @@ export function QortalLand({
     QORTAL_LAND_PARK_ROOM_ID
   );
   const [isCharacterPanelOpen, setIsCharacterPanelOpen] = useState(false);
+  const [selectedSkinId, setSelectedSkinId] = useState<QortalLandSkinId>(
+    initialSkinIdRef.current
+  );
+  const [pendingSkinId, setPendingSkinId] = useState<QortalLandSkinId>(
+    initialSkinIdRef.current
+  );
+  const [isSkinSelectorOpen, setIsSkinSelectorOpen] = useState(false);
   const [characterCustomization, setCharacterCustomization] = useState(() =>
     readQortalLandCharacterCustomization(myAddress)
   );
@@ -2912,9 +3021,11 @@ export function QortalLand({
           sequence: sequenceRef.current,
           ...localStateRef.current,
           movement: 'leave',
-          statusFlags:
-            (localStateRef.current.afk ? LAND_STATUS_AFK : 0) |
-            (localStateRef.current.dnd ? LAND_STATUS_DND : 0),
+          statusFlags: buildLandStatusFlags(
+            localStateRef.current.afk,
+            localStateRef.current.dnd,
+            localStateRef.current.skinId
+          ),
         });
       }
     } else {
@@ -3219,6 +3330,31 @@ export function QortalLand({
     setCharacterCustomization(readQortalLandCharacterCustomization(myAddress));
   }, [myAddress]);
 
+  useEffect(() => {
+    const skinId = readQortalLandCharacterSkin(myAddress);
+    initialSkinIdRef.current = skinId;
+    localStateRef.current = { ...localStateRef.current, skinId };
+    lastSentRef.current = { ...lastSentRef.current, skinId, sentAt: 0 };
+    setSelectedSkinId(skinId);
+    setPendingSkinId(skinId);
+  }, [myAddress]);
+
+  const openSkinSelector = useCallback(() => {
+    setPendingSkinId(selectedSkinId);
+    setIsSkinSelectorOpen(true);
+  }, [selectedSkinId]);
+
+  const applySelectedSkin = useCallback(() => {
+    const skinId = normalizeQortalLandSkinId(pendingSkinId);
+    localStateRef.current = { ...localStateRef.current, skinId };
+    lastSentRef.current = { ...lastSentRef.current, skinId, sentAt: 0 };
+    initialSkinIdRef.current = skinId;
+    setSelectedSkinId(skinId);
+    writeQortalLandCharacterSkin(myAddress, skinId);
+    setIsSkinSelectorOpen(false);
+    recordLandActivity();
+  }, [myAddress, pendingSkinId, recordLandActivity]);
+
   const updateCharacterCustomization = useCallback(
     (field: QortalLandCharacterCustomizationField, value: string) => {
       const next = {
@@ -3409,9 +3545,9 @@ export function QortalLand({
 
   const setProceduralClubShellVisible = useCallback((enabled: boolean) => {
     if (enabled) {
-      window.localStorage.removeItem(QORTAL_LAND_DEV_PROCEDURAL_CLUB_SHELL_STORAGE_KEY);
+      window.localStorage.setItem(QORTAL_LAND_DEV_PROCEDURAL_CLUB_SHELL_STORAGE_KEY, '1');
     } else {
-      window.localStorage.setItem(QORTAL_LAND_DEV_PROCEDURAL_CLUB_SHELL_STORAGE_KEY, '0');
+      window.localStorage.removeItem(QORTAL_LAND_DEV_PROCEDURAL_CLUB_SHELL_STORAGE_KEY);
     }
     setProceduralClubShellEnabled(enabled);
     notifyQortalLandDevelopmentAssetsChanged();
@@ -4362,6 +4498,7 @@ export function QortalLand({
         : Math.max(fromTimelineAt + LAND_REMOTE_RECONCILE_MS, mappedTimelineAt);
       const afk = (statusFlags & LAND_STATUS_AFK) !== 0;
       const dnd = (statusFlags & LAND_STATUS_DND) !== 0;
+      const skinId = skinIdFromLandStatusFlags(statusFlags);
       const availabilityChanged =
         !existing ||
         existing.roomId !== roomId ||
@@ -4396,6 +4533,7 @@ export function QortalLand({
         velocityY,
         afk,
         dnd,
+        skinId,
       });
       if (availabilityChanged) {
         setLandAvailabilityVersion((value) => value + 1);
@@ -4410,9 +4548,11 @@ export function QortalLand({
         sequence: sequenceRef.current + 1,
         ...localStateRef.current,
         movement: 'leave',
-        statusFlags:
-          (localStateRef.current.afk ? LAND_STATUS_AFK : 0) |
-          (localStateRef.current.dnd ? LAND_STATUS_DND : 0),
+        statusFlags: buildLandStatusFlags(
+          localStateRef.current.afk,
+          localStateRef.current.dnd,
+          localStateRef.current.skinId
+        ),
       });
     };
   }, [
@@ -4736,7 +4876,8 @@ export function QortalLand({
         current.direction !== previous.direction ||
         current.movement !== previous.movement ||
         current.afk !== previous.afk ||
-        current.dnd !== previous.dnd;
+        current.dnd !== previous.dnd ||
+        current.skinId !== previous.skinId;
       if (!moved && now - previous.sentAt < LAND_HEARTBEAT_MS) return;
       sequenceRef.current += 1;
       lastSentRef.current = { ...current, sentAt: now };
@@ -4744,9 +4885,11 @@ export function QortalLand({
         sessionId,
         sequence: sequenceRef.current,
         ...current,
-        statusFlags:
-          (current.afk ? LAND_STATUS_AFK : 0) |
-          (current.dnd ? LAND_STATUS_DND : 0),
+        statusFlags: buildLandStatusFlags(
+          current.afk,
+          current.dnd,
+          current.skinId
+        ),
       });
     }, LAND_SEND_INTERVAL_MS);
     return () => window.clearInterval(interval);
@@ -5047,9 +5190,11 @@ export function QortalLand({
         }
 
         preload() {
-          this.load.spritesheet(LAND_CHARACTER_SPRITESHEET_KEY, defaultCharacterSpritesheetUrl, {
-            frameWidth: LAND_CHARACTER_FRAME_SIZE,
-            frameHeight: LAND_CHARACTER_FRAME_SIZE,
+          QORTAL_LAND_CHARACTER_SKINS.forEach((skin) => {
+            this.load.spritesheet(qortalLandSkinTextureKey(skin.id), skin.spritesheetUrl, {
+              frameWidth: LAND_CHARACTER_FRAME_SIZE,
+              frameHeight: LAND_CHARACTER_FRAME_SIZE,
+            });
           });
           qortalLandDevelopmentPngAssetsForRoom(QORTAL_LAND_START_ROOM_ID).forEach((asset) => {
             const textureKey = qortalLandDevelopmentPngTextureKey(asset.id);
@@ -5133,7 +5278,12 @@ export function QortalLand({
             avatarScaleXForDirection(transition.direction, scale),
             scale
           );
-          this.animateAvatar(this.localAvatar, false, transition.direction);
+          this.animateAvatar(
+            this.localAvatar,
+            false,
+            transition.direction,
+            localStateRef.current.skinId
+          );
           this.localAvatar?.setDepth(transition.y + 20);
           this.localLabel?.setPosition(
             transition.x,
@@ -5181,7 +5331,13 @@ export function QortalLand({
           this.drawWorld();
           const start = localStateRef.current;
           const startScale = characterScaleForRoomY(start.roomId, start.y);
-          this.localAvatar = this.createAvatar(start.x, start.y, localColor, true);
+          this.localAvatar = this.createAvatar(
+            start.x,
+            start.y,
+            localColor,
+            true,
+            start.skinId
+          );
           this.localAvatar.setInteractive({
             alphaTolerance: 8,
             pixelPerfect: true,
@@ -5969,84 +6125,74 @@ export function QortalLand({
         }
 
         private ensureCharacterAnimations() {
-          if (!this.anims.exists(LAND_CHARACTER_IDLE_SIDE_ANIM_KEY)) {
-            this.anims.create({
-              key: LAND_CHARACTER_IDLE_SIDE_ANIM_KEY,
-              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, { start: 0, end: 0 }),
-              frameRate: 1,
-              repeat: 0,
+          QORTAL_LAND_CHARACTER_SKINS.forEach((skin) => {
+            const textureKey = qortalLandSkinTextureKey(skin.id);
+            ([
+              ['idle', 'side', 0, 0, 1, 0],
+              ['walk', 'side', 0, LAND_CHARACTER_FRAMES_PER_DIRECTION - 1, 10, -1],
+              ['idle', 'down', LAND_CHARACTER_FRAMES_PER_DIRECTION, LAND_CHARACTER_FRAMES_PER_DIRECTION, 1, 0],
+              ['walk', 'down', LAND_CHARACTER_FRAMES_PER_DIRECTION, LAND_CHARACTER_FRAMES_PER_DIRECTION * 2 - 1, 10, -1],
+              ['idle', 'up', LAND_CHARACTER_FRAMES_PER_DIRECTION * 2, LAND_CHARACTER_FRAMES_PER_DIRECTION * 2, 1, 0],
+              ['walk', 'up', LAND_CHARACTER_FRAMES_PER_DIRECTION * 2, LAND_CHARACTER_FRAMES_PER_DIRECTION * 3 - 1, 10, -1],
+            ] as const).forEach(([movement, facing, start, end, frameRate, repeat]) => {
+              const key = qortalLandSkinAnimationKey(skin.id, movement, facing);
+              if (this.anims.exists(key)) return;
+              this.anims.create({
+                key,
+                frames: this.anims.generateFrameNumbers(textureKey, { start, end }),
+                frameRate,
+                repeat,
+              });
             });
-          }
-          if (!this.anims.exists(LAND_CHARACTER_WALK_SIDE_ANIM_KEY)) {
-            this.anims.create({
-              key: LAND_CHARACTER_WALK_SIDE_ANIM_KEY,
-              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
-                start: 0,
-                end: LAND_CHARACTER_FRAMES_PER_DIRECTION - 1,
-              }),
-              frameRate: 10,
-              repeat: -1,
-            });
-          }
-          if (!this.anims.exists(LAND_CHARACTER_IDLE_DOWN_ANIM_KEY)) {
-            this.anims.create({
-              key: LAND_CHARACTER_IDLE_DOWN_ANIM_KEY,
-              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
-                start: LAND_CHARACTER_FRAMES_PER_DIRECTION,
-                end: LAND_CHARACTER_FRAMES_PER_DIRECTION,
-              }),
-              frameRate: 1,
-              repeat: 0,
-            });
-          }
-          if (!this.anims.exists(LAND_CHARACTER_WALK_DOWN_ANIM_KEY)) {
-            this.anims.create({
-              key: LAND_CHARACTER_WALK_DOWN_ANIM_KEY,
-              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
-                start: LAND_CHARACTER_FRAMES_PER_DIRECTION,
-                end: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2 - 1,
-              }),
-              frameRate: 10,
-              repeat: -1,
-            });
-          }
-          if (!this.anims.exists(LAND_CHARACTER_IDLE_UP_ANIM_KEY)) {
-            this.anims.create({
-              key: LAND_CHARACTER_IDLE_UP_ANIM_KEY,
-              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
-                start: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2,
-                end: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2,
-              }),
-              frameRate: 1,
-              repeat: 0,
-            });
-          }
-          if (!this.anims.exists(LAND_CHARACTER_WALK_UP_ANIM_KEY)) {
-            this.anims.create({
-              key: LAND_CHARACTER_WALK_UP_ANIM_KEY,
-              frames: this.anims.generateFrameNumbers(LAND_CHARACTER_SPRITESHEET_KEY, {
-                start: LAND_CHARACTER_FRAMES_PER_DIRECTION * 2,
-                end: LAND_CHARACTER_FRAMES_PER_DIRECTION * 3 - 1,
-              }),
-              frameRate: 10,
-              repeat: -1,
-            });
-          }
+          });
         }
 
-        private createAvatar(x: number, y: number, _color: number, _local: boolean) {
-          const avatar = this.add.sprite(x, y, LAND_CHARACTER_SPRITESHEET_KEY, LAND_CHARACTER_FRAMES_PER_DIRECTION);
+        private createAvatar(
+          x: number,
+          y: number,
+          _color: number,
+          _local: boolean,
+          skinId: QortalLandSkinId
+        ) {
+          const normalizedSkinId = normalizeQortalLandSkinId(skinId);
+          const avatar = this.add.sprite(
+            x,
+            y,
+            qortalLandSkinTextureKey(normalizedSkinId),
+            LAND_CHARACTER_FRAMES_PER_DIRECTION
+          );
           avatar.setOrigin(0.5, LAND_CHARACTER_FEET_BASELINE / LAND_CHARACTER_FRAME_SIZE);
           avatar.setSize(104, 174);
-          avatar.play(LAND_CHARACTER_IDLE_DOWN_ANIM_KEY);
-          avatar.setData('lastAnimation', LAND_CHARACTER_IDLE_DOWN_ANIM_KEY);
+          const initialAnimation = qortalLandSkinAnimationKey(
+            normalizedSkinId,
+            'idle',
+            'down'
+          );
+          avatar.play(initialAnimation);
+          avatar.setData('skinId', normalizedSkinId);
+          avatar.setData('lastAnimation', initialAnimation);
           avatar.setData('logicalX', x);
           avatar.setData('logicalY', y);
           return avatar;
         }
 
-        private animateAvatar(avatar: any, moving: boolean, direction: string) {
-          const animationKey = avatarAnimationKeyForDirection(direction, moving);
+        private animateAvatar(
+          avatar: any,
+          moving: boolean,
+          direction: string,
+          skinId: QortalLandSkinId
+        ) {
+          const normalizedSkinId = normalizeQortalLandSkinId(skinId);
+          if (avatar?.getData?.('skinId') !== normalizedSkinId) {
+            avatar?.setTexture?.(qortalLandSkinTextureKey(normalizedSkinId));
+            avatar?.setData?.('skinId', normalizedSkinId);
+            avatar?.setData?.('lastAnimation', '');
+          }
+          const animationKey = avatarAnimationKeyForDirection(
+            direction,
+            moving,
+            normalizedSkinId
+          );
           if (avatar?.getData?.('lastAnimation') === animationKey) return;
           avatar?.play?.(animationKey, true);
           avatar?.setData?.('lastAnimation', animationKey);
@@ -8247,7 +8393,12 @@ export function QortalLand({
           if (!this.localAvatar) return;
           if (this.pendingRoomTransition) {
             movementKeysRef.current.clear();
-            this.animateAvatar(this.localAvatar, false, localStateRef.current.direction);
+            this.animateAvatar(
+              this.localAvatar,
+              false,
+              localStateRef.current.direction,
+              localStateRef.current.skinId
+            );
             localStateRef.current = {
               ...localStateRef.current,
               movement: 'idle',
@@ -8333,7 +8484,12 @@ export function QortalLand({
           this.localAvatar.setData('logicalY', y);
           this.localAvatar.setPosition(x, renderY);
           this.localAvatar.setScale(avatarScaleXForDirection(direction, scale), scale);
-          this.animateAvatar(this.localAvatar, moving, direction);
+          this.animateAvatar(
+            this.localAvatar,
+            moving,
+            direction,
+            localStateRef.current.skinId
+          );
           this.localLabel?.setPosition(x, renderY - LAND_CHARACTER_LABEL_OFFSET * scale);
           this.localAvatar.setDepth(y + 20);
           this.localLabel?.setDepth(y + 90);
@@ -8484,7 +8640,13 @@ export function QortalLand({
                 0.6,
                 0.56
               ).color;
-              avatar = this.createAvatar(player.x, player.y, color, false);
+              avatar = this.createAvatar(
+                player.x,
+                player.y,
+                color,
+                false,
+                player.skinId
+              );
               avatar.setInteractive({
                 alphaTolerance: 8,
                 pixelPerfect: true,
@@ -8586,7 +8748,8 @@ export function QortalLand({
             this.animateAvatar(
               avatar,
               renderMovement === 'walk' && elapsedSinceUpdate <= LAND_REMOTE_STOP_WALKING_AFTER_MS,
-              renderDirection
+              renderDirection,
+              player.skinId
             );
             avatar.setDepth(nextY + 20);
             label?.setPosition(nextX, renderY - LAND_CHARACTER_LABEL_OFFSET * scale);
@@ -8691,6 +8854,15 @@ export function QortalLand({
   const actionTargetName = actionTarget
     ? displayNameForAddress(actionTarget.authorAddress, primaryNameCacheRef.current)
     : '';
+  const actionTargetSkinId =
+    actionTarget?.authorAddress === myAddress
+      ? selectedSkinId
+      : normalizeQortalLandSkinId(
+          actionTarget
+            ? remotePlayersRef.current.get(actionTarget.key)?.skinId
+            : 1
+        );
+  const isSelfActionTarget = actionTarget?.authorAddress === myAddress;
   const sendQortTargetName = sendQortTarget
     ? displayNameForAddress(sendQortTarget.authorAddress, primaryNameCacheRef.current)
     : '';
@@ -9914,45 +10086,161 @@ export function QortalLand({
             onMouseDown={(event) => event.stopPropagation()}
             ref={actionMenuRef}
             sx={{
-              background: `linear-gradient(180deg, ${alpha('#10182a', 0.98)}, ${alpha('#070914', 0.96)})`,
-              border: `1px solid ${alpha('#2cf8ff', 0.34)}`,
-              borderRadius: '10px',
-              boxShadow: `0 18px 38px ${alpha('#000', 0.44)}, 0 0 24px ${alpha('#2cf8ff', 0.1)}`,
+              background: alpha('#07111f', 0.985),
+              border: `1px solid ${alpha('#2cf8ff', 0.42)}`,
+              borderRadius: '14px',
+              boxShadow: `0 18px 38px ${alpha('#000', 0.4)}`,
               boxSizing: 'border-box',
               left: actionTarget.menuX,
               maxHeight: 'calc(100% - 24px)',
               maxWidth: 'calc(100% - 24px)',
               overflowX: 'hidden',
               overflowY: 'auto',
-              padding: '10px',
+              padding: '14px',
               position: 'absolute',
               top: actionTarget.menuY,
-              width: 270,
+              width: 326,
               zIndex: 5,
             }}
           >
             <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: 1, justifyContent: 'space-between' }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: 1.5,
+                  minWidth: 0,
+                }}
+              >
+                <Box
+                  aria-label={
+                    actionTarget.authorAddress === myAddress
+                      ? 'Change character skin'
+                      : `${actionTargetName} character`
+                  }
+                  component={actionTarget.authorAddress === myAddress ? 'button' : 'div'}
+                  onClick={
+                    actionTarget.authorAddress === myAddress
+                      ? () => {
+                          setActionTarget(null);
+                          openSkinSelector();
+                        }
+                      : undefined
+                  }
                   sx={{
-                    color: theme.palette.text.primary,
-                    fontSize: 13,
-                    fontWeight: 700,
-                    lineHeight: 1.2,
-                    marginBottom: 0.5,
+                    appearance: 'none',
+                    background: alpha('#0a1324', 0.9),
+                    border: `1.5px solid ${alpha('#2cf8ff', 0.82)}`,
+                    borderRadius: '50%',
+                    cursor:
+                      actionTarget.authorAddress === myAddress
+                        ? 'pointer'
+                        : 'default',
+                    flex: '0 0 auto',
+                    height: 68,
+                    overflow: 'visible',
+                    padding: 0,
+                    position: 'relative',
+                    width: 68,
+                    '&:hover': {
+                      borderColor: '#79f8ff',
+                    },
+                    '&:hover .skin-edit-button': {
+                      backgroundColor: alpha('#16283d', 1),
+                      color: '#7df9ff',
+                    },
                   }}
                 >
-                  {actionTargetName}
-                </Typography>
-                <Typography
-                  sx={{
-                    color: alpha(theme.palette.text.secondary, 0.9),
-                    fontSize: 11,
-                    marginBottom: 1,
-                  }}
-                >
-                  {shortAddress(actionTarget.authorAddress)}
-                </Typography>
+                  <Box
+                    alt={`${qortalLandSkinForId(actionTargetSkinId).label} character`}
+                    component="img"
+                    src={qortalLandSkinForId(actionTargetSkinId).faceUrl}
+                    sx={{
+                      borderRadius: '50%',
+                      display: 'block',
+                      height: '100%',
+                      objectFit: 'cover',
+                      width: '100%',
+                    }}
+                  />
+                  {actionTarget.authorAddress === myAddress && (
+                    <Box
+                      className="skin-edit-button"
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: alpha('#0b1627', 0.98),
+                        border: `1px solid ${alpha('#7ecbff', 0.38)}`,
+                        borderRadius: '50%',
+                        bottom: -3,
+                        boxShadow: `0 2px 8px ${alpha('#000', 0.36)}`,
+                        color: '#55dfff',
+                        display: 'flex',
+                        height: 24,
+                        justifyContent: 'center',
+                        position: 'absolute',
+                        right: -3,
+                        transition: 'background-color 140ms ease, color 140ms ease',
+                        width: 24,
+                      }}
+                    >
+                      <EditRoundedIcon sx={{ fontSize: 14 }} />
+                    </Box>
+                  )}
+                </Box>
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontSize: 19,
+                      fontWeight: 800,
+                      lineHeight: 1.2,
+                      marginBottom: 0.65,
+                    }}
+                  >
+                    {actionTargetName}
+                  </Typography>
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      color: alpha('#9bb8d8', 0.72),
+                      display: 'flex',
+                      fontSize: 12,
+                      gap: 0.4,
+                      marginBottom: 1,
+                    }}
+                  >
+                    <Typography
+                      component="span"
+                      sx={{
+                        color: 'inherit',
+                        fontSize: 'inherit',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {shortAddress(actionTarget.authorAddress)}
+                    </Typography>
+                    <IconButton
+                      aria-label="Copy Qortal address"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void navigator.clipboard?.writeText(actionTarget.authorAddress);
+                      }}
+                      size="small"
+                      sx={{
+                        color: alpha('#79aef2', 0.78),
+                        height: 22,
+                        padding: 0,
+                        width: 22,
+                        '&:hover': {
+                          backgroundColor: alpha('#79aef2', 0.1),
+                          color: '#9ac4ff',
+                        },
+                      }}
+                    >
+                      <ContentCopyRoundedIcon sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </Box>
+                </Box>
               </Box>
               <IconButton
                 aria-label="Close player actions"
@@ -9973,13 +10261,48 @@ export function QortalLand({
                 <CloseRoundedIcon sx={{ fontSize: 16 }} />
               </IconButton>
             </Box>
-            <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.72), fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', mb: 0.75, textTransform: 'uppercase' }}>
-              Mood
-            </Typography>
-            <Box sx={{ display: 'grid', gap: 0.65, gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', mb: 1 }}>
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                gap: 1,
+                mb: 1.1,
+                mt: 2.75,
+              }}
+            >
+              <Typography
+                sx={{
+                  color: alpha('#72aaff', 0.9),
+                  flex: '0 0 auto',
+                  fontSize: 11,
+                  fontWeight: 800,
+                  letterSpacing: '0.1em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Mood
+              </Typography>
+              <Box
+                sx={{
+                  backgroundColor: alpha('#a8bdd6', 0.16),
+                  height: '1px',
+                  width: '100%',
+                }}
+              />
+            </Box>
+            <Box
+              sx={{
+                display: 'grid',
+                gap: 0.9,
+                gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                mb: isSelfActionTarget ? 0 : 1.25,
+              }}
+            >
               {LAND_SOCIAL_ACTIONS.map((socialAction) => {
                 const busy = Boolean(sendingSocialAction);
                 const coolingDown = socialActionCooldownUntil > Date.now();
+                const moodCardColor =
+                  LAND_SOCIAL_ACTION_CARD_COLORS[socialAction.type];
                 const disabled =
                   reticulumReady !== true ||
                   busy ||
@@ -9991,22 +10314,25 @@ export function QortalLand({
                     key={socialAction.type}
                     onClick={() => void sendSocialAction(socialAction.type)}
                     sx={{
-                      background: `linear-gradient(145deg, ${alpha(socialAction.color, 0.18)}, ${alpha('#fff', 0.035)})`,
-                      border: `1px solid ${alpha(socialAction.color, 0.32)}`,
-                      borderRadius: '9px',
+                      backgroundColor: alpha(moodCardColor, 0.075),
+                      border: `1px solid ${alpha(moodCardColor, 0.44)}`,
+                      borderRadius: '11px',
+                      boxShadow: 'none',
                       color: '#f8fbff',
                       flexDirection: 'column',
-                      fontSize: 10,
-                      fontWeight: 750,
-                      gap: 0.15,
-                      minHeight: 58,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      gap: 0.45,
+                      minHeight: 72,
                       minWidth: 0,
-                      padding: '6px 3px',
+                      padding: '8px 4px',
+                      position: 'relative',
                       textTransform: 'none',
+                      transition:
+                        'background-color 140ms ease, border-color 140ms ease, transform 140ms ease',
                       '&:hover': {
-                        backgroundColor: alpha(socialAction.color, 0.24),
-                        borderColor: alpha(socialAction.color, 0.58),
-                        boxShadow: `0 0 14px ${alpha(socialAction.color, 0.16)}`,
+                        backgroundColor: alpha(moodCardColor, 0.14),
+                        borderColor: alpha(moodCardColor, 0.7),
                         transform: 'translateY(-1px)',
                       },
                       '&.Mui-disabled': {
@@ -10015,7 +10341,14 @@ export function QortalLand({
                       },
                     }}
                   >
-                    <Box component="span" sx={{ color: socialAction.color, fontSize: 22, lineHeight: 1 }}>
+                    <Box
+                      component="span"
+                      sx={{
+                        color: socialAction.color,
+                        fontSize: 25,
+                        lineHeight: 1,
+                      }}
+                    >
                       {sendingSocialAction === socialAction.type ? '· · ·' : socialAction.symbol}
                     </Box>
                     {socialAction.label}
@@ -10127,6 +10460,113 @@ export function QortalLand({
           </Box>
         </ClickAwayListener>
       )}
+      <Dialog
+        open={isSkinSelectorOpen}
+        onClose={() => setIsSkinSelectorOpen(false)}
+        PaperProps={{
+          sx: {
+            background: `linear-gradient(180deg, ${alpha('#10182a', 0.99)}, ${alpha('#070914', 0.99)})`,
+            border: `1px solid ${alpha('#2cf8ff', 0.3)}`,
+            borderRadius: '14px',
+            color: '#f8fbff',
+            maxWidth: 680,
+            width: 'calc(100% - 32px)',
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontSize: 22, fontWeight: 850, pb: 0.75 }}>
+          Choose your character
+        </DialogTitle>
+        <DialogContent>
+          <Typography
+            sx={{ color: alpha('#f8fbff', 0.62), fontSize: 13, mb: 2 }}
+          >
+            Select the look other players will see in QortalLand.
+          </Typography>
+          <Box
+            sx={{
+              display: 'grid',
+              gap: 1.25,
+              gridTemplateColumns: {
+                xs: 'repeat(2, minmax(0, 1fr))',
+                sm: 'repeat(3, minmax(0, 1fr))',
+              },
+            }}
+          >
+            {QORTAL_LAND_CHARACTER_SKINS.map((skin) => {
+              const selected = pendingSkinId === skin.id;
+              return (
+                <Box
+                  aria-label={`Select ${skin.label} character`}
+                  component="button"
+                  key={skin.id}
+                  onClick={() => setPendingSkinId(skin.id)}
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor: selected
+                      ? alpha('#2cf8ff', 0.13)
+                      : alpha('#fff', 0.035),
+                    border: `1px solid ${
+                      selected ? alpha('#2cf8ff', 0.72) : alpha('#fff', 0.11)
+                    }`,
+                    borderRadius: '11px',
+                    color: '#f8fbff',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 0.5,
+                    minHeight: 190,
+                    overflow: 'hidden',
+                    padding: '8px 8px 10px',
+                    position: 'relative',
+                    transition:
+                      'background-color 140ms ease, border-color 140ms ease, transform 140ms ease',
+                    '&:hover': {
+                      backgroundColor: alpha('#2cf8ff', 0.09),
+                      borderColor: alpha('#2cf8ff', 0.46),
+                      transform: 'translateY(-1px)',
+                    },
+                  }}
+                >
+                  <Box
+                    sx={{
+                      backgroundImage: `url(${skin.spritesheetUrl})`,
+                      backgroundPosition: '0% 50%',
+                      backgroundRepeat: 'no-repeat',
+                      backgroundSize: `${LAND_CHARACTER_FRAMES_PER_DIRECTION * 100}% 300%`,
+                      height: 150,
+                      width: 150,
+                    }}
+                  />
+                  <Typography sx={{ fontSize: 12, fontWeight: 750 }}>
+                    {skin.label}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button
+            onClick={() => setIsSkinSelectorOpen(false)}
+            sx={{ color: alpha('#f8fbff', 0.7), textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={applySelectedSkin}
+            variant="contained"
+            sx={{
+              borderRadius: '8px',
+              fontWeight: 750,
+              minWidth: 112,
+              textTransform: 'none',
+            }}
+          >
+            Use character
+          </Button>
+        </DialogActions>
+      </Dialog>
       {landGame.modal}
       {localLandCallActive && (
         <Box

@@ -18,6 +18,7 @@ import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../utils/events';
 import { mutedGroupsAtom, txListAtom } from '../atoms/global';
@@ -93,6 +94,7 @@ export const ContextMenu = ({
   onChangeAvatar,
   onCreateCategory,
   onCreateChannel,
+  onOpenHiddenUsers,
   showGroupInfo = true,
   showStandardActions = true,
 }) => {
@@ -506,6 +508,21 @@ export const ContextMenu = ({
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
               Create Category
+            </Typography>
+          </MenuItem>
+        )}
+        {reticulumGroup && onOpenHiddenUsers && (
+          <MenuItem
+            onClick={(event) => {
+              handleClose(event);
+              onOpenHiddenUsers();
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <VisibilityOffRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Hidden Users
             </Typography>
           </MenuItem>
         )}
