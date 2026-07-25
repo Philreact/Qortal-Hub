@@ -10089,12 +10089,13 @@ describe('reticulum chat manager', () => {
     }
   });
 
-  it('accepts compact QortalLand call requests and dedupes relay copies', async () => {
+  it('accepts compact QortalLand call requests and rejections and dedupes relay copies', async () => {
     const caller = createDmIdentity();
     const recipient = createDmIdentity();
     const emitted: Array<Record<string, unknown>> = [];
+    const sent: Array<Record<string, unknown>> = [];
     const callId = 'abcdefghijklmnopqrst';
-    const timestamp = 100_000;
+    const timestamp = Date.now();
     const chatId = `direct:${[caller.address, recipient.address].sort().join(':')}`;
     const signature = base58Encode(
       nacl.sign.detached(
@@ -10163,8 +10164,19 @@ describe('reticulum chat manager', () => {
       bridge: {
         on: () => undefined,
         off: () => undefined,
-        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
-        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        fanoutReticulumChatDetailed: async (
+          messages: Array<Record<string, unknown>>
+        ) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async (
+          _targetPeer: string,
+          message: Record<string, unknown>
+        ) => {
+          sent.push(message);
+          return { ok: true as const };
+        },
         getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
       } as any,
       now: () => timestamp,
@@ -10210,6 +10222,76 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(emitted).toHaveLength(1);
+
+    const rejectTimestamp = timestamp + 1;
+    const rejectSignature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(
+          canonicalizeForSigning({
+            type: 'CALL_REJECT',
+            callId,
+            timestamp: rejectTimestamp,
+          })
+        ),
+        recipient.secretKey
+      )
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'lc',
+        g: 73,
+        y: 'j',
+        c: callId,
+        b: caller.address,
+        p: recipient.publicKey,
+        z: rejectSignature,
+        s: rejectTimestamp,
+        o: 'cccccccccccccccc',
+        h: 0,
+      },
+      'cccccccccccccccc'
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(emitted).toHaveLength(2);
+    expect(emitted[1]).toEqual(
+      expect.objectContaining({
+        groupId: 73,
+        callType: 'reject',
+        callId,
+        fromAddress: recipient.address,
+        toAddress: caller.address,
+        chatId,
+        fromPublicKey: recipient.publicKey,
+        signature: rejectSignature,
+        timestamp: rejectTimestamp,
+      })
+    );
+
+    const sendResult = await manager.sendLandCall(73, {
+      callType: 'reject',
+      callId,
+      fromAddress: recipient.address,
+      toAddress: caller.address,
+      fromPublicKey: recipient.publicKey,
+      signature: rejectSignature,
+      timestamp: rejectTimestamp,
+    });
+    expect(sendResult.ok).toBe(true);
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        k: 'lc',
+        y: 'j',
+        c: callId,
+        b: caller.address,
+        p: recipient.publicKey,
+        z: rejectSignature,
+        s: rejectTimestamp,
+      })
+    );
     manager.close();
   });
 

@@ -8942,6 +8942,11 @@ export class ReticulumChatManager extends EventEmitter {
       };
     }
     const result = await this.sendLocalGroupLiveControl(wire);
+    if (signedControl) {
+      loggerLog(
+        `[ReticulumChat] land_call_send group=${groupId} type=${callType} call=${callId.slice(0, 12)} result=${result.ok === true ? 'ok' : result.reason}`
+      );
+    }
     if (result.ok === true) {
       this.applyLandCall(groupId, wire);
     }
@@ -14265,6 +14270,11 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
+    }
+    if (['request', 'accept', 'reject', 'hangup'].includes(callType)) {
+      loggerLog(
+        `[ReticulumChat] land_call_received group=${groupId} type=${callType} call=${callId.slice(0, 12)}`
+      );
     }
     this.applyLandCall(groupId, wire);
   }

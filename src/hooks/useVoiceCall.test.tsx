@@ -312,6 +312,92 @@ describe('useVoiceCall', () => {
     });
   });
 
+  it('keeps an incoming call actionable when its rejection fails', async () => {
+    let eventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+    let settleRejection!: (result: {
+      success: boolean;
+      error?: string;
+    }) => void;
+    const pendingRejection = new Promise<{
+      success: boolean;
+      error?: string;
+    }>((resolve) => {
+      settleRejection = resolve;
+    });
+    const callApi = {
+      onEvent: vi.fn(
+        (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+          eventHandler = cb;
+          return vi.fn();
+        }
+      ),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      reject: vi.fn(() => pendingRejection),
+    };
+
+    Object.assign(window as any, {
+      call: callApi,
+      groupCall: { onEvent: vi.fn(() => vi.fn()) },
+      sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+    });
+
+    const myAddr = 'Qme';
+    const peerAddr = 'Qbuddy';
+    const chatId = buildDirectVoiceCallChatId(myAddr, peerAddr);
+    const store = createStore();
+    store.set(userInfoAtom, { address: myAddr, publicKey: 'pub' });
+    store.set(blockedAddressesAtom, {});
+    store.set(dmFriendsByAddressAtom, {
+      [peerAddr]: { publicKey: 'pk', addedAt: 1 },
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+
+    const { result } = renderHook(() => useVoiceCall(), { wrapper });
+
+    await act(async () => {
+      await eventHandler?.('call:incoming', {
+        callId: 'call-reject-fails',
+        fromAddress: peerAddr,
+        chatId,
+      });
+    });
+    let rejectPromise!: Promise<void>;
+    act(() => {
+      rejectPromise = result.current.rejectCall();
+    });
+
+    await waitFor(() =>
+      expect(callApi.reject).toHaveBeenCalledWith(
+        'call-reject-fails',
+        'rejected',
+        'sig',
+        'pub',
+        expect.any(Number)
+      )
+    );
+    expect(result.current.callState).toBe('ringing');
+    expect(result.current.incomingCall?.callId).toBe('call-reject-fails');
+
+    await act(async () => {
+      settleRejection({
+        success: false,
+        error: 'Unknown QortalLand call',
+      });
+      await rejectPromise;
+    });
+
+    expect(result.current.callState).toBe('ringing');
+    expect(result.current.incomingCall).toEqual({
+      callId: 'call-reject-fails',
+      fromAddress: peerAddr,
+      chatId,
+    });
+  });
+
   it('accepts a direct call without prewarming the main renderer audio context', async () => {
     let eventHandler:
       | ((event: string, payload: unknown) => void | Promise<void>)

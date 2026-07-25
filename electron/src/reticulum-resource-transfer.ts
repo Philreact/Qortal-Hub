@@ -25,6 +25,7 @@ export const RETICULUM_RESOURCE_TRANSFER_OVERLAY_STALE_THROTTLE_MS = 30_000;
 export const RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS = 5_000;
 const RETICULUM_RESOURCE_TRANSFER_ACCEPT_STALE_MS = 180_000;
 const RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS = 5_000;
+export const RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS = 12_000;
 const RETICULUM_RESOURCE_TRANSFER_ZERO_PROGRESS_RETRY_MS = 10_000;
 const RETICULUM_RESOURCE_TRANSFER_STALLED_PROGRESS_RETRY_MS = 20_000;
 
@@ -141,6 +142,7 @@ type TransferSpeedSample = {
 type TransferProgressWatch = {
   lastProgressAt: number;
   lastProgressBytes: number;
+  receivingStarted: boolean;
 };
 
 export type ReticulumResourceTransferOptions<TRequestWire> = {
@@ -537,7 +539,8 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (
       reason !== 'resource_unavailable' &&
       reason !== 'manifest_not_found' &&
-      reason !== 'request_not_allowed'
+      reason !== 'request_not_allowed' &&
+      reason !== 'resource_session_establish_timeout'
     ) {
       return;
     }
@@ -1017,6 +1020,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     this.activeAccepts.add(transferId);
     const startedAt = this.now();
     this.activeAcceptStartedAt.set(transferId, startedAt);
+    this.transferProgressWatch.set(transferId, {
+      lastProgressAt: startedAt,
+      lastProgressBytes: 0,
+      receivingStarted: false,
+    });
     this.markOfferRangesInFlight(state, offer);
     loggerLog(
       `[${this.loggerPrefix}] resource_session_opened fileHash=${state.fileHash} ` +
@@ -1235,11 +1243,16 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     if (!offer || !this.activeAccepts.has(transferId)) return;
     const now = this.now();
     this.activeAcceptStartedAt.set(transferId, now);
-    if (!this.transferProgressWatch.has(transferId)) {
+    const watch = this.transferProgressWatch.get(transferId);
+    if (!watch) {
       this.transferProgressWatch.set(transferId, {
         lastProgressAt: now,
         lastProgressBytes: 0,
+        receivingStarted: true,
       });
+    } else if (!watch.receivingStarted) {
+      watch.receivingStarted = true;
+      watch.lastProgressAt = now;
     }
     const state = this.downloads.get(offer.fileHash);
     if (state) this.refreshOfferRangesInFlight(state, offer);
@@ -1893,29 +1906,37 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
 
   private retryNoProgressTransfers(): void {
     const now = this.now();
-    const retryTransferIds: string[] = [];
+    const retries: Array<{ transferId: string; reason: string }> = [];
     for (const transferId of this.activeAccepts) {
       const offer = this.offers.get(transferId);
       const watch = this.transferProgressWatch.get(transferId);
       if (!offer || !watch) continue;
       const receivedBytes = Math.max(0, Math.floor(watch.lastProgressBytes));
-      const thresholdMs = receivedBytes <= 0
-        ? RETICULUM_RESOURCE_TRANSFER_ZERO_PROGRESS_RETRY_MS
-        : RETICULUM_RESOURCE_TRANSFER_STALLED_PROGRESS_RETRY_MS;
+      const thresholdMs = !watch.receivingStarted
+        ? RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS
+        : receivedBytes <= 0
+          ? RETICULUM_RESOURCE_TRANSFER_ZERO_PROGRESS_RETRY_MS
+          : RETICULUM_RESOURCE_TRANSFER_STALLED_PROGRESS_RETRY_MS;
       const ageMs = now - watch.lastProgressAt;
       if (ageMs >= thresholdMs) {
+        const reason = watch.receivingStarted
+          ? 'resource_range_no_progress_retry'
+          : 'resource_session_establish_timeout';
         loggerWarn(
-          `[${this.loggerPrefix}] resource_range_no_progress_retry fileHash=${offer.fileHash} ` +
+          `[${this.loggerPrefix}] ${reason} fileHash=${offer.fileHash} ` +
             `transfer=${transferId} peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} ` +
             `range=${offer.ranges.map(rangeKey).join(',')} ` +
             `bytesReceived=${receivedBytes}/${offer.sizeBytes} ageMs=${Math.round(ageMs)} ` +
             `thresholdMs=${thresholdMs}`
         );
-        retryTransferIds.push(transferId);
+        retries.push({ transferId, reason });
       }
     }
-    for (const transferId of retryTransferIds) {
-      this.cancelTransferForRetry(transferId, 'resource_range_no_progress_retry');
+    for (const { transferId, reason } of retries) {
+      if (reason === 'resource_session_establish_timeout') {
+        this.rejectUnavailableProvider(transferId, reason);
+      }
+      this.cancelTransferForRetry(transferId, reason);
     }
   }
 

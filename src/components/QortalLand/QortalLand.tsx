@@ -3169,7 +3169,9 @@ export function QortalLand({
     },
     reject: async (callId, reason, signature, publicKey, timestamp) => {
       const peer = landCallPeersRef.current.get(callId);
-      if (!peer) return { success: true };
+      if (!peer) {
+        return { success: false, error: 'Unknown QortalLand call' };
+      }
       const result = await sendLandCallSignal({
         callType: 'reject',
         callId,
@@ -3182,6 +3184,7 @@ export function QortalLand({
         roomId: currentRoomRef.current,
         timestamp: timestamp ?? Date.now(),
       });
+      if (!result.success) return result;
       landCallPeersRef.current.delete(callId);
       if (lastAnnouncedLandCallRef.current?.callId === callId) {
         lastAnnouncedLandCallRef.current = null;
@@ -4403,6 +4406,11 @@ export function QortalLand({
     (target: LandActionTarget) => {
       if (!myAddress || landVoiceCall.callState !== 'idle') return;
       if (isAddressInLandCall(target.authorAddress)) return;
+      const targetIsDnd = [...remotePlayersRef.current.values()].some(
+        (player) =>
+          player.authorAddress === target.authorAddress && player.dnd
+      );
+      if (targetIsDnd) return;
       recordLandActivity();
       const chatId = buildDirectVoiceCallChatId(myAddress, target.authorAddress);
       setActionTarget(null);
@@ -8868,7 +8876,8 @@ export function QortalLand({
     landVoiceCall.callState === 'idle' &&
     !landGame.busy &&
     !actionTargetInCall &&
-    !actionTargetInGame;
+    !actionTargetInGame &&
+    !actionTargetDnd;
   const canStartLandGame =
     Boolean(actionTarget) &&
     landGame.transportReady &&
@@ -10364,10 +10373,10 @@ export function QortalLand({
               startIcon={<CallRoundedIcon fontSize="small" />}
               onClick={() => startLandCall(actionTarget)}
               sx={{
-                backgroundColor: actionTargetInCall || actionTargetInGame ? alpha('#fff', 0.05) : alpha('#2cf8ff', 0.12),
-                border: `1px solid ${actionTargetInCall || actionTargetInGame ? alpha('#fff', 0.1) : alpha('#2cf8ff', 0.3)}`,
+                backgroundColor: actionTargetInCall || actionTargetInGame || actionTargetDnd ? alpha('#fff', 0.05) : alpha('#2cf8ff', 0.12),
+                border: `1px solid ${actionTargetInCall || actionTargetInGame || actionTargetDnd ? alpha('#fff', 0.1) : alpha('#2cf8ff', 0.3)}`,
                 borderRadius: '8px',
-                color: actionTargetInCall || actionTargetInGame ? alpha(theme.palette.text.secondary, 0.9) : '#9ffcff',
+                color: actionTargetInCall || actionTargetInGame || actionTargetDnd ? alpha(theme.palette.text.secondary, 0.9) : '#9ffcff',
                 fontSize: 12,
                 fontWeight: 800,
                 justifyContent: 'flex-start',
@@ -10378,11 +10387,17 @@ export function QortalLand({
                   backgroundColor: alpha('#2cf8ff', 0.2),
                 },
                 '&.Mui-disabled': {
-                  color: actionTargetInCall || actionTargetInGame ? alpha('#ffcf5a', 0.72) : alpha('#fff', 0.32),
+                  color: actionTargetInCall || actionTargetInGame || actionTargetDnd ? alpha('#ffcf5a', 0.72) : alpha('#fff', 0.32),
                 },
               }}
             >
-              {actionTargetInCall ? 'In a call' : actionTargetInGame ? 'In a game' : `Call ${actionTargetName}`}
+              {actionTargetDnd
+                ? 'Do Not Disturb'
+                : actionTargetInCall
+                  ? 'In a call'
+                  : actionTargetInGame
+                    ? 'In a game'
+                    : `Call ${actionTargetName}`}
             </Button>
             <Button
               disabled={!canStartLandGame}

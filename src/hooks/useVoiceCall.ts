@@ -161,7 +161,7 @@ export interface UseVoiceCallReturn {
     ) => Promise<{ signature: string; publicKey: string }>
   ) => void;
   acceptCall: () => Promise<void>;
-  rejectCall: () => void;
+  rejectCall: () => Promise<void>;
   hangUp: () => Promise<void>;
   toggleMute: () => void;
   setHearCall: (hear: boolean) => void;
@@ -2291,21 +2291,37 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
   const rejectCall = useCallback(async () => {
     const incoming = incomingCallRef.current;
     if (!incoming) return;
+
+    try {
+      const rejectTs = Date.now();
+      const { signature, publicKey } = await signPresenceFields(
+        { type: 'CALL_REJECT', callId: incoming.callId, timestamp: rejectTs },
+        publicKeyRef.current
+      );
+      const rejectResult = await callApiRef.current?.reject?.(
+        incoming.callId,
+        'rejected',
+        signature,
+        publicKey,
+        rejectTs
+      );
+      if (!rejectResult?.success) {
+        pushDirectVoiceUiLog('warn', 'call.reject failed', {
+          result: rejectResult ?? null,
+        });
+        return;
+      }
+    } catch (error) {
+      pushDirectVoiceUiLog('warn', 'call.reject failed', {
+        error: String(error),
+      });
+      return;
+    }
+
+    // Keep the call in ringing state until rejection succeeds. Entering idle
+    // earlier lets QortalLand cleanup discard the caller route before send.
     updateIncomingCall(null);
     updateCallState('idle');
-
-    const rejectTs = Date.now();
-    const { signature, publicKey } = await signPresenceFields(
-      { type: 'CALL_REJECT', callId: incoming.callId, timestamp: rejectTs },
-      publicKeyRef.current
-    );
-    await callApiRef.current?.reject?.(
-      incoming.callId,
-      'rejected',
-      signature,
-      publicKey,
-      rejectTs
-    );
   }, [updateCallState, updateIncomingCall]);
 
   const hangUp = useCallback(async () => {

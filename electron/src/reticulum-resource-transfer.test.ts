@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ReticulumResourceStore, type ReticulumResourceManifest } from './reticulum-resource-store';
 import {
+  RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_TTL_MS,
   type ReticulumResourceTransferProgress,
   ReticulumResourceTransferManager,
@@ -173,7 +174,7 @@ describe('reticulum resource transfer storage protection', () => {
     );
   });
 
-  it('does not time out a range before Reticulum starts receiving it', () => {
+  it('times out a range session that never starts receiving', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
     let now = 100_000;
     const store = new ReticulumResourceStore({
@@ -205,24 +206,90 @@ describe('reticulum resource transfer storage protection', () => {
     });
     (transfer as any).activeAccepts.add(transferId);
     (transfer as any).activeAcceptStartedAt.set(transferId, now);
+    (transfer as any).transferProgressWatch.set(transferId, {
+      lastProgressAt: now,
+      lastProgressBytes: 0,
+      receivingStarted: false,
+    });
 
-    now += 30_000;
+    now += RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS - 1;
     (transfer as any).retryNoProgressTransfers();
     expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
 
-    transfer.handleResourceEvent({ status: 'auth_sent', transferId });
-    now += 30_000;
-    (transfer as any).retryNoProgressTransfers();
-    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
-
-    (transfer as any).handleTransferReceivingStarted(transferId);
-    now += 10_001;
+    now += 2;
     (transfer as any).retryNoProgressTransfers();
     expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
       expect.objectContaining({
         transferId,
-        reason: 'resource_range_no_progress_retry',
+        reason: 'resource_session_establish_timeout',
       })
     );
+    expect((transfer as any).activeAccepts.has(transferId)).toBe(false);
+    expect((transfer as any).offers.has(transferId)).toBe(false);
+  });
+
+  it('moves an unstarted range to another provider after establishment timeout', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const contents = Buffer.from('provider fallback');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'fallback.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: now,
+      metadata: { groupId: 716 },
+    };
+    const firstPeer = 'a'.repeat(32);
+    const secondPeer = 'b'.repeat(32);
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    const acceptedPeers: string[] = [];
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: {
+        getLocalDestinationHash: () => 'c'.repeat(32),
+        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({
+          ok: true,
+        })),
+        acceptReticulumResourceDetailed: vi.fn(async (payload: {
+          peerPresenceHash: string;
+        }) => {
+          acceptedPeers.push(payload.peerPresenceHash);
+          return { ok: true };
+        }),
+        cancelReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
+      } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [{}],
+    });
+    transfers.push(transfer);
+
+    const state = (transfer as any).upsertDownload(
+      716,
+      manifest,
+      'event-with-image',
+      [firstPeer, secondPeer]
+    );
+    (transfer as any).ensureStorageProtection(state);
+    store.ensurePartialFile(manifest.fileHash);
+    await (transfer as any).dispatchRequests(state);
+
+    expect(acceptedPeers).toEqual([firstPeer]);
+    now += RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS + 1;
+    (transfer as any).retryNoProgressTransfers();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(state.peerHashes.has(firstPeer)).toBe(false);
+    expect(state.peerHashes.has(secondPeer)).toBe(true);
+    expect(acceptedPeers).toEqual([firstPeer, secondPeer]);
   });
 });
