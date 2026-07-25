@@ -4875,9 +4875,19 @@ export function QortalLand({
         dnd: current.dnd,
         skinId: current.skinId,
       });
+      // Keep the renderer-wide member list snapshot in step with the same
+      // heartbeat used for network presence. Without this refresh, the local
+      // Q-LAND badge can expire even while the player remains in QortalLand.
+      publishLandPresenceSnapshot();
     }, LAND_SEND_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [groupId, myAddress, reticulumReady, sessionId]);
+  }, [
+    groupId,
+    myAddress,
+    publishLandPresenceSnapshot,
+    reticulumReady,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (!myAddress || reticulumReady !== true) return;

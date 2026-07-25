@@ -162,11 +162,6 @@ const LazyFindGroupModal = lazy(() =>
 const LazyManageMembers = lazy(() =>
   import('./ManageMembers').then((m) => ({ default: m.ManageMembers }))
 );
-const LazyQortalLandMembers = lazy(() =>
-  import('../QortalLand/QortalLandMembers').then((m) => ({
-    default: m.QortalLandMembers,
-  }))
-);
 const LazyBlockedUsersModal = lazy(() =>
   import('./BlockedUsersModal').then((m) => ({ default: m.BlockedUsersModal }))
 );
@@ -1033,8 +1028,14 @@ export const Group = ({
   const [mountedLandGroupId, setMountedLandGroupId] = useState<string | null>(
     null
   );
-  const [reticulumMembersPanelOpen, setReticulumMembersPanelOpen] =
-    useState(false);
+  const [
+    reticulumChatMembersPanelOpen,
+    setReticulumChatMembersPanelOpen,
+  ] = useState(true);
+  const [
+    reticulumLandMembersPanelOpen,
+    setReticulumLandMembersPanelOpen,
+  ] = useState(false);
   const [reticulumJoinRequestCount, setReticulumJoinRequestCount] = useState(0);
   const [mobileViewMode, setMobileViewMode] = useState('home');
   const [, setMobileViewModeKeepOpen] = useState('');
@@ -3964,9 +3965,17 @@ export const Group = ({
     }
   }, [groupSection, reticulumChatEnabled]);
 
+  const reticulumMembersPanelOpen =
+    groupSection === 'land'
+      ? reticulumLandMembersPanelOpen
+      : reticulumChatMembersPanelOpen;
   const toggleReticulumMembersPanel = useCallback(() => {
-    setReticulumMembersPanelOpen((open) => !open);
-  }, []);
+    if (groupSection === 'land') {
+      setReticulumLandMembersPanelOpen((open) => !open);
+      return;
+    }
+    setReticulumChatMembersPanelOpen((open) => !open);
+  }, [groupSection]);
 
   const handleReticulumChannelSelected = useCallback(
     (channelId: string) => {
@@ -3995,11 +4004,15 @@ export const Group = ({
 
   useEffect(() => {
     if (!reticulumChatEnabled) return;
-    const closeMembersPanel = () => setReticulumMembersPanelOpen(false);
+    const closeMembersPanel = () => {
+      if (groupSection === 'land') {
+        setReticulumLandMembersPanelOpen(false);
+      }
+    };
     subscribeToEvent('closeReticulumMembersPanel', closeMembersPanel);
     return () =>
       unsubscribeFromEvent('closeReticulumMembersPanel', closeMembersPanel);
-  }, [reticulumChatEnabled]);
+  }, [groupSection, reticulumChatEnabled]);
 
   const loadingGroupSnackbarInfo = useMemo(
     () => ({
@@ -4483,7 +4496,11 @@ export const Group = ({
               />
             )}
 
-            <ChatContentBox>
+            <ChatContentBox
+              sx={{
+                mr: 0,
+              }}
+            >
               {reticulumChatEnabled && !!selectedGroup && (
                 <PersistentSectionLayer active={groupSection === 'chat'}>
                   <ReticulumChatGroup
@@ -4932,28 +4949,21 @@ export const Group = ({
                   }}
                 >
                   <Suspense fallback={null}>
-                    {groupSection === 'land' ? (
-                      <LazyQortalLandMembers
-                        groupId={Number(selectedGroup.groupId)}
-                        myAddress={myAddress}
-                      />
-                    ) : (
-                      <LazyManageMembers
-                        inline
-                        reticulumSidebar
-                        selectedGroup={selectedGroup}
-                        address={myAddress}
-                        open
-                        setOpen={setOpenManageMembers}
-                        isAdmin={admins.includes(myAddress)}
-                        isOwner={groupOwner?.owner === myAddress}
-                        isPrivate={isPrivate === true}
-                        joinRequestCount={reticulumJoinRequestCount}
-                        onJoinRequestCountChange={
-                          handleReticulumJoinRequestCountChange
-                        }
-                      />
-                    )}
+                    <LazyManageMembers
+                      inline
+                      reticulumSidebar
+                      selectedGroup={selectedGroup}
+                      address={myAddress}
+                      open
+                      setOpen={setOpenManageMembers}
+                      isAdmin={admins.includes(myAddress)}
+                      isOwner={groupOwner?.owner === myAddress}
+                      isPrivate={isPrivate === true}
+                      joinRequestCount={reticulumJoinRequestCount}
+                      onJoinRequestCountChange={
+                        handleReticulumJoinRequestCountChange
+                      }
+                    />
                   </Suspense>
                 </Box>
               )}
