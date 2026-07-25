@@ -22,6 +22,15 @@ export const RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS = 'members';
 export const RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS = 'admins';
 export const RETICULUM_CHAT_AUTHOR_SEQUENCE_LEASE_TTL_MS = 120_000;
 
+export function isReticulumChatBuiltInChannelId(channelId: unknown): boolean {
+  if (typeof channelId !== 'string') return false;
+  const normalizedChannelId = channelId.trim().toLowerCase();
+  return (
+    normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+    normalizedChannelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+  );
+}
+
 export class ReticulumChatSequenceLeaseBusyError extends Error {
   constructor() {
     super('A group author sequence is already reserved');
@@ -109,6 +118,21 @@ export type ReticulumGroupChannel = {
   createdAt: number;
   updatedAt: number;
 };
+
+function keepReticulumBuiltInChannelOpen(
+  channel: ReticulumGroupChannel
+): ReticulumGroupChannel {
+  if (!isReticulumChatBuiltInChannelId(channel.channelId)) return channel;
+  if (
+    channel.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS &&
+    channel.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
+  ) return channel;
+  return {
+    ...channel,
+    writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
+    readMode: RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS,
+  };
+}
 
 type ReticulumGroupChannelInput = Omit<
   ReticulumGroupChannel,
@@ -7785,15 +7809,18 @@ export class ReticulumChatDatabase {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+    for (let index = 0; index < channels.length; index += 1) {
+      channels[index] = keepReticulumBuiltInChannelOpen(channels[index]);
+    }
     for (const channel of this.memoryChannels.values()) {
       if (channel.groupId !== groupId) continue;
       const existingIndex = channels.findIndex(
         (item) => item.channelId === channel.channelId
       );
       if (existingIndex >= 0) {
-        channels[existingIndex] = channel;
+        channels[existingIndex] = keepReticulumBuiltInChannelOpen(channel);
       } else {
-        channels.push(channel);
+        channels.push(keepReticulumBuiltInChannelOpen(channel));
       }
     }
     if (
@@ -7858,7 +7885,7 @@ export class ReticulumChatDatabase {
     const existingExpiryDurationMs = normalizeReticulumChatExpiryDurationMs(
       existing?.expiryDurationMs
     );
-    const normalizedChannel: ReticulumGroupChannel = {
+    const normalizedChannelCandidate: ReticulumGroupChannel = {
       ...channel,
       channelId: normalizedChannelId,
       categoryId:
@@ -7874,6 +7901,9 @@ export class ReticulumChatDatabase {
       expiryDurationMs,
       description: channel.description?.trim() || undefined,
     };
+    const normalizedChannel = keepReticulumBuiltInChannelOpen(
+      normalizedChannelCandidate
+    );
     const expiryPolicyChanged =
       existing === null || existingExpiryDurationMs !== expiryDurationMs;
     const tx = this.db.transaction(() => {

@@ -1830,6 +1830,29 @@ describe('reticulum chat database', () => {
     ).toBe(RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS);
   });
 
+  it('keeps built-in channels open on database writes and reads', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+
+    for (const channelId of [
+      RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
+    ]) {
+      const channel = db.getChannel(11, channelId)!;
+      db.upsertChannel({
+        ...channel,
+        writeMode: 'admins',
+        readMode: 'admins',
+        writeModeUpdatedAt: 1,
+        updatedAt: 1,
+      });
+      expect(db.getChannel(11, channelId)).toMatchObject({
+        writeMode: 'members',
+        readMode: 'members',
+      });
+    }
+  });
+
   it('expires messages using message-level expiry when the channel has none', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -18074,6 +18097,8 @@ describe('reticulum chat manager', () => {
       channelId: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
       name: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
       position: 1,
+      writeMode: 'admins',
+      readMode: 'admins',
       expiryDurationMs: 7 * RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
     };
     const builtInEvent = signedEvent({
@@ -18088,11 +18113,16 @@ describe('reticulum chat manager', () => {
     await expect(
       manager.applyChannelMetadataEvent(builtInEvent.eventId, builtInPayload)
     ).resolves.toBe(true);
-    expect(
-      manager.getChannels(groupId, true).find(
-        (channel) => channel.channelId === builtInPayload.channelId
-      )?.expiryDurationMs
-    ).toBe(RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS);
+    const builtInChannel = manager.getChannels(groupId, true).find(
+      (channel) => channel.channelId === builtInPayload.channelId
+    );
+    expect(builtInChannel?.expiryDurationMs).toBe(
+      RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS
+    );
+    expect(builtInChannel).toMatchObject({
+      writeMode: 'members',
+      readMode: 'members',
+    });
     manager.close();
   });
 
@@ -19321,6 +19351,28 @@ describe('reticulum chat manager', () => {
       channel
     );
     expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+
+    const restrictedChannel = {
+      ...channel,
+      writeMode: 'admins' as const,
+      readMode: 'admins' as const,
+    };
+    expect(
+      metadataSnapshotHasConsistentRevisions({
+        ...snapshot,
+        channels: [restrictedChannel],
+        revisions: [
+          {
+            ...snapshot.revisions[0],
+            stateHash: hashReticulumChatMetadataEntityState(
+              'channel',
+              channel.channelId,
+              restrictedChannel
+            ),
+          },
+        ],
+      })
+    ).toBe(false);
 
     snapshot.channels = [
       {

@@ -7144,7 +7144,9 @@ export const ChatGroup = ({
       setEditingReticulumChannel(channel);
       setReticulumChannelName(channel.name || channel.channelId);
       setReticulumChannelAccessMode(
-        reticulumChannelAccessFromModes(channel.writeMode, channel.readMode)
+        isReticulumSystemChannelId(channel.channelId)
+          ? RETICULUM_CHANNEL_ACCESS_REGULAR
+          : reticulumChannelAccessFromModes(channel.writeMode, channel.readMode)
       );
       setReticulumChannelExpiryDurationMs(channel.expiryDurationMs);
       setReticulumChannelError('');
@@ -7187,9 +7189,11 @@ export const ChatGroup = ({
       setReticulumChannelError('Channel already exists');
       return;
     }
-    const channelModes = reticulumChannelModesFromAccess(
-      reticulumChannelAccessMode
-    );
+    const channelModes = isReticulumSystemChannelId(
+      editingReticulumChannel.channelId
+    )
+      ? reticulumChannelModesFromAccess(RETICULUM_CHANNEL_ACCESS_REGULAR)
+      : reticulumChannelModesFromAccess(reticulumChannelAccessMode);
     const expiryPayload = isReticulumSystemChannelId(
       editingReticulumChannel.channelId
     )
@@ -7974,6 +7978,10 @@ export const ChatGroup = ({
   );
   const isNewReticulumChannelNameValid = Boolean(
     newReticulumChannelNormalizedName
+  );
+  const isEditingReticulumSystemChannel = Boolean(
+    editingReticulumChannel &&
+      isReticulumSystemChannelId(editingReticulumChannel.channelId)
   );
   const handleReticulumChannelTypeKeyDown = (
     event: ReactKeyboardEvent<HTMLElement>,
@@ -11111,29 +11119,40 @@ export const ChatGroup = ({
                   {reticulumChannelTypeOptions.map((option, index) => {
                     const selected =
                       reticulumChannelAccessMode === option.value;
+                    const disabled =
+                      isEditingReticulumSystemChannel &&
+                      option.value !== RETICULUM_CHANNEL_ACCESS_REGULAR;
                     const Icon = option.icon;
                     return (
                       <ButtonBase
                         aria-checked={selected}
                         aria-describedby={`reticulum-channel-settings-type-description-${index}`}
                         aria-label={`${option.label}. ${option.description}`}
+                        disabled={disabled}
                         id={`reticulum-channel-settings-type-${index}`}
                         key={option.value}
-                        onClick={() =>
-                          setReticulumChannelAccessMode(option.value)
+                        onClick={
+                          disabled
+                            ? undefined
+                            : () => setReticulumChannelAccessMode(option.value)
                         }
-                        onKeyDown={(event) =>
-                          handleReticulumChannelTypeKeyDown(
-                            event,
-                            index,
-                            'settings'
-                          )
+                        onKeyDown={
+                          isEditingReticulumSystemChannel || disabled
+                            ? undefined
+                            : (event) =>
+                                handleReticulumChannelTypeKeyDown(
+                                  event,
+                                  index,
+                                  'settings'
+                                )
                         }
                         role="radio"
                         sx={{
                           alignItems: 'center',
                           backgroundColor: selected
                             ? 'rgba(37, 99, 235, 0.12)'
+                            : disabled
+                              ? 'rgba(255, 255, 255, 0.025)'
                             : 'background.default',
                           borderColor: selected
                             ? RETICULUM_ACTIVE_BLUE
@@ -11145,14 +11164,19 @@ export const ChatGroup = ({
                           borderRadius:
                             index === 0
                               ? '9px 0 0 9px'
-                              : index === reticulumChannelTypeOptions.length - 1
+                              : index ===
+                                  reticulumChannelTypeOptions.length - 1
                                 ? '0 9px 9px 0'
                                 : 0,
                           borderTop: 'none',
                           boxShadow: selected
                             ? `inset 0 0 0 1px ${RETICULUM_ACTIVE_BLUE}`
                             : 'none',
-                          color: selected ? 'common.white' : 'text.primary',
+                          color: disabled
+                            ? 'text.disabled'
+                            : selected
+                              ? 'common.white'
+                              : 'text.primary',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 0.75,
@@ -11171,13 +11195,22 @@ export const ChatGroup = ({
                               ? RETICULUM_ACTIVE_BLUE
                               : 'text.secondary',
                           },
+                          '&.Mui-disabled': {
+                            opacity: 1,
+                          },
                           '&.Mui-focusVisible': {
                             outline: `2px solid ${RETICULUM_ACTIVE_BLUE}`,
                             outlineOffset: -4,
                           },
                           zIndex: selected ? 1 : 0,
                         }}
-                        tabIndex={selected ? 0 : -1}
+                        tabIndex={
+                          disabled
+                            ? -1
+                            : selected
+                              ? 0
+                              : -1
+                        }
                       >
                         {selected && (
                           <CheckCircleRoundedIcon
@@ -11192,14 +11225,22 @@ export const ChatGroup = ({
                         )}
                         <Icon
                           sx={{
-                            color: selected ? 'common.white' : 'text.secondary',
+                            color: disabled
+                              ? 'text.disabled'
+                              : selected
+                                ? 'common.white'
+                                : 'text.secondary',
                             fontSize: 26,
                             transition: 'color 140ms ease',
                           }}
                         />
                         <Typography
                           sx={{
-                            color: selected ? 'common.white' : 'text.primary',
+                            color: disabled
+                              ? 'text.disabled'
+                              : selected
+                                ? 'common.white'
+                                : 'text.primary',
                             fontSize: 15,
                             fontWeight: 800,
                             lineHeight: '18px',
@@ -11210,7 +11251,9 @@ export const ChatGroup = ({
                         <Typography
                           id={`reticulum-channel-settings-type-description-${index}`}
                           sx={{
-                            color: 'text.secondary',
+                            color: disabled
+                              ? 'text.disabled'
+                              : 'text.secondary',
                             fontSize: 13,
                             lineHeight: '18px',
                             maxWidth: 180,

@@ -39,6 +39,7 @@ import {
   compareMetadataEntityRevisions,
   hashReticulumChatMentionAddress,
   hashReticulumChatMetadataEntityState,
+  isReticulumChatBuiltInChannelId,
   normalizeReticulumChatChannelExpiryDurationMs,
   normalizeReticulumChatExpiryDurationMs,
   normalizeReticulumDmConversationId,
@@ -3624,6 +3625,11 @@ export function metadataSnapshotHasConsistentRevisions(
       channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
     )
       return false;
+    if (
+      isReticulumChatBuiltInChannelId(channel.channelId) &&
+      (channel.writeMode !== RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS ||
+        channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS)
+    ) return false;
     if (
       !Number.isInteger(channel.writeModeUpdatedAt) ||
       channel.writeModeUpdatedAt < 0
@@ -18087,21 +18093,27 @@ export class ReticulumChatManager extends EventEmitter {
         ? data.description.trim().slice(0, 240)
         : undefined
       : existing?.description;
+    const isBuiltInChannel = isReticulumChatBuiltInChannelId(channelId);
     const writeMode: ReticulumGroupChannelWriteMode =
-      data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
+      isBuiltInChannel
+        ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
+        : data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
         ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
         : data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
           ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
           : (existing?.writeMode ?? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS);
     const readMode: ReticulumGroupChannelReadMode =
-      data.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
+      isBuiltInChannel
+        ? RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
+        : data.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
         ? RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
         : data.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
           ? RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
           : (existing?.readMode ?? RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS);
     const writeModeUpdatedAt =
-      data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS ||
-      data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS ||
+      (!isBuiltInChannel &&
+        (data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS ||
+          data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS)) ||
       !existing
         ? now
         : (existing.writeModeUpdatedAt ?? existing.updatedAt);
@@ -19113,15 +19125,36 @@ export class ReticulumChatManager extends EventEmitter {
     const projected =
       await this.flushChannelMetadataProjectionForGroup(groupId);
     if (!projected) return null;
-    const revisions = this.db.getMetadataEntityRevisions(groupId);
+    const allChannels = this.db.getChannels(groupId, true);
+    const channelsById = new Map(
+      allChannels.map((channel) => [channel.channelId, channel])
+    );
+    const revisions = this.db.getMetadataEntityRevisions(groupId).map(
+      (revision) => {
+        if (
+          revision.entityType !== 'channel' ||
+          !isReticulumChatBuiltInChannelId(revision.entityId) ||
+          revision.deleted
+        ) return revision;
+        const channel = channelsById.get(revision.entityId);
+        return channel
+          ? {
+              ...revision,
+              stateHash: hashReticulumChatMetadataEntityState(
+                'channel',
+                revision.entityId,
+                channel
+              ),
+            }
+          : revision;
+      }
+    );
     const activeRevisionKeys = new Set(
       revisions
         .filter((revision) => !revision.deleted)
         .map((revision) => `${revision.entityType}:${revision.entityId}`)
     );
-    const channels = this.db
-      .getChannels(groupId, true)
-      .filter(
+    const channels = allChannels.filter(
         (channel) =>
           channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
           channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID ||
