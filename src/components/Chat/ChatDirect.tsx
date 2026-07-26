@@ -87,6 +87,7 @@ import {
   isReticulumGifFile,
 } from './reticulumImagePreparation';
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
+import { shouldBlockChatForLowBalance } from './chatTransportBalance';
 
 const uid = new ShortUniqueId({ length: 5 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
@@ -684,7 +685,13 @@ export const ChatDirect = ({
     async (reaction, chatMessage, reactionState = true) => {
       try {
         if (isSending) return;
-        if (+balance < MIN_REQUIRED_QORTS)
+        if (
+          shouldBlockChatForLowBalance(
+            balance,
+            MIN_REQUIRED_QORTS,
+            reticulumDirectEnabled
+          )
+        )
           throw new Error(
             t('group:message.error.qortals_required', {
               quantity: MIN_REQUIRED_QORTS,
@@ -751,6 +758,7 @@ export const ChatDirect = ({
       publicKeyOfRecipient,
       myName,
       myAddress,
+      reticulumDirectEnabled,
     ]
   );
 
@@ -764,14 +772,6 @@ export const ChatDirect = ({
           isSending
         ) {
           return;
-        }
-        if (+balance < MIN_REQUIRED_QORTS) {
-          throw new Error(
-            t('group:message.error.qortals_required', {
-              quantity: MIN_REQUIRED_QORTS,
-              postProcess: 'capitalizeFirstChar',
-            })
-          );
         }
         const targetEventId = String(
           chatMessage?.signature || chatMessage?.id || ''
@@ -804,13 +804,11 @@ export const ChatDirect = ({
       }
     },
     [
-      balance,
       isSending,
       myAddress,
       publicKeyOfRecipient,
       reticulumDirectEnabled,
       selectedDirect?.address,
-      t,
     ]
   );
 
@@ -1510,7 +1508,13 @@ export const ChatDirect = ({
     try {
       if (isNewChat || !selectedDirect?.address) return;
       if (isSending) return;
-      if (+balance < MIN_REQUIRED_QORTS) {
+      if (
+        shouldBlockChatForLowBalance(
+          balance,
+          MIN_REQUIRED_QORTS,
+          reticulumDirectEnabled
+        )
+      ) {
         throw new Error(
           t('group:message.error.qortals_required', {
             quantity: MIN_REQUIRED_QORTS,
@@ -1533,14 +1537,27 @@ export const ChatDirect = ({
       });
       setOpenSnack(true);
     }
-  }, [balance, isNewChat, isSending, selectedDirect?.address, t]);
+  }, [
+    balance,
+    isNewChat,
+    isSending,
+    reticulumDirectEnabled,
+    selectedDirect?.address,
+    t,
+  ]);
 
   const handleConfirmQchatFileOffer = useCallback(async () => {
     try {
       if (isNewChat || !selectedDirect?.address || !pendingQchatFileOffer)
         return;
       if (isSending) return;
-      if (+balance < MIN_REQUIRED_QORTS) {
+      if (
+        shouldBlockChatForLowBalance(
+          balance,
+          MIN_REQUIRED_QORTS,
+          reticulumDirectEnabled
+        )
+      ) {
         throw new Error(
           t('group:message.error.qortals_required', {
             quantity: MIN_REQUIRED_QORTS,
@@ -1655,6 +1672,7 @@ export const ChatDirect = ({
     pendingQchatFileOffer,
     publicKeyOfRecipient,
     qchatFileExpiryHours,
+    reticulumDirectEnabled,
     selectedDirect?.address,
     t,
   ]);
@@ -2361,7 +2379,13 @@ export const ChatDirect = ({
       )
         return;
       if (reticulumDirectPending) return;
-      if (+balance < MIN_REQUIRED_QORTS)
+      if (
+        shouldBlockChatForLowBalance(
+          balance,
+          MIN_REQUIRED_QORTS,
+          reticulumDirectEnabled
+        )
+      )
         throw new Error(
           t('group:message.error.qortals_required', {
             quantity: MIN_REQUIRED_QORTS,

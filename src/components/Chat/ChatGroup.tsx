@@ -30,6 +30,7 @@ import { ChatList } from './ChatList';
 import { AdminSpaceInner } from './AdminSpaceInner';
 import Tiptap, { type MentionSuggestionItem } from './TipTap';
 import { normalizeExactReticulumMentions } from './reticulumMentionNormalization';
+import { shouldBlockChatForLowBalance } from './chatTransportBalance';
 import './chat.css';
 import { CustomButton } from '../../styles/App-styles';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -4761,14 +4762,6 @@ export const ChatGroup = ({
             `Message is too long (maximum ${MAX_SIZE_MESSAGE} bytes)`
           );
         }
-        if (+balance < MIN_REQUIRED_QORTS) {
-          throw new Error(
-            t('group:message.error.qortals_required', {
-              quantity: MIN_REQUIRED_QORTS,
-              postProcess: 'capitalizeFirstChar',
-            })
-          );
-        }
         setIsSending(true);
         ownsSendingState = true;
         stopReticulumTyping();
@@ -4917,7 +4910,6 @@ export const ChatGroup = ({
       }
     },
     [
-      balance,
       canWriteSelectedReticulumChannel,
       isSending,
       loadReticulumDiscussion,
@@ -5559,7 +5551,13 @@ export const ChatGroup = ({
           })
         );
       if (isSending) return;
-      if (+balance < MIN_REQUIRED_QORTS)
+      if (
+        shouldBlockChatForLowBalance(
+          balance,
+          MIN_REQUIRED_QORTS,
+          reticulumChatEnabled
+        )
+      )
         throw new Error(
           t('group:message.error.qortals_required', {
             quantity: MIN_REQUIRED_QORTS,
@@ -6189,13 +6187,6 @@ export const ChatGroup = ({
       try {
         if (!reticulumChatEnabled || !message?.reticulumChat) return;
         if (isSending) return;
-        if (+balance < MIN_REQUIRED_QORTS)
-          throw new Error(
-            t('group:message.error.qortals_required', {
-              quantity: MIN_REQUIRED_QORTS,
-              postProcess: 'capitalizeFirstChar',
-            })
-          );
         if (isPrivate === null)
           throw new Error(
             t('group:message.error:determine_group_private', {
@@ -6251,7 +6242,6 @@ export const ChatGroup = ({
     },
     [
       applyReticulumChatItem,
-      balance,
       convertReticulumEventToChatItem,
       getSecretKey,
       isPrivate,
@@ -6266,7 +6256,13 @@ export const ChatGroup = ({
     async (reaction, chatMessage, reactionState = true) => {
       try {
         if (isSending) return;
-        if (+balance < MIN_REQUIRED_QORTS)
+        if (
+          shouldBlockChatForLowBalance(
+            balance,
+            MIN_REQUIRED_QORTS,
+            reticulumChatEnabled
+          )
+        )
           throw new Error(
             t('group:message.error.qortals_required', {
               quantity: MIN_REQUIRED_QORTS,
@@ -6351,6 +6347,7 @@ export const ChatGroup = ({
     },
     [
       applyReticulumChatItem,
+      balance,
       convertReticulumEventToChatItem,
       isPrivate,
       publishReticulumGroupChatEvent,
