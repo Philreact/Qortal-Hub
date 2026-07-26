@@ -1,11 +1,14 @@
 import { parentPort } from 'worker_threads';
-import * as fs from 'fs';
-import * as nodeCrypto from 'crypto';
+import type { KeyObject } from 'crypto';
 import type { Database as DB } from 'better-sqlite3';
 import type {
   SerializedReticulumChatAuthorTreeSnapshot,
 } from './reticulum-chat-author-tree';
 
+// This worker is unpacked from app.asar so Node can execute it directly.
+// Avoid emitted tslib helpers, which are not resolvable from that location.
+const fs = require('fs') as typeof import('fs');
+const nodeCrypto = require('crypto') as typeof import('crypto');
 const path = require('path') as typeof import('path');
 
 function openReadOnlyDatabase(dbPath: string): DB {
@@ -32,7 +35,7 @@ const ED25519_PUBLIC_KEY_BYTES = 32;
 const ED25519_SIGNATURE_BYTES = 64;
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const LAND_STATE_PUBLIC_KEY_CACHE_MAX = 256;
-const landStatePublicKeyCache = new Map<string, nodeCrypto.KeyObject>();
+const landStatePublicKeyCache = new Map<string, KeyObject>();
 // Match the manager's existing digest freshness window. The worker changes
 // where the snapshot is built, not how long peers may reuse it.
 const DIGEST_STATE_MAX_CACHE_MS = 2_000;

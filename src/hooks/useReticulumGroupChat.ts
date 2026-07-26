@@ -238,6 +238,12 @@ export function useReticulumGroupChat(
     let oldest: { eventId: string; timestamp: number } | null = null;
     for (const item of events) {
       const event = item as ReticulumChatHookEvent;
+      if (
+        event?.eventType !== 'message' &&
+        event?.eventType !== 'attachment_manifest'
+      ) {
+        continue;
+      }
       const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
       const timestamp = Number(event?.timestamp);
       if (!eventId || !Number.isFinite(timestamp) || timestamp < 0) continue;

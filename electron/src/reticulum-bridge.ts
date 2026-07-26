@@ -3422,6 +3422,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       `[ReticulumBridge] Spawned child pid=${child.pid ?? 'unknown'} cmd=${launch.cmd}`
     );
     const audioOutParent = child.stdio[3];
+    this.attachChildWritablePipeErrorGuards(child);
     if (
       !audioOutParent ||
       typeof (audioOutParent as NodeJS.WritableStream).write !== 'function'
@@ -3543,6 +3544,49 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     this.stdoutSlowEmitLogLastByEvent.clear();
   }
 
+  /**
+   * Child stdio pipes emit their own asynchronous `error` events. In
+   * particular, Windows reports a write racing bridge shutdown as EPIPE on the
+   * pipe Socket rather than on ChildProcess. Leaving either writable pipe
+   * without an error listener turns that normal shutdown race into an
+   * uncaught main-process error dialog.
+   */
+  private attachChildWritablePipeErrorGuards(child: ChildProcess): void {
+    const attach = (
+      stream: NodeJS.WritableStream | NodeJS.ReadableStream | null | undefined,
+      pipe: 'control' | 'audio'
+    ) => {
+      if (!stream || typeof stream.on !== 'function') return;
+      stream.on('error', (error: Error) => {
+        this.handleChildWritablePipeError(child, pipe, error);
+      });
+    };
+    attach(child.stdin, 'control');
+    attach(child.stdio?.[3], 'audio');
+  }
+
+  private handleChildWritablePipeError(
+    child: ChildProcess,
+    pipe: 'control' | 'audio',
+    error: Error
+  ): void {
+    // prepareStop() detaches this child before terminating it. Any late EPIPE
+    // from that child is therefore expected and must not affect a replacement
+    // bridge (or escape as an unhandled stream error).
+    if (this.child !== child || !this.desiredRunning || this.state === 'stopped') {
+      return;
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    const reason = `bridge-${pipe}-pipe-error:${code || error.message || 'unknown'}`;
+    loggerWarn(`[ReticulumBridge] ${reason}`);
+    this.transitionToDegraded(reason);
+    if (typeof child.pid === 'number') {
+      signalBridgeProcessTree(child.pid, 'SIGTERM');
+    } else if (!child.killed) {
+      child.kill();
+    }
+  }
+
   private sendCommand(
     action: BridgeCmdFrame['action'],
     payload?: Record<string, unknown>
@@ -3589,7 +3633,18 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     for (;;) {
       const frame = this.dequeueNextCommand();
       if (!frame) return;
-      const ok = this.child.stdin.write(frame.wire);
+      const child = this.child;
+      let ok: boolean;
+      try {
+        ok = child.stdin.write(frame.wire);
+      } catch (error) {
+        this.handleChildWritablePipeError(
+          child,
+          'control',
+          error instanceof Error ? error : new Error(String(error))
+        );
+        return;
+      }
       if (!ok) {
         this.waitingForDrain = true;
         return;
@@ -3892,10 +3947,21 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           }
         }
       };
-      const ok = stream.write(item.buf);
+      let ok: boolean;
+      try {
+        ok = stream.write(item.buf);
+      } catch (error) {
+        this.handleChildWritablePipeError(
+          c,
+          'audio',
+          error instanceof Error ? error : new Error(String(error))
+        );
+        return;
+      }
       if (!ok) {
         this.waitingForAudioBinaryDrain = true;
         stream.once('drain', () => {
+          if (this.child !== c) return;
           this.waitingForAudioBinaryDrain = false;
           noteWriteTiming();
           this.audioBinaryWriteQueue.shift();

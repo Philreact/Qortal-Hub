@@ -9326,7 +9326,7 @@ export class ReticulumChatManager extends EventEmitter {
       String(groupId)
     );
     if (channelId && !canReadChannel(channelId)) return [];
-    const events = this.readMessageHistoryEvents(
+    const messageEvents = this.readMessageHistoryEvents(
       groupId,
       channelId,
       safeLimit,
@@ -9335,10 +9335,24 @@ export class ReticulumChatManager extends EventEmitter {
     )
       .filter((event) => canReadChannel(event.channelId))
       .map((event) => this.eventForRenderer(event));
+    const reactionEvents = this.db
+      .getReactionEventsForTargets(
+        groupId,
+        messageEvents.map((event) => event.eventId),
+        channelId,
+        silencedAuthors
+      )
+      .filter((event) => canReadChannel(event.channelId))
+      .map((event) => this.eventForRenderer(event));
+    const events = [...messageEvents, ...reactionEvents].sort(
+      (left, right) =>
+        left.timestamp - right.timestamp ||
+        left.eventId.localeCompare(right.eventId)
+    );
     this.requestNetworkHistoryForRead(
       groupId,
       channelId,
-      events,
+      messageEvents,
       options,
       'message-history-read'
     );
@@ -10594,7 +10608,13 @@ export class ReticulumChatManager extends EventEmitter {
             item.peerHash,
             item.groupId,
             'group_sub'
-          );
+          ).catch((error) => {
+            if (this.isClosed) return;
+            loggerWarn(
+              `[ReticulumChat] metadata_snapshot_send_failed group=${item.groupId} peer=${item.peerHash.slice(0, 16)} context=group_sub:`,
+              error
+            );
+          });
           actions.metadataPushQueued = true;
         }
         if (item.hops === 0 && item.originPeerHash === item.inboundPeerHash) {
@@ -17318,7 +17338,13 @@ export class ReticulumChatManager extends EventEmitter {
         this.updateStateHeadsCacheForEvent(event);
       }
       if (CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
-        void this.ensureLocalMetadataSnapshot(event.groupId);
+        void this.ensureLocalMetadataSnapshot(event.groupId).catch((error) => {
+          if (this.isClosed) return;
+          loggerWarn(
+            `[ReticulumChat] metadata_snapshot_build_failed group=${event.groupId}:`,
+            error
+          );
+        });
       }
       this.queueChannelMetadataProjection(event);
       this.observedDbEventIds.add(event.eventId);
@@ -19101,6 +19127,7 @@ export class ReticulumChatManager extends EventEmitter {
   private async ensureLocalMetadataSnapshot(
     groupId: number
   ): Promise<ReticulumChatMetadataSnapshotRecord | null> {
+    if (this.isClosed) return null;
     const existing = this.metadataSnapshotBuildInflight.get(groupId);
     if (existing) return existing;
     const build = this.buildLocalMetadataSnapshot(groupId).finally(() => {
@@ -19115,15 +19142,22 @@ export class ReticulumChatManager extends EventEmitter {
   private async buildLocalMetadataSnapshot(
     groupId: number
   ): Promise<ReticulumChatMetadataSnapshotRecord | null> {
-    if (!this.signLocalFields || !this.localGroupIds.has(groupId)) return null;
+    if (
+      this.isClosed ||
+      !this.signLocalFields ||
+      !this.localGroupIds.has(groupId)
+    )
+      return null;
     const localAddress = this.localGroupAddresses.get(groupId) ?? '';
     if (!localAddress) return null;
     const localIsAdmin =
       this.localGroupAdminIds.has(groupId) ||
       (await this.isValidatedGroupAdmin(groupId, localAddress));
+    if (this.isClosed) return null;
     if (!localIsAdmin) return null;
     const projected =
       await this.flushChannelMetadataProjectionForGroup(groupId);
+    if (this.isClosed) return null;
     if (!projected) return null;
     const allChannels = this.db.getChannels(groupId, true);
     const channelsById = new Map(
@@ -19231,11 +19265,13 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn('[ReticulumChat] Failed to sign metadata snapshot:', err);
       return null;
     });
+    if (this.isClosed) return null;
     if (!signed) return null;
     const signerIsAdmin = await this.isValidatedGroupAdmin(
       groupId,
       signed.authorAddress
     );
+    if (this.isClosed) return null;
     if (!signerIsAdmin) return null;
     const snapshot: ReticulumChatMetadataSnapshotRecord = {
       groupId,
@@ -19277,7 +19313,7 @@ export class ReticulumChatManager extends EventEmitter {
     categories: ReticulumGroupCategory[];
     revisions: ReticulumChatMetadataEntityRevision[];
   }): Promise<ReticulumChatMetadataSnapshotRecord | null> {
-    if (!this.signLocalFields) return null;
+    if (this.isClosed || !this.signLocalFields) return null;
     const snapshotId =
       input.snapshotId ?? nodeCrypto.randomBytes(8).toString('hex');
     const snapshotHash = hashReticulumMetadataSnapshotBody({
@@ -19307,11 +19343,13 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn('[ReticulumChat] Failed to sign metadata snapshot:', err);
       return null;
     });
+    if (this.isClosed) return null;
     if (!signed) return null;
     const signerIsAdmin = await this.isValidatedGroupAdmin(
       input.groupId,
       signed.authorAddress
     );
+    if (this.isClosed) return null;
     if (!signerIsAdmin) return null;
     const snapshot: ReticulumChatMetadataSnapshotRecord = {
       groupId: input.groupId,
@@ -19336,6 +19374,7 @@ export class ReticulumChatManager extends EventEmitter {
   private async buildPublicMetadataSnapshotFromFull(
     fullSnapshot: ReticulumChatMetadataSnapshotRecord
   ): Promise<ReticulumChatMetadataSnapshotRecord | null> {
+    if (this.isClosed) return null;
     const cached = this.metadataPublicSnapshotCache.get(fullSnapshot.groupId);
     if (cached?.sourceHash === fullSnapshot.snapshotHash)
       return cached.snapshot;
@@ -19389,6 +19428,7 @@ export class ReticulumChatManager extends EventEmitter {
       categories,
       revisions,
     });
+    if (this.isClosed) return null;
     if (!publicSnapshot) return null;
     this.db.upsertMetadataSnapshot(publicSnapshot);
     this.metadataPublicSnapshotCache.set(fullSnapshot.groupId, {
@@ -19402,11 +19442,14 @@ export class ReticulumChatManager extends EventEmitter {
     snapshot: ReticulumChatMetadataSnapshotRecord;
     fullSnapshot?: ReticulumChatMetadataSnapshotRecord;
   } | null> {
+    if (this.isClosed) return null;
     const fullSnapshot = await this.getBestMetadataSnapshotForSend(groupId);
+    if (this.isClosed) return null;
     if (!fullSnapshot) return null;
     if (fullSnapshot.scope === 'public') return { snapshot: fullSnapshot };
     const publicSnapshot =
       await this.buildPublicMetadataSnapshotFromFull(fullSnapshot);
+    if (this.isClosed) return null;
     if (!publicSnapshot) return null;
     return { snapshot: publicSnapshot, fullSnapshot };
   }
@@ -19418,12 +19461,14 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     const peer = peerHash.trim().toLowerCase();
     if (
+      this.isClosed ||
       !peer ||
       !this.subscribedGroups.has(groupId) ||
       !this.localGroupIds.has(groupId)
     )
       return;
     const selected = await this.getPublicMetadataSnapshotForSend(groupId);
+    if (this.isClosed) return;
     if (!selected) return;
     const { snapshot, fullSnapshot } = selected;
     this.setMetadataSnapshotState(
@@ -19493,14 +19538,17 @@ export class ReticulumChatManager extends EventEmitter {
   private async getBestMetadataSnapshotForSend(
     groupId: number
   ): Promise<ReticulumChatMetadataSnapshotRecord | null> {
+    if (this.isClosed) return null;
     const localAddress = this.localGroupAddresses.get(groupId) ?? '';
     const canBuildLocalSnapshot =
       !!this.signLocalFields &&
       !!localAddress &&
       (this.localGroupAdminIds.has(groupId) ||
         (await this.isValidatedGroupAdmin(groupId, localAddress)));
+    if (this.isClosed) return null;
     if (canBuildLocalSnapshot) {
       const fresh = await this.ensureLocalMetadataSnapshot(groupId);
+      if (this.isClosed) return null;
       if (fresh) return fresh;
     }
     const stored = this.db.getLatestMetadataSnapshot(groupId);
@@ -19753,6 +19801,7 @@ export class ReticulumChatManager extends EventEmitter {
       requesterAddress,
       'metadata_snapshot_request'
     );
+    if (this.isClosed) return;
     if (requesterIsMember !== true) {
       const message = `[ReticulumChat] metadata_snapshot_request_ignored group=${groupId} peer=${peerHash.slice(0, 16)} reason=${requesterIsMember === null ? 'membership_unavailable' : 'requester_not_member'}`;
       if (requesterIsMember === null) {
@@ -19768,6 +19817,7 @@ export class ReticulumChatManager extends EventEmitter {
       ? this.db.getMetadataSnapshotByHash(groupId, requestedHash)
       : ((await this.getPublicMetadataSnapshotForSend(groupId))?.snapshot ??
         null);
+    if (this.isClosed) return;
     if (!snapshot) return;
     if (
       snapshot.scope === 'full' &&
@@ -20217,6 +20267,7 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<ReticulumChatWire | null> {
     const selectedSnapshot =
       await this.getPublicMetadataSnapshotForSend(groupId);
+    if (this.isClosed) return null;
     const snapshot =
       selectedSnapshot?.snapshot ?? this.db.getLatestMetadataSnapshot(groupId);
     const fullSnapshot = selectedSnapshot?.fullSnapshot;

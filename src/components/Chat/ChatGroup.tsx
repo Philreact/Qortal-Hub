@@ -168,6 +168,7 @@ import {
 import EmojiPicker, { EmojiStyle, Theme } from 'emoji-picker-react';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { applyReticulumJoinUnreadBaseline } from './reticulumJoinUnreadBaseline';
+import { projectReticulumReactionReferences } from '../../utils/reticulumReactionProjection';
 import {
   buildReticulumMessageExpiryPayload,
   formatReticulumExpiryDuration,
@@ -2451,6 +2452,46 @@ export const ChatGroup = ({
       items.filter((item) => !isReticulumHiddenAuthor(item?.sender)),
     [isReticulumHiddenAuthor]
   );
+
+  const reticulumReactionReferences = useMemo(() => {
+    if (!reticulumChatEnabled) return {};
+    return projectReticulumReactionReferences(
+      reticulumChatEvents.filter(
+        (event: any) =>
+          !isChatSenderBlocked({ sender: event?.authorAddress }) &&
+          !isReticulumHiddenAuthor(event?.authorAddress)
+      )
+    );
+  }, [
+    isChatSenderBlocked,
+    isReticulumHiddenAuthor,
+    reticulumChatEnabled,
+    reticulumChatEvents,
+  ]);
+  const renderedChatReferences = useMemo(() => {
+    if (!reticulumChatEnabled) return chatReferences;
+    const next: Record<string, any> = {};
+    for (const [targetEventId, reference] of Object.entries(
+      chatReferences as Record<string, any>
+    )) {
+      const { reactions: _incrementalReactions, ...otherReferenceState } =
+        reference || {};
+      const projectedReactions =
+        reticulumReactionReferences[targetEventId]?.reactions;
+      if (projectedReactions || Object.keys(otherReferenceState).length > 0) {
+        next[targetEventId] = {
+          ...otherReferenceState,
+          ...(projectedReactions ? { reactions: projectedReactions } : {}),
+        };
+      }
+    }
+    for (const [targetEventId, reference] of Object.entries(
+      reticulumReactionReferences
+    )) {
+      if (!next[targetEventId]) next[targetEventId] = reference;
+    }
+    return next;
+  }, [chatReferences, reticulumChatEnabled, reticulumReactionReferences]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8994,7 +9035,7 @@ export const ChatGroup = ({
                     ? `${selectedGroup}:${selectedReticulumChannelId}`
                     : selectedGroup
                 }
-                chatReferences={chatReferences}
+                chatReferences={renderedChatReferences}
                 enableMentions
                 handleReaction={handleReaction}
                 hasSecretKey={!!secretKey}
@@ -9025,6 +9066,8 @@ export const ChatGroup = ({
                     ? acknowledgeReticulumUnreadMessages
                     : undefined
                 }
+                reticulumViewActive={isActive}
+                reticulumReadEntryToken={reticulumReadEntryToken}
                 reticulumDiscussionReplyCounts={
                   reticulumChatEnabled
                     ? reticulumDiscussionIndex.replyCounts

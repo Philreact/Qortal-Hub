@@ -173,6 +173,35 @@ describe('useReticulumGroupChat', () => {
     expect(result.current.hasOlder).toBe(true);
   });
 
+  it('uses the oldest message rather than a reaction as the history cursor', async () => {
+    getMessageHistory
+      .mockResolvedValueOnce([
+        {
+          ...event('reaction-with-skewed-time', 'general', 50),
+          eventType: 'reaction_add',
+          targetEventId: 'current',
+        },
+        event('current', 'general', 200),
+      ])
+      .mockResolvedValueOnce([event('older', 'general', 100)]);
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+
+    await act(async () => {
+      await result.current.loadOlder();
+    });
+
+    expect(getMessageHistory).toHaveBeenLastCalledWith(
+      42,
+      'general',
+      100,
+      expect.objectContaining({
+        beforeEventId: 'current',
+        beforeTimestamp: 200,
+      })
+    );
+  });
+
   it('treats a transient membership history rejection as empty state', async () => {
     getMessageHistory.mockRejectedValueOnce(
       new Error('Local user is not a member of this group')

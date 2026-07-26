@@ -1672,9 +1672,12 @@ export class PresenceManager extends EventEmitter {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
     if (this.isSelfReticulumHash(hash)) return;
+    const normalizedAddress = address.trim();
     this.reticulumCandidates.delete(hash);
     const existing = this.verifiedReticulumPeers.get(hash);
     if (existing) {
+      const addressWasBackfilled =
+        !existing.address && Boolean(normalizedAddress);
       const wasClosed = existing.linkClosedAt !== null;
       const canClearClosedState =
         !wasClosed ||
@@ -1683,7 +1686,9 @@ export class PresenceManager extends EventEmitter {
           now >= existing.linkCooldownUntil);
       this.verifiedReticulumPeers.set(hash, {
         destinationHash: hash,
-        address: existing.address || address,
+        // A destination's first authenticated, non-empty Qortal address is
+        // immutable. Later conflicting claims must never replace it.
+        address: existing.address || normalizedAddress,
         lastSeen: now,
         verifiedAt: existing.verifiedAt,
         linkClosedAt: canClearClosedState ? null : existing.linkClosedAt,
@@ -1694,13 +1699,18 @@ export class PresenceManager extends EventEmitter {
       });
       if (wasClosed && canClearClosedState) {
         this.recomputeReticulumActiveNeighbors(now);
+      }
+      if ((wasClosed && canClearClosedState) || addressWasBackfilled) {
+        // The bridge's game resolver indexes verified peers by Qortal address.
+        // Push a newly authenticated address immediately instead of leaving
+        // the bridge with the earlier address-less verification snapshot.
         this.emitReticulumOverlayChanged();
       }
       return;
     }
     this.verifiedReticulumPeers.set(hash, {
       destinationHash: hash,
-      address,
+      address: normalizedAddress,
       lastSeen: now,
       verifiedAt: now,
       linkClosedAt: null,
@@ -1710,7 +1720,7 @@ export class PresenceManager extends EventEmitter {
     this.recomputeReticulumActiveNeighbors(now);
     this.emit('reticulum-peer-verified', {
       destinationHash: hash,
-      address,
+      address: normalizedAddress,
       lastSeen: now,
       source,
     });

@@ -1,7 +1,11 @@
 import { parentPort } from 'worker_threads';
-import * as fs from 'fs';
-import * as nodeCrypto from 'crypto';
-import * as path from 'path';
+
+// This worker is unpacked from app.asar so Node can execute it directly.
+// Use direct CommonJS imports to keep TypeScript from emitting tslib helpers,
+// which cannot be resolved across the app.asar/app.asar.unpacked boundary.
+const fs = require('fs') as typeof import('fs');
+const nodeCrypto = require('crypto') as typeof import('crypto');
+const path = require('path') as typeof import('path');
 
 export type ReticulumResourceWorkerTask =
   | {

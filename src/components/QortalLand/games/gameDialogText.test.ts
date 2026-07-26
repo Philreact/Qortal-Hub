@@ -12,6 +12,15 @@ describe('friendlyGameStatus', () => {
     expect(friendlyGameStatus('Invitation busy')).toBe('The other player is currently busy.');
   });
 
+  it('explains an incomplete game identity binding without calling the peer unverified', () => {
+    expect(friendlyGameStatus('recipient_not_verified')).toBe(
+      'Player identity is still syncing. Try again in a moment.'
+    );
+    expect(friendlyGameStatus('unverified_peer')).toBe(
+      'Player identity is still syncing. Try again in a moment.'
+    );
+  });
+
   it('humanizes an unknown internal status', () => {
     expect(friendlyGameStatus('connection_lost')).toBe('Connection lost.');
   });

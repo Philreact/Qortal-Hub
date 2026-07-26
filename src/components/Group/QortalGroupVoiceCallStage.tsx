@@ -124,10 +124,14 @@ export function QortalGroupVoiceCallStage() {
 
   useEffect(() => {
     if (!visible) {
-      setQcallMinimized(false);
+      // The join flow selects the compact navbar view before the asynchronous
+      // audio engine reports `joining`. Do not overwrite that requested view
+      // during the startup gap. Inactive calls are already excluded from both
+      // the stage and nav widget, and each new Qortal call explicitly starts
+      // minimized.
       setQcallPrimaryNames({});
     }
-  }, [visible, setQcallMinimized, setQcallPrimaryNames]);
+  }, [visible, setQcallPrimaryNames]);
 
   const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {

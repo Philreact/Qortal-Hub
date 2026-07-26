@@ -4492,6 +4492,42 @@ describe('reticulum chat manager', () => {
     }
   });
 
+  it('cancels an in-flight metadata snapshot lookup when shutdown closes the database', async () => {
+    let resolveValidationStarted: (() => void) | null = null;
+    const validationStarted = new Promise<void>((resolve) => {
+      resolveValidationStarted = resolve;
+    });
+    let resolveValidation: ((isAdmin: boolean) => void) | null = null;
+    const validationResult = new Promise<boolean>((resolve) => {
+      resolveValidation = resolve;
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: async () => null,
+      validateGroupAdmin: async () => {
+        resolveValidationStarted?.();
+        return validationResult;
+      },
+    });
+    let closed = false;
+    try {
+      const groupId = 901;
+      (manager as any).localGroupIds.add(groupId);
+      (manager as any).localGroupAddresses.set(groupId, 'Qlocal');
+
+      const pending = (manager as any).getBestMetadataSnapshotForSend(groupId);
+      await validationStarted;
+      manager.close();
+      closed = true;
+      resolveValidation?.(true);
+
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      resolveValidation?.(false);
+      if (!closed) manager.close();
+    }
+  });
+
   it('marks replies whose parent message was deleted in renderer history', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     manager.setLocalGroupMemberships([149]);
@@ -4534,6 +4570,64 @@ describe('reticulum chat manager', () => {
         replyToEventId: root.eventId,
         replyTargetDeleted: true,
       },
+    ]);
+    manager.close();
+  });
+
+  it('includes reactions for projected messages when renderer history reloads', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([150]);
+    const [message, add, remove, currentAdd] = signedAuthorEvents([
+      {
+        eventId: 'reaction-history-message',
+        groupId: 150,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: 1_000,
+        eventType: 'message',
+      },
+      {
+        eventId: 'reaction-history-old-add',
+        groupId: 150,
+        channelId: 'general',
+        authorSeq: 2,
+        timestamp: 1_001,
+        eventType: 'reaction_add',
+        targetEventId: 'reaction-history-message',
+        encryptedPayload: JSON.stringify({ content: '👍' }),
+      },
+      {
+        eventId: 'reaction-history-remove',
+        groupId: 150,
+        channelId: 'general',
+        authorSeq: 3,
+        timestamp: 1_002,
+        eventType: 'reaction_remove',
+        targetEventId: 'reaction-history-message',
+        encryptedPayload: JSON.stringify({ content: '👍' }),
+      },
+      {
+        eventId: 'reaction-history-current-add',
+        groupId: 150,
+        channelId: 'general',
+        authorSeq: 4,
+        timestamp: 1_003,
+        eventType: 'reaction_add',
+        targetEventId: 'reaction-history-message',
+        encryptedPayload: JSON.stringify({ content: '👍' }),
+      },
+    ]);
+    const db = (manager as unknown as { db: ReticulumChatDatabase }).db;
+    expect(db.insertEvent(message, false)).toBe(true);
+    expect(db.insertEvent(add, false)).toBe(true);
+    expect(db.insertEvent(remove, false)).toBe(true);
+    expect(db.insertEvent(currentAdd, false)).toBe(true);
+
+    expect(manager.getMessageHistory(150, 'general', 10)).toMatchObject([
+      { eventId: message.eventId, eventType: 'message' },
+      { eventId: add.eventId, eventType: 'reaction_add' },
+      { eventId: remove.eventId, eventType: 'reaction_remove' },
+      { eventId: currentAdd.eventId, eventType: 'reaction_add' },
     ]);
     manager.close();
   });

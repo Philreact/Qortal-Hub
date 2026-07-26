@@ -5581,6 +5581,77 @@ export class ReticulumChatDatabase {
     return rows.map(messageProjectionRowToEvent);
   }
 
+  getReactionEventsForTargets(
+    groupId: number,
+    targetEventIds: readonly string[],
+    channelId: string | null = null,
+    excludedAuthorAddresses: readonly string[] = []
+  ): ReticulumChatEvent[] {
+    const targets = Array.from(
+      new Set(
+        targetEventIds
+          .map((eventId) => String(eventId || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 500);
+    if (!Number.isInteger(groupId) || groupId <= 0 || targets.length === 0) {
+      return [];
+    }
+    const normalizedChannelId =
+      channelId == null ? null : normalizeReticulumChatChannelId(channelId);
+    const excludedAuthors = normalizeExcludedAuthors(excludedAuthorAddresses);
+    const excludedAuthorSet = new Set(excludedAuthors);
+    const targetSet = new Set(targets);
+    const channelClause =
+      normalizedChannelId == null ? '' : 'AND channel_id = ?';
+    const rows = this.db
+      .prepare(
+        `
+          SELECT * FROM reticulum_chat_events
+          INDEXED BY idx_reticulum_chat_events_target
+          WHERE group_id = ?
+            ${channelClause}
+            AND event_type IN ('reaction_add', 'reaction_remove')
+            AND target_event_id IN (${targets.map(() => '?').join(', ')})
+            AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
+          ORDER BY timestamp ASC, event_id ASC
+        `
+      )
+      .all(
+        groupId,
+        ...(normalizedChannelId == null ? [] : [normalizedChannelId]),
+        ...targets
+      ) as EventRow[];
+    const eventsById = new Map<string, ReticulumChatEvent>();
+    for (const row of rows) {
+      const event = rowToEvent(row);
+      if (excludedAuthorSet.has(event.authorAddress)) continue;
+      eventsById.set(event.eventId, event);
+    }
+    for (const event of this.memoryEvents.values()) {
+      if (
+        event.groupId !== groupId ||
+        (normalizedChannelId != null &&
+          normalizeReticulumChatChannelId(event.channelId) !==
+            normalizedChannelId) ||
+        (event.eventType !== 'reaction_add' &&
+          event.eventType !== 'reaction_remove') ||
+        !event.targetEventId ||
+        !targetSet.has(event.targetEventId) ||
+        excludedAuthorSet.has(event.authorAddress) ||
+        !this.eventIsVisible(event)
+      ) {
+        continue;
+      }
+      eventsById.set(event.eventId, event);
+    }
+    return [...eventsById.values()].sort(
+      (left, right) =>
+        left.timestamp - right.timestamp ||
+        left.eventId.localeCompare(right.eventId)
+    );
+  }
+
   getDiscussionIndex(
     groupId: number,
     channelId: string,

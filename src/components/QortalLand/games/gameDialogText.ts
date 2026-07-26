@@ -10,6 +10,13 @@ export const friendlyGameStatus = (error?: string): string => {
   if (normalized.includes('busy') || normalized.includes('game_busy')) {
     return 'The other player is currently busy.';
   }
+  if (
+    normalized.includes('recipient_not_verified') ||
+    normalized.includes('recipient_identity_unavailable') ||
+    normalized === 'unverified_peer'
+  ) {
+    return 'Player identity is still syncing. Try again in a moment.';
+  }
   if (normalized.includes('could not be recovered')) {
     return 'The game connection was lost.';
   }

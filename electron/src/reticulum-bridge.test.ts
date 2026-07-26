@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'events';
 
 vi.mock('electron', () => ({
   app: {
@@ -414,6 +415,31 @@ describe('ReticulumBridge group audio support', () => {
     await expect(pending).resolves.toMatchObject({ ok: true });
 
     bridge.stop();
+  });
+
+  it('absorbs late Windows pipe errors after bridge shutdown', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    const controlPipe = new EventEmitter();
+    const audioPipe = new EventEmitter();
+    const child = {
+      exitCode: null,
+      killed: false,
+      kill: vi.fn(),
+      stdin: controlPipe,
+      stdio: [controlPipe, null, null, audioPipe],
+    };
+    internal.child = child;
+    internal.desiredRunning = true;
+    internal.state = 'ready';
+    internal.attachChildWritablePipeErrorGuards(child);
+
+    bridge.stop();
+
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(() => controlPipe.emit('error', epipe)).not.toThrow();
+    expect(() => audioPipe.emit('error', epipe)).not.toThrow();
+    expect(internal.state).toBe('stopped');
   });
 
   it('enqueueGroupAudio returns not-ready when bridge is down', () => {

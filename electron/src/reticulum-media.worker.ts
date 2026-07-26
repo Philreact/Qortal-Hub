@@ -1,7 +1,23 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { parentPort } from 'worker_threads';
-import sharp from 'sharp';
+
+// This worker is unpacked from app.asar so Node can execute it directly.
+// Avoid emitted tslib helpers, which are not resolvable from that location.
+const fs = require('fs') as typeof import('fs');
+const path = require('path') as typeof import('path');
+
+function loadSharp(): typeof import('sharp') {
+  if (__dirname.includes('app.asar.unpacked')) {
+    const packedDir = __dirname.replace('app.asar.unpacked', 'app.asar');
+    return require(path.join(
+      packedDir,
+      'node_modules',
+      'sharp'
+    )) as typeof import('sharp');
+  }
+  return require('sharp') as typeof import('sharp');
+}
+
+const sharp = loadSharp();
 
 export type ReticulumMediaWorkerTask = {
   id: number;

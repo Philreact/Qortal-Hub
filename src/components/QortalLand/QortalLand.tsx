@@ -2791,6 +2791,7 @@ export function QortalLand({
   const isActiveRef = useRef(isActive);
   const movementKeysRef = useRef<Set<string>>(new Set());
   const landGameActiveRef = useRef(false);
+  const landGameInputBlockedRef = useRef(false);
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
   const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
   const chatInputRef = useRef<HTMLInputElement | null>(null);
@@ -3871,6 +3872,20 @@ export function QortalLand({
     onPlayerSeen: handleLandGamePlayerSeen,
     resolvePlayerName: resolveLandPlayerName,
   });
+  landGameInputBlockedRef.current = landGame.busy;
+
+  useLayoutEffect(() => {
+    const blocked = landGame.busy;
+    landGameInputBlockedRef.current = blocked;
+    if (blocked) movementKeysRef.current.clear();
+
+    const game = gameRef.current;
+    if (game) game.input.enabled = !blocked;
+
+    return () => {
+      if (game && gameRef.current === game) game.input.enabled = true;
+    };
+  }, [landGame.busy]);
 
   useEffect(() => {
     const callInUse =
@@ -8908,6 +8923,7 @@ export function QortalLand({
         },
         scene: QortalLandScene,
       });
+      game.input.enabled = !landGameInputBlockedRef.current;
       gameRef.current = game;
       game.events.once(Phaser.Core.Events.READY, () => {
         if (!destroyed && !isActiveRef.current) game.loop.sleep();

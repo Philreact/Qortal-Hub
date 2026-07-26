@@ -291,6 +291,85 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     expect(verifiedEvents).toHaveLength(1);
   });
 
+  it('immediately resyncs when signed presence binds an address-less verified peer', () => {
+    const manager = new PresenceManager();
+    const overlayChanges: unknown[] = [];
+    manager.on('reticulum-overlay-changed', (event) =>
+      overlayChanges.push(event)
+    );
+    const now = Date.now();
+
+    manager.markReticulumOverlayPeerVerified(
+      'origin-hash',
+      'call_signal',
+      undefined,
+      now
+    );
+    expect(overlayChanges).toHaveLength(1);
+
+    expect(
+      (manager as any).applyVerifiedPresenceEnvelope(
+        {
+          id: 'identity-binding-heartbeat',
+          type: 'PRESENCE_HEARTBEAT',
+          senderAddress: 'Q-bound',
+          timestamp: now + 1,
+          payload: {
+            address: 'Q-bound',
+            publicKey: 'pk-bound',
+            sessionId: 'sid-bound',
+            status: 'online',
+          },
+          signature: 'sig-bound',
+        },
+        {
+          kind: 'reticulum',
+          destinationHash: 'origin-hash',
+        },
+        now + 1
+      )
+    ).toBe(true);
+
+    expect(manager.getReticulumVerifiedPeers()).toEqual([
+      {
+        destinationHash: 'origin-hash',
+        address: 'Q-bound',
+        lastSeen: now + 1,
+      },
+    ]);
+    expect(overlayChanges).toHaveLength(2);
+  });
+
+  it('never replaces an existing verified destination address binding', () => {
+    const manager = new PresenceManager();
+    const overlayChanges: unknown[] = [];
+    manager.on('reticulum-overlay-changed', (event) =>
+      overlayChanges.push(event)
+    );
+
+    (manager as any).promoteVerifiedReticulumPeer(
+      'origin-hash',
+      'Q-original',
+      1_000,
+      'presence-direct'
+    );
+    (manager as any).promoteVerifiedReticulumPeer(
+      'origin-hash',
+      'Q-conflicting',
+      2_000,
+      'presence-direct'
+    );
+
+    expect(manager.getReticulumVerifiedPeers()).toEqual([
+      {
+        destinationHash: 'origin-hash',
+        address: 'Q-original',
+        lastSeen: 2_000,
+      },
+    ]);
+    expect(overlayChanges).toHaveLength(1);
+  });
+
   it('allows a fanned-out presence proof to verify an announce-backed candidate', () => {
     const manager = new PresenceManager();
     const now = Date.now();

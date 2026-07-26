@@ -90,6 +90,8 @@ type ChatListProps = {
   reticulumMemberRolesReady?: boolean;
   reticulumUnreadCount?: number;
   onReticulumUnreadAcknowledged?: () => void;
+  reticulumViewActive?: boolean;
+  reticulumReadEntryToken?: number;
   reticulumDiscussionReplyCounts?: Record<string, number>;
   onOpenReticulumDiscussion?: (message: any) => void;
   secretKeyObject?: any;
@@ -136,6 +138,8 @@ export const ChatList = ({
   reticulumMemberRolesReady = true,
   reticulumUnreadCount = 0,
   onReticulumUnreadAcknowledged,
+  reticulumViewActive = true,
+  reticulumReadEntryToken,
   reticulumDiscussionReplyCounts,
   onOpenReticulumDiscussion,
   secretKeyObject,
@@ -171,6 +175,9 @@ export const ChatList = ({
   const lastAutoFillMessageCountRef = useRef(-1);
   const previousMessageCountRef = useRef(0);
   const reticulumUnreadPromptShownRef = useRef(false);
+  const lastReticulumReadEntryTokenRef = useRef<number | null>(null);
+  const reticulumViewWasActiveRef = useRef(false);
+  const reticulumPinnedToBottomRef = useRef(false);
   const pendingInitialReticulumBottomRef = useRef(false);
   const pendingInitialReticulumUnreadIndexRef = useRef<number | null>(null);
   const initialReticulumRevealTimeoutRef = useRef<ReturnType<
@@ -260,14 +267,18 @@ export const ChatList = ({
     estimateSize: useCallback(() => 80, []), // Provide an estimated height of items, adjust this as needed
     overscan: 10, // Number of items to render outside the visible area to improve smoothness
     // Keep the visible Reticulum content anchored when a reply preview or image
-    // above the viewport settles to a different measured height.
+    // settles to a different measured height. If the reader was pinned to the
+    // end, preserve that anchor even when the final row itself grows (for
+    // example when its first reaction is displayed).
     shouldAdjustScrollPositionOnItemSizeChange: (item, _delta, instance) => {
       if (!reticulumChatEnabled) return true;
+      if (reticulumPinnedToBottomRef.current) return true;
       return (
         item.start < instance.getScrollOffset() + instance.scrollAdjustments
       );
     },
   });
+  const virtualContentHeight = rowVirtualizer.getTotalSize();
 
   const clearScrollRetries = useCallback(() => {
     scrollRetrySequenceRef.current += 1;
@@ -318,6 +329,7 @@ export const ChatList = ({
     lastSeenUnreadMessageTimestamp.current = null;
     previousMessageCountRef.current = 0;
     reticulumUnreadPromptShownRef.current = false;
+    reticulumPinnedToBottomRef.current = false;
     pendingInitialReticulumBottomRef.current = false;
     pendingInitialReticulumUnreadIndexRef.current = null;
     setReticulumUnreadBoundaryIndex(null);
@@ -333,16 +345,6 @@ export const ChatList = ({
     };
   }, [clearInitialReticulumReveal, clearScrollRetries]);
 
-  const isAtBottom = useMemo(() => {
-    if (parentRef.current && rowVirtualizer?.isScrolling !== undefined) {
-      const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-      const atBottom = scrollTop + clientHeight >= scrollHeight - 10; // Adjust threshold as needed
-      return atBottom;
-    }
-
-    return false;
-  }, [rowVirtualizer?.isScrolling]);
-
   const isPinnedToBottom = useCallback(() => {
     const scrollElement = parentRef.current as HTMLDivElement | null;
     if (!scrollElement) return false;
@@ -350,13 +352,16 @@ export const ChatList = ({
     // Reticulum follows only when the reader is actually at the end. A tiny
     // tolerance accounts for sub-pixel layout without treating an upward read
     // position as pinned.
-    return (
+    const isPinned =
       scrollElement.scrollHeight -
         scrollElement.scrollTop -
         scrollElement.clientHeight <=
-      4
-    );
-  }, []);
+      4;
+    if (reticulumChatEnabled) {
+      reticulumPinnedToBottomRef.current = isPinned;
+    }
+    return isPinned;
+  }, [reticulumChatEnabled]);
 
   const loadOlderFromTop = useCallback(async () => {
     if (!onLoadOlder) return;
@@ -388,10 +393,17 @@ export const ChatList = ({
   const handleScroll = useCallback(() => {
     const scrollElement = parentRef.current as HTMLDivElement | null;
     if (!scrollElement) return;
+    if (reticulumChatEnabled) {
+      reticulumPinnedToBottomRef.current =
+        scrollElement.scrollHeight -
+          scrollElement.scrollTop -
+          scrollElement.clientHeight <=
+        4;
+    }
     if (scrollElement.scrollTop <= 160) {
       void loadOlderFromTop();
     }
-  }, [loadOlderFromTop]);
+  }, [loadOlderFromTop, reticulumChatEnabled]);
 
   const cancelReticulumScrollRetries = useCallback(() => {
     if (!reticulumChatEnabled) return;
@@ -415,30 +427,48 @@ export const ChatList = ({
   }, [hasOlderMessages, loadOlderFromTop, messages.length, onLoadOlder]);
 
   useEffect(() => {
-    if (!parentRef.current || rowVirtualizer?.isScrolling === undefined) return;
-    if (isAtBottom) {
-      if (scrollingIntervalRef.current) {
-        clearTimeout(scrollingIntervalRef.current);
-      }
-      setShowScrollDownButton(false);
-      return;
-    } else if (rowVirtualizer?.isScrolling) {
-      if (scrollingIntervalRef.current) {
-        clearTimeout(scrollingIntervalRef.current);
-      }
-      setShowScrollDownButton(false);
-      return;
+    if (scrollingIntervalRef.current) {
+      window.clearTimeout(scrollingIntervalRef.current);
+      scrollingIntervalRef.current = null;
     }
-    const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-    const atBottom = scrollHeight - scrollTop - clientHeight <= 300;
-    if (!atBottom) {
-      scrollingIntervalRef.current = setTimeout(() => {
-        setShowScrollDownButton(true);
-      }, 250);
-    } else {
+
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement || rowVirtualizer.isScrolling) {
       setShowScrollDownButton(false);
+      return undefined;
     }
-  }, [rowVirtualizer?.isScrolling, isAtBottom]);
+
+    const shouldShowScrollDownButton = () => {
+      const currentElement = parentRef.current as HTMLDivElement | null;
+      if (!currentElement) return false;
+      const { scrollTop, scrollHeight, clientHeight } = currentElement;
+      const hasScrollableOverflow = scrollHeight > clientHeight + 4;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      return hasScrollableOverflow && distanceFromBottom > 300;
+    };
+
+    if (!shouldShowScrollDownButton()) {
+      setShowScrollDownButton(false);
+      return undefined;
+    }
+
+    scrollingIntervalRef.current = window.setTimeout(() => {
+      scrollingIntervalRef.current = null;
+      setShowScrollDownButton(shouldShowScrollDownButton());
+    }, 250);
+
+    return () => {
+      if (scrollingIntervalRef.current) {
+        window.clearTimeout(scrollingIntervalRef.current);
+        scrollingIntervalRef.current = null;
+      }
+    };
+  }, [
+    chatIdentity,
+    messages.length,
+    rowVirtualizer.isScrolling,
+    virtualContentHeight,
+  ]);
 
   // Update message list with unique signatures and tempMessages
   useEffect(() => {
@@ -501,6 +531,25 @@ export const ChatList = ({
     const hasNewMessages =
       hasLoadedInitialRef.current &&
       totalMessages.length > previousMessageCountRef.current;
+    const normalizedReticulumReadEntryToken =
+      typeof reticulumReadEntryToken === 'number'
+        ? reticulumReadEntryToken
+        : null;
+    const reticulumViewBecameActive =
+      reticulumViewActive && !reticulumViewWasActiveRef.current;
+    reticulumViewWasActiveRef.current = reticulumViewActive;
+    if (
+      reticulumViewBecameActive ||
+      (normalizedReticulumReadEntryToken !== null &&
+        normalizedReticulumReadEntryToken !==
+          lastReticulumReadEntryTokenRef.current)
+    ) {
+      reticulumUnreadPromptShownRef.current = false;
+    }
+    if (normalizedReticulumReadEntryToken !== null) {
+      lastReticulumReadEntryTokenRef.current =
+        normalizedReticulumReadEntryToken;
+    }
     const latestMessage = totalMessages[totalMessages.length - 1];
     const isLatestMessageMine =
       latestMessage?.sender === myAddress ||
@@ -540,6 +589,7 @@ export const ChatList = ({
         );
         const shouldAcknowledgeInitialReticulumUnread =
           reticulumChatEnabled &&
+          reticulumViewActive &&
           !reticulumUnreadPromptShownRef.current &&
           initialReticulumUnreadCount > 0 &&
           initialReticulumUnreadIndexes.length > 0;
@@ -668,9 +718,11 @@ export const ChatList = ({
     isPinnedToBottom,
     myAddress,
     onReticulumUnreadAcknowledged,
+    reticulumReadEntryToken,
     reticulumChatEnabled,
     reticulumInitialHistoryReady,
     reticulumUnreadCount,
+    reticulumViewActive,
     tempMessages,
     scrollToMessageId,
     clearInitialReticulumReveal,
@@ -690,6 +742,7 @@ export const ChatList = ({
       const pinToBottom = () => {
         const scrollElement = parentRef.current as HTMLDivElement | null;
         if (!scrollElement) return;
+        reticulumPinnedToBottomRef.current = true;
         // Directly pinning avoids scrollToIndex's recursive dynamic-size retry.
         // Scheduled calls below still follow late Reticulum row measurements.
         scrollElement.scrollTop = scrollElement.scrollHeight;
@@ -1004,7 +1057,7 @@ export const ChatList = ({
         >
           <Box
             sx={{
-              height: rowVirtualizer.getTotalSize(),
+              height: virtualContentHeight,
               width: '100%',
             }}
           >
