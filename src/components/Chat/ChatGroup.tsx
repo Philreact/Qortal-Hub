@@ -1437,6 +1437,9 @@ export const ChatGroup = ({
     }[]
   >([]);
   const [reticulumGroupOwnerName, setReticulumGroupOwnerName] = useState('');
+  const [reticulumMemberDataGroupId, setReticulumMemberDataGroupId] = useState<
+    number | null
+  >(null);
   const reticulumWelcomePublishInFlightRef = useRef<Set<string>>(new Set());
   const [
     reticulumPrivilegedMemberRolesByAddress,
@@ -2744,11 +2747,13 @@ export const ChatGroup = ({
     if (!Number.isInteger(groupId) || groupId <= 0) {
       setGroupMentionMembers([]);
       setReticulumGroupOwnerName('');
+      setReticulumMemberDataGroupId(null);
       setReticulumPrivilegedMemberRolesByAddress({});
       setReticulumMemberRolesReady(false);
       return;
     }
     let cancelled = false;
+    setReticulumMemberDataGroupId(null);
     setReticulumMemberRolesReady(false);
     void getGroupMembers(groupId)
       .then(async (data) => {
@@ -2807,6 +2812,7 @@ export const ChatGroup = ({
         setReticulumGroupOwnerName(ownerName);
         setReticulumPrivilegedMemberRolesByAddress(privilegedRoles);
         setGroupMentionMembers(membersWithNames);
+        setReticulumMemberDataGroupId(groupId);
         setReticulumMemberRolesReady(true);
       })
       .catch((error) => {
@@ -2814,6 +2820,7 @@ export const ChatGroup = ({
           console.error('Failed to load group members for mentions:', error);
           setGroupMentionMembers([]);
           setReticulumGroupOwnerName('');
+          setReticulumMemberDataGroupId(null);
           setReticulumPrivilegedMemberRolesByAddress({});
           setReticulumMemberRolesReady(false);
         }
@@ -2897,6 +2904,10 @@ export const ChatGroup = ({
       document.removeEventListener('visibilitychange', refreshOnVisible);
     };
   }, [reticulumChatEnabled, selectedGroup]);
+
+  const reticulumMemberRolesReadyForSelectedGroup =
+    reticulumMemberRolesReady &&
+    reticulumMemberDataGroupId === Number(selectedGroup);
 
   const reticulumMemberRolesByAddress = useMemo(() => {
     const roles: Record<string, 'owner' | 'admin'> = {
@@ -3249,7 +3260,7 @@ export const ChatGroup = ({
     const joinedAt = Number(member?.joined);
     if (
       !reticulumChatEnabled ||
-      !reticulumMemberRolesReady ||
+      !reticulumMemberRolesReadyForSelectedGroup ||
       !Number.isInteger(groupId) ||
       groupId <= 0 ||
       !myAddress ||
@@ -3269,7 +3280,7 @@ export const ChatGroup = ({
     myAddress,
     reticulumChannels,
     reticulumChatEnabled,
-    reticulumMemberRolesReady,
+    reticulumMemberRolesReadyForSelectedGroup,
     selectedGroup,
   ]);
 
@@ -4089,7 +4100,7 @@ export const ChatGroup = ({
     const groupId = Number(selectedGroup);
     if (
       !reticulumChatEnabled ||
-      !reticulumMemberRolesReady ||
+      !reticulumMemberRolesReadyForSelectedGroup ||
       !myAddress ||
       !Number.isInteger(groupId) ||
       groupId <= 0
@@ -4222,7 +4233,7 @@ export const ChatGroup = ({
     publishReticulumGroupChatEvent,
     reticulumChatEnabled,
     reticulumGroupOwnerName,
-    reticulumMemberRolesReady,
+    reticulumMemberRolesReadyForSelectedGroup,
     selectedGroup,
     selectedGroupName,
   ]);
@@ -9048,7 +9059,9 @@ export const ChatGroup = ({
                 reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 reticulumMemberJoinedByAddress={reticulumMemberJoinedByAddress}
                 reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
-                reticulumMemberRolesReady={reticulumMemberRolesReady}
+                reticulumMemberRolesReady={
+                  reticulumMemberRolesReadyForSelectedGroup
+                }
                 reticulumUnreadCount={
                   reticulumChatEnabled
                     ? Math.max(
@@ -12407,7 +12420,7 @@ export const ChatGroup = ({
         reticulumGroupDisplayName={selectedGroupName}
         reticulumMemberJoinedByAddress={reticulumMemberJoinedByAddress}
         reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
-        reticulumMemberRolesReady={reticulumMemberRolesReady}
+        reticulumMemberRolesReady={reticulumMemberRolesReadyForSelectedGroup}
         reticulumMentionUsers={reticulumMentionUsers}
         reticulumChannelLinkAccess={reticulumChannelLinkAccess}
         selectedGroup={selectedGroup}
