@@ -4734,7 +4734,18 @@ describe('reticulum chat manager', () => {
         wire.k === 'dm_probe'
     );
     expect(probes).toHaveLength(1);
+    expect(probes[0].q.q).toHaveLength(8);
     expect(verifyReticulumDmProbe(probes[0].q, Date.now())).toBe(true);
+
+    manager.handleWire(
+      {
+        ...probes[0],
+        q: { ...probes[0].q, h: 2 },
+      },
+      'b'.repeat(32)
+    );
+    await flushAsyncWork();
+    expect(fanout.filter((wire) => wire.k === 'dm_probe')).toHaveLength(1);
     manager.close();
   });
 
@@ -9078,6 +9089,148 @@ describe('reticulum chat manager', () => {
         }),
       })
     );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'typing',
+        g: 73,
+        c: 'general',
+        a: 'Qsender',
+        ts: 100_000,
+        active: true,
+        o: 'peer-origin',
+        h: 3,
+      },
+      'peer-d'
+    );
+    await Promise.resolve();
+
+    expect(direct).toHaveLength(1);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'typing',
+        g: 73,
+        c: 'general',
+        a: 'Qother',
+        ts: 90_000,
+        active: true,
+      },
+      'peer-d'
+    );
+    await Promise.resolve();
+    expect(direct).toHaveLength(1);
+    manager.close();
+  });
+
+  it('forwards an identity request only along its first valid reverse route', async () => {
+    const fanout: Array<{
+      messages: Record<string, unknown>[];
+      excludes: string[];
+    }> = [];
+    const localPeerHash = 'a'.repeat(32);
+    const destinationHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localPeerHash,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[],
+          excludes: string[] = []
+        ) => {
+          fanout.push({ messages, excludes });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    const request: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'identity_req',
+      d: destinationHash,
+      rid: '1'.repeat(24),
+      h: 0,
+      m: 5,
+      x: 130_000,
+    };
+
+    manager.handleWire(request, 'b'.repeat(32));
+    manager.handleWire({ ...request, h: 2 }, 'c'.repeat(32));
+    await flushAsyncWork();
+
+    const requests = fanout.filter(({ messages }) =>
+      messages.some((wire) => wire.k === 'identity_req')
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0].excludes).not.toContain(destinationHash);
+    manager.close();
+  });
+
+  it('resolves the local resource identity without a network request', async () => {
+    const localPeerHash = 'a'.repeat(32);
+    const localPublicKey = Buffer.alloc(64, 7).toString('base64');
+    const fanout = vi.fn(async () => ({ ok: true as const }));
+    const ensureKnown = vi.fn(async () => false);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localPeerHash,
+        getLocalIdentityPublicKeyBase64: async () => localPublicKey,
+        ensurePeerIdentityKnown: ensureKnown,
+        fanoutReticulumChatDetailed: fanout,
+      } as any,
+      now: () => 100_000,
+    });
+
+    await expect(
+      (manager as any).ensureResourcePeerIdentity(localPeerHash, 'test')
+    ).resolves.toBe(localPublicKey);
+    expect(ensureKnown).not.toHaveBeenCalled();
+    expect(fanout).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('does not relay a local identity request echo after its waiter finishes', async () => {
+    const fanout: ReticulumChatWire[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        fanoutReticulumChatDetailed: async (
+          messages: ReticulumChatWire[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    const pending = (manager as any).requestReticulumPeerIdentity(
+      'd'.repeat(32),
+      'test'
+    );
+    await flushAsyncWork();
+    const request = fanout.find(
+      (wire): wire is Extract<ReticulumChatWire, { k: 'identity_req' }> =>
+        wire.k === 'identity_req'
+    );
+    expect(request).toBeDefined();
+
+    const waiter = (manager as any).localIdentityRequests.get(request!.rid);
+    clearTimeout(waiter.timeout);
+    (manager as any).localIdentityRequests.delete(request!.rid);
+    waiter.resolve(null);
+    await expect(pending).resolves.toBeNull();
+
+    manager.handleWire({ ...request!, h: 2 }, 'b'.repeat(32));
+    await flushAsyncWork();
+    expect(fanout.filter((wire) => wire.k === 'identity_req')).toHaveLength(1);
     manager.close();
   });
 

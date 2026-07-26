@@ -138,6 +138,59 @@ class FakeDestination:
         self.hash = bytes.fromhex("44" * 16)
 
 
+class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def test_identity_request_dedup_ignores_route_fields(self):
+        request = {
+            "t": "RCHAT",
+            "k": "identity_req",
+            "d": "dd" * 16,
+            "rid": "11" * 12,
+            "h": 0,
+            "m": 5,
+            "x": int((time.time() + 30) * 1000),
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(request)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**request, "h": 3, "r": "aa" * 16}
+            )
+        )
+
+    def test_typing_dedup_ignores_origin_hops_and_ingress_sender(self):
+        typing = {
+            "t": "RCHAT",
+            "k": "typing",
+            "g": 73,
+            "c": "general",
+            "a": "Qsender",
+            "ts": 123_456,
+            "active": True,
+            "o": "aa" * 16,
+            "h": 1,
+            "r": "bb" * 16,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(typing)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**typing, "o": "cc" * 16, "h": 4, "r": "dd" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**typing, "ts": 123_457}
+            )
+        )
+
+
 class PresenceBridgeLandStateFastPathTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()

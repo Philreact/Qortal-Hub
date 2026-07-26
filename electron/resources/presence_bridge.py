@@ -186,6 +186,12 @@ _CALL_RELAY_DEDUP_MAX = 4096
 _call_relay_dedup: Dict[str, float] = {}
 _call_relay_dedup_last_log_at: float = 0.0
 _call_relay_dedup_suppressed_since_log: int = 0
+_RETICULUM_CHAT_INBOUND_DEDUP_MAX = 8192
+_RETICULUM_CHAT_IDENTITY_DEDUP_TTL_SECONDS = 35.0
+_RETICULUM_CHAT_TYPING_DEDUP_TTL_SECONDS = 35.0
+_reticulum_chat_inbound_dedup: Dict[str, float] = {}
+_reticulum_chat_inbound_dedup_last_log_at: float = 0.0
+_reticulum_chat_inbound_dedup_suppressed_since_log: int = 0
 _QCHAT_FILE_LINK_OPEN_PATH_AWAIT_SECONDS = 0.0
 _QCHAT_FILE_LINK_PATH_WAIT_TIMEOUT_SECONDS = 45.0
 _QCHAT_FILE_LINK_PATH_POLL_SECONDS = 1.0
@@ -11060,6 +11066,127 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
     return True
 
 
+def _reticulum_chat_inbound_dedup_key(
+    message: Dict[str, Any],
+) -> Optional[Tuple[str, float]]:
+    message_type = message.get("k")
+    if message_type == "identity_req":
+        request_id = message.get("rid")
+        destination_hash = message.get("d")
+        hops = message.get("h")
+        max_hops = message.get("m")
+        expires_at = message.get("x")
+        if not isinstance(request_id, str) or not request_id.strip():
+            return None
+        if not isinstance(destination_hash, str) or not destination_hash.strip():
+            return None
+        if (
+            isinstance(hops, bool)
+            or not isinstance(hops, int)
+            or isinstance(max_hops, bool)
+            or not isinstance(max_hops, int)
+            or hops < 0
+            or max_hops < hops
+            or max_hops > 5
+        ):
+            return None
+        if (
+            isinstance(expires_at, bool)
+            or not isinstance(expires_at, (int, float))
+            or not math.isfinite(float(expires_at))
+            or float(expires_at) <= time.time() * 1000
+            or float(expires_at) > (time.time() + 60.0) * 1000
+        ):
+            return None
+        return (
+            f"identity_req:{request_id.strip().lower()}:{destination_hash.strip().lower()}",
+            _RETICULUM_CHAT_IDENTITY_DEDUP_TTL_SECONDS,
+        )
+    if message_type == "typing":
+        group_id = message.get("g")
+        channel_id = message.get("c")
+        author = message.get("a")
+        timestamp = message.get("ts")
+        if (
+            isinstance(group_id, bool)
+            or not isinstance(group_id, int)
+            or group_id <= 0
+        ):
+            return None
+        if (
+            not isinstance(channel_id, str)
+            or not isinstance(author, str)
+            or not author.strip()
+        ):
+            return None
+        if (
+            isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(float(timestamp))
+        ):
+            return None
+        stable_fields = [
+            group_id,
+            channel_id.strip(),
+            author.strip(),
+            int(timestamp),
+            message.get("active") is True,
+        ]
+        digest = hashlib.sha256(
+            json.dumps(stable_fields, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return (
+            f"typing:{digest}",
+            _RETICULUM_CHAT_TYPING_DEDUP_TTL_SECONDS,
+        )
+    return None
+
+
+def _should_drop_duplicate_reticulum_chat_inbound(
+    message: Dict[str, Any],
+) -> bool:
+    global _reticulum_chat_inbound_dedup_last_log_at
+    global _reticulum_chat_inbound_dedup_suppressed_since_log
+    keyed_ttl = _reticulum_chat_inbound_dedup_key(message)
+    if keyed_ttl is None:
+        return False
+    key, ttl_seconds = keyed_ttl
+    now = time.time()
+    with _state_lock:
+        expires_at = _reticulum_chat_inbound_dedup.get(key)
+        if isinstance(expires_at, (int, float)) and float(expires_at) > now:
+            _reticulum_chat_inbound_dedup_suppressed_since_log += 1
+            if now - _reticulum_chat_inbound_dedup_last_log_at >= 10.0:
+                log(
+                    "[presence_bridge] target=reticulum-chat-inbound-dedup "
+                    f"suppressed={_reticulum_chat_inbound_dedup_suppressed_since_log} "
+                    f"cache={len(_reticulum_chat_inbound_dedup)}"
+                )
+                _reticulum_chat_inbound_dedup_suppressed_since_log = 0
+                _reticulum_chat_inbound_dedup_last_log_at = now
+            return True
+        _reticulum_chat_inbound_dedup[key] = now + ttl_seconds
+        if len(_reticulum_chat_inbound_dedup) > _RETICULUM_CHAT_INBOUND_DEDUP_MAX:
+            expired = [
+                cached_key
+                for cached_key, cached_expiry in _reticulum_chat_inbound_dedup.items()
+                if not isinstance(cached_expiry, (int, float))
+                or float(cached_expiry) <= now
+            ]
+            for cached_key in expired:
+                _reticulum_chat_inbound_dedup.pop(cached_key, None)
+            overflow = (
+                len(_reticulum_chat_inbound_dedup)
+                - _RETICULUM_CHAT_INBOUND_DEDUP_MAX
+            )
+            if overflow > 0:
+                for cached_key in list(_reticulum_chat_inbound_dedup.keys())[
+                    :overflow
+                ]:
+                    _reticulum_chat_inbound_dedup.pop(cached_key, None)
+    return False
+
+
 def _emit_call_bridge_message(
     message: Dict[str, Any],
     peer_presence_hash: str = "",
@@ -11078,6 +11205,8 @@ def _emit_call_bridge_message(
     )
     t = message.get("t")
     if t == _RETICULUM_CHAT_WIRE_TYPE:
+        if _should_drop_duplicate_reticulum_chat_inbound(message):
+            return True
         _note_presence_pressure("decoded:reticulum_chat", str(message.get("k") or ""))
         payload: Dict[str, Any] = {
             "wire": message,

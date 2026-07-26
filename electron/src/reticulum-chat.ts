@@ -5638,6 +5638,7 @@ export class ReticulumChatManager extends EventEmitter {
   private recentResourceReceiptsSent = new Map<string, number>();
   private learnedResourceIdentityPublicKeys = new Map<string, string>();
   private identityRequestRoutes = new Map<string, ReticulumChatIdentityRoute>();
+  private recentLocalIdentityRequestIds = new Map<string, number>();
   private localIdentityRequests = new Map<
     string,
     ReticulumChatIdentityWaiter
@@ -6472,6 +6473,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.localResourceFindRequests.clear();
     this.learnedResourceIdentityPublicKeys.clear();
     this.identityRequestRoutes.clear();
+    this.recentLocalIdentityRequestIds.clear();
     for (const waiter of this.localIdentityRequests.values()) {
       clearTimeout(waiter.timeout);
       waiter.resolve(null);
@@ -8140,7 +8142,7 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     this.lastTypingSentAt.set(key, now);
-    void this.fanout({
+    const wire: Extract<ReticulumChatWire, { k: 'typing' }> = {
       t: 'RCHAT',
       k: 'typing',
       g: groupId,
@@ -8148,7 +8150,11 @@ export class ReticulumChatManager extends EventEmitter {
       a: authorAddress,
       ts: now,
       active,
-    });
+    };
+    // A fanout can return through another overlay path. Mark the locally
+    // originated state before sending so its echo cannot be relayed again.
+    this.shouldDropDuplicateTypingWire(wire);
+    void this.fanout(wire);
   }
 
   private landAuthSessionKey(
@@ -10220,7 +10226,6 @@ export class ReticulumChatManager extends EventEmitter {
     const kind = typeof wire.k === 'string' ? wire.k : '';
     if (
       kind !== 'group_sub' &&
-      kind !== 'typing' &&
       kind !== 'relay_digest' &&
       kind !== 'gkd' &&
       kind !== 'gkq' &&
@@ -10250,6 +10255,29 @@ export class ReticulumChatManager extends EventEmitter {
     return this.markRecentOrDuplicate(
       this.recentInboundControlWires,
       key,
+      RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS,
+      RETICULUM_CHAT_CONTROL_DEDUP_MAX
+    );
+  }
+
+  private typingWireFingerprint(
+    wire: Extract<ReticulumChatWire, { k: 'typing' }>
+  ): string {
+    return this.hashControlPayload({
+      g: Number(wire.g),
+      c: normalizeReticulumChatChannelId(wire.c),
+      a: typeof wire.a === 'string' ? wire.a.trim() : '',
+      ts: Math.trunc(Number(wire.ts)),
+      active: wire.active === true,
+    });
+  }
+
+  private shouldDropDuplicateTypingWire(
+    wire: Extract<ReticulumChatWire, { k: 'typing' }>
+  ): boolean {
+    return this.markRecentOrDuplicate(
+      this.recentInboundControlWires,
+      `typing:${this.typingWireFingerprint(wire)}`,
       RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS,
       RETICULUM_CHAT_CONTROL_DEDUP_MAX
     );
@@ -11968,7 +11996,20 @@ export class ReticulumChatManager extends EventEmitter {
         if (isDisabledTyping) return;
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        if (typeof wire.a !== 'string') return;
+        if (typeof wire.a !== 'string' || !wire.a.trim()) return;
+        if (typeof wire.ts !== 'number' || !Number.isFinite(wire.ts)) return;
+        const now = this.now();
+        if (
+          wire.ts < now - RETICULUM_CHAT_TYPING_TTL_MS ||
+          wire.ts > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS
+        )
+          return;
+        if (
+          this.shouldDropDuplicateTypingWire(
+            wire as Extract<ReticulumChatWire, { k: 'typing' }>
+          )
+        )
+          return;
         void this.forwardTypingToInterestRoutes(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'typing' }>,
@@ -11978,8 +12019,6 @@ export class ReticulumChatManager extends EventEmitter {
           !this.localGroupIds.has(groupId) ||
           !this.subscribedGroups.has(groupId)
         )
-          return;
-        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
           return;
         this.applyTyping(
           groupId,
@@ -12935,6 +12974,12 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(`${tracePrefix} status=skip reason=bad_source`);
       return;
     }
+    if (source === this.getLocalResourcePeerHash()) {
+      if (RETICULUM_CHAT_TRACE) {
+        loggerLog(`${tracePrefix} status=skip reason=local_source`);
+      }
+      return;
+    }
     if (!this.localDmAddressForConversation(addressA, addressB)) {
       loggerWarn(`${tracePrefix} status=skip reason=no_local_dm_address`);
       return;
@@ -13640,27 +13685,31 @@ export class ReticulumChatManager extends EventEmitter {
       o: this.compactRoutePeerHash(origin),
       h: hops + 1,
     };
-    const payloadKey = this.hashControlPayload(forwarded);
+    const payloadKey = this.typingWireFingerprint(wire);
+    const forwardedPeers = new Set<string>();
     for (const route of this.groupInterestRoutes.values()) {
       if (route.groupId !== groupId) continue;
       if (route.reversePeerHash === inbound) continue;
       if (local && route.originPeerHash === local) continue;
+      const nextHop = this.routePeerHash(route.reversePeerHash);
+      if (!nextHop || forwardedPeers.has(nextHop)) continue;
+      forwardedPeers.add(nextHop);
       const key = this.groupControlRouteKey(
         'typing',
         groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
+        nextHop,
+        payloadKey
       );
       if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
       this.forwardedGroupControlKeys.set(
         key,
         this.now() + RETICULUM_CHAT_TYPING_TTL_MS
       );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
+      void this.sendToPeer(nextHop, forwarded).then((result) => {
         if (result.ok === false) {
           this.pruneGroupInterestRoutesForNextHop(
             groupId,
-            route.reversePeerHash,
+            nextHop,
             result.reason
           );
         }
@@ -18802,7 +18851,13 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     if (!verifyReticulumDmNotify(notify.d, timestamp)) return null;
-    return wireFitsReticulum(notify) ? notify : null;
+    if (!wireFitsReticulum(notify)) return null;
+    this.pruneDmDiscoveryRoutes(timestamp);
+    this.recentDmDiscoveryKeys.set(
+      `notify:${requestId}`,
+      timestamp + RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS
+    );
+    return notify;
   }
 
   private async buildSignedDirectProbeWire(
@@ -18830,7 +18885,13 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     if (!verifyReticulumDmProbe(probe.q, timestamp)) return null;
-    return wireFitsReticulum(probe) ? probe : null;
+    if (!wireFitsReticulum(probe)) return null;
+    this.pruneDmDiscoveryRoutes(timestamp);
+    this.recentDmDiscoveryKeys.set(
+      `probe:${requestId}`,
+      timestamp + RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS
+    );
+    return probe;
   }
 
   private async announceDirectNotifyForEvent(
@@ -23090,6 +23151,21 @@ export class ReticulumChatManager extends EventEmitter {
         this.localIdentityRequests.delete(requestId);
       }
     }
+    for (const [requestId, expiresAt] of this.recentLocalIdentityRequestIds) {
+      if (expiresAt <= now) this.recentLocalIdentityRequestIds.delete(requestId);
+    }
+    if (
+      this.recentLocalIdentityRequestIds.size > RETICULUM_CHAT_IDENTITY_ROUTE_MAX
+    ) {
+      const excess =
+        this.recentLocalIdentityRequestIds.size -
+        RETICULUM_CHAT_IDENTITY_ROUTE_MAX;
+      for (const requestId of [
+        ...this.recentLocalIdentityRequestIds.keys(),
+      ].slice(0, excess)) {
+        this.recentLocalIdentityRequestIds.delete(requestId);
+      }
+    }
   }
 
   private async bridgeKnowsPeerIdentity(peerHash: string): Promise<boolean> {
@@ -23107,6 +23183,11 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<string | null> {
     const peer = this.normalizeResourcePeerHash(peerHash);
     if (!peer) return '';
+    if (peer === this.getLocalResourcePeerHash()) {
+      const { identityPublicKeyBase64 } =
+        await this.localReticulumResourceIdentity();
+      return identityPublicKeyBase64 ?? '';
+    }
     const learnedPublicKey = this.learnedResourceIdentityPublicKeys.get(peer);
     if (learnedPublicKey) return learnedPublicKey;
     if (await this.bridgeKnowsPeerIdentity(peer)) return '';
@@ -23191,10 +23272,7 @@ export class ReticulumChatManager extends EventEmitter {
       x: expiresAt,
     };
     if (!wireFitsReticulum(wire)) return Promise.resolve(null);
-    loggerLog(
-      `[ReticulumChat] identity_req_sent peer=${peer.slice(0, 16)} rid=${requestId.slice(0, 12)} reason=${reason}`
-    );
-    void this.fanoutOnce(wire, []);
+    this.recentLocalIdentityRequestIds.set(requestId, expiresAt);
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         const waiter = this.localIdentityRequests.get(requestId);
@@ -23209,6 +23287,10 @@ export class ReticulumChatManager extends EventEmitter {
         timeout,
         expiresAt,
       });
+      loggerLog(
+        `[ReticulumChat] identity_req_sent peer=${peer.slice(0, 16)} rid=${requestId.slice(0, 12)} reason=${reason}`
+      );
+      void this.fanoutOnce(wire, []);
     });
   }
 
@@ -23236,6 +23318,15 @@ export class ReticulumChatManager extends EventEmitter {
     )
       return;
     this.pruneIdentityRoutes(now);
+    // A request can arrive through several overlay paths, including back at
+    // its origin. The first valid route is the only reverse path we retain.
+    if (
+      this.localIdentityRequests.has(requestId) ||
+      (this.recentLocalIdentityRequestIds.get(requestId) ?? 0) > now
+    )
+      return;
+    const existingRoute = this.identityRequestRoutes.get(requestId);
+    if (existingRoute) return;
     this.identityRequestRoutes.set(requestId, {
       reversePeerHash,
       destinationHash,
@@ -23270,7 +23361,6 @@ export class ReticulumChatManager extends EventEmitter {
     if (!wireFitsReticulum(forwarded)) return;
     void this.fanoutOnce(forwarded, [
       reversePeerHash,
-      destinationHash,
       ...(localPeerHash ? [localPeerHash] : []),
     ]);
   }
