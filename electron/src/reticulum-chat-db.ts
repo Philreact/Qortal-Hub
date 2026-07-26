@@ -8320,10 +8320,13 @@ export class ReticulumChatDatabase {
     snapshot: ReticulumChatMetadataSnapshotRecord
   ): boolean {
     const channels = new Map(
-      snapshot.channels.map((channel) => [
-        normalizeReticulumChatChannelId(channel.channelId),
-        channel,
-      ])
+      snapshot.channels.map((channel) => {
+        const normalizedChannel = applyReticulumBuiltInChannelPolicy(channel);
+        return [
+          normalizeReticulumChatChannelId(normalizedChannel.channelId),
+          normalizedChannel,
+        ];
+      })
     );
     const categories = new Map(
       snapshot.categories.map((category) => [
@@ -8332,17 +8335,33 @@ export class ReticulumChatDatabase {
       ])
     );
     for (const revision of snapshot.revisions) {
+      const revisionChannel =
+        revision.entityType === 'channel' && !revision.deleted
+          ? channels.get(normalizeReticulumChatChannelId(revision.entityId))
+          : undefined;
+      const projectedRevision =
+        revisionChannel &&
+        isReticulumChatBuiltInChannelId(revisionChannel.channelId)
+          ? {
+              ...revision,
+              stateHash: hashReticulumChatMetadataEntityState(
+                'channel',
+                revisionChannel.channelId,
+                revisionChannel
+              ),
+            }
+          : revision;
       const currentRecord = this.getMetadataEntityRevisionRecord(
         snapshot.groupId,
-        revision.entityType,
-        revision.entityId
+        projectedRevision.entityType,
+        projectedRevision.entityId
       );
       const current = currentRecord?.revision ?? null;
       const headComparison = current
-        ? compareMetadataEntityRevisionHeads(revision, current)
+        ? compareMetadataEntityRevisionHeads(projectedRevision, current)
         : 1;
       const comparison = current
-        ? compareMetadataEntityRevisions(revision, current)
+        ? compareMetadataEntityRevisions(projectedRevision, current)
         : 1;
       if (
         headComparison < 0 ||
@@ -8351,8 +8370,10 @@ export class ReticulumChatDatabase {
           comparison < 0)
       )
         continue;
-      if (revision.entityType === 'channel') {
-        const channelId = normalizeReticulumChatChannelId(revision.entityId);
+      if (projectedRevision.entityType === 'channel') {
+        const channelId = normalizeReticulumChatChannelId(
+          projectedRevision.entityId
+        );
         const channel = channels.get(channelId);
         const projected = this.getChannel(snapshot.groupId, channelId);
         const projectedHash = hashReticulumChatMetadataEntityState(
@@ -8363,10 +8384,10 @@ export class ReticulumChatDatabase {
         if (
           comparison === 0 &&
           currentRecord?.source === 'snapshot' &&
-          projectedHash === revision.stateHash
+          projectedHash === projectedRevision.stateHash
         )
           continue;
-        if (revision.deleted) {
+        if (projectedRevision.deleted) {
           if (
             channelId !== RETICULUM_CHAT_DEFAULT_CHANNEL_ID &&
             channelId !== RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
@@ -8380,7 +8401,9 @@ export class ReticulumChatDatabase {
           continue;
         }
       } else {
-        const categoryId = normalizeReticulumChatCategoryId(revision.entityId);
+        const categoryId = normalizeReticulumChatCategoryId(
+          projectedRevision.entityId
+        );
         const category = categories.get(categoryId);
         const projected = this.getCategory(snapshot.groupId, categoryId);
         const projectedHash = hashReticulumChatMetadataEntityState(
@@ -8391,10 +8414,10 @@ export class ReticulumChatDatabase {
         if (
           comparison === 0 &&
           currentRecord?.source === 'snapshot' &&
-          projectedHash === revision.stateHash
+          projectedHash === projectedRevision.stateHash
         )
           continue;
-        if (revision.deleted) {
+        if (projectedRevision.deleted) {
           this.deleteCategory(snapshot.groupId, categoryId, {
             clearChannelAssignments: false,
           });
@@ -8404,7 +8427,7 @@ export class ReticulumChatDatabase {
           continue;
         }
       }
-      this.upsertMetadataEntityRevision(snapshot.groupId, revision, {
+      this.upsertMetadataEntityRevision(snapshot.groupId, projectedRevision, {
         replaceSameEvent: headComparison === 0,
         source: 'snapshot',
       });

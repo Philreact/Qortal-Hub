@@ -19918,7 +19918,7 @@ describe('reticulum chat manager', () => {
     expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
   });
 
-  it('rejects metadata snapshots that remove or alter the general expiry', () => {
+  it('accepts legacy general snapshots but rejects an altered expiry', () => {
     const channel = {
       groupId: 825,
       channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
@@ -19957,7 +19957,29 @@ describe('reticulum chat manager', () => {
         ...snapshot,
         channels: [{ ...channel, expiryDurationMs: undefined }],
       })
-    ).toBe(false);
+    ).toBe(true);
+    const legacyChannel = { ...channel, expiryDurationMs: undefined };
+    expect(
+      metadataSnapshotHasConsistentRevisions({
+        ...snapshot,
+        channels: [legacyChannel],
+        revisions: [
+          {
+            entityType: 'channel' as const,
+            entityId: legacyChannel.channelId,
+            eventId: 'legacy-general-update',
+            eventType: 'channel_update',
+            timestamp: 100,
+            deleted: false,
+            stateHash: hashReticulumChatMetadataEntityState(
+              'channel',
+              legacyChannel.channelId,
+              legacyChannel
+            ),
+          },
+        ],
+      })
+    ).toBe(true);
     expect(
       metadataSnapshotHasConsistentRevisions({
         ...snapshot,
@@ -21913,6 +21935,100 @@ describe('reticulum chat manager', () => {
     });
     expect(snapshotResult).toBe(true);
     expect(db.getMetadataSnapshotByHash(740, 'b'.repeat(64))).toBeTruthy();
+    db.close();
+  });
+
+  it('normalizes legacy general snapshot projections to the fixed expiry', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    const groupId = 741;
+    const legacyGeneral = {
+      groupId,
+      channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      name: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      position: 0,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: 0,
+      expiryDurationMs: undefined,
+      createdBy: '',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const legacyRevision = {
+      entityType: 'channel' as const,
+      entityId: legacyGeneral.channelId,
+      eventId: 'legacy-general-snapshot-update',
+      eventType: 'channel_update',
+      timestamp: 100,
+      deleted: false,
+      stateHash: hashReticulumChatMetadataEntityState(
+        'channel',
+        legacyGeneral.channelId,
+        legacyGeneral
+      ),
+    };
+
+    expect(
+      db.applyMetadataSnapshot({
+        groupId,
+        snapshotId: 'legacy-general-snapshot',
+        scope: 'public',
+        parentSnapshotHash: '',
+        version: 1,
+        createdAt: 100,
+        latestEventId: legacyRevision.eventId,
+        latestFeedTimestamp: legacyRevision.timestamp,
+        snapshotHash: 'c'.repeat(64),
+        adminAddress: 'Qadmin',
+        adminPublicKey: 'public-key',
+        signature: 'signature',
+        channels: [legacyGeneral],
+        categories: [],
+        revisions: [legacyRevision],
+      })
+    ).toBe(true);
+    const projectedGeneral = db.getChannel(
+      groupId,
+      RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+    );
+    expect(projectedGeneral?.expiryDurationMs).toBe(
+      RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS
+    );
+    expect(
+      db.getMetadataEntityRevisionRecord(
+        groupId,
+        'channel',
+        RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+      )?.revision.stateHash
+    ).toBe(
+      hashReticulumChatMetadataEntityState(
+        'channel',
+        RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+        projectedGeneral
+      )
+    );
+    const upsertChannelSpy = vi.spyOn(db as any, 'upsertChannel');
+    expect(
+      db.applyMetadataSnapshot({
+        groupId,
+        snapshotId: 'legacy-general-snapshot-repeat',
+        scope: 'public',
+        parentSnapshotHash: '',
+        version: 1,
+        createdAt: 100,
+        latestEventId: legacyRevision.eventId,
+        latestFeedTimestamp: legacyRevision.timestamp,
+        snapshotHash: 'd'.repeat(64),
+        adminAddress: 'Qadmin',
+        adminPublicKey: 'public-key',
+        signature: 'signature',
+        channels: [legacyGeneral],
+        categories: [],
+        revisions: [legacyRevision],
+      })
+    ).toBe(true);
+    expect(upsertChannelSpy).not.toHaveBeenCalled();
     db.close();
   });
 

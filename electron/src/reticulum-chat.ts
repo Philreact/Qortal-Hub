@@ -3656,11 +3656,20 @@ export function metadataSnapshotHasConsistentRevisions(
         channel.channelId,
         channel.expiryDurationMs
       );
-    if (
-      channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
-      channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+    if (channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
+      // Snapshots produced before General gained a fixed expiry omitted this
+      // field. They remain valid signed snapshots, but projection normalizes
+      // them to the current one-month policy.
+      if (
+        channel.expiryDurationMs != null &&
+        channel.expiryDurationMs !== canonicalExpiryDurationMs
+      )
+        return false;
+    } else if (
+      channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID &&
+      channel.expiryDurationMs !== canonicalExpiryDurationMs
     ) {
-      if (channel.expiryDurationMs !== canonicalExpiryDurationMs) return false;
+      return false;
     }
     return (
       typeof channel.createdBy === 'string' &&
@@ -3747,13 +3756,26 @@ export function metadataSnapshotHasConsistentRevisions(
         createdAt: 0,
         updatedAt: 0,
       };
+      const channelStateHash = hashReticulumChatMetadataEntityState(
+        'channel',
+        channelId,
+        channel
+      );
+      const canonicalStateHash = hashReticulumChatMetadataEntityState(
+        'channel',
+        channelId,
+        canonicalChannel
+      );
+      const legacyGeneralStateHash =
+        channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+          ? hashReticulumChatMetadataEntityState('channel', channelId, {
+              ...canonicalChannel,
+              expiryDurationMs: undefined,
+            })
+          : '';
       if (
-        hashReticulumChatMetadataEntityState('channel', channelId, channel) !==
-        hashReticulumChatMetadataEntityState(
-          'channel',
-          channelId,
-          canonicalChannel
-        )
+        channelStateHash !== canonicalStateHash &&
+        channelStateHash !== legacyGeneralStateHash
       )
         return false;
       continue;
