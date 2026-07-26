@@ -76,6 +76,7 @@ import {
   measureHomeLayoutDebugMetric,
   parseHomeCustomizableCardsLayout,
 } from './utils';
+import { returnToQChat } from './homeNavigation';
 
 const readStoredDashboardModuleVisible = (key: string): boolean => {
   if (typeof window === 'undefined') return true;
@@ -91,7 +92,6 @@ const readStoredDashboardModuleVisible = (key: string): boolean => {
 export const HomeDesktop = ({
   myAddress,
   setGroupSection,
-  setSelectedGroup,
   setDesktopViewMode,
   desktopViewMode,
   onOpenSettings,
@@ -505,10 +505,8 @@ export const HomeDesktop = ({
     executeEvent('open-apps-mode', {});
   }, []);
   const handleOpenQChatPanel = useCallback(() => {
-    setSelectedGroup(null);
-    setGroupSection('chat');
-    openQChatTab();
-  }, [setGroupSection, setSelectedGroup]);
+    returnToQChat(setGroupSection, openQChatTab);
+  }, [setGroupSection]);
   const handleOpenGroupsWidget = useCallback(() => {
     handleOpenQChatPanel();
   }, [handleOpenQChatPanel]);

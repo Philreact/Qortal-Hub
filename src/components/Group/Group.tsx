@@ -5267,7 +5267,6 @@ export const Group = ({
             isLoadingGroups={isLoadingGroups}
             onOpenSettings={onOpenSettings}
             setGroupSection={setGroupSection}
-            setSelectedGroup={setSelectedGroup}
             getTimestampEnterChat={getTimestampEnterChat}
             setOpenManageMembers={setOpenManageMembers}
             setOpenAddGroup={setOpenAddGroup}
