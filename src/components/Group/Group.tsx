@@ -226,6 +226,7 @@ type ReticulumNotificationSummary = {
   channelId?: string;
   lastEvent?: ReticulumBackgroundEvent | null;
   unreadCount?: number;
+  replyCount?: number;
   mentionCount?: number;
   hasUnreadMention?: boolean;
   updatedAt?: number;

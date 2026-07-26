@@ -9727,6 +9727,10 @@ export class ReticulumChatManager extends EventEmitter {
           (total, channel) => total + channel.unreadCount,
           0
         );
+        const replyCount = channels.reduce(
+          (total, channel) => total + channel.replyCount,
+          0
+        );
         const mentionCount = channels.reduce(
           (total, channel) => total + channel.mentionCount,
           0
@@ -9737,6 +9741,7 @@ export class ReticulumChatManager extends EventEmitter {
           lastEvent: latest.lastEvent,
           updatedAt: latest.updatedAt,
           unreadCount,
+          replyCount,
           mentionCount,
           hasUnreadMention: mentionCount > 0,
         };

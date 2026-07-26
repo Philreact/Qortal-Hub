@@ -300,6 +300,7 @@ export type ReticulumChatSummary = {
   channelId: string;
   lastEvent: ReticulumChatEvent | null;
   unreadCount: number;
+  replyCount: number;
   mentionCount: number;
   hasUnreadMention: boolean;
   updatedAt: number;
@@ -309,6 +310,7 @@ export type ReticulumGroupChatSummary = {
   groupId: number;
   lastEvent: ReticulumChatEvent | null;
   unreadCount: number;
+  replyCount: number;
   mentionCount: number;
   hasUnreadMention: boolean;
   updatedAt: number;
@@ -1429,6 +1431,7 @@ export class ReticulumChatDatabase {
   private stmtUpsertMention: Statement;
   private stmtDeleteMentionsForEvent: Statement;
   private stmtGetUnreadMentionRecords: Statement;
+  private stmtGetUnreadReplyRecords: Statement;
   private stmtMarkMentionsRead: Statement;
   private stmtMarkServed: Statement;
   private stmtTotalCacheBytes: Statement;
@@ -1984,6 +1987,26 @@ export class ReticulumChatDatabase {
         AND projection.mention_address_hashes LIKE ?
         AND projection.deleted_at IS NULL
         AND (projection.expires_at IS NULL OR projection.expires_at > ?)
+    `);
+    this.stmtGetUnreadReplyRecords = this.db.prepare(`
+      SELECT
+        reply.root_event_id,
+        reply.author_address,
+        reply.created_at
+      FROM rchat_message_projection AS reply
+      JOIN rchat_message_projection AS parent
+        ON parent.root_event_id = reply.reply_to_event_id
+       AND parent.group_id = reply.group_id
+       AND parent.channel_id = reply.channel_id
+      WHERE reply.group_id = ?
+        AND reply.channel_id = ?
+        AND reply.created_at > ?
+        AND reply.author_address != ?
+        AND parent.author_address = ?
+        AND reply.deleted_at IS NULL
+        AND (reply.expires_at IS NULL OR reply.expires_at > ?)
+        AND parent.deleted_at IS NULL
+        AND (parent.expires_at IS NULL OR parent.expires_at > ?)
     `);
     this.stmtMarkMentionsRead = this.db.prepare(`
       UPDATE reticulum_chat_mentions
@@ -8687,6 +8710,10 @@ export class ReticulumChatDatabase {
         (total, summary) => total + summary.unreadCount,
         0
       );
+      const replyCount = chatNotificationSummaries.reduce(
+        (total, summary) => total + summary.replyCount,
+        0
+      );
       const mentionCount = chatNotificationSummaries.reduce(
         (total, summary) => total + summary.mentionCount,
         0
@@ -8696,6 +8723,7 @@ export class ReticulumChatDatabase {
         groupId,
         lastEvent: lastChannel.lastEvent,
         unreadCount,
+        replyCount,
         mentionCount,
         hasUnreadMention: mentionCount > 0,
         updatedAt: lastChannel.updatedAt,
@@ -8962,6 +8990,77 @@ export class ReticulumChatDatabase {
     return count;
   }
 
+  private countUnreadReplies(
+    groupId: number,
+    channelId: string,
+    myAddress: string,
+    watermark: number,
+    now: number,
+    activeSilencedAuthors: ReadonlySet<string>,
+    ignoredThroughByAuthor: ReadonlyMap<string, number>,
+    recentMessageEvents: readonly ReticulumChatEvent[]
+  ): number {
+    if (!myAddress) return 0;
+    const rows = this.stmtGetUnreadReplyRecords.all(
+      groupId,
+      channelId,
+      watermark,
+      myAddress,
+      myAddress,
+      now,
+      now
+    ) as Array<{
+      root_event_id?: string;
+      author_address?: string;
+      created_at?: number;
+    }>;
+    const replyEventIds = new Set<string>();
+    for (const row of rows) {
+      const authorAddress = String(row.author_address || '');
+      const createdAt = Number(row.created_at || 0);
+      if (
+        !row.root_event_id ||
+        !authorAddress ||
+        activeSilencedAuthors.has(authorAddress) ||
+        createdAt <= (ignoredThroughByAuthor.get(authorAddress) ?? 0)
+      ) {
+        continue;
+      }
+      replyEventIds.add(row.root_event_id);
+    }
+
+    // Remote relay events can still be in the bounded live cache before they
+    // are retained in the durable projection. Include that window without
+    // turning summary reads into a scan of the event log.
+    for (const event of recentMessageEvents) {
+      if (
+        replyEventIds.has(event.eventId) ||
+        !event.replyToEventId ||
+        event.timestamp <= watermark ||
+        event.authorAddress === myAddress ||
+        activeSilencedAuthors.has(event.authorAddress) ||
+        event.timestamp <=
+          (ignoredThroughByAuthor.get(event.authorAddress) ?? 0)
+      ) {
+        continue;
+      }
+      const parent = this.getEvent(event.replyToEventId);
+      if (
+        !parent ||
+        parent.groupId !== groupId ||
+        normalizeReticulumChatChannelId(parent.channelId) !== channelId ||
+        parent.authorAddress !== myAddress ||
+        (parent.eventType !== 'message' &&
+          parent.eventType !== 'attachment_manifest') ||
+        this.isEventPayloadScrubbed(parent.eventId)
+      ) {
+        continue;
+      }
+      replyEventIds.add(event.eventId);
+    }
+    return replyEventIds.size;
+  }
+
   private getChannelSummary(
     groupId: number,
     channelId: string,
@@ -9003,6 +9102,19 @@ export class ReticulumChatDatabase {
               event.timestamp >
                 (ignoredThroughByAuthor.get(event.authorAddress) ?? 0)
           ).length
+        : 0;
+    const replyCount =
+      myAddress && !suppressUnreadState
+        ? this.countUnreadReplies(
+            groupId,
+            normalizedChannelId,
+            myAddress,
+            watermark,
+            now,
+            activeSilencedAuthors,
+            ignoredThroughByAuthor,
+            events
+          )
         : 0;
     const mentionCount =
       myAddress && !suppressUnreadState
@@ -9195,6 +9307,7 @@ export class ReticulumChatDatabase {
       channelId: normalizedChannelId,
       lastEvent,
       unreadCount,
+      replyCount,
       mentionCount: totalMentionCount,
       hasUnreadMention: totalMentionCount > 0,
       updatedAt: lastEvent.timestamp,

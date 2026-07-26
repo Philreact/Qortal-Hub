@@ -798,6 +798,7 @@ type ReticulumSortableChannelButtonProps = {
   selected: boolean;
   textScale: 'default' | 'medium' | 'high';
   unreadCount: number;
+  replyCount: number;
 };
 
 const reticulumTextSize = (
@@ -847,6 +848,7 @@ function ReticulumSortableChannelButton({
   selected,
   textScale,
   unreadCount,
+  replyCount,
 }: ReticulumSortableChannelButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumChannelDragId(channel.channelId),
@@ -1014,12 +1016,14 @@ function ReticulumSortableChannelButton({
             </Box>
           </Tooltip>
         )}
-        {unreadCount > 0 && (
+        {(replyCount > 0 || (unreadCount > 0 && !hasUnreadMention)) && (
           <Tooltip
             title={
-              unreadCount > 1
-                ? `${unreadCount} unread messages`
-                : 'Unread message'
+              replyCount > 1
+                ? `${replyCount} unread replies`
+                : replyCount === 1
+                  ? 'Unread reply'
+                  : 'Unread messages'
             }
           >
             <Box
@@ -1032,14 +1036,18 @@ function ReticulumSortableChannelButton({
                 display: 'inline-flex',
                 fontSize: 11,
                 fontWeight: 800,
-                height: 18,
+                height: replyCount > 0 ? 18 : 8,
                 justifyContent: 'center',
                 lineHeight: 1,
-                minWidth: 18,
-                px: 0.5,
+                minWidth: replyCount > 0 ? 18 : 8,
+                px: replyCount > 0 ? 0.5 : 0,
               }}
             >
-              {unreadCount > 99 ? '99+' : unreadCount}
+              {replyCount > 0
+                ? replyCount > 99
+                  ? '99+'
+                  : replyCount
+                : null}
             </Box>
           </Tooltip>
         )}
@@ -7958,6 +7966,7 @@ export const ChatGroup = ({
     const selected = channel.channelId === selectedReticulumChannelId;
     const channelSummary = reticulumChannelSummariesById.get(channel.channelId);
     const unreadCount = Math.max(0, Number(channelSummary?.unreadCount) || 0);
+    const replyCount = Math.max(0, Number(channelSummary?.replyCount) || 0);
     const mentionCount = Math.max(0, Number(channelSummary?.mentionCount) || 0);
     const hasUnreadMention =
       channelSummary?.hasUnreadMention === true || mentionCount > 0;
@@ -7986,6 +7995,7 @@ export const ChatGroup = ({
         selected={selected}
         textScale={reticulumChatTextScale}
         unreadCount={unreadCount}
+        replyCount={replyCount}
       />
     );
   };

@@ -1362,6 +1362,10 @@ const GroupItem = memo(
       0,
       Number(group?.reticulumChatSummary?.unreadCount || 0)
     );
+    const reticulumReplyCount = Math.max(
+      0,
+      Number(group?.reticulumChatSummary?.replyCount || 0)
+    );
     const hasReticulumUnread = reticulumUnreadCount > 0;
     const hasReticulumMention =
       group?.reticulumChatSummary?.hasUnreadMention === true ||
@@ -1604,12 +1608,13 @@ const GroupItem = memo(
                         timeDifferenceForNotificationChats) ||
                       timestampEnterData < group?.timestamp))) && (
                   <ReticulumUnreadCountBadge
-                    count={hasReticulumUnread ? reticulumUnreadCount : null}
+                    count={reticulumReplyCount > 0 ? reticulumReplyCount : null}
                     outlineColor={theme.palette.background.surface}
+                    size={reticulumReplyCount > 0 ? 18 : 8}
                     sx={{
-                      bottom: -2,
+                      bottom: reticulumReplyCount > 0 ? -2 : 1,
                       position: 'absolute',
-                      right: -2,
+                      right: reticulumReplyCount > 0 ? -2 : 1,
                       zIndex: 2,
                     }}
                   />

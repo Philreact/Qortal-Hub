@@ -3208,6 +3208,114 @@ describe('reticulum chat database', () => {
     expect(db.getChatSummaries(accountA)[0]?.unreadCount).toBe(1);
   });
 
+  it('counts unread replies to local messages separately from ordinary unread messages', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const groupId = 165;
+    const baseTimestamp = Date.now() - 10_000;
+    const [localRoot, localReply] = signedAuthorEvents([
+      {
+        eventId: 'reply-count-local-root',
+        groupId,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: baseTimestamp,
+      },
+      {
+        eventId: 'reply-count-local-reply',
+        groupId,
+        channelId: 'general',
+        authorSeq: 2,
+        timestamp: baseTimestamp + 4_000,
+        replyToEventId: 'reply-count-local-root',
+      },
+    ]);
+    const [ordinaryMessage, remoteReply, deleteRemoteReply] =
+      signedAuthorEvents([
+        {
+          eventId: 'reply-count-ordinary-message',
+          groupId,
+          channelId: 'general',
+          authorSeq: 1,
+          timestamp: baseTimestamp + 1_000,
+        },
+        {
+          eventId: 'reply-count-remote-reply',
+          groupId,
+          channelId: 'general',
+          authorSeq: 2,
+          timestamp: baseTimestamp + 2_000,
+          replyToEventId: 'reply-count-local-root',
+        },
+        {
+          eventId: 'reply-count-delete-remote-reply',
+          groupId,
+          channelId: 'general',
+          authorSeq: 3,
+          timestamp: baseTimestamp + 5_000,
+          eventType: 'delete',
+          targetEventId: 'reply-count-remote-reply',
+        },
+      ]);
+    const crossChannelReply = signedEvent({
+      eventId: 'reply-count-cross-channel-reply',
+      groupId,
+      channelId: 'other',
+      timestamp: baseTimestamp + 3_000,
+      replyToEventId: 'reply-count-local-root',
+    });
+    const readerAddress = localRoot.authorAddress;
+
+    expect(db.insertEvent(localRoot, true)).toBe(true);
+    db.markRead(groupId, 'general', localRoot.timestamp, readerAddress);
+    expect(db.insertEvent(ordinaryMessage, false)).toBe(true);
+    expect(db.insertEvent(remoteReply, false)).toBe(true);
+    expect(db.insertEvent(crossChannelReply, false)).toBe(true);
+    expect(db.insertEvent(localReply, true)).toBe(true);
+
+    const summary = db
+      .getChatSummaries(readerAddress)
+      .find((entry) => entry.groupId === groupId);
+    expect(summary).toMatchObject({
+      unreadCount: 3,
+      replyCount: 1,
+    });
+    expect(
+      summary?.channels.find((channel) => channel.channelId === 'general')
+    ).toMatchObject({
+      unreadCount: 2,
+      replyCount: 1,
+    });
+    expect(
+      summary?.channels.find((channel) => channel.channelId === 'other')
+    ).toMatchObject({
+      unreadCount: 1,
+      replyCount: 0,
+    });
+
+    expect(db.insertEvent(deleteRemoteReply, false)).toBe(true);
+    expect(
+      db
+        .getChatSummaries(readerAddress)
+        .find((entry) => entry.groupId === groupId)
+        ?.channels.find((channel) => channel.channelId === 'general')
+    ).toMatchObject({
+      unreadCount: 1,
+      replyCount: 0,
+    });
+
+    db.markRead(groupId, 'general', deleteRemoteReply.timestamp, readerAddress);
+    expect(
+      db
+        .getChatSummaries(readerAddress)
+        .find((entry) => entry.groupId === groupId)
+        ?.channels.find((channel) => channel.channelId === 'general')
+    ).toMatchObject({
+      unreadCount: 0,
+      replyCount: 0,
+    });
+  });
+
   it('does not count archived channels in unread group summaries', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);

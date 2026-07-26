@@ -51,6 +51,7 @@ export type ReticulumChatSummaryAtomEntry = {
     timestamp?: number;
   } | null;
   unreadCount?: number;
+  replyCount?: number;
   mentionCount?: number;
   hasUnreadMention?: boolean;
   updatedAt?: number;
