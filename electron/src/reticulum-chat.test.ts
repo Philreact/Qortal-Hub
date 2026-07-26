@@ -23105,6 +23105,181 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('repairs forward from the newest local message on a normal history read', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([743]);
+    manager.subscribeGroup(743);
+    const older = signedEvent({
+      eventId: 'history-read-older',
+      groupId: 743,
+      channelId: 'general',
+      timestamp: 1_000,
+    });
+    const newer = signedEvent({
+      eventId: 'history-read-newer',
+      groupId: 743,
+      channelId: 'general',
+      timestamp: 2_000,
+    });
+    (manager as any).getInterestedPeers = () => ['peer-history'];
+    (manager as any).shouldRequestGroupRepair = () => true;
+    (manager as any).requestStateHeadsFromPeer = vi.fn();
+    const requestPage = vi.fn(async () => undefined);
+    (manager as any).requestLinkedHistoryPage = requestPage;
+
+    (manager as any).requestNetworkHistoryForRead(
+      743,
+      'general',
+      [older, newer],
+      {},
+      'message-history-read'
+    );
+
+    expect(requestPage).toHaveBeenCalledWith(
+      'peer-history',
+      743,
+      'general',
+      { eventId: newer.eventId, feedTimestamp: newer.timestamp },
+      'after',
+      false,
+      'message-history-read',
+      'peer-history'
+    );
+    manager.close();
+  });
+
+  it('keeps explicit older-history reads moving backward', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([744]);
+    manager.subscribeGroup(744);
+    const event = signedEvent({
+      eventId: 'history-read-before',
+      groupId: 744,
+      channelId: 'general',
+      timestamp: 2_000,
+    });
+    (manager as any).getInterestedPeers = () => ['peer-history'];
+    (manager as any).shouldRequestGroupRepair = () => true;
+    (manager as any).requestStateHeadsFromPeer = vi.fn();
+    const requestPage = vi.fn(async () => undefined);
+    (manager as any).requestLinkedHistoryPage = requestPage;
+
+    (manager as any).requestNetworkHistoryForRead(
+      744,
+      'general',
+      [event],
+      { beforeTimestamp: event.timestamp, beforeEventId: event.eventId },
+      'message-history-read'
+    );
+
+    expect(requestPage.mock.calls[0]?.[3]).toEqual({
+      eventId: event.eventId,
+      feedTimestamp: event.timestamp,
+    });
+    expect(requestPage.mock.calls[0]?.[4]).toBe('before');
+    manager.close();
+  });
+
+  it('requests the newest available page when a channel has no local history', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([746]);
+    manager.subscribeGroup(746);
+    (manager as any).getInterestedPeers = () => ['peer-history'];
+    (manager as any).shouldRequestGroupRepair = () => true;
+    (manager as any).requestStateHeadsFromPeer = vi.fn();
+    const requestPage = vi.fn(async () => undefined);
+    (manager as any).requestLinkedHistoryPage = requestPage;
+
+    (manager as any).requestNetworkHistoryForRead(
+      746,
+      'general',
+      [],
+      {},
+      'message-history-read'
+    );
+
+    expect(requestPage.mock.calls[0]?.[3]).toBeNull();
+    expect(requestPage.mock.calls[0]?.[4]).toBe('before');
+    manager.close();
+  });
+
+  it('keeps network search walking backward from its oldest local event', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([747]);
+    manager.subscribeGroup(747);
+    const older = signedEvent({
+      eventId: 'search-history-older',
+      groupId: 747,
+      channelId: 'general',
+      timestamp: 1_000,
+    });
+    const newer = signedEvent({
+      eventId: 'search-history-newer',
+      groupId: 747,
+      channelId: 'general',
+      timestamp: 2_000,
+    });
+    (manager as any).getInterestedPeers = () => ['peer-history'];
+    (manager as any).shouldRequestGroupRepair = () => true;
+    (manager as any).requestStateHeadsFromPeer = vi.fn();
+    const requestPage = vi.fn(async () => undefined);
+    (manager as any).requestLinkedHistoryPage = requestPage;
+
+    (manager as any).requestNetworkHistoryForRead(
+      747,
+      'general',
+      [older, newer],
+      {},
+      'search-read',
+      'before'
+    );
+
+    expect(requestPage.mock.calls[0]?.[3]).toEqual({
+      eventId: older.eventId,
+      feedTimestamp: older.timestamp,
+    });
+    expect(requestPage.mock.calls[0]?.[4]).toBe('before');
+    manager.close();
+  });
+
+  it('fits a paginated UUID channel state head in an RCHAT control packet', async () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([745]);
+    manager.subscribeGroup(745);
+    const firstChannel = 'ch-25ce35ea-1c06-4621-aae2-399c181b8970';
+    const secondChannel = 'ch-c029151a-3a6a-4a07-b39a-1205fa921416';
+    upsertTestChannel(manager, { groupId: 745, channelId: firstChannel });
+    upsertTestChannel(manager, { groupId: 745, channelId: secondChannel });
+    expect(
+      (manager as any).db.insertEvent(
+        signedEvent({
+          eventId: 'a5b14f79-dd51-4dca-8ae7-0d69f09747ac',
+          groupId: 745,
+          channelId: firstChannel,
+          timestamp: 2_000,
+        }),
+        false
+      )
+    ).toBe(true);
+    const sendToPeer = vi.fn(async () => ({ ok: true }));
+    (manager as any).sendToPeer = sendToPeer;
+
+    await (manager as any).handleStateHeadsReq(
+      745,
+      { type: 'channels', limit: 1 },
+      'peer-state-heads'
+    );
+
+    expect(sendToPeer).toHaveBeenCalledTimes(1);
+    const pageWire = sendToPeer.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(pageWire).toMatchObject({
+      k: 'state_heads_page_v3',
+      p: { more: true, nextCursor: '1' },
+    });
+    expect(wireFitsReticulum(pageWire)).toBe(true);
+    manager.close();
+  });
+
   it('rejects unsigned live event resource auth for admin-private channels', async () => {
     const authorized: unknown[] = [];
     const rejected: unknown[] = [];

@@ -9633,7 +9633,8 @@ export class ReticulumChatManager extends EventEmitter {
     channelId: string | null,
     localEvents: ReticulumChatEvent[],
     options: ReticulumChatHistoryReadOptions,
-    reason: string
+    reason: string,
+    defaultDirection: 'before' | 'after' = 'after'
   ): void {
     if (options.repairNetwork === false) return;
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId))
@@ -9644,9 +9645,18 @@ export class ReticulumChatManager extends EventEmitter {
       channelId == null
         ? RETICULUM_CHAT_ALL_CHANNELS_ID
         : normalizeReticulumChatChannelId(channelId);
-    const cursor = this.cursorForHistoryRead(localEvents, options);
+    const cursor = this.cursorForHistoryRead(
+      localEvents,
+      options,
+      defaultDirection
+    );
     const direction: 'before' | 'after' =
-      options.afterTimestamp != null ? 'after' : 'before';
+      options.beforeTimestamp != null
+        ? 'before'
+        : options.afterTimestamp != null ||
+            (localEvents.length > 0 && defaultDirection === 'after')
+          ? 'after'
+          : 'before';
     const scopeCursor = cursor
       ? `${cursor.feedTimestamp}:${cursor.eventId}`
       : 'empty';
@@ -9669,7 +9679,8 @@ export class ReticulumChatManager extends EventEmitter {
 
   private cursorForHistoryRead(
     localEvents: ReticulumChatEvent[],
-    options: ReticulumChatHistoryReadOptions
+    options: ReticulumChatHistoryReadOptions,
+    defaultDirection: 'before' | 'after' = 'after'
   ): ReticulumChatFeedCursor | null {
     if (options.beforeTimestamp != null) {
       const eventId = options.beforeEventId || localEvents[0]?.eventId || '';
@@ -9690,8 +9701,11 @@ export class ReticulumChatManager extends EventEmitter {
         feedTimestamp: options.afterTimestamp,
       };
     }
-    const oldest = localEvents[0];
-    return oldest ? this.eventCursor(oldest) : null;
+    const boundary =
+      defaultDirection === 'after'
+        ? localEvents[localEvents.length - 1]
+        : localEvents[0];
+    return boundary ? this.eventCursor(boundary) : null;
   }
 
   getChannelMetadataHistory(
@@ -9931,7 +9945,8 @@ export class ReticulumChatManager extends EventEmitter {
           channelId === RETICULUM_CHAT_ALL_CHANNELS_ID ? null : channelId,
           channelEvents,
           {},
-          'search-read'
+          'search-read',
+          'before'
         );
       }
     }
@@ -20843,7 +20858,6 @@ export class ReticulumChatManager extends EventEmitter {
         g: groupId,
         p: {
           type,
-          cursor: String(offset),
           nextCursor: more ? String(offset + count) : undefined,
           more,
           heads: pageHeads,
