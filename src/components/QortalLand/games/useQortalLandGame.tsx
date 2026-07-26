@@ -716,6 +716,14 @@ export function useQortalLandGame(options: Options) {
     }
     if (event.type === 'GAME_ENDED') {
       if (event.matchId !== matchRef.current?.matchId) return;
+      // A completed game can remain as a hidden session-idle link so the next
+      // challenge can reuse the temporary peer connection. If that retained
+      // link closes later, it is cleanup rather than a new user-visible game
+      // result. Do not resurrect the dismissed game-over dialog.
+      if (matchRef.current.phase === 'session-idle') {
+        replaceMatch(null);
+        return;
+      }
       const result = String(event.outcome || 'abandoned');
       updateMatch((value) => value && ({
         ...value,
