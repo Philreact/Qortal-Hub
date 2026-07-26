@@ -1750,7 +1750,8 @@ export const MessageItemComponent = ({
     !isOwn &&
     Boolean(myAddress) &&
     (message?.reticulumChat
-      ? message?.directMentionAuthorized === true
+      ? message?.directMentionAuthorized === true ||
+        message?.privilegedMentionAuthorized === true
       : mentionedAddresses.some(
           (address) => String(address).trim() === myAddress
         ));
@@ -1859,8 +1860,7 @@ export const MessageItemComponent = ({
     : formatTimestamp(message.timestamp);
   const hasReticulumDiscussion =
     reticulumChatEnabled && reticulumDiscussionReplyCount > 0;
-  const collapseGroupedHeader =
-    isGroupedWithPrevious && !hasReticulumDiscussion;
+  const collapseGroupedHeader = isGroupedWithPrevious;
   const isReticulumDiscussionInitialPost =
     reticulumDiscussionView &&
     String(message?.signature || '') === reticulumDiscussionRootId;
