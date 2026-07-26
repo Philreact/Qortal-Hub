@@ -959,7 +959,7 @@ const ListOfMembers = ({
           height: compact ? '100%' : '500px',
           minHeight: 0,
           boxSizing: 'border-box',
-          padding: categorizedReticulumMembers ? '8px 10px' : undefined,
+          padding: categorizedReticulumMembers ? '8px 0 8px 10px' : undefined,
           position: 'relative',
           width: '100%',
         }}
@@ -984,7 +984,11 @@ const ListOfMembers = ({
                     : MEMBER_ROW_HEIGHT
               }
               rowRenderer={rowRenderer}
-              style={{ outline: 'none' }}
+              style={{
+                boxSizing: 'border-box',
+                outline: 'none',
+                paddingRight: categorizedReticulumMembers ? 10 : undefined,
+              }}
               tabIndex={-1}
               width={width}
             />
