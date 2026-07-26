@@ -692,7 +692,10 @@ class Statement {
   }
 
   get(...args: any[]) {
-    if (this.sql.includes('FROM rchat_silences')) {
+    if (
+      this.sql.includes('FROM rchat_silences') &&
+      !this.sql.includes('FROM rchat_dm_events')
+    ) {
       const [ownerAddress, targetAddress, scopeType, scopeId] = args;
       return this.store.reticulumChatSilences.find(
         (row) =>
@@ -712,6 +715,8 @@ class Statement {
               row.conversation_id !== conversationId ||
               row.recipient_address !== recipientAddress ||
               row.sender_address === senderAddress ||
+              (this.sql.includes("event_type = 'message'") &&
+                row.event_type !== 'message') ||
               Number(row.read_at) !== 0
             ) {
               return false;
@@ -1183,6 +1188,25 @@ class Statement {
         row.updated_at = updatedAt;
       }
       return { changes: row ? 1 : 0, lastInsertRowid: 0 };
+    }
+    if (
+      this.sql.includes('UPDATE rchat_dm_events') &&
+      this.sql.includes('SET read_at')
+    ) {
+      const [readAt, conversationId, recipientAddress, upToTimestamp] = args;
+      let changes = 0;
+      for (const row of this.store.reticulumDmEvents) {
+        if (
+          row.conversation_id === conversationId &&
+          row.recipient_address === recipientAddress &&
+          Number(row.timestamp) <= Number(upToTimestamp) &&
+          Number(row.read_at) === 0
+        ) {
+          row.read_at = Math.max(Number(row.read_at), Number(readAt));
+          changes += 1;
+        }
+      }
+      return { changes, lastInsertRowid: 0 };
     }
     if (this.sql.includes('INTO rchat_dm_events')) {
       if (

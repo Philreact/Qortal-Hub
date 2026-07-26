@@ -97,6 +97,7 @@ declare global {
       getAppSettings?: () => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
@@ -109,6 +110,7 @@ declare global {
       setAppSettings?: (settings: {
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
@@ -120,6 +122,7 @@ declare global {
       }) => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
@@ -131,6 +134,7 @@ declare global {
       }>;
       onAppSettingsChanged?: (
         callback: (settings: {
+          autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
           disableAutoLockOnIdle?: boolean;
           reticulumEnabled?: boolean;
           reticulumManagedConfigEnabled?: boolean;

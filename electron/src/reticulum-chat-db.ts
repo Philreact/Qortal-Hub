@@ -2939,6 +2939,7 @@ export class ReticulumChatDatabase {
           WHERE incoming.conversation_id = ?
             AND incoming.recipient_address = ?
             AND incoming.sender_address <> ?
+            AND incoming.event_type = 'message'
             AND incoming.read_at = 0
             AND NOT EXISTS (
               SELECT 1

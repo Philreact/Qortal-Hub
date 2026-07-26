@@ -1724,12 +1724,35 @@ ipcMain.handle('miscPersistentStore:delete', async (_event, key: string) => {
 const APP_SETTINGS_FILENAME = 'app-settings.json';
 
 export type CloseAction = 'ask' | 'minimizeToTray' | 'quit';
+export type AutoLockTimeoutMinutes = 0 | 10 | 30 | 60 | 180;
+
+const AUTO_LOCK_TIMEOUT_OPTIONS: readonly AutoLockTimeoutMinutes[] = [
+  0, 10, 30, 60, 180,
+];
+const DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES: AutoLockTimeoutMinutes = 30;
+
+function normalizeAutoLockTimeoutMinutes(
+  value: unknown,
+  legacyDisabled = false
+): AutoLockTimeoutMinutes {
+  if (value == null) {
+    return legacyDisabled ? 0 : DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES;
+  }
+  const numericValue = Number(value);
+  return AUTO_LOCK_TIMEOUT_OPTIONS.includes(
+    numericValue as AutoLockTimeoutMinutes
+  )
+    ? (numericValue as AutoLockTimeoutMinutes)
+    : DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES;
+}
 
 export interface AppSettings {
   closeAction?: CloseAction;
   /** When true, skip the intro audio played on the unauthenticated startup screen. */
   disableStartupSound?: boolean;
-  /** When true, becoming idle does not automatically lock the authenticated UI. */
+  /** Minutes of inactivity before locking. Zero disables automatic locking. */
+  autoLockTimeoutMinutes?: AutoLockTimeoutMinutes;
+  /** @deprecated Compatibility for settings written before timeout selection. */
   disableAutoLockOnIdle?: boolean;
   /** Whether the Hub P2P network auto-starts on launch (default true). */
   p2pEnabled?: boolean;
@@ -1753,6 +1776,7 @@ export interface AppSettings {
 const DEFAULT_APP_SETTINGS: AppSettings = {
   closeAction: 'ask',
   disableStartupSound: false,
+  autoLockTimeoutMinutes: DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
   disableAutoLockOnIdle: false,
   p2pEnabled: !isDisabledLegacy,
   reticulumMeshUpnpEnabled: true,
@@ -1768,6 +1792,10 @@ export async function readAppSettings(): Promise<AppSettings> {
     const raw = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
     if (!raw) return { ...DEFAULT_APP_SETTINGS };
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    const autoLockTimeoutMinutes = normalizeAutoLockTimeoutMinutes(
+      parsed.autoLockTimeoutMinutes,
+      parsed.disableAutoLockOnIdle === true
+    );
     return {
       ...DEFAULT_APP_SETTINGS,
       ...parsed,
@@ -1777,7 +1805,8 @@ export async function readAppSettings(): Promise<AppSettings> {
           ? (parsed.closeAction as CloseAction)
           : DEFAULT_APP_SETTINGS.closeAction,
       disableStartupSound: parsed.disableStartupSound === true,
-      disableAutoLockOnIdle: parsed.disableAutoLockOnIdle === true,
+      autoLockTimeoutMinutes,
+      disableAutoLockOnIdle: autoLockTimeoutMinutes === 0,
       p2pEnabled: isDisabledLegacy
         ? false
         : parsed.p2pEnabled === false
@@ -1939,9 +1968,19 @@ ipcMain.handle(
   'appSettings:set',
   async (_event, partial: Partial<AppSettings>) => {
     const current = await readAppSettings();
+    const autoLockTimeoutMinutes = normalizeAutoLockTimeoutMinutes(
+      partial.autoLockTimeoutMinutes ??
+        (partial.disableAutoLockOnIdle == null
+          ? current.autoLockTimeoutMinutes
+          : partial.disableAutoLockOnIdle
+            ? 0
+            : DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES)
+    );
     const next: AppSettings = {
       ...current,
       ...partial,
+      autoLockTimeoutMinutes,
+      disableAutoLockOnIdle: autoLockTimeoutMinutes === 0,
       reticulumResourceLimitBytes: Math.max(
         RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
         Math.min(

@@ -49,7 +49,9 @@ function directEvent(
   eventId: string,
   senderAddress: string,
   recipientAddress: string,
-  timestamp: number
+  timestamp: number,
+  eventType: ReticulumDmEvent['eventType'] = 'message',
+  targetEventId?: string
 ): ReticulumDmEvent {
   const payload = `payload-${eventId}`;
   return {
@@ -60,7 +62,8 @@ function directEvent(
     senderPublicKey: `public-key-${senderAddress}`,
     senderSeq: timestamp,
     timestamp,
-    eventType: 'message',
+    eventType,
+    targetEventId,
     payload,
     payloadHash: `hash-${eventId}`,
     signature: `signature-${eventId}`,
@@ -124,6 +127,86 @@ describe('Reticulum chat silence', () => {
     db.insertEvent(groupEvent('new-peer', PEER, base + 5), false);
     summary = db.getChatSummaries(OWNER)[0];
     expect(summary.unreadCount).toBe(1);
+  });
+
+  it('counts only incoming DM messages as unread', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    databases.push(db);
+    const base = Date.now() - 10_000;
+    const incomingMessage = directEvent(
+      'incoming-message',
+      PEER,
+      OWNER,
+      base + 1
+    );
+    expect(db.insertDirectEvent(incomingMessage, false)).toBe(true);
+    expect(db.getDirectSummaries(OWNER)[0]?.unreadCount).toBe(1);
+    expect(
+      db.insertDirectEvent(
+        directEvent(
+          'incoming-reaction',
+          PEER,
+          OWNER,
+          base + 2,
+          'reaction_add',
+          incomingMessage.eventId
+        ),
+        false
+      )
+    ).toBe(true);
+    expect(db.getDirectSummaries(OWNER)[0]?.unreadCount).toBe(1);
+    expect(
+      db.insertDirectEvent(
+        directEvent(
+          'incoming-edit',
+          PEER,
+          OWNER,
+          base + 3,
+          'edit',
+          incomingMessage.eventId
+        ),
+        false
+      )
+    ).toBe(true);
+
+    expect(db.getDirectSummaries(OWNER)[0]?.unreadCount).toBe(1);
+
+    db.markDirectRead(
+      incomingMessage.conversationId,
+      OWNER,
+      incomingMessage.timestamp
+    );
+    expect(db.getDirectSummaries(OWNER)[0]?.unreadCount).toBe(0);
+
+    expect(
+      db.insertDirectEvent(
+        directEvent(
+          'incoming-reaction-remove',
+          PEER,
+          OWNER,
+          base + 4,
+          'reaction_remove',
+          incomingMessage.eventId
+        ),
+        false
+      )
+    ).toBe(true);
+    expect(db.getDirectSummaries(OWNER)[0]?.unreadCount).toBe(0);
+
+    expect(
+      db.insertDirectEvent(
+        directEvent(
+          'incoming-delete',
+          PEER,
+          OWNER,
+          base + 5,
+          'delete',
+          incomingMessage.eventId
+        ),
+        false
+      )
+    ).toBe(true);
+    expect(db.getDirectSummaries(OWNER)[0]?.unreadCount).toBe(0);
   });
 
   it('uses the actual clear time when a timed silence is ended early', () => {

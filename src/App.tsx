@@ -140,6 +140,12 @@ import type { AuthUnlockTransitionSnapshot } from './types/authTransition';
 import { openQWalletsTab } from './utils/openQWalletsTab';
 import { clearLastAuthenticatedWalletAddress } from './utils/lastAuthenticatedWallet';
 import { appLockedAtom, isIdleAtom } from './atoms/presence';
+import {
+  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
+  isAutoLockDue,
+  resolveAutoLockTimeoutMinutes,
+  type AutoLockTimeoutMinutes,
+} from './lib/autoLock';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
@@ -268,8 +274,9 @@ function App() {
 
   const [extState, setExtstate] = useAtom(extStateAtom);
   const [isAppLocked, setIsAppLocked] = useAtom(appLockedAtom);
-  const [isIdle, setIsIdle] = useAtom(isIdleAtom);
-  const [isIdleAutoLockDisabled, setIsIdleAutoLockDisabled] = useState(false);
+  const setIsIdle = useSetAtom(isIdleAtom);
+  const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
+    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
   const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
@@ -283,12 +290,18 @@ function App() {
     let cancelled = false;
     let settingsChangeReceived = false;
     const applySettings = (settings?: {
+      autoLockTimeoutMinutes?: number;
       disableAutoLockOnIdle?: boolean;
       reticulumEnabled?: boolean;
     }) => {
       if (cancelled) return;
       setReticulumEnabled(settings?.reticulumEnabled !== false);
-      setIsIdleAutoLockDisabled(settings?.disableAutoLockOnIdle === true);
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
     };
     const unsubscribe = window.electronAPI?.onAppSettingsChanged?.(
       (settings) => {
@@ -465,19 +478,57 @@ function App() {
     if (extState !== 'authenticated') {
       setIsIdle(false);
       setIsAppLocked(false);
+    }
+  }, [extState, setIsAppLocked, setIsIdle]);
+
+  useEffect(() => {
+    if (
+      extState !== 'authenticated' ||
+      !isMainWindow ||
+      isAppLocked ||
+      autoLockTimeoutMinutes === 0
+    ) {
       return;
     }
-    if (isMainWindow && isIdle && !isAppLocked && !isIdleAutoLockDisabled) {
-      setIsAppLocked(true);
-    }
-  }, [
-    extState,
-    isAppLocked,
-    isIdle,
-    isIdleAutoLockDisabled,
-    setIsAppLocked,
-    setIsIdle,
-  ]);
+
+    let lastActivityAt = Date.now();
+    const recordActivity = () => {
+      const now = Date.now();
+      if (isAutoLockDue(lastActivityAt, now, autoLockTimeoutMinutes)) {
+        lockApp();
+        return;
+      }
+      lastActivityAt = now;
+    };
+    const checkAutoLock = () => {
+      if (isAutoLockDue(lastActivityAt, Date.now(), autoLockTimeoutMinutes)) {
+        lockApp();
+      }
+    };
+    const activityEvents = [
+      'mousemove',
+      'keydown',
+      'click',
+      'touchstart',
+      'wheel',
+    ] as const;
+
+    activityEvents.forEach((eventName) =>
+      document.addEventListener(eventName, recordActivity, { passive: true })
+    );
+    window.addEventListener('focus', checkAutoLock);
+    document.addEventListener('visibilitychange', checkAutoLock);
+    const intervalId = window.setInterval(checkAutoLock, 15_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      activityEvents.forEach((eventName) =>
+        document.removeEventListener(eventName, recordActivity)
+      );
+      window.removeEventListener('focus', checkAutoLock);
+      document.removeEventListener('visibilitychange', checkAutoLock);
+    };
+  }, [autoLockTimeoutMinutes, extState, isAppLocked, lockApp]);
 
   useEffect(() => {
     if (typeof window.electronAPI?.onSystemLockRequested !== 'function') return;

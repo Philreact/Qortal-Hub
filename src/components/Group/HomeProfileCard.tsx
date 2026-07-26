@@ -95,6 +95,13 @@ import {
   HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
   HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
 } from './HomeDesktop/homeDesktopConstants';
+import {
+  AUTO_LOCK_TIMEOUT_OPTIONS,
+  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
+  normalizeAutoLockTimeoutMinutes,
+  resolveAutoLockTimeoutMinutes,
+  type AutoLockTimeoutMinutes,
+} from '../../lib/autoLock';
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
@@ -274,7 +281,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       return false;
     }
   });
-  const [isIdleAutoLockDisabled, setIsIdleAutoLockDisabled] = useState(false);
+  const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
+    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
   const [areUiAnimationsEnabled, setAreUiAnimationsEnabled] = useState(() =>
     readStoredBoolean(ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY, true)
   );
@@ -773,7 +781,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       if (revision !== appSettingsRevisionRef.current) return;
       const shouldDisableStartupSound = settings?.disableStartupSound === true;
       setIsStartupSoundDisabled(shouldDisableStartupSound);
-      setIsIdleAutoLockDisabled(settings?.disableAutoLockOnIdle === true);
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
@@ -807,7 +820,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   useEffect(() => {
     return window.electronAPI?.onAppSettingsChanged?.((settings) => {
       appSettingsRevisionRef.current += 1;
-      setIsIdleAutoLockDisabled(settings?.disableAutoLockOnIdle === true);
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
       const enabled = settings?.reticulumEnabled !== false;
       setReticulumEnabled(enabled);
       if (!enabled) setIsReticulumDetailsOpen(false);
@@ -1045,17 +1063,18 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [setInfoSnack, setOpenSnack, td]
   );
 
-  const handleToggleIdleAutoLock = useCallback(
-    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
-      const previous = isIdleAutoLockDisabled;
-      setIsIdleAutoLockDisabled(checked);
+  const handleAutoLockTimeoutChange = useCallback(
+    async (value: AutoLockTimeoutMinutes) => {
+      const previous = autoLockTimeoutMinutes;
+      setAutoLockTimeoutMinutes(value);
 
       try {
         await window.electronAPI?.setAppSettings?.({
-          disableAutoLockOnIdle: checked,
+          autoLockTimeoutMinutes: value,
+          disableAutoLockOnIdle: value === 0,
         });
       } catch {
-        setIsIdleAutoLockDisabled(previous);
+        setAutoLockTimeoutMinutes(previous);
         setInfoSnack({
           type: 'error',
           message: td(
@@ -1066,7 +1085,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         setOpenSnack(true);
       }
     },
-    [isIdleAutoLockDisabled, setInfoSnack, setOpenSnack, td]
+    [autoLockTimeoutMinutes, setInfoSnack, setOpenSnack, td]
   );
 
   const handleToggleDevLogFiltering = useCallback(
@@ -3943,10 +3962,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             letterSpacing: '0.01em',
                           }}
                         >
-                          {td(
-                            'disable_idle_auto_lock',
-                            'Disable Auto-Lock When Idle'
-                          )}
+                          {td('idle_auto_lock', 'Auto-Lock When Idle')}
                         </Typography>
                         <Typography
                           sx={{
@@ -3957,16 +3973,43 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                           }}
                         >
                           {td(
-                            'disable_idle_auto_lock_desc',
-                            'Keep the Hub unlocked when you are inactive. Manual Lock and system locking still work.'
+                            'idle_auto_lock_desc',
+                            'Choose how long the Hub waits before locking while you are inactive.'
                           )}
                         </Typography>
                       </Box>
-                      <Switch
-                        checked={isIdleAutoLockDisabled}
-                        onChange={handleToggleIdleAutoLock}
-                        sx={settingsSwitchSx}
-                      />
+                      <Select
+                        size="small"
+                        value={autoLockTimeoutMinutes}
+                        onChange={(event) =>
+                          void handleAutoLockTimeoutChange(
+                            normalizeAutoLockTimeoutMinutes(event.target.value)
+                          )
+                        }
+                        sx={{
+                          borderRadius: '10px',
+                          flexShrink: 0,
+                          fontSize: '0.82rem',
+                          minWidth: 122,
+                          '& .MuiSelect-select': { py: 0.85 },
+                        }}
+                      >
+                        {AUTO_LOCK_TIMEOUT_OPTIONS.map((minutes) => (
+                          <MenuItem key={minutes} value={minutes}>
+                            {minutes === 0
+                              ? td('idle_auto_lock_disabled', 'Disabled')
+                              : minutes < 60
+                                ? td('idle_auto_lock_minutes', '{{count}} min', {
+                                    count: minutes,
+                                  })
+                                : td(
+                                    'idle_auto_lock_hours',
+                                    minutes === 60 ? '1 hour' : '3 hours',
+                                    { count: minutes / 60 }
+                                  )}
+                          </MenuItem>
+                        ))}
+                      </Select>
                     </Box>
 
                     <Box

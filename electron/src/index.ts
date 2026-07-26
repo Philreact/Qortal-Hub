@@ -574,9 +574,9 @@ async function setupMultiInstanceUserData(
   const initialAppSettings = await readAppSettings();
   reticulumGloballyEnabled = initialAppSettings.reticulumEnabled !== false;
   automaticAppLockDisabled =
-    initialAppSettings.disableAutoLockOnIdle === true;
+    initialAppSettings.autoLockTimeoutMinutes === 0;
   subscribeToAppSettingsChanges((settings) => {
-    automaticAppLockDisabled = settings.disableAutoLockOnIdle === true;
+    automaticAppLockDisabled = settings.autoLockTimeoutMinutes === 0;
     return applyGlobalReticulumSetting(settings.reticulumEnabled !== false);
   });
   await startAppSettingsWatcher();

@@ -448,6 +448,7 @@ try {
     setAppSettings: (settings: {
       closeAction?: 'ask' | 'minimizeToTray' | 'quit';
       disableStartupSound?: boolean;
+      autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
       disableAutoLockOnIdle?: boolean;
       p2pEnabled?: boolean;
       legacyPublicStunFallback?: boolean;
@@ -459,6 +460,7 @@ try {
     }) => ipcRenderer.invoke('appSettings:set', settings),
     onAppSettingsChanged: (
       callback: (settings: {
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
         disableAutoLockOnIdle?: boolean;
         reticulumEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;

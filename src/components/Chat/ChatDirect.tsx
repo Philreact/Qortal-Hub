@@ -1406,6 +1406,7 @@ export const ChatDirect = ({
           setNewChat(null);
         }
         return {
+          clearQueueOnSuccess: true,
           recipient: directTo,
           timestamp: Date.now(),
           reticulumDirect: true,
