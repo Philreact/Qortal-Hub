@@ -7538,6 +7538,33 @@ export class ReticulumChatDatabase {
       .map((row) => this.missingRangeRowToState(row));
   }
 
+  getNextMissingRangeAttemptAt(groupIds: number[]): number | null {
+    const groups = new Set(
+      groupIds.filter((groupId) => Number.isInteger(groupId) && groupId > 0)
+    );
+    if (groups.size === 0) return null;
+    const rows = this.dedupeMissingRangeRows([
+      ...(this.stmtGetAllMissingRanges.all() as ReticulumChatMissingRangeRow[]),
+      ...[...this.memoryMissingRanges.values()].map((range) =>
+        this.missingRangeStateToRow(range)
+      ),
+    ]);
+    let nextAttemptAt = Number.POSITIVE_INFINITY;
+    for (const row of rows) {
+      if (
+        !groups.has(Number(row.group_id)) ||
+        !String(row.preferred_peer || '').trim()
+      ) {
+        continue;
+      }
+      const candidate = Math.max(0, Math.floor(Number(row.next_attempt_at)));
+      if (Number.isFinite(candidate)) {
+        nextAttemptAt = Math.min(nextAttemptAt, candidate);
+      }
+    }
+    return Number.isFinite(nextAttemptAt) ? nextAttemptAt : null;
+  }
+
   getAuthorMaxSeq(
     groupId: number,
     authorAddress: string,
@@ -10578,6 +10605,8 @@ export class ReticulumChatDatabase {
         next_attempt_at INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
       );
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_stream_ranges_ready
+        ON rchat_missing_stream_ranges (next_attempt_at, group_id);
       DROP INDEX IF EXISTS reticulum_chat_author_seq_idx;
       DROP INDEX IF EXISTS idx_rchat_event_headers_author_seq;
       DROP INDEX IF EXISTS idx_reticulum_chat_events_author_seq;

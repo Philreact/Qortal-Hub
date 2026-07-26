@@ -16034,6 +16034,352 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('does not postpone an existing deferred author-gap retry when the gap is rediscovered', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const [first, latest] = signedAuthorEvents([
+      {
+        eventId: 'event-repeat-gap-first',
+        groupId: 57,
+        authorSeq: 1,
+        timestamp: 10_001,
+      },
+      {
+        eventId: 'event-repeat-gap-latest',
+        groupId: 57,
+        authorSeq: 3,
+        timestamp: 10_003,
+      },
+    ]);
+    expect((manager as any).db.insertEvent(first, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latest, true)).toBe(true);
+    const range = {
+      a: first.authorAddress,
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 2,
+      to: 2,
+    };
+
+    expect(
+      (manager as any).recordAuthorGapRanges(57, 'peer-gap', [range], 'first')
+    ).toBe(1);
+    expect(
+      (manager as any).db.getMissingRange(
+        57,
+        first.authorAddress,
+        TEST_AUTHOR_STREAM_ID,
+        2,
+        2
+      )?.nextAttemptAt
+    ).toBe(160_000);
+
+    now = 120_000;
+    expect(
+      (manager as any).recordAuthorGapRanges(57, 'peer-gap', [range], 'repeat')
+    ).toBe(1);
+    expect(
+      (manager as any).db.getMissingRange(
+        57,
+        first.authorAddress,
+        TEST_AUTHOR_STREAM_ID,
+        2,
+        2
+      )?.nextAttemptAt
+    ).toBe(160_000);
+    (manager as any).processBackgroundAuthorGapRepair();
+    expect((manager as any).backgroundAuthorGapRepairTimer).not.toBeNull();
+    expect((manager as any).backgroundAuthorGapRepairDueAt).toBe(160_000);
+    (manager as any).scheduleBackgroundAuthorGapRepair(10_000);
+    expect((manager as any).backgroundAuthorGapRepairDueAt).toBe(130_000);
+    manager.close();
+  });
+
+  it('does not let an unrelated author gap suppress a fresh digest repair', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push(wire);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const [first, latest] = signedAuthorEvents([
+      {
+        eventId: 'event-digest-gap-first',
+        groupId: 59,
+        authorSeq: 1,
+        timestamp: 10_001,
+      },
+      {
+        eventId: 'event-digest-gap-latest',
+        groupId: 59,
+        authorSeq: 3,
+        timestamp: 10_003,
+      },
+    ]);
+    expect((manager as any).db.insertEvent(first, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latest, true)).toBe(true);
+    const localDigest = (manager as any).buildGroupDigestSnapshot(59);
+    direct.length = 0;
+
+    const stats = (manager as any).processGroupDigestRepair({
+      key: 'peer-gap:59',
+      peerHash: 'peer-gap',
+      providerPeerHash: 'peer-gap',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: localDigest.latest,
+      remoteDigestHash: 'f'.repeat(64),
+      enqueuedAt: 100_000,
+      coalescedCount: 0,
+    });
+    await flushQueuedWork();
+
+    expect(stats).toMatchObject({
+      authorGapRequested: true,
+      metadataRepairRequested: true,
+    });
+    expect(
+      direct.some(
+        (wire) => wire.k === 'feed_req' && wire.c === '*' && wire.p === 'm'
+      )
+    ).toBe(true);
+    expect(
+      (manager as any).db.getMissingRange(
+        59,
+        first.authorAddress,
+        TEST_AUTHOR_STREAM_ID,
+        2,
+        2
+      )
+    ).toMatchObject({ nextAttemptAt: 160_000 });
+    manager.close();
+  });
+
+  it('suppresses only repeated metadata repair after its page makes no progress', async () => {
+    const dbPath = tempDbPath();
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        acceptReticulumChatResourceDetailed: async () => ({
+          ok: true as const,
+        }),
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const event = signedEvent({
+      eventId: 'event-digest-no-progress-known',
+      groupId: 59,
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const localDigest = (manager as any).buildGroupDigestSnapshot(59);
+    const remoteDigestHash = 'f'.repeat(64);
+    const fingerprint = (manager as any).digestRepairFingerprint(
+      remoteDigestHash,
+      localDigest.digestHash,
+      localDigest.latest
+    );
+    const page = {
+      v: 1,
+      g: 59,
+      c: '*',
+      d: 'before',
+      p: 'm',
+      more: true,
+      start: { id: event.eventId, ts: event.timestamp },
+      end: { id: event.eventId, ts: event.timestamp },
+      wh: (manager as any).db.computeWindowHash([event]),
+      events: [event],
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto
+      .createHash('sha256')
+      .update(blob, 'utf8')
+      .digest('hex');
+    const transferId = 'digest-no-progress-direct-page';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).directHistoryPageRequests.set(transferId, {
+      transferId,
+      groupId: 59,
+      channelId: '*',
+      direction: 'before',
+      priority: 'metadata',
+      pageHash: '',
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: 100,
+      start: { eventId: event.eventId, feedTimestamp: event.timestamp },
+      sourcePeerHash: 'peer-digest',
+      requestedAt: 100_000,
+      digestRepairFingerprint: fingerprint,
+    });
+
+    (manager as any).handleEventPageOffer(
+      {
+        transferId,
+        groupId: 59,
+        channelId: '*',
+        direction: 'before',
+        priority: 'metadata',
+        pageHash,
+        sizeBytes: Buffer.byteLength(blob, 'utf8'),
+        eventCount: 1,
+        hasMore: true,
+      },
+      'peer-digest'
+    );
+    await flushQueuedWork();
+    expect(
+      (manager as any).eventPageOffers.get(transferId)?.digestRepairFingerprint
+    ).toBe(fingerprint);
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-digest',
+    });
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        'peer-digest',
+        59,
+        fingerprint
+      )
+    ).toBe(true);
+
+    const stats = (manager as any).processGroupDigestRepair({
+      key: 'peer-digest:59',
+      peerHash: 'peer-digest',
+      providerPeerHash: 'peer-digest',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: localDigest.latest,
+      remoteDigestHash,
+      enqueuedAt: 100_000,
+      coalescedCount: 0,
+    });
+    expect(stats.metadataRepairRequested).toBe(false);
+    expect(stats.newestRepairRequested).toBe(true);
+    manager.close();
+  });
+
+  it('correlates fallback metadata page offers with their pending digest repair', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed: async () => ({
+          ok: true as const,
+        }),
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const fingerprint = 'digest-repair-fingerprint';
+    (manager as any).trackPendingDigestRepairFingerprint(
+      'peer-fallback',
+      59,
+      fingerprint
+    );
+
+    (manager as any).handleEventPageOffer(
+      {
+        transferId: 'fallback-metadata-page',
+        groupId: 59,
+        channelId: '*',
+        direction: 'before',
+        priority: 'metadata',
+        pageHash: 'a'.repeat(64),
+        sizeBytes: 100,
+        eventCount: 1,
+      },
+      'peer-fallback'
+    );
+
+    expect(
+      (manager as any).eventPageOffers.get('fallback-metadata-page')
+        ?.digestRepairFingerprint
+    ).toBe(fingerprint);
+    manager.close();
+  });
+
+  it('invalidates digest no-progress suppression when local digest state changes', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+    });
+    const latest = { eventId: 'event-latest', feedTimestamp: 90_000 };
+    const original = (manager as any).digestRepairFingerprint(
+      'a'.repeat(64),
+      'b'.repeat(64),
+      latest
+    );
+    const afterLocalProgress = (manager as any).digestRepairFingerprint(
+      'a'.repeat(64),
+      'c'.repeat(64),
+      latest
+    );
+
+    (manager as any).markDigestRepairNoProgress('peer-gap', 59, original);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        'peer-gap',
+        59,
+        original
+      )
+    ).toBe(true);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        'peer-gap',
+        59,
+        afterLocalProgress
+      )
+    ).toBe(false);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        'peer-gap',
+        59,
+        original
+      )
+    ).toBe(true);
+    manager.close();
+  });
+
   it('verifies a targeted author tree path before deferring its history gap', async () => {
     let now = 200_000;
     const localDirect: Array<{ peer: string; wire: ReticulumChatWire }> = [];
