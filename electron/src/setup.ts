@@ -3642,7 +3642,8 @@ ipcMain.on('presence:unsubscribe', (event) => {
 const chatEventSubscribers = new Set<Electron.WebContents>();
 const chatTypingSubscribers = new Set<Electron.WebContents>();
 const chatReadSubscribers = new Set<Electron.WebContents>();
-const reticulumChatEventSubscribers = new Set<Electron.WebContents>();
+const reticulumChatEventSubscription =
+  createRefcountedSubscriberSet<Electron.WebContents>();
 const reticulumChatReadinessSubscribers = new Set<Electron.WebContents>();
 const reticulumChatTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandStateSubscription =
@@ -3650,7 +3651,8 @@ const reticulumChatLandStateSubscription =
 const reticulumChatLandChatSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandActionSubscribers = new Set<Electron.WebContents>();
 const reticulumChatLandCallSubscribers = new Set<Electron.WebContents>();
-const reticulumChatSummarySubscribers = new Set<Electron.WebContents>();
+const reticulumChatSummarySubscription =
+  createRefcountedSubscriberSet<Electron.WebContents>();
 const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
@@ -3694,13 +3696,13 @@ export function attachReticulumChatListeners(
   if (!manager || reticulumChatListenersAttached) return;
   reticulumChatListenersAttached = true;
 
-  manager.on('event', (payload: unknown) =>
-    broadcastToSet(
-      reticulumChatEventSubscribers,
-      'reticulumChat:event',
-      payload
-    )
-  );
+  manager.on('event', (payload: unknown) => {
+    for (const wc of reticulumChatEventSubscription.subscribers) {
+      if (sendToRenderer(wc, 'reticulumChat:event', payload) === 'destroyed') {
+        reticulumChatEventSubscription.drop(wc);
+      }
+    }
+  });
 
   manager.on('typing', (payload: unknown) =>
     broadcastToSet(
@@ -3744,13 +3746,16 @@ export function attachReticulumChatListeners(
     )
   );
 
-  manager.on('summaryChanged', (payload: unknown) =>
-    broadcastToSet(
-      reticulumChatSummarySubscribers,
-      'reticulumChat:summaryChanged',
-      payload
-    )
-  );
+  manager.on('summaryChanged', (payload: unknown) => {
+    for (const wc of reticulumChatSummarySubscription.subscribers) {
+      if (
+        sendToRenderer(wc, 'reticulumChat:summaryChanged', payload) ===
+        'destroyed'
+      ) {
+        reticulumChatSummarySubscription.drop(wc);
+      }
+    }
+  });
 
   manager.on('directEvent', (payload: unknown) =>
     broadcastToSet(
@@ -5554,10 +5559,10 @@ ipcMain.handle(
 );
 
 ipcMain.on('reticulumChat:event:subscribe', (event) => {
-  reticulumChatEventSubscribers.add(event.sender);
+  reticulumChatEventSubscription.subscribe(event.sender);
 });
 ipcMain.on('reticulumChat:event:unsubscribe', (event) => {
-  reticulumChatEventSubscribers.delete(event.sender);
+  reticulumChatEventSubscription.unsubscribe(event.sender);
 });
 ipcMain.on('reticulumChat:readinessChanged:subscribe', (event) => {
   reticulumChatReadinessSubscribers.add(event.sender);
@@ -5596,10 +5601,10 @@ ipcMain.on('reticulumChat:landCall:unsubscribe', (event) => {
   reticulumChatLandCallSubscribers.delete(event.sender);
 });
 ipcMain.on('reticulumChat:summaryChanged:subscribe', (event) => {
-  reticulumChatSummarySubscribers.add(event.sender);
+  reticulumChatSummarySubscription.subscribe(event.sender);
 });
 ipcMain.on('reticulumChat:summaryChanged:unsubscribe', (event) => {
-  reticulumChatSummarySubscribers.delete(event.sender);
+  reticulumChatSummarySubscription.unsubscribe(event.sender);
 });
 ipcMain.on('reticulumChat:directEvent:subscribe', (event) => {
   reticulumDirectEventSubscribers.add(event.sender);
