@@ -1,5 +1,6 @@
 import {
   TIME_DAYS_1_IN_MILLISECONDS,
+  TIME_MONTHS_1_IN_MILLISECONDS,
   TIME_WEEKS_1_IN_MILLISECONDS,
 } from '../../constants/constants';
 
@@ -25,6 +26,10 @@ export const RETICULUM_MESSAGE_EXPIRY_OPTIONS: readonly ReticulumMessageExpiryOp
     {
       durationMs: TIME_WEEKS_1_IN_MILLISECONDS,
       label: '1 week',
+    },
+    {
+      durationMs: TIME_MONTHS_1_IN_MILLISECONDS,
+      label: '1 month',
     },
   ];
 

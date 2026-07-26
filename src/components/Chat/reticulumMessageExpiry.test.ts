@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   TIME_DAYS_1_IN_MILLISECONDS,
+  TIME_MONTHS_1_IN_MILLISECONDS,
   TIME_WEEKS_1_IN_MILLISECONDS,
 } from '../../constants/constants';
 import {
@@ -17,6 +18,7 @@ describe('Reticulum message expiry', () => {
       expect.objectContaining({ durationMs: 2 * TIME_DAYS_1_IN_MILLISECONDS }),
       expect.objectContaining({ durationMs: 3 * TIME_DAYS_1_IN_MILLISECONDS }),
       expect.objectContaining({ durationMs: TIME_WEEKS_1_IN_MILLISECONDS }),
+      expect.objectContaining({ durationMs: TIME_MONTHS_1_IN_MILLISECONDS }),
     ]);
   });
 
@@ -60,6 +62,9 @@ describe('Reticulum message expiry', () => {
     expect(formatReticulumExpiryDuration(undefined)).toBe('No expiry');
     expect(formatReticulumExpiryDuration(TIME_WEEKS_1_IN_MILLISECONDS)).toBe(
       '1 week'
+    );
+    expect(formatReticulumExpiryDuration(TIME_MONTHS_1_IN_MILLISECONDS)).toBe(
+      '1 month'
     );
     expect(formatReticulumExpiryDuration(12 * 60 * 60 * 1_000)).toBe(
       '12 hours'

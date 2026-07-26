@@ -48,6 +48,7 @@ import {
   MIN_REQUIRED_QORTS,
   PUBLIC_NOTIFICATION_CODE_FIRST_SECRET_KEY,
   TIME_DAYS_1_IN_MILLISECONDS,
+  TIME_MONTHS_1_IN_MILLISECONDS,
   TIME_MINUTES_2_IN_MILLISECONDS,
 } from '../../constants/constants';
 import { useMessageQueue } from '../../messaging/MessageQueueContext.tsx';
@@ -864,9 +865,7 @@ function ReticulumSortableChannelButton({
   const hasAutoExpiry =
     Number.isFinite(expiryDurationMs) && expiryDurationMs > 0;
   const autoDeleteTooltip = hasAutoExpiry
-    ? `Messages Auto-Delete in ${reticulumChannelAutoDeleteLabel(
-        expiryDurationMs
-      )}`
+    ? `Messages Auto-Delete in ${reticulumChannelAutoDeleteLabel(expiryDurationMs)}`
     : '';
 
   return (
@@ -1043,11 +1042,7 @@ function ReticulumSortableChannelButton({
                 px: replyCount > 0 ? 0.5 : 0,
               }}
             >
-              {replyCount > 0
-                ? replyCount > 99
-                  ? '99+'
-                  : replyCount
-                : null}
+              {replyCount > 0 ? (replyCount > 99 ? '99+' : replyCount) : null}
             </Box>
           </Tooltip>
         )}
@@ -1469,7 +1464,10 @@ export const ChatGroup = ({
   const [reticulumAdminAnchorEl, setReticulumAdminAnchorEl] =
     useState<HTMLElement | null>(null);
   const [reticulumAdminAnchorPosition, setReticulumAdminAnchorPosition] =
-    useState<{ left: number; top: number } | null>(null);
+    useState<{
+      left: number;
+      top: number;
+    } | null>(null);
   const reticulumAdminPopoverRef = useRef<HTMLDivElement | null>(null);
   const [isDeleteImage, setIsDeleteImage] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
@@ -1579,7 +1577,7 @@ export const ChatGroup = ({
   const [
     newReticulumChannelExpiryDurationMs,
     setNewReticulumChannelExpiryDurationMs,
-  ] = useState<number | undefined>(undefined);
+  ] = useState<number | undefined>(TIME_MONTHS_1_IN_MILLISECONDS);
   const [reticulumChannelSettingsOpen, setReticulumChannelSettingsOpen] =
     useState(false);
   const [editingReticulumChannel, setEditingReticulumChannel] =
@@ -1640,17 +1638,26 @@ export const ChatGroup = ({
   const [collapsedReticulumCategoryIds, setCollapsedReticulumCategoryIds] =
     useState<Set<string>>(() => new Set());
   const [reticulumCategoryMenuPosition, setReticulumCategoryMenuPosition] =
-    useState<{ mouseX: number; mouseY: number } | null>(null);
+    useState<{
+      mouseX: number;
+      mouseY: number;
+    } | null>(null);
   const [reticulumCategoryMenuCategory, setReticulumCategoryMenuCategory] =
     useState<ReticulumGroupCategory | null>(null);
   const [reticulumChannelMenuPosition, setReticulumChannelMenuPosition] =
-    useState<{ mouseX: number; mouseY: number } | null>(null);
+    useState<{
+      mouseX: number;
+      mouseY: number;
+    } | null>(null);
   const [reticulumChannelMenuChannel, setReticulumChannelMenuChannel] =
     useState<ReticulumGroupChannel | null>(null);
   const [
     reticulumChannelAreaMenuPosition,
     setReticulumChannelAreaMenuPosition,
-  ] = useState<{ mouseX: number; mouseY: number } | null>(null);
+  ] = useState<{
+    mouseX: number;
+    mouseY: number;
+  } | null>(null);
   const [reticulumLargeImageChoice, setReticulumLargeImageChoice] = useState<{
     file: File;
     filePath: string;
@@ -2294,9 +2301,11 @@ export const ChatGroup = ({
   );
   const selectedReticulumChannelExpiryDurationMs =
     selectedReticulumChannel?.expiryDurationMs ??
-    (selectedReticulumChannelId === QORTAL_LAND_RETICULUM_CHANNEL_ID
-      ? TIME_DAYS_1_IN_MILLISECONDS
-      : undefined);
+    (selectedReticulumChannelId === DEFAULT_RETICULUM_CHANNEL_ID
+      ? TIME_MONTHS_1_IN_MILLISECONDS
+      : selectedReticulumChannelId === QORTAL_LAND_RETICULUM_CHANNEL_ID
+        ? TIME_DAYS_1_IN_MILLISECONDS
+        : undefined);
 
   useEffect(() => {
     setReticulumMessageExpiryDurationMs(undefined);
@@ -2710,9 +2719,7 @@ export const ChatGroup = ({
         : 'Relevant';
   const reticulumSearchDateFilterLabel =
     reticulumSearchAfterDate || reticulumSearchBeforeDate
-      ? `${reticulumSearchAfterDate || 'any'} -> ${
-          reticulumSearchBeforeDate || 'any'
-        }`
+      ? `${reticulumSearchAfterDate || 'any'} -> ${reticulumSearchBeforeDate || 'any'}`
       : 'Any time';
   const reticulumSearchVisiblePageNumbers = useMemo(() => {
     const pages = new Set<number>([0, reticulumSearchPage]);
@@ -6496,9 +6503,7 @@ export const ChatGroup = ({
   useEffect(() => {
     if (!reticulumChatEnabled) return;
     const openSearch = (event: any) => {
-      const shouldToggle = Boolean(
-        event?.detail?.toggle ?? event?.toggle
-      );
+      const shouldToggle = Boolean(event?.detail?.toggle ?? event?.toggle);
       setReticulumSearchOpen((open) => (shouldToggle ? !open : true));
     };
     subscribeToEvent('openReticulumChatSearch', openSearch);
@@ -7130,7 +7135,7 @@ export const ChatGroup = ({
     setNewReticulumChannelCategoryId(categoryId);
     setNewReticulumChannelName('');
     setNewReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
-    setNewReticulumChannelExpiryDurationMs(undefined);
+    setNewReticulumChannelExpiryDurationMs(TIME_MONTHS_1_IN_MILLISECONDS);
     setNewReticulumChannelError('');
     setIsCreateReticulumChannelOpen(true);
   }, []);
@@ -7141,7 +7146,7 @@ export const ChatGroup = ({
     setNewReticulumChannelError('');
     setNewReticulumChannelCategoryId('');
     setNewReticulumChannelAccessMode(RETICULUM_CHANNEL_ACCESS_REGULAR);
-    setNewReticulumChannelExpiryDurationMs(undefined);
+    setNewReticulumChannelExpiryDurationMs(TIME_MONTHS_1_IN_MILLISECONDS);
     setReticulumNameEmojiPicker(null);
   }, []);
 
@@ -8049,7 +8054,7 @@ export const ChatGroup = ({
   );
   const isEditingReticulumSystemChannel = Boolean(
     editingReticulumChannel &&
-      isReticulumSystemChannelId(editingReticulumChannel.channelId)
+    isReticulumSystemChannelId(editingReticulumChannel.channelId)
   );
   const handleReticulumChannelTypeKeyDown = (
     event: ReactKeyboardEvent<HTMLElement>,
@@ -9031,10 +9036,7 @@ export const ChatGroup = ({
               display: 'flex',
               flex: 1,
               flexDirection: 'column',
-              mr:
-                reticulumChatEnabled && membersPanelOpen
-                  ? '280px'
-                  : 0,
+              mr: reticulumChatEnabled && membersPanelOpen ? '280px' : 0,
               minHeight: 0,
               minWidth: 0,
               position: 'relative',
@@ -9648,10 +9650,7 @@ export const ChatGroup = ({
                 sx={{
                   alignItems: 'center',
                   backgroundColor: alpha(theme.palette.primary.main, 0.2),
-                  border: `2px solid ${alpha(
-                    theme.palette.primary.light,
-                    0.72
-                  )}`,
+                  border: `2px solid ${alpha(theme.palette.primary.light, 0.72)}`,
                   bottom: 0,
                   display: 'flex',
                   justifyContent: 'center',
@@ -9669,10 +9668,7 @@ export const ChatGroup = ({
                       theme.palette.background.paper,
                       0.92
                     ),
-                    border: `1px solid ${alpha(
-                      theme.palette.primary.light,
-                      0.68
-                    )}`,
+                    border: `1px solid ${alpha(theme.palette.primary.light, 0.68)}`,
                     borderRadius: '8px',
                     boxShadow: '0 10px 28px rgba(0, 0, 0, 0.28)',
                     color: theme.palette.text.primary,
@@ -9921,10 +9917,7 @@ export const ChatGroup = ({
                     sx={{
                       alignItems: 'center',
                       backgroundColor: alpha(theme.palette.common.black, 0.12),
-                      border: `1px solid ${alpha(
-                        theme.palette.common.white,
-                        0.12
-                      )}`,
+                      border: `1px solid ${alpha(theme.palette.common.white, 0.12)}`,
                       borderRadius: '4px',
                       display: 'flex',
                       gap: 0.5,
@@ -10343,10 +10336,7 @@ export const ChatGroup = ({
                                 theme.palette.common.black,
                                 0.18
                               ),
-                              border: `1px solid ${alpha(
-                                theme.palette.common.white,
-                                0.1
-                              )}`,
+                              border: `1px solid ${alpha(theme.palette.common.white, 0.1)}`,
                               borderRadius: '6px',
                               color: theme.palette.text.primary,
                               display: 'flex',
@@ -10546,9 +10536,7 @@ export const ChatGroup = ({
       <ReticulumLargeImageDialog
         open={Boolean(reticulumLargeImageChoice)}
         onClose={closeReticulumLargeImageChoice}
-        fileSize={formatReticulumFileSize(
-          reticulumLargeImageChoice?.file.size
-        )}
+        fileSize={formatReticulumFileSize(reticulumLargeImageChoice?.file.size)}
         loading={isCompressingReticulumImage}
         onCompress={useReticulumCompressedImage}
         onUseAsAttachment={useReticulumImageAsAttachment}
@@ -11231,7 +11219,7 @@ export const ChatGroup = ({
                               )
                             : disabled
                               ? alpha(theme.palette.text.primary, 0.025)
-                            : 'background.default',
+                              : 'background.default',
                           borderColor: selected
                             ? RETICULUM_ACTIVE_BLUE
                             : 'rgba(0, 0, 0, 0.72)',
@@ -11246,8 +11234,7 @@ export const ChatGroup = ({
                           borderRadius:
                             index === 0
                               ? '9px 0 0 9px'
-                              : index ===
-                                  reticulumChannelTypeOptions.length - 1
+                              : index === reticulumChannelTypeOptions.length - 1
                                 ? '0 9px 9px 0'
                                 : 0,
                           borderTop: 'none',
@@ -11291,13 +11278,7 @@ export const ChatGroup = ({
                           },
                           zIndex: selected ? 1 : 0,
                         }}
-                        tabIndex={
-                          disabled
-                            ? -1
-                            : selected
-                              ? 0
-                              : -1
-                        }
+                        tabIndex={disabled ? -1 : selected ? 0 : -1}
                       >
                         {selected && (
                           <CheckCircleRoundedIcon

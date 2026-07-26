@@ -29,6 +29,7 @@ import {
   RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
   RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+  RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
   normalizeReticulumChatAuthorStreamId,
@@ -3636,7 +3637,8 @@ export function metadataSnapshotHasConsistentRevisions(
       isReticulumChatBuiltInChannelId(channel.channelId) &&
       (channel.writeMode !== RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS ||
         channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS)
-    ) return false;
+    )
+      return false;
     if (
       !Number.isInteger(channel.writeModeUpdatedAt) ||
       channel.writeModeUpdatedAt < 0
@@ -3654,9 +3656,10 @@ export function metadataSnapshotHasConsistentRevisions(
         channel.channelId,
         channel.expiryDurationMs
       );
-    if (channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
-      if (channel.expiryDurationMs != null) return false;
-    } else if (channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID) {
+    if (
+      channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+      channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
+    ) {
       if (channel.expiryDurationMs !== canonicalExpiryDurationMs) return false;
     }
     return (
@@ -3736,9 +3739,10 @@ export function metadataSnapshotHasConsistentRevisions(
         writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
         readMode: RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS,
         writeModeUpdatedAt: 0,
-        ...(channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID
-          ? { expiryDurationMs: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS }
-          : {}),
+        expiryDurationMs:
+          channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+            ? RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS
+            : RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
         createdBy: '',
         createdAt: 0,
         updatedAt: 0,
@@ -8613,9 +8617,7 @@ export class ReticulumChatManager extends EventEmitter {
             movement,
             afk,
             dnd,
-            ...(voiceEnabled || voiceMuted
-              ? { voiceEnabled, voiceMuted }
-              : {}),
+            ...(voiceEnabled || voiceMuted ? { voiceEnabled, voiceMuted } : {}),
             skinId,
             timestamp,
           })
@@ -12193,7 +12195,9 @@ export class ReticulumChatManager extends EventEmitter {
         [],
         [],
         this.landStateForwardingRevision,
-        { startIfNeeded: false }
+        {
+          startIfNeeded: false,
+        }
       );
     }
   }
@@ -18207,18 +18211,16 @@ export class ReticulumChatManager extends EventEmitter {
         : undefined
       : existing?.description;
     const isBuiltInChannel = isReticulumChatBuiltInChannelId(channelId);
-    const writeMode: ReticulumGroupChannelWriteMode =
-      isBuiltInChannel
-        ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
-        : data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
+    const writeMode: ReticulumGroupChannelWriteMode = isBuiltInChannel
+      ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
+      : data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
         ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS
         : data.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
           ? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS
           : (existing?.writeMode ?? RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS);
-    const readMode: ReticulumGroupChannelReadMode =
-      isBuiltInChannel
-        ? RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
-        : data.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
+    const readMode: ReticulumGroupChannelReadMode = isBuiltInChannel
+      ? RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
+      : data.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
         ? RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS
         : data.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
           ? RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
@@ -19262,13 +19264,15 @@ export class ReticulumChatManager extends EventEmitter {
     const channelsById = new Map(
       allChannels.map((channel) => [channel.channelId, channel])
     );
-    const revisions = this.db.getMetadataEntityRevisions(groupId).map(
-      (revision) => {
+    const revisions = this.db
+      .getMetadataEntityRevisions(groupId)
+      .map((revision) => {
         if (
           revision.entityType !== 'channel' ||
           !isReticulumChatBuiltInChannelId(revision.entityId) ||
           revision.deleted
-        ) return revision;
+        )
+          return revision;
         const channel = channelsById.get(revision.entityId);
         return channel
           ? {
@@ -19280,19 +19284,18 @@ export class ReticulumChatManager extends EventEmitter {
               ),
             }
           : revision;
-      }
-    );
+      });
     const activeRevisionKeys = new Set(
       revisions
         .filter((revision) => !revision.deleted)
         .map((revision) => `${revision.entityType}:${revision.entityId}`)
     );
     const channels = allChannels.filter(
-        (channel) =>
-          channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
-          channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID ||
-          activeRevisionKeys.has(`channel:${channel.channelId}`)
-      );
+      (channel) =>
+        channel.channelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID ||
+        channel.channelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID ||
+        activeRevisionKeys.has(`channel:${channel.channelId}`)
+    );
     const categories = this.db
       .getCategories(groupId)
       .filter((category) =>
@@ -23157,10 +23160,12 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     for (const [requestId, expiresAt] of this.recentLocalIdentityRequestIds) {
-      if (expiresAt <= now) this.recentLocalIdentityRequestIds.delete(requestId);
+      if (expiresAt <= now)
+        this.recentLocalIdentityRequestIds.delete(requestId);
     }
     if (
-      this.recentLocalIdentityRequestIds.size > RETICULUM_CHAT_IDENTITY_ROUTE_MAX
+      this.recentLocalIdentityRequestIds.size >
+      RETICULUM_CHAT_IDENTITY_ROUTE_MAX
     ) {
       const excess =
         this.recentLocalIdentityRequestIds.size -

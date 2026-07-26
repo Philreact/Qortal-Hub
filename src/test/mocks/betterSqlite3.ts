@@ -41,9 +41,13 @@ class Statement {
   all(...args: any[]) {
     const pragmaMatch = this.sql.match(/PRAGMA\s+table_info\(([^)]+)\)/i);
     if (pragmaMatch) {
-      const tableName = pragmaMatch[1]?.trim().replace(/^["'`]|["'`]$/g, '') ?? '';
+      const tableName =
+        pragmaMatch[1]?.trim().replace(/^["'`]|["'`]$/g, '') ?? '';
       return [...(this.store.schema.get(tableName) ?? new Set<string>())].map(
-        (name, cid) => ({ cid, name })
+        (name, cid) => ({
+          cid,
+          name,
+        })
       );
     }
     if (this.sql.includes('FROM rchat_author_sequence_leases')) {
@@ -52,7 +56,10 @@ class Statement {
         for (const row of this.store.reticulumChatAuthorSequenceLeases) {
           owners.set(row.owner_id, row.owner_pid);
         }
-        return [...owners].map(([owner_id, owner_pid]) => ({ owner_id, owner_pid }));
+        return [...owners].map(([owner_id, owner_pid]) => ({
+          owner_id,
+          owner_pid,
+        }));
       }
       return [...this.store.reticulumChatAuthorSequenceLeases];
     }
@@ -76,8 +83,7 @@ class Statement {
       const limit = Math.max(1, Number(args[0]) || 200);
       return this.store.reticulumPublicGroupActivity
         .filter(
-          (row) =>
-            row.local_state_json != null || Number(row.observed_at) > 0
+          (row) => row.local_state_json != null || Number(row.observed_at) > 0
         )
         .sort(
           (a, b) =>
@@ -171,19 +177,26 @@ class Statement {
           .sort(
             (a, b) =>
               Number(b.to_seq) - Number(a.to_seq) ||
-              String(a.author_address).localeCompare(String(b.author_address)) ||
+              String(a.author_address).localeCompare(
+                String(b.author_address)
+              ) ||
               Number(b.from_seq) - Number(a.from_seq)
           )
           .slice(0, Number(limit) || undefined);
       }
-      if (this.sql.includes('author_seq >= ?') && this.sql.includes('author_seq <= ?')) {
-        const [rangeGroupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
+      if (
+        this.sql.includes('author_seq >= ?') &&
+        this.sql.includes('author_seq <= ?')
+      ) {
+        const [rangeGroupId, authorAddress, authorStreamId, fromSeq, toSeq] =
+          args;
         return this.store.reticulumChatEventHeaders
           .filter(
             (row) =>
               row.group_id === rangeGroupId &&
               row.author_address === authorAddress &&
-              String(row.author_stream_id || '') === String(authorStreamId || '') &&
+              String(row.author_stream_id || '') ===
+                String(authorStreamId || '') &&
               Number(row.author_seq) >= Number(fromSeq) &&
               Number(row.author_seq) <= Number(toSeq)
           )
@@ -213,7 +226,10 @@ class Statement {
               Number(b.timestamp) - Number(a.timestamp) ||
               String(b.event_id).localeCompare(String(a.event_id))
           )
-          .slice(Number(offset) || 0, (Number(offset) || 0) + (Number(limit) || Infinity))
+          .slice(
+            Number(offset) || 0,
+            (Number(offset) || 0) + (Number(limit) || Infinity)
+          )
           .map((row) => ({
             author_address: row.author_address,
             author_stream_id: row.author_stream_id || '',
@@ -227,7 +243,9 @@ class Statement {
         return [...byAuthor.values()]
           .sort(
             (a, b) =>
-              String(a.author_address).localeCompare(String(b.author_address)) ||
+              String(a.author_address).localeCompare(
+                String(b.author_address)
+              ) ||
               String(a.author_stream_id || '').localeCompare(
                 String(b.author_stream_id || '')
               )
@@ -243,7 +261,10 @@ class Statement {
     if (this.sql.includes('FROM rchat_metadata_snapshots')) {
       const [groupId, scope] = args;
       return this.store.reticulumChatMetadataSnapshots
-        .filter((row) => row.group_id === groupId && (scope == null || row.scope === scope))
+        .filter(
+          (row) =>
+            row.group_id === groupId && (scope == null || row.scope === scope)
+        )
         .sort(
           (a, b) =>
             b.version - a.version ||
@@ -283,11 +304,15 @@ class Statement {
         );
     }
     if (this.sql.includes('FROM rchat_message_projection')) {
-      if (this.sql.includes('expires_at IS NOT NULL') && this.sql.includes('expires_at <= ?')) {
+      if (
+        this.sql.includes('expires_at IS NOT NULL') &&
+        this.sql.includes('expires_at <= ?')
+      ) {
         const [now, limit = Infinity] = args;
         return this.store.reticulumChatMessages
           .filter(
-            (row) => row.expires_at != null && Number(row.expires_at) <= Number(now)
+            (row) =>
+              row.expires_at != null && Number(row.expires_at) <= Number(now)
           )
           .sort(
             (a, b) =>
@@ -398,7 +423,8 @@ class Statement {
         .filter(
           (row) =>
             row.file_hash === fileHash &&
-            (!this.sql.includes("status = 'complete'") || row.status === 'complete') &&
+            (!this.sql.includes("status = 'complete'") ||
+              row.status === 'complete') &&
             (!this.sql.includes('start_byte <= ?') ||
               (Number(row.start_byte) <= Number(overlapEnd) &&
                 Number(row.end_byte_exclusive) >= Number(overlapStart)))
@@ -456,7 +482,8 @@ class Statement {
               ref.file_hash === row.file_hash &&
               (!this.sql.includes("event_id <> ''") || Boolean(ref.event_id)) &&
               ref.state === 'live' &&
-              (ref.expires_at == null || Number(ref.expires_at) > Number(liveNow))
+              (ref.expires_at == null ||
+                Number(ref.expires_at) > Number(liveNow))
           ).length,
           provider_count: new Set(
             this.store.reticulumResourceProviders
@@ -479,7 +506,9 @@ class Statement {
         const [afterFileHash = '', limit = Infinity] = args;
         return this.store.reticulumResources
           .filter((row) => String(row.file_hash) > String(afterFileHash))
-          .sort((a, b) => String(a.file_hash).localeCompare(String(b.file_hash)))
+          .sort((a, b) =>
+            String(a.file_hash).localeCompare(String(b.file_hash))
+          )
           .slice(0, Number(limit) || Infinity);
       }
       return [...this.store.reticulumResources];
@@ -511,7 +540,9 @@ class Statement {
             (row) =>
               row.group_id === groupId &&
               row.channel_id === channelId &&
-              ['message', 'attachment_manifest'].includes(String(row.event_type)) &&
+              ['message', 'attachment_manifest'].includes(
+                String(row.event_type)
+              ) &&
               (Number(row.timestamp) > Number(afterTimestamp) ||
                 (Number(row.timestamp) === Number(afterTimestamp) &&
                   String(row.event_id) > String(afterEventId)))
@@ -539,11 +570,16 @@ class Statement {
           )
           .sort(
             (a, b) =>
-              (a.feed_timestamp ?? a.timestamp) - (b.feed_timestamp ?? b.timestamp) ||
+              (a.feed_timestamp ?? a.timestamp) -
+                (b.feed_timestamp ?? b.timestamp) ||
               String(a.event_id).localeCompare(String(b.event_id))
           );
       }
-      if (this.sql.includes('WHERE group_id = ? AND author_address = ? AND author_stream_id = ? AND author_seq > ?')) {
+      if (
+        this.sql.includes(
+          'WHERE group_id = ? AND author_address = ? AND author_stream_id = ? AND author_seq > ?'
+        )
+      ) {
         const [groupId, authorAddress, authorStreamId, seq, limit] = args;
         return this.store.reticulumChatEvents
           .filter(
@@ -621,13 +657,18 @@ class Statement {
           };
         });
       }
-      if (this.sql.includes('timestamp > ? OR (timestamp = ? AND event_id > ?)')) {
+      if (
+        this.sql.includes('timestamp > ? OR (timestamp = ? AND event_id > ?)')
+      ) {
         const [groupId, timestamp, _sameTimestamp, eventId, limit] = args;
         return this.store.reticulumChatEvents
           .filter((row) => {
             if (row.group_id !== groupId) return false;
             if (row.timestamp > timestamp) return true;
-            return row.timestamp === timestamp && String(row.event_id) > String(eventId);
+            return (
+              row.timestamp === timestamp &&
+              String(row.event_id) > String(eventId)
+            );
           })
           .sort(
             (a, b) =>
@@ -639,7 +680,9 @@ class Statement {
       if (this.sql.includes('timestamp >= ?')) {
         const [groupId, timestamp, limit] = args;
         return this.store.reticulumChatEvents
-          .filter((row) => row.group_id === groupId && row.timestamp >= timestamp)
+          .filter(
+            (row) => row.group_id === groupId && row.timestamp >= timestamp
+          )
           .sort(
             (a, b) =>
               a.timestamp - b.timestamp ||
@@ -649,7 +692,13 @@ class Statement {
       }
       if (this.sql.includes('timestamp < ?')) {
         const hasCursor = this.sql.includes('event_id < ?');
-        const [groupId, timestamp, _sameTimestampOrLimit, eventIdOrUndefined, maybeLimit] = args;
+        const [
+          groupId,
+          timestamp,
+          _sameTimestampOrLimit,
+          eventIdOrUndefined,
+          maybeLimit,
+        ] = args;
         const eventId = hasCursor ? String(eventIdOrUndefined) : '';
         const limit = hasCursor ? maybeLimit : _sameTimestampOrLimit;
         return this.store.reticulumChatEvents
@@ -657,7 +706,9 @@ class Statement {
             if (row.group_id !== groupId) return false;
             if (!hasCursor) return row.timestamp < timestamp;
             if (row.timestamp < timestamp) return true;
-            return row.timestamp === timestamp && String(row.event_id) < eventId;
+            return (
+              row.timestamp === timestamp && String(row.event_id) < eventId
+            );
           })
           .sort(
             (a, b) =>
@@ -707,8 +758,13 @@ class Statement {
     }
     if (this.sql.includes('FROM rchat_dm_events')) {
       if (this.sql.includes('COUNT(*) AS count')) {
-        const [conversationId, recipientAddress, senderAddress, ownerAddress, now] =
-          args;
+        const [
+          conversationId,
+          recipientAddress,
+          senderAddress,
+          ownerAddress,
+          now,
+        ] = args;
         return {
           count: this.store.reticulumDmEvents.filter((row) => {
             if (
@@ -741,7 +797,9 @@ class Statement {
         return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
       }
     }
-    if (this.sql.includes('SELECT author_seq FROM rchat_author_sequence_leases')) {
+    if (
+      this.sql.includes('SELECT author_seq FROM rchat_author_sequence_leases')
+    ) {
       const [groupId, authorAddress, authorStreamId, ownerId] = args;
       return this.store.reticulumChatAuthorSequenceLeases.find(
         (row) =>
@@ -788,7 +846,9 @@ class Statement {
       return { seq };
     }
     if (this.sql.includes('SELECT stream_id FROM rchat_author_streams')) {
-      const streamId = this.store.reticulumChatAuthorStreams.get(String(args[0] || ''));
+      const streamId = this.store.reticulumChatAuthorStreams.get(
+        String(args[0] || '')
+      );
       return streamId ? { stream_id: streamId } : undefined;
     }
     if (this.sql.includes('FROM rchat_metadata_snapshots')) {
@@ -796,7 +856,8 @@ class Statement {
       return this.store.reticulumChatMetadataSnapshots
         .filter((row) => {
           if (row.group_id !== groupId) return false;
-          if (this.sql.includes('snapshot_hash = ?')) return row.snapshot_hash === value;
+          if (this.sql.includes('snapshot_hash = ?'))
+            return row.snapshot_hash === value;
           if (this.sql.includes('scope = ?')) return row.scope === value;
           return true;
         })
@@ -836,7 +897,9 @@ class Statement {
       this.sql.includes('SELECT 1 AS present') &&
       this.sql.includes('FROM reticulum_resources')
     ) {
-      return this.store.reticulumResources.length > 0 ? { present: 1 } : undefined;
+      return this.store.reticulumResources.length > 0
+        ? { present: 1 }
+        : undefined;
     }
     if (this.sql.includes('FROM reticulum_resources r')) {
       const [liveNow = 0, providerNow = 0, leaseNow = 0, fileHash] = args;
@@ -871,9 +934,12 @@ class Statement {
     }
     if (this.sql.includes('FROM reticulum_resources')) {
       const [fileHash] = args;
-      const row = this.store.reticulumResources.find((item) => item.file_hash === fileHash);
+      const row = this.store.reticulumResources.find(
+        (item) => item.file_hash === fileHash
+      );
       if (!row) return undefined;
-      if (this.sql.includes('SELECT provenance')) return { provenance: row.provenance };
+      if (this.sql.includes('SELECT provenance'))
+        return { provenance: row.provenance };
       return row;
     }
     if (this.sql.includes('FROM reticulum_resource_group_refs')) {
@@ -919,7 +985,8 @@ class Statement {
           this.store.reticulumResourceProviders
             .filter(
               (row) =>
-                row.file_hash === fileHash && Number(row.retention_until) > Number(now)
+                row.file_hash === fileHash &&
+                Number(row.retention_until) > Number(now)
             )
             .map((row) => row.provider_id)
         ).size,
@@ -939,12 +1006,12 @@ class Statement {
     ) {
       const [fileHash] = args;
       const updatedAt = this.store.reticulumResourceRanges
-        .filter((row) => row.file_hash === fileHash && row.status === 'complete')
-        .reduce<number | null>(
-          (latest, row) =>
-            latest == null ? Number(row.updated_at) : Math.max(latest, Number(row.updated_at)),
-          null
-        );
+        .filter(
+          (row) => row.file_hash === fileHash && row.status === 'complete'
+        )
+        .reduce<
+          number | null
+        >((latest, row) => (latest == null ? Number(row.updated_at) : Math.max(latest, Number(row.updated_at))), null);
       return { updated_at: updatedAt };
     }
     if (this.sql.includes('FROM reticulum_resource_chunks')) {
@@ -979,9 +1046,12 @@ class Statement {
     }
     if (this.sql.includes('FROM rchat_schema_migrations')) {
       const [name] = args;
-      return this.store.reticulumChatSchemaMigrations.has(String(name))
-        ? { 1: 1 }
-        : undefined;
+      const appliedAt = this.store.reticulumChatSchemaMigrations.get(
+        String(name)
+      );
+      return appliedAt === undefined
+        ? undefined
+        : { 1: 1, applied_at: appliedAt };
     }
     if (this.sql.includes('FROM rchat_channel_expiry_reconciliation')) {
       const [groupId, channelId] = args;
@@ -1008,7 +1078,14 @@ class Statement {
         return this.sql.includes('SELECT 1') ? { 1: 1 } : row;
       }
       if (this.sql.includes('MAX(author_seq) AS seq')) {
-        const [groupId, authorAddress, authorStreamId, markerGroupId, markerAuthorAddress, markerStreamId] = args;
+        const [
+          groupId,
+          authorAddress,
+          authorStreamId,
+          markerGroupId,
+          markerAuthorAddress,
+          markerStreamId,
+        ] = args;
         let seq = 0;
         for (const row of [
           ...this.store.reticulumChatEvents,
@@ -1055,9 +1132,19 @@ class Statement {
 
   run(...args: any[]) {
     const [params, second] = args;
+    if (this.sql.includes('DELETE FROM rchat_schema_migrations')) {
+      const [name] = args;
+      const deleted = this.store.reticulumChatSchemaMigrations.delete(
+        String(name)
+      );
+      return { changes: deleted ? 1 : 0, lastInsertRowid: 0 };
+    }
     if (this.sql.includes('INSERT INTO rchat_schema_migrations')) {
       const [name, appliedAt] = args;
-      this.store.reticulumChatSchemaMigrations.set(String(name), Number(appliedAt));
+      this.store.reticulumChatSchemaMigrations.set(
+        String(name),
+        Number(appliedAt)
+      );
       return { changes: 1, lastInsertRowid: 1 };
     }
     if (this.sql.includes('INSERT INTO rchat_public_group_activity')) {
@@ -1132,7 +1219,8 @@ class Statement {
         this.store.reticulumPublicGroupActivity =
           this.store.reticulumPublicGroupActivity.filter(
             (row) =>
-              row.local_state_json != null || retainedRemoteIds.has(row.group_id)
+              row.local_state_json != null ||
+              retainedRemoteIds.has(row.group_id)
           );
       }
       return {
@@ -1173,8 +1261,14 @@ class Statement {
       return { changes: 1, lastInsertRowid: index + 1 };
     }
     if (this.sql.includes('UPDATE rchat_silences')) {
-      const [clearedAt, updatedAt, ownerAddress, targetAddress, scopeType, scopeId] =
-        args;
+      const [
+        clearedAt,
+        updatedAt,
+        ownerAddress,
+        targetAddress,
+        scopeType,
+        scopeId,
+      ] = args;
       const row = this.store.reticulumChatSilences.find(
         (item) =>
           item.owner_address === ownerAddress &&
@@ -1223,16 +1317,57 @@ class Statement {
       };
     }
     if (
-      this.sql.includes('INSERT OR IGNORE INTO rchat_channel_expiry_reconciliation') &&
+      this.sql.includes(
+        'INSERT OR IGNORE INTO rchat_channel_expiry_reconciliation'
+      ) &&
       this.sql.includes('SELECT DISTINCT')
     ) {
       return { changes: 0, lastInsertRowid: 0 };
     }
+    if (
+      this.sql.includes('INSERT INTO rchat_channel_expiry_reconciliation') &&
+      this.sql.includes('SELECT groups.group_id')
+    ) {
+      const [channelId, expiryDurationMs, updatedAt, eventChannelId] = args;
+      const groupIds = new Set<number>();
+      for (const event of this.store.reticulumChatEvents) {
+        if (event.channel_id === eventChannelId) {
+          groupIds.add(Number(event.group_id));
+        }
+      }
+      for (const channel of this.store.reticulumChatChannels) {
+        if (channel.channel_id === channelId) {
+          groupIds.add(Number(channel.group_id));
+        }
+      }
+      let changes = 0;
+      for (const groupId of groupIds) {
+        if (!Number.isInteger(groupId) || groupId <= 0) continue;
+        const existing =
+          this.store.reticulumChatChannelExpiryReconciliations.find(
+            (row) => row.group_id === groupId && row.channel_id === channelId
+          );
+        const next = {
+          group_id: groupId,
+          channel_id: channelId,
+          revision: existing ? Number(existing.revision || 1) + 1 : 1,
+          expiry_duration_ms: expiryDurationMs,
+          after_timestamp: -1,
+          after_event_id: '',
+          updated_at: updatedAt,
+        };
+        if (existing) Object.assign(existing, next);
+        else this.store.reticulumChatChannelExpiryReconciliations.push(next);
+        changes += 1;
+      }
+      return { changes, lastInsertRowid: changes };
+    }
     if (this.sql.includes('INSERT INTO rchat_channel_expiry_reconciliation')) {
       const [groupId, channelId, expiryDurationMs, updatedAt] = args;
-      const existing = this.store.reticulumChatChannelExpiryReconciliations.find(
-        (row) => row.group_id === groupId && row.channel_id === channelId
-      );
+      const existing =
+        this.store.reticulumChatChannelExpiryReconciliations.find(
+          (row) => row.group_id === groupId && row.channel_id === channelId
+        );
       const next = {
         group_id: groupId,
         channel_id: channelId,
@@ -1257,7 +1392,7 @@ class Statement {
             item.group_id === row.group_id && item.channel_id === row.channel_id
         );
         row.expiry_duration_ms = channel
-          ? channel.expiry_duration_ms ?? null
+          ? (channel.expiry_duration_ms ?? null)
           : row.channel_id === qortalLandChannelId
             ? qortalLandExpiryMs
             : null;
@@ -1301,7 +1436,8 @@ class Statement {
         expectedAfterTimestamp,
         expectedAfterEventId,
       ] = args;
-      const before = this.store.reticulumChatChannelExpiryReconciliations.length;
+      const before =
+        this.store.reticulumChatChannelExpiryReconciliations.length;
       this.store.reticulumChatChannelExpiryReconciliations =
         this.store.reticulumChatChannelExpiryReconciliations.filter(
           (row) =>
@@ -1338,7 +1474,9 @@ class Statement {
             existing.author_seq === row.author_seq
         )
       ) {
-        throw new Error('UNIQUE constraint failed: rchat_author_sequence_leases');
+        throw new Error(
+          'UNIQUE constraint failed: rchat_author_sequence_leases'
+        );
       }
       this.store.reticulumChatAuthorSequenceLeases.push(row);
       return {
@@ -1373,16 +1511,37 @@ class Statement {
       else this.store.reticulumChatChannels.push(row);
       return {
         changes: 1,
-        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumChatChannels.length,
+        lastInsertRowid:
+          index >= 0 ? index + 1 : this.store.reticulumChatChannels.length,
       };
+    }
+    if (
+      this.sql.includes('UPDATE reticulum_chat_channels') &&
+      this.sql.includes('SET expiry_duration_ms = ?')
+    ) {
+      const expiryDurationMs = args[0];
+      const groupScoped = this.sql.includes('group_id = ?');
+      const groupId = groupScoped ? args[1] : undefined;
+      const channelId = groupScoped ? args[2] : args[1];
+      let changes = 0;
+      for (const channel of this.store.reticulumChatChannels) {
+        if (
+          channel.channel_id !== channelId ||
+          (groupScoped && channel.group_id !== groupId)
+        ) {
+          continue;
+        }
+        channel.expiry_duration_ms = expiryDurationMs;
+        changes += 1;
+      }
+      return { changes, lastInsertRowid: 0 };
     }
     if (this.sql.includes('DELETE FROM reticulum_chat_channels')) {
       const [groupId, channelId] = args;
       const before = this.store.reticulumChatChannels.length;
       this.store.reticulumChatChannels =
         this.store.reticulumChatChannels.filter(
-          (row) =>
-            !(row.group_id === groupId && row.channel_id === channelId)
+          (row) => !(row.group_id === groupId && row.channel_id === channelId)
         );
       return {
         changes: before - this.store.reticulumChatChannels.length,
@@ -1393,7 +1552,8 @@ class Statement {
       const values = args;
       const before = this.store.reticulumChatAuthorSequenceLeases.length;
       if (this.sql.includes('group_id = ?')) {
-        const [groupId, authorAddress, authorStreamId, authorSeq, ownerId] = values;
+        const [groupId, authorAddress, authorStreamId, authorSeq, ownerId] =
+          values;
         this.store.reticulumChatAuthorSequenceLeases =
           this.store.reticulumChatAuthorSequenceLeases.filter(
             (row) =>
@@ -1432,32 +1592,50 @@ class Statement {
     }
     if (this.sql.includes('INSERT OR IGNORE INTO rchat_author_streams')) {
       if (!this.store.reticulumChatAuthorStreams.has(params.author_address)) {
-        this.store.reticulumChatAuthorStreams.set(params.author_address, params.stream_id);
+        this.store.reticulumChatAuthorStreams.set(
+          params.author_address,
+          params.stream_id
+        );
         return { changes: 1, lastInsertRowid: 1 };
       }
       return { changes: 0, lastInsertRowid: 0 };
     }
     if (this.sql.includes('INSERT OR REPLACE INTO rchat_metadata_snapshots')) {
       const values = args;
-      const row = params && typeof params === 'object' && !Array.isArray(params)
-        ? { ...params }
-        : {
-            group_id: values[0], snapshot_id: values[1], scope: values[2],
-            parent_snapshot_hash: values[3], version: values[4], created_at: values[5],
-            latest_event_id: values[6], latest_feed_timestamp: values[7],
-            snapshot_hash: values[8], admin_address: values[9], admin_public_key: values[10],
-            signature: values[11], channels_json: values[12], categories_json: values[13],
-          };
+      const row =
+        params && typeof params === 'object' && !Array.isArray(params)
+          ? { ...params }
+          : {
+              group_id: values[0],
+              snapshot_id: values[1],
+              scope: values[2],
+              parent_snapshot_hash: values[3],
+              version: values[4],
+              created_at: values[5],
+              latest_event_id: values[6],
+              latest_feed_timestamp: values[7],
+              snapshot_hash: values[8],
+              admin_address: values[9],
+              admin_public_key: values[10],
+              signature: values[11],
+              channels_json: values[12],
+              categories_json: values[13],
+            };
       const index = this.store.reticulumChatMetadataSnapshots.findIndex(
         (existing) =>
-          (existing.group_id === row.group_id && existing.snapshot_id === row.snapshot_id) ||
-          (existing.group_id === row.group_id && existing.snapshot_hash === row.snapshot_hash)
+          (existing.group_id === row.group_id &&
+            existing.snapshot_id === row.snapshot_id) ||
+          (existing.group_id === row.group_id &&
+            existing.snapshot_hash === row.snapshot_hash)
       );
       if (index >= 0) this.store.reticulumChatMetadataSnapshots[index] = row;
       else this.store.reticulumChatMetadataSnapshots.push(row);
       return {
         changes: 1,
-        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumChatMetadataSnapshots.length,
+        lastInsertRowid:
+          index >= 0
+            ? index + 1
+            : this.store.reticulumChatMetadataSnapshots.length,
       };
     }
     if (this.sql.includes('INSERT INTO rchat_metadata_entity_revisions')) {
@@ -1479,12 +1657,15 @@ class Statement {
           existing.entity_type === row.entity_type &&
           existing.entity_id === row.entity_id
       );
-      if (index >= 0) this.store.reticulumChatMetadataEntityRevisions[index] = row;
+      if (index >= 0)
+        this.store.reticulumChatMetadataEntityRevisions[index] = row;
       else this.store.reticulumChatMetadataEntityRevisions.push(row);
       return {
         changes: 1,
         lastInsertRowid:
-          index >= 0 ? index + 1 : this.store.reticulumChatMetadataEntityRevisions.length,
+          index >= 0
+            ? index + 1
+            : this.store.reticulumChatMetadataEntityRevisions.length,
       };
     }
     if (this.sql.includes('INSERT INTO reticulum_resources')) {
@@ -1510,7 +1691,8 @@ class Statement {
           metadata: existing.metadata ?? params.metadata,
           thumbnail: existing.thumbnail ?? params.thumbnail,
           updated_at: params.updated_at,
-          final_verified_at: params.final_verified_at ?? existing.final_verified_at,
+          final_verified_at:
+            params.final_verified_at ?? existing.final_verified_at,
           provenance:
             existing.provenance === 'local_authored'
               ? 'local_authored'
@@ -1519,22 +1701,30 @@ class Statement {
             Number(existing.resident_bytes || 0),
             Number(params.resident_bytes || 0)
           ),
-          last_accessed_at: params.last_accessed_at ?? existing.last_accessed_at,
+          last_accessed_at:
+            params.last_accessed_at ?? existing.last_accessed_at,
           last_served_at: params.last_served_at ?? existing.last_served_at,
           access_count: Math.max(
             Number(existing.access_count || 0),
             Number(params.access_count || 0)
           ),
-          retention_until: Math.max(
-            Number(existing.retention_until || 0),
-            Number(params.retention_until || 0)
-          ) || null,
-          managed: Math.max(Number(existing.managed || 0), Number(params.managed || 0)),
+          retention_until:
+            Math.max(
+              Number(existing.retention_until || 0),
+              Number(params.retention_until || 0)
+            ) || null,
+          managed: Math.max(
+            Number(existing.managed || 0),
+            Number(params.managed || 0)
+          ),
         };
         return { changes: 1, lastInsertRowid: index + 1 };
       }
       this.store.reticulumResources.push({ ...params });
-      return { changes: 1, lastInsertRowid: this.store.reticulumResources.length };
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumResources.length,
+      };
     }
     if (this.sql.includes('INSERT INTO reticulum_resource_meta')) {
       const [key, value] = args;
@@ -1549,7 +1739,8 @@ class Statement {
       );
       if (!row) return { changes: 0, lastInsertRowid: 0 };
       if (this.sql.includes('SET status = ?')) {
-        const [status, assembledPath, partialPath, updatedAt, finalVerifiedAt] = values;
+        const [status, assembledPath, partialPath, updatedAt, finalVerifiedAt] =
+          values;
         row.status = status;
         row.assembled_path = assembledPath;
         row.partial_path = partialPath;
@@ -1561,9 +1752,13 @@ class Statement {
         row.updated_at = updatedAt;
       } else if (this.sql.includes("SET provenance = 'local_authored'")) {
         row.provenance = 'local_authored';
-        if (this.sql.includes('retention_until = NULL')) row.retention_until = null;
+        if (this.sql.includes('retention_until = NULL'))
+          row.retention_until = null;
         if (this.sql.includes('managed = MAX')) {
-          row.managed = Math.max(Number(row.managed || 0), Number(values[0] || 0));
+          row.managed = Math.max(
+            Number(row.managed || 0),
+            Number(values[0] || 0)
+          );
           row.updated_at = values[1];
         } else {
           row.updated_at = values[0];
@@ -1632,21 +1827,23 @@ class Statement {
       else this.store.reticulumResourceRanges.push(row);
       return {
         changes: 1,
-        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumResourceRanges.length,
+        lastInsertRowid:
+          index >= 0 ? index + 1 : this.store.reticulumResourceRanges.length,
       };
     }
     if (this.sql.includes('DELETE FROM reticulum_resource_ranges')) {
       const [fileHash, overlapEnd, overlapStart] = args;
       const before = this.store.reticulumResourceRanges.length;
-      this.store.reticulumResourceRanges = this.store.reticulumResourceRanges.filter(
-        (row) =>
-          row.file_hash !== fileHash ||
-          (this.sql.includes('start_byte <= ?') &&
-            !(
-              Number(row.start_byte) <= Number(overlapEnd) &&
-              Number(row.end_byte_exclusive) >= Number(overlapStart)
-            ))
-      );
+      this.store.reticulumResourceRanges =
+        this.store.reticulumResourceRanges.filter(
+          (row) =>
+            row.file_hash !== fileHash ||
+            (this.sql.includes('start_byte <= ?') &&
+              !(
+                Number(row.start_byte) <= Number(overlapEnd) &&
+                Number(row.end_byte_exclusive) >= Number(overlapStart)
+              ))
+        );
       return {
         changes: before - this.store.reticulumResourceRanges.length,
         lastInsertRowid: 0,
@@ -1671,7 +1868,9 @@ class Statement {
       if (index >= 0) {
         this.store.reticulumResourceGroupRefs[index] = {
           ...this.store.reticulumResourceGroupRefs[index],
-          owner_id: row.owner_id ?? this.store.reticulumResourceGroupRefs[index].owner_id,
+          owner_id:
+            row.owner_id ??
+            this.store.reticulumResourceGroupRefs[index].owner_id,
           updated_at: row.updated_at,
         };
       } else {
@@ -1737,7 +1936,8 @@ class Statement {
       }
       return {
         changes: 1,
-        lastInsertRowid: index >= 0 ? index + 1 : this.store.reticulumResourceRefs.length,
+        lastInsertRowid:
+          index >= 0 ? index + 1 : this.store.reticulumResourceRefs.length,
       };
     }
     if (this.sql.includes('UPDATE reticulum_resource_refs')) {
@@ -1784,7 +1984,8 @@ class Statement {
           }
         }
       } else if (this.sql.includes('SET state = ?')) {
-        const [state, updatedAt, scopeType, scopeId, eventId, fileHash] = values;
+        const [state, updatedAt, scopeType, scopeId, eventId, fileHash] =
+          values;
         for (const row of this.store.reticulumResourceRefs) {
           if (
             row.scope_type === scopeType &&
@@ -1824,7 +2025,9 @@ class Statement {
       return {
         changes: 1,
         lastInsertRowid:
-          existing >= 0 ? existing + 1 : this.store.reticulumResourceLeases.length,
+          existing >= 0
+            ? existing + 1
+            : this.store.reticulumResourceLeases.length,
       };
     }
     if (this.sql.includes('UPDATE reticulum_resource_leases')) {
@@ -1838,12 +2041,12 @@ class Statement {
     if (this.sql.includes('DELETE FROM reticulum_resource_leases')) {
       const values = args;
       const before = this.store.reticulumResourceLeases.length;
-      this.store.reticulumResourceLeases = this.store.reticulumResourceLeases.filter(
-        (row) =>
+      this.store.reticulumResourceLeases =
+        this.store.reticulumResourceLeases.filter((row) =>
           this.sql.includes('expires_at <= ?')
             ? Number(row.expires_at) > Number(values[0])
             : row.lease_id !== values[0]
-      );
+        );
       return {
         changes: before - this.store.reticulumResourceLeases.length,
         lastInsertRowid: 0,
@@ -1935,9 +2138,10 @@ class Statement {
     }
     if (this.sql.includes('DELETE FROM reticulum_resource_providers')) {
       const before = this.store.reticulumResourceProviders.length;
-      this.store.reticulumResourceProviders = this.store.reticulumResourceProviders.filter(
-        (row) => Number(row.retention_until) > Number(params)
-      );
+      this.store.reticulumResourceProviders =
+        this.store.reticulumResourceProviders.filter(
+          (row) => Number(row.retention_until) > Number(params)
+        );
       return {
         changes: before - this.store.reticulumResourceProviders.length,
         lastInsertRowid: 0,
@@ -1991,12 +2195,25 @@ class Statement {
         return { changes: 0, lastInsertRowid: 0 };
       }
       this.store.reticulumChatEvents.push({ ...params });
-      return { changes: 1, lastInsertRowid: this.store.reticulumChatEvents.length };
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumChatEvents.length,
+      };
     }
-    if (this.sql.includes('INSERT OR IGNORE INTO rchat_expired_event_markers')) {
+    if (
+      this.sql.includes('INSERT OR IGNORE INTO rchat_expired_event_markers')
+    ) {
       const values = args;
-      const [eventId, groupId, channelId, authorAddress, authorStreamId, authorSeq, timestamp, expiredAt] =
-        values;
+      const [
+        eventId,
+        groupId,
+        channelId,
+        authorAddress,
+        authorStreamId,
+        authorSeq,
+        timestamp,
+        expiredAt,
+      ] = values;
       if (
         this.store.reticulumChatExpiredEventMarkers.some(
           (row) => row.event_id === eventId
@@ -2036,7 +2253,9 @@ class Statement {
         lastInsertRowid: this.store.reticulumChatMessages.length,
       };
     }
-    if (this.sql.includes('UPDATE reticulum_chat_events SET last_served_at = ?')) {
+    if (
+      this.sql.includes('UPDATE reticulum_chat_events SET last_served_at = ?')
+    ) {
       const [lastServedAt, eventId] = [params, second];
       const row = this.store.reticulumChatEvents.find(
         (item) => item.event_id === eventId
@@ -2064,7 +2283,9 @@ class Statement {
     ) {
       const values = Array.isArray(params) ? params : args;
       const updatesMutation = this.sql.includes('target_event_id = ?');
-      const updatesMessageExpiry = this.sql.includes('message_expiry_duration_ms = ?');
+      const updatesMessageExpiry = this.sql.includes(
+        'message_expiry_duration_ms = ?'
+      );
       const expiresAt = values[0];
       const messageExpiryDurationMs = updatesMessageExpiry ? values[1] : null;
       const eventId = values[updatesMessageExpiry ? 2 : 1];
@@ -2088,7 +2309,9 @@ class Statement {
     ) {
       const values = Array.isArray(params) ? params : args;
       const updatesMutation = this.sql.includes('target_event_id = ?');
-      const updatesMessageExpiry = this.sql.includes('message_expiry_duration_ms = ?');
+      const updatesMessageExpiry = this.sql.includes(
+        'message_expiry_duration_ms = ?'
+      );
       const expiresAt = values[0];
       const messageExpiryDurationMs = updatesMessageExpiry ? values[1] : null;
       const eventId = values[updatesMessageExpiry ? 2 : 1];
@@ -2119,7 +2342,9 @@ class Statement {
       if (row) row.expires_at = expiresAt;
       return { changes: row ? 1 : 0, lastInsertRowid: 0 };
     }
-    if (this.sql.includes('DELETE FROM reticulum_chat_events WHERE event_id = ?')) {
+    if (
+      this.sql.includes('DELETE FROM reticulum_chat_events WHERE event_id = ?')
+    ) {
       const before = this.store.reticulumChatEvents.length;
       this.store.reticulumChatEvents = this.store.reticulumChatEvents.filter(
         (row) => row.event_id !== params
@@ -2129,11 +2354,16 @@ class Statement {
         lastInsertRowid: 0,
       };
     }
-    if (this.sql.includes('DELETE FROM rchat_message_projection WHERE root_event_id = ?')) {
+    if (
+      this.sql.includes(
+        'DELETE FROM rchat_message_projection WHERE root_event_id = ?'
+      )
+    ) {
       const before = this.store.reticulumChatMessages.length;
-      this.store.reticulumChatMessages = this.store.reticulumChatMessages.filter(
-        (row) => row.root_event_id !== params
-      );
+      this.store.reticulumChatMessages =
+        this.store.reticulumChatMessages.filter(
+          (row) => row.root_event_id !== params
+        );
       return {
         changes: before - this.store.reticulumChatMessages.length,
         lastInsertRowid: 0,
@@ -2200,7 +2430,8 @@ class MockDatabase {
   }
 
   private applySchemaSql(sql: string): void {
-    const dropTablePattern = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_]+)/gi;
+    const dropTablePattern =
+      /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_]+)/gi;
     let dropMatch: RegExpExecArray | null;
     while ((dropMatch = dropTablePattern.exec(sql))) {
       this.store.schema.delete(dropMatch[1]);

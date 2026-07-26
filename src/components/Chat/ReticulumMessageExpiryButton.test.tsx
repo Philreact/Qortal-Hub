@@ -1,7 +1,10 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { TIME_DAYS_1_IN_MILLISECONDS } from '../../constants/constants';
+import {
+  TIME_DAYS_1_IN_MILLISECONDS,
+  TIME_MONTHS_1_IN_MILLISECONDS,
+} from '../../constants/constants';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 
 describe('ReticulumMessageExpiryButton', () => {
@@ -91,6 +94,16 @@ describe('ReticulumMessageExpiryButton', () => {
     expect(
       screen.getByRole('button', { name: 'Set message expiry' })
     ).toHaveTextContent('1W');
+
+    rerender(
+      <ReticulumMessageExpiryButton
+        channelExpiryDurationMs={TIME_MONTHS_1_IN_MILLISECONDS}
+        onChange={() => undefined}
+      />
+    );
+    expect(
+      screen.getByRole('button', { name: 'Set message expiry' })
+    ).toHaveTextContent('1M');
   });
 
   it('does not open while expiry changes are disabled', () => {

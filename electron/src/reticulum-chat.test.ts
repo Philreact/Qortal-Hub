@@ -63,6 +63,7 @@ import {
   ReticulumChatSequenceLeaseBusyError,
   RETICULUM_CHAT_AUTHOR_SEQUENCE_LEASE_TTL_MS,
   RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+  RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
@@ -341,15 +342,18 @@ function createLandAuthSigner() {
       k: 'la' as const,
       g: input.groupId,
       id: input.actionId,
-      y: ({
-        qort_received: 'q',
-        buzz: 'b',
-        love: 'l',
-        devil: 'd',
-        angel: 'a',
-        rain: 'r',
-        sunshine: 's',
-      } as Record<string, string>)[input.actionType] ?? '',
+      y:
+        (
+          {
+            qort_received: 'q',
+            buzz: 'b',
+            love: 'l',
+            devil: 'd',
+            angel: 'a',
+            rain: 'r',
+            sunshine: 's',
+          } as Record<string, string>
+        )[input.actionType] ?? '',
       a: identity.address,
       f: input.sourceSessionId,
       q: input.sequence,
@@ -1130,28 +1134,21 @@ describe('reticulum chat protocol', () => {
       )
     ).toBe(false);
 
-    expect(summarizeReticulumPublicGroupActivity(716, state, now)).toMatchObject(
-      {
-        groupId: 716,
-        messages24h: 3,
-        messages7d: 3,
-        activeAuthors7d: 2,
-      }
-    );
     expect(
-      summarizeReticulumPublicGroupActivity(
-        716,
-        state,
-        now + 25 * 60 * 60_000
-      )
+      summarizeReticulumPublicGroupActivity(716, state, now)
+    ).toMatchObject({
+      groupId: 716,
+      messages24h: 3,
+      messages7d: 3,
+      activeAuthors7d: 2,
+    });
+    expect(
+      summarizeReticulumPublicGroupActivity(716, state, now + 25 * 60 * 60_000)
     ).toMatchObject({ messages24h: 0, messages7d: 3 });
   });
 
   it('keeps a full public activity top page within the control wire limit', () => {
-    const wire: Extract<
-      ReticulumChatWire,
-      { k: 'public_activity_top_v1' }
-    > = {
+    const wire: Extract<ReticulumChatWire, { k: 'public_activity_top_v1' }> = {
       t: 'RCHAT',
       k: 'public_activity_top_v1',
       q: 'a'.repeat(16),
@@ -1692,9 +1689,9 @@ describe('reticulum chat database', () => {
       activeAuthors7d: 4,
       confidence: 2,
     });
-    expect(records.filter((record) => record.localStateJson === null)).toHaveLength(
-      1
-    );
+    expect(
+      records.filter((record) => record.localStateJson === null)
+    ).toHaveLength(1);
   });
 
   it('dedupes events by eventId and builds sync state', () => {
@@ -1813,14 +1810,17 @@ describe('reticulum chat database', () => {
     expect(db.getRelayCacheBytes()).toBeGreaterThan(0);
   });
 
-  it('creates QortalLand as a default expiring channel', () => {
+  it('creates built-in channels with their fixed expiry policies', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
 
-    const channel = db.getChannel(11, RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID);
+    const general = db.getChannel(11, RETICULUM_CHAT_DEFAULT_CHANNEL_ID);
+    const qortalLand = db.getChannel(11, RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID);
 
-    expect(channel?.channelId).toBe(RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID);
-    expect(channel?.expiryDurationMs).toBe(
+    expect(general?.expiryDurationMs).toBe(
+      RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS
+    );
+    expect(qortalLand?.expiryDurationMs).toBe(
       RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS
     );
   });
@@ -1847,10 +1847,116 @@ describe('reticulum chat database', () => {
 
     expect(
       db.getChannel(11, RETICULUM_CHAT_DEFAULT_CHANNEL_ID)?.expiryDurationMs
-    ).toBeUndefined();
+    ).toBe(RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS);
     expect(
       db.getChannel(11, RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID)?.expiryDurationMs
     ).toBe(RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS);
+  });
+
+  it('gives legacy general messages a migration grace period', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const policyAppliedAt = Number(
+      (db as any).generalChannelExpiryPolicyAppliedAt
+    );
+    const legacyEvent = signedEvent({
+      eventId: 'legacy-general-expiry-grace',
+      groupId: 11,
+      channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      timestamp: 1_000,
+    });
+    const newEvent = signedEvent({
+      eventId: 'new-general-expiry-policy',
+      groupId: 11,
+      channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      timestamp: policyAppliedAt + 1_000,
+    });
+
+    expect(policyAppliedAt).toBeGreaterThan(0);
+    expect(db.insertEvent(legacyEvent, true)).toBe(true);
+    expect(db.insertEvent(newEvent, true)).toBe(true);
+    expect(db.getEventExpiresAt(legacyEvent.eventId)).toBe(
+      policyAppliedAt + RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS
+    );
+    expect(db.getEventExpiresAt(newEvent.eventId)).toBe(
+      newEvent.timestamp + RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS
+    );
+  });
+
+  it('migrates stored general channels and queues legacy history reconciliation', () => {
+    const dbPath = tempDbPath();
+    const legacyDb = new ReticulumChatDatabase(dbPath);
+    const legacyEvent = signedEvent({
+      eventId: 'legacy-general-expiry-migration',
+      groupId: 12,
+      channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      timestamp: 1_000,
+    });
+    expect(legacyDb.insertEvent(legacyEvent, true)).toBe(true);
+    legacyDb.upsertChannel({
+      ...legacyDb.getChannel(12, RETICULUM_CHAT_DEFAULT_CHANNEL_ID)!,
+      updatedAt: 1,
+    });
+    const rawLegacyDb = (legacyDb as any).db;
+    rawLegacyDb
+      .prepare('DELETE FROM rchat_schema_migrations WHERE name = ?')
+      .run('general-channel-expiry-policy-v1');
+    rawLegacyDb
+      .prepare(
+        'UPDATE reticulum_chat_channels SET expiry_duration_ms = ? WHERE group_id = ? AND channel_id = ?'
+      )
+      .run(null, 12, RETICULUM_CHAT_DEFAULT_CHANNEL_ID);
+    rawLegacyDb
+      .prepare(
+        'UPDATE reticulum_chat_events SET expires_at = ? WHERE event_id = ?'
+      )
+      .run(null, legacyEvent.eventId);
+    rawLegacyDb
+      .prepare(
+        'UPDATE rchat_message_projection SET expires_at = ? WHERE root_event_id = ?'
+      )
+      .run(null, legacyEvent.eventId);
+    rawLegacyDb
+      .prepare(
+        'DELETE FROM rchat_channel_expiry_reconciliation WHERE group_id = ? AND channel_id = ?'
+      )
+      .run(12, RETICULUM_CHAT_DEFAULT_CHANNEL_ID);
+    expect(
+      rawLegacyDb
+        .prepare(
+          'SELECT applied_at FROM rchat_schema_migrations WHERE name = ? LIMIT 1'
+        )
+        .get('general-channel-expiry-policy-v1')
+    ).toBeUndefined();
+    legacyDb.close();
+
+    const migratedDb = new ReticulumChatDatabase(dbPath);
+    dbs.push(migratedDb);
+    const policyAppliedAt = Number(
+      (migratedDb as any).generalChannelExpiryPolicyAppliedAt
+    );
+    expect(policyAppliedAt).toBeGreaterThan(0);
+    expect(
+      migratedDb.getChannel(12, RETICULUM_CHAT_DEFAULT_CHANNEL_ID)
+        ?.expiryDurationMs
+    ).toBe(RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS);
+    expect(migratedDb.getChannelExpiryReconciliationTargets(12)).toContainEqual(
+      {
+        groupId: 12,
+        channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      }
+    );
+
+    const reconciled = migratedDb.reconcileChannelMessageExpiries(
+      12,
+      RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      10,
+      policyAppliedAt
+    );
+    expect(reconciled.resolutions).toContainEqual({
+      eventId: legacyEvent.eventId,
+      expiresAt: policyAppliedAt + RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
+    });
   });
 
   it('keeps built-in channels open on database writes and reads', () => {
@@ -3161,9 +3267,7 @@ describe('reticulum chat database', () => {
       eventId: 'event-mention-target',
       groupId: 63,
       authorAddress: 'Qauthor',
-      mentionAddressHashes: [
-        hashReticulumChatMentionAddress('Qmentioned'),
-      ],
+      mentionAddressHashes: [hashReticulumChatMentionAddress('Qmentioned')],
     });
     db.insertEvent(event, true);
 
@@ -3506,9 +3610,7 @@ describe('reticulum chat database', () => {
       mention_address_hashes: JSON.stringify([
         hashReticulumChatMentionAddress(mentionedAddress),
       ]),
-      mention_targets: JSON.stringify([
-        { type: 'everyone', groupId: 267 },
-      ]),
+      mention_targets: JSON.stringify([{ type: 'everyone', groupId: 267 }]),
       privileged_mention_status: 0,
       projection_author_address: authorAddress,
       timestamp: Date.now(),
@@ -3874,9 +3976,7 @@ describe('reticulum chat database', () => {
       eventId: 'event-mention-replace',
       groupId: 64,
       authorAddress: 'Qauthor',
-      mentionAddressHashes: [
-        hashReticulumChatMentionAddress('Qfirst'),
-      ],
+      mentionAddressHashes: [hashReticulumChatMentionAddress('Qfirst')],
     });
     db.insertEvent(event, true);
 
@@ -3918,9 +4018,7 @@ describe('reticulum chat database', () => {
       timestamp: root.timestamp + 2,
       eventType: 'edit',
       targetEventId: root.eventId,
-      mentionAddressHashes: [
-        hashReticulumChatMentionAddress('QnewerMention'),
-      ],
+      mentionAddressHashes: [hashReticulumChatMentionAddress('QnewerMention')],
     });
 
     db.insertEvent(root, true);
@@ -4506,7 +4604,11 @@ describe('reticulum chat manager', () => {
       readMode: 'admins',
     });
     (provider as any).acceptValidatedEvent(
-      signedEvent({ groupId: 716, channelId: 'general', timestamp: Date.now() }),
+      signedEvent({
+        groupId: 716,
+        channelId: 'general',
+        timestamp: Date.now(),
+      }),
       false
     );
     (provider as any).acceptValidatedEvent(
@@ -7483,9 +7585,9 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([256]);
     expect((manager as any).db.insertEvent(root, false, 0)).toBe(true);
     expect((manager as any).db.insertEvent(edit, false, 1)).toBe(true);
-    expect(
-      (manager as any).db.getCurrentProjectedEventId(root.eventId)
-    ).toBe(edit.eventId);
+    expect((manager as any).db.getCurrentProjectedEventId(root.eventId)).toBe(
+      edit.eventId
+    );
     expect((manager as any).db.getPrivilegedMentionStatus(edit.eventId)).toBe(
       1
     );
@@ -7788,10 +7890,7 @@ describe('reticulum chat manager', () => {
       timestamp: 99_000,
     });
     expect((manager as any).db.insertEvent(cachedEvent, false)).toBe(true);
-    const buildDigest = vi.spyOn(
-      manager as any,
-      'buildGroupStateDigestWire'
-    );
+    const buildDigest = vi.spyOn(manager as any, 'buildGroupStateDigestWire');
 
     manager.handleWire(
       { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
@@ -9310,9 +9409,7 @@ describe('reticulum chat manager', () => {
         on: () => undefined,
         off: () => undefined,
         getLocalDestinationHash: () => 'a'.repeat(32),
-        fanoutReticulumChatDetailed: async (
-          messages: ReticulumChatWire[]
-        ) => {
+        fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
           fanout.push(...messages);
           return { ok: true as const };
         },
@@ -9486,14 +9583,18 @@ describe('reticulum chat manager', () => {
     const signer = createLandAuthSigner();
     const target = createLandAuthSigner();
     const actionId = '123e4567-e89b-42d3-a456-426614174000';
-    const compactActionId = Buffer.from(actionId.replace(/-/g, ''), 'hex')
-      .toString('base64url');
+    const compactActionId = Buffer.from(
+      actionId.replace(/-/g, ''),
+      'hex'
+    ).toString('base64url');
     const sourceSessionId = 'a'.repeat(16);
-    const compactSourceSessionId = Buffer.from(sourceSessionId, 'hex')
-      .toString('base64url');
+    const compactSourceSessionId = Buffer.from(sourceSessionId, 'hex').toString(
+      'base64url'
+    );
     const targetSessionId = 'b'.repeat(16);
-    const compactTargetSessionId = Buffer.from(targetSessionId, 'hex')
-      .toString('base64url');
+    const compactTargetSessionId = Buffer.from(targetSessionId, 'hex').toString(
+      'base64url'
+    );
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -9563,9 +9664,7 @@ describe('reticulum chat manager', () => {
     });
     expect(actionWire).not.toHaveProperty('amt');
     expect(
-      byteLengthUtf8JsonWithBridgeSender(
-        actionWire as Record<string, unknown>
-      )
+      byteLengthUtf8JsonWithBridgeSender(actionWire as Record<string, unknown>)
     ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
     expect(
       nacl.sign.detached.verify(
@@ -9700,7 +9799,8 @@ describe('reticulum chat manager', () => {
   it('verifies, rate limits, and replay-protects inbound QortalLand social actions', async () => {
     let now = 100_000;
     const emitted: Array<Record<string, unknown>> = [];
-    const forwarded: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const forwarded: Array<{ peer: string; wire: Record<string, unknown> }> =
+      [];
     const signer = createLandAuthSigner();
     const target = createLandAuthSigner();
     const manager = new ReticulumChatManager({
@@ -10322,9 +10422,7 @@ describe('reticulum chat manager', () => {
         new Uint8Array(base58Decode(String(authWire?.e)))
       )
     ).toBe(true);
-    expect(stateWire).toEqual(
-      expect.objectContaining({ v: 1, i: 4 })
-    );
+    expect(stateWire).toEqual(expect.objectContaining({ v: 1, i: 4 }));
     expect(stateWire).not.toHaveProperty('af');
     expect(stateWire).not.toHaveProperty('dn');
     direct.length = 0;
@@ -10807,7 +10905,9 @@ describe('reticulum chat manager', () => {
         address === player.address || address === opponent.address,
     });
 
-    manager.setLocalGroupMemberships([{ groupId: 73, localAddress: player.address }]);
+    manager.setLocalGroupMemberships([
+      { groupId: 73, localAddress: player.address },
+    ]);
     manager.subscribeGroup(73);
     const sendResult = await manager.sendLandCall(73, {
       callType: 'game_status',
@@ -10818,40 +10918,48 @@ describe('reticulum chat manager', () => {
       timestamp: 100_000,
     });
     expect(sendResult.ok).toBe(true);
-    expect(sent).toContainEqual(expect.objectContaining({
-      k: 'lc',
-      y: 'g',
-      c: 'game-match-id',
-      a: player.address,
-      b: opponent.address,
-      u: 'park',
-    }));
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        k: 'lc',
+        y: 'g',
+        c: 'game-match-id',
+        a: player.address,
+        b: opponent.address,
+        u: 'park',
+      })
+    );
     manager.on('landCall', (payload) => {
       emitted.push(payload as Record<string, unknown>);
     });
 
-    manager.handleWire({
-      t: 'RCHAT',
-      k: 'lc',
-      g: 73,
-      y: 'g',
-      c: 'game-match-id',
-      a: player.address,
-      b: opponent.address,
-      u: 'park',
-      s: 100_000,
-    }, 'bbbbbbbbbbbbbbbb');
-    manager.handleWire({
-      t: 'RCHAT',
-      k: 'lc',
-      g: 73,
-      y: 'x',
-      c: 'game-match-id',
-      a: player.address,
-      b: opponent.address,
-      u: 'park',
-      s: 100_000,
-    }, 'bbbbbbbbbbbbbbbb');
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'lc',
+        g: 73,
+        y: 'g',
+        c: 'game-match-id',
+        a: player.address,
+        b: opponent.address,
+        u: 'park',
+        s: 100_000,
+      },
+      'bbbbbbbbbbbbbbbb'
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'lc',
+        g: 73,
+        y: 'x',
+        c: 'game-match-id',
+        a: player.address,
+        b: opponent.address,
+        u: 'park',
+        s: 100_000,
+      },
+      'bbbbbbbbbbbbbbbb'
+    );
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -13604,7 +13712,9 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-image')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(accepts).toHaveLength(1);
@@ -13691,7 +13801,9 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-image')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     manager.handleWire(
       {
         t: 'RCHAT',
@@ -13762,7 +13874,9 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-image')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     manager.handleWire(
       {
         t: 'RCHAT',
@@ -13840,7 +13954,9 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-file')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     manager.handleWire(
       {
         t: 'RCHAT',
@@ -13872,7 +13988,9 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-file')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     expect(accepts).toHaveLength(
@@ -13938,11 +14056,15 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-image')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
     await expect(
       manager.requestResource(78, manifest, 'event-with-image')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(discoveryCalls).toHaveLength(2);
@@ -14347,7 +14469,9 @@ describe('reticulum chat manager', () => {
 
     await expect(
       manager.requestResource(78, manifest, 'event-with-image')
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
     const findWire = fanouts
       .flatMap((call) => call.messages)
@@ -15405,7 +15529,9 @@ describe('reticulum chat manager', () => {
       );
       await vi.waitUntil(
         () => direct.some((wire) => wire.k === 'metadata_snapshot_req_v3'),
-        { timeout: 1_000 }
+        {
+          timeout: 1_000,
+        }
       );
       expect(direct).toContainEqual(
         expect.objectContaining({
@@ -16356,7 +16482,10 @@ describe('reticulum chat manager', () => {
     );
     await vi.waitFor(
       () => expect(direct.some((wire) => wire.k === 'group_digest')).toBe(true),
-      { timeout: 1_000, interval: 10 }
+      {
+        timeout: 1_000,
+        interval: 10,
+      }
     );
 
     const digest = direct.find((wire) => wire.k === 'group_digest') as any;
@@ -18444,9 +18573,10 @@ describe('reticulum chat manager', () => {
       manager.applyChannelMetadataEvent(createEvent.eventId, createPayload)
     ).resolves.toBe(true);
     expect(
-      manager.getChannels(groupId, true).find(
-        (channel) => channel.channelId === createPayload.channelId
-      )?.expiryDurationMs
+      manager
+        .getChannels(groupId, true)
+        .find((channel) => channel.channelId === createPayload.channelId)
+        ?.expiryDurationMs
     ).toBe(createPayload.expiryDurationMs);
 
     const removePayload = {
@@ -18466,9 +18596,10 @@ describe('reticulum chat manager', () => {
       manager.applyChannelMetadataEvent(removeEvent.eventId, removePayload)
     ).resolves.toBe(true);
     expect(
-      manager.getChannels(groupId, true).find(
-        (channel) => channel.channelId === createPayload.channelId
-      )?.expiryDurationMs
+      manager
+        .getChannels(groupId, true)
+        .find((channel) => channel.channelId === createPayload.channelId)
+        ?.expiryDurationMs
     ).toBeUndefined();
 
     const builtInPayload = {
@@ -18491,9 +18622,9 @@ describe('reticulum chat manager', () => {
     await expect(
       manager.applyChannelMetadataEvent(builtInEvent.eventId, builtInPayload)
     ).resolves.toBe(true);
-    const builtInChannel = manager.getChannels(groupId, true).find(
-      (channel) => channel.channelId === builtInPayload.channelId
-    );
+    const builtInChannel = manager
+      .getChannels(groupId, true)
+      .find((channel) => channel.channelId === builtInPayload.channelId);
     expect(builtInChannel?.expiryDurationMs).toBe(
       RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS
     );
@@ -19785,6 +19916,59 @@ describe('reticulum chat manager', () => {
       },
     ];
     expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+  });
+
+  it('rejects metadata snapshots that remove or alter the general expiry', () => {
+    const channel = {
+      groupId: 825,
+      channelId: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      name: RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      position: 0,
+      archived: false,
+      writeMode: 'members' as const,
+      readMode: 'members' as const,
+      writeModeUpdatedAt: 0,
+      expiryDurationMs: RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
+      createdBy: '',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const snapshot = {
+      groupId: channel.groupId,
+      snapshotId: 'general-fixed-expiry',
+      scope: 'public' as const,
+      parentSnapshotHash: '',
+      version: 1,
+      createdAt: 100,
+      latestEventId: '',
+      latestFeedTimestamp: 0,
+      snapshotHash: 'b'.repeat(64),
+      adminAddress: 'Qadmin',
+      adminPublicKey: 'public-key',
+      signature: 'signature',
+      channels: [channel],
+      categories: [],
+      revisions: [],
+    };
+
+    expect(metadataSnapshotHasConsistentRevisions(snapshot)).toBe(true);
+    expect(
+      metadataSnapshotHasConsistentRevisions({
+        ...snapshot,
+        channels: [{ ...channel, expiryDurationMs: undefined }],
+      })
+    ).toBe(false);
+    expect(
+      metadataSnapshotHasConsistentRevisions({
+        ...snapshot,
+        channels: [
+          {
+            ...channel,
+            expiryDurationMs: RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+          },
+        ],
+      })
+    ).toBe(false);
   });
 
   it('rejects malformed snapshot channel records instead of normalizing them', () => {
@@ -21658,7 +21842,9 @@ describe('reticulum chat manager', () => {
     ).toBeNull();
     await vi.waitUntil(
       () => adminRequests.some((wire) => wire.k === 'metadata_snapshot_req_v3'),
-      { timeout: 1_000 }
+      {
+        timeout: 1_000,
+      }
     );
     const fullSnapshotRequest = adminRequests.find(
       (
@@ -23644,9 +23830,7 @@ describe('reticulum chat manager', () => {
       groupId: firstGroupId,
       channelId: 'general',
       timestamp: 100_000,
-      mentionAddressHashes: [
-        hashReticulumChatMentionAddress(readerAddress),
-      ],
+      mentionAddressHashes: [hashReticulumChatMentionAddress(readerAddress)],
     });
     const firstOther = signedEvent({
       eventId: 'mark-groups-read-first-other',
@@ -23671,10 +23855,15 @@ describe('reticulum chat manager', () => {
     const afterFirstMark = manager.getChatSummaries(readerAddress);
     expect(
       afterFirstMark.find((summary) => summary.groupId === firstGroupId)
-    ).toMatchObject({ unreadCount: 0, mentionCount: 0 });
+    ).toMatchObject({
+      unreadCount: 0,
+      mentionCount: 0,
+    });
     expect(
       afterFirstMark.find((summary) => summary.groupId === secondGroupId)
-    ).toMatchObject({ unreadCount: 1 });
+    ).toMatchObject({
+      unreadCount: 1,
+    });
 
     const newerEvent = signedEvent({
       eventId: 'mark-groups-read-newer-event',
@@ -23690,11 +23879,11 @@ describe('reticulum chat manager', () => {
     ).toMatchObject({ unreadCount: 1 });
 
     expect(
-      manager.markGroupsRead(
-        [firstGroupId, secondGroupId],
-        readerAddress
-      )
-    ).toEqual({ groupsMarked: 2, channelsMarked: 2 });
+      manager.markGroupsRead([firstGroupId, secondGroupId], readerAddress)
+    ).toEqual({
+      groupsMarked: 2,
+      channelsMarked: 2,
+    });
     expect(
       manager
         .getChatSummaries(readerAddress)

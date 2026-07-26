@@ -68,6 +68,7 @@ const expiryIndicatorLabel = (durationMs?: number): string | null => {
   if (option.label === '48 hours') return '48';
   if (option.label === '72 hours') return '72';
   if (option.label === '1 week') return '1W';
+  if (option.label === '1 month') return '1M';
   return null;
 };
 

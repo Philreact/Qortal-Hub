@@ -15,6 +15,8 @@ export const RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 export const RETICULUM_CHAT_RELAY_EVENT_MAX_BYTES = 32 * 1024;
 export const RETICULUM_CHAT_DEFAULT_CHANNEL_ID = 'general';
 export const RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID = 'qortal-land';
+export const RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS =
+  30 * 24 * 60 * 60 * 1000;
 export const RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS = 24 * 60 * 60 * 1000;
 export const RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS = 'members';
 export const RETICULUM_CHAT_CHANNEL_WRITE_MODE_ADMINS = 'admins';
@@ -119,18 +121,25 @@ export type ReticulumGroupChannel = {
   updatedAt: number;
 };
 
-function keepReticulumBuiltInChannelOpen(
+function applyReticulumBuiltInChannelPolicy(
   channel: ReticulumGroupChannel
 ): ReticulumGroupChannel {
   if (!isReticulumChatBuiltInChannelId(channel.channelId)) return channel;
+  const expiryDurationMs = normalizeReticulumChatChannelExpiryDurationMs(
+    channel.channelId,
+    channel.expiryDurationMs
+  );
   if (
     channel.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS &&
-    channel.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS
-  ) return channel;
+    channel.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS &&
+    channel.expiryDurationMs === expiryDurationMs
+  )
+    return channel;
   return {
     ...channel,
     writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
     readMode: RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS,
+    expiryDurationMs,
   };
 }
 
@@ -903,8 +912,9 @@ export function normalizeReticulumChatChannelExpiryDurationMs(
   value: unknown
 ): number | undefined {
   const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
-  if (normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID)
-    return undefined;
+  if (normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
+    return RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS;
+  }
   if (normalizedChannelId === RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID) {
     return RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS;
   }
@@ -996,7 +1006,11 @@ export function reticulumChatPayloadHasPrivilegedMention(
     }
     if (!value || typeof value !== 'object') continue;
     const record = value as Record<string, unknown>;
-    if (record.type === 'mention' && record.attrs && typeof record.attrs === 'object') {
+    if (
+      record.type === 'mention' &&
+      record.attrs &&
+      typeof record.attrs === 'object'
+    ) {
       const attrs = record.attrs as Record<string, unknown>;
       for (const candidate of [attrs.id, attrs.label]) {
         const token = String(candidate || '')
@@ -1374,6 +1388,7 @@ export class ReticulumChatDatabase {
   >();
   private memoryReadWatermarks = new Map<string, number>();
   private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
+  private generalChannelExpiryPolicyAppliedAt = 0;
   private lastExpiryPruneAt = 0;
   private memoryMeta = new Map<
     string,
@@ -3135,20 +3150,41 @@ export class ReticulumChatDatabase {
     const messageExpiry = messageExpiryDurationFromPayload(
       root.encryptedPayload
     );
-    const duration =
-      channelExpiry !== undefined && messageExpiry !== undefined
-        ? Math.min(channelExpiry, messageExpiry)
-        : (channelExpiry ?? messageExpiry);
     const createdAt = Number(root.timestamp);
     return {
-      expiresAt:
-        duration && Number.isFinite(createdAt) && createdAt > 0
-          ? createdAt + duration
-          : null,
+      expiresAt: this.resolveMessageExpiresAt(
+        root.channelId,
+        createdAt,
+        channelExpiry,
+        messageExpiry
+      ),
       ...(messageExpiry !== undefined
         ? { messageExpiryDurationMs: messageExpiry }
         : {}),
     };
+  }
+
+  private resolveMessageExpiresAt(
+    channelId: unknown,
+    createdAt: number,
+    channelExpiryDurationMs?: number,
+    messageExpiryDurationMs?: number
+  ): number | null {
+    if (!Number.isFinite(createdAt) || createdAt <= 0) return null;
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const channelExpiryBase =
+      normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID &&
+      this.generalChannelExpiryPolicyAppliedAt > 0
+        ? Math.max(createdAt, this.generalChannelExpiryPolicyAppliedAt)
+        : createdAt;
+    const candidates: number[] = [];
+    if (channelExpiryDurationMs !== undefined) {
+      candidates.push(channelExpiryBase + channelExpiryDurationMs);
+    }
+    if (messageExpiryDurationMs !== undefined) {
+      candidates.push(createdAt + messageExpiryDurationMs);
+    }
+    return candidates.length > 0 ? Math.min(...candidates) : null;
   }
 
   private rootMessageExpiresAt(root: ReticulumChatEvent): number | null {
@@ -3329,11 +3365,6 @@ export class ReticulumChatDatabase {
       const messageExpiryDurationMs =
         storedMessageExpiry ??
         messageExpiryDurationFromPayload(row.encrypted_payload ?? '');
-      const duration =
-        channelExpiryDurationMs !== undefined &&
-        messageExpiryDurationMs !== undefined
-          ? Math.min(channelExpiryDurationMs, messageExpiryDurationMs)
-          : (channelExpiryDurationMs ?? messageExpiryDurationMs);
       const timestamp = Number(row.timestamp);
       const previousExpiresAt = Number(row.expires_at);
       const alreadyExpired =
@@ -3343,8 +3374,13 @@ export class ReticulumChatDatabase {
       let expiresAt: number | null = null;
       if (alreadyExpired) {
         expiresAt = previousExpiresAt;
-      } else if (duration && Number.isFinite(timestamp) && timestamp > 0) {
-        expiresAt = timestamp + duration;
+      } else {
+        expiresAt = this.resolveMessageExpiresAt(
+          normalizedChannelId,
+          timestamp,
+          channelExpiryDurationMs,
+          messageExpiryDurationMs
+        );
       }
       return {
         eventId: row.event_id,
@@ -4984,9 +5020,11 @@ export class ReticulumChatDatabase {
     if (!projection) return false;
     const rootEventId = projection.root_event_id;
     const mentionTargets = parseMentionTargets(projection.mention_targets);
-    const hasPrivilegedTarget = mentionTargets.some(
-      (target) => target.type === 'everyone' || target.type === 'here'
-    ) || reticulumChatPayloadHasPrivilegedMention(projection.encrypted_payload);
+    const hasPrivilegedTarget =
+      mentionTargets.some(
+        (target) => target.type === 'everyone' || target.type === 'here'
+      ) ||
+      reticulumChatPayloadHasPrivilegedMention(projection.encrypted_payload);
     const privilegedMentionAuthorized =
       this.getPrivilegedMentionStatus(projection.current_event_id) === 1;
     const signedMentionHashes = new Set(
@@ -5153,9 +5191,7 @@ export class ReticulumChatDatabase {
     }
     if (excludedAuthors.size > 0) {
       clauses.push(
-        `p.author_address NOT IN (${[...excludedAuthors]
-          .map(() => '?')
-          .join(', ')})`
+        `p.author_address NOT IN (${[...excludedAuthors].map(() => '?').join(', ')})`
       );
       params.push(...excludedAuthors);
     }
@@ -5163,9 +5199,7 @@ export class ReticulumChatDatabase {
       const groupClauses: string[] = [];
       for (const [groupId, authors] of excludedAuthorsByGroup) {
         groupClauses.push(
-          `(p.group_id = ? AND p.author_address IN (${[...authors]
-            .map(() => '?')
-            .join(', ')}))`
+          `(p.group_id = ? AND p.author_address IN (${[...authors].map(() => '?').join(', ')}))`
         );
         params.push(groupId, ...authors);
       }
@@ -5173,9 +5207,7 @@ export class ReticulumChatDatabase {
     }
     if (normalizedEventTypes.length > 0) {
       clauses.push(
-        `p.root_event_type IN (${normalizedEventTypes
-          .map(() => '?')
-          .join(', ')})`
+        `p.root_event_type IN (${normalizedEventTypes.map(() => '?').join(', ')})`
       );
       params.push(...normalizedEventTypes);
     }
@@ -5324,9 +5356,7 @@ export class ReticulumChatDatabase {
       options.excludedAuthorAddresses ?? []
     );
     const excludedClause = excludedAuthors.length
-      ? `AND p.author_address NOT IN (${excludedAuthors
-          .map(() => '?')
-          .join(', ')})`
+      ? `AND p.author_address NOT IN (${excludedAuthors.map(() => '?').join(', ')})`
       : '';
     const target = this.db
       .prepare(
@@ -5689,9 +5719,7 @@ export class ReticulumChatDatabase {
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     const excludedAuthors = normalizeExcludedAuthors(excludedAuthorAddresses);
     const excludedClause = excludedAuthors.length
-      ? `AND projection.author_address NOT IN (${excludedAuthors
-          .map(() => '?')
-          .join(', ')})`
+      ? `AND projection.author_address NOT IN (${excludedAuthors.map(() => '?').join(', ')})`
       : '';
     const rows = this.db
       .prepare(
@@ -5779,9 +5807,7 @@ export class ReticulumChatDatabase {
     const discussionRootId = String(discussionRoot?.event_id || '');
     if (!discussionRootId) return [];
     const excludedClause = excludedAuthors.length
-      ? `AND projection.author_address NOT IN (${excludedAuthors
-          .map(() => '?')
-          .join(', ')})`
+      ? `AND projection.author_address NOT IN (${excludedAuthors.map(() => '?').join(', ')})`
       : '';
     const rows = this.db
       .prepare(
@@ -7905,7 +7931,7 @@ export class ReticulumChatDatabase {
       updatedAt: row.updated_at,
     }));
     for (let index = 0; index < channels.length; index += 1) {
-      channels[index] = keepReticulumBuiltInChannelOpen(channels[index]);
+      channels[index] = applyReticulumBuiltInChannelPolicy(channels[index]);
     }
     for (const channel of this.memoryChannels.values()) {
       if (channel.groupId !== groupId) continue;
@@ -7913,9 +7939,9 @@ export class ReticulumChatDatabase {
         (item) => item.channelId === channel.channelId
       );
       if (existingIndex >= 0) {
-        channels[existingIndex] = keepReticulumBuiltInChannelOpen(channel);
+        channels[existingIndex] = applyReticulumBuiltInChannelPolicy(channel);
       } else {
-        channels.push(keepReticulumBuiltInChannelOpen(channel));
+        channels.push(applyReticulumBuiltInChannelPolicy(channel));
       }
     }
     if (
@@ -7996,7 +8022,7 @@ export class ReticulumChatDatabase {
       expiryDurationMs,
       description: channel.description?.trim() || undefined,
     };
-    const normalizedChannel = keepReticulumBuiltInChannelOpen(
+    const normalizedChannel = applyReticulumBuiltInChannelPolicy(
       normalizedChannelCandidate
     );
     const expiryPolicyChanged =
@@ -8061,6 +8087,7 @@ export class ReticulumChatDatabase {
       writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
       readMode: RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS,
       writeModeUpdatedAt: 0,
+      expiryDurationMs: RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
       createdBy: '',
       createdAt: 0,
       updatedAt: 0,
@@ -8979,10 +9006,7 @@ export class ReticulumChatDatabase {
         reticulumChatPayloadHasPrivilegedMention(
           String(row.encrypted_payload || '')
         );
-      if (
-        hasPrivilegedMention &&
-        Number(row.privileged_mention_status) !== 1
-      ) {
+      if (hasPrivilegedMention && Number(row.privileged_mention_status) !== 1) {
         continue;
       }
       count += 1;
@@ -9190,11 +9214,10 @@ export class ReticulumChatDatabase {
     };
     if (!suppressUnreadState) {
       for (const event of effectiveMentionEvents.values()) {
-        const hasPrivilegedTarget = sanitizeMentionTargets(
-          event.mentionTargets
-        ).some(
-          (target) => target.type === 'everyone' || target.type === 'here'
-        ) || reticulumChatPayloadHasPrivilegedMention(event.encryptedPayload);
+        const hasPrivilegedTarget =
+          sanitizeMentionTargets(event.mentionTargets).some(
+            (target) => target.type === 'everyone' || target.type === 'here'
+          ) || reticulumChatPayloadHasPrivilegedMention(event.encryptedPayload);
         const privilegedMentionAuthorized =
           this.getPrivilegedMentionStatus(event.eventId) === 1;
         if (
@@ -10588,6 +10611,10 @@ export class ReticulumChatDatabase {
         run: () => this.migrateDynamicChannelExpiryPolicySchema(),
       },
       {
+        name: 'general-channel-expiry-policy',
+        run: () => this.migrateGeneralChannelExpiryPolicySchema(),
+      },
+      {
         name: 'message-projection-attachments',
         run: () => this.migrateMessageProjectionAttachmentSchema(),
       },
@@ -10639,10 +10666,82 @@ export class ReticulumChatDatabase {
     `);
   }
 
+  private migrateGeneralChannelExpiryPolicySchema(): void {
+    const migrationName = 'general-channel-expiry-policy-v1';
+    const applied = this.db
+      .prepare(
+        'SELECT applied_at FROM rchat_schema_migrations WHERE name = ? LIMIT 1'
+      )
+      .get(migrationName) as { applied_at?: number } | undefined;
+    if (applied) {
+      this.generalChannelExpiryPolicyAppliedAt = Math.max(
+        0,
+        Math.floor(Number(applied.applied_at) || 0)
+      );
+      return;
+    }
+    const appliedAt = Date.now();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            UPDATE reticulum_chat_channels
+            SET expiry_duration_ms = ?
+            WHERE channel_id = ?
+          `
+        )
+        .run(
+          RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
+          RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+        );
+      this.db
+        .prepare(
+          `
+            INSERT INTO rchat_channel_expiry_reconciliation
+              (group_id, channel_id, revision, expiry_duration_ms,
+               after_timestamp, after_event_id, updated_at)
+            SELECT groups.group_id, ?, 1, ?, -1, '', ?
+            FROM (
+              SELECT group_id
+              FROM reticulum_chat_events
+              WHERE channel_id = ?
+              UNION
+              SELECT group_id
+              FROM reticulum_chat_channels
+              WHERE channel_id = ?
+            ) AS groups
+            WHERE groups.group_id > 0
+            ON CONFLICT(group_id, channel_id) DO UPDATE SET
+              revision = rchat_channel_expiry_reconciliation.revision + 1,
+              expiry_duration_ms = excluded.expiry_duration_ms,
+              after_timestamp = -1,
+              after_event_id = '',
+              updated_at = excluded.updated_at
+          `
+        )
+        .run(
+          RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+          RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
+          appliedAt,
+          RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+          RETICULUM_CHAT_DEFAULT_CHANNEL_ID
+        );
+      this.db
+        .prepare(
+          'INSERT INTO rchat_schema_migrations (name, applied_at) VALUES (?, ?)'
+        )
+        .run(migrationName, appliedAt);
+    });
+    tx();
+    this.generalChannelExpiryPolicyAppliedAt = appliedAt;
+  }
+
   private tableColumns(tableName: string): Set<string> {
     const rows = this.db
       .prepare(`PRAGMA table_info(${tableName})`)
-      .all() as Array<{ name?: string }>;
+      .all() as Array<{
+      name?: string;
+    }>;
     return new Set(
       rows
         .map((row) => (typeof row.name === 'string' ? row.name : ''))
