@@ -35,6 +35,7 @@ import './chat.css';
 import { CustomButton } from '../../styles/App-styles';
 import CircularProgress from '@mui/material/CircularProgress';
 import { LoadingSnackbar } from '../Snackbar/LoadingSnackbar';
+import { ReactionPicker } from '../ReactionPicker';
 import {
   getBaseApiReact,
   getBaseApiReactSocket,
@@ -9157,7 +9158,7 @@ export const ChatGroup = ({
               (reticulumChatEnabled || !!secretKey || isPrivate === false) && (
                 <Box
                   sx={{
-                    alignItems: reticulumChatEnabled ? 'center' : 'flex-end',
+                    alignItems: 'flex-end',
                     backgroundColor: reticulumChatEnabled
                       ? alpha(theme.palette.background.paper, 0.72)
                       : theme.palette.background.default,
@@ -9534,22 +9535,44 @@ export const ChatGroup = ({
                     }}
                   >
                     {reticulumChatEnabled && (
-                      <ReticulumMessageExpiryButton
-                        channelExpiryDurationMs={
-                          selectedReticulumChannelExpiryDurationMs
-                        }
-                        disabled={
-                          Boolean(onEditMessage) ||
-                          !canWriteSelectedReticulumChannel
-                        }
-                        disabledReason={
-                          onEditMessage
-                            ? 'Expiry cannot be changed while editing'
-                            : 'You cannot write in this channel'
-                        }
-                        onChange={setReticulumMessageExpiryDurationMs}
-                        value={reticulumMessageExpiryDurationMs}
-                      />
+                      <>
+                        <Tooltip title="Choose Emoji">
+                          <Box
+                            sx={{
+                              alignItems: 'center',
+                              display: 'inline-flex',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <ReactionPicker
+                              neutralIcon
+                              onReaction={(emoji: string) => {
+                                editorRef.current
+                                  ?.chain()
+                                  .focus()
+                                  .insertContent(emoji)
+                                  .run();
+                              }}
+                            />
+                          </Box>
+                        </Tooltip>
+                        <ReticulumMessageExpiryButton
+                          channelExpiryDurationMs={
+                            selectedReticulumChannelExpiryDurationMs
+                          }
+                          disabled={
+                            Boolean(onEditMessage) ||
+                            !canWriteSelectedReticulumChannel
+                          }
+                          disabledReason={
+                            onEditMessage
+                              ? 'Expiry cannot be changed while editing'
+                              : 'You cannot write in this channel'
+                          }
+                          onChange={setReticulumMessageExpiryDurationMs}
+                          value={reticulumMessageExpiryDurationMs}
+                        />
+                      </>
                     )}
                     <CustomButton
                       onClick={() => {
