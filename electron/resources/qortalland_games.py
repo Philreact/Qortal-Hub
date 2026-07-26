@@ -19,7 +19,7 @@ from collections import deque
 from typing import Any, Callable, Dict, Optional
 
 import RNS
-from RNS.Channel import MessageBase
+from RNS.Channel import CEType, ChannelException, MessageBase
 from RNS.vendor import umsgpack
 from qortalland_proximity import PROXIMITY_COMMANDS, QortalLandProximityVoiceManager
 
@@ -144,6 +144,9 @@ CHAT_MAX_CHARS = 500
 CHAT_MAX_BYTES = 2000
 CHAT_CHUNK_BYTES = 180
 CHAT_HISTORY_LIMIT = 100
+GAME_SEND_QUEUE_MAX = 128
+GAME_SEND_FLUSH_BUDGET = 16
+EPHEMERAL_GAME_MESSAGE_TYPES = {"MATCH_PING", "MATCH_PONG", "CHAT_TYPING"}
 
 
 def _b58decode(value: str) -> bytes:
@@ -1247,6 +1250,154 @@ class QortalLandGameManager:
         if envelope is None:
             raise ValueError("channel_send_failed")
 
+    @staticmethod
+    def _is_channel_temporarily_unavailable(exc: Exception) -> bool:
+        return (
+            isinstance(exc, ChannelException)
+            and getattr(exc, "type", None) == CEType.ME_LINK_NOT_READY
+        ) or str(exc).lower() in {
+            "channel_send_failed",
+            "('link is not ready',)",
+            "('outlet did not transmit packet',)",
+        }
+
+    @staticmethod
+    def _game_send_key(payload: Dict[str, Any]) -> str:
+        message = payload.get("m") if isinstance(payload, dict) else None
+        if not isinstance(message, dict):
+            return ""
+        message_type = str(message.get("type") or "")
+        message_id = str(message.get("messageId") or "")
+        if not message_type:
+            return ""
+        if message_type == "START_ACK":
+            return message_type
+        if not message_id:
+            return ""
+        if message_type == "CHAT_CHUNK":
+            return f"{message_type}:{message_id}:{message.get('index')}"
+        return f"{message_type}:{message_id}"
+
+    @staticmethod
+    def _is_ephemeral_game_payload(payload: Dict[str, Any]) -> bool:
+        message = payload.get("m") if isinstance(payload, dict) else None
+        return (
+            isinstance(message, dict)
+            and str(message.get("type") or "") in EPHEMERAL_GAME_MESSAGE_TYPES
+        )
+
+    def _queue_game_payload(
+        self,
+        state: Dict[str, Any],
+        payload: Dict[str, Any],
+        recovery_priority: bool = False,
+    ) -> bool:
+        if self._is_ephemeral_game_payload(payload):
+            return False
+        with self.lock:
+            priority_queue = state.setdefault("recoveryGameSendQueue", deque())
+            normal_queue = state.setdefault("gameSendQueue", deque())
+            key = self._game_send_key(payload)
+            if key and any(
+                self._game_send_key(queued) == key
+                for queued in (*priority_queue, *normal_queue)
+            ):
+                return True
+            if len(priority_queue) + len(normal_queue) >= GAME_SEND_QUEUE_MAX:
+                raise ValueError("game_send_queue_full")
+            (priority_queue if recovery_priority else normal_queue).append(payload)
+        return True
+
+    def _send_game_payload(
+        self,
+        state: Dict[str, Any],
+        message: Dict[str, Any],
+        recovery_priority: bool = False,
+    ) -> bool:
+        payload = {"k": "game", "m": message}
+        with self.lock:
+            priority_queue = state.setdefault("recoveryGameSendQueue", deque())
+            normal_queue = state.setdefault("gameSendQueue", deque())
+            has_queued_payload = bool(priority_queue or normal_queue)
+        if has_queued_payload:
+            queued = self._queue_game_payload(
+                state,
+                payload,
+                recovery_priority=recovery_priority,
+            )
+            self._flush_game_send_queue(state)
+            return queued
+        try:
+            self._send_channel(state, payload)
+            return True
+        except Exception as exc:
+            if not self._is_channel_temporarily_unavailable(exc):
+                raise
+            queued = self._queue_game_payload(
+                state,
+                payload,
+                recovery_priority=recovery_priority,
+            )
+            now = time.time()
+            if queued and now - float(state.get("lastGameSendDeferredLog") or 0) >= 2:
+                state["lastGameSendDeferredLog"] = now
+                self.log(
+                    f"[qortalland-game] send deferred match={state['matchId'][:8]} "
+                    f"queued={len(priority_queue) + len(normal_queue)} code=channel_not_ready"
+                )
+            return queued
+
+    def _flush_game_send_queue(self, state: Dict[str, Any]) -> None:
+        if state.get("phase") not in {"active", "ending", *ROUND_PHASES}:
+            return
+        with self.lock:
+            if state.get("gameSendFlushActive"):
+                return
+            state["gameSendFlushActive"] = True
+        try:
+            sent = 0
+            while sent < GAME_SEND_FLUSH_BUDGET:
+                with self.lock:
+                    priority_queue = state.setdefault("recoveryGameSendQueue", deque())
+                    normal_queue = state.setdefault("gameSendQueue", deque())
+                    queue_to_use = priority_queue if priority_queue else normal_queue
+                    if not queue_to_use:
+                        return
+                    payload = queue_to_use[0]
+                    queued_message = payload.get("m") if isinstance(payload, dict) else None
+                    if (
+                        isinstance(queued_message, dict)
+                        and queued_message.get("type") == "MOVE"
+                        and queued_message.get("roundId") == state.get("roundId")
+                        and queued_message.get("messageId")
+                    ):
+                        state.setdefault("pendingOutboundMoves", {}).setdefault(
+                            str(queued_message["messageId"]),
+                            {**queued_message, "type": "MOVE"},
+                        )
+                try:
+                    self._send_channel(state, payload)
+                except Exception as exc:
+                    if not self._is_channel_temporarily_unavailable(exc):
+                        self.log(
+                            f"[qortalland-game] queued send failed match={state['matchId'][:8]} "
+                            f"code={str(exc)[:80]}"
+                        )
+                    return
+                with self.lock:
+                    if queue_to_use and queue_to_use[0] is payload:
+                        queue_to_use.popleft()
+                sent += 1
+        finally:
+            with self.lock:
+                state["gameSendFlushActive"] = False
+
+    def _flush_game_send_queues(self) -> None:
+        with self.lock:
+            states = list(self.matches.values())
+        for state in states:
+            self._flush_game_send_queue(state)
+
     def _current_state_hash(self, state: Dict[str, Any]) -> str:
         transcript = state.get("transcript") or []
         return (
@@ -1384,10 +1535,10 @@ class QortalLandGameManager:
         raw = text_value.encode("utf-8")
         chunks = [raw[index:index + CHAT_CHUNK_BYTES] for index in range(0, len(raw), CHAT_CHUNK_BYTES)]
         for index, chunk in enumerate(chunks):
-            self._send_channel(state, {"k": "game", "m": {
+            self._send_game_payload(state, {
                 "type": "CHAT_CHUNK", "matchId": state["matchId"], "messageId": message_id,
                 "createdAt": created_at, "index": index, "total": len(chunks), "data": chunk,
-            }})
+            })
 
     def _receive_chat_chunk(self, state: Dict[str, Any], message: Dict[str, Any]) -> None:
         message_id = str(message.get("messageId") or "")
@@ -1406,7 +1557,7 @@ class QortalLandGameManager:
         ):
             raise ValueError("invalid_chat_chunk")
         if any(item.get("messageId") == message_id for item in state.get("chatMessages", [])):
-            self._send_channel(state, {"k": "game", "m": {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id}})
+            self._send_game_payload(state, {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id})
             return
         assemblies = state.setdefault("inboundChatChunks", {})
         if message_id not in assemblies and len(assemblies) >= 16:
@@ -1433,7 +1584,7 @@ class QortalLandGameManager:
             "matchId": state["matchId"],
             "message": {"type": "CHAT_MESSAGE", "matchId": state["matchId"], **record},
         })
-        self._send_channel(state, {"k": "game", "m": {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id}})
+        self._send_game_payload(state, {"type": "CHAT_ACK", "matchId": state["matchId"], "messageId": message_id})
 
     def _validate_round_control(self, state: Dict[str, Any], message: Dict[str, Any]) -> None:
         round_id = str(message.get("roundId") or "")
@@ -1525,11 +1676,11 @@ class QortalLandGameManager:
                     incoming_id = str(game_message["roundId"])
                     pending_id = str(pending.get("roundId") or "")
                     if uuid.UUID(incoming_id).bytes > uuid.UUID(pending_id).bytes:
-                        self._send_channel(state, {"k": "game", "m": {
+                        self._send_game_payload(state, {
                             "type": "ROUND_RESPONSE", "matchId": match_id,
                             "messageId": str(uuid.uuid4()), "roundId": incoming_id,
                             "accepted": False, "reason": "superseded",
-                        }})
+                        })
                         return True
                     if incoming_id == pending_id:
                         return True
@@ -1589,7 +1740,7 @@ class QortalLandGameManager:
                 if accepted is None or not self._same_move(accepted, normalized_move):
                     self._protocol_error(state, "conflicting_accepted_move")
                 else:
-                    self._send_channel(state, {"k": "game", "m": cached_ack})
+                    self._send_game_payload(state, cached_ack)
                 return True
             try:
                 self._validate_move_shape(state, normalized_move)
@@ -1629,20 +1780,21 @@ class QortalLandGameManager:
         if message_id and message_id in seen:
             cached_ack = state.setdefault("moveAcks", {}).get(message_id)
             if cached_ack is not None:
-                self._send_channel(state, {"k": "game", "m": cached_ack})
+                self._send_game_payload(state, cached_ack)
             return True
         if message_id:
             if len(seen) >= 256:
                 seen.pop()
             seen.add(message_id)
         if game_message.get("type") == "MATCH_PING":
-            self._send_channel(state, {"k": "game", "m": {"type": "MATCH_PONG", "matchId": match_id, "messageId": message_id}})
+            self._send_game_payload(state, {"type": "MATCH_PONG", "matchId": match_id, "messageId": message_id})
         elif game_message.get("type") == "START_ACK":
             resume_phase = str(state.pop("resumeReturnPhase", "active"))
             state["phase"] = resume_phase if resume_phase in {"active", "ending", "round_waiting", "round_incoming"} else "active"
             state.pop("disconnectedAt", None)
             if state["phase"] in {"active", "ending"}:
                 self._send_missing_sync_moves(state)
+            self._flush_game_send_queue(state)
             self.send_event("GAME_STARTED", self._public_state(state))
         else:
             self.send_event("GAME_MESSAGE", {"matchId": match_id, "message": game_message})
@@ -1666,9 +1818,10 @@ class QortalLandGameManager:
         transcript = list(state.get("transcript") or [])
         peer_ply = int(state.pop("peerResumePly", len(transcript)) or 0)
         for move in transcript[max(0, peer_ply):]:
-            self._send_channel(
+            self._send_game_payload(
                 state,
-                {"k": "game", "m": {**move, "type": "SYNC_MOVE"}},
+                {**move, "type": "SYNC_MOVE"},
+                recovery_priority=True,
             )
 
     def _handle_handshake(self, state: Dict[str, Any], envelope: Dict[str, Any]) -> None:
@@ -1749,7 +1902,11 @@ class QortalLandGameManager:
             ):
                 raise ValueError("invalid_confirm")
             state["phase"] = "active"
-            self._send_channel(state, {"k": "game", "m": {"type": "START_ACK", "matchId": state["matchId"], "messageId": str(uuid.uuid4())}})
+            self._send_game_payload(
+                state,
+                {"type": "START_ACK", "matchId": state["matchId"], "messageId": str(uuid.uuid4())},
+                recovery_priority=True,
+            )
             self.send_event("GAME_STARTED", self._public_state(state))
         elif kind == "QORTAL_LAND_GAME_RESUME_ACCEPT":
             local = self._resume_state_fields(state)
@@ -1828,9 +1985,14 @@ class QortalLandGameManager:
             resume_phase = str(state.pop("resumeReturnPhase", "active"))
             state["phase"] = resume_phase if resume_phase in {"active", "ending", "round_waiting", "round_incoming"} else "active"
             state.pop("disconnectedAt", None)
-            self._send_channel(state, {"k": "game", "m": {"type": "START_ACK", "matchId": state["matchId"], "messageId": str(uuid.uuid4())}})
+            self._send_game_payload(
+                state,
+                {"type": "START_ACK", "matchId": state["matchId"], "messageId": str(uuid.uuid4())},
+                recovery_priority=True,
+            )
             if state["phase"] in {"active", "ending"}:
                 self._send_missing_sync_moves(state)
+            self._flush_game_send_queue(state)
             self.send_event("GAME_STARTED", self._public_state(state))
 
     def _starter(self, state: Dict[str, Any]) -> str:
@@ -1937,9 +2099,9 @@ class QortalLandGameManager:
             if game_message["active"] and now - float(state.get("lastLocalTyping") or 0) < 0.2:
                 return
             state["lastLocalTyping"] = now
-            self._send_channel(state, {"k": "game", "m": {
+            self._send_game_payload(state, {
                 "type": "CHAT_TYPING", "matchId": match_id, "active": game_message["active"]
-            }})
+            })
             return
         if message_type == "ROUND_REQUEST":
             self._validate_round_control(state, game_message)
@@ -1954,7 +2116,7 @@ class QortalLandGameManager:
                 "requestedByRemote": False,
             }
             state["phase"] = "round_waiting"
-            self._send_channel(state, {"k": "game", "m": game_message})
+            self._send_game_payload(state, game_message)
             return
         if message_type == "ROUND_RESPONSE":
             pending = state.get("pendingRound") or {}
@@ -1963,7 +2125,7 @@ class QortalLandGameManager:
             if game_message.get("accepted") is True:
                 if not valid_hex(game_message.get("recipientNonce"), 16):
                     raise ValueError("invalid_round_nonce")
-            self._send_channel(state, {"k": "game", "m": game_message})
+            self._send_game_payload(state, game_message)
             if game_message.get("accepted") is True:
                 self._reset_round(state, pending["roundId"], pending["requesterNonce"], str(game_message.get("recipientNonce") or ""))
             else:
@@ -1974,7 +2136,7 @@ class QortalLandGameManager:
             pending = state.get("pendingRound") or {}
             if state.get("phase") != "round_waiting" or game_message.get("roundId") != pending.get("roundId"):
                 raise ValueError("unexpected_round_cancel")
-            self._send_channel(state, {"k": "game", "m": game_message})
+            self._send_game_payload(state, game_message)
             state["phase"] = "session_idle"
             state.pop("pendingRound", None)
             return
@@ -1984,15 +2146,19 @@ class QortalLandGameManager:
             self._validate_move_shape(state, normalized_move)
             if state.setdefault("pendingOutboundMoves", {}) or state.setdefault("pendingInboundMoves", {}):
                 raise ValueError("move_already_pending")
-            self._send_channel(state, {"k": "game", "m": game_message})
             state["pendingOutboundMoves"][message_id] = normalized_move
+            try:
+                self._send_game_payload(state, game_message)
+            except Exception:
+                state["pendingOutboundMoves"].pop(message_id, None)
+                raise
             return
         if message_type == "MOVE_ACK":
             pending_move = state.setdefault("pendingInboundMoves", {}).get(message_id)
             if pending_move is None:
                 cached = state.setdefault("moveAcks", {}).get(message_id)
                 if cached == game_message:
-                    self._send_channel(state, {"k": "game", "m": cached})
+                    self._send_game_payload(state, cached)
                     return
                 raise ValueError("unexpected_move_ack")
             if (
@@ -2000,12 +2166,18 @@ class QortalLandGameManager:
                 or game_message.get("stateHash") != pending_move.get("resultingStateHash")
             ):
                 raise ValueError("conflicting_move_ack")
+            transcript = state.setdefault("transcript", [])
+            transcript_length = len(transcript)
             self._append_accepted_move(state, pending_move)
-            self._send_channel(state, {"k": "game", "m": game_message})
+            try:
+                self._send_game_payload(state, game_message)
+            except Exception:
+                del transcript[transcript_length:]
+                raise
             state["pendingInboundMoves"].pop(message_id, None)
             state.setdefault("moveAcks", {})[message_id] = game_message
             return
-        self._send_channel(state, {"k": "game", "m": game_message})
+        self._send_game_payload(state, game_message)
         if message_type in {"RESIGN", "GAME_OVER"}:
             state["phase"] = "ending"
             self._schedule_terminal_close(match_id, 5.0)
@@ -2040,6 +2212,7 @@ class QortalLandGameManager:
     def _monitor(self) -> None:
         while not self.stop_event.wait(1):
             self.enqueue(self.proximity.tick, ())
+            self.enqueue(self._flush_game_send_queues, ())
             now = time.time()
             for nonce_key, expiry in list(self.used_nonces.items()):
                 if expiry <= now:
@@ -2070,7 +2243,7 @@ class QortalLandGameManager:
                     if now - last_rx >= HEARTBEAT_INTERVAL and now - float(state.get("lastPing") or 0) >= HEARTBEAT_INTERVAL:
                         try:
                             ping_id = str(uuid.uuid4())
-                            self._send_channel(state, {"k": "game", "m": {"type": "MATCH_PING", "matchId": state["matchId"], "messageId": ping_id}})
+                            self._send_game_payload(state, {"type": "MATCH_PING", "matchId": state["matchId"], "messageId": ping_id})
                             state["lastPing"] = now
                         except Exception:
                             pass
@@ -2129,6 +2302,9 @@ class QortalLandGameManager:
             state["resumeReturnPhase"] = state.get("resumeReturnPhase") or state.get("phase")
             state["phase"] = "recovering"
             state.setdefault("disconnectedAt", time.time())
+            # The renderer rebuilds unacknowledged state from the authenticated
+            # resume snapshot. Deferred MOVE payloads remain queued and restore
+            # their pending entry immediately before retransmission.
             state.setdefault("pendingInboundMoves", {}).clear()
             state.setdefault("pendingOutboundMoves", {}).clear()
             self.send_event("GAME_LINK_STATE", {"matchId": state["matchId"], "state": "recovering", "deadlineAt": int((time.time() + RECOVERY_WINDOW) * 1000)})

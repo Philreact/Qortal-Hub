@@ -2,9 +2,11 @@ import json
 import threading
 import time
 import unittest
+from collections import deque
 from unittest import mock
 
 import RNS
+from RNS.Channel import CEType, ChannelException
 
 from qortalland_games import (
     GameMessage,
@@ -469,6 +471,209 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "pendingOutboundMoves": {pending["messageId"]: pending},
         }
         self.assertEqual(manager._public_state(state)["pendingOutboundMove"], pending)
+
+    def test_busy_reliable_channel_defers_move_without_ending_match(self):
+        manager, events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.ready = False
+                self.sent = []
+
+            def send(self, message):
+                if not self.ready:
+                    raise ChannelException(CEType.ME_LINK_NOT_READY, "Link is not ready")
+                self.sent.append(message.payload)
+                return object()
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        channel = Channel()
+        state = {
+            "matchId": match_id,
+            "roundId": match_id,
+            "game": "connect-four",
+            "rulesVersion": 1,
+            "requester": self.address,
+            "recipient": "Qopponent1111111111111111111111111111",
+            "requesterNonce": "11" * 16,
+            "recipientNonce": "22" * 16,
+            "phase": "active",
+            "channel": channel,
+            "transcript": [],
+            "pendingOutboundMoves": {},
+            "pendingInboundMoves": {},
+        }
+        manager.matches[match_id] = state
+        message_id = "10000000-0000-4000-8000-000000000020"
+        move = {
+            "type": "MOVE",
+            "messageId": message_id,
+            "ply": 1,
+            "column": 3,
+            "previousStateHash": manager._initial_state_hash(state),
+            "resultingStateHash": "bb" * 32,
+        }
+
+        manager._send_active({"matchId": match_id, "message": move})
+
+        self.assertEqual(state["phase"], "active")
+        self.assertIn(message_id, state["pendingOutboundMoves"])
+        self.assertEqual(len(state["gameSendQueue"]), 1)
+        self.assertFalse(any(event == "GAME_ENDED" for event, _payload in events))
+
+        channel.ready = True
+        manager._flush_game_send_queue(state)
+
+        self.assertEqual(len(state["gameSendQueue"]), 0)
+        self.assertEqual(channel.sent[0]["m"]["messageId"], message_id)
+
+    def test_recovery_sync_is_flushed_before_a_deferred_new_move(self):
+        manager, _events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.ready = False
+                self.sent = []
+
+            def send(self, message):
+                if not self.ready:
+                    raise ChannelException(CEType.ME_LINK_NOT_READY, "Link is not ready")
+                self.sent.append(message.payload)
+                return object()
+
+        channel = Channel()
+        state = {
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "phase": "active",
+            "channel": channel,
+        }
+        manager._send_game_payload(state, {
+            "type": "MOVE", "messageId": "10000000-0000-4000-8000-000000000021"
+        })
+        manager._send_game_payload(
+            state,
+            {"type": "SYNC_MOVE", "messageId": "10000000-0000-4000-8000-000000000022"},
+            recovery_priority=True,
+        )
+
+        channel.ready = True
+        manager._flush_game_send_queue(state)
+
+        self.assertEqual(
+            [payload["m"]["type"] for payload in channel.sent],
+            ["SYNC_MOVE", "MOVE"],
+        )
+
+    def test_deferred_start_ack_stays_ahead_of_recovery_sync(self):
+        manager, _events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.ready = False
+                self.sent = []
+
+            def send(self, message):
+                if not self.ready:
+                    raise ChannelException(CEType.ME_LINK_NOT_READY, "Link is not ready")
+                self.sent.append(message.payload)
+                return object()
+
+        channel = Channel()
+        state = {
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "phase": "active",
+            "channel": channel,
+        }
+        manager._send_game_payload(
+            state,
+            {"type": "START_ACK", "messageId": "10000000-0000-4000-8000-000000000025"},
+            recovery_priority=True,
+        )
+        manager._send_game_payload(
+            state,
+            {"type": "START_ACK", "messageId": "10000000-0000-4000-8000-000000000027"},
+            recovery_priority=True,
+        )
+        manager._send_game_payload(
+            state,
+            {"type": "SYNC_MOVE", "messageId": "10000000-0000-4000-8000-000000000026"},
+            recovery_priority=True,
+        )
+
+        channel.ready = True
+        manager._flush_game_send_queue(state)
+
+        self.assertEqual(
+            [payload["m"]["type"] for payload in channel.sent],
+            ["START_ACK", "SYNC_MOVE"],
+        )
+
+    def test_link_recovery_rolls_back_pending_state_but_preserves_deferred_moves(self):
+        manager, events = self.make_manager()
+        link = object()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        pending = {
+            "type": "MOVE",
+            "messageId": "10000000-0000-4000-8000-000000000023",
+            "ply": 1,
+        }
+        state = {
+            "matchId": match_id,
+            "phase": "active",
+            "outbound": False,
+            "link": link,
+            "pendingOutboundMoves": {pending["messageId"]: pending},
+            "pendingInboundMoves": {},
+            "gameSendQueue": deque([
+                {"k": "game", "m": pending}
+            ]),
+        }
+        manager.matches[match_id] = state
+        manager.links_by_object[id(link)] = match_id
+
+        manager._link_closed(link)
+
+        self.assertEqual(state["phase"], "recovering")
+        self.assertEqual(state["pendingOutboundMoves"], {})
+        self.assertEqual(len(state["gameSendQueue"]), 1)
+        self.assertTrue(
+            any(
+                event == "GAME_LINK_STATE" and payload.get("state") == "recovering"
+                for event, payload in events
+            )
+        )
+
+    def test_deferred_move_restores_pending_state_when_retransmitted(self):
+        manager, _events = self.make_manager()
+
+        class Channel:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, message):
+                self.sent.append(message.payload)
+                return object()
+
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        message_id = "10000000-0000-4000-8000-000000000024"
+        move = {
+            "type": "MOVE", "matchId": match_id, "roundId": match_id,
+            "messageId": message_id, "ply": 1, "column": 3,
+            "previousStateHash": "aa" * 32, "resultingStateHash": "bb" * 32,
+        }
+        state = {
+            "matchId": match_id,
+            "roundId": match_id,
+            "phase": "active",
+            "channel": Channel(),
+            "pendingOutboundMoves": {},
+            "gameSendQueue": deque([{"k": "game", "m": move}]),
+        }
+
+        manager._flush_game_send_queue(state)
+
+        self.assertEqual(state["pendingOutboundMoves"][message_id], move)
+        self.assertEqual(len(state["gameSendQueue"]), 0)
 
     def test_explicit_completed_close_releases_match(self):
         manager, events = self.make_manager()

@@ -1085,6 +1085,29 @@ async function flushQueuedWork(ticks = 8): Promise<void> {
 }
 
 describe('reticulum chat protocol', () => {
+  it('rejects DM participants that are names rather than Qortal addresses', () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dm-invalid-recipient-name',
+      senderSeq: 1,
+      timestamp: Date.now(),
+    });
+    const malformed = {
+      ...event,
+      recipientAddress: 'Qortal Justin',
+      conversationId: reticulumDmConversationId(
+        event.senderAddress,
+        'Qortal Justin'
+      ),
+    };
+
+    expect(validateReticulumDmEventShape(event)).toBe(true);
+    expect(validateReticulumDmEventShape(malformed)).toBe(false);
+  });
+
   it('keeps public group activity in bounded rolling counters', () => {
     const now = 20 * 24 * 60 * 60_000;
     const state = createReticulumPublicGroupActivityState();

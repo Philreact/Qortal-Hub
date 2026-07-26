@@ -18,6 +18,11 @@ export type QortalLandPresenceSnapshot = {
   members: QortalLandPresenceMember[];
 };
 
+export const shouldSuspendQortalLandPresence = (
+  isActive: boolean,
+  isAfk: boolean
+): boolean => !isActive && isAfk;
+
 const latestSnapshots = new Map<number, QortalLandPresenceSnapshot>();
 
 export const getQortalLandPresence = (

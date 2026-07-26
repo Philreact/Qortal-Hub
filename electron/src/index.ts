@@ -141,6 +141,7 @@ let lastReticulumWakeRecoveryAt = 0;
 let reticulumGloballyEnabled = true;
 let reticulumGlobalTransition: Promise<void> = Promise.resolve();
 let reticulumGlobalTransitionFailed = false;
+let automaticAppLockDisabled = false;
 
 const RETICULUM_WAKE_RECOVERY_DEBOUNCE_MS = 15_000;
 const RETICULUM_WAKE_RECOVERY_BRIDGE_ATTACH_WAIT_MS = 20_000;
@@ -152,6 +153,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function requestAuthenticatedRendererLock(): void {
+  if (automaticAppLockDisabled) return;
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
     window.webContents.send('system:lock-requested');
@@ -571,9 +573,12 @@ async function setupMultiInstanceUserData(
   await app.whenReady();
   const initialAppSettings = await readAppSettings();
   reticulumGloballyEnabled = initialAppSettings.reticulumEnabled !== false;
-  subscribeToAppSettingsChanges((settings) =>
-    applyGlobalReticulumSetting(settings.reticulumEnabled !== false)
-  );
+  automaticAppLockDisabled =
+    initialAppSettings.disableAutoLockOnIdle === true;
+  subscribeToAppSettingsChanges((settings) => {
+    automaticAppLockDisabled = settings.disableAutoLockOnIdle === true;
+    return applyGlobalReticulumSetting(settings.reticulumEnabled !== false);
+  });
   await startAppSettingsWatcher();
   loadPersistedAllowedDomainsAtStartup();
   const reticulumDevEnsureOk = reticulumGloballyEnabled
@@ -689,8 +694,9 @@ async function setupMultiInstanceUserData(
     requestAuthenticatedRendererLock();
   });
 
-  // Lock before sleep where the platform exposes suspend, then repeat on
-  // resume in case the renderer was frozen before it received the first IPC.
+  // When automatic locking is enabled, lock before sleep where the platform
+  // exposes suspend, then repeat on resume in case the renderer was frozen
+  // before it received the first IPC.
   powerMonitor.on('suspend', requestAuthenticatedRendererLock);
   powerMonitor.on('lock-screen', requestAuthenticatedRendererLock);
 })();

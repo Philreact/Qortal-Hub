@@ -109,6 +109,7 @@ import {
   dmFriendsByAddressAtom,
 } from '../../atoms/global';
 import { mergeDirectsWithFriends } from '../../lib/dm/mergeDirectsWithFriends';
+import { validateAddress } from '../../utils/validateAddress';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
 import { WalletsAppWrapper } from './WalletsAppWrapper';
 import { useTranslation } from 'react-i18next';
@@ -135,6 +136,10 @@ import {
   orderReticulumGroups,
   readReticulumGroupOrder,
 } from './reticulumGroupRail';
+import {
+  beginReticulumSummaryRefresh,
+  getReticulumMentionBadgeCount,
+} from './reticulumSummaryRefresh';
 import {
   AdminRowBox,
   CenterBox,
@@ -225,82 +230,6 @@ type ReticulumNotificationSummary = {
   hasUnreadMention?: boolean;
   updatedAt?: number;
   channels?: ReticulumNotificationSummary[];
-};
-
-const getReticulumMentionBadgeCount = (
-  summaries: Record<string, ReticulumNotificationSummary>
-): number => {
-  return Object.values(summaries || {}).reduce((total, summary) => {
-    return total + Math.max(0, Number(summary?.mentionCount) || 0);
-  }, 0);
-};
-
-const getReticulumSummaryMentionCount = (
-  summary: ReticulumNotificationSummary | undefined
-): number => {
-  if (!summary) return 0;
-  return Math.max(0, Number(summary?.mentionCount) || 0);
-};
-
-const getReticulumChannelMentionCount = (
-  summary: ReticulumNotificationSummary | undefined,
-  channelId: string
-): number => {
-  if (!summary) return 0;
-  const targetChannelId = String(channelId || 'general');
-  const channels = Array.isArray(summary?.channels) ? summary.channels : [];
-  const channelSummary = channels.find(
-    (channel) => String(channel?.channelId || 'general') === targetChannelId
-  );
-  if (channelSummary) return getReticulumSummaryMentionCount(channelSummary);
-  if (String(summary?.channelId || '') === targetChannelId) {
-    return getReticulumSummaryMentionCount(summary);
-  }
-  return 0;
-};
-
-const getReticulumMentionBadgeStateForRefresh = (
-  previous: Record<string, ReticulumNotificationSummary> | null,
-  next: Record<string, ReticulumNotificationSummary>,
-  activeGroupId: number | null,
-  activeChannelId: string
-): {
-  count: number;
-  summaries: Record<string, ReticulumNotificationSummary>;
-} => {
-  if (!previous)
-    return { count: getReticulumMentionBadgeCount(next), summaries: next };
-  const groupIds = new Set([...Object.keys(previous), ...Object.keys(next)]);
-  let total = 0;
-  const summaries: Record<string, ReticulumNotificationSummary> = {};
-  for (const groupIdKey of groupIds) {
-    const previousSummary = previous[groupIdKey];
-    const nextSummary = next[groupIdKey];
-    const previousCount = getReticulumSummaryMentionCount(previousSummary);
-    const nextCount = getReticulumSummaryMentionCount(nextSummary);
-    if (nextCount >= previousCount) {
-      total += nextCount;
-      if (nextSummary) summaries[groupIdKey] = nextSummary;
-      continue;
-    }
-    const groupId = Number(groupIdKey);
-    const allowDrop =
-      Number.isInteger(groupId) && groupId === activeGroupId && activeChannelId
-        ? Math.max(
-            0,
-            getReticulumChannelMentionCount(previousSummary, activeChannelId) -
-              getReticulumChannelMentionCount(nextSummary, activeChannelId)
-          )
-        : 0;
-    const droppedCount = Math.min(previousCount - nextCount, allowDrop);
-    total += previousCount - droppedCount;
-    if (droppedCount >= previousCount - nextCount) {
-      if (nextSummary) summaries[groupIdKey] = nextSummary;
-    } else if (previousSummary) {
-      summaries[groupIdKey] = previousSummary;
-    }
-  }
-  return { count: total, summaries };
 };
 
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
@@ -1084,10 +1013,7 @@ export const Group = ({
   const reticulumDirectSummariesRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const reticulumMentionBadgeSummariesRef = useRef<Record<
-    string,
-    ReticulumNotificationSummary
-  > | null>(null);
+  const reticulumSummariesRefreshSequenceRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -1102,6 +1028,7 @@ export const Group = ({
       if (cancelled) return;
       setReticulumEnabled(globallyEnabled);
       if (!globallyEnabled) {
+        reticulumSummariesRefreshSequenceRef.current += 1;
         setReticulumChatEnabled(false);
         setReticulumChatSummaries({});
         setReticulumDirectSummaries({});
@@ -1625,6 +1552,9 @@ export const Group = ({
 
   const refreshReticulumChatSummaries =
     useCallback(async (): Promise<boolean> => {
+      const refreshWasSuperseded = beginReticulumSummaryRefresh(
+        reticulumSummariesRefreshSequenceRef
+      );
       try {
         if (typeof window.reticulumChat?.isEnabled !== 'function') {
           console.error(
@@ -1633,9 +1563,9 @@ export const Group = ({
           return false;
         }
         const enabled = await window.reticulumChat?.isEnabled?.();
+        if (refreshWasSuperseded()) return true;
         setReticulumChatEnabled(enabled === true);
         if (!enabled) {
-          reticulumMentionBadgeSummariesRef.current = null;
           setReticulumChatSummaries({});
           void window.reticulumChat?.updateMentionBadge?.(0);
           return false;
@@ -1647,12 +1577,12 @@ export const Group = ({
           return false;
         }
         const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
+        if (refreshWasSuperseded()) return true;
         if (!Array.isArray(summaries)) {
           console.error(
             '[ReticulumChat] Activity dashboard summary refresh returned an invalid result',
             { resultType: summaries === null ? 'null' : typeof summaries }
           );
-          reticulumMentionBadgeSummariesRef.current = null;
           setReticulumChatSummaries({});
           void window.reticulumChat?.updateMentionBadge?.(0);
           return false;
@@ -1668,16 +1598,12 @@ export const Group = ({
         );
         setReticulumChatSummaries(next);
         syncReticulumMentionNotifications(next);
-        const badgeState = getReticulumMentionBadgeStateForRefresh(
-          reticulumMentionBadgeSummariesRef.current,
-          next,
-          getGroupIdFromGroupLike(selectedGroupRef.current),
-          activeReticulumChannelIdRef.current || 'general'
+        void window.reticulumChat?.updateMentionBadge?.(
+          getReticulumMentionBadgeCount(next)
         );
-        reticulumMentionBadgeSummariesRef.current = badgeState.summaries;
-        void window.reticulumChat?.updateMentionBadge?.(badgeState.count);
         return true;
       } catch (error) {
+        if (refreshWasSuperseded()) return true;
         console.error(
           '[ReticulumChat] Failed to refresh group summaries:',
           error
@@ -1702,12 +1628,12 @@ export const Group = ({
   }, [refreshReticulumChatSummaries]);
 
   useEffect(() => {
+    reticulumSummariesRefreshSequenceRef.current += 1;
     myAddressRef.current = myAddress || '';
     setReticulumAdminGroupsLoadedAddress('');
     setReticulumMembershipsAppliedKey('');
     setReticulumSummariesLoadedMembershipKey('');
     if (!myAddress) {
-      reticulumMentionBadgeSummariesRef.current = null;
       void window.reticulumChat?.updateMentionBadge?.(0);
     }
   }, [myAddress]);
@@ -1813,12 +1739,12 @@ export const Group = ({
         const enabled = await window.reticulumChat.isEnabled();
         if (cancelled || !enabled) {
           if (!cancelled) {
+            reticulumSummariesRefreshSequenceRef.current += 1;
             for (const groupId of reticulumSubscribedGroupIdsRef.current) {
               void window.reticulumChat?.unsubscribeGroup?.(groupId);
             }
             reticulumSubscribedGroupIdsRef.current = new Set();
             void window.reticulumChat?.setLocalGroupMemberships?.([]);
-            reticulumMentionBadgeSummariesRef.current = null;
             setReticulumChatSummaries({});
             void window.reticulumChat?.updateMentionBadge?.(0);
           }
@@ -1900,7 +1826,7 @@ export const Group = ({
         }
         reticulumSubscribedGroupIdsRef.current = nextIds;
         if (groupIds.length === 0) {
-          reticulumMentionBadgeSummariesRef.current = null;
+          reticulumSummariesRefreshSequenceRef.current += 1;
           setReticulumChatSummaries({});
           void window.reticulumChat?.updateMentionBadge?.(0);
           return;
@@ -2266,13 +2192,14 @@ export const Group = ({
         const peerAddress = String(summary?.peerAddress || '').trim();
         const lastEvent = summary?.lastEvent || null;
         const silenced = summary?.silenced === true;
-        if (!peerAddress || (!lastEvent && !silenced)) return null;
+        if (!validateAddress(peerAddress) || (!lastEvent && !silenced))
+          return null;
         const friend = dmFriendsByAddress?.[peerAddress];
         const resolvedName =
           friend?.name || reticulumDirectNamesByAddress[peerAddress];
         return {
           address: peerAddress,
-          name: friend?.name || peerAddress,
+          name: resolvedName || peerAddress,
           timestamp: Number(summary?.updatedAt || lastEvent?.timestamp || 0),
           sender: lastEvent?.senderAddress || '',
           senderName:
@@ -2328,7 +2255,13 @@ export const Group = ({
 
   const displayDirects = useMemo(() => {
     if (reticulumChatEnabled) {
-      return [...mergedDirectRows].sort((a: any, b: any) => {
+      const merged = mergeDirectsWithFriends(
+        mergedDirectRows,
+        dmFriendsByAddress,
+        myAddress,
+        userInfo?.name
+      );
+      return merged.sort((a: any, b: any) => {
         const timestampA = Number(a?.timestamp || 0);
         const timestampB = Number(b?.timestamp || 0);
         if (timestampA !== timestampB) return timestampB - timestampA;

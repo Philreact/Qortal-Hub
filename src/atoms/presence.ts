@@ -74,3 +74,17 @@ export const isOnlineAtomFamily = atomFamily((address: string) =>
 export const statusAtomFamily = atomFamily((address: string) =>
   atom((get) => get(statusMapAtom).get(address) ?? null)
 );
+
+/**
+ * Canonical badge status for a single address. The online-address set is the
+ * authoritative liveness source used by the homepage count; the status map
+ * only refines a live peer to busy/idle. Returning one primitive value keeps
+ * per-row consumers on one subscription and prevents split online/status
+ * snapshots from rendering contradictory badges.
+ */
+export const effectivePresenceStatusAtomFamily = atomFamily((address: string) =>
+  atom((get): UserStatus | null => {
+    if (!get(onlineAddressesAtom).has(address)) return null;
+    return get(statusMapAtom).get(address) ?? 'online';
+  })
+);

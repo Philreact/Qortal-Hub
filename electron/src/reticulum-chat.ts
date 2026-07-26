@@ -3100,8 +3100,15 @@ export function validateReticulumDmEventShape(
   const e = event as Partial<ReticulumDmEvent>;
   if (typeof e.eventId !== 'string' || e.eventId.length < 8) return false;
   if (!normalizeReticulumDmConversationId(e.conversationId)) return false;
-  if (typeof e.senderAddress !== 'string' || !e.senderAddress) return false;
-  if (typeof e.recipientAddress !== 'string' || !e.recipientAddress)
+  if (
+    typeof e.senderAddress !== 'string' ||
+    !isValidQortalAddress(e.senderAddress)
+  )
+    return false;
+  if (
+    typeof e.recipientAddress !== 'string' ||
+    !isValidQortalAddress(e.recipientAddress)
+  )
     return false;
   if (e.senderAddress === e.recipientAddress) return false;
   if (
@@ -4932,6 +4939,27 @@ function defaultReticulumChatDbPath(): string {
     'qortal-shared',
     'reticulum-chat.db'
   );
+}
+
+function isValidQortalAddress(address: string): boolean {
+  try {
+    if (address !== address.trim()) return false;
+    const decoded = base58Decode(address);
+    if (decoded.length !== 25 || decoded[0] !== 58) return false;
+    if (base58Encode(decoded) !== address) return false;
+    const payload = Buffer.from(decoded.slice(0, 21));
+    const expectedChecksum = nodeCrypto
+      .createHash('sha256')
+      .update(nodeCrypto.createHash('sha256').update(payload).digest())
+      .digest()
+      .subarray(0, 4);
+    return nodeCrypto.timingSafeEqual(
+      expectedChecksum,
+      Buffer.from(decoded.slice(21))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function ownAddressMatches(addresses: Set<string>, address: string): boolean {
@@ -7277,7 +7305,7 @@ export class ReticulumChatManager extends EventEmitter {
     const nextAddresses = new Set(
       (Array.isArray(addresses) ? addresses : [])
         .map((address) => String(address || '').trim())
-        .filter(Boolean)
+        .filter(isValidQortalAddress)
     );
     const unchanged =
       nextAddresses.size === this.localDmAddresses.size &&
@@ -17251,6 +17279,11 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private acceptsDirectConversation(event: ReticulumDmEvent): boolean {
+    if (
+      !isValidQortalAddress(event.senderAddress) ||
+      !isValidQortalAddress(event.recipientAddress)
+    )
+      return false;
     if (ownAddressMatches(this.localDmAddresses, event.senderAddress))
       return true;
     if (ownAddressMatches(this.localDmAddresses, event.recipientAddress))

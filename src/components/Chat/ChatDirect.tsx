@@ -65,6 +65,7 @@ import { ReplyPreview } from './MessageItem';
 import { useTranslation } from 'react-i18next';
 import { useNameSearch } from '../../hooks/useNameSearch';
 import { validateAddress } from '../../utils/validateAddress';
+import { resolveDirectTarget } from '../../lib/dm/resolveDirectTarget';
 import {
   MAX_SIZE_MESSAGE,
   MESSAGE_LIMIT_WARNING,
@@ -1241,16 +1242,7 @@ export const ChatDirect = ({
   }, [directToValue, nameSearchResults]);
 
   const resolvedNewChatTarget = useMemo(() => {
-    const trimmed = directToValue.trim();
-    if (!trimmed) return null;
-    if (validateAddress(trimmed)) {
-      return { address: trimmed, name: trimmed };
-    }
-    const exact = (nameSearchResults || []).filter((r) => r.name === trimmed);
-    if (exact.length === 1) {
-      return { address: exact[0].address, name: exact[0].name };
-    }
-    return null;
+    return resolveDirectTarget(directToValue, nameSearchResults || []);
   }, [directToValue, nameSearchResults]);
 
   const [friendActionBusy, setFriendActionBusy] = useState(false);
@@ -1383,9 +1375,12 @@ export const ChatDirect = ({
     isNewChatVar
   ) => {
     try {
-      const directTo = isNewChatVar ? directToValue : address;
+      const newChatTarget = isNewChatVar ? resolvedNewChatTarget : null;
+      const directTo = isNewChatVar ? newChatTarget?.address : address;
 
-      if (!directTo) return;
+      if (!directTo) {
+        throw new Error('Select a valid Qortal name or address');
+      }
       if (reticulumDirectEnabled) {
         const result = await publishReticulumDirectEvent({
           chatReference,
@@ -1405,7 +1400,7 @@ export const ChatDirect = ({
           }
           setSelectedDirect({
             address: directTo,
-            name: getRecipientName,
+            name: newChatTarget?.name || getRecipientName || directTo,
             timestamp: Date.now(),
             sender: myAddress,
             senderName: myName,
@@ -2969,9 +2964,7 @@ export const ChatDirect = ({
                             <ListItem key={key} disablePadding sx={{ px: 1 }}>
                               <ListItemButton
                                 onClick={() => {
-                                  const valueToSet =
-                                    typeof opt === 'string' ? opt : opt.name;
-                                  setDirectToValue(valueToSet);
+                                  void handleSelectNameOrAddress(opt);
                                   setSuggestionsOpen(false);
                                 }}
                                 sx={{

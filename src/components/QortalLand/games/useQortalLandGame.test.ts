@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { canSignQortalLandGameHandshake } from './useQortalLandGame';
+import {
+  canSignQortalLandGameHandshake,
+  isRetryableQortalLandGameTransportError,
+  seatForIncomingQortalLandGameMove,
+} from './useQortalLandGame';
 
 const match = {
   matchId: '00112233-4455-6677-8899-aabbccddeeff',
@@ -132,5 +136,29 @@ describe('Qortal Land game handshake signing guard', () => {
       match.requesterAddress,
       'public-key'
     )).toBe(true);
+  });
+});
+
+describe('Qortal Land temporary game transport failures', () => {
+  it('recognizes the Reticulum channel backpressure errors', () => {
+    expect(isRetryableQortalLandGameTransportError("('Link is not ready',)", 'active')).toBe(true);
+    expect(isRetryableQortalLandGameTransportError("('Outlet did not transmit packet',)", 'active')).toBe(true);
+    expect(isRetryableQortalLandGameTransportError('channel_send_failed', 'active')).toBe(true);
+  });
+
+  it('replays a sync move using the turn encoded by the verified state', () => {
+    const state = { nextSeat: 1 } as Parameters<typeof seatForIncomingQortalLandGameMove>[1];
+    expect(seatForIncomingQortalLandGameMove('MOVE', state, 1)).toBe(2);
+    expect(seatForIncomingQortalLandGameMove('SYNC_MOVE', state, 1)).toBe(1);
+  });
+
+  it('only treats an inactive match as temporary while reconnecting', () => {
+    expect(isRetryableQortalLandGameTransportError('match_not_active', 'reconnecting')).toBe(true);
+    expect(isRetryableQortalLandGameTransportError('match_not_active', 'active')).toBe(false);
+  });
+
+  it('does not hide genuine command or protocol errors', () => {
+    expect(isRetryableQortalLandGameTransportError('state_hash_mismatch', 'active')).toBe(false);
+    expect(isRetryableQortalLandGameTransportError('invalid_move', 'active')).toBe(false);
   });
 });

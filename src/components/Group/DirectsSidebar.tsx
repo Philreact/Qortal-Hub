@@ -31,7 +31,7 @@ import {
   getClickableAvatarSx,
   getFallbackAvatarOutlineSx,
 } from '../Chat/clickableAvatarStyles';
-import { isOnlineAtomFamily, statusAtomFamily } from '../../atoms/presence';
+import { effectivePresenceStatusAtomFamily } from '../../atoms/presence';
 import type { DmFriendStored } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
@@ -48,10 +48,9 @@ const DirectsPresenceBadge = React.memo(
     address: string;
     children: React.ReactNode;
   }) => {
-    const isOnline = useAtomValue(isOnlineAtomFamily(address));
-    const status = useAtomValue(statusAtomFamily(address));
+    const status = useAtomValue(effectivePresenceStatusAtomFamily(address));
     return (
-      <PresenceStatusBadge online={isOnline} status={status}>
+      <PresenceStatusBadge online={status !== null} status={status}>
         {children}
       </PresenceStatusBadge>
     );

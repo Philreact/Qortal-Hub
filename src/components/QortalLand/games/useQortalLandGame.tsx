@@ -45,6 +45,7 @@ export type QortalLandGameMatchView = Omit<ConnectFourGameView, 'state' | 'moves
   moves: QortalLandGameMove[];
 };
 type Match = QortalLandGameMatchView;
+const GAME_RECONNECTING_ERROR = 'Private game connection interrupted. Reconnecting…';
 
 const isGameId = (value: unknown): value is QortalLandGameId =>
   value === 'connect-four' || value === 'checkers' || value === 'chess';
@@ -84,6 +85,14 @@ const applyGameMove = (game: QortalLandGameId, state: QortalLandGameState, seat:
   if (!Number.isInteger(move.column)) throw new Error('Invalid Connect Four move');
   return applyConnectFourMove(state as ConnectFourState, seat, Number(move.column));
 };
+
+export const seatForIncomingQortalLandGameMove = (
+  messageType: unknown,
+  state: QortalLandGameState,
+  localSeat: ConnectFourSeat
+): ConnectFourSeat => (
+  messageType === 'SYNC_MOVE' ? state.nextSeat : localSeat === 1 ? 2 : 1
+);
 
 type Options = {
   address: string;
@@ -126,6 +135,22 @@ const parseChatMessages = (value: unknown): GameChatMessage[] => (
       }).slice(-100)
     : []
 );
+
+export const isRetryableQortalLandGameTransportError = (
+  error: unknown,
+  phase?: Match['phase']
+): boolean => {
+  const normalized = String(error || '').trim().toLowerCase();
+  return (
+    normalized === 'channel_send_failed' ||
+    normalized === 'game_link_recovering' ||
+    normalized === "('link is not ready',)" ||
+    normalized === "('outlet did not transmit packet',)" ||
+    normalized === 'link is not ready' ||
+    normalized === 'outlet did not transmit packet' ||
+    (normalized === 'match_not_active' && phase === 'reconnecting')
+  );
+};
 
 export const canSignQortalLandGameHandshake = (
   fields: Record<string, unknown>,
@@ -439,8 +464,8 @@ export function useQortalLandGame(options: Options) {
       if (current.pendingMoveId || move.ply !== current.state.ply + 1 || move.previousStateHash !== current.stateHash) {
         throw new Error('Unexpected move sequence');
       }
-      const remoteSeat = current.localSeat === 1 ? 2 : 1;
-      const next = applyGameMove(current.game, current.state, remoteSeat, message);
+      const moveSeat = seatForIncomingQortalLandGameMove(message.type, current.state, current.localSeat);
+      const next = applyGameMove(current.game, current.state, moveSeat, message);
       const resultingHash = await hashGameState(current.game, next);
       if (resultingHash !== move.resultingStateHash) throw new Error('Move state hash mismatch');
       send('SEND_GAME_MESSAGE', {
@@ -507,6 +532,18 @@ export function useQortalLandGame(options: Options) {
           chatMessages: value.chatMessages.map((item) => item.messageId === pending.messageId ? { ...item, failed: true } : item),
           error,
         }));
+        return;
+      }
+      if (isRetryableQortalLandGameTransportError(error, matchRef.current?.phase)) {
+        updateMatch((value) => value && ({
+          ...value,
+          phase: value.phase === 'finished' ? value.phase : 'reconnecting',
+          reconnectDeadline: value.reconnectDeadline || Date.now() + 30_000,
+          error: GAME_RECONNECTING_ERROR,
+        }));
+        if (qortalLandRealtime.isReady()) {
+          qortalLandRealtime.send({ type: 'GET_ACTIVE_MATCH', requestId: crypto.randomUUID() });
+        }
         return;
       }
       updateMatch((value) => value && ({ ...value, phase: 'finished', error }));
@@ -681,6 +718,7 @@ export function useQortalLandGame(options: Options) {
         outcome: state.outcome || undefined,
         sessionClosed: false,
         reconnectDeadline: ['recovering', 'awaiting_resume_accept', 'awaiting_resume_confirm'].includes(transportPhase) ? Date.now() + 30_000 : undefined,
+        error: previous?.error === GAME_RECONNECTING_ERROR ? undefined : previous?.error,
       }));
       return;
     }

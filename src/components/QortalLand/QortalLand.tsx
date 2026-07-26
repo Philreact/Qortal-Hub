@@ -50,7 +50,10 @@ import {
   qortalLandOptimizedAssetRenderScale,
 } from './qortalLandOptimizedAssets';
 import { collectQortalLandRoomAssetIds } from './qortalLandRoomAssetPolicy';
-import { publishQortalLandPresence } from './qortalLandPresence';
+import {
+  publishQortalLandPresence,
+  shouldSuspendQortalLandPresence,
+} from './qortalLandPresence';
 
 type QortalLandSkinId = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -2789,6 +2792,8 @@ export function QortalLand({
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<import('phaser').Game | null>(null);
   const isActiveRef = useRef(isActive);
+  const landPresenceSuspendedRef = useRef(false);
+  const landPresenceLeaveSentRef = useRef(false);
   const movementKeysRef = useRef<Set<string>>(new Set());
   const landGameActiveRef = useRef(false);
   const landGameInputBlockedRef = useRef(false);
@@ -2936,7 +2941,13 @@ export function QortalLand({
         lastSeenAt: number;
       }
     >();
-    if (myAddress && isActiveRef.current) {
+    if (
+      myAddress &&
+      !shouldSuspendQortalLandPresence(
+        isActiveRef.current,
+        localStateRef.current.afk
+      )
+    ) {
       byAddress.set(myAddress, {
         address: myAddress,
         roomId: localStateRef.current.roomId,
@@ -3015,7 +3026,6 @@ export function QortalLand({
   }, [recordLandActivity]);
 
   useEffect(() => {
-    if (!isActive) return undefined;
     const interval = window.setInterval(() => {
       if (
         !localStateRef.current.afk &&
@@ -3025,7 +3035,7 @@ export function QortalLand({
       }
     }, LAND_AFK_CHECK_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [isActive, setLocalLandAvailability]);
+  }, [setLocalLandAvailability]);
 
   useEffect(() => {
     publishLandPresenceSnapshot();
@@ -3042,20 +3052,6 @@ export function QortalLand({
       movementKeysRef.current.clear();
       localStateRef.current = { ...localStateRef.current, movement: 'idle' };
       chatInputRef.current?.blur();
-      if (reticulumReady === true && myAddress) {
-        sequenceRef.current += 1;
-        void window.reticulumChat?.sendLandState?.(groupId, myAddress, {
-          sessionId,
-          sequence: sequenceRef.current,
-          ...localStateRef.current,
-          movement: 'leave',
-          afk: localStateRef.current.afk,
-          dnd: localStateRef.current.dnd,
-          voiceEnabled: localStateRef.current.voiceEnabled,
-          voiceMuted: localStateRef.current.voiceMuted,
-          skinId: localStateRef.current.skinId,
-        });
-      }
     } else {
       lastLandActivityAtRef.current = Date.now();
       if (localStateRef.current.afk) {
@@ -3086,12 +3082,57 @@ export function QortalLand({
       window.cancelAnimationFrame(resizeFrame);
     };
   }, [
+    isActive,
+    publishLandPresenceSnapshot,
+    setLocalLandAvailability,
+  ]);
+
+  useEffect(() => {
+    const shouldSuspend = shouldSuspendQortalLandPresence(
+      isActive,
+      isLandAfk
+    );
+    if (!shouldSuspend) {
+      if (landPresenceSuspendedRef.current) {
+        lastSentRef.current = { ...lastSentRef.current, sentAt: 0 };
+      }
+      landPresenceSuspendedRef.current = false;
+      landPresenceLeaveSentRef.current = false;
+      return;
+    }
+
+    landPresenceSuspendedRef.current = true;
+    publishLandPresenceSnapshot();
+    if (
+      landPresenceLeaveSentRef.current ||
+      reticulumReady !== true ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !myAddress
+    ) {
+      return;
+    }
+
+    landPresenceLeaveSentRef.current = true;
+    sequenceRef.current += 1;
+    void window.reticulumChat?.sendLandState?.(groupId, myAddress, {
+      sessionId,
+      sequence: sequenceRef.current,
+      ...localStateRef.current,
+      movement: 'leave',
+      afk: localStateRef.current.afk,
+      dnd: localStateRef.current.dnd,
+      voiceEnabled: localStateRef.current.voiceEnabled,
+      voiceMuted: localStateRef.current.voiceMuted,
+      skinId: localStateRef.current.skinId,
+    });
+  }, [
     groupId,
     isActive,
+    isLandAfk,
     myAddress,
     publishLandPresenceSnapshot,
     reticulumReady,
-    setLocalLandAvailability,
     sessionId,
   ]);
 
@@ -4925,9 +4966,13 @@ export function QortalLand({
   useEffect(() => {
     if (reticulumReady !== true || !Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
     const interval = window.setInterval(() => {
-      if (!isActiveRef.current) return;
       const now = Date.now();
       const current = localStateRef.current;
+      if (
+        shouldSuspendQortalLandPresence(isActiveRef.current, current.afk)
+      ) {
+        return;
+      }
       const previous = lastSentRef.current;
       const moved =
         Math.abs(current.x - previous.x) >= 2 ||
