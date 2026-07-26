@@ -112,6 +112,19 @@ type LandChatBubble = {
 
 type LandChatMode = 'say' | 'yell' | 'emote';
 type LandChatTab = 'local' | 'whispers';
+type LandChatPanelGeometry = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+type LandChatPanelInteraction = {
+  mode: 'drag' | 'resize-top-right' | 'resize-bottom-right';
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startGeometry: LandChatPanelGeometry;
+};
 
 type LandChatTranscriptMessage = {
   messageId: string;
@@ -2800,7 +2813,11 @@ export function QortalLand({
   const remotePlayersRef = useRef<Map<string, LandPlayerState>>(new Map());
   const landChatBubblesRef = useRef<Map<string, LandChatBubble>>(new Map());
   const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const chatPanelRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const chatPanelDefaultSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const chatPanelGeometryRef = useRef<LandChatPanelGeometry | null>(null);
+  const chatPanelInteractionRef = useRef<LandChatPanelInteraction | null>(null);
   const landActionAnimationsRef = useRef<Map<string, LandActionAnimation>>(new Map());
   const landCallPresenceRef = useRef<Map<string, LandCallPresence>>(new Map());
   const landGamePresenceRef = useRef<Map<string, LandGamePresence>>(new Map());
@@ -2863,6 +2880,8 @@ export function QortalLand({
   const [isChatDimmed, setIsChatDimmed] = useState(true);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [activeChatTab, setActiveChatTab] = useState<LandChatTab>('local');
+  const [chatPanelGeometry, setChatPanelGeometry] =
+    useState<LandChatPanelGeometry | null>(null);
   const [lastChatActivityAt, setLastChatActivityAt] = useState(() => Date.now());
   const [, setPrimaryNameLookupVersion] = useState(0);
   const [actionTarget, setActionTarget] = useState<LandActionTarget | null>(null);
@@ -4131,14 +4150,169 @@ export function QortalLand({
     return () => window.clearTimeout(timeout);
   }, [isChatFocused, lastChatActivityAt]);
 
+  const latestLandChatMessageId =
+    landChatMessages[landChatMessages.length - 1]?.messageId || '';
+
+  const commitChatPanelGeometry = useCallback(
+    (next: LandChatPanelGeometry) => {
+      chatPanelGeometryRef.current = next;
+      setChatPanelGeometry(next);
+    },
+    []
+  );
+
+  const beginChatPanelInteraction = useCallback(
+    (
+      mode: LandChatPanelInteraction['mode'],
+      pointerId: number,
+      clientX: number,
+      clientY: number
+    ) => {
+      const panel = chatPanelRef.current;
+      const container = containerRef.current;
+      if (!panel || !container) return;
+      const panelRect = panel.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const measured: LandChatPanelGeometry = {
+        x: panelRect.left - containerRect.left,
+        y: panelRect.top - containerRect.top,
+        width: panelRect.width,
+        height: panelRect.height,
+      };
+      if (!chatPanelDefaultSizeRef.current) {
+        chatPanelDefaultSizeRef.current = {
+          width: panelRect.width,
+          height: panelRect.height,
+        };
+      }
+      commitChatPanelGeometry(measured);
+      chatPanelInteractionRef.current = {
+        mode,
+        pointerId,
+        startClientX: clientX,
+        startClientY: clientY,
+        startGeometry: measured,
+      };
+      wakeLandChatPanel();
+    },
+    [commitChatPanelGeometry, wakeLandChatPanel]
+  );
+
   useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const interaction = chatPanelInteractionRef.current;
+      const container = containerRef.current;
+      const defaults = chatPanelDefaultSizeRef.current;
+      if (
+        !interaction ||
+        event.pointerId !== interaction.pointerId ||
+        !container ||
+        !defaults
+      ) {
+        return;
+      }
+      event.preventDefault();
+      const bounds = container.getBoundingClientRect();
+      const dx = event.clientX - interaction.startClientX;
+      const dy = event.clientY - interaction.startClientY;
+      const start = interaction.startGeometry;
+      const minWidth = Math.min(defaults.width * 0.9, bounds.width);
+      const minHeight = Math.min(defaults.height * 0.9, bounds.height);
+      const maxWidth = Math.min(defaults.width * 1.3, bounds.width);
+      const maxHeight = Math.min(defaults.height * 1.3, bounds.height);
+      let next: LandChatPanelGeometry;
+
+      if (interaction.mode === 'drag') {
+        next = {
+          ...start,
+          x: clampNumber(start.x + dx, 0, Math.max(0, bounds.width - start.width)),
+          y: clampNumber(start.y + dy, 0, Math.max(0, bounds.height - start.height)),
+        };
+      } else {
+        const availableWidth = Math.max(0, bounds.width - start.x);
+        const width = clampNumber(
+          start.width + dx,
+          Math.min(minWidth, availableWidth),
+          Math.max(Math.min(minWidth, availableWidth), Math.min(maxWidth, availableWidth))
+        );
+        if (interaction.mode === 'resize-top-right') {
+          const fixedBottom = start.y + start.height;
+          const availableHeight = Math.max(0, fixedBottom);
+          const height = clampNumber(
+            start.height - dy,
+            Math.min(minHeight, availableHeight),
+            Math.max(Math.min(minHeight, availableHeight), Math.min(maxHeight, availableHeight))
+          );
+          next = {
+            x: start.x,
+            y: fixedBottom - height,
+            width,
+            height,
+          };
+        } else {
+          const availableHeight = Math.max(0, bounds.height - start.y);
+          const height = clampNumber(
+            start.height + dy,
+            Math.min(minHeight, availableHeight),
+            Math.max(Math.min(minHeight, availableHeight), Math.min(maxHeight, availableHeight))
+          );
+          next = {
+            x: start.x,
+            y: start.y,
+            width,
+            height,
+          };
+        }
+      }
+      commitChatPanelGeometry(next);
+    };
+    const finishPointerInteraction = (event: PointerEvent) => {
+      if (chatPanelInteractionRef.current?.pointerId === event.pointerId) {
+        chatPanelInteractionRef.current = null;
+      }
+    };
+    window.addEventListener('pointermove', handlePointerMove, {
+      passive: false,
+    });
+    window.addEventListener('pointerup', finishPointerInteraction);
+    window.addEventListener('pointercancel', finishPointerInteraction);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishPointerInteraction);
+      window.removeEventListener('pointercancel', finishPointerInteraction);
+    };
+  }, [commitChatPanelGeometry]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      const current = chatPanelGeometryRef.current;
+      if (!current) return;
+      const bounds = container.getBoundingClientRect();
+      const width = Math.min(current.width, bounds.width);
+      const height = Math.min(current.height, bounds.height);
+      commitChatPanelGeometry({
+        x: clampNumber(current.x, 0, Math.max(0, bounds.width - width)),
+        y: clampNumber(current.y, 0, Math.max(0, bounds.height - height)),
+        width,
+        height,
+      });
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [commitChatPanelGeometry]);
+
+  useLayoutEffect(() => {
+    if (activeChatTab !== 'local') return undefined;
     const viewport = chatMessagesViewportRef.current;
-    if (!viewport) return;
+    if (!viewport) return undefined;
+    viewport.scrollTop = viewport.scrollHeight;
     const frame = window.requestAnimationFrame(() => {
       viewport.scrollTop = viewport.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [landChatMessages.length]);
+  }, [activeChatTab, latestLandChatMessageId]);
 
   useEffect(() => {
     const handleStartChat = (event: KeyboardEvent) => {
@@ -9254,30 +9428,112 @@ export function QortalLand({
           >
             <Box
               data-qortalland-chat-panel="true"
-              onClick={wakeLandChatPanel}
+            onClick={wakeLandChatPanel}
+              ref={chatPanelRef}
               sx={{
                 background:
                   'linear-gradient(180deg, rgba(7, 12, 20, 0.96), rgba(5, 8, 15, 0.9))',
                 border: '1px solid rgba(44, 248, 255, 0.52)',
                 borderRadius: '14px',
-                bottom: { xs: 12, md: 18 },
+                bottom: chatPanelGeometry ? 'auto' : { xs: 12, md: 18 },
+                boxSizing: 'border-box',
                 boxShadow:
                   '0 18px 42px rgba(0, 0, 0, 0.52), inset 0 0 0 1px rgba(255, 43, 214, 0.28), inset 0 0 28px rgba(44, 248, 255, 0.04)',
                 color: '#f8fbff',
-                left: { xs: 12, md: 22 },
+                display: 'flex',
+                flexDirection: 'column',
+                height: chatPanelGeometry ? chatPanelGeometry.height : 'auto',
+                left: chatPanelGeometry ? chatPanelGeometry.x : { xs: 12, md: 22 },
                 opacity: landChatOpacity,
                 padding: '14px 14px 16px',
                 pointerEvents: 'auto',
                 position: 'absolute',
+                top: chatPanelGeometry ? chatPanelGeometry.y : 'auto',
                 transition: 'opacity 180ms ease, border-color 180ms ease, background 180ms ease',
-                width: 'min(468px, calc(100% - 24px))',
+                width: chatPanelGeometry
+                  ? chatPanelGeometry.width
+                  : 'min(468px, calc(100% - 24px))',
                 zIndex: 4,
                 '&:hover': {
                   opacity: 0.9,
                 },
               }}
             >
-              <Box sx={{ alignItems: 'center', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', gap: 0.75, paddingBottom: 0.75 }}>
+              <Box
+                aria-hidden="true"
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  beginChatPanelInteraction(
+                    'resize-top-right',
+                    event.pointerId,
+                    event.clientX,
+                    event.clientY
+                  );
+                }}
+                sx={{
+                  cursor: 'nesw-resize',
+                  height: 18,
+                  position: 'absolute',
+                  right: 0,
+                  top: 0,
+                  touchAction: 'none',
+                  width: 18,
+                  zIndex: 3,
+                }}
+              />
+              <Box
+                aria-hidden="true"
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  beginChatPanelInteraction(
+                    'resize-bottom-right',
+                    event.pointerId,
+                    event.clientX,
+                    event.clientY
+                  );
+                }}
+                sx={{
+                  bottom: 0,
+                  cursor: 'nwse-resize',
+                  height: 18,
+                  position: 'absolute',
+                  right: 0,
+                  touchAction: 'none',
+                  width: 18,
+                  zIndex: 3,
+                }}
+              />
+              <Box
+                onPointerDown={(event) => {
+                  if (
+                    event.button !== 0 ||
+                    (event.target instanceof Element &&
+                      event.target.closest('[data-land-chat-no-drag="true"]'))
+                  ) {
+                    return;
+                  }
+                  beginChatPanelInteraction(
+                    'drag',
+                    event.pointerId,
+                    event.clientX,
+                    event.clientY
+                  );
+                }}
+                sx={{
+                  alignItems: 'center',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                  cursor: 'move',
+                  display: 'flex',
+                  gap: 0.75,
+                  paddingBottom: 0.75,
+                  touchAction: 'none',
+                  userSelect: 'none',
+                }}
+              >
                 {([
                   ['local', 'World'],
                   ['whispers', 'Whispers'],
@@ -9327,7 +9583,10 @@ export function QortalLand({
                   );
                 })}
                 {(window.qortalLandRealtime || window.qortalLandGames) && (
-                  <Box sx={{ marginLeft: 'auto' }}>
+                  <Box
+                    data-land-chat-no-drag="true"
+                    sx={{ marginLeft: 'auto' }}
+                  >
                     <ProximityVoiceControl
                       state={proximityVoice.state}
                       mode={proximityVoice.mode}
@@ -9356,14 +9615,22 @@ export function QortalLand({
                   </Box>
                 )}
               </Box>
-              <Box sx={{ minHeight: 118 }}>
+              <Box
+                sx={{
+                  display: 'flex',
+                  flex: 1,
+                  minHeight: chatPanelGeometry ? 0 : 118,
+                }}
+              >
                 <Box
                   ref={chatMessagesViewportRef}
                   sx={{
-                    maxHeight: 116,
-                    minHeight: 108,
+                    flex: 1,
+                    maxHeight: chatPanelGeometry ? 'none' : 116,
+                    minHeight: chatPanelGeometry ? 0 : 108,
                     overflowY: 'auto',
                     padding: '12px 11px 5px 0',
+                    width: '100%',
                     scrollbarColor: 'rgba(44, 248, 255, 0.7) transparent',
                     scrollbarWidth: 'thin',
                     '&::-webkit-scrollbar': {

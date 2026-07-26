@@ -410,6 +410,10 @@ export const MessageItemComponent = ({
     signedWelcomeJoinedAt === recordedWelcomeJoinedAt
       ? signedGroupWelcomeSystem
       : null;
+  const shouldSuppressUnvalidatedGroupWelcome =
+    reticulumChatEnabled &&
+    Boolean(signedGroupWelcomeSystem) &&
+    (!reticulumMemberRolesReady || !groupWelcomeSystem);
   const isOfficialGroupWelcome = Boolean(
     reticulumChatEnabled && groupWelcomeSystem
   );
@@ -1864,6 +1868,8 @@ export const MessageItemComponent = ({
     !isReticulumDiscussionInitialPost &&
     (!reticulumDiscussionView ||
       String(message?.repliedTo || '') !== reticulumDiscussionRootId);
+
+  if (shouldSuppressUnvalidatedGroupWelcome) return null;
 
   return (
     <>
