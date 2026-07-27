@@ -979,7 +979,7 @@ const Tiptap = ({
       >
         <Box
           sx={{
-            alignItems: 'center',
+            alignItems: 'flex-end',
             display: 'flex',
             gap: 0.5,
             minHeight: 44,
