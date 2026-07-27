@@ -48,6 +48,7 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
+import { canEditOwnReticulumMessage } from './reticulumMessagePermissions';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
@@ -1807,11 +1808,11 @@ export const MessageItemComponent = ({
     !isOfficialGroupWelcome &&
     message?.reticulumChat &&
     typeof onDelete === 'function';
-  const isOwnReticulumEditable =
-    isOwn &&
-    !isOfficialGroupWelcome &&
-    message?.reticulumChat &&
-    (!message?.isNotEncrypted || isPrivate === false);
+  const isOwnReticulumEditable = canEditOwnReticulumMessage({
+    isOfficialGroupWelcome,
+    message,
+    myAddress,
+  });
   const copyReticulumMessage = useCallback(async () => {
     const html = String(
       message?.decryptedData?.data?.message ??

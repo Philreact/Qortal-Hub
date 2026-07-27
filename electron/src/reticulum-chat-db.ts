@@ -130,6 +130,7 @@ function applyReticulumBuiltInChannelPolicy(
     channel.expiryDurationMs
   );
   if (
+    channel.archived === false &&
     channel.writeMode === RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS &&
     channel.readMode === RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS &&
     channel.expiryDurationMs === expiryDurationMs
@@ -137,6 +138,7 @@ function applyReticulumBuiltInChannelPolicy(
     return channel;
   return {
     ...channel,
+    archived: false,
     writeMode: RETICULUM_CHAT_CHANNEL_WRITE_MODE_MEMBERS,
     readMode: RETICULUM_CHAT_CHANNEL_READ_MODE_MEMBERS,
     expiryDurationMs,

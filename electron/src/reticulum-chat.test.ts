@@ -2036,12 +2036,14 @@ describe('reticulum chat database', () => {
       const channel = db.getChannel(11, channelId)!;
       db.upsertChannel({
         ...channel,
+        archived: true,
         writeMode: 'admins',
         readMode: 'admins',
         writeModeUpdatedAt: 1,
         updatedAt: 1,
       });
       expect(db.getChannel(11, channelId)).toMatchObject({
+        archived: false,
         writeMode: 'members',
         readMode: 'members',
       });
