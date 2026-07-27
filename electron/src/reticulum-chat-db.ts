@@ -2512,6 +2512,7 @@ export class ReticulumChatDatabase {
       SET status = ?
       WHERE group_id = ? AND epoch = ? AND key_id = ?
     `);
+    this.migrateAuthorGapPeerRetryBackoff();
     this.pruneSatisfiedMissingRanges();
     this.backfillMessageProjection();
     this.backfillSearchIndex();
@@ -10842,6 +10843,61 @@ export class ReticulumChatDatabase {
         throw new Error(
           `Reticulum chat DB migration failed: ${migration.name}: ${message}`
         );
+      }
+    }
+  }
+
+  private migrateAuthorGapPeerRetryBackoff(): void {
+    const migrationName = 'author-gap-peer-retry-backoff-v1';
+    const appliedAt = Date.now();
+    const retryAt = appliedAt + 60_000;
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          'INSERT OR IGNORE INTO rchat_schema_migrations (name, applied_at) VALUES (?, ?)'
+        )
+        .run(migrationName, appliedAt);
+      const applied = this.db
+        .prepare(
+          'SELECT applied_at FROM rchat_schema_migrations WHERE name = ? LIMIT 1'
+        )
+        .get(migrationName) as { applied_at?: number } | undefined;
+      if (Number(applied?.applied_at) !== appliedAt) return;
+      this.shortenLegacyAuthorGapRetryBackoff(retryAt);
+    });
+    tx();
+  }
+
+  private shortenLegacyAuthorGapRetryBackoff(retryAt: number): void {
+    const delayedRanges = this.dedupeMissingRangeRows([
+      ...(this.stmtGetAllMissingRanges.all() as ReticulumChatMissingRangeRow[]),
+      ...[...this.memoryMissingRanges.values()].map((range) =>
+        this.missingRangeStateToRow(range)
+      ),
+    ]).filter((row) => Number(row.next_attempt_at) > retryAt);
+    for (const range of delayedRanges) {
+      this.stmtRescheduleMissingRangeAny.run({
+        group_id: range.group_id,
+        author_address: range.author_address,
+        author_stream_id: range.author_stream_id,
+        from_seq: range.from_seq,
+        to_seq: range.to_seq,
+        preferred_peer: range.preferred_peer ?? null,
+        next_attempt_at: retryAt,
+      });
+      const key = this.missingRangeKey(
+        range.group_id,
+        range.author_address,
+        range.author_stream_id,
+        range.from_seq,
+        range.to_seq
+      );
+      const memoryRange = this.memoryMissingRanges.get(key);
+      if (memoryRange) {
+        this.memoryMissingRanges.set(key, {
+          ...memoryRange,
+          nextAttemptAt: retryAt,
+        });
       }
     }
   }

@@ -1831,6 +1831,42 @@ describe('reticulum chat database', () => {
     });
   });
 
+  it('shortens legacy author gap backoff once for peer-aware retry', () => {
+    const legacyDb = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(legacyDb);
+    const author = 'QlegacyGapBackoff';
+    legacyDb.ensureMissingRange(
+      11,
+      author,
+      TEST_AUTHOR_STREAM_ID,
+      2,
+      5,
+      'peer-a'
+    );
+    legacyDb.deferMissingRange(
+      11,
+      author,
+      TEST_AUTHOR_STREAM_ID,
+      2,
+      5,
+      'peer-a',
+      Date.now() + 2 * 60 * 60_000,
+      106
+    );
+    const retryAt = Date.now() + 60_000;
+    (legacyDb as any).shortenLegacyAuthorGapRetryBackoff(retryAt);
+    const migrated = legacyDb.getMissingRange(
+      11,
+      author,
+      TEST_AUTHOR_STREAM_ID,
+      2,
+      5
+    );
+
+    expect(migrated).toMatchObject({ attempts: 106 });
+    expect(migrated?.nextAttemptAt).toBe(retryAt);
+  });
+
   it('does not count own events against the relay cache budget', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
