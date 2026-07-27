@@ -10,6 +10,9 @@ import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { ReticulumUserCard } from './ReticulumUserCard';
 import type { ReticulumUserCardData } from './ReticulumUserCard';
 
+const stripTrailingQortalLinkPunctuation = (value: string) =>
+  value.replace(/[),.;!?]+$/g, '');
+
 export const extractComponents = (url: string) => {
   if (!url || !url.startsWith(QORTAL_PROTOCOL)) {
     return null;
@@ -235,6 +238,7 @@ const decorateStaticReticulumMentions = (
 
 export const MessageDisplay = ({
   htmlContent,
+  hiddenQortalUrls,
   isReply = false,
   mentionedAddresses,
   mentionUsers,
@@ -244,6 +248,7 @@ export const MessageDisplay = ({
   textColor,
 }: {
   htmlContent: unknown;
+  hiddenQortalUrls?: string[];
   isReply?: boolean;
   mentionedAddresses?: string[];
   mentionUsers?: Record<string, MentionUser>;
@@ -330,6 +335,50 @@ export const MessageDisplay = ({
       return sanitized;
     }
     const document = new DOMParser().parseFromString(sanitized, 'text/html');
+    const hiddenUrlSet = new Set(
+      (hiddenQortalUrls || []).map((url) =>
+        stripTrailingQortalLinkPunctuation(url.trim()).toLowerCase()
+      )
+    );
+    if (hiddenUrlSet.size > 0) {
+      for (const node of document.querySelectorAll<HTMLElement>(
+        'a[href], [data-url]'
+      )) {
+        const value = stripTrailingQortalLinkPunctuation(
+          String(
+            node.getAttribute('href') ||
+              node.getAttribute('data-url') ||
+              node.textContent ||
+              ''
+          ).trim()
+        ).toLowerCase();
+        if (hiddenUrlSet.has(value)) node.remove();
+      }
+      const textWalker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT
+      );
+      const textNodes: Text[] = [];
+      let textNode = textWalker.nextNode();
+      while (textNode) {
+        if (!textNode.parentElement?.closest('code, pre')) {
+          textNodes.push(textNode as Text);
+        }
+        textNode = textWalker.nextNode();
+      }
+      for (const node of textNodes) {
+        let nextText = node.textContent || '';
+        for (const hiddenUrl of hiddenQortalUrls || []) {
+          nextText = nextText.split(hiddenUrl).join('');
+        }
+        if (nextText !== node.textContent) node.textContent = nextText;
+      }
+      for (const node of document.querySelectorAll<HTMLElement>('p, div')) {
+        if (!node.textContent?.trim() && !node.querySelector('img, video')) {
+          node.remove();
+        }
+      }
+    }
     const userMentionLabels = new Set<string>();
     for (const [label, user] of Object.entries(mentionUsers || {})) {
       userMentionLabels.add(label.trim().replace(/^@/, '').toLowerCase());
@@ -419,6 +468,7 @@ export const MessageDisplay = ({
     }
     return document.body.innerHTML;
   }, [
+    hiddenQortalUrls,
     mentionUsers,
     privilegedMentionAuthorized,
     reticulumChannelLinkAccess,
