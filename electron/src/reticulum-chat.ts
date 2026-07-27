@@ -270,6 +270,7 @@ interface ReticulumChatQueuedGroupSubSync {
   inboundPeerHash: string;
   groupId: number;
   hops: number;
+  bootstrapRequested: boolean;
   enqueuedAt: number;
   coalescedCount: number;
 }
@@ -5310,12 +5311,15 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     {
       groupId: number;
+      peerHash: string;
       snapshotHash: string;
       fileHash: string;
       expiresAt: number;
       hasAdminPrivateChannels: boolean;
     }
   >();
+  private metadataSnapshotPushHashes = new Map<string, string>();
+  private metadataSnapshotPushInflight = new Set<string>();
   private liveEventResourceDiagnostics = new Map<
     string,
     {
@@ -6551,6 +6555,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.authorGapPagedRangeOrigins.clear();
     this.outboundEventResources.clear();
     this.outboundMetadataSnapshotResources.clear();
+    this.metadataSnapshotPushHashes.clear();
+    this.metadataSnapshotPushInflight.clear();
     this.metadataSnapshotOffers.clear();
     this.recentDmDiscoveryKeys.clear();
     this.dmProbeRoutes.clear();
@@ -10619,6 +10625,8 @@ export class ReticulumChatManager extends EventEmitter {
       existing.originPeerHash = item.originPeerHash;
       existing.inboundPeerHash = item.inboundPeerHash;
       existing.hops = item.hops;
+      existing.bootstrapRequested =
+        existing.bootstrapRequested || item.bootstrapRequested;
       existing.enqueuedAt = this.now();
       existing.coalescedCount += 1;
       this.groupSubSyncQueueStats.coalesced += 1;
@@ -10718,7 +10726,7 @@ export class ReticulumChatManager extends EventEmitter {
         actions.digestQueued = true;
       }
       if (localMemberSubscription) {
-        if (item.hops === 0 && item.originPeerHash === item.inboundPeerHash) {
+        if (item.bootstrapRequested) {
           void this.sendMetadataSnapshotToPeer(
             item.peerHash,
             item.groupId,
@@ -10732,7 +10740,7 @@ export class ReticulumChatManager extends EventEmitter {
           });
           actions.metadataPushQueued = true;
         }
-        if (item.hops === 0 && item.originPeerHash === item.inboundPeerHash) {
+        if (item.bootstrapRequested) {
           void this.pushNewestHistoryPageToPeer(
             item.peerHash,
             item.groupId,
@@ -15031,7 +15039,11 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (!inboundPeerHash || !originPeerHash) return;
     for (const groupId of groups) {
-      this.notePeerSubscription(originPeerHash, groupId, true);
+      const isNewSubscription = this.notePeerSubscription(
+        originPeerHash,
+        groupId,
+        true
+      );
       this.noteGroupInterestRoute(
         groupId,
         originPeerHash,
@@ -15047,6 +15059,10 @@ export class ReticulumChatManager extends EventEmitter {
         inboundPeerHash,
         groupId,
         hops,
+        bootstrapRequested:
+          (isNewSubscription || wire.mode === 'active') &&
+          hops === 0 &&
+          originPeerHash === inboundPeerHash,
       });
     }
     void this.forwardGroupSub(
@@ -19827,51 +19843,87 @@ export class ReticulumChatManager extends EventEmitter {
       this.isClosed ||
       !peer ||
       !this.subscribedGroups.has(groupId) ||
-      !this.localGroupIds.has(groupId)
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId)
     )
       return;
-    const selected = await this.getPublicMetadataSnapshotForSend(groupId);
-    if (this.isClosed) return;
-    if (!selected) return;
-    const { snapshot, fullSnapshot } = selected;
-    this.setMetadataSnapshotState(
-      groupId,
-      'snapshot_current',
-      'metadata_snapshot_send'
-    );
-    const wire: ReticulumChatWire = {
-      t: 'RCHAT',
-      v: 3,
-      k: 'metadata_snapshot_offer_v3',
-      g: groupId,
-      s: metadataSnapshotToWire(snapshot),
-      ...(fullSnapshot
-        ? { fh: compactSha256ForWire(fullSnapshot.snapshotHash) }
-        : {}),
-    };
-    if (
-      this.metadataSnapshotHasAdminPrivateChannels(snapshot) ||
-      !wireFitsReticulum(wire)
-    ) {
-      loggerInfo(
-        `[ReticulumChat] metadata_snapshot_offer_too_large group=${groupId} peer=${peer.slice(0, 16)} bytes=${Buffer.byteLength(JSON.stringify(wire), 'utf8')} context=${reason}`
-      );
-      await this.sendMetadataSnapshotResourceToPeer(
-        peer,
-        groupId,
-        snapshot,
-        reason,
-        fullSnapshot?.snapshotHash
-      );
-    } else {
-      const result = await this.sendToPeer(peer, wire);
-      if (!result.ok) {
-        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
-        loggerWarn(
-          `[ReticulumChat] metadata_snapshot_offer_failed group=${groupId} peer=${peer.slice(0, 16)} reason=${failed.error ?? failed.reason} context=${reason}`
-        );
+    const pushKey = this.metadataSnapshotPushKey(peer, groupId);
+    if (this.metadataSnapshotPushInflight.has(pushKey)) return;
+    this.metadataSnapshotPushInflight.add(pushKey);
+    let offered = false;
+    try {
+      const selected = await this.getPublicMetadataSnapshotForSend(groupId);
+      if (
+        this.isClosed ||
+        !selected ||
+        !this.hasCurrentPeerSubscription(peer, groupId)
+      ) {
+        return;
       }
+      const { snapshot, fullSnapshot } = selected;
+      if (
+        this.metadataSnapshotPushHashes.get(pushKey) === snapshot.snapshotHash
+      ) {
+        return;
+      }
+      this.setMetadataSnapshotState(
+        groupId,
+        'snapshot_current',
+        'metadata_snapshot_send'
+      );
+      const wire: ReticulumChatWire = {
+        t: 'RCHAT',
+        v: 3,
+        k: 'metadata_snapshot_offer_v3',
+        g: groupId,
+        s: metadataSnapshotToWire(snapshot),
+        ...(fullSnapshot
+          ? { fh: compactSha256ForWire(fullSnapshot.snapshotHash) }
+          : {}),
+      };
+      if (
+        this.metadataSnapshotHasAdminPrivateChannels(snapshot) ||
+        !wireFitsReticulum(wire)
+      ) {
+        loggerInfo(
+          `[ReticulumChat] metadata_snapshot_offer_too_large group=${groupId} peer=${peer.slice(0, 16)} bytes=${Buffer.byteLength(JSON.stringify(wire), 'utf8')} context=${reason}`
+        );
+        offered = await this.sendMetadataSnapshotResourceToPeer(
+          peer,
+          groupId,
+          snapshot,
+          reason,
+          fullSnapshot?.snapshotHash
+        );
+      } else {
+        const result = await this.sendToPeer(peer, wire);
+        if (!result.ok) {
+          const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+          loggerWarn(
+            `[ReticulumChat] metadata_snapshot_offer_failed group=${groupId} peer=${peer.slice(0, 16)} reason=${failed.error ?? failed.reason} context=${reason}`
+          );
+        } else {
+          offered = true;
+        }
+      }
+      if (offered && this.hasCurrentPeerSubscription(peer, groupId)) {
+        this.metadataSnapshotPushHashes.set(pushKey, snapshot.snapshotHash);
+      }
+    } finally {
+      this.metadataSnapshotPushInflight.delete(pushKey);
     }
+  }
+
+  private metadataSnapshotPushKey(peerHash: string, groupId: number): string {
+    return `${peerHash.trim().toLowerCase()}:${groupId}`;
+  }
+
+  private clearMetadataSnapshotPushState(
+    peerHash: string,
+    groupId: number
+  ): void {
+    const key = this.metadataSnapshotPushKey(peerHash, groupId);
+    this.metadataSnapshotPushHashes.delete(key);
   }
 
   private async expectedMetadataSnapshotScope(
@@ -20230,14 +20282,14 @@ export class ReticulumChatManager extends EventEmitter {
     snapshot: ReticulumChatMetadataSnapshotRecord,
     reason: string,
     advertisedFullSnapshotHash = ''
-  ): Promise<void> {
+  ): Promise<boolean> {
     const peer = peerHash.trim().toLowerCase();
     if (
       !peer ||
       !this.bridge ||
       typeof this.bridge.sendReticulumChatResourceDetailed !== 'function'
     )
-      return;
+      return false;
     const snapshotWire = metadataSnapshotToWire(snapshot);
     const blob = JSON.stringify(snapshotWire);
     const sizeBytes = Buffer.byteLength(blob, 'utf8');
@@ -20245,7 +20297,7 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] metadata_snapshot_resource_too_large group=${groupId} peer=${peer.slice(0, 16)} bytes=${sizeBytes} context=${reason}`
       );
-      return;
+      return false;
     }
     const fileHash = nodeCrypto
       .createHash('sha256')
@@ -20278,7 +20330,7 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] metadata_snapshot_resource_register_failed group=${groupId} peer=${peer.slice(0, 16)} reason=${failed.error ?? failed.reason} context=${reason}`
       );
-      return;
+      return false;
     }
     const offer: ReticulumChatMetadataSnapshotResourceOffer = {
       transferId,
@@ -20296,6 +20348,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     this.outboundMetadataSnapshotResources.set(transferId, {
       groupId,
+      peerHash: peer,
       snapshotHash: snapshot.snapshotHash,
       fileHash,
       expiresAt,
@@ -20318,7 +20371,7 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] metadata_snapshot_resource_offer_too_large group=${groupId} peer=${peer.slice(0, 16)} context=${reason}`
       );
-      return;
+      return false;
     }
     const sent = await this.sendToPeer(peer, wire);
     if (!sent.ok) {
@@ -20328,11 +20381,12 @@ export class ReticulumChatManager extends EventEmitter {
       loggerWarn(
         `[ReticulumChat] metadata_snapshot_resource_offer_failed group=${groupId} peer=${peer.slice(0, 16)} reason=${failed.error ?? failed.reason} context=${reason}`
       );
-      return;
+      return false;
     }
     loggerLog(
       `[ReticulumChat] metadata_snapshot_resource_offered group=${groupId} peer=${peer.slice(0, 16)} version=${snapshot.version} transfer=${transferId} size=${sizeBytes} context=${reason}`
     );
+    return true;
   }
 
   private setMetadataSnapshotState(
@@ -26221,6 +26275,21 @@ export class ReticulumChatManager extends EventEmitter {
         if (payload.status === 'sent') {
           this.outboundMetadataSnapshotResources.delete(payload.transferId);
         } else {
+          const snapshotResource = this.outboundMetadataSnapshotResources.get(
+            payload.transferId
+          );
+          if (snapshotResource) {
+            const pushKey = this.metadataSnapshotPushKey(
+              snapshotResource.peerHash,
+              snapshotResource.groupId
+            );
+            if (
+              this.metadataSnapshotPushHashes.get(pushKey) ===
+              snapshotResource.snapshotHash
+            ) {
+              this.metadataSnapshotPushHashes.delete(pushKey);
+            }
+          }
           loggerWarn(
             `[ReticulumChat] metadata_snapshot_resource_send_failed transfer=${payload.transferId} reason=${typeof payload.reason === 'string' ? payload.reason : 'resource_failed'}`
           );
@@ -29079,22 +29148,41 @@ export class ReticulumChatManager extends EventEmitter {
     peerHash: string,
     groupId: number,
     active: boolean
-  ): void {
+  ): boolean {
     const key = peerHash.trim().toLowerCase();
-    if (!key) return;
+    if (!key) return false;
     this.prunePeerSubscriptions();
     const groups = this.peerSubscriptions.get(key) ?? new Map<number, number>();
-    if (active)
+    const wasSubscribed = groups.has(groupId);
+    if (active) {
       groups.set(groupId, this.now() + RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS);
-    else groups.delete(groupId);
+    } else {
+      groups.delete(groupId);
+      this.clearMetadataSnapshotPushState(key, groupId);
+    }
     if (groups.size) this.peerSubscriptions.set(key, groups);
     else this.peerSubscriptions.delete(key);
+    return active && !wasSubscribed;
+  }
+
+  private hasCurrentPeerSubscription(
+    peerHash: string,
+    groupId: number,
+    now = this.now()
+  ): boolean {
+    const peer = peerHash.trim().toLowerCase();
+    if (!peer) return false;
+    const expiresAt = this.peerSubscriptions.get(peer)?.get(groupId);
+    return typeof expiresAt === 'number' && expiresAt > now;
   }
 
   private prunePeerSubscriptions(now = this.now()): void {
     for (const [peerHash, groups] of this.peerSubscriptions) {
       for (const [groupId, expiresAt] of groups) {
-        if (expiresAt <= now) groups.delete(groupId);
+        if (expiresAt <= now) {
+          groups.delete(groupId);
+          this.clearMetadataSnapshotPushState(peerHash, groupId);
+        }
       }
       if (groups.size === 0) this.peerSubscriptions.delete(peerHash);
     }

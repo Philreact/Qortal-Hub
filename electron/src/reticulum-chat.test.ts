@@ -7872,6 +7872,205 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('treats summary group_sub refreshes as lightweight renewals', async () => {
+    let now = 100_000;
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    await flushQueuedWork();
+    direct.length = 0;
+    const metadataPush = vi
+      .spyOn(manager as any, 'sendMetadataSnapshotToPeer')
+      .mockResolvedValue(undefined);
+    const newestPush = vi
+      .spyOn(manager as any, 'pushNewestHistoryPageToPeer')
+      .mockResolvedValue(undefined);
+    const summary = {
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [69],
+      mode: 'summary',
+    };
+
+    manager.handleWire(summary, 'peer-a');
+    await flushQueuedWork();
+
+    expect(metadataPush).toHaveBeenCalledTimes(1);
+    expect(newestPush).toHaveBeenCalledTimes(1);
+    expect(
+      direct.filter((item) => item.wire.k === 'group_state_digest_v3')
+    ).toHaveLength(1);
+
+    now += 60_000;
+    manager.handleWire(summary, 'peer-a');
+    await flushQueuedWork();
+
+    expect(metadataPush).toHaveBeenCalledTimes(1);
+    expect(newestPush).toHaveBeenCalledTimes(1);
+    expect(
+      direct.filter((item) => item.wire.k === 'group_state_digest_v3')
+    ).toHaveLength(2);
+
+    now += 2 * 60_000 + 1;
+    manager.handleWire(summary, 'peer-a');
+    await flushQueuedWork();
+
+    expect(metadataPush).toHaveBeenCalledTimes(2);
+    expect(newestPush).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
+  it('keeps active group_sub entry eligible for fast history bootstrap', async () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    await flushQueuedWork();
+    const metadataPush = vi
+      .spyOn(manager as any, 'sendMetadataSnapshotToPeer')
+      .mockResolvedValue(undefined);
+    const newestPush = vi
+      .spyOn(manager as any, 'pushNewestHistoryPageToPeer')
+      .mockResolvedValue(undefined);
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
+      'peer-a'
+    );
+    await flushQueuedWork();
+    now += 31_000;
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'active' },
+      'peer-a'
+    );
+    await flushQueuedWork();
+
+    expect(metadataPush).toHaveBeenCalledTimes(2);
+    expect(newestPush).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
+  it('preserves a direct bootstrap when a relayed subscription is coalesced', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    await flushQueuedWork();
+    const metadataPush = vi
+      .spyOn(manager as any, 'sendMetadataSnapshotToPeer')
+      .mockResolvedValue(undefined);
+    const newestPush = vi
+      .spyOn(manager as any, 'pushNewestHistoryPageToPeer')
+      .mockResolvedValue(undefined);
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
+      'peer-a'
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [69],
+        mode: 'summary',
+        o: 'peer-b',
+        h: 1,
+      },
+      'peer-a'
+    );
+    await flushQueuedWork();
+
+    expect(metadataPush).toHaveBeenCalledTimes(1);
+    expect(newestPush).toHaveBeenCalledTimes(1);
+    manager.close();
+  });
+
+  it('does not finish a metadata bootstrap after the peer unsubscribes', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    await flushQueuedWork();
+    direct.length = 0;
+    (manager as any).notePeerSubscription('peer-a', 69, true);
+    let resolveSnapshot!: (value: Record<string, unknown>) => void;
+    const snapshotReady = new Promise<Record<string, unknown>>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    vi.spyOn(
+      manager as any,
+      'getPublicMetadataSnapshotForSend'
+    ).mockReturnValue(snapshotReady);
+
+    const pending = (manager as any).sendMetadataSnapshotToPeer(
+      'peer-a',
+      69,
+      'test-unsubscribe-race'
+    );
+    await Promise.resolve();
+    (manager as any).notePeerSubscription('peer-a', 69, false);
+    resolveSnapshot({
+      snapshot: {
+        groupId: 69,
+        snapshotHash: 'a'.repeat(64),
+      },
+    });
+    await pending;
+
+    expect(direct).toEqual([]);
+    expect((manager as any).metadataSnapshotPushHashes.size).toBe(0);
+    expect((manager as any).metadataSnapshotPushInflight.size).toBe(0);
+    manager.close();
+  });
+
   it('does not queue a group-state digest from cached history without current membership', async () => {
     const bridge = {
       on: () => undefined,
@@ -21923,6 +22122,7 @@ describe('reticulum chat manager', () => {
     const fileHash = 'f'.repeat(64);
     (manager as any).outboundMetadataSnapshotResources.set(transferId, {
       groupId: 74,
+      peerHash: 'peer-private-snapshot',
       snapshotHash: snapshot.snapshotHash,
       fileHash,
       expiresAt: 120_000,
@@ -22061,10 +22261,17 @@ describe('reticulum chat manager', () => {
       'admin-private'
     );
 
+    (sender as any).notePeerSubscription('peer-public-snapshot', 74, true);
+
     await (sender as any).sendMetadataSnapshotToPeer(
       'peer-public-snapshot',
       74,
       'test'
+    );
+    await (sender as any).sendMetadataSnapshotToPeer(
+      'peer-public-snapshot',
+      74,
+      'duplicate-test'
     );
 
     const publicSnapshotWire = resources
@@ -22106,6 +22313,21 @@ describe('reticulum chat manager', () => {
     expect(snapshotWire.p).toBeTruthy();
     expect(snapshotWire.z).toBeTruthy();
     expect(resources).toHaveLength(1);
+
+    const [failedTransferId] = Array.from(
+      (sender as any).outboundMetadataSnapshotResources.keys()
+    ) as string[];
+    sender.handleResourceEvent({
+      status: 'failed',
+      transferId: failedTransferId,
+      reason: 'test-transfer-failure',
+    });
+    await (sender as any).sendMetadataSnapshotToPeer(
+      'peer-public-snapshot',
+      74,
+      'retry-after-failure'
+    );
+    expect(resources).toHaveLength(2);
 
     const acceptedSnapshotResources: Array<Record<string, unknown>> = [];
     const receiver = new ReticulumChatManager({
