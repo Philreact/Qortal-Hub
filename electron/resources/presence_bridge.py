@@ -208,6 +208,7 @@ _QCHAT_FILE_BULK_ACTIVE_MAX_PER_PEER = (
 _RESOURCE_SESSION_REQUEST_PATH = "/qortal/resource/v1"
 _RESOURCE_SESSION_HELLO_TYPE = "RETICULUM_RESOURCE_SESSION_HELLO"
 _RESOURCE_SESSION_READY_TYPE = "RETICULUM_RESOURCE_SESSION_READY"
+_RESOURCE_SESSION_CANCEL_TYPE = "RETICULUM_RESOURCE_SESSION_CANCEL"
 _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
 _RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 30.0
@@ -220,9 +221,25 @@ _RESOURCE_SESSION_MAX_QUEUE_TOTAL = 256
 _RESOURCE_SESSION_FAST_CONCURRENCY = 4
 _RESOURCE_SESSION_BULK_POOL_SIZE = 5
 _RESOURCE_SESSION_BULK_CONCURRENCY = 1
-_RESOURCE_SESSION_PROVIDER_CONCURRENCY = 8
+# Authorization is admitted separately so slow membership checks cannot occupy
+# response capacity. The nested response ceilings preserve one slot for live
+# events and two slots that attachment ranges cannot consume.
+_RESOURCE_SESSION_PROVIDER_CONCURRENCY = 12
+_RESOURCE_SESSION_PROVIDER_NON_LIVE_CONCURRENCY = 11
+_RESOURCE_SESSION_PROVIDER_ATTACHMENT_CONCURRENCY = 10
+_RESOURCE_SESSION_PROVIDER_ACTIVE_MAX_PER_PEER = 10
+_RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER = 8
+_RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX = 40
+_RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX_PER_PEER = 8
+_RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX = 24
+_RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX_PER_PEER = 6
+_RESOURCE_SESSION_PROVIDER_CAPACITY_WAIT_SECONDS = 15.0
+_RESOURCE_SESSION_PROVIDER_RESPONSE_START_GRACE_SECONDS = 2.0
+_RESOURCE_SESSION_PROVIDER_CANCEL_TTL_SECONDS = 2 * 60.0
+_RESOURCE_SESSION_PROVIDER_CANCEL_MAX = 4096
 _RESOURCE_SESSION_AUTH_MAX_QUEUE_SECONDS = 90.0
-_RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS = 30 * 60.0
+_RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS = 15.0
+_RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_FAILURE_BACKOFF_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)
 _RESOURCE_SESSION_FAILURE_RECORD_MAX = 4096
 # Inbound RNS.Link: classify overlay vs audio by first JSON packet; if none, default to overlay.
@@ -408,9 +425,26 @@ _resource_session_jobs_by_transfer: Dict[str, Dict[str, Any]] = {}
 _resource_session_jobs_by_semantic_key: Dict[str, Dict[str, Any]] = {}
 _resource_session_provider_waiters: Dict[str, Dict[str, Any]] = {}
 _resource_session_failures_by_key: Dict[str, Dict[str, Any]] = {}
-_resource_session_provider_slots = threading.BoundedSemaphore(
-    _RESOURCE_SESSION_PROVIDER_CONCURRENCY
-)
+_resource_session_provider_pending_auth_by_peer: Dict[str, int] = {}
+_resource_session_provider_inflight_transfers: Set[str] = set()
+_resource_session_provider_recent_cancellations: Dict[str, float] = {}
+_resource_session_provider_capacity_condition = threading.Condition(_state_lock)
+_resource_session_provider_capacity_waiters: Dict[str, int] = {
+    "live": 0,
+    "metadata": 0,
+    "history": 0,
+    "attachment": 0,
+}
+_resource_session_provider_capacity_waiters_by_peer: Dict[str, int] = {}
+_resource_session_provider_capacity_queue: List[Dict[str, Any]] = []
+_resource_session_provider_active_by_class: Dict[str, int] = {
+    "live": 0,
+    "metadata": 0,
+    "history": 0,
+    "attachment": 0,
+}
+_resource_session_provider_active_by_peer: Dict[str, int] = {}
+_resource_session_provider_active_attachments_by_peer: Dict[str, int] = {}
 _RETICULUM_CHAT_RESOURCE_TYPE = "reticulum_chat_event"
 _RETICULUM_RESOURCE_TYPE = "reticulum_resource"
 _RETICULUM_CHAT_RESOURCE_AUTH_TYPE = "RETICULUM_CHAT_RESOURCE_AUTH"
@@ -1144,6 +1178,18 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         overlay_links = len(_overlay_links_by_id)
         audio_links = len(_audio_links_by_id)
         file_links = len(_qchat_file_links_by_id)
+        provider_pending_auth = len(_resource_session_provider_waiters)
+        provider_inflight = len(_resource_session_provider_inflight_transfers)
+        provider_capacity_waiters = dict(
+            _resource_session_provider_capacity_waiters
+        )
+        provider_waiting_peers = len(
+            _resource_session_provider_capacity_waiters_by_peer
+        )
+        provider_active_by_class = dict(
+            _resource_session_provider_active_by_class
+        )
+        provider_active_peers = len(_resource_session_provider_active_by_peer)
         raw_gap_sample_count = int(_audio_rns_raw_inbound_gap_sample_count or 0)
         shared_gap_sample_count = int(_audio_rns_shared_frame_gap_sample_count or 0)
         raw_gap_median_ms = _estimate_gap_median_ms(
@@ -1180,6 +1226,10 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         or file_links > 0
         or resource_session_active > 0
         or resource_session_queued > 0
+        or provider_pending_auth > 0
+        or provider_inflight > 0
+        or any(count > 0 for count in provider_capacity_waiters.values())
+        or any(count > 0 for count in provider_active_by_class.values())
         or rns_gap_pressure
         or overlay_destination_closes > 0
     )
@@ -1198,6 +1248,12 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         f"links=overlay:{overlay_links},audio:{audio_links},file:{file_links} "
         f"resource_sessions={resource_sessions} resource_active={resource_session_active} "
         f"resource_queued={resource_session_queued} resource_oldest_ms={int(resource_session_oldest_age * 1000)} "
+        f"provider_auth_pending={provider_pending_auth} "
+        f"provider_inflight={provider_inflight} "
+        f"provider_waiting={_format_bridge_pressure_counts(provider_capacity_waiters)} "
+        f"provider_waiting_peers={provider_waiting_peers} "
+        f"provider_active={_format_bridge_pressure_counts(provider_active_by_class)} "
+        f"provider_active_peers={provider_active_peers} "
         f"scheduler_slow={slow_text} scheduler_active={active_text} "
         f"rns_gap_ms_window={int(rns_gap_ms_window)} "
         f"rns_gap_ms_max={int(rns_gap_ms_max)} "
@@ -13039,6 +13095,68 @@ def configure_qchat_file_link(link, link_id: str) -> None:
     _qchat_file_link_ids_by_object[id(link)] = link_id
 
 
+def _resource_session_cancel_provider_transfer(
+    state: Dict[str, Any],
+    transfer_id: str,
+) -> None:
+    transfer_key = str(transfer_id or "").strip()
+    if not transfer_key or state.get("incoming") is not True:
+        return
+    link_id = str(state.get("linkId") or "")
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    waiter_key = _resource_session_waiter_key(link_id, transfer_key)
+    handled = False
+    with _state_lock:
+        now = time.time()
+        cancel_key = _resource_session_provider_cancel_key(peer_hash, transfer_key)
+        _resource_session_provider_recent_cancellations[cancel_key] = (
+            now + _RESOURCE_SESSION_PROVIDER_CANCEL_TTL_SECONDS
+        )
+        if (
+            len(_resource_session_provider_recent_cancellations)
+            > _RESOURCE_SESSION_PROVIDER_CANCEL_MAX
+        ):
+            expired_keys = [
+                key
+                for key, expires_at in _resource_session_provider_recent_cancellations.items()
+                if float(expires_at or 0) <= now
+            ]
+            for key in expired_keys:
+                _resource_session_provider_recent_cancellations.pop(key, None)
+            while (
+                len(_resource_session_provider_recent_cancellations)
+                > _RESOURCE_SESSION_PROVIDER_CANCEL_MAX
+            ):
+                oldest_key = min(
+                    _resource_session_provider_recent_cancellations,
+                    key=_resource_session_provider_recent_cancellations.get,
+                )
+                _resource_session_provider_recent_cancellations.pop(
+                    oldest_key,
+                    None,
+                )
+        waiter = _resource_session_provider_waiters.get(waiter_key)
+        pending = _qchat_file_pending_sends_by_transfer.get(transfer_key)
+        if isinstance(pending, dict):
+            allowed_recipient = str(
+                pending.get("allowedRecipientAddress") or ""
+            ).strip().lower()
+            if not allowed_recipient or allowed_recipient == peer_hash:
+                pending["cancelled"] = True
+                handled = True
+        if isinstance(waiter, dict):
+            waiter["authorized"] = False
+            waiter["reason"] = "resource_requester_cancelled"
+            waiter["event"].set()
+            handled = True
+        _resource_session_provider_capacity_condition.notify_all()
+    if handled:
+        log(
+            "[presence_bridge] resource_session_provider_cancelled "
+            f"transfer={transfer_key} peer={peer_hash[:16]}"
+        )
+
+
 def _handle_qchat_file_link_packet(message, packet) -> None:
     link = getattr(packet, "link", None)
     link_id = get_qchat_file_link_id(link) if link is not None else None
@@ -13055,6 +13173,14 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
     if not isinstance(decoded, dict):
         return
     _note_presence_pressure("source:qchat_file")
+    if decoded.get("type") == _RESOURCE_SESSION_CANCEL_TYPE:
+        if state.get("manager_kind") != "resource_session":
+            return
+        _resource_session_cancel_provider_transfer(
+            state,
+            str(decoded.get("transferId") or ""),
+        )
+        return
     if decoded.get("type") == _RESOURCE_SESSION_READY_TYPE:
         if (
             state.get("manager_kind") != "resource_session"
@@ -13598,6 +13724,40 @@ def _qchat_file_abort_receive_transfer(peer_hash: str, transfer_id: str) -> None
             _qchat_file_close_link_now(link_state)
 
 
+def _resource_session_cancel_request_receipt(receipt: Any, transfer_id: str) -> None:
+    if receipt is None:
+        return
+    try:
+        request_resource = getattr(receipt, "resource", None)
+        cancel_request_resource = getattr(request_resource, "cancel", None)
+        if callable(cancel_request_resource):
+            cancel_request_resource()
+        link = getattr(receipt, "link", None)
+        request_id = getattr(receipt, "request_id", None)
+        if link is not None and request_id is not None:
+            for response_resource in list(
+                getattr(link, "incoming_resources", None) or []
+            ):
+                if getattr(response_resource, "request_id", None) != request_id:
+                    continue
+                cancel_response_resource = getattr(response_resource, "cancel", None)
+                if callable(cancel_response_resource):
+                    cancel_response_resource()
+            pending_requests = getattr(link, "pending_requests", None)
+            if isinstance(pending_requests, list) and receipt in pending_requests:
+                pending_requests.remove(receipt)
+        failed_status = getattr(type(receipt), "FAILED", None)
+        if failed_status is not None:
+            receipt.status = failed_status
+        if hasattr(receipt, "concluded_at"):
+            receipt.concluded_at = time.time()
+    except Exception as exc:
+        log(
+            "[presence_bridge] resource_session_request_cancel_failed "
+            f"transfer={transfer_id} err={exc}"
+        )
+
+
 def _qchat_file_cancel_transfer(transfer_id: str, peer_hash: str = "", reason: str = "cancelled") -> int:
     transfer_key = transfer_id.strip()
     peer_key = peer_hash.strip().lower()
@@ -13612,9 +13772,11 @@ def _qchat_file_cancel_transfer(transfer_id: str, peer_hash: str = "", reason: s
         )
         if cancel_session_job:
             session_job["completed"] = True
+            session_job["cancelled"] = True
     if cancel_session_job:
         semantic_key = str(session_job.get("semanticKey") or "")
         session = session_job.get("session") if isinstance(session_job.get("session"), dict) else None
+        receipt = session_job.get("receipt")
         with _state_lock:
             if semantic_key and _resource_session_jobs_by_semantic_key.get(semantic_key) is session_job:
                 _resource_session_jobs_by_semantic_key.pop(semantic_key, None)
@@ -13625,6 +13787,21 @@ def _qchat_file_cancel_transfer(transfer_id: str, peer_hash: str = "", reason: s
                 pending_jobs = session.get("pending_jobs")
                 if isinstance(pending_jobs, list):
                     session["pending_jobs"] = [job for job in pending_jobs if job is not session_job]
+        if session is not None:
+            link = session.get("link")
+            if link is not None:
+                _send_packet_on_link(
+                    link,
+                    json.dumps(
+                        {
+                            "type": _RESOURCE_SESSION_CANCEL_TYPE,
+                            "transferId": transfer_key,
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                    f"target=qchat-file-reticulum resource_session_cancel transfer={transfer_key}",
+                )
+        _resource_session_cancel_request_receipt(receipt, transfer_key)
         _resource_session_finish_followers(
             session_job,
             False,
@@ -18525,6 +18702,310 @@ def _resource_session_lane(resource_type: str, logical_resource_type: str = "") 
     return "fast" if normalized == _RETICULUM_CHAT_RESOURCE_TYPE else "bulk"
 
 
+def _resource_session_provider_class(
+    resource_type: str,
+    logical_resource_type: str = "",
+) -> str:
+    normalized = str(resource_type or "").strip().lower()
+    logical_type = str(logical_resource_type or "").strip().lower()
+    if (
+        logical_type == "reticulum_resource_range"
+        or logical_type.endswith("_resource_range")
+        or normalized == "reticulum_resource_range"
+        or normalized.endswith("_resource_range")
+    ):
+        return "attachment"
+    if logical_type == "reticulum_chat_metadata_snapshot":
+        return "metadata"
+    if logical_type in {
+        "reticulum_chat_history_page",
+        "reticulum_chat_dm_page",
+        "reticulum_chat_event_page",
+    }:
+        return "history"
+    return "live" if normalized == _RETICULUM_CHAT_RESOURCE_TYPE else "history"
+
+
+def _resource_session_provider_has_capacity_locked(
+    provider_class: str,
+    peer_hash: str = "",
+) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    active_total = sum(_resource_session_provider_active_by_class.values())
+    if active_total >= _RESOURCE_SESSION_PROVIDER_CONCURRENCY:
+        return False
+    if (
+        peer_key
+        and int(_resource_session_provider_active_by_peer.get(peer_key) or 0)
+        >= _RESOURCE_SESSION_PROVIDER_ACTIVE_MAX_PER_PEER
+    ):
+        return False
+    if provider_class != "live":
+        active_non_live = (
+            _resource_session_provider_active_by_class["metadata"]
+            + _resource_session_provider_active_by_class["history"]
+            + _resource_session_provider_active_by_class["attachment"]
+        )
+        if active_non_live >= _RESOURCE_SESSION_PROVIDER_NON_LIVE_CONCURRENCY:
+            return False
+    if (
+        provider_class == "attachment"
+        and _resource_session_provider_active_by_class["attachment"]
+        >= _RESOURCE_SESSION_PROVIDER_ATTACHMENT_CONCURRENCY
+    ):
+        return False
+    if (
+        provider_class == "attachment"
+        and peer_key
+        and int(
+            _resource_session_provider_active_attachments_by_peer.get(peer_key)
+            or 0
+        )
+        >= _RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER
+    ):
+        return False
+    return True
+
+
+def _resource_session_provider_can_start_locked(
+    provider_class: str,
+    peer_hash: str = "",
+    waiter: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if not _resource_session_provider_has_capacity_locked(
+        provider_class,
+        peer_hash,
+    ):
+        return False
+    if waiter is None:
+        return True
+    priorities = {
+        "live": 0,
+        "metadata": 1,
+        "history": 2,
+        "attachment": 3,
+    }
+    waiter_priority = priorities.get(provider_class, 3)
+    try:
+        waiter_index = _resource_session_provider_capacity_queue.index(waiter)
+    except ValueError:
+        return False
+    for queued_index, queued in enumerate(
+        _resource_session_provider_capacity_queue
+    ):
+        if queued is waiter:
+            continue
+        queued_class = str(queued.get("providerClass") or "attachment")
+        queued_priority = priorities.get(queued_class, 3)
+        if queued_priority > waiter_priority:
+            continue
+        if queued_priority == waiter_priority and queued_index > waiter_index:
+            continue
+        queued_peer = str(queued.get("peerPresenceHash") or "").strip().lower()
+        if _resource_session_provider_has_capacity_locked(
+            queued_class,
+            queued_peer,
+        ):
+            return False
+    return True
+
+
+def _resource_session_provider_acquire_capacity(
+    provider_class: str,
+    transfer_id: str,
+    pending: Dict[str, Any],
+    state: Dict[str, Any],
+) -> bool:
+    deadline = time.monotonic() + _RESOURCE_SESSION_PROVIDER_CAPACITY_WAIT_SECONDS
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    waiter = {
+        "providerClass": provider_class,
+        "peerPresenceHash": peer_hash,
+        "transferId": transfer_id,
+    }
+    with _resource_session_provider_capacity_condition:
+        total_waiters = len(_resource_session_provider_capacity_queue)
+        peer_waiters = int(
+            _resource_session_provider_capacity_waiters_by_peer.get(peer_hash) or 0
+        )
+        if (
+            total_waiters >= _RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX
+            or (
+                peer_hash
+                and peer_waiters
+                >= _RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX_PER_PEER
+            )
+        ):
+            return False
+        _resource_session_provider_capacity_waiters[provider_class] += 1
+        _resource_session_provider_capacity_queue.append(waiter)
+        if peer_hash:
+            _resource_session_provider_capacity_waiters_by_peer[peer_hash] = (
+                peer_waiters + 1
+            )
+        try:
+            while True:
+                if (
+                    pending.get("cancelled") is True
+                    or _shutdown.is_set()
+                    or state.get("closing") is True
+                ):
+                    return False
+                if _resource_session_provider_can_start_locked(
+                    provider_class,
+                    peer_hash,
+                    waiter,
+                ):
+                    _resource_session_provider_active_by_class[provider_class] += 1
+                    if peer_hash:
+                        _resource_session_provider_active_by_peer[peer_hash] = (
+                            int(
+                                _resource_session_provider_active_by_peer.get(
+                                    peer_hash
+                                )
+                                or 0
+                            )
+                            + 1
+                        )
+                        if provider_class == "attachment":
+                            _resource_session_provider_active_attachments_by_peer[
+                                peer_hash
+                            ] = (
+                                int(
+                                    _resource_session_provider_active_attachments_by_peer.get(
+                                        peer_hash
+                                    )
+                                    or 0
+                                )
+                                + 1
+                            )
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    log(
+                        "[presence_bridge] resource_provider_capacity_timeout "
+                        f"transfer={transfer_id} class={provider_class}"
+                    )
+                    return False
+                _resource_session_provider_capacity_condition.wait(
+                    timeout=min(0.25, remaining)
+                )
+        finally:
+            if waiter in _resource_session_provider_capacity_queue:
+                _resource_session_provider_capacity_queue.remove(waiter)
+            _resource_session_provider_capacity_waiters[provider_class] = max(
+                0,
+                _resource_session_provider_capacity_waiters[provider_class] - 1,
+            )
+            if peer_hash:
+                remaining_peer_waiters = max(
+                    0,
+                    int(
+                        _resource_session_provider_capacity_waiters_by_peer.get(
+                            peer_hash
+                        )
+                        or 0
+                    )
+                    - 1,
+                )
+                if remaining_peer_waiters > 0:
+                    _resource_session_provider_capacity_waiters_by_peer[
+                        peer_hash
+                    ] = remaining_peer_waiters
+                else:
+                    _resource_session_provider_capacity_waiters_by_peer.pop(
+                        peer_hash,
+                        None,
+                    )
+            _resource_session_provider_capacity_condition.notify_all()
+
+
+def _resource_session_provider_release_capacity(
+    provider_class: str,
+    peer_hash: str = "",
+) -> None:
+    peer_key = str(peer_hash or "").strip().lower()
+    with _resource_session_provider_capacity_condition:
+        _resource_session_provider_active_by_class[provider_class] = max(
+            0,
+            _resource_session_provider_active_by_class[provider_class] - 1,
+        )
+        if peer_key:
+            remaining = max(
+                0,
+                int(_resource_session_provider_active_by_peer.get(peer_key) or 0)
+                - 1,
+            )
+            if remaining > 0:
+                _resource_session_provider_active_by_peer[peer_key] = remaining
+            else:
+                _resource_session_provider_active_by_peer.pop(peer_key, None)
+            if provider_class == "attachment":
+                remaining_attachments = max(
+                    0,
+                    int(
+                        _resource_session_provider_active_attachments_by_peer.get(
+                            peer_key
+                        )
+                        or 0
+                    )
+                    - 1,
+                )
+                if remaining_attachments > 0:
+                    _resource_session_provider_active_attachments_by_peer[
+                        peer_key
+                    ] = remaining_attachments
+                else:
+                    _resource_session_provider_active_attachments_by_peer.pop(
+                        peer_key,
+                        None,
+                    )
+        _resource_session_provider_capacity_condition.notify_all()
+
+
+def _resource_session_provider_release_auth_admission(
+    waiter_key: str,
+    waiter: Optional[Dict[str, Any]],
+) -> None:
+    if not waiter_key or not isinstance(waiter, dict):
+        return
+    with _state_lock:
+        if _resource_session_provider_waiters.get(waiter_key) is not waiter:
+            return
+        _resource_session_provider_waiters.pop(waiter_key, None)
+        peer_hash = str(waiter.get("peerPresenceHash") or "").strip().lower()
+        if peer_hash:
+            remaining = max(
+                0,
+                int(_resource_session_provider_pending_auth_by_peer.get(peer_hash) or 0)
+                - 1,
+            )
+            if remaining > 0:
+                _resource_session_provider_pending_auth_by_peer[peer_hash] = remaining
+            else:
+                _resource_session_provider_pending_auth_by_peer.pop(peer_hash, None)
+
+
+def _resource_session_provider_cancel_key(peer_hash: str, transfer_id: str) -> str:
+    return f"{str(peer_hash or '').strip().lower()}:{str(transfer_id or '').strip()}"
+
+
+def _resource_session_provider_was_cancelled_locked(
+    peer_hash: str,
+    transfer_id: str,
+) -> bool:
+    now = time.time()
+    cancel_key = _resource_session_provider_cancel_key(peer_hash, transfer_id)
+    expires_at = float(
+        _resource_session_provider_recent_cancellations.get(cancel_key) or 0
+    )
+    if expires_at > now:
+        return True
+    if expires_at > 0:
+        _resource_session_provider_recent_cancellations.pop(cancel_key, None)
+    return False
+
+
 def _resource_session_key(peer_hash: str, lane: str, slot: int = 0) -> str:
     peer_key = str(peer_hash or "").strip().lower()
     session_lane = "bulk" if lane == "bulk" else "fast"
@@ -19017,7 +19498,13 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
     if receipt is False:
         _resource_session_finish_job(job, False, reason="resource_request_send_failed")
         return False
-    job["receipt"] = receipt
+    with _state_lock:
+        cancelled_during_dispatch = job.get("cancelled") is True
+        if not cancelled_during_dispatch:
+            job["receipt"] = receipt
+    if cancelled_during_dispatch:
+        _resource_session_cancel_request_receipt(receipt, transfer_id)
+        return False
     _qchat_file_emit(
         "auth_sent",
         {
@@ -19125,6 +19612,7 @@ def _resource_session_fail_state(
         active_jobs = list((state.get("active_requests") or {}).values())
         state["pending_jobs"] = []
         state["active_requests"] = {}
+        _resource_session_provider_capacity_condition.notify_all()
     _resource_session_note_failure(state, reason)
     _resource_session_emit_status(state, "failed", reason)
     _resource_session_remove_state(state)
@@ -19616,24 +20104,25 @@ def _resource_session_watch_provider_file(
     pending: Dict[str, Any],
     state: Dict[str, Any],
     request_id: Any,
+    provider_class: str,
 ) -> None:
     transfer_id = str(pending.get("transferId") or "")
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     link = state.get("link")
 
     def watch() -> None:
         completed = False
-        failure_reason = "resource_response_stalled"
+        failure_reason = "resource_response_not_started"
         tracked_resource = None
-        last_progress = -1.0
+        transfer_started = False
+        last_progress = 0.0
         last_progress_at = time.monotonic()
+        response_start_deadline = (
+            last_progress_at
+            + _RESOURCE_SESSION_PROVIDER_RESPONSE_START_GRACE_SECONDS
+        )
         try:
             while True:
-                if pending.get("cancelled") is True:
-                    failure_reason = "resource_response_cancelled"
-                    break
-                if _shutdown.is_set() or state.get("closing") is True:
-                    failure_reason = "resource_session_closed"
-                    break
                 if tracked_resource is None and link is not None:
                     try:
                         outgoing_resources = list(
@@ -19649,6 +20138,18 @@ def _resource_session_watch_provider_file(
                         ),
                         None,
                     )
+                cancelled = pending.get("cancelled") is True
+                session_closed = _shutdown.is_set() or state.get("closing") is True
+                if (cancelled or session_closed) and tracked_resource is None:
+                    if time.monotonic() < response_start_deadline:
+                        time.sleep(0.01)
+                        continue
+                if cancelled:
+                    failure_reason = "resource_response_cancelled"
+                    break
+                if session_closed:
+                    failure_reason = "resource_session_closed"
+                    break
                 if tracked_resource is not None:
                     status = getattr(tracked_resource, "status", None)
                     if status == getattr(RNS.Resource, "COMPLETE", object()):
@@ -19672,6 +20173,18 @@ def _resource_session_watch_provider_file(
                         )
                         if next_segment is not None:
                             tracked_resource = next_segment
+                            transfer_started = True
+                            try:
+                                next_progress = float(
+                                    tracked_resource.get_progress()
+                                )
+                            except Exception:
+                                next_progress = 0.0
+                            last_progress = (
+                                max(0.0, next_progress)
+                                if math.isfinite(next_progress)
+                                else 0.0
+                            )
                             last_progress_at = time.monotonic()
                             continue
                     if status in {
@@ -19685,7 +20198,10 @@ def _resource_session_watch_provider_file(
                         progress = float(tracked_resource.get_progress())
                     except Exception:
                         progress = last_progress
+                    if not math.isfinite(progress):
+                        progress = last_progress
                     if progress > last_progress:
+                        transfer_started = True
                         last_progress = progress
                         last_progress_at = time.monotonic()
                         with _state_lock:
@@ -19693,10 +20209,17 @@ def _resource_session_watch_provider_file(
                             state["activity_generation"] = int(
                                 state.get("activity_generation") or 0
                             ) + 1
-                if (
-                    time.monotonic() - last_progress_at
-                    >= _RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS
-                ):
+                no_progress_timeout = (
+                    _RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS
+                    if transfer_started
+                    else _RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS
+                )
+                if time.monotonic() - last_progress_at >= no_progress_timeout:
+                    failure_reason = (
+                        "resource_response_stalled"
+                        if transfer_started
+                        else "resource_response_not_started"
+                    )
                     break
                 time.sleep(0.1)
         finally:
@@ -19715,6 +20238,7 @@ def _resource_session_watch_provider_file(
                 current = _qchat_file_pending_sends_by_transfer.get(transfer_id)
                 if current is pending:
                     _qchat_file_pending_sends_by_transfer.pop(transfer_id, None)
+                _resource_session_provider_inflight_transfers.discard(transfer_id)
                 state["provider_active"] = max(
                     0,
                     int(state.get("provider_active") or 0) - 1,
@@ -19723,7 +20247,10 @@ def _resource_session_watch_provider_file(
                 state["activity_generation"] = int(
                     state.get("activity_generation") or 0
                 ) + 1
-            _resource_session_provider_slots.release()
+            _resource_session_provider_release_capacity(
+                provider_class,
+                peer_hash,
+            )
             _resource_session_schedule_idle_close(state)
             if not cancelled:
                 _qchat_file_emit(
@@ -19754,9 +20281,11 @@ def _resource_session_response_generator(
     remote_identity,
     _requested_at,
 ):
-    if not _resource_session_provider_slots.acquire(blocking=False):
-        return {"ok": False, "reason": "resource_provider_busy"}
-    provider_slot_transferred = False
+    provider_capacity_acquired = False
+    provider_capacity_transferred = False
+    provider_session_active = False
+    provider_session_active_transferred = False
+    provider_class = "history"
     waiter: Optional[Dict[str, Any]] = None
     waiter_key = ""
     try:
@@ -19794,6 +20323,23 @@ def _resource_session_response_generator(
         claimed_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if claimed_peer_hash and claimed_peer_hash != identified_peer_hash:
             return {"ok": False, "reason": "resource_peer_identity_mismatch"}
+        waiter_key = _resource_session_waiter_key(
+            str(state.get("linkId") or ""),
+            transfer_id,
+        )
+        provider_class = _resource_session_provider_class(
+            resource_type,
+            str(metadata.get("logicalResourceType") or ""),
+        )
+        waiter = {
+            "event": threading.Event(),
+            "authorized": False,
+            "reason": "resource_authorization_timeout",
+            "linkId": str(state.get("linkId") or ""),
+            "transferId": transfer_id,
+            "peerPresenceHash": identified_peer_hash,
+            "providerClass": provider_class,
+        }
         with _state_lock:
             link_id = str(state.get("linkId") or "")
             if (
@@ -19803,26 +20349,44 @@ def _resource_session_response_generator(
                 or _qchat_file_links_by_id.get(link_id) is not state
             ):
                 return {"ok": False, "reason": "resource_session_unavailable"}
+            if _resource_session_provider_was_cancelled_locked(
+                identified_peer_hash,
+                transfer_id,
+            ):
+                return {"ok": False, "reason": "resource_requester_cancelled"}
+            if (
+                waiter_key in _resource_session_provider_waiters
+                or transfer_id in _resource_session_provider_inflight_transfers
+            ):
+                return {"ok": False, "reason": "duplicate_resource_request"}
+            peer_pending_auth = int(
+                _resource_session_provider_pending_auth_by_peer.get(
+                    identified_peer_hash,
+                    0,
+                )
+                or 0
+            )
+            if (
+                len(_resource_session_provider_waiters)
+                >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX
+                or peer_pending_auth
+                >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX_PER_PEER
+            ):
+                return {"ok": False, "reason": "resource_provider_busy"}
             state["peerPresenceHash"] = identified_peer_hash
             state["peerDestinationHash"] = identified_peer_hash
             state["provider_active"] = int(state.get("provider_active") or 0) + 1
+            provider_session_active = True
             state["last_used_at"] = time.time()
             state["activity_generation"] = int(
                 state.get("activity_generation") or 0
             ) + 1
-        _resource_session_cancel_timer(state, "idle_timer")
-        waiter_key = _resource_session_waiter_key(link_id, transfer_id)
-        waiter = {
-            "event": threading.Event(),
-            "authorized": False,
-            "reason": "resource_authorization_timeout",
-            "linkId": link_id,
-            "transferId": transfer_id,
-        }
-        with _state_lock:
-            if waiter_key in _resource_session_provider_waiters:
-                return {"ok": False, "reason": "duplicate_resource_request"}
             _resource_session_provider_waiters[waiter_key] = waiter
+            _resource_session_provider_inflight_transfers.add(transfer_id)
+            _resource_session_provider_pending_auth_by_peer[identified_peer_hash] = (
+                peer_pending_auth + 1
+            )
+        _resource_session_cancel_timer(state, "idle_timer")
         _qchat_file_emit(
             "auth",
             {
@@ -19841,10 +20405,20 @@ def _resource_session_response_generator(
             return {"ok": False, "reason": "resource_authorization_timeout"}
         if waiter.get("authorized") is not True:
             return {"ok": False, "reason": str(waiter.get("reason") or "resource_request_rejected")}
+        _resource_session_provider_release_auth_admission(waiter_key, waiter)
         with _state_lock:
             pending = _qchat_file_pending_sends_by_transfer.get(transfer_id)
         if not isinstance(pending, dict):
             return {"ok": False, "reason": "resource_not_registered"}
+        pending_metadata = (
+            pending.get("metadata")
+            if isinstance(pending.get("metadata"), dict)
+            else {}
+        )
+        provider_class = _resource_session_provider_class(
+            str(pending.get("resourceType") or ""),
+            str(pending_metadata.get("logicalResourceType") or ""),
+        )
         allowed_recipient = str(pending.get("allowedRecipientAddress") or "").strip().lower()
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if allowed_recipient and peer_hash and allowed_recipient != peer_hash:
@@ -19854,31 +20428,46 @@ def _resource_session_response_generator(
         file_path = str(pending.get("filePath") or "")
         if not os.path.isfile(file_path):
             return {"ok": False, "reason": "resource_file_missing"}
+        provider_capacity_acquired = _resource_session_provider_acquire_capacity(
+            provider_class,
+            transfer_id,
+            pending,
+            state,
+        )
+        if not provider_capacity_acquired:
+            return {"ok": False, "reason": "resource_provider_busy"}
+        if pending.get("cancelled") is True:
+            return {"ok": False, "reason": "resource_requester_cancelled"}
+        if state.get("closing") is True:
+            return {"ok": False, "reason": "resource_session_unavailable"}
         file_handle = open(file_path, "rb")
         try:
+            response_metadata = _resource_session_response_metadata(pending)
+            _qchat_file_emit(
+                "sending",
+                {
+                    "transferId": transfer_id,
+                    "peerPresenceHash": peer_hash,
+                    "fileName": pending.get("fileName") or "",
+                    "size": int(pending.get("size") or 0),
+                    "resourceType": pending.get("resourceType") or "",
+                    "sessionLane": state.get("sessionLane") or "",
+                },
+            )
             _resource_session_watch_provider_file(
                 file_handle,
                 pending,
                 state,
                 request_id,
+                provider_class,
             )
         except Exception:
             file_handle.close()
             raise
-        provider_slot_transferred = True
+        provider_capacity_transferred = True
+        provider_session_active_transferred = True
         waiter["response_started"] = True
-        _qchat_file_emit(
-            "sending",
-            {
-                "transferId": transfer_id,
-                "peerPresenceHash": peer_hash,
-                "fileName": pending.get("fileName") or "",
-                "size": int(pending.get("size") or 0),
-                "resourceType": pending.get("resourceType") or "",
-                "sessionLane": state.get("sessionLane") or "",
-            },
-        )
-        return (file_handle, _resource_session_response_metadata(pending))
+        return (file_handle, response_metadata)
     except Exception as exc:
         log(f"[presence_bridge] resource_session_provider_error err={exc}")
         return {"ok": False, "reason": "resource_provider_error"}
@@ -19906,16 +20495,12 @@ def _resource_session_response_generator(
                         "reason": "resource_response_not_started",
                     },
                 )
-        if waiter_key:
-            with _state_lock:
-                _resource_session_provider_waiters.pop(waiter_key, None)
+        _resource_session_provider_release_auth_admission(waiter_key, waiter)
         if (
-            "state" in locals()
+            provider_session_active
+            and "state" in locals()
             and isinstance(state, dict)
-            and not (
-                isinstance(waiter, dict)
-                and waiter.get("response_started") is True
-            )
+            and not provider_session_active_transferred
         ):
             with _state_lock:
                 state["provider_active"] = max(
@@ -19927,8 +20512,20 @@ def _resource_session_response_generator(
                     state.get("activity_generation") or 0
                 ) + 1
             _resource_session_schedule_idle_close(state)
-        if not provider_slot_transferred:
-            _resource_session_provider_slots.release()
+        if provider_capacity_acquired and not provider_capacity_transferred:
+            _resource_session_provider_release_capacity(
+                provider_class,
+                str(state.get("peerPresenceHash") or "").strip().lower()
+                if "state" in locals() and isinstance(state, dict)
+                else "",
+            )
+        if not provider_session_active_transferred:
+            with _state_lock:
+                _resource_session_provider_inflight_transfers.discard(
+                    str(waiter.get("transferId") or "")
+                    if isinstance(waiter, dict)
+                    else ""
+                )
 
 
 def handle_prepare_reticulum_resource_session(
@@ -20172,6 +20769,32 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
         emit_resp(req_id, False, error=str(exc))
 
 
+def _resource_session_abandon_late_pending_send(
+    transfer_id: str,
+    reason: str,
+) -> bool:
+    """Discard a send registered after its resource request already ended."""
+    with _state_lock:
+        if transfer_id in _resource_session_provider_inflight_transfers:
+            return False
+        pending = _qchat_file_pending_sends_by_transfer.pop(transfer_id, None)
+        if not isinstance(pending, dict):
+            return False
+        pending["cancelled"] = True
+    _qchat_file_emit(
+        "failed",
+        {
+            "transferId": transfer_id,
+            "peerPresenceHash": pending.get("allowedRecipientAddress") or "",
+            "fileName": pending.get("fileName") or "",
+            "size": int(pending.get("size") or 0),
+            "resourceType": pending.get("resourceType") or "",
+            "reason": reason,
+        },
+    )
+    return True
+
+
 def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> None:
     link_id = str(payload.get("linkId") or "").strip()
     transfer_id = str(payload.get("transferId") or "").strip()
@@ -20180,6 +20803,10 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
         return
     state = get_qchat_file_link_state(link_id)
     if state is None:
+        _resource_session_abandon_late_pending_send(
+            transfer_id,
+            "resource_authorization_session_closed",
+        )
         emit_resp(req_id, False, payload={"code": "unknown_link_id"}, error="Unknown link id")
         return
     with _state_lock:
@@ -20205,6 +20832,10 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
         with _state_lock:
             waiter = _resource_session_provider_waiters.get(waiter_key)
         if not isinstance(waiter, dict):
+            _resource_session_abandon_late_pending_send(
+                transfer_id,
+                "resource_authorization_no_longer_active",
+            )
             emit_resp(
                 req_id,
                 False,

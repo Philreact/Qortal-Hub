@@ -78,16 +78,28 @@ class FakeLink:
 
 
 class FakeSessionReceipt:
+    FAILED = 0
+    SENT = 1
+
     def __init__(self):
         self.progress = 0.0
         self.metadata = None
         self.response = None
+        self.cancelled = False
+        self.status = self.SENT
+        self.concluded_at = None
+        self.resource = None
+        self.link = None
+        self.request_id = None
 
     def get_progress(self):
         return self.progress
 
     def get_response(self):
         return self.response
+
+    def cancel(self):
+        self.cancelled = True
 
 
 class FakeSessionLink(FakeLink):
@@ -2751,6 +2763,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "fileName": "managed.bin",
             "size": 128,
             "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+            "expires_at": time.time() + 60,
         }
         with mock.patch.object(
             self.bridge,
@@ -3379,28 +3392,414 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.assertEqual(state["provider_active"], 0)
         emit.assert_not_called()
 
-    def test_provider_concurrency_limit_rejects_without_emitting_auth(self):
-        acquired = []
-        for _ in range(self.bridge._RESOURCE_SESSION_PROVIDER_CONCURRENCY):
-            self.assertTrue(
-                self.bridge._resource_session_provider_slots.acquire(blocking=False)
+    def test_provider_pending_auth_limit_rejects_without_emitting_auth(self):
+        state, link = self.session()
+        state["incoming"] = True
+        for index in range(self.bridge._RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX):
+            self.bridge._resource_session_provider_waiters[f"existing:{index}"] = {
+                "peerPresenceHash": f"{index:032x}",
+            }
+        with mock.patch.object(
+            self.bridge,
+            "_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            response = self.bridge._resource_session_response_generator(
+                self.bridge._RESOURCE_SESSION_REQUEST_PATH,
+                {
+                    "version": 1,
+                    "transferId": "capacity",
+                    "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                    "metadata": {"eventId": "event-capacity"},
+                    "authMessage": {"type": "RCR"},
+                },
+                b"request",
+                link.link_id,
+                object(),
+                time.time(),
             )
-            acquired.append(True)
+        self.assertEqual(response["reason"], "resource_provider_busy")
+        self.assertEqual(state["provider_active"], 0)
+        emit.assert_not_called()
+
+    def test_provider_waiting_for_auth_does_not_consume_transfer_capacity(self):
+        state, link = self.session()
+        state["incoming"] = True
+        auth_emitted = threading.Event()
+        result = {}
+
+        def on_emit(status, _payload):
+            if status == "auth":
+                auth_emitted.set()
+
+        def request():
+            result["response"] = self.bridge._resource_session_response_generator(
+                self.bridge._RESOURCE_SESSION_REQUEST_PATH,
+                {
+                    "version": 1,
+                    "transferId": "waiting-auth",
+                    "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                    "metadata": {"eventId": "event-waiting-auth"},
+                    "authMessage": {"type": "RCR"},
+                },
+                b"request",
+                link.link_id,
+                object(),
+                time.time(),
+            )
+
+        with mock.patch.object(
+            self.bridge,
+            "_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(
+            self.bridge,
+            "_qchat_file_emit",
+            side_effect=on_emit,
+        ):
+            thread = threading.Thread(target=request)
+            thread.start()
+            self.assertTrue(auth_emitted.wait(1.0))
+            self.assertEqual(
+                sum(self.bridge._resource_session_provider_active_by_class.values()),
+                0,
+            )
+            waiter = next(
+                iter(self.bridge._resource_session_provider_waiters.values())
+            )
+            waiter["reason"] = "test_rejected"
+            waiter["event"].set()
+            thread.join(1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["response"]["reason"], "test_rejected")
+        self.assertEqual(state["provider_active"], 0)
+        self.assertFalse(self.bridge._resource_session_provider_waiters)
+        self.assertFalse(
+            self.bridge._resource_session_provider_pending_auth_by_peer
+        )
+
+    def test_late_authorization_discards_abandoned_registered_send(self):
+        state, _link = self.session()
+        state["incoming"] = True
+        transfer_id = "late-authorization"
+        pending = {
+            "allowedRecipientAddress": self.peer_hash,
+            "transferId": transfer_id,
+            "fileName": "late.bin",
+            "size": 128,
+            "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+            "expires_at": time.time() + 60,
+        }
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
+
+        with mock.patch.object(self.bridge, "_qchat_file_emit") as emit, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+        ) as emit_resp:
+            self.bridge.handle_authorize_qchat_file_resource(
+                "req",
+                {"linkId": state["linkId"], "transferId": transfer_id},
+            )
+
+        self.assertNotIn(
+            transfer_id,
+            self.bridge._qchat_file_pending_sends_by_transfer,
+        )
+        self.assertTrue(pending["cancelled"])
+        emit.assert_called_once_with("failed", mock.ANY)
+        self.assertEqual(
+            emit.call_args.args[1]["reason"],
+            "resource_authorization_no_longer_active",
+        )
+        emit_resp.assert_called_once_with(
+            "req",
+            False,
+            payload={"code": "unknown_resource_request"},
+            error="Unknown resource session request",
+        )
+
+    def test_late_authorization_cannot_discard_inflight_send(self):
+        state, _link = self.session()
+        state["incoming"] = True
+        transfer_id = "inflight-authorization"
+        pending = {
+            "allowedRecipientAddress": self.peer_hash,
+            "transferId": transfer_id,
+            "fileName": "active.bin",
+            "size": 128,
+            "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+        }
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
+        self.bridge._resource_session_provider_inflight_transfers.add(transfer_id)
+
+        with mock.patch.object(self.bridge, "_qchat_file_emit") as emit, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+        ):
+            self.bridge.handle_authorize_qchat_file_resource(
+                "req",
+                {"linkId": state["linkId"], "transferId": transfer_id},
+            )
+
+        self.assertIs(
+            self.bridge._qchat_file_pending_sends_by_transfer[transfer_id],
+            pending,
+        )
+        self.assertNotIn("cancelled", pending)
+        emit.assert_not_called()
+
+    def test_provider_capacity_preserves_live_and_sync_slots(self):
+        active = self.bridge._resource_session_provider_active_by_class
+        active["attachment"] = (
+            self.bridge._RESOURCE_SESSION_PROVIDER_ATTACHMENT_CONCURRENCY
+        )
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked("attachment")
+        )
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked("history")
+        )
+        active["history"] = 1
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked("history")
+        )
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked("live")
+        )
+
+    def test_provider_capacity_waiters_are_prioritized(self):
+        live_waiter = {
+            "providerClass": "live",
+            "peerPresenceHash": self.peer_hash,
+        }
+        metadata_waiter = {
+            "providerClass": "metadata",
+            "peerPresenceHash": "cd" * 16,
+        }
+        history_waiter = {
+            "providerClass": "history",
+            "peerPresenceHash": "ef" * 16,
+        }
+        queue = self.bridge._resource_session_provider_capacity_queue
+        queue.extend([history_waiter, metadata_waiter, live_waiter])
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked(
+                "metadata",
+                "cd" * 16,
+                metadata_waiter,
+            )
+        )
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked(
+                "history",
+                "ef" * 16,
+                history_waiter,
+            )
+        )
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked(
+                "live",
+                self.peer_hash,
+                live_waiter,
+            )
+        )
+
+    def test_ineligible_priority_waiter_does_not_block_other_peers(self):
+        blocked_peer = self.peer_hash
+        available_peer = "cd" * 16
+        live_waiter = {
+            "providerClass": "live",
+            "peerPresenceHash": blocked_peer,
+        }
+        history_waiter = {
+            "providerClass": "history",
+            "peerPresenceHash": available_peer,
+        }
+        self.bridge._resource_session_provider_capacity_queue.extend(
+            [live_waiter, history_waiter]
+        )
+        self.bridge._resource_session_provider_active_by_peer[blocked_peer] = (
+            self.bridge._RESOURCE_SESSION_PROVIDER_ACTIVE_MAX_PER_PEER
+        )
+
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked(
+                "history",
+                available_peer,
+                history_waiter,
+            )
+        )
+
+    def test_provider_active_capacity_is_bounded_per_peer(self):
+        self.bridge._resource_session_provider_active_by_peer[self.peer_hash] = (
+            self.bridge._RESOURCE_SESSION_PROVIDER_ACTIVE_MAX_PER_PEER
+        )
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked(
+                "live",
+                self.peer_hash,
+            )
+        )
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked(
+                "live",
+                "cd" * 16,
+            )
+        )
+
+    def test_attachment_capacity_reserves_two_slots_for_same_peer_chat(self):
+        self.bridge._resource_session_provider_active_by_class["attachment"] = (
+            self.bridge._RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER
+        )
+        self.bridge._resource_session_provider_active_by_peer[self.peer_hash] = (
+            self.bridge._RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER
+        )
+        self.bridge._resource_session_provider_active_attachments_by_peer[
+            self.peer_hash
+        ] = self.bridge._RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER
+
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked(
+                "attachment",
+                self.peer_hash,
+            )
+        )
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked(
+                "history",
+                self.peer_hash,
+            )
+        )
+        self.assertTrue(
+            self.bridge._resource_session_provider_can_start_locked(
+                "live",
+                self.peer_hash,
+            )
+        )
+
+    def test_provider_post_auth_wait_queue_is_bounded(self):
+        state, _link = self.session()
+        self.bridge._resource_session_provider_capacity_queue.extend(
+            {
+                "providerClass": "attachment",
+                "peerPresenceHash": f"{index:032x}",
+                "transferId": f"queued-{index}",
+            }
+            for index in range(
+                self.bridge._RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX
+            )
+        )
+
+        acquired = self.bridge._resource_session_provider_acquire_capacity(
+            "live",
+            "queue-full",
+            {},
+            state,
+        )
+
+        self.assertFalse(acquired)
+        self.assertFalse(
+            self.bridge._resource_session_provider_capacity_waiters_by_peer
+        )
+
+    def test_provider_classifies_attachment_ranges_separately(self):
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                "reticulum_group_resource_range",
+                "reticulum_group_resource_range",
+            ),
+            "attachment",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_history_page",
+            ),
+            "history",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_metadata_snapshot",
+            ),
+            "metadata",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "qortalland_chat",
+            ),
+            "live",
+        )
+
+    def test_provider_uses_registered_resource_for_capacity_class(self):
+        state, link = self.session()
+        state["incoming"] = True
+        transfer_id = "authoritative-class"
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(b"range-response")
+            file_path = temp_file.name
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = {
+            "allowedRecipientAddress": self.peer_hash,
+            "transferId": transfer_id,
+            "filePath": file_path,
+            "fileName": "range.bin",
+            "size": len(b"range-response"),
+            "sha256": "",
+            "resourceType": "reticulum_group_resource_range",
+            "metadata": {
+                "logicalResourceType": "reticulum_group_resource_range",
+            },
+            "expires_at": time.time() + 60,
+        }
+        captured_classes = []
+
+        def authorize(status, _payload):
+            if status != "auth":
+                return
+            waiter = next(
+                iter(self.bridge._resource_session_provider_waiters.values())
+            )
+            waiter["authorized"] = True
+            waiter["event"].set()
+
+        def watch(_file, _pending, _state, _request_id, provider_class):
+            captured_classes.append(provider_class)
+
         try:
-            with mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            with mock.patch.object(
+                self.bridge,
+                "_destination_hash_for_identity",
+                return_value=self.peer_hash,
+            ), mock.patch.object(
+                self.bridge,
+                "_qchat_file_emit",
+                side_effect=authorize,
+            ), mock.patch.object(
+                self.bridge,
+                "_resource_session_watch_provider_file",
+                side_effect=watch,
+            ):
                 response = self.bridge._resource_session_response_generator(
                     self.bridge._RESOURCE_SESSION_REQUEST_PATH,
-                    {},
+                    {
+                        "version": 1,
+                        "transferId": transfer_id,
+                        "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                        "metadata": {"eventId": "mislabelled-range"},
+                        "authMessage": {"type": "RCR"},
+                    },
                     b"request",
-                    b"link",
-                    None,
+                    link.link_id,
+                    object(),
                     time.time(),
                 )
-            self.assertEqual(response["reason"], "resource_provider_busy")
-            emit.assert_not_called()
+            self.assertIsInstance(response, tuple)
+            self.assertEqual(captured_classes, ["attachment"])
+            response[0].close()
         finally:
-            for _ in acquired:
-                self.bridge._resource_session_provider_slots.release()
+            Path(file_path).unlink(missing_ok=True)
 
     def test_provider_slot_is_held_until_progressing_response_completes(self):
         state, link = self.session()
@@ -3431,14 +3830,16 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
         }
         self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
-        self.assertTrue(
-            self.bridge._resource_session_provider_slots.acquire(blocking=False)
-        )
+        self.bridge._resource_session_provider_active_by_class["live"] = 1
 
         try:
             with mock.patch.object(
                 self.bridge,
                 "_RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS",
+                0.25,
+            ), mock.patch.object(
+                self.bridge,
+                "_RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS",
                 0.25,
             ), mock.patch.object(
                 self.bridge,
@@ -3449,6 +3850,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
                     pending,
                     state,
                     request_id,
+                    "live",
                 )
                 for progress in (0.1, 0.2, 0.3, 0.4):
                     time.sleep(0.11)
@@ -3470,15 +3872,73 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
                     for call in emit.call_args_list
                 )
             )
-            available_slots = 0
-            while self.bridge._resource_session_provider_slots.acquire(blocking=False):
-                available_slots += 1
             self.assertEqual(
-                available_slots,
-                self.bridge._RESOURCE_SESSION_PROVIDER_CONCURRENCY,
+                self.bridge._resource_session_provider_active_by_class["live"],
+                0,
             )
-            for _ in range(available_slots):
-                self.bridge._resource_session_provider_slots.release()
+        finally:
+            if not file_handle.closed:
+                file_handle.close()
+            Path(file_path).unlink(missing_ok=True)
+
+    def test_provider_zero_progress_uses_initial_progress_timeout(self):
+        state, link = self.session()
+        state["incoming"] = True
+        state["provider_active"] = 1
+        transfer_id = "provider-no-progress"
+        request_id = bytes.fromhex("89" * 16)
+
+        resource = mock.Mock()
+        resource.request_id = request_id
+        resource.status = RNS.Resource.TRANSFERRING
+        resource.get_progress.return_value = 0.0
+        link.outgoing_resources.append(resource)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(b"no-progress-resource")
+            file_path = temp_file.name
+        file_handle = open(file_path, "rb")
+        pending = {
+            "transferId": transfer_id,
+            "fileName": "no-progress.bin",
+            "size": len(b"no-progress-resource"),
+            "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+        }
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
+        self.bridge._resource_session_provider_active_by_class["live"] = 1
+
+        try:
+            with mock.patch.object(
+                self.bridge,
+                "_RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS",
+                0.12,
+            ), mock.patch.object(
+                self.bridge,
+                "_RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS",
+                1.0,
+            ), mock.patch.object(
+                self.bridge,
+                "_resource_session_schedule_idle_close",
+            ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+                self.bridge._resource_session_watch_provider_file(
+                    file_handle,
+                    pending,
+                    state,
+                    request_id,
+                    "live",
+                )
+                deadline = time.time() + 1
+                while state["provider_active"] > 0 and time.time() < deadline:
+                    time.sleep(0.01)
+
+            self.assertEqual(state["provider_active"], 0)
+            resource.cancel.assert_called_once_with()
+            self.assertTrue(
+                any(
+                    call.args[0] == "failed"
+                    and call.args[1]["reason"] == "resource_response_not_started"
+                    for call in emit.call_args_list
+                )
+            )
         finally:
             if not file_handle.closed:
                 file_handle.close()
@@ -3518,14 +3978,16 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
         }
         self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
-        self.assertTrue(
-            self.bridge._resource_session_provider_slots.acquire(blocking=False)
-        )
+        self.bridge._resource_session_provider_active_by_class["live"] = 1
 
         try:
             with mock.patch.object(
                 self.bridge,
                 "_RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS",
+                1.0,
+            ), mock.patch.object(
+                self.bridge,
+                "_RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS",
                 1.0,
             ), mock.patch.object(
                 self.bridge,
@@ -3536,6 +3998,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
                     pending,
                     state,
                     request_id,
+                    "live",
                 )
                 time.sleep(0.15)
                 self.assertEqual(state["provider_active"], 1)
@@ -3557,22 +4020,146 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
                 file_handle.close()
             Path(file_path).unlink(missing_ok=True)
 
+    def test_provider_watcher_preserves_file_during_response_handoff(self):
+        state, _link = self.session()
+        state["incoming"] = True
+        state["provider_active"] = 1
+        transfer_id = "provider-handoff-cancel"
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(b"handoff-resource")
+            file_path = temp_file.name
+        file_handle = open(file_path, "rb")
+        pending = {
+            "transferId": transfer_id,
+            "fileName": "handoff.bin",
+            "size": len(b"handoff-resource"),
+            "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+            "cancelled": True,
+        }
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
+        self.bridge._resource_session_provider_active_by_class["live"] = 1
+
+        try:
+            with mock.patch.object(
+                self.bridge,
+                "_RESOURCE_SESSION_PROVIDER_RESPONSE_START_GRACE_SECONDS",
+                0.1,
+            ), mock.patch.object(
+                self.bridge,
+                "_resource_session_schedule_idle_close",
+            ):
+                self.bridge._resource_session_watch_provider_file(
+                    file_handle,
+                    pending,
+                    state,
+                    b"request",
+                    "live",
+                )
+                time.sleep(0.03)
+                self.assertFalse(file_handle.closed)
+                deadline = time.time() + 1
+                while state["provider_active"] > 0 and time.time() < deadline:
+                    time.sleep(0.01)
+
+            self.assertTrue(file_handle.closed)
+            self.assertEqual(state["provider_active"], 0)
+            self.assertEqual(
+                self.bridge._resource_session_provider_active_by_class["live"],
+                0,
+            )
+        finally:
+            if not file_handle.closed:
+                file_handle.close()
+            Path(file_path).unlink(missing_ok=True)
+
+    def test_provider_cancel_wakes_auth_and_marks_registered_send(self):
+        state, _link = self.session()
+        state["incoming"] = True
+        transfer_id = "provider-cancel"
+        waiter = {
+            "event": threading.Event(),
+            "authorized": False,
+            "reason": "resource_authorization_timeout",
+        }
+        waiter_key = self.bridge._resource_session_waiter_key(
+            state["linkId"],
+            transfer_id,
+        )
+        pending = {
+            "transferId": transfer_id,
+            "allowedRecipientAddress": self.peer_hash,
+        }
+        self.bridge._resource_session_provider_waiters[waiter_key] = waiter
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
+
+        self.bridge._resource_session_cancel_provider_transfer(
+            state,
+            transfer_id,
+        )
+
+        self.assertTrue(waiter["event"].is_set())
+        self.assertEqual(waiter["reason"], "resource_requester_cancelled")
+        self.assertTrue(pending["cancelled"])
+
+    def test_provider_remembers_cancel_that_arrives_before_request(self):
+        state, link = self.session()
+        state["incoming"] = True
+        transfer_id = "cancel-before-request"
+        self.bridge._resource_session_cancel_provider_transfer(
+            state,
+            transfer_id,
+        )
+
+        with mock.patch.object(
+            self.bridge,
+            "_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            response = self.bridge._resource_session_response_generator(
+                self.bridge._RESOURCE_SESSION_REQUEST_PATH,
+                {
+                    "version": 1,
+                    "transferId": transfer_id,
+                    "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                    "metadata": {"eventId": "cancelled-event"},
+                    "authMessage": {"type": "RCR"},
+                },
+                b"request",
+                link.link_id,
+                object(),
+                time.time(),
+            )
+
+        self.assertEqual(response["reason"], "resource_requester_cancelled")
+        self.assertEqual(state["provider_active"], 0)
+        emit.assert_not_called()
+
     def test_cancelled_request_does_not_close_reusable_session(self):
         state, link = self.session()
         pending = self.pending("cancel-me")
+        receipt = FakeSessionReceipt()
+        receipt.resource = mock.Mock()
         job = {
             "pending": pending,
             "created_at": time.time(),
             "followers": [],
             "session": state,
             "semanticKey": "cancel-key",
+            "receipt": receipt,
         }
         state["active_requests"]["cancel-me"] = job
         self.bridge._resource_session_jobs_by_transfer["cancel-me"] = job
         self.bridge._resource_session_jobs_by_semantic_key["cancel-key"] = job
         self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
 
-        with mock.patch.object(self.bridge, "_qchat_file_emit"):
+        with mock.patch.object(
+            self.bridge,
+            "_qchat_file_emit",
+        ), mock.patch.object(
+            self.bridge,
+            "_send_packet_on_link",
+            return_value=True,
+        ) as send_packet:
             closed = self.bridge._qchat_file_cancel_transfer(
                 "cancel-me",
                 self.peer_hash,
@@ -3581,8 +4168,63 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
 
         self.assertEqual(closed, 0)
         self.assertFalse(link.teardown_called)
+        receipt.resource.cancel.assert_called_once_with()
+        self.assertEqual(receipt.status, FakeSessionReceipt.FAILED)
+        cancel_wire = json.loads(send_packet.call_args.args[1].decode("utf-8"))
+        self.assertEqual(
+            cancel_wire,
+            {
+                "type": self.bridge._RESOURCE_SESSION_CANCEL_TYPE,
+                "transferId": "cancel-me",
+            },
+        )
         self.assertIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
         self.assertTrue(job["completed"])
+
+    def test_cancel_during_request_handoff_cancels_late_receipt(self):
+        state, link = self.session()
+        pending = self.pending("handoff-cancel")
+        job = {
+            "pending": pending,
+            "created_at": time.time(),
+            "followers": [],
+            "session": state,
+            "semanticKey": "handoff-key",
+        }
+        self.bridge._resource_session_jobs_by_transfer["handoff-cancel"] = job
+        self.bridge._resource_session_jobs_by_semantic_key["handoff-key"] = job
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+        receipt = FakeSessionReceipt()
+        receipt.resource = mock.Mock()
+
+        def request_then_cancel(*_args, **_kwargs):
+            self.bridge._qchat_file_cancel_transfer(
+                "handoff-cancel",
+                self.peer_hash,
+                "test-handoff-cancel",
+            )
+            return receipt
+
+        with mock.patch.object(
+            link,
+            "request",
+            side_effect=request_then_cancel,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_packet_on_link",
+            return_value=True,
+        ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            dispatched = self.bridge._resource_session_dispatch_job(state, job)
+
+        self.assertFalse(dispatched)
+        self.assertTrue(job["completed"])
+        self.assertTrue(job["cancelled"])
+        self.assertEqual(receipt.status, FakeSessionReceipt.FAILED)
+        receipt.resource.cancel.assert_called_once_with()
+        self.assertNotIn("receipt", job)
+        self.assertFalse(
+            any(call.args[0] == "auth_sent" for call in emit.call_args_list)
+        )
 
 
 if __name__ == "__main__":
