@@ -20101,12 +20101,13 @@ def _resource_session_response_metadata(pending: Dict[str, Any]) -> Dict[str, An
 
 def _resource_session_watch_provider_file(
     file_handle,
+    transfer_id: str,
     pending: Dict[str, Any],
     state: Dict[str, Any],
     request_id: Any,
     provider_class: str,
 ) -> None:
-    transfer_id = str(pending.get("transferId") or "")
+    transfer_id = str(transfer_id or "").strip()
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     link = state.get("link")
 
@@ -20238,6 +20239,8 @@ def _resource_session_watch_provider_file(
                 current = _qchat_file_pending_sends_by_transfer.get(transfer_id)
                 if current is pending:
                     _qchat_file_pending_sends_by_transfer.pop(transfer_id, None)
+                # This watcher owns the in-flight admission even if a newer
+                # registration replaced the pending metadata for a retry.
                 _resource_session_provider_inflight_transfers.discard(transfer_id)
                 state["provider_active"] = max(
                     0,
@@ -20456,6 +20459,7 @@ def _resource_session_response_generator(
             )
             _resource_session_watch_provider_file(
                 file_handle,
+                transfer_id,
                 pending,
                 state,
                 request_id,
@@ -20738,6 +20742,7 @@ def handle_send_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> Non
         size = os.path.getsize(file_path)
         with _state_lock:
             _qchat_file_pending_sends_by_transfer[transfer_id] = {
+                "transferId": transfer_id,
                 "allowedRecipientAddress": allowed_recipient,
                 "filePath": file_path,
                 "fileName": file_name,

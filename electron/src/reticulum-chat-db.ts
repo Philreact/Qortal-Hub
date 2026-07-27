@@ -1494,6 +1494,11 @@ export class ReticulumChatDatabase {
   private stmtGetAllMissingRanges: Statement;
   private stmtGetReadyMissingRanges: Statement;
   private stmtGetPresentSeqsInRange: Statement;
+  private stmtPruneMissingRangePeerUnavailable: Statement;
+  private stmtUpsertMissingRangePeerUnavailable: Statement;
+  private stmtCountMissingRangePeerUnavailable: Statement;
+  private stmtGetMissingRangePeerUnavailable: Statement;
+  private stmtClearMissingRangePeerUnavailable: Statement;
   private stmtDeleteMissingRange: Statement;
   private stmtInsertMissingRangeRaw: Statement;
   private stmtInsertRelayBlob: Statement;
@@ -1767,6 +1772,7 @@ export class ReticulumChatDatabase {
     this.stmtGetGroupEventsAfter = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
       WHERE group_id = ? AND feed_timestamp > ?
+        AND scrubbed_at IS NULL
         AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
       ORDER BY feed_timestamp ASC, event_id ASC
       LIMIT ?
@@ -1774,6 +1780,7 @@ export class ReticulumChatDatabase {
     this.stmtGetGroupEventsAfterCursor = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
       WHERE group_id = ? AND (feed_timestamp > ? OR (feed_timestamp = ? AND event_id > ?))
+        AND scrubbed_at IS NULL
         AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
       ORDER BY feed_timestamp ASC, event_id ASC
       LIMIT ?
@@ -1782,6 +1789,7 @@ export class ReticulumChatDatabase {
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
         WHERE group_id = ? AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
+          AND scrubbed_at IS NULL
           AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
         ORDER BY feed_timestamp DESC, event_id DESC
         LIMIT ?
@@ -1792,6 +1800,7 @@ export class ReticulumChatDatabase {
       SELECT * FROM (
         SELECT * FROM reticulum_chat_events
         WHERE group_id = ? AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id <= ?))
+          AND scrubbed_at IS NULL
           AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
         ORDER BY feed_timestamp DESC, event_id DESC
         LIMIT ?
@@ -2179,6 +2188,7 @@ export class ReticulumChatDatabase {
       SELECT * FROM reticulum_chat_events
       WHERE group_id = ?
         AND channel_id = ?
+        AND scrubbed_at IS NULL
         AND (feed_timestamp > ? OR (feed_timestamp = ? AND event_id > ?))
         AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
       ORDER BY feed_timestamp ASC, event_id ASC
@@ -2189,6 +2199,7 @@ export class ReticulumChatDatabase {
         SELECT * FROM reticulum_chat_events
         WHERE group_id = ?
           AND channel_id = ?
+          AND scrubbed_at IS NULL
           AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id < ?))
           AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
         ORDER BY feed_timestamp DESC, event_id DESC
@@ -2201,6 +2212,7 @@ export class ReticulumChatDatabase {
         SELECT * FROM reticulum_chat_events
         WHERE group_id = ?
           AND channel_id = ?
+          AND scrubbed_at IS NULL
           AND (feed_timestamp < ? OR (feed_timestamp = ? AND event_id <= ?))
           AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
         ORDER BY feed_timestamp DESC, event_id DESC
@@ -2215,6 +2227,7 @@ export class ReticulumChatDatabase {
         AND author_stream_id = ?
         AND author_seq >= ?
         AND author_seq <= ?
+        AND scrubbed_at IS NULL
         AND ${RETICULUM_CHAT_VISIBLE_EVENT_SQL}
       ORDER BY author_seq DESC, feed_timestamp DESC, event_id DESC
       LIMIT ?
@@ -2358,14 +2371,53 @@ export class ReticulumChatDatabase {
       LIMIT ?
     `);
     this.stmtGetPresentSeqsInRange = this.db.prepare(`
-      SELECT author_seq
-      FROM rchat_event_headers
-      WHERE group_id = ?
-        AND author_address = ?
-        AND author_stream_id = ?
-        AND author_seq >= ?
-        AND author_seq <= ?
+      SELECT author_seq FROM (
+        SELECT author_seq
+        FROM rchat_event_headers
+        WHERE group_id = ?
+          AND author_address = ?
+          AND author_stream_id = ?
+          AND author_seq >= ?
+          AND author_seq <= ?
+        UNION
+        SELECT author_seq
+        FROM rchat_expired_event_markers
+        WHERE group_id = ?
+          AND author_address = ?
+          AND author_stream_id = ?
+          AND author_seq >= ?
+          AND author_seq <= ?
+      )
       ORDER BY author_seq ASC
+    `);
+    this.stmtPruneMissingRangePeerUnavailable = this.db.prepare(`
+      DELETE FROM rchat_missing_range_peer_observations
+      WHERE observed_at < ?
+    `);
+    this.stmtUpsertMissingRangePeerUnavailable = this.db.prepare(`
+      INSERT INTO rchat_missing_range_peer_observations
+        (group_id, author_address, author_stream_id, from_seq, to_seq, peer_hash, observed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq, peer_hash)
+      DO UPDATE SET observed_at = excluded.observed_at
+    `);
+    this.stmtCountMissingRangePeerUnavailable = this.db.prepare(`
+      SELECT COUNT(DISTINCT peer_hash) AS count
+      FROM rchat_missing_range_peer_observations
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq <= ? AND to_seq >= ? AND observed_at >= ?
+    `);
+    this.stmtGetMissingRangePeerUnavailable = this.db.prepare(`
+      SELECT MAX(observed_at) AS observed_at
+      FROM rchat_missing_range_peer_observations
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq <= ? AND to_seq >= ? AND peer_hash = ?
+      LIMIT 1
+    `);
+    this.stmtClearMissingRangePeerUnavailable = this.db.prepare(`
+      DELETE FROM rchat_missing_range_peer_observations
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq <= ? AND to_seq >= ?
     `);
     this.stmtDeleteMissingRange = this.db.prepare(`
       DELETE FROM rchat_missing_stream_ranges
@@ -3603,6 +3655,20 @@ export class ReticulumChatDatabase {
     const messageExpiryDurationMs = rootExpiryState?.messageExpiryDurationMs;
     if (expiresAt !== null && expiresAt <= now) {
       this.recordExpiredEventMarker(event, now);
+      this.clearMissingRangePeerUnavailable(
+        event.groupId,
+        event.authorAddress,
+        authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      );
+      this.pruneSatisfiedMissingRange(
+        event.groupId,
+        event.authorAddress,
+        authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      );
       return false;
     }
     const result = this.stmtInsertEvent.run({
@@ -6679,6 +6745,7 @@ export class ReticulumChatDatabase {
     ) as EventRow[];
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
+      if (this.isEventPayloadScrubbed(event.eventId)) return false;
       if (!this.eventIsVisible(event)) return false;
       if (
         normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId
@@ -6719,6 +6786,7 @@ export class ReticulumChatDatabase {
     ) as EventRow[];
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
+      if (this.isEventPayloadScrubbed(event.eventId)) return false;
       if (!this.eventIsVisible(event)) return false;
       if (
         normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId
@@ -6782,6 +6850,7 @@ export class ReticulumChatDatabase {
     ) as EventRow[];
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
+      if (this.isEventPayloadScrubbed(event.eventId)) return false;
       if (!this.eventIsVisible(event)) return false;
       if (
         normalizeReticulumChatChannelId(event.channelId) !== normalizedChannelId
@@ -6826,6 +6895,7 @@ export class ReticulumChatDatabase {
         );
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
+      if (this.isEventPayloadScrubbed(event.eventId)) return false;
       if (!this.eventIsVisible(event)) return false;
       return (
         this.compareFeedCursors(
@@ -6859,6 +6929,7 @@ export class ReticulumChatDatabase {
     ) as EventRow[];
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
+      if (this.isEventPayloadScrubbed(event.eventId)) return false;
       if (!this.eventIsVisible(event)) return false;
       return (
         this.compareFeedCursors(
@@ -6892,6 +6963,7 @@ export class ReticulumChatDatabase {
     ) as EventRow[];
     const matches = (event: ReticulumChatEvent): boolean => {
       if (event.groupId !== groupId) return false;
+      if (this.isEventPayloadScrubbed(event.eventId)) return false;
       if (!this.eventIsVisible(event)) return false;
       return (
         this.compareFeedCursors(
@@ -6936,6 +7008,7 @@ export class ReticulumChatDatabase {
     const memoryMatches = [...this.memoryEvents.values()].filter(
       (event) =>
         event.groupId === groupId &&
+        !this.isEventPayloadScrubbed(event.eventId) &&
         event.authorAddress === authorAddress &&
         normalizeReticulumChatAuthorStreamId(event.authorStreamId) ===
           normalizeReticulumChatAuthorStreamId(authorStreamId) &&
@@ -7059,6 +7132,8 @@ export class ReticulumChatDatabase {
     const from = Math.max(1, Math.floor(fromSeq));
     const to = Math.max(from, Math.floor(toSeq));
     if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
+    const key = this.missingRangeKey(groupId, author, stream, from, to);
+    const alreadyTracked = this.memoryMissingRanges.has(key);
     this.stmtUpsertMissingRange.run({
       group_id: groupId,
       author_address: author,
@@ -7068,7 +7143,6 @@ export class ReticulumChatDatabase {
       preferred_peer: peer || null,
       next_attempt_at: nextAttemptAt,
     });
-    const key = this.missingRangeKey(groupId, author, stream, from, to);
     const existing = this.memoryMissingRanges.get(key);
     this.memoryMissingRanges.set(key, {
       groupId,
@@ -7085,6 +7159,9 @@ export class ReticulumChatDatabase {
           )
         : Math.max(0, Math.floor(nextAttemptAt)),
     });
+    if (!alreadyTracked) {
+      this.pruneSatisfiedMissingRange(groupId, author, stream, from, to);
+    }
   }
 
   ensureMissingRange(
@@ -7105,7 +7182,9 @@ export class ReticulumChatDatabase {
     const from = Math.max(1, Math.floor(fromSeq));
     const to = Math.max(from, Math.floor(toSeq));
     if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
-    this.stmtEnsureMissingRange.run({
+    const key = this.missingRangeKey(groupId, author, stream, from, to);
+    const alreadyTracked = this.memoryMissingRanges.has(key);
+    const result = this.stmtEnsureMissingRange.run({
       group_id: groupId,
       author_address: author,
       author_stream_id: stream,
@@ -7114,7 +7193,6 @@ export class ReticulumChatDatabase {
       preferred_peer: peer || null,
       next_attempt_at: 0,
     });
-    const key = this.missingRangeKey(groupId, author, stream, from, to);
     if (!this.memoryMissingRanges.has(key)) {
       this.memoryMissingRanges.set(key, {
         groupId,
@@ -7126,6 +7204,9 @@ export class ReticulumChatDatabase {
         attempts: 0,
         nextAttemptAt: 0,
       });
+    }
+    if (!alreadyTracked || result.changes > 0) {
+      this.pruneSatisfiedMissingRange(groupId, author, stream, from, to);
     }
   }
 
@@ -7284,6 +7365,120 @@ export class ReticulumChatDatabase {
         )
         .map((range) => this.missingRangeStateToRow(range)),
     ]).map((row) => this.missingRangeRowToState(row));
+  }
+
+  recordMissingRangePeerUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    peerHash: string,
+    observedAt = Date.now(),
+    observationMaxAgeMs = Number.POSITIVE_INFINITY
+  ): number {
+    const author = String(authorAddress || '').trim();
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const peer = String(peerHash || '')
+      .trim()
+      .toLowerCase();
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !author ||
+      !stream ||
+      !peer
+    )
+      return 0;
+    const oldestAcceptedAt = Number.isFinite(observationMaxAgeMs)
+      ? Math.floor(observedAt) - Math.max(0, Math.floor(observationMaxAgeMs))
+      : Number.NEGATIVE_INFINITY;
+    if (Number.isFinite(oldestAcceptedAt)) {
+      this.stmtPruneMissingRangePeerUnavailable.run(oldestAcceptedAt);
+    }
+    this.stmtUpsertMissingRangePeerUnavailable.run(
+      groupId,
+      author,
+      stream,
+      from,
+      to,
+      peer,
+      Math.floor(observedAt)
+    );
+    return this.countMissingRangePeerUnavailable(
+      groupId,
+      author,
+      stream,
+      from,
+      to,
+      oldestAcceptedAt
+    );
+  }
+
+  countMissingRangePeerUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    observedAfter = 0
+  ): number {
+    const row = this.stmtCountMissingRangePeerUnavailable.get(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(fromSeq)),
+      Math.max(Math.max(1, Math.floor(fromSeq)), Math.floor(toSeq)),
+      Math.max(0, Math.floor(observedAfter))
+    ) as { count?: number } | undefined;
+    return Math.max(0, Math.floor(Number(row?.count || 0)));
+  }
+
+  hasMissingRangePeerUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    peerHash: string,
+    observedAfter = 0
+  ): boolean {
+    const row = this.stmtGetMissingRangePeerUnavailable.get(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(fromSeq)),
+      Math.max(Math.max(1, Math.floor(fromSeq)), Math.floor(toSeq)),
+      String(peerHash || '')
+        .trim()
+        .toLowerCase()
+    );
+    const observedAt = Number(
+      (row as { observed_at?: number | null } | undefined)?.observed_at
+    );
+    return (
+      Number.isFinite(observedAt) &&
+      observedAt > 0 &&
+      observedAt >= observedAfter
+    );
+  }
+
+  clearMissingRangePeerUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): void {
+    this.stmtClearMissingRangePeerUnavailable.run(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(toSeq)),
+      Math.max(1, Math.floor(fromSeq))
+    );
   }
 
   getMissingRange(
@@ -7478,6 +7673,13 @@ export class ReticulumChatDatabase {
       ),
     ]);
     if (rows.length === 0) return;
+    this.clearMissingRangePeerUnavailable(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq
+    );
     this.rewriteMissingRanges(rows, (row) => new Set([event.authorSeq]));
   }
 
@@ -7491,6 +7693,59 @@ export class ReticulumChatDatabase {
     if (rows.length === 0) return;
     this.rewriteMissingRanges(rows, (row) => {
       const presentRows = this.stmtGetPresentSeqsInRange.all(
+        row.group_id,
+        row.author_address,
+        row.author_stream_id,
+        row.from_seq,
+        row.to_seq,
+        row.group_id,
+        row.author_address,
+        row.author_stream_id,
+        row.from_seq,
+        row.to_seq
+      ) as Array<{ author_seq?: number }>;
+      return new Set(
+        presentRows
+          .map((present) => Number(present.author_seq))
+          .filter((seq) => Number.isInteger(seq))
+      );
+    });
+  }
+
+  private pruneSatisfiedMissingRange(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string,
+    fromSeq: number,
+    toSeq: number
+  ): void {
+    const rows = this.dedupeMissingRangeRows([
+      ...(this.stmtGetMissingRangeOverlaps.all({
+        group_id: groupId,
+        author_address: authorAddress,
+        author_stream_id: authorStreamId,
+        from_seq: fromSeq,
+        to_seq: toSeq,
+      }) as ReticulumChatMissingRangeRow[]),
+      ...[...this.memoryMissingRanges.values()]
+        .filter(
+          (range) =>
+            range.groupId === groupId &&
+            range.authorAddress === authorAddress &&
+            range.authorStreamId === authorStreamId &&
+            range.fromSeq <= toSeq &&
+            range.toSeq >= fromSeq
+        )
+        .map((range) => this.missingRangeStateToRow(range)),
+    ]);
+    if (rows.length === 0) return;
+    this.rewriteMissingRanges(rows, (row) => {
+      const presentRows = this.stmtGetPresentSeqsInRange.all(
+        row.group_id,
+        row.author_address,
+        row.author_stream_id,
+        row.from_seq,
+        row.to_seq,
         row.group_id,
         row.author_address,
         row.author_stream_id,
@@ -7524,6 +7779,13 @@ export class ReticulumChatDatabase {
             continue;
           const presentSeqs = presentSeqsForRow(row);
           if (presentSeqs.size === 0) continue;
+          this.clearMissingRangePeerUnavailable(
+            groupId,
+            authorAddress,
+            authorStreamId,
+            fromSeq,
+            toSeq
+          );
           this.stmtDeleteMissingRange.run(
             groupId,
             authorAddress,
@@ -10325,6 +10587,21 @@ export class ReticulumChatDatabase {
         next_attempt_at INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
       );
+      CREATE TABLE IF NOT EXISTS rchat_missing_range_peer_observations (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        peer_hash TEXT NOT NULL,
+        observed_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq, peer_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_range_peer_observations_range
+        ON rchat_missing_range_peer_observations
+          (group_id, author_address, author_stream_id, from_seq, to_seq, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_range_peer_observations_time
+        ON rchat_missing_range_peer_observations (observed_at);
       CREATE TABLE IF NOT EXISTS rchat_sync_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         priority INTEGER NOT NULL,
@@ -10836,6 +11113,10 @@ export class ReticulumChatDatabase {
         name: 'discussion-reply-index',
         run: () => this.migrateDiscussionReplyIndexSchema(),
       },
+      {
+        name: 'author-gap-peer-observations',
+        run: () => this.initAuthorGapPeerObservationSchema(),
+      },
     ];
     for (const migration of migrations) {
       try {
@@ -10847,6 +11128,26 @@ export class ReticulumChatDatabase {
         );
       }
     }
+  }
+
+  private initAuthorGapPeerObservationSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_missing_range_peer_observations (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        peer_hash TEXT NOT NULL,
+        observed_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq, peer_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_range_peer_observations_range
+        ON rchat_missing_range_peer_observations
+          (group_id, author_address, author_stream_id, from_seq, to_seq, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_range_peer_observations_time
+        ON rchat_missing_range_peer_observations (observed_at);
+    `);
   }
 
   private migrateAuthorGapPeerRetryBackoff(): void {

@@ -139,6 +139,7 @@ import {
 import {
   beginReticulumSummaryRefresh,
   getReticulumMentionBadgeCount,
+  scheduleReticulumSummaryRefresh,
 } from './reticulumSummaryRefresh';
 import {
   AdminRowBox,
@@ -1011,6 +1012,9 @@ export const Group = ({
   const reticulumSummariesRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
+  const reticulumSummariesRefreshWindowStartedAtRef = useRef<number | null>(
+    null
+  );
   const reticulumDirectSummariesRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -1619,13 +1623,11 @@ export const Group = ({
     ]);
 
   const scheduleReticulumChatSummariesRefresh = useCallback(() => {
-    if (reticulumSummariesRefreshTimerRef.current) {
-      clearTimeout(reticulumSummariesRefreshTimerRef.current);
-    }
-    reticulumSummariesRefreshTimerRef.current = setTimeout(() => {
-      reticulumSummariesRefreshTimerRef.current = null;
-      void refreshReticulumChatSummaries();
-    }, 150);
+    scheduleReticulumSummaryRefresh(
+      reticulumSummariesRefreshTimerRef,
+      reticulumSummariesRefreshWindowStartedAtRef,
+      refreshReticulumChatSummaries
+    );
   }, [refreshReticulumChatSummaries]);
 
   useEffect(() => {
@@ -1895,6 +1897,7 @@ export const Group = ({
         clearTimeout(reticulumSummariesRefreshTimerRef.current);
         reticulumSummariesRefreshTimerRef.current = null;
       }
+      reticulumSummariesRefreshWindowStartedAtRef.current = null;
     };
   }, [refreshReticulumChatSummaries, scheduleReticulumChatSummariesRefresh]);
 

@@ -79,6 +79,8 @@ const isAudioSurfaceWindow = windowRole === AUDIO_SURFACE_WINDOW_ROLE;
 let gcallFullStreamOnEventRefCount = 0;
 /** Same idea as gcall: avoid dropping main fanout if `call.onEvent` is registered more than once. */
 let callOnEventRefCount = 0;
+/** DM voice, group calls, and Qortal Land share the same hidden audio-surface stream. */
+let audioSurfaceOnEventRefCount = 0;
 /** Group and DM chat can both observe local hide-state changes in the same renderer. */
 let reticulumChatSilenceChangedRefCount = 0;
 
@@ -735,10 +737,20 @@ try {
         cb(payload as AudioSurfaceEvent);
       };
       ipcRenderer.on(channel, handler);
-      ipcRenderer.send('audio-surface:subscribe');
+      audioSurfaceOnEventRefCount += 1;
+      if (audioSurfaceOnEventRefCount === 1) {
+        ipcRenderer.send('audio-surface:subscribe');
+      }
+      let active = true;
       return () => {
-        ipcRenderer.send('audio-surface:unsubscribe');
+        if (!active) return;
+        active = false;
         ipcRenderer.removeListener(channel, handler);
+        audioSurfaceOnEventRefCount -= 1;
+        if (audioSurfaceOnEventRefCount <= 0) {
+          audioSurfaceOnEventRefCount = 0;
+          ipcRenderer.send('audio-surface:unsubscribe');
+        }
       };
     },
     getWindowRole: async () => windowRole,

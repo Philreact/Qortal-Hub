@@ -15,6 +15,7 @@ type MockStore = {
   reticulumChatSchemaMigrations: Map<string, number>;
   reticulumChatAuthorStreams: Map<string, string>;
   reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
+  reticulumChatMissingRangePeerObservations: ReticulumChatRow[];
   reticulumChatSilences: ReticulumChatRow[];
   reticulumPublicGroupActivity: ReticulumChatRow[];
   reticulumDmEvents: ReticulumChatRow[];
@@ -62,6 +63,30 @@ class Statement {
         }));
       }
       return [...this.store.reticulumChatAuthorSequenceLeases];
+    }
+    if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {
+      const [groupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
+      const matching =
+        this.store.reticulumChatMissingRangePeerObservations.filter(
+          (row) =>
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            row.author_stream_id === authorStreamId &&
+            row.from_seq <= fromSeq &&
+            row.to_seq >= toSeq
+        );
+      if (!this.sql.includes('GROUP BY peer_hash')) return matching;
+      const newestByPeer = new Map<string, ReticulumChatRow>();
+      for (const row of matching) {
+        const existing = newestByPeer.get(String(row.peer_hash));
+        if (
+          !existing ||
+          Number(row.observed_at) > Number(existing.observed_at)
+        ) {
+          newestByPeer.set(String(row.peer_hash), row);
+        }
+      }
+      return [...newestByPeer.values()];
     }
     if (this.sql.includes('FROM rchat_silences')) {
       const [ownerAddress, scopeType, scopeId] = args;
@@ -190,7 +215,7 @@ class Statement {
       ) {
         const [rangeGroupId, authorAddress, authorStreamId, fromSeq, toSeq] =
           args;
-        return this.store.reticulumChatEventHeaders
+        return knownRows
           .filter(
             (row) =>
               row.group_id === rangeGroupId &&
@@ -743,6 +768,47 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {
+      const [
+        groupId,
+        authorAddress,
+        authorStreamId,
+        queryFromSeq,
+        queryToSeq,
+        peerOrObservedAfter,
+      ] = args;
+      const matching =
+        this.store.reticulumChatMissingRangePeerObservations.filter(
+          (row) =>
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            row.author_stream_id === authorStreamId &&
+            row.from_seq <= queryFromSeq &&
+            row.to_seq >= queryToSeq
+        );
+      if (this.sql.includes('COUNT(DISTINCT peer_hash)')) {
+        const peers = new Set(
+          matching
+            .filter(
+              (row) =>
+                Number(row.observed_at) >= Number(peerOrObservedAfter || 0)
+            )
+            .map((row) => String(row.peer_hash))
+        );
+        return { count: peers.size };
+      }
+      const peerHash = peerOrObservedAfter;
+      const peerMatches = matching.filter((row) => row.peer_hash === peerHash);
+      if (!this.sql.includes('MAX(observed_at)')) return peerMatches[0];
+      const newest = peerMatches.reduce<ReticulumChatRow | undefined>(
+        (current, row) =>
+          !current || Number(row.observed_at) > Number(current.observed_at)
+            ? row
+            : current,
+        undefined
+      );
+      return newest ? { observed_at: newest.observed_at } : undefined;
+    }
     if (
       this.sql.includes('FROM rchat_silences') &&
       !this.sql.includes('FROM rchat_dm_events')
@@ -1131,6 +1197,77 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (
+      this.sql.includes('INSERT INTO rchat_missing_range_peer_observations')
+    ) {
+      const [
+        groupId,
+        authorAddress,
+        authorStreamId,
+        fromSeq,
+        toSeq,
+        peerHash,
+        observedAt,
+      ] = args;
+      const existing =
+        this.store.reticulumChatMissingRangePeerObservations.find(
+          (row) =>
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            row.author_stream_id === authorStreamId &&
+            row.from_seq === fromSeq &&
+            row.to_seq === toSeq &&
+            row.peer_hash === peerHash
+        );
+      if (existing) existing.observed_at = observedAt;
+      else
+        this.store.reticulumChatMissingRangePeerObservations.push({
+          group_id: groupId,
+          author_address: authorAddress,
+          author_stream_id: authorStreamId,
+          from_seq: fromSeq,
+          to_seq: toSeq,
+          peer_hash: peerHash,
+          observed_at: observedAt,
+        });
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (
+      this.sql.includes('DELETE FROM rchat_missing_range_peer_observations')
+    ) {
+      if (this.sql.includes('observed_at < ?')) {
+        const [observedBefore] = args;
+        const before =
+          this.store.reticulumChatMissingRangePeerObservations.length;
+        this.store.reticulumChatMissingRangePeerObservations =
+          this.store.reticulumChatMissingRangePeerObservations.filter(
+            (row) => Number(row.observed_at) >= Number(observedBefore)
+          );
+        return {
+          changes:
+            before -
+            this.store.reticulumChatMissingRangePeerObservations.length,
+          lastInsertRowid: 0,
+        };
+      }
+      const [groupId, authorAddress, authorStreamId, toSeq, fromSeq] = args;
+      const before =
+        this.store.reticulumChatMissingRangePeerObservations.length;
+      this.store.reticulumChatMissingRangePeerObservations =
+        this.store.reticulumChatMissingRangePeerObservations.filter(
+          (row) =>
+            row.group_id !== groupId ||
+            row.author_address !== authorAddress ||
+            row.author_stream_id !== authorStreamId ||
+            row.from_seq > toSeq ||
+            row.to_seq < fromSeq
+        );
+      return {
+        changes:
+          before - this.store.reticulumChatMissingRangePeerObservations.length,
+        lastInsertRowid: 0,
+      };
+    }
     const [params, second] = args;
     if (this.sql.includes('DELETE FROM rchat_schema_migrations')) {
       const [name] = args;
@@ -2390,6 +2527,7 @@ class MockDatabase {
       reticulumChatSchemaMigrations: new Map(),
       reticulumChatAuthorStreams: new Map(),
       reticulumChatAuthorSequenceLeases: [],
+      reticulumChatMissingRangePeerObservations: [],
       reticulumChatSilences: [],
       reticulumPublicGroupActivity: [],
       reticulumDmEvents: [],

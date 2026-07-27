@@ -249,6 +249,13 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'snapshotHash',
     'timestamp',
   ]),
+  RCHAT_STATE_HEADS_REQ: schema([
+    'type',
+    'groupId',
+    'cursor',
+    'limit',
+    'timestamp',
+  ]),
   RCHAT_EVENT_REQ: schema(['type', 'eventId', 'groupId', 'timestamp']),
   RCHAT_RESOURCE_AUTH: schema(['type', 'groupId', 'timestamp', 'transferId']),
   RCHAT_GROUP_KEY_DIGEST: schema([

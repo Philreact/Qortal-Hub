@@ -3764,7 +3764,14 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             waiter["authorized"] = True
             waiter["event"].set()
 
-        def watch(_file, _pending, _state, _request_id, provider_class):
+        def watch(
+            _file,
+            _transfer_id,
+            _pending,
+            _state,
+            _request_id,
+            provider_class,
+        ):
             captured_classes.append(provider_class)
 
         try:
@@ -3847,6 +3854,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
                 self.bridge._resource_session_watch_provider_file(
                     file_handle,
+                    transfer_id,
                     pending,
                     state,
                     request_id,
@@ -3921,6 +3929,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
                 self.bridge._resource_session_watch_provider_file(
                     file_handle,
+                    transfer_id,
                     pending,
                     state,
                     request_id,
@@ -3995,6 +4004,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
                 self.bridge._resource_session_watch_provider_file(
                     file_handle,
+                    transfer_id,
                     pending,
                     state,
                     request_id,
@@ -4014,6 +4024,66 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             self.assertEqual(state["provider_active"], 0)
             self.assertTrue(
                 any(call.args[0] == "sent" for call in emit.call_args_list)
+            )
+        finally:
+            if not file_handle.closed:
+                file_handle.close()
+            Path(file_path).unlink(missing_ok=True)
+
+    def test_provider_watcher_releases_inflight_admission_after_pending_replacement(self):
+        state, link = self.session()
+        state["incoming"] = True
+        state["provider_active"] = 1
+        transfer_id = "provider-replaced-pending"
+        request_id = bytes.fromhex("aa" * 16)
+        resource = mock.Mock()
+        resource.request_id = request_id
+        resource.status = RNS.Resource.TRANSFERRING
+        resource.get_progress.return_value = 0.5
+        link.outgoing_resources.append(resource)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(b"replacement-resource")
+            file_path = temp_file.name
+        file_handle = open(file_path, "rb")
+        pending = {
+            "transferId": transfer_id,
+            "fileName": "original.bin",
+            "size": len(b"replacement-resource"),
+            "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+        }
+        replacement = {**pending, "fileName": "retry.bin"}
+        self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = pending
+        self.bridge._resource_session_provider_inflight_transfers.add(transfer_id)
+        self.bridge._resource_session_provider_active_by_class["live"] = 1
+
+        try:
+            with mock.patch.object(
+                self.bridge,
+                "_resource_session_schedule_idle_close",
+            ):
+                self.bridge._resource_session_watch_provider_file(
+                    file_handle,
+                    transfer_id,
+                    pending,
+                    state,
+                    request_id,
+                    "live",
+                )
+                self.bridge._qchat_file_pending_sends_by_transfer[transfer_id] = (
+                    replacement
+                )
+                resource.status = RNS.Resource.COMPLETE
+                deadline = time.time() + 1
+                while state["provider_active"] > 0 and time.time() < deadline:
+                    time.sleep(0.01)
+
+            self.assertIs(
+                self.bridge._qchat_file_pending_sends_by_transfer[transfer_id],
+                replacement,
+            )
+            self.assertNotIn(
+                transfer_id,
+                self.bridge._resource_session_provider_inflight_transfers,
             )
         finally:
             if not file_handle.closed:
@@ -4050,6 +4120,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ):
                 self.bridge._resource_session_watch_provider_file(
                     file_handle,
+                    transfer_id,
                     pending,
                     state,
                     b"request",
