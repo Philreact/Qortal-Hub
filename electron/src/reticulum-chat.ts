@@ -270,6 +270,7 @@ interface ReticulumChatQueuedGroupSubSync {
   inboundPeerHash: string;
   groupId: number;
   hops: number;
+  stateSyncRequested: boolean;
   bootstrapRequested: boolean;
   enqueuedAt: number;
   coalescedCount: number;
@@ -5266,6 +5267,10 @@ export class ReticulumChatManager extends EventEmitter {
   private subscribedGroups = new Set<number>();
   private pendingGroupSubscriptions = new Set<number>();
   private peerSubscriptions = new Map<string, Map<number, number>>();
+  // Routed subscriptions are useful for forwarding, but only a subscription
+  // received from the subscriber itself should start a state bootstrap. Keep
+  // that direct lease separate so a routed copy cannot consume the bootstrap.
+  private directPeerSubscriptions = new Map<string, Map<number, number>>();
   private groupMemberValidationCache = new Map<
     string,
     { isMember: boolean; expiresAt: number }
@@ -5695,7 +5700,13 @@ export class ReticulumChatManager extends EventEmitter {
   private landStateForwardingRevision = 0;
   private landStateForwardingAppliedRevision = -1;
   private landStateForwardingAppliedKey = '';
-  private forwardedGroupSubKeys = new Map<string, number>();
+  // One lease per original subscriber prevents the same announcement from
+  // being amplified when it arrives through several overlay neighbors.
+  private forwardedGroupSubKeys = new Map<
+    string,
+    { expiresAt: number; hops: number; leaseId: number }
+  >();
+  private forwardedGroupSubLeaseId = 0;
   private forwardedGroupControlKeys = new Map<string, number>();
   private dmDigestTimer: ReturnType<typeof setInterval> | null = null;
   private dmDiscoveryInFlight = false;
@@ -6547,6 +6558,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.recentLandChatHints.clear();
     this.groupInterestRoutes.clear();
     this.forwardedGroupSubKeys.clear();
+    this.directPeerSubscriptions.clear();
     this.forwardedGroupControlKeys.clear();
     this.recentDmRequests.clear();
     this.digestRepairNoProgressSuppressions.clear();
@@ -10205,8 +10217,8 @@ export class ReticulumChatManager extends EventEmitter {
         routesChanged = true;
       }
     }
-    for (const [key, expiresAt] of this.forwardedGroupSubKeys) {
-      if (expiresAt <= now) this.forwardedGroupSubKeys.delete(key);
+    for (const [key, forwarded] of this.forwardedGroupSubKeys) {
+      if (forwarded.expiresAt <= now) this.forwardedGroupSubKeys.delete(key);
     }
     if (this.groupInterestRoutes.size > RETICULUM_CHAT_GROUP_ROUTE_MAX_ROUTES) {
       const excess =
@@ -10625,6 +10637,8 @@ export class ReticulumChatManager extends EventEmitter {
       existing.originPeerHash = item.originPeerHash;
       existing.inboundPeerHash = item.inboundPeerHash;
       existing.hops = item.hops;
+      existing.stateSyncRequested =
+        existing.stateSyncRequested || item.stateSyncRequested;
       existing.bootstrapRequested =
         existing.bootstrapRequested || item.bootstrapRequested;
       existing.enqueuedAt = this.now();
@@ -10709,14 +10723,16 @@ export class ReticulumChatManager extends EventEmitter {
       const localMemberSubscription =
         this.subscribedGroups.has(item.groupId) &&
         this.localGroupIds.has(item.groupId);
-      actions.authorGapRequested = this.requestKnownAuthorGaps(
-        item.groupId,
-        item.peerHash,
-        'group_sub',
-        false,
-        { immediate: false }
-      );
-      if (localMemberSubscription) {
+      if (item.stateSyncRequested) {
+        actions.authorGapRequested = this.requestKnownAuthorGaps(
+          item.groupId,
+          item.peerHash,
+          'group_sub',
+          false,
+          { immediate: false }
+        );
+      }
+      if (localMemberSubscription && item.stateSyncRequested) {
         this.enqueueDigestSend({
           mode: 'peer',
           peerHash: item.peerHash,
@@ -10726,7 +10742,7 @@ export class ReticulumChatManager extends EventEmitter {
         actions.digestQueued = true;
       }
       if (localMemberSubscription) {
-        if (item.bootstrapRequested) {
+        if (item.stateSyncRequested && item.bootstrapRequested) {
           void this.sendMetadataSnapshotToPeer(
             item.peerHash,
             item.groupId,
@@ -10740,7 +10756,7 @@ export class ReticulumChatManager extends EventEmitter {
           });
           actions.metadataPushQueued = true;
         }
-        if (item.bootstrapRequested) {
+        if (item.stateSyncRequested && item.bootstrapRequested) {
           void this.pushNewestHistoryPageToPeer(
             item.peerHash,
             item.groupId,
@@ -11709,6 +11725,7 @@ export class ReticulumChatManager extends EventEmitter {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         this.notePeerSubscription(peerHash, groupId, false);
+        this.noteDirectPeerSubscription(peerHash, groupId, false);
         return;
       }
       case 'event_req': {
@@ -12475,27 +12492,56 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
-  private shouldForwardGroupSub(
+  private reserveGroupSubForward(
     groupId: number,
     originPeerHash: string,
-    inboundPeerHash: string
-  ): boolean {
+    hops: number
+  ): number | null {
     const origin = this.routePeerHash(originPeerHash);
-    const inbound = this.routePeerHash(inboundPeerHash);
-    if (!origin || !inbound) return false;
-    const key = `${groupId}:${origin}:${inbound}`;
+    if (!origin) return null;
+    const key = `${groupId}:${origin}`;
     const now = this.now();
-    const expiresAt = this.forwardedGroupSubKeys.get(key) ?? 0;
-    if (expiresAt > now) return false;
-    this.forwardedGroupSubKeys.set(
-      key,
-      now + RETICULUM_CHAT_GROUP_ROUTE_FORWARD_DEDUPE_MS
-    );
-    return true;
+    const forwarded = this.forwardedGroupSubKeys.get(key);
+    // A shorter route is useful new information and may propagate immediately.
+    if (forwarded && forwarded.expiresAt > now && forwarded.hops <= hops) {
+      return null;
+    }
+    const leaseId = ++this.forwardedGroupSubLeaseId;
+    // Reinsert replacements so the bounded map's insertion order reflects
+    // the newest useful route information.
+    this.forwardedGroupSubKeys.delete(key);
+    this.forwardedGroupSubKeys.set(key, {
+      expiresAt: now + RETICULUM_CHAT_GROUP_ROUTE_FORWARD_DEDUPE_MS,
+      hops,
+      leaseId,
+    });
+    while (
+      this.forwardedGroupSubKeys.size > RETICULUM_CHAT_GROUP_ROUTE_MAX_ROUTES
+    ) {
+      const oldestKey = this.forwardedGroupSubKeys.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.forwardedGroupSubKeys.delete(oldestKey);
+    }
+    return leaseId;
+  }
+
+  private releaseGroupSubForward(
+    groupId: number,
+    originPeerHash: string,
+    leaseId: number
+  ): void {
+    const origin = this.routePeerHash(originPeerHash);
+    if (!origin) return;
+    const key = `${groupId}:${origin}`;
+    if (this.forwardedGroupSubKeys.get(key)?.leaseId === leaseId) {
+      this.forwardedGroupSubKeys.delete(key);
+    }
   }
 
   private async forwardGroupSub(
-    groups: number[],
+    groups: Array<{ groupId: number; leaseId: number }>,
     mode: 'summary' | 'active',
     originPeerHash: string,
     inboundPeerHash: string,
@@ -12506,28 +12552,38 @@ export class ReticulumChatManager extends EventEmitter {
     const local = this.localPeerHash();
     if (!origin || !inbound || (local && origin === local)) return;
     if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    const forwardGroups = groups.filter((groupId) =>
-      this.shouldForwardGroupSub(groupId, origin, inbound)
-    );
-    if (!forwardGroups.length) return;
+    if (!groups.length) return;
     for (
       let offset = 0;
-      offset < forwardGroups.length;
+      offset < groups.length;
       offset += RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
     ) {
-      const page = forwardGroups.slice(
+      const page = groups.slice(
         offset,
         offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
       );
       const wire: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'group_sub',
-        groups: page,
+        groups: page.map(({ groupId }) => groupId),
         mode,
         o: this.compactRoutePeerHash(origin),
         h: hops + 1,
       };
-      void this.fanout(wire, [inbound, origin, ...(local ? [local] : [])]);
+      let forwarded = false;
+      try {
+        forwarded = (
+          await this.fanout(wire, [inbound, origin, ...(local ? [local] : [])])
+        ).ok;
+      } catch {
+        // The production bridge returns structured failures, but keep a thrown
+        // adapter failure from holding the lease or becoming unhandled.
+      }
+      if (!forwarded) {
+        for (const { groupId, leaseId } of page) {
+          this.releaseGroupSubForward(groupId, origin, leaseId);
+        }
+      }
     }
   }
 
@@ -15029,7 +15085,6 @@ export class ReticulumChatManager extends EventEmitter {
       .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
       .slice(0, RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE);
     const inboundPeerHash = this.routePeerHash(peerHash);
-    const originPeerHash = this.routePeerHash(wire.o) ?? inboundPeerHash;
     const hops = Math.max(
       0,
       Math.min(
@@ -15037,7 +15092,14 @@ export class ReticulumChatManager extends EventEmitter {
         Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
       )
     );
+    const originPeerHash =
+      hops > 0
+        ? (this.routePeerHash(wire.o) ?? inboundPeerHash)
+        : inboundPeerHash;
     if (!inboundPeerHash || !originPeerHash) return;
+    const localPeerHash = this.localPeerHash();
+    if (localPeerHash && originPeerHash === localPeerHash) return;
+    const forwardGroups: Array<{ groupId: number; leaseId: number }> = [];
     for (const groupId of groups) {
       const isNewSubscription = this.notePeerSubscription(
         originPeerHash,
@@ -15053,20 +15115,38 @@ export class ReticulumChatManager extends EventEmitter {
       if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) {
         continue;
       }
-      this.enqueueGroupSubSync({
-        peerHash,
-        originPeerHash,
-        inboundPeerHash,
+      const forwardLeaseId = this.reserveGroupSubForward(
         groupId,
-        hops,
-        bootstrapRequested:
-          (isNewSubscription || wire.mode === 'active') &&
-          hops === 0 &&
-          originPeerHash === inboundPeerHash,
-      });
+        originPeerHash,
+        hops
+      );
+      const isDirect = hops === 0 && originPeerHash === inboundPeerHash;
+      const isNewDirectSubscription = isDirect
+        ? this.noteDirectPeerSubscription(inboundPeerHash, groupId, true)
+        : false;
+      const shouldSyncDirectSubscription =
+        isDirect && (isNewDirectSubscription || wire.mode === 'active');
+      const shouldServeRoutedSubscription =
+        !isDirect &&
+        isNewSubscription &&
+        (!isDisabledRelayCache || !isDisableReticulumGroupKeys);
+      if (shouldSyncDirectSubscription || shouldServeRoutedSubscription) {
+        this.enqueueGroupSubSync({
+          peerHash,
+          originPeerHash,
+          inboundPeerHash,
+          groupId,
+          hops,
+          stateSyncRequested: shouldSyncDirectSubscription,
+          bootstrapRequested: shouldSyncDirectSubscription,
+        });
+      }
+      if (forwardLeaseId !== null) {
+        forwardGroups.push({ groupId, leaseId: forwardLeaseId });
+      }
     }
     void this.forwardGroupSub(
-      groups,
+      forwardGroups,
       wire.mode === 'active' ? 'active' : 'summary',
       originPeerHash,
       inboundPeerHash,
@@ -29151,11 +29231,16 @@ export class ReticulumChatManager extends EventEmitter {
   ): boolean {
     const key = peerHash.trim().toLowerCase();
     if (!key) return false;
-    this.prunePeerSubscriptions();
+    const now = this.now();
     const groups = this.peerSubscriptions.get(key) ?? new Map<number, number>();
-    const wasSubscribed = groups.has(groupId);
+    const previousExpiry = groups.get(groupId) ?? 0;
+    const wasSubscribed = previousExpiry > now;
+    if (previousExpiry > 0 && !wasSubscribed) {
+      groups.delete(groupId);
+      this.clearMetadataSnapshotPushState(key, groupId);
+    }
     if (active) {
-      groups.set(groupId, this.now() + RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS);
+      groups.set(groupId, now + RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS);
     } else {
       groups.delete(groupId);
       this.clearMetadataSnapshotPushState(key, groupId);
@@ -29163,6 +29248,38 @@ export class ReticulumChatManager extends EventEmitter {
     if (groups.size) this.peerSubscriptions.set(key, groups);
     else this.peerSubscriptions.delete(key);
     return active && !wasSubscribed;
+  }
+
+  private noteDirectPeerSubscription(
+    peerHash: string,
+    groupId: number,
+    active: boolean
+  ): boolean {
+    const key = peerHash.trim().toLowerCase();
+    if (!key) return false;
+    const now = this.now();
+    const groups =
+      this.directPeerSubscriptions.get(key) ?? new Map<number, number>();
+    const previousExpiry = groups.get(groupId) ?? 0;
+    const wasSubscribed = previousExpiry > now;
+    if (previousExpiry > 0 && !wasSubscribed) groups.delete(groupId);
+    if (active) {
+      groups.set(groupId, now + RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS);
+    } else {
+      groups.delete(groupId);
+    }
+    if (groups.size) this.directPeerSubscriptions.set(key, groups);
+    else this.directPeerSubscriptions.delete(key);
+    return active && !wasSubscribed;
+  }
+
+  private pruneDirectPeerSubscriptions(now = this.now()): void {
+    for (const [peerHash, groups] of this.directPeerSubscriptions) {
+      for (const [groupId, expiresAt] of groups) {
+        if (expiresAt <= now) groups.delete(groupId);
+      }
+      if (groups.size === 0) this.directPeerSubscriptions.delete(peerHash);
+    }
   }
 
   private hasCurrentPeerSubscription(
@@ -29177,6 +29294,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private prunePeerSubscriptions(now = this.now()): void {
+    this.pruneDirectPeerSubscriptions(now);
     for (const [peerHash, groups] of this.peerSubscriptions) {
       for (const [groupId, expiresAt] of groups) {
         if (expiresAt <= now) {

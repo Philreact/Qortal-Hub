@@ -7925,7 +7925,7 @@ describe('reticulum chat manager', () => {
     expect(newestPush).toHaveBeenCalledTimes(1);
     expect(
       direct.filter((item) => item.wire.k === 'group_state_digest_v3')
-    ).toHaveLength(2);
+    ).toHaveLength(1);
 
     now += 2 * 60_000 + 1;
     manager.handleWire(summary, 'peer-a');
@@ -7933,6 +7933,170 @@ describe('reticulum chat manager', () => {
 
     expect(metadataPush).toHaveBeenCalledTimes(2);
     expect(newestPush).toHaveBeenCalledTimes(2);
+    expect(
+      direct.filter((item) => item.wire.k === 'group_state_digest_v3')
+    ).toHaveLength(2);
+    manager.close();
+  });
+
+  it('uses routed group_sub messages only to maintain forwarding routes when relay features are disabled', async () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    await flushQueuedWork();
+    const enqueueSync = vi.spyOn(manager as any, 'enqueueGroupSubSync');
+    const authorGapRepair = vi.spyOn(manager as any, 'requestKnownAuthorGaps');
+    const enqueueDigest = vi.spyOn(manager as any, 'enqueueDigestSend');
+    const metadataPush = vi.spyOn(manager as any, 'sendMetadataSnapshotToPeer');
+    const newestPush = vi.spyOn(manager as any, 'pushNewestHistoryPageToPeer');
+    const relayDigest = vi
+      .spyOn(manager as any, 'serveRelayDigestForGroup')
+      .mockResolvedValue(undefined);
+    const groupKeyDigest = vi
+      .spyOn(manager as any, 'serveGroupKeyDigestForGroup')
+      .mockResolvedValue(undefined);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [69],
+        mode: 'active',
+        o: 'origin-peer',
+        h: 1,
+      },
+      'relay-peer'
+    );
+    await flushQueuedWork();
+
+    expect(enqueueSync).not.toHaveBeenCalled();
+    expect(authorGapRepair).not.toHaveBeenCalled();
+    expect(enqueueDigest).not.toHaveBeenCalled();
+    expect(metadataPush).not.toHaveBeenCalled();
+    expect(newestPush).not.toHaveBeenCalled();
+    expect(relayDigest).not.toHaveBeenCalled();
+    expect(groupKeyDigest).not.toHaveBeenCalled();
+    expect((manager as any).groupInterestRoutes.get('69:origin-peer')).toEqual(
+      expect.objectContaining({
+        reversePeerHash: 'relay-peer',
+        hops: 1,
+      })
+    );
+
+    now += 60_001;
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [69],
+        mode: 'active',
+        o: 'origin-peer',
+        h: 1,
+      },
+      'relay-peer'
+    );
+    await flushQueuedWork();
+
+    expect(enqueueSync).not.toHaveBeenCalled();
+    expect(relayDigest).not.toHaveBeenCalled();
+    expect(groupKeyDigest).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('keeps relay-only group_sub work out of full state repair', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    const authorGapRepair = vi.spyOn(manager as any, 'requestKnownAuthorGaps');
+    const enqueueDigest = vi.spyOn(manager as any, 'enqueueDigestSend');
+    const metadataPush = vi.spyOn(manager as any, 'sendMetadataSnapshotToPeer');
+    const newestPush = vi.spyOn(manager as any, 'pushNewestHistoryPageToPeer');
+    const relayDigest = vi
+      .spyOn(manager as any, 'serveRelayDigestForGroup')
+      .mockResolvedValue(undefined);
+    const groupKeyDigest = vi
+      .spyOn(manager as any, 'serveGroupKeyDigestForGroup')
+      .mockResolvedValue(undefined);
+
+    (manager as any).processGroupSubSyncQueueItem({
+      key: 'relay-peer:69',
+      peerHash: 'relay-peer',
+      originPeerHash: 'origin-peer',
+      inboundPeerHash: 'relay-peer',
+      groupId: 69,
+      hops: 1,
+      stateSyncRequested: false,
+      bootstrapRequested: false,
+      enqueuedAt: 100_000,
+      coalescedCount: 0,
+    });
+
+    expect(authorGapRepair).not.toHaveBeenCalled();
+    expect(enqueueDigest).not.toHaveBeenCalled();
+    expect(metadataPush).not.toHaveBeenCalled();
+    expect(newestPush).not.toHaveBeenCalled();
+    expect(relayDigest).toHaveBeenCalledWith('relay-peer', 69);
+    expect(groupKeyDigest).toHaveBeenCalledWith('relay-peer', 69);
+    manager.close();
+  });
+
+  it('bootstraps direct group_sub after first learning it through a relay', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+    await flushQueuedWork();
+    const metadataPush = vi
+      .spyOn(manager as any, 'sendMetadataSnapshotToPeer')
+      .mockResolvedValue(undefined);
+    const newestPush = vi
+      .spyOn(manager as any, 'pushNewestHistoryPageToPeer')
+      .mockResolvedValue(undefined);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [69],
+        mode: 'summary',
+        o: 'origin-peer',
+        h: 1,
+      },
+      'relay-peer'
+    );
+    await flushQueuedWork();
+    expect(metadataPush).not.toHaveBeenCalled();
+    expect(newestPush).not.toHaveBeenCalled();
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
+      'origin-peer'
+    );
+    await flushQueuedWork();
+
+    expect(metadataPush).toHaveBeenCalledTimes(1);
+    expect(newestPush).toHaveBeenCalledTimes(1);
     manager.close();
   });
 
@@ -9193,6 +9357,273 @@ describe('reticulum chat manager', () => {
           }),
         ],
         excludes: expect.arrayContaining(['peer-a']),
+      })
+    );
+    manager.close();
+  });
+
+  it('forwards a routed group subscription only once across alternate paths', async () => {
+    const fanout: Array<{
+      messages: Record<string, unknown>[];
+      excludes: string[];
+    }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[],
+          excludes: string[] = []
+        ) => {
+          fanout.push({ messages, excludes });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    const enqueueSync = vi.spyOn(manager as any, 'enqueueGroupSubSync');
+    const routedSubscription = {
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [72],
+      mode: 'summary',
+      o: 'origin-peer',
+      h: 1,
+    };
+
+    manager.handleWire(routedSubscription, 'relay-a');
+    manager.handleWire(routedSubscription, 'relay-b');
+    manager.handleWire(routedSubscription, 'relay-c');
+    await flushQueuedWork();
+
+    expect(fanout).toHaveLength(1);
+    expect(enqueueSync).not.toHaveBeenCalled();
+    expect(fanout[0]).toEqual(
+      expect.objectContaining({
+        messages: [
+          expect.objectContaining({
+            k: 'group_sub',
+            groups: [72],
+            o: 'origin-peer',
+            h: 2,
+          }),
+        ],
+      })
+    );
+    manager.close();
+  });
+
+  it('propagates a better group subscription route and later renewals', async () => {
+    let now = 100_000;
+    const fanout: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    const subscription = (hops: number) => ({
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [72],
+      mode: 'summary',
+      o: 'origin-peer',
+      h: hops,
+    });
+
+    manager.handleWire(subscription(3), 'relay-a');
+    manager.handleWire(subscription(1), 'relay-b');
+    manager.handleWire(subscription(2), 'relay-c');
+    await flushQueuedWork();
+
+    expect(fanout.map((wire) => wire.h)).toEqual([4, 2]);
+
+    now += 60_001;
+    manager.handleWire(subscription(2), 'relay-c');
+    await flushQueuedWork();
+
+    expect(fanout.map((wire) => wire.h)).toEqual([4, 2, 3]);
+    manager.close();
+  });
+
+  it('allows an alternate group subscription path after forwarding fails', async () => {
+    const fanout = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: 'no-route' as const,
+      })
+      .mockResolvedValue({ ok: true as const });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: fanout,
+      } as any,
+      now: () => 100_000,
+    });
+    const subscription = {
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [72],
+      mode: 'summary',
+      o: 'origin-peer',
+      h: 1,
+    };
+
+    manager.handleWire(subscription, 'relay-a');
+    await flushQueuedWork();
+    manager.handleWire(subscription, 'relay-b');
+    await flushQueuedWork();
+
+    expect(fanout).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
+  it('does not let an older failed forward clear a newer better route', async () => {
+    let resolveFirst:
+      | ((result: { ok: false; reason: 'no-route' }) => void)
+      | undefined;
+    const fanout = vi.fn(
+      () =>
+        new Promise<{ ok: true } | { ok: false; reason: 'no-route' }>(
+          (resolve) => {
+            if (fanout.mock.calls.length === 1) {
+              resolveFirst = resolve;
+              return;
+            }
+            resolve({ ok: true });
+          }
+        )
+    );
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: fanout,
+      } as any,
+      now: () => 100_000,
+    });
+    const subscription = (hops: number) => ({
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups: [72],
+      mode: 'summary',
+      o: 'origin-peer',
+      h: hops,
+    });
+
+    manager.handleWire(subscription(3), 'relay-a');
+    await Promise.resolve();
+    manager.handleWire(subscription(1), 'relay-b');
+    await flushQueuedWork();
+    resolveFirst?.({ ok: false, reason: 'no-route' });
+    await flushQueuedWork();
+    manager.handleWire(subscription(2), 'relay-c');
+    await flushQueuedWork();
+
+    expect(fanout).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
+  it('bounds group subscription forwarding leases', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+    });
+
+    for (let index = 0; index < 4_200; index += 1) {
+      (manager as any).reserveGroupSubForward(72, `origin-${index}`, 1);
+    }
+
+    expect((manager as any).forwardedGroupSubKeys.size).toBe(4_096);
+    manager.close();
+  });
+
+  it('ignores a relayed copy of the local group subscription', async () => {
+    const fanout: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    const enqueueSync = vi.spyOn(manager as any, 'enqueueGroupSubSync');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [72],
+        mode: 'summary',
+        o: 'aaaaaaaaaaaaaaaa',
+        h: 2,
+      },
+      'relay-a'
+    );
+    await flushQueuedWork();
+
+    expect(fanout).toEqual([]);
+    expect(enqueueSync).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('does not trust an advertised relay origin without a positive hop count', async () => {
+    const fanout: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [72],
+        mode: 'summary',
+        o: 'spoofed-origin',
+        h: 0,
+      },
+      'peer-a'
+    );
+    await flushQueuedWork();
+
+    expect(fanout).toContainEqual(
+      expect.objectContaining({
+        k: 'group_sub',
+        groups: [72],
+        o: 'peer-a',
+        h: 1,
       })
     );
     manager.close();
@@ -16105,7 +16536,7 @@ describe('reticulum chat manager', () => {
     }
   });
 
-  it('does not repeatedly serve digests for duplicate inbound group_sub controls', async () => {
+  it('does not repeatedly serve digests for direct group_sub renewals', async () => {
     let now = 80_000;
     const direct: Record<string, unknown>[] = [];
     const bridge = {
@@ -16150,7 +16581,7 @@ describe('reticulum chat manager', () => {
 
     expect(
       direct.filter((wire) => wire.k === 'group_state_digest_v3')
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     manager.close();
   });
 
