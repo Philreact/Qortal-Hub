@@ -18,6 +18,10 @@ import {
   Box,
   Button,
   ButtonBase,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   LinearProgress,
   List,
@@ -48,6 +52,8 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import TextStyle from '@tiptap/extension-text-style';
 import level0Img from '../../assets/badges/level-0.png';
 import level1Img from '../../assets/badges/level-1.png';
@@ -892,6 +898,9 @@ export const MessageItemComponent = ({
     averageBytesPerSecond?: number;
     nextRequestAt?: number | null;
   } | null>(null);
+  const [isFileOpenWarningOpen, setIsFileOpenWarningOpen] = useState(false);
+  const [isOpeningFile, setIsOpeningFile] = useState(false);
+  const [fileOpenError, setFileOpenError] = useState<string | null>(null);
   useEffect(() => {
     if (
       !isReticulumResourceImage ||
@@ -1507,6 +1516,31 @@ export const MessageItemComponent = ({
     reticulumFileName,
     reticulumFileResourceId,
   ]);
+
+  const openReticulumFileResource = useCallback(async () => {
+    if (!reticulumFileResourceId || fileResourceStatus !== 'ready') return;
+    setIsOpeningFile(true);
+    setFileOpenError(null);
+    try {
+      const result = await window.reticulumResources?.open?.(
+        reticulumFileResourceId,
+        reticulumFileName
+      );
+      if (!result?.success) {
+        setFileOpenError(result?.error || 'The operating system could not open this file.');
+        return;
+      }
+      setIsFileOpenWarningOpen(false);
+    } catch (error) {
+      setFileOpenError(
+        error instanceof Error
+          ? error.message
+          : 'The operating system could not open this file.'
+      );
+    } finally {
+      setIsOpeningFile(false);
+    }
+  }, [fileResourceStatus, reticulumFileName, reticulumFileResourceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3163,14 +3197,14 @@ export const MessageItemComponent = ({
                   display: 'grid',
                   gridTemplateColumns: '56px minmax(0, 1fr) auto',
                   marginTop: '4px',
-                  maxWidth: '540px',
+                  maxWidth: '640px',
                   minHeight: '100px',
                   overflow: 'hidden',
                   padding: '18px 20px',
                   position: 'relative',
                   transition:
                     'background-color 150ms ease, border-color 150ms ease',
-                  width: 'min(100%, 540px)',
+                  width: 'min(100%, 640px)',
                   '&:hover': {
                     backgroundColor:
                       theme.palette.mode === 'dark'
@@ -3362,6 +3396,7 @@ export const MessageItemComponent = ({
                     alignSelf: 'center',
                     display: 'flex',
                     flexShrink: 0,
+                    gap: '8px',
                     justifyContent: 'flex-end',
                     '@media (max-width: 460px)': {
                       gridColumn: '1 / -1',
@@ -3400,6 +3435,89 @@ export const MessageItemComponent = ({
                     >
                       Cancel
                     </Button>
+                  ) : fileResourceStatus === 'ready' ? (
+                    <>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<OpenInNewRoundedIcon />}
+                        onClick={() => {
+                          setFileOpenError(null);
+                          setIsFileOpenWarningOpen(true);
+                        }}
+                        aria-label={`Open ${reticulumFileName}, ${formatQchatFileSize(
+                          reticulumFileSize
+                        )}`}
+                        sx={{
+                          background:
+                            'linear-gradient(180deg, #5b96ee 0%, #3f7ed8 100%)',
+                          border: '1px solid #69a4f2',
+                          borderRadius: '9px',
+                          boxShadow:
+                            '0 4px 12px rgba(46, 111, 207, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.14)',
+                          color: '#ffffff',
+                          flexShrink: 0,
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          height: '42px',
+                          minWidth: '104px',
+                          padding: '0 15px',
+                          textTransform: 'none',
+                          '&:hover': {
+                            background:
+                              'linear-gradient(180deg, #68a1f5 0%, #4a88e3 100%)',
+                            borderColor: '#82b5f6',
+                          },
+                          '@media (max-width: 600px)': {
+                            minWidth: '92px',
+                          },
+                          '@media (max-width: 460px)': {
+                            flex: 1,
+                          },
+                        }}
+                      >
+                        Open
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="inherit"
+                        startIcon={<DownloadRoundedIcon />}
+                        onClick={() => {
+                          void saveReticulumFileResource();
+                        }}
+                        aria-label={fileResourceActionAriaLabel}
+                        sx={{
+                          borderColor: alpha(theme.palette.text.primary, 0.3),
+                          borderRadius: '9px',
+                          flexShrink: 0,
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          height: '42px',
+                          minWidth: '104px',
+                          padding: '0 15px',
+                          textTransform: 'none',
+                          '&:hover': {
+                            backgroundColor: alpha(
+                              theme.palette.text.primary,
+                              0.06
+                            ),
+                            borderColor: alpha(
+                              theme.palette.text.primary,
+                              0.45
+                            ),
+                          },
+                          '@media (max-width: 600px)': {
+                            minWidth: '92px',
+                          },
+                          '@media (max-width: 460px)': {
+                            flex: 1,
+                          },
+                        }}
+                      >
+                        Save
+                      </Button>
+                    </>
                   ) : (
                     <Button
                       size="small"
@@ -3813,6 +3931,193 @@ export const MessageItemComponent = ({
           />
         )}
       </MessageWragger>
+      <Dialog
+        aria-describedby="reticulum-file-open-warning-description"
+        aria-labelledby="reticulum-file-open-warning-title"
+        maxWidth="xs"
+        fullWidth
+        open={isFileOpenWarningOpen}
+        onClose={() => {
+          if (isOpeningFile) return;
+          setIsFileOpenWarningOpen(false);
+          setFileOpenError(null);
+        }}
+        slotProps={{
+          backdrop: {
+            sx: {
+              backgroundColor: 'rgba(3, 6, 12, 0.78)',
+              backdropFilter: 'blur(2px)',
+            },
+          },
+          paper: {
+            sx: {
+              backgroundColor: theme.palette.background.paper,
+              backgroundImage:
+                theme.palette.mode === 'dark'
+                  ? `linear-gradient(180deg, ${alpha(
+                      theme.palette.common.white,
+                      0.035
+                    )} 0%, transparent 100%)`
+                  : 'none',
+              border: '1px solid',
+              borderColor: alpha(theme.palette.text.secondary, 0.22),
+              borderRadius: '16px',
+              boxShadow: '0 24px 70px rgba(0, 0, 0, 0.48)',
+              overflow: 'hidden',
+            },
+          },
+        }}
+      >
+        <DialogTitle
+          id="reticulum-file-open-warning-title"
+          sx={{
+            alignItems: 'center',
+            borderBottom: '1px solid',
+            borderColor: alpha(theme.palette.text.secondary, 0.14),
+            display: 'flex',
+            fontSize: '18px',
+            fontWeight: 750,
+            gap: '12px',
+            padding: '20px 22px 17px',
+          }}
+        >
+          <Box
+            sx={{
+              alignItems: 'center',
+              backgroundColor: alpha(theme.palette.warning.main, 0.12),
+              border: '1px solid',
+              borderColor: alpha(theme.palette.warning.main, 0.28),
+              borderRadius: '10px',
+              display: 'flex',
+              flexShrink: 0,
+              height: '38px',
+              justifyContent: 'center',
+              width: '38px',
+            }}
+          >
+            <WarningAmberRoundedIcon
+              sx={{ color: theme.palette.warning.main, fontSize: '22px' }}
+            />
+          </Box>
+          Open attachment?
+        </DialogTitle>
+        <DialogContent sx={{ padding: '20px 22px 8px !important' }}>
+          <Typography
+            id="reticulum-file-open-warning-description"
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '14px',
+              lineHeight: 1.6,
+            }}
+          >
+            Attachments can contain harmful content. Only open this file if you
+            trust who sent it and were expecting it.
+          </Typography>
+          <Box
+            sx={{
+              alignItems: 'center',
+              backgroundColor: alpha(theme.palette.text.primary, 0.035),
+              border: '1px solid',
+              borderColor: alpha(theme.palette.text.secondary, 0.15),
+              borderRadius: '11px',
+              display: 'grid',
+              gap: '12px',
+              gridTemplateColumns: '38px minmax(0, 1fr)',
+              marginTop: '17px',
+              padding: '12px 14px',
+            }}
+          >
+            <InsertDriveFileRoundedIcon
+              sx={{ color: theme.palette.text.secondary, fontSize: '28px' }}
+            />
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                title={reticulumFileName}
+                sx={{
+                  fontSize: '14px',
+                  fontWeight: 650,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {reticulumFileName}
+              </Typography>
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '12px',
+                  marginTop: '2px',
+                }}
+              >
+                {formatQchatFileSize(reticulumFileSize)} · Opens with your
+                default app
+              </Typography>
+            </Box>
+          </Box>
+          {fileOpenError && (
+            <Box
+              role="alert"
+              sx={{
+                backgroundColor: alpha(theme.palette.error.main, 0.09),
+                border: '1px solid',
+                borderColor: alpha(theme.palette.error.main, 0.24),
+                borderRadius: '9px',
+                color: theme.palette.error.light,
+                fontSize: '13px',
+                lineHeight: 1.45,
+                marginTop: '13px',
+                padding: '10px 12px',
+              }}
+            >
+              {fileOpenError}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions
+          sx={{
+            gap: '8px',
+            padding: '14px 22px 20px',
+          }}
+        >
+          <Button
+            autoFocus
+            color="inherit"
+            disabled={isOpeningFile}
+            onClick={() => {
+              setIsFileOpenWarningOpen(false);
+              setFileOpenError(null);
+            }}
+            sx={{
+              borderRadius: '9px',
+              color: theme.palette.text.secondary,
+              fontWeight: 650,
+              minHeight: '40px',
+              minWidth: '96px',
+              textTransform: 'none',
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={isOpeningFile}
+            startIcon={<OpenInNewRoundedIcon />}
+            variant="contained"
+            onClick={() => {
+              void openReticulumFileResource();
+            }}
+            sx={{
+              borderRadius: '9px',
+              fontWeight: 650,
+              minHeight: '40px',
+              minWidth: '112px',
+              textTransform: 'none',
+            }}
+          >
+            {isOpeningFile ? 'Opening...' : 'Open file'}
+          </Button>
+        </DialogActions>
+      </Dialog>
       <CustomStyledMenu
         reticulumMenu
         anchorReference="anchorPosition"

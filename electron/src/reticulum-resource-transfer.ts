@@ -13,8 +13,8 @@ import { log as loggerLog, warn as loggerWarn } from './logger';
 
 export const RETICULUM_RESOURCE_TRANSFER_RANGE_BYTES = RETICULUM_RESOURCE_RANGE_SIZE;
 export const RETICULUM_RESOURCE_TRANSFER_ACCEPT_CONCURRENCY = 30;
-export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE = 10;
-export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 10;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_RESOURCE = 5;
+export const RETICULUM_RESOURCE_TRANSFER_ACCEPTS_PER_PEER = 5;
 export const RETICULUM_RESOURCE_TRANSFER_RETRY_MS = 5_000;
 export const RETICULUM_RESOURCE_TRANSFER_MAX_RANGE_ATTEMPTS = 6;
 export const RETICULUM_RESOURCE_TRANSFER_TTL_MS = 10 * 60 * 1000;
@@ -523,7 +523,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       return;
     }
     if (payload?.status === 'failed' && payload.transferId) {
-      this.rejectUnavailableProvider(payload.transferId, String(payload.reason || 'resource_failed'));
+      this.handleProviderFailure(payload.transferId, String(payload.reason || 'resource_failed'));
       this.finishTransfer(payload.transferId, false);
       return;
     }
@@ -535,12 +535,15 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     void this.importReceived(payload);
   }
 
-  private rejectUnavailableProvider(transferId: string, reason: string): void {
+  private handleProviderFailure(transferId: string, reason: string): void {
+    if (reason === 'resource_session_establish_timeout') {
+      this.temporarilyThrottleProvider(transferId, reason);
+      return;
+    }
     if (
       reason !== 'resource_unavailable' &&
       reason !== 'manifest_not_found' &&
-      reason !== 'request_not_allowed' &&
-      reason !== 'resource_session_establish_timeout'
+      reason !== 'request_not_allowed'
     ) {
       return;
     }
@@ -560,6 +563,29 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       loggerWarn(
         `[${this.loggerPrefix}] resource_provider_rejected fileHash=${offer.fileHash} ` +
           `peer=${peerKey.slice(0, 16)} transfer=${transferId} reason=${reason}`
+      );
+    }
+  }
+
+  private temporarilyThrottleProvider(transferId: string, reason: string): void {
+    const offer = this.offers.get(transferId);
+    if (!offer?.sourcePeerHash) return;
+    const state = this.downloads.get(offer.fileHash);
+    if (!state) return;
+    const peerKey = offer.sourcePeerHash.trim().toLowerCase();
+    if (!peerKey || !state.peerHashes.has(peerKey)) return;
+    const retryMs = RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS;
+    const throttledUntil = this.now() + retryMs;
+    state.peerBulkThrottleUntil.set(
+      peerKey,
+      Math.max(state.peerBulkThrottleUntil.get(peerKey) ?? 0, throttledUntil)
+    );
+    const lastLoggedAt = state.peerBulkThrottleLoggedAt.get(peerKey) ?? 0;
+    if (lastLoggedAt === 0 || this.now() - lastLoggedAt >= retryMs) {
+      state.peerBulkThrottleLoggedAt.set(peerKey, this.now());
+      loggerLog(
+        `[${this.loggerPrefix}] resource_provider_temporarily_throttled fileHash=${offer.fileHash} ` +
+          `peer=${peerKey.slice(0, 16)} transfer=${transferId} reason=${reason} retryMs=${retryMs}`
       );
     }
   }
@@ -1934,7 +1960,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
     for (const { transferId, reason } of retries) {
       if (reason === 'resource_session_establish_timeout') {
-        this.rejectUnavailableProvider(transferId, reason);
+        this.handleProviderFailure(transferId, reason);
       }
       this.cancelTransferForRetry(transferId, reason);
     }

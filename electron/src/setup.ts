@@ -17,12 +17,14 @@ import {
   ipcMain,
   dialog,
   net,
+  shell,
 } from 'electron';
 import electronIsDev from 'electron-is-dev';
 import windowStateKeeper from 'electron-window-state';
 import { dirname, join } from 'path';
 import { pipeline } from 'stream/promises';
 import { pathToFileURL } from 'url';
+import { materializeReticulumResourceForOpen } from './reticulum-resource-open';
 import {
   DEV_LOGS_DISABLED_STORAGE_KEY,
   log as loggerLog,
@@ -5198,6 +5200,50 @@ ipcMain.handle(
         success: false,
         error:
           err instanceof Error ? err.message : 'Reticulum resource save failed',
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumResource:open',
+  async (_event, fileHash: string, suggestedFileName?: string) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const hash = typeof fileHash === 'string' ? fileHash.trim() : '';
+    if (!hash) return { success: false, error: 'Invalid file hash' };
+    try {
+      const store = getReticulumResourceStore();
+      const manifest = store.getManifest(hash);
+      if (!manifest) return { success: false, error: 'Unknown resource' };
+      const leaseId = store.acquireLease(hash, 'save', 60 * 60_000);
+      try {
+        const assembledPath =
+          store.getVerifiedAssembledPath(hash) ??
+          (await store.assembleResourceAsync(hash));
+        const openPath = await materializeReticulumResourceForOpen({
+          sourcePath: assembledPath,
+          tempRoot: app.getPath('temp'),
+          fileHash: hash,
+          suggestedFileName,
+          fallbackFileName: manifest.fileName || 'attachment.bin',
+        });
+        const openError = await shell.openPath(openPath);
+        if (openError) {
+          return { success: false, error: openError };
+        }
+        return { success: true };
+      } finally {
+        store.releaseLease(leaseId);
+      }
+    } catch (err) {
+      loggerError('[Reticulum] Failed to open attachment:', err);
+      return {
+        success: false,
+        error:
+          err instanceof Error ? err.message : 'Unable to open attachment',
       };
     }
   }

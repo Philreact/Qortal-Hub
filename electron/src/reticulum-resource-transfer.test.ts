@@ -6,6 +6,7 @@ import * as path from 'path';
 import { ReticulumResourceStore, type ReticulumResourceManifest } from './reticulum-resource-store';
 import {
   RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS,
+  RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
   RETICULUM_RESOURCE_TRANSFER_TTL_MS,
   type ReticulumResourceTransferProgress,
   ReticulumResourceTransferManager,
@@ -228,7 +229,7 @@ describe('reticulum resource transfer storage protection', () => {
     expect((transfer as any).offers.has(transferId)).toBe(false);
   });
 
-  it('moves an unstarted range to another provider after establishment timeout', async () => {
+  it('temporarily throttles a timed-out provider and moves the range to another provider', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
     let now = 100_000;
     const store = new ReticulumResourceStore({
@@ -288,8 +289,78 @@ describe('reticulum resource transfer storage protection', () => {
     (transfer as any).retryNoProgressTransfers();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(state.peerHashes.has(firstPeer)).toBe(false);
+    expect(state.peerHashes.has(firstPeer)).toBe(true);
+    expect(state.peerBulkThrottleUntil.get(firstPeer)).toBeGreaterThan(now);
     expect(state.peerHashes.has(secondPeer)).toBe(true);
     expect(acceptedPeers).toEqual([firstPeer, secondPeer]);
+  });
+
+  it('retries a timed-out range against the same sole provider after backoff', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const contents = Buffer.from('sole provider retry');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'sole-provider.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: now,
+      metadata: { groupId: 716 },
+    };
+    const peer = 'a'.repeat(32);
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    const acceptedPeers: string[] = [];
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: {
+        getLocalDestinationHash: () => 'c'.repeat(32),
+        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({ ok: true })),
+        acceptReticulumResourceDetailed: vi.fn(async (payload: {
+          peerPresenceHash: string;
+        }) => {
+          acceptedPeers.push(payload.peerPresenceHash);
+          return { ok: true };
+        }),
+        cancelReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
+      } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [{}],
+    });
+    transfers.push(transfer);
+
+    const state = (transfer as any).upsertDownload(
+      716,
+      manifest,
+      'event-with-attachment',
+      [peer]
+    );
+    (transfer as any).ensureStorageProtection(state);
+    store.ensurePartialFile(manifest.fileHash);
+    await (transfer as any).dispatchRequests(state);
+    expect(acceptedPeers).toEqual([peer]);
+
+    now += RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS + 1;
+    (transfer as any).retryNoProgressTransfers();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(state.peerHashes.has(peer)).toBe(true);
+    expect(state.waitingForProvider).toBe(false);
+    expect(acceptedPeers).toEqual([peer]);
+
+    now += RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS;
+    await (transfer as any).processDownloads();
+
+    expect(acceptedPeers).toEqual([peer, peer]);
+    expect(state.peerHashes.has(peer)).toBe(true);
+    expect(state.waitingForProvider).toBe(false);
   });
 });

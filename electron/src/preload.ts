@@ -1089,6 +1089,15 @@ try {
         path?: string;
         error?: string;
       }>,
+    open: async (fileHash: string, suggestedFileName?: string) =>
+      ipcRenderer.invoke(
+        'reticulumResource:open',
+        fileHash,
+        suggestedFileName
+      ) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
   });
 
   if (!isDisabledLegacy) {

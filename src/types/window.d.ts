@@ -1123,6 +1123,13 @@ declare global {
         path?: string;
         error?: string;
       }>;
+      open: (
+        fileHash: string,
+        suggestedFileName?: string
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
     };
 
     // ── Group Call ────────────────────────────────────────────────────────────
