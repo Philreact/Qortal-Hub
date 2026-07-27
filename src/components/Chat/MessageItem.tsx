@@ -86,7 +86,10 @@ import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { ReticulumImageViewer } from './ReticulumImageViewer';
 import { ReticulumGroupInvitePreviews } from './ReticulumGroupInvitePreview';
-import { ReticulumQAppLinkPreviews } from './ReticulumQAppLinkPreview';
+import {
+  parseReticulumQAppLinks,
+  ReticulumQAppLinkPreviews,
+} from './ReticulumQAppLinkPreview';
 import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
@@ -395,9 +398,6 @@ export const MessageItemComponent = ({
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState(null);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
-  const [resolvedQAppPreviewLinks, setResolvedQAppPreviewLinks] = useState<
-    string[]
-  >([]);
   const [reticulumMessageMenuPosition, setReticulumMessageMenuPosition] =
     useState<{ mouseX: number; mouseY: number } | null>(null);
   const signedGroupWelcomeSystem =
@@ -514,6 +514,15 @@ export const MessageItemComponent = ({
       deferredMessage?.text,
       message?.decryptedData?.data?.message,
     ]
+  );
+  const reticulumQAppPreviewLinks = useMemo(
+    () =>
+      reticulumChatEnabled
+        ? parseReticulumQAppLinks(reticulumInviteSource).map(
+            (previewLink) => previewLink.link
+          )
+        : [],
+    [reticulumChatEnabled, reticulumInviteSource]
   );
 
   const htmlReply = useMemo(() => {
@@ -2853,10 +2862,7 @@ export const MessageItemComponent = ({
             {reticulumChatEnabled && reticulumInviteSource && (
               <>
                 <ReticulumGroupInvitePreviews source={reticulumInviteSource} />
-                <ReticulumQAppLinkPreviews
-                  source={reticulumInviteSource}
-                  onResolvedLinksChange={setResolvedQAppPreviewLinks}
-                />
+                <ReticulumQAppLinkPreviews source={reticulumInviteSource} />
               </>
             )}
 
@@ -2971,7 +2977,7 @@ export const MessageItemComponent = ({
             ) : hasNoMessage ? null : htmlText ? (
               <MessageDisplay
                 htmlContent={htmlText}
-                hiddenQortalUrls={resolvedQAppPreviewLinks}
+                hiddenQortalUrls={reticulumQAppPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
@@ -2990,7 +2996,7 @@ export const MessageItemComponent = ({
             ) : (
               <MessageDisplay
                 htmlContent={message.text}
-                hiddenQortalUrls={resolvedQAppPreviewLinks}
+                hiddenQortalUrls={reticulumQAppPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}

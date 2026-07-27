@@ -11,6 +11,7 @@ import {
 } from '@mui/material';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import { getBaseApiReact } from '../../utils/globalApi';
 import { executeEvent } from '../../utils/events';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
@@ -34,6 +35,18 @@ type QAppPreviewData = {
   thumbnail?: string;
   title: string;
 };
+
+type QAppPreviewFailure = 'not-found' | 'unavailable';
+
+class QAppPreviewLoadError extends Error {
+  reason: QAppPreviewFailure;
+
+  constructor(reason: QAppPreviewFailure, message: string) {
+    super(message);
+    this.name = 'QAppPreviewLoadError';
+    this.reason = reason;
+  }
+}
 
 const QAPP_LINK_PATTERN = /qortal:\/\/APP\/[^\s<>"']+/gi;
 const QAPP_PREVIEW_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -290,12 +303,30 @@ const loadPreview = async (
   link: ReticulumQAppLink,
   signal: AbortSignal
 ): Promise<QAppPreviewData> => {
-  const [documentValue, searchValue] = await Promise.all([
+  const [documentResult, searchResult] = await Promise.allSettled([
     fetchJson(resourceDocumentUrl(link), signal),
-    fetchJson(resourceSearchUrl(link), signal).catch(() => []),
+    fetchJson(resourceSearchUrl(link), signal),
   ]);
+  if (documentResult.status === 'rejected') {
+    const resourceWasNotFound =
+      searchResult.status === 'fulfilled' &&
+      Array.isArray(searchResult.value) &&
+      searchResult.value.length === 0;
+    throw new QAppPreviewLoadError(
+      resourceWasNotFound ? 'not-found' : 'unavailable',
+      resourceWasNotFound
+        ? 'Q-App preview resource was not found'
+        : 'Q-App preview document could not be loaded'
+    );
+  }
+  const documentValue = documentResult.value;
+  const searchValue =
+    searchResult.status === 'fulfilled' ? searchResult.value : [];
   if (!isRecord(documentValue)) {
-    throw new Error('Q-App preview document is invalid');
+    throw new QAppPreviewLoadError(
+      'unavailable',
+      'Q-App preview document is invalid'
+    );
   }
   const searchEntry =
     Array.isArray(searchValue) && isRecord(searchValue[0])
@@ -423,7 +454,6 @@ const cardSurface = (mode: 'light' | 'dark') =>
   mode === 'light' ? '#f4f6f9' : '#17191f';
 
 const WIDE_MEDIA_PREVIEW_WIDTH = 'min(730px, 100%)';
-const TEXT_ONLY_SUBWIRE_PREVIEW_WIDTH = 'min(510px, 100%)';
 
 function PreviewShell({
   accentColor,
@@ -455,6 +485,7 @@ function PreviewShell({
           borderRadius: '8px',
           boxSizing: 'border-box',
           color: 'text.primary',
+          height: { xs: 'auto', sm: minHeight },
           maxWidth,
           minHeight,
           mt: 0.8,
@@ -551,14 +582,19 @@ const horizontalPreviewSx = {
   mt: 1.15,
 };
 
-function PreviewSkeleton({ kind }: { kind: QAppPreviewKind }) {
+const previewShellLayout = (kind: QAppPreviewKind) => ({
+  maxWidth: kind === 'quitter' ? 'min(510px, 100%)' : WIDE_MEDIA_PREVIEW_WIDTH,
+  minHeight: kind === 'quitter' ? 185 : 268,
+});
+
+function PreviewSkeleton({ link }: { link: ReticulumQAppLink }) {
+  const layout = previewShellLayout(link.kind);
   return (
     <PreviewShell
-      accentColor={QAPP_PREVIEW_ACCENTS[kind]}
-      maxWidth={
-        kind === 'quitter' ? 'min(510px, 100%)' : WIDE_MEDIA_PREVIEW_WIDTH
-      }
-      minHeight={kind === 'quitter' ? 150 : 268}
+      accentColor={QAPP_PREVIEW_ACCENTS[link.kind]}
+      link={link}
+      maxWidth={layout.maxWidth}
+      minHeight={layout.minHeight}
     >
       <Box sx={{ p: 1.6 }}>
         <Skeleton height={26} width={92} />
@@ -566,7 +602,7 @@ function PreviewSkeleton({ kind }: { kind: QAppPreviewKind }) {
           <Skeleton
             sx={{ borderRadius: 1 }}
             variant="rectangular"
-            height={kind === 'quitter' ? 88 : 190}
+            height={link.kind === 'quitter' ? 88 : 190}
           />
           <Box>
             <Skeleton height={26} width="65%" />
@@ -574,6 +610,91 @@ function PreviewSkeleton({ kind }: { kind: QAppPreviewKind }) {
             <Skeleton height={18} width="96%" />
             <Skeleton height={18} width="82%" />
             <Skeleton height={34} width={180} sx={{ mt: 1 }} />
+          </Box>
+        </Box>
+      </Box>
+    </PreviewShell>
+  );
+}
+
+function PreviewFailure({
+  failure,
+  link,
+  onRetry,
+}: {
+  failure: QAppPreviewFailure;
+  link: ReticulumQAppLink;
+  onRetry: () => void;
+}) {
+  const layout = previewShellLayout(link.kind);
+  const notFound = failure === 'not-found';
+  return (
+    <PreviewShell
+      accentColor={QAPP_PREVIEW_ACCENTS[link.kind]}
+      link={link}
+      maxWidth={layout.maxWidth}
+      minHeight={layout.minHeight}
+    >
+      <Box
+        sx={{
+          alignItems: 'center',
+          boxSizing: 'border-box',
+          display: 'flex',
+          height: '100%',
+          minHeight: layout.minHeight,
+          p: 1.6,
+        }}
+      >
+        <Box sx={{ maxWidth: 420 }}>
+          <AppHeader link={link} />
+          <Typography sx={{ fontSize: 14, fontWeight: 750, mt: 1.6 }}>
+            {notFound ? 'Resource not found' : 'Preview unavailable'}
+          </Typography>
+          <Typography
+            sx={{
+              color: 'text.secondary',
+              fontSize: 12.5,
+              lineHeight: 1.45,
+              mt: 0.45,
+            }}
+          >
+            {notFound
+              ? 'No Q-App resource was found for this link.'
+              : `The resource exists, but its preview could not be loaded right now.`}
+          </Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.7 }}>
+            <Button
+              onClick={(event) => {
+                event.stopPropagation();
+                onRetry();
+              }}
+              size="small"
+              startIcon={<RefreshRoundedIcon />}
+              variant="contained"
+              sx={{ borderRadius: '6px', minHeight: 32, textTransform: 'none' }}
+            >
+              {notFound ? 'Check again' : 'Retry'}
+            </Button>
+            {!notFound ? (
+              <Button
+                endIcon={<OpenInNewRoundedIcon />}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openQAppLink(link);
+                }}
+                size="small"
+                variant="outlined"
+                sx={{
+                  borderColor: 'divider',
+                  borderRadius: '6px',
+                  color: 'text.primary',
+                  minHeight: 32,
+                  textTransform: 'none',
+                }}
+              >
+                Open in {link.appName}
+              </Button>
+            ) : null}
           </Box>
         </Box>
       </Box>
@@ -704,12 +825,13 @@ function QTubePreview({
 }) {
   const date = formatPreviewDate(data.createdAt);
   const duration = formatDuration(data.duration);
+  const layout = previewShellLayout(link.kind);
   return (
     <PreviewShell
       accentColor={QAPP_PREVIEW_ACCENTS.qtube}
       link={link}
-      maxWidth={WIDE_MEDIA_PREVIEW_WIDTH}
-      minHeight={268}
+      maxWidth={layout.maxWidth}
+      minHeight={layout.minHeight}
     >
       <Box sx={{ p: 1.6 }}>
         <AppHeader link={link} />
@@ -797,11 +919,13 @@ function QuitterPreview({
   link: ReticulumQAppLink;
 }) {
   const date = formatPreviewDate(data.createdAt);
+  const layout = previewShellLayout(link.kind);
   return (
     <PreviewShell
       accentColor={QAPP_PREVIEW_ACCENTS.quitter}
       link={link}
-      minHeight={150}
+      maxWidth={layout.maxWidth}
+      minHeight={layout.minHeight}
     >
       <Box sx={{ p: 1.6 }}>
         <Box
@@ -919,15 +1043,14 @@ function SubWirePreview({
   }, [data.thumbnail]);
 
   const hasMedia = Boolean(data.thumbnail && !mediaFailed);
+  const layout = previewShellLayout(link.kind);
 
   return (
     <PreviewShell
       accentColor={QAPP_PREVIEW_ACCENTS.subwire}
       link={link}
-      maxWidth={
-        hasMedia ? WIDE_MEDIA_PREVIEW_WIDTH : TEXT_ONLY_SUBWIRE_PREVIEW_WIDTH
-      }
-      minHeight={hasMedia ? 268 : 180}
+      maxWidth={layout.maxWidth}
+      minHeight={layout.minHeight}
     >
       <Box sx={{ p: 1.6 }}>
         <AppHeader link={link} />
@@ -1022,99 +1145,68 @@ function SubWirePreview({
   );
 }
 
-function QAppPreview({
-  link,
-  onResolvedChange,
-}: {
-  link: ReticulumQAppLink;
-  onResolvedChange: (link: string, resolved: boolean) => void;
-}) {
+function QAppPreview({ link }: { link: ReticulumQAppLink }) {
   const cacheKey = link.link.toLowerCase();
   const [data, setData] = useState<QAppPreviewData | null>(() =>
     readCachedPreview(cacheKey)
   );
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<QAppPreviewFailure | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (data) return;
     const controller = new AbortController();
-    const timeout = window.setTimeout(
-      () => controller.abort(),
-      QAPP_PREVIEW_REQUEST_TIMEOUT_MS
-    );
+    const timeout = window.setTimeout(() => {
+      setFailure('unavailable');
+      controller.abort();
+    }, QAPP_PREVIEW_REQUEST_TIMEOUT_MS);
     void loadPreview(link, controller.signal)
       .then((next) => {
         if (controller.signal.aborted) return;
         cachePreview(cacheKey, next);
         setData(next);
       })
-      .catch(() => {
-        if (!controller.signal.aborted) setFailed(true);
+      .catch((error) => {
+        if (!controller.signal.aborted) {
+          setFailure(
+            error instanceof QAppPreviewLoadError ? error.reason : 'unavailable'
+          );
+        }
       })
       .finally(() => window.clearTimeout(timeout));
     return () => {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [cacheKey, data, link]);
+  }, [attempt, cacheKey, data, link]);
 
-  useEffect(() => {
-    if (!data) return;
-    onResolvedChange(link.link, true);
-    return () => onResolvedChange(link.link, false);
-  }, [data, link.link, onResolvedChange]);
-
-  if (failed) return null;
-  if (!data) return <PreviewSkeleton kind={link.kind} />;
+  if (failure) {
+    return (
+      <PreviewFailure
+        failure={failure}
+        link={link}
+        onRetry={() => {
+          setFailure(null);
+          setAttempt((previous) => previous + 1);
+        }}
+      />
+    );
+  }
+  if (!data) return <PreviewSkeleton link={link} />;
   if (link.kind === 'qtube') return <QTubePreview data={data} link={link} />;
   if (link.kind === 'quitter')
     return <QuitterPreview data={data} link={link} />;
   return <SubWirePreview data={data} link={link} />;
 }
 
-export function ReticulumQAppLinkPreviews({
-  onResolvedLinksChange,
-  source,
-}: {
-  onResolvedLinksChange?: (links: string[]) => void;
-  source: string;
-}) {
+export function ReticulumQAppLinkPreviews({ source }: { source: string }) {
   const links = useMemo(() => parseReticulumQAppLinks(source), [source]);
-  const [resolvedLinks, setResolvedLinks] = useState<Set<string>>(
-    () => new Set()
-  );
-
-  const setLinkResolved = useMemo(
-    () => (link: string, resolved: boolean) => {
-      setResolvedLinks((previous) => {
-        const next = new Set(previous);
-        if (resolved) next.add(link);
-        else next.delete(link);
-        if (
-          next.size === previous.size &&
-          [...next].every((entry) => previous.has(entry))
-        ) {
-          return previous;
-        }
-        return next;
-      });
-    },
-    []
-  );
-
-  useEffect(() => {
-    onResolvedLinksChange?.([...resolvedLinks]);
-  }, [onResolvedLinksChange, resolvedLinks]);
 
   if (links.length === 0) return null;
   return (
     <>
       {links.map((link) => (
-        <QAppPreview
-          key={link.link}
-          link={link}
-          onResolvedChange={setLinkResolved}
-        />
+        <QAppPreview key={link.link} link={link} />
       ))}
     </>
   );

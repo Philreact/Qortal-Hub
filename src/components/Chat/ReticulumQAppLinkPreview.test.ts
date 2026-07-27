@@ -1,9 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
+import { createElement } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   formatReticulumQAppDisplayLink,
   parseReticulumQAppLinks,
+  ReticulumQAppLinkPreviews,
   resolveReticulumPreviewImageUrl,
 } from './ReticulumQAppLinkPreview';
+
+vi.mock('../../utils/globalApi', () => ({
+  getBaseApiReact: () => 'http://localhost:12391',
+}));
 
 const qtubeLink =
   'qortal://APP/Q-Tube/video/Johnny%20Go%20Vroom/qtube_vid_grizzla-armor-for-the-lynx-s-t_wirangkppk_metadata';
@@ -11,6 +24,13 @@ const quitterLink =
   'qortal://APP/Quitter/post/igorcoin/MhNiRYdzkaP9dz-kX47dT-XrFXaYetyErMdF-vvQf5Ahb3N7jGgi-v1';
 const subwireLink =
   'qortal://APP/SubWire/publication/JonahQ/7l1NGsWiY0SgPb-eEGFM7-T60ZadsfPsbLTh-53qmcEK52mrIPme-v1';
+const missingQTubeLink =
+  'qortal://APP/Q-Tube/video/Johnny%20Go%20Vroom/definitely-missing-metadata';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe('parseReticulumQAppLinks', () => {
   it('recognizes the supported canonical Q-App routes', () => {
@@ -113,5 +133,88 @@ describe('resolveReticulumPreviewImageUrl', () => {
         'publication-id'
       )
     ).toBe('data:image/webp;base64,UklGRmVtYmVkZGVkLXdlYnA=');
+  });
+});
+
+describe('ReticulumQAppLinkPreviews', () => {
+  it('removes the loading preview when its request times out', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, options?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              reject(new DOMException('Aborted', 'AbortError'));
+            });
+          })
+      )
+    );
+
+    const { container } = render(
+      createElement(ReticulumQAppLinkPreviews, { source: qtubeLink })
+    );
+    expect(container.querySelector('.MuiSkeleton-root')).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    expect(container.querySelector('.MuiSkeleton-root')).toBeNull();
+    expect(screen.getByText('Preview unavailable')).toBeVisible();
+    expect(
+      screen.getByRole('link', { name: /qortal:\/\/APP\/Q-Tube/i })
+    ).toBeVisible();
+  });
+
+  it('can retry a failed preview request without removing its shell', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('unavailable'))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [{ name: 'Johnny Go Vroom' }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ title: 'Recovered video' }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => [] });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      createElement(ReticulumQAppLinkPreviews, { source: missingQTubeLink })
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Preview unavailable')).toBeVisible()
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Recovered video')).toBeVisible()
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('distinguishes a missing resource from a metadata fetch failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockRejectedValueOnce(new Error('not found'))
+        .mockResolvedValueOnce({ ok: true, json: async () => [] })
+    );
+
+    render(createElement(ReticulumQAppLinkPreviews, { source: qtubeLink }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Resource not found')).toBeVisible()
+    );
+    expect(
+      screen.getByText('No Q-App resource was found for this link.')
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Open in Q-Tube' })).toBeNull();
   });
 });
