@@ -1799,6 +1799,36 @@ describe('reticulum chat database', () => {
       attempts: 3,
       nextAttemptAt: 600_000,
     });
+
+    const rotated = db.rescheduleMissingRange(
+      11,
+      author,
+      TEST_AUTHOR_STREAM_ID,
+      2,
+      5,
+      'peer-f',
+      201_000
+    );
+    expect(rotated).toMatchObject({
+      preferredPeer: 'peer-f',
+      attempts: 3,
+      nextAttemptAt: 201_000,
+    });
+
+    const staleRotation = db.rescheduleMissingRange(
+      11,
+      author,
+      TEST_AUTHOR_STREAM_ID,
+      2,
+      5,
+      'peer-stale',
+      100,
+      'peer-e'
+    );
+    expect(staleRotation).toMatchObject({
+      preferredPeer: 'peer-f',
+      nextAttemptAt: 201_000,
+    });
   });
 
   it('does not count own events against the relay cache budget', () => {
@@ -17728,6 +17758,428 @@ describe('reticulum chat manager', () => {
       true
     );
     expect(direct.every((wire) => wire.k !== 'event_batch')).toBe(true);
+    manager.close();
+  });
+
+  it('answers correlated author range misses explicitly', async () => {
+    const direct: Record<string, unknown>[] = [];
+    const missingAuthorAddress = createDmIdentity().address;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          message: Record<string, unknown>
+        ) => {
+          direct.push(message);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([60]);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 60,
+        id: '0123456789abcdef',
+        ranges: [
+          {
+            a: missingAuthorAddress,
+            s: TEST_AUTHOR_STREAM_ID,
+            from: 7,
+            to: 9,
+          },
+        ],
+        limit: 10,
+      },
+      'b'.repeat(32)
+    );
+    await flushQueuedWork();
+
+    const response = {
+      t: 'RCHAT',
+      k: 'range_none',
+      g: 60,
+      id: '0123456789abcdef',
+      ranges: [
+        {
+          a: missingAuthorAddress,
+          s: TEST_AUTHOR_STREAM_ID,
+          from: 7,
+          to: 9,
+        },
+      ],
+    };
+    expect(direct).toContainEqual(response);
+    expect(wireFitsReticulum(response)).toBe(true);
+    manager.close();
+  });
+
+  it('uses signed requester access when repairing an admin-private range', async () => {
+    const peer = 'b'.repeat(32);
+    const requester = createDmIdentity();
+    const resources: Array<Record<string, any>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatResourceDetailed: async (
+          payload: Record<string, any>
+        ) => {
+          resources.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) =>
+        address === requester.address,
+      validateGroupAdmin: async (_groupId, address) =>
+        address === requester.address,
+    });
+    manager.setLocalGroupMemberships([60]);
+    upsertTestChannel(manager, {
+      groupId: 60,
+      channelId: 'admin-private',
+      writeMode: 'admins',
+      readMode: 'admins',
+    });
+    const event = signedEvent({
+      eventId: 'event-private-range-repair',
+      groupId: 60,
+      channelId: 'admin-private',
+      authorSeq: 1,
+      timestamp: 40_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const requestId = 'fedcba9876543210';
+    const ranges = [
+      {
+        a: event.authorAddress,
+        s: event.authorStreamId,
+        from: 1,
+        to: 1,
+      },
+    ];
+    const signedFields = {
+      type: 'RCHAT_RANGE_REQ',
+      groupId: 60,
+      ranges,
+      limit: 10,
+      sourcePeerHash: peer,
+      timestamp: 100_000,
+      authorAddress: requester.address,
+      authorPublicKey: requester.publicKey,
+    };
+    const signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(signedFields)),
+        requester.secretKey
+      )
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 60,
+        id: requestId,
+        ranges: [[event.authorAddress, event.authorStreamId, 1, 1]],
+        limit: 10,
+        q: [peer, requester.publicKey, 100_000, signature],
+      },
+      peer
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(resources).toHaveLength(1);
+    const page = JSON.parse(
+      fs.readFileSync(String(resources[0].filePath), 'utf8')
+    ) as { events: ReticulumChatEvent[] };
+    expect(page.events.map((item) => item.eventId)).toEqual([event.eventId]);
+    manager.close();
+  });
+
+  it('rotates an unavailable author range to another verified peer immediately', async () => {
+    const firstPeer = 'b'.repeat(32);
+    const secondPeer = 'c'.repeat(32);
+    const direct: Array<{ peer: string; wire: Record<string, any> }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      getVerifiedReticulumPeers: () => [
+        { destinationHash: firstPeer, address: 'Qfirst', lastSeen: 2 },
+        { destinationHash: secondPeer, address: 'Qsecond', lastSeen: 1 },
+      ],
+    });
+    manager.setLocalGroupMemberships([60]);
+    manager.subscribeGroup(60);
+    const range = {
+      a: 'QmissingAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 7,
+      to: 9,
+    };
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(
+        60,
+        firstPeer,
+        [range],
+        'test'
+      )
+    ).toBe(1);
+    await flushQueuedWork();
+    const request = direct.find((item) => item.peer === firstPeer);
+    expect(request?.wire.k).toBe('range_req');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'range_none',
+        g: 60,
+        id: request?.wire.id,
+        ranges: request?.wire.ranges,
+      },
+      firstPeer
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await flushQueuedWork();
+
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: secondPeer,
+        wire: expect.objectContaining({ k: 'range_req', g: 60 }),
+      })
+    );
+    manager.close();
+  });
+
+  it('rotates an unanswered author range request instead of retrying the same peer', async () => {
+    const firstPeer = 'b'.repeat(32);
+    const secondPeer = 'c'.repeat(32);
+    const { signLocalFields, address: rangeAuthorAddress } =
+      createLandAuthSigner();
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields,
+      getVerifiedReticulumPeers: () => [
+        { destinationHash: firstPeer, address: 'Qfirst', lastSeen: 2 },
+        { destinationHash: secondPeer, address: 'Qsecond', lastSeen: 1 },
+      ],
+    });
+    manager.setLocalGroupMemberships([60]);
+    manager.subscribeGroup(60);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'hello_v3',
+        v: 3,
+        f: [
+          'hello_v3',
+          'state_digest_v3',
+          'event_notice_v3',
+          'metadata_snapshot_v3',
+          'state_heads_v3',
+          'delta_req_v3',
+          'range_auth_v1',
+          'author_streams',
+          'author_merkle_v1',
+          'dm',
+        ],
+      },
+      firstPeer
+    );
+    const range = {
+      a: rangeAuthorAddress,
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 12,
+      to: 12,
+    };
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(
+        60,
+        firstPeer,
+        [range],
+        'test'
+      )
+    ).toBe(1);
+    await flushQueuedWork();
+    now += 20_001;
+    (manager as any).processBackgroundAuthorGapRepair();
+    await flushQueuedWork();
+
+    expect(direct.map((item) => item.peer)).toEqual([firstPeer, secondPeer]);
+    expect(Array.isArray(direct[0].wire.q)).toBe(true);
+    expect(direct[0].wire.id).toBeUndefined();
+    expect(wireFitsReticulum(direct[0].wire)).toBe(true);
+    manager.close();
+  });
+
+  it('keeps author range requests compatible with peers that do not advertise authenticated ranges', async () => {
+    const peer = 'b'.repeat(32);
+    const { signLocalFields, address } = createLandAuthSigner();
+    const direct: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push(wire);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      signLocalFields,
+    });
+    manager.setLocalGroupMemberships([60]);
+    const range = {
+      a: address,
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 12,
+      to: 12,
+    };
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(60, peer, [range], 'test')
+    ).toBe(1);
+    await flushQueuedWork();
+
+    expect(direct).toHaveLength(1);
+    expect(direct[0].q).toBeUndefined();
+    expect(direct[0].id).toEqual(expect.any(String));
+    expect(direct[0].ranges).toEqual([range]);
+    manager.close();
+  });
+
+  it('does not recreate or rotate an author gap repaired before its response timeout', async () => {
+    const firstPeer = 'b'.repeat(32);
+    const secondPeer = 'c'.repeat(32);
+    const { signLocalFields } = createLandAuthSigner();
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields,
+      getVerifiedReticulumPeers: () => [
+        { destinationHash: firstPeer, address: 'Qfirst', lastSeen: 2 },
+        { destinationHash: secondPeer, address: 'Qsecond', lastSeen: 1 },
+      ],
+    });
+    manager.setLocalGroupMemberships([60]);
+    manager.subscribeGroup(60);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'hello_v3',
+        v: 3,
+        f: [
+          'hello_v3',
+          'state_digest_v3',
+          'event_notice_v3',
+          'metadata_snapshot_v3',
+          'state_heads_v3',
+          'delta_req_v3',
+          'range_auth_v1',
+          'author_streams',
+          'author_merkle_v1',
+          'dm',
+        ],
+      },
+      firstPeer
+    );
+    const event = signedEvent({
+      eventId: 'event-repaired-before-range-timeout',
+      groupId: 60,
+      channelId: 'general',
+      authorSeq: 12,
+      timestamp: 90_000,
+    });
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: 12,
+      to: 12,
+    };
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(
+        60,
+        firstPeer,
+        [range],
+        'test'
+      )
+    ).toBe(1);
+    await flushQueuedWork();
+    expect((manager as any).db.insertEvent(event, false)).toBe(true);
+
+    now += 20_001;
+    (manager as any).processBackgroundAuthorGapRepair();
+    await flushQueuedWork();
+
+    expect(direct.map((item) => item.peer)).toEqual([firstPeer]);
+    expect(
+      (manager as any).db.getMissingRangeOverlaps(
+        60,
+        range.a,
+        range.s,
+        range.from,
+        range.to
+      )
+    ).toEqual([]);
     manager.close();
   });
 
