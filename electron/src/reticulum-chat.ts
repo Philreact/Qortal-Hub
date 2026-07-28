@@ -6406,6 +6406,10 @@ export class ReticulumChatManager extends EventEmitter {
   private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
   private landSessionRoutes = new Map<string, ReticulumLandSessionRoute>();
   private latestVerifiedLandStateSequences = new Map<string, number>();
+  private latestVerifiedLandStates = new Map<
+    string,
+    Extract<ReticulumChatWire, { k: 'land_state' }>
+  >();
   private latestVerifiedLandActionSequences = new Map<string, number>();
   private localLandSocialActionTimes = new Map<string, number[]>();
   private remoteLandSocialActionTimes = new Map<string, number[]>();
@@ -7374,6 +7378,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.landAuthSessions.clear();
     this.landSessionRoutes.clear();
     this.latestVerifiedLandStateSequences.clear();
+    this.latestVerifiedLandStates.clear();
     this.latestVerifiedLandActionSequences.clear();
     this.localLandSocialActionTimes.clear();
     this.remoteLandSocialActionTimes.clear();
@@ -9253,6 +9258,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (session.expiresAt <= now) {
         this.landAuthSessions.delete(key);
         this.latestVerifiedLandStateSequences.delete(key);
+        this.latestVerifiedLandStates.delete(key);
         this.latestVerifiedLandActionSequences.delete(key);
         sessionsChanged = true;
       }
@@ -9266,6 +9272,7 @@ export class ReticulumChatManager extends EventEmitter {
       for (const [key] of oldest) {
         this.landAuthSessions.delete(key);
         this.latestVerifiedLandStateSequences.delete(key);
+        this.latestVerifiedLandStates.delete(key);
         this.latestVerifiedLandActionSequences.delete(key);
         sessionsChanged = true;
       }
@@ -9277,6 +9284,7 @@ export class ReticulumChatManager extends EventEmitter {
       for (const key of this.latestVerifiedLandStateSequences.keys()) {
         if (this.landAuthSessions.has(key)) continue;
         this.latestVerifiedLandStateSequences.delete(key);
+        this.latestVerifiedLandStates.delete(key);
         if (
           this.latestVerifiedLandStateSequences.size <=
           RETICULUM_LAND_STATE_SEQUENCE_MAX
@@ -9323,6 +9331,7 @@ export class ReticulumChatManager extends EventEmitter {
     const existing = this.landAuthSessions.get(sessionKey);
     if (existing && existing.ephemeralPublicKey !== ephemeralPublicKey) {
       this.latestVerifiedLandStateSequences.delete(sessionKey);
+      this.latestVerifiedLandStates.delete(sessionKey);
       this.latestVerifiedLandActionSequences.delete(sessionKey);
     }
     this.landAuthSessions.set(sessionKey, {
@@ -15730,9 +15739,25 @@ export class ReticulumChatManager extends EventEmitter {
       route.sessionId
     );
     const existing = this.landSessionRoutes.get(key);
+    let routeChanged = false;
     if (!existing || route.timestamp >= existing.timestamp) {
       this.landSessionRoutes.set(key, route);
       this.pruneLandSessionRoutes();
+      routeChanged =
+        !existing ||
+        existing.destinationHash !== route.destinationHash ||
+        existing.expiresAt !== route.expiresAt;
+    }
+    // Land state and its signed per-device route travel independently. If the
+    // state won that race, immediately re-emit the latest verified state with
+    // the newly authenticated destination instead of waiting for movement.
+    if (
+      routeChanged &&
+      this.localGroupIds.has(route.groupId) &&
+      this.subscribedGroups.has(route.groupId)
+    ) {
+      const latestState = this.latestVerifiedLandStates.get(key);
+      if (latestState) this.applyLandState(route.groupId, latestState);
     }
     await this.forwardLandSessionRouteToInterestRoutes(
       route.groupId,
@@ -15848,6 +15873,7 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       }
       this.latestVerifiedLandStateSequences.set(sequenceKey, sequence);
+      this.latestVerifiedLandStates.set(sequenceKey, wire);
       const diagnosticKey = sequenceKey;
       if (
         !this.markRecentOrDuplicate(

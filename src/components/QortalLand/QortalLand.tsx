@@ -4810,6 +4810,18 @@ export function QortalLand({
       }
       if (existing && payload.sequence <= existing.sequence) {
         existing.lastSeenAt = now;
+        // A signed device route can arrive after the state that first rendered
+        // this player. Merge that late route even though the state sequence is
+        // unchanged so calls and games become available without movement.
+        if (
+          payload.sequence === existing.sequence &&
+          payload.destinationHash &&
+          existing.destinationHash !== payload.destinationHash
+        ) {
+          existing.destinationHash = payload.destinationHash;
+          setLandAvailabilityVersion((value) => value + 1);
+          publishLandPresenceSnapshot();
+        }
         return;
       }
       const sentAt = finiteNumber(payload.timestamp) ?? now;

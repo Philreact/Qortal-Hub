@@ -13171,7 +13171,7 @@ export function useGroupVoiceCall(uiActive = false) {
           userInfo.publicKey,
           ts,
           reticulumDestinationHash,
-          joinGeneration,
+          encodeGroupCallTakeoverGeneration(joinGeneration),
           lastObservedEpochRef.current,
           reticulumIdentityPublicKeyBase64 ?? undefined,
           joinRkSig,

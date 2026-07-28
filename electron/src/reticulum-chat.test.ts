@@ -11671,6 +11671,66 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('enriches an already-rendered Land state when its signed device route arrives later', async () => {
+    const emitted: Array<Record<string, unknown>> = [];
+    const signer = createLandAuthSigner();
+    const destinationHash = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'a'.repeat(32),
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) =>
+        address === signer.address,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.on('landState', (payload) =>
+      emitted.push(payload as Record<string, unknown>)
+    );
+    manager.handleWire(
+      signer.landAuthWire(73, 'late-route', 100_000),
+      'peer-source'
+    );
+    await flushQueuedWork();
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'late-route',
+        sequence: 1,
+        x: 50,
+        y: 60,
+        voiceEnabled: true,
+        timestamp: 100_000,
+      }),
+      'peer-source'
+    );
+    await vi.waitFor(() => expect(emitted).toHaveLength(1));
+    expect(emitted[0]).not.toHaveProperty('destinationHash');
+
+    manager.handleWire(
+      signer.landRouteWire(
+        73,
+        'late-route',
+        destinationHash,
+        100_000
+      ),
+      'peer-source'
+    );
+    await vi.waitFor(() => expect(emitted).toHaveLength(2));
+    expect(emitted[1]).toMatchObject({
+      sequence: 1,
+      destinationHash,
+    });
+    manager.close();
+  });
+
   it('does not relay a QortalLand state twice after Python fast forwarding', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const emitted: Array<Record<string, unknown>> = [];

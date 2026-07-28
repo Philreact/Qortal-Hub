@@ -5,9 +5,54 @@ import {
   decodeGroupCallLogicalJoinGeneration,
   reticulumAudioResetReasonForVerifiedJoin,
   resolveVerifiedJoinTakeoverAt,
+  resolveDmVoiceAudioLinkOpenDecision,
+  resolveGroupCallSignedJoinGeneration,
   shouldApplyGroupCallLeaveToSession,
   shouldRefreshParticipantFromVerifiedJoin,
 } from './group-call';
+
+describe('DM voice audio-link ownership recovery', () => {
+  it('opens immediately for the preferred opener', () => {
+    expect(
+      resolveDmVoiceAudioLinkOpenDecision({
+        role: 'opener',
+        createdAtMs: 1_000,
+        nowMs: 1_000,
+      })
+    ).toBe('open');
+  });
+
+  it('lets the waiter recover only after the opener grace window', () => {
+    expect(
+      resolveDmVoiceAudioLinkOpenDecision({
+        role: 'waiter',
+        createdAtMs: 1_000,
+        nowMs: 4_999,
+      })
+    ).toBe('defer');
+    expect(
+      resolveDmVoiceAudioLinkOpenDecision({
+        role: 'waiter',
+        createdAtMs: 1_000,
+        nowMs: 5_000,
+      })
+    ).toBe('open');
+  });
+});
+
+describe('group-call signed join generation transport', () => {
+  it('preserves an already encoded takeover generation across IPC', () => {
+    expect(resolveGroupCallSignedJoinGeneration(-4_000_000_001, false)).toBe(
+      -4_000_000_001
+    );
+    expect(resolveGroupCallSignedJoinGeneration(-123, true)).toBe(-123);
+  });
+
+  it('still encodes takeover for older callers that send a logical generation', () => {
+    expect(resolveGroupCallSignedJoinGeneration(122, true)).toBe(-123);
+    expect(resolveGroupCallSignedJoinGeneration(122, false)).toBe(122);
+  });
+});
 
 describe('group-call multi-device participant ownership', () => {
   it('decodes the signed compact takeover generation', () => {

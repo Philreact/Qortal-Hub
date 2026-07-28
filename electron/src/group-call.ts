@@ -358,6 +358,33 @@ const GC_RETICULUM_AUDIO_MEDIA_TARGET_LEASE_MS = 30_000;
  */
 const GC_RETICULUM_AUDIO_OWNER_OPEN_GRACE_MS = 4_000;
 
+export type DmVoiceAudioLinkOpenDecision = 'open' | 'defer';
+
+/**
+ * Explicit DM-call link roles avoid both peers opening at once, but the waiter
+ * must still recover if the preferred opener never creates a link.  Once the
+ * grace window expires it becomes eligible to open; duplicate links are
+ * resolved by the normal canonical-link selection path.
+ */
+export function resolveDmVoiceAudioLinkOpenDecision(input: {
+  role: 'opener' | 'waiter';
+  createdAtMs: number;
+  nowMs: number;
+  graceMs?: number;
+}): DmVoiceAudioLinkOpenDecision {
+  if (input.role === 'opener') return 'open';
+  const graceMs = Math.max(
+    0,
+    Number.isFinite(input.graceMs)
+      ? Number(input.graceMs)
+      : GC_RETICULUM_AUDIO_OWNER_OPEN_GRACE_MS
+  );
+  const createdAtMs = Number.isFinite(input.createdAtMs)
+    ? input.createdAtMs
+    : input.nowMs;
+  return input.nowMs - createdAtMs >= graceMs ? 'open' : 'defer';
+}
+
 type ReticulumMediaTransportKind = 'link' | 'packet';
 
 const GC_RETICULUM_PACKET_MEDIA_ENABLED = false;
@@ -472,10 +499,20 @@ export function decodeGroupCallLogicalJoinGeneration(
   return generation < 0 ? (-1 - generation) >>> 0 : generation >>> 0;
 }
 
-function encodeGroupCallSignedJoinGeneration(
+export function resolveGroupCallSignedJoinGeneration(
   generation: number | undefined,
   takeover: boolean
 ): number | undefined {
+  // A negative generation is already the signed takeover representation. Keep
+  // it byte-for-byte so IPC/preload version skew cannot make main broadcast a
+  // different value from the one the renderer signed.
+  if (
+    typeof generation === 'number' &&
+    Number.isFinite(generation) &&
+    generation < 0
+  ) {
+    return generation;
+  }
   const logical = decodeGroupCallLogicalJoinGeneration(generation);
   if (logical === undefined) return undefined;
   return takeover ? -1 - logical : logical;
@@ -4763,15 +4800,20 @@ export class GroupCallManager extends EventEmitter {
       isRnsIdentityPublicKeyBase64(reticulumIdentityPublicKeyBase64)
         ? reticulumIdentityPublicKeyBase64
         : undefined;
-    const signedJoinGeneration = encodeGroupCallSignedJoinGeneration(
+    const signedJoinGeneration = resolveGroupCallSignedJoinGeneration(
       joinGeneration,
       takeover
     );
+    const logicalJoinGeneration = decodeGroupCallLogicalJoinGeneration(
+      signedJoinGeneration
+    );
+    const effectiveTakeover =
+      takeover ||
+      (typeof signedJoinGeneration === 'number' && signedJoinGeneration < 0);
     const existingLocalParticipant = room.participants.get(localAddress);
     const sameLocalGeneration =
-      typeof joinGeneration === 'number' &&
-      Number.isFinite(joinGeneration) &&
-      existingLocalParticipant?.joinGeneration === joinGeneration;
+      logicalJoinGeneration !== undefined &&
+      existingLocalParticipant?.joinGeneration === logicalJoinGeneration;
     room.participants.set(
       localAddress,
       buildRoomParticipantRecord({
@@ -4779,14 +4821,14 @@ export class GroupCallManager extends EventEmitter {
         joinedAt: timestamp,
         reticulumDestinationHash: destNorm,
         reticulumIdentityPublicKeyBase64: rk,
-        joinGeneration,
+        joinGeneration: logicalJoinGeneration,
         takeoverAt:
-          sameLocalGeneration && !takeover
+          sameLocalGeneration && !effectiveTakeover
             ? resolveVerifiedJoinTakeoverAt({
                 currentJoinedAt: existingLocalParticipant?.joinedAt,
                 currentJoinGeneration: existingLocalParticipant?.joinGeneration,
                 currentTakeoverAt: existingLocalParticipant?.takeoverAt,
-                incomingJoinGeneration: joinGeneration,
+                incomingJoinGeneration: logicalJoinGeneration,
                 incomingJoinTimestamp: timestamp,
               })
             : timestamp,
@@ -6050,7 +6092,9 @@ export class GroupCallManager extends EventEmitter {
       }
     }
     if (!sawDmVoiceRoom) return true;
-    if (sawExplicitWaiter) return false;
+    // A waiter is an eventual fallback owner. The grace-window check in
+    // shouldDeferReticulumAudioOpenForOwnerGrace prevents it opening early.
+    if (sawExplicitWaiter) return true;
     if (sawMissingDmVoiceRoom) return false;
     const localAddress = this.getReticulumAudioLocalAddressForState(state);
     return localAddress
@@ -6058,21 +6102,20 @@ export class GroupCallManager extends EventEmitter {
       : false;
   }
 
-  private hasExplicitDmVoiceAudioLinkRole(
+  private getExplicitDmVoiceAudioLinkRole(
     state: Pick<ReticulumAudioPeerState, 'rooms'> | null | undefined
-  ): boolean {
-    if (!state) return false;
+  ): 'opener' | 'waiter' | null {
+    if (!state) return null;
+    let sawWaiter = false;
     for (const roomId of state.rooms) {
       const room = this.rooms.get(roomId);
-      if (
-        roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
-        (room?.dmVoiceAudioLinkRole === 'opener' ||
-          room?.dmVoiceAudioLinkRole === 'waiter')
-      ) {
-        return true;
-      }
+      // A shared peer link serving any group-call room is needed immediately;
+      // a simultaneous DM wait role must not delay that existing use.
+      if (!roomId.startsWith(DM_VOICE_ROOM_PREFIX)) return 'opener';
+      if (room?.dmVoiceAudioLinkRole === 'opener') return 'opener';
+      if (room?.dmVoiceAudioLinkRole === 'waiter') sawWaiter = true;
     }
-    return false;
+    return sawWaiter ? 'waiter' : null;
   }
 
   private hasEstablishedReticulumAudioLink(
@@ -6233,7 +6276,23 @@ export class GroupCallManager extends EventEmitter {
     now = Date.now()
   ): boolean {
     if (state.established || state.linkId || state.opening) return false;
-    if (this.hasExplicitDmVoiceAudioLinkRole(state)) return false;
+    const explicitRole = this.getExplicitDmVoiceAudioLinkRole(state);
+    if (explicitRole) {
+      const decision = resolveDmVoiceAudioLinkOpenDecision({
+        role: explicitRole,
+        createdAtMs: state.createdAtMs || now,
+        nowMs: now,
+      });
+      if (decision === 'open') return false;
+      const remainingMs = Math.max(
+        1,
+        (state.createdAtMs || now) +
+          GC_RETICULUM_AUDIO_OWNER_OPEN_GRACE_MS -
+          now
+      );
+      this.deferReticulumAudioOpenForAddress(address, remainingMs);
+      return true;
+    }
     const localAddress = this.getReticulumAudioLocalAddressForState(state);
     if (!localAddress) return false;
     if (this.isLocalAddressReticulumAudioLinkOwner(localAddress, address)) {
