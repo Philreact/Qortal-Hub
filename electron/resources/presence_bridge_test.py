@@ -728,11 +728,22 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
 
     def drain_json_events(self):
         events = []
+        for event_queue in (
+            self.bridge._json_priority_event_queue,
+            self.bridge._json_event_queue,
+        ):
+            while True:
+                try:
+                    frame = event_queue.get_nowait()
+                    if frame is not None:
+                        events.append(frame)
+                except queue.Empty:
+                    break
         while True:
-            try:
-                events.append(self.bridge._json_event_queue.get_nowait())
-            except queue.Empty:
+            frame = self.bridge._pop_coalesced_json_event_line()
+            if frame is None:
                 return events
+            events.append(frame)
 
     def drain_json_responses(self):
         responses = []

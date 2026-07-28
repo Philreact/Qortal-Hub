@@ -44,7 +44,7 @@ type Props = {
   onInputDevice: (deviceId: string) => void;
   onOutputDevice: (deviceId: string) => void;
   onMasterVolume: (volume: number) => void;
-  onPeerPolicy: (address: string, muted: boolean, volume: number) => void;
+  onPeerPolicy: (peerKey: string, muted: boolean, volume: number) => void;
   availableVoiceAddresses?: string[];
   openRequest?: number;
   focusAddress?: string;
@@ -183,8 +183,9 @@ export function ProximityVoiceControl(props: Props) {
     if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
     if (focusAddress) {
       window.setTimeout(() => {
+        const focusKey = peers.find((peer) => peer.address === focusAddress)?.key || focusAddress;
         peerRowRefs.current
-          .get(focusAddress)
+          .get(focusKey)
           ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }, 60);
       focusTimerRef.current = setTimeout(() => {
@@ -193,7 +194,7 @@ export function ProximityVoiceControl(props: Props) {
         );
       }, 1800);
     }
-  }, [focusAddress, openPanel, openRequest]);
+  }, [focusAddress, openPanel, openRequest, peers]);
 
   useEffect(
     () => () => {
@@ -678,10 +679,10 @@ export function ProximityVoiceControl(props: Props) {
                   const range = distanceLabel(peer);
                   return (
                     <Box
-                      key={peer.address}
+                      key={peer.key}
                       ref={(node: HTMLDivElement | null) => {
-                        if (node) peerRowRefs.current.set(peer.address, node);
-                        else peerRowRefs.current.delete(peer.address);
+                        if (node) peerRowRefs.current.set(peer.key, node);
+                        else peerRowRefs.current.delete(peer.key);
                       }}
                       sx={{
                         alignItems: 'center',
@@ -774,7 +775,7 @@ export function ProximityVoiceControl(props: Props) {
                         min={0}
                         onChange={(_event, value) =>
                           onPeerPolicy(
-                            peer.address,
+                            peer.key,
                             peer.muted,
                             Array.isArray(value) ? value[0] : value
                           )
@@ -792,7 +793,7 @@ export function ProximityVoiceControl(props: Props) {
                           }
                           onClick={() =>
                             onPeerPolicy(
-                              peer.address,
+                              peer.key,
                               !peer.muted,
                               peer.volume
                             )

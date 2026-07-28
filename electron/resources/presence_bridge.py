@@ -7785,15 +7785,37 @@ def build_outbound_destination(peer_identity):
     )
 
 
-def _resolve_verified_game_peer(address: str) -> Optional[str]:
+def _resolve_verified_game_peer(address: str, preferred_hash: str = "") -> Optional[str]:
     target = str(address or "").strip()
+    preferred = str(preferred_hash or "").strip().lower()
     if not target:
         return None
     with _state_lock:
+        if preferred:
+            details = _verified_overlay_peers.get(preferred)
+            return (
+                preferred
+                if isinstance(details, dict)
+                and str(details.get("address") or "") == target
+                else None
+            )
         for peer_hash, details in _verified_overlay_peers.items():
             if isinstance(details, dict) and str(details.get("address") or "") == target:
                 return peer_hash
     return None
+
+
+def _qortalland_game_link_peer_hash(link: Any) -> str:
+    identity = _overlay_link_remote_identity(link)
+    return (
+        derive_presence_destination_hash_for_identity(identity)
+        if identity is not None
+        else ""
+    )
+
+
+def _qortalland_local_destination_hash() -> str:
+    return destination_hash_hex(_destination.hash) if _destination is not None else ""
 
 
 def _enqueue_game_control(fn: Callable[..., Any], args: tuple) -> bool:
@@ -7824,10 +7846,10 @@ def _encode_qortalland_proximity_discovery(wire: Dict[str, Any]) -> Optional[byt
             int(capability["protocolVersion"]),
             _b58decode(str(capability["signerPublicKey"])),
             bytes.fromhex(str(capability["ephemeralPublicKey"])),
+            bytes.fromhex(str(capability["destinationHash"])),
             int(capability["groupId"]),
             str(capability["landSessionId"]),
             uuid.UUID(str(capability["instanceId"])).bytes,
-            bytes.fromhex(str(capability["nonce"])),
             int(capability["createdAt"]),
             int(capability["expiresAt"]) - int(capability["createdAt"]),
             _b58decode(str(wire["z"])),
@@ -7839,9 +7861,9 @@ def _encode_qortalland_proximity_discovery(wire: Dict[str, Any]) -> Optional[byt
             bytes.fromhex(str(wire["j"])),
         ]
         if (
-            len(compact[1]) != 32 or len(compact[2]) != 32
-            or len(compact[6]) != 32 or len(compact[9]) != 64
-            or len(compact[15]) != 64 or not 0 <= compact[14] <= 3
+            len(compact[1]) != 32 or len(compact[2]) != 32 or len(compact[3]) != 16
+            or len(compact[9]) != 64 or len(compact[15]) != 64
+            or not 0 <= compact[14] <= 3
             or not 0 < compact[8] <= 4 * 60 * 60 * 1000
         ):
             return None
@@ -7860,18 +7882,19 @@ def _decode_qortalland_proximity_discovery(raw: bytes) -> Optional[Dict[str, Any
             return None
         public_key = bytes(compact[1])
         ephemeral_key = bytes(compact[2])
-        nonce = bytes(compact[6])
+        destination_hash = bytes(compact[3])
+        nonce = ephemeral_key
         wallet_signature = bytes(compact[9])
         announcement_signature = bytes(compact[15])
-        instance_bytes = bytes(compact[5])
+        instance_bytes = bytes(compact[6])
         if (
-            len(public_key) != 32 or len(ephemeral_key) != 32 or len(nonce) != 32
+            len(public_key) != 32 or len(ephemeral_key) != 32 or len(destination_hash) != 16 or len(nonce) != 32
             or len(wallet_signature) != 64 or len(announcement_signature) != 64
             or len(instance_bytes) != 16
             or compact[0] != 1
-            or not isinstance(compact[3], int) or isinstance(compact[3], bool)
-            or not 0 < compact[3] <= 0x7FFFFFFF
-            or not isinstance(compact[4], str) or not 0 < len(compact[4]) <= 24
+            or not isinstance(compact[4], int) or isinstance(compact[4], bool)
+            or not 0 < compact[4] <= 0x7FFFFFFF
+            or not isinstance(compact[5], str) or not 0 < len(compact[5]) <= 24
             or not isinstance(compact[7], int) or isinstance(compact[7], bool)
             or not isinstance(compact[8], int) or isinstance(compact[8], bool)
             or not 0 < compact[8] <= 4 * 60 * 60 * 1000
@@ -7890,8 +7913,9 @@ def _decode_qortalland_proximity_discovery(raw: bytes) -> Optional[Dict[str, Any
             "address": address,
             "signerPublicKey": public_key_b58,
             "ephemeralPublicKey": ephemeral_key.hex(),
-            "groupId": str(int(compact[3])),
-            "landSessionId": str(compact[4]),
+            "destinationHash": destination_hash.hex(),
+            "groupId": str(int(compact[4])),
+            "landSessionId": str(compact[5]),
             "instanceId": str(uuid.UUID(bytes=instance_bytes)),
             "nonce": nonce.hex(),
             "createdAt": int(compact[7]),
@@ -7904,7 +7928,7 @@ def _decode_qortalland_proximity_discovery(raw: bytes) -> Optional[Dict[str, Any
         ).hexdigest()
         return {
             "t": "QLPV1", "v": int(compact[0]), "e": compact[10],
-            "a": address, "g": str(int(compact[3])), "s": str(compact[4]),
+            "a": address, "g": str(int(compact[4])), "s": str(compact[5]),
             "u": str(compact[11]), "b": compact[12], "ts": int(compact[13]),
             "p": compact[14], "c": capability, "z": signature_b58,
             "h": capability_hash, "j": announcement_signature.hex(),
@@ -7976,6 +8000,8 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
                 await_seconds=0.0,
             ),
             broadcast_proximity=_broadcast_qortalland_proximity,
+            resolve_link_peer_hash=_qortalland_game_link_peer_hash,
+            local_destination_hash=_qortalland_local_destination_hash,
         )
     return _qortalland_game_manager
 

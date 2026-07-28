@@ -3749,6 +3749,15 @@ export function attachReticulumChatListeners(
   );
 
   manager.on('summaryChanged', (payload: unknown) => {
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      (payload as { readStateChanged?: unknown }).readStateChanged === true
+    ) {
+      myCapacitorApp.updateReticulumChatMentionBadge(
+        manager.getTotalUnreadMentionCount(RETICULUM_CHAT_ONLINE_SINCE_MS)
+      );
+    }
     for (const wc of reticulumChatSummarySubscription.subscribers) {
       if (
         sendToRenderer(wc, 'reticulumChat:summaryChanged', payload) ===
@@ -4034,6 +4043,15 @@ ipcMain.handle(
     if (result.ok) return { success: true };
     const failed = result as Exclude<typeof result, { ok: true }>;
     return { success: false, error: failed.error ?? failed.reason };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDirectAuthorStreamId',
+  async (_event, authorAddress: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.getDirectAuthorStreamId(authorAddress);
   }
 );
 
@@ -4520,6 +4538,9 @@ ipcMain.handle(
       signature?: unknown;
       reason?: unknown;
       roomId?: unknown;
+      sourceSessionId?: unknown;
+      targetSessionId?: unknown;
+      targetDestinationHash?: unknown;
       timestamp?: unknown;
     }
   ) => {
@@ -5242,8 +5263,7 @@ ipcMain.handle(
       loggerError('[Reticulum] Failed to open attachment:', err);
       return {
         success: false,
-        error:
-          err instanceof Error ? err.message : 'Unable to open attachment',
+        error: err instanceof Error ? err.message : 'Unable to open attachment',
       };
     }
   }
@@ -5893,7 +5913,10 @@ ipcMain.handle(
     signature: string,
     publicKey: string,
     callId: string,
-    timestamp: number
+    timestamp: number,
+    cancellationSignature?: string,
+    cancellationPublicKey?: string,
+    cancellationTimestamp?: number
   ) => {
     const mgr = getCallManager();
     if (!mgr) return { success: false, error: 'Call manager not running' };
@@ -5904,7 +5927,10 @@ ipcMain.handle(
       signature,
       publicKey,
       callId,
-      timestamp
+      timestamp,
+      cancellationSignature,
+      cancellationPublicKey,
+      cancellationTimestamp
     );
     return resultCallId
       ? { success: true, callId: resultCallId }
@@ -6039,6 +6065,10 @@ export function attachGroupCallListeners(
 
   manager.on('gcall:participant-joined', forward('gcall:participant-joined'));
   manager.on('gcall:participant-left', forward('gcall:participant-left'));
+  manager.on(
+    'gcall:local-session-taken-over',
+    forward('gcall:local-session-taken-over')
+  );
   manager.on('gcall:topology', forward('gcall:topology'));
   manager.on('gcall:cluster-heartbeat', forward('gcall:cluster-heartbeat'));
   manager.on('gcall:heartbeat', forward('gcall:heartbeat'));
@@ -6112,7 +6142,9 @@ ipcMain.handle(
     topologyEpochFloor?: number,
     reticulumIdentityPublicKeyBase64?: string,
     joinRkSignature?: string,
-    dmVoiceAudioLinkRole?: 'opener' | 'waiter'
+    dmVoiceAudioLinkRole?: 'opener' | 'waiter',
+    takeover?: boolean,
+    dmVoicePeerDestinationHash?: string
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
@@ -6129,7 +6161,9 @@ ipcMain.handle(
         topologyEpochFloor,
         reticulumIdentityPublicKeyBase64,
         joinRkSignature,
-        dmVoiceAudioLinkRole
+        dmVoiceAudioLinkRole,
+        takeover,
+        dmVoicePeerDestinationHash
       );
       return {
         success: true,
@@ -6153,11 +6187,19 @@ ipcMain.handle(
     localAddress: string,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    joinGeneration?: number
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
-    mgr.leaveRoom(roomId, localAddress, signature, publicKey, timestamp);
+    mgr.leaveRoom(
+      roomId,
+      localAddress,
+      signature,
+      publicKey,
+      timestamp,
+      joinGeneration
+    );
     return { success: true };
   }
 );
@@ -6170,7 +6212,8 @@ ipcMain.on(
     localAddress: string,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    joinGeneration?: number
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) {
@@ -6180,7 +6223,14 @@ ipcMain.on(
       };
       return;
     }
-    mgr.leaveRoom(roomId, localAddress, signature, publicKey, timestamp);
+    mgr.leaveRoom(
+      roomId,
+      localAddress,
+      signature,
+      publicKey,
+      timestamp,
+      joinGeneration
+    );
     event.returnValue = { success: true };
   }
 );

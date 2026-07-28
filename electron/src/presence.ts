@@ -762,6 +762,39 @@ function shouldPreferAggregateRoute(
   return candidate.lastSeen > current.lastSeen;
 }
 
+function getAggregateStatusPriority(status: UserStatus): number {
+  switch (status) {
+    case 'busy':
+      return 3;
+    case 'online':
+      return 2;
+    case 'idle':
+      return 1;
+  }
+}
+
+function getPresenceRouteKey(route: PresenceRoute): string {
+  switch (route.kind) {
+    case 'local':
+      return 'local';
+    case 'mesh-node':
+      return `mesh-node:${route.id}`;
+    case 'reticulum':
+      return `reticulum:${route.destinationHash}`;
+  }
+}
+
+function getPresenceRoutePriority(route: PresenceRoute): number {
+  switch (route.kind) {
+    case 'reticulum':
+      return 3;
+    case 'mesh-node':
+      return 2;
+    case 'local':
+      return 1;
+  }
+}
+
 // ── Presence Manager ──────────────────────────────────────────────────────────
 
 export class PresenceManager extends EventEmitter {
@@ -1174,6 +1207,57 @@ export class PresenceManager extends EventEmitter {
     return this.getAddressAggregate(address).route;
   }
 
+  /**
+   * Returns every distinct, fresh route advertised by the address's live
+   * sessions. Reticulum routes are preferred, followed by mesh and local
+   * routes; routes of the same kind are ordered by their freshest session.
+   *
+   * Callers that support multi-device delivery should use this method. Legacy
+   * single-destination callers can continue using getRouteForAddress().
+   */
+  getRoutesForAddress(address: string): PresenceRoute[] {
+    const now = Date.now();
+    const keys = this.sessionKeysByAddress.get(address);
+    if (!keys) return [];
+
+    const freshestSessionByRoute = new Map<string, PresenceSession>();
+    for (const key of keys) {
+      const session = this.sessions.get(key);
+      if (
+        !session ||
+        !isSessionLive(session, now) ||
+        !isRouteFresh(session, now)
+      ) {
+        continue;
+      }
+      const routeKey = getPresenceRouteKey(session.route);
+      const current = freshestSessionByRoute.get(routeKey);
+      if (
+        !current ||
+        session.lastSeen > current.lastSeen ||
+        (session.lastSeen === current.lastSeen &&
+          session.sessionId.localeCompare(current.sessionId) < 0)
+      ) {
+        freshestSessionByRoute.set(routeKey, session);
+      }
+    }
+
+    return [...freshestSessionByRoute.values()]
+      .sort((left, right) => {
+        const priorityDifference =
+          getPresenceRoutePriority(right.route) -
+          getPresenceRoutePriority(left.route);
+        if (priorityDifference !== 0) return priorityDifference;
+        if (left.lastSeen !== right.lastSeen) {
+          return right.lastSeen - left.lastSeen;
+        }
+        return getPresenceRouteKey(left.route).localeCompare(
+          getPresenceRouteKey(right.route)
+        );
+      })
+      .map((session) => session.route);
+  }
+
   private hasRecentlyAcceptedEnvelope(
     envelope: Partial<PresenceEnvelope> | null | undefined,
     now: number
@@ -1582,7 +1666,7 @@ export class PresenceManager extends EventEmitter {
     const keys = this.sessionKeysByAddress.get(address);
     let liveSessionCount = 0;
     let lastSeen: number | null = null;
-    let latestLiveSession: PresenceSession | null = null;
+    let aggregateStatus: UserStatus | null = null;
     let aggregateRouteSession: PresenceSession | null = null;
     let nextExpiryAt: number | null = null;
 
@@ -1603,15 +1687,17 @@ export class PresenceManager extends EventEmitter {
         }
         if (
           session.routeExpiresAt !== null &&
+          session.routeExpiresAt > now &&
           (nextExpiryAt === null || session.routeExpiresAt < nextExpiryAt)
         ) {
           nextExpiryAt = session.routeExpiresAt;
         }
         if (
-          !latestLiveSession ||
-          session.lastSeen > latestLiveSession.lastSeen
+          aggregateStatus === null ||
+          getAggregateStatusPriority(session.status) >
+            getAggregateStatusPriority(aggregateStatus)
         ) {
-          latestLiveSession = session;
+          aggregateStatus = session.status;
         }
         if (shouldPreferAggregateRoute(session, aggregateRouteSession, now)) {
           aggregateRouteSession = session;
@@ -1624,7 +1710,7 @@ export class PresenceManager extends EventEmitter {
     const aggregate: PresenceAddressAggregate = {
       liveSessionCount,
       lastSeen,
-      status: latestLiveSession?.status ?? null,
+      status: aggregateStatus,
       originNodeId:
         freshestRoute?.kind === 'mesh-node' ? freshestRoute.id : null,
       route: freshestRoute,

@@ -19,6 +19,9 @@ type MockStore = {
   reticulumChatSilences: ReticulumChatRow[];
   reticulumPublicGroupActivity: ReticulumChatRow[];
   reticulumDmEvents: ReticulumChatRow[];
+  reticulumDmReadWatermarks: ReticulumChatRow[];
+  reticulumDeviceReadStates: ReticulumChatRow[];
+  reticulumPendingDeviceReadStates: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
   reticulumResourceRanges: ReticulumResourceStateRow[];
@@ -119,6 +122,42 @@ class Statement {
             Number(a.group_id) - Number(b.group_id)
         )
         .slice(0, limit);
+    }
+    if (this.sql.includes('FROM rchat_pending_device_read_state')) {
+      const [ownerAddress, limit = 5_000] = args;
+      return this.store.reticulumPendingDeviceReadStates
+        .filter((pending) => {
+          if (pending.owner_address !== ownerAddress) return false;
+          const signed = this.store.reticulumDeviceReadStates.find(
+            (state) =>
+              state.owner_address === pending.owner_address &&
+              state.scope_type === pending.scope_type &&
+              state.scope_id === pending.scope_id
+          );
+          return (
+            Number(pending.up_to_timestamp) >
+            Number(signed?.up_to_timestamp || 0)
+          );
+        })
+        .sort(
+          (a, b) =>
+            Number(a.updated_at) - Number(b.updated_at) ||
+            String(a.scope_type).localeCompare(String(b.scope_type)) ||
+            String(a.scope_id).localeCompare(String(b.scope_id))
+        )
+        .slice(0, Number(limit));
+    }
+    if (this.sql.includes('FROM rchat_device_read_state')) {
+      const [ownerAddress, limit = 2_000] = args;
+      return this.store.reticulumDeviceReadStates
+        .filter((row) => row.owner_address === ownerAddress)
+        .sort(
+          (a, b) =>
+            Number(b.signed_at) - Number(a.signed_at) ||
+            String(a.scope_type).localeCompare(String(b.scope_type)) ||
+            String(a.scope_id).localeCompare(String(b.scope_id))
+        )
+        .slice(0, Number(limit));
     }
     if (this.sql.includes('FROM rchat_dm_events')) {
       if (this.sql.includes('SELECT e.*')) {
@@ -768,6 +807,22 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_device_read_state')) {
+      const [ownerAddress, scopeType, scopeId] = args;
+      return this.store.reticulumDeviceReadStates.find(
+        (row) =>
+          row.owner_address === ownerAddress &&
+          row.scope_type === scopeType &&
+          row.scope_id === scopeId
+      );
+    }
+    if (this.sql.includes('FROM rchat_dm_read_watermarks')) {
+      const [conversationId, address] = args;
+      return this.store.reticulumDmReadWatermarks.find(
+        (row) =>
+          row.conversation_id === conversationId && row.address === address
+      );
+    }
     if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {
       const [
         groupId,
@@ -1197,6 +1252,125 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (this.sql.includes('INSERT INTO rchat_dm_read_watermarks')) {
+      const [conversationId, address, timestamp] = args;
+      const existing = this.store.reticulumDmReadWatermarks.find(
+        (row) =>
+          row.conversation_id === conversationId && row.address === address
+      );
+      if (existing) {
+        existing.timestamp = Math.max(
+          Number(existing.timestamp),
+          Number(timestamp)
+        );
+      } else {
+        this.store.reticulumDmReadWatermarks.push({
+          conversation_id: conversationId,
+          address,
+          timestamp,
+        });
+      }
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT INTO rchat_pending_device_read_state')) {
+      const [
+        ownerAddress,
+        scopeType,
+        scopeId,
+        groupId,
+        channelId,
+        conversationId,
+        peerAddress,
+        upToTimestamp,
+        updatedAt,
+      ] = args;
+      const existing = this.store.reticulumPendingDeviceReadStates.find(
+        (row) =>
+          row.owner_address === ownerAddress &&
+          row.scope_type === scopeType &&
+          row.scope_id === scopeId
+      );
+      const row = {
+        owner_address: ownerAddress,
+        scope_type: scopeType,
+        scope_id: scopeId,
+        group_id: groupId,
+        channel_id: channelId,
+        conversation_id: conversationId,
+        peer_address: peerAddress,
+        up_to_timestamp: Math.max(
+          Number(existing?.up_to_timestamp || 0),
+          Number(upToTimestamp)
+        ),
+        updated_at: updatedAt,
+      };
+      if (existing) Object.assign(existing, row);
+      else this.store.reticulumPendingDeviceReadStates.push(row);
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT INTO rchat_device_read_state')) {
+      const [
+        ownerAddress,
+        scopeType,
+        scopeId,
+        groupId,
+        channelId,
+        conversationId,
+        peerAddress,
+        upToTimestamp,
+        signedAt,
+        authorPublicKey,
+        signature,
+      ] = args;
+      const existing = this.store.reticulumDeviceReadStates.find(
+        (row) =>
+          row.owner_address === ownerAddress &&
+          row.scope_type === scopeType &&
+          row.scope_id === scopeId
+      );
+      if (
+        existing &&
+        (Number(existing.up_to_timestamp) > Number(upToTimestamp) ||
+          (Number(existing.up_to_timestamp) === Number(upToTimestamp) &&
+            Number(existing.signed_at) >= Number(signedAt)))
+      ) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      const row = {
+        owner_address: ownerAddress,
+        scope_type: scopeType,
+        scope_id: scopeId,
+        group_id: groupId,
+        channel_id: channelId,
+        conversation_id: conversationId,
+        peer_address: peerAddress,
+        up_to_timestamp: upToTimestamp,
+        signed_at: signedAt,
+        author_public_key: authorPublicKey,
+        signature,
+      };
+      if (existing) Object.assign(existing, row);
+      else this.store.reticulumDeviceReadStates.push(row);
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('DELETE FROM rchat_pending_device_read_state')) {
+      const [ownerAddress, scopeType, scopeId, upToTimestamp] = args;
+      const before = this.store.reticulumPendingDeviceReadStates.length;
+      this.store.reticulumPendingDeviceReadStates =
+        this.store.reticulumPendingDeviceReadStates.filter(
+          (row) =>
+            !(
+              row.owner_address === ownerAddress &&
+              row.scope_type === scopeType &&
+              row.scope_id === scopeId &&
+              Number(row.up_to_timestamp) <= Number(upToTimestamp)
+            )
+        );
+      return {
+        changes: before - this.store.reticulumPendingDeviceReadStates.length,
+        lastInsertRowid: 0,
+      };
+    }
     if (
       this.sql.includes('INSERT INTO rchat_missing_range_peer_observations')
     ) {
@@ -2531,6 +2705,9 @@ class MockDatabase {
       reticulumChatSilences: [],
       reticulumPublicGroupActivity: [],
       reticulumDmEvents: [],
+      reticulumDmReadWatermarks: [],
+      reticulumDeviceReadStates: [],
+      reticulumPendingDeviceReadStates: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
       reticulumResourceRanges: [],

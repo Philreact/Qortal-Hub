@@ -1,8 +1,97 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   GroupCallManager,
+  decodeGroupCallLogicalJoinGeneration,
   reticulumAudioResetReasonForVerifiedJoin,
+  shouldApplyGroupCallLeaveToSession,
+  shouldRefreshParticipantFromVerifiedJoin,
 } from './group-call';
+
+describe('group-call multi-device participant ownership', () => {
+  it('decodes the signed compact takeover generation', () => {
+    expect(decodeGroupCallLogicalJoinGeneration(-8)).toBe(7);
+    expect(decodeGroupCallLogicalJoinGeneration(7)).toBe(7);
+  });
+
+  it('allows same-session reannouncements without changing ownership', () => {
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 2_000,
+        currentJoinGeneration: 10,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+        incomingJoinGeneration: 10,
+      })
+    ).toBe(true);
+  });
+
+  it('rejects a different device generation unless it is an explicit takeover', () => {
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 2_000,
+        currentJoinGeneration: 10,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+        incomingJoinGeneration: 20,
+      })
+    ).toBe(false);
+  });
+
+  it('accepts a newer explicit takeover and rejects a delayed older takeover', () => {
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 4_000,
+        currentJoinGeneration: 10,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+        incomingJoinGeneration: 20,
+        incomingTakeover: true,
+      })
+    ).toBe(true);
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 4_000,
+        currentJoinGeneration: 20,
+        currentTakeoverAt: 3_000,
+        incomingJoinTimestamp: 1_000,
+        incomingJoinGeneration: 10,
+        incomingTakeover: true,
+      })
+    ).toBe(false);
+  });
+
+  it('only applies a session-aware leave to the selected generation', () => {
+    expect(
+      shouldApplyGroupCallLeaveToSession({
+        activeJoinGeneration: 20,
+        leavingJoinGeneration: 10,
+      })
+    ).toBe(false);
+    expect(
+      shouldApplyGroupCallLeaveToSession({
+        activeJoinGeneration: 20,
+        leavingJoinGeneration: 20,
+      })
+    ).toBe(true);
+  });
+
+  it('binds legacy leaves to the selected transport endpoint', () => {
+    expect(
+      shouldApplyGroupCallLeaveToSession({
+        activeJoinGeneration: 20,
+        activeReticulumDestinationHash: 'aaaa',
+        transportPeerPresenceHash: 'bbbb',
+      })
+    ).toBe(false);
+    expect(
+      shouldApplyGroupCallLeaveToSession({
+        activeJoinGeneration: 20,
+        activeReticulumDestinationHash: 'AAAA',
+        transportPeerPresenceHash: 'aaaa',
+      })
+    ).toBe(true);
+  });
+});
 
 describe('group-call verified join audio reset decision', () => {
   it('keeps matching audio state when a fresh join arrives before roster catches up', () => {

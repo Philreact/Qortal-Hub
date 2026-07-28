@@ -9,6 +9,7 @@ export type ReticulumDmEvent = {
   senderAddress: string;
   recipientAddress: string;
   senderPublicKey: string;
+  senderStreamId?: string;
   senderSeq: number;
   timestamp: number;
   eventType: 'message' | 'edit' | 'delete' | 'reaction_add' | 'reaction_remove';
@@ -17,6 +18,7 @@ export type ReticulumDmEvent = {
   payload: string;
   payloadHash: string;
   signature: string;
+  legacySignature?: string;
   authorPrimaryName?: string;
   senderName?: string;
   localDeliveryStatus?: 'pending' | 'sent' | 'received';
@@ -481,6 +483,11 @@ export function useReticulumDirectChat(
               ...(hasOtherData ? { otherData } : {}),
             });
       const payloadHash = await sha256Hex(payload);
+      const senderStreamId =
+        await window.reticulumChat?.getDirectAuthorStreamId?.(myAddress);
+      if (!senderStreamId) {
+        throw new Error('DM author stream is unavailable');
+      }
       const existingSeqs = events
         .filter((event) => event.senderAddress === myAddress)
         .map((event) => Number(event.senderSeq || 0));
@@ -509,6 +516,7 @@ export function useReticulumDirectChat(
         payloadHash,
         recipientAddress: actualPeerAddress,
         replyToEventId: (otherData?.repliedTo as string) || null,
+        senderStreamId,
         senderSeq,
         targetEventId: chatReference || null,
         timestamp,
@@ -521,6 +529,22 @@ export function useReticulumDirectChat(
       if (signed?.authorAddress !== myAddress) {
         throw new Error('Signed DM author mismatch');
       }
+      const { senderStreamId: _senderStreamId, ...legacyBaseFields } =
+        baseFields;
+      const legacySigned = await window.sendMessage(
+        'signReticulumChatEvent',
+        legacyBaseFields
+      );
+      if (
+        legacySigned?.error ||
+        legacySigned?.authorAddress !== myAddress ||
+        legacySigned?.authorPublicKey !== signed.authorPublicKey ||
+        typeof legacySigned?.signature !== 'string'
+      ) {
+        throw new Error(
+          legacySigned?.error || 'Legacy DM compatibility signature failed'
+        );
+      }
       const event: ReticulumDmEvent = {
         ...baseFields,
         replyToEventId: baseFields.replyToEventId || undefined,
@@ -528,6 +552,7 @@ export function useReticulumDirectChat(
         senderAddress: signed.authorAddress,
         senderPublicKey: signed.authorPublicKey,
         signature: signed.signature,
+        legacySignature: legacySigned.signature,
         localDeliveryStatus: 'pending',
         localDeliveryUpdatedAt: Date.now(),
       };

@@ -208,6 +208,7 @@ export interface UseVoiceCallOptions {
   skipSystemReadiness?: boolean;
   skipDirectFriendValidation?: boolean;
   getPeerPublicKey?: (address: string) => string | undefined;
+  getPeerDestinationHash?: (address: string) => string | undefined;
   createCallId?: () => string;
   suppressGlobalSnackbars?: boolean;
 }
@@ -251,7 +252,9 @@ async function isSystemReadyForCall(
   return true;
 }
 
-export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallReturn {
+export function useVoiceCall(
+  options: UseVoiceCallOptions = {}
+): UseVoiceCallReturn {
   const userInfo = useAtomValue(userInfoAtom);
   const blockedAddresses = useAtomValue(blockedAddressesAtom);
   const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
@@ -260,7 +263,10 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const callApiRef = useRef<VoiceCallApi | null>(null);
-  callApiRef.current = options.callApi ?? ((window as any).call as VoiceCallApi | undefined) ?? null;
+  callApiRef.current =
+    options.callApi ??
+    ((window as any).call as VoiceCallApi | undefined) ??
+    null;
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [audioMode, setAudioMode] = useState<AudioMode>(null);
@@ -1663,6 +1669,8 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
       reticulumDestinationHash: retHash,
       reticulumIdentityPublicKeyBase64,
       dmVoiceAudioLinkRole: isOutboundCallRef.current ? 'waiter' : 'opener',
+      peerDestinationHash:
+        optionsRef.current.getPeerDestinationHash?.(peer),
     });
 
     if (!joinRes.success || !joinRes.callSessionId) {
@@ -1858,7 +1866,8 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
       const p = payload as {
         roomId?: string;
       };
-      if (!isDmVoiceRoomId(p.roomId) || p.roomId !== dmRoomIdRef.current) return;
+      if (!isDmVoiceRoomId(p.roomId) || p.roomId !== dmRoomIdRef.current)
+        return;
       dmVoiceAudioPacketCountRef.current += 1;
       const now = Date.now();
       if (now - dmVoiceLastAudioUiLogAtRef.current >= 2500) {
@@ -2151,9 +2160,7 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
         return;
       }
 
-      const callId =
-        optionsRef.current.createCallId?.() ||
-        crypto.randomUUID();
+      const callId = optionsRef.current.createCallId?.() || crypto.randomUUID();
       const timestamp = Date.now();
       const myPublicKey = userInfo?.publicKey ?? '';
 
@@ -2164,6 +2171,12 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
         fromAddress: localAddress,
         fromPublicKey: myPublicKey,
         timestamp,
+      });
+      const cancellationTimestamp = timestamp;
+      const cancellation = await sign({
+        type: 'CALL_HANGUP',
+        callId,
+        timestamp: cancellationTimestamp,
       });
 
       isOutboundCallRef.current = true;
@@ -2181,7 +2194,10 @@ export function useVoiceCall(options: UseVoiceCallOptions = {}): UseVoiceCallRet
         signature,
         publicKey,
         callId,
-        timestamp
+        timestamp,
+        cancellation.signature,
+        cancellation.publicKey,
+        cancellationTimestamp
       );
 
       if (!result?.success) {

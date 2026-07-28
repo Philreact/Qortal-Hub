@@ -674,10 +674,7 @@ function decodeAudioDataPlaneInboundBatch(
   let offset = bodyOffset;
   const frameCount = view.getUint16(offset, false);
   offset += 2;
-  if (
-    frameCount <= 0 ||
-    frameCount > GCALL_AUDIO_DATA_PLANE_MAX_FRAMES
-  ) {
+  if (frameCount <= 0 || frameCount > GCALL_AUDIO_DATA_PLANE_MAX_FRAMES) {
     throw new Error('audio-data-plane bad frame count');
   }
   const readString = (maxLen: number): string => {
@@ -699,7 +696,8 @@ function decodeAudioDataPlaneInboundBatch(
     const roomId = readString(255);
     const peerPresenceHash = readString(128);
     const peerDestinationHash = readString(128);
-    if (offset + 10 > bodyEnd) throw new Error('audio-data-plane truncated payload');
+    if (offset + 10 > bodyEnd)
+      throw new Error('audio-data-plane truncated payload');
     const payloadLen = view.getUint16(offset, false);
     offset += 2;
     const receivedAtWallMs = readAudioDataPlaneU64(view, offset);
@@ -1021,6 +1019,8 @@ export class GroupCallAudioEngineRuntime {
   private directVoiceMediaReadyEmitted = false;
   private unsubscribeGroupCallEvents: (() => void) | null = null;
   private currentChatId = '';
+  /** Logical unsigned generation of this installation's active group-call slot. */
+  private localGroupJoinGeneration: number | null = null;
   private topology: GroupCallTopology | null = null;
   private roomKey: Uint8Array | null = null;
   private appliedRoomKeyCommitment = '';
@@ -4773,6 +4773,7 @@ export class GroupCallAudioEngineRuntime {
       fromPublicKey: userInfo.publicKey,
       timestamp,
       joinGeneration,
+      takeover: true,
       reticulumDestinationHash,
       reticulumIdentityPublicKeyBase64,
     });
@@ -4814,7 +4815,9 @@ export class GroupCallAudioEngineRuntime {
       joinGeneration,
       0,
       reticulumIdentityPublicKeyBase64 ?? undefined,
-      signed.joinRkSig
+      signed.joinRkSig,
+      undefined,
+      true
     );
     const GCALL_JOIN_IPC_TIMEOUT_MS = 25_000;
     traceGcallAudioSurface(
@@ -4859,6 +4862,7 @@ export class GroupCallAudioEngineRuntime {
     traceGcallAudioSurface('engine.joinGroupCall: success', { roomId });
     const joinSuccessAtMs = Date.now();
     this.lastJoinSuccessAtMs = joinSuccessAtMs;
+    this.localGroupJoinGeneration = joinGeneration;
     this.recordDiagEvent('join-success', { roomId, joinSuccessAtMs });
     this.snapshot = buildConnectedSnapshot(this.snapshot, roomId);
     this.emitSnapshot();
@@ -4879,7 +4883,9 @@ export class GroupCallAudioEngineRuntime {
     return { ok: true, payload: result };
   }
 
-  private async leaveGroupCall(): Promise<AudioSurfaceResponse> {
+  private async leaveGroupCall(
+    broadcastLeave = true
+  ): Promise<AudioSurfaceResponse> {
     const userInfo = this.userInfo;
     const roomId = this.snapshot.roomId;
     if (!userInfo?.address || !roomId) {
@@ -4888,6 +4894,8 @@ export class GroupCallAudioEngineRuntime {
     const localAddress = userInfo.address;
     const publicKey = userInfo.publicKey ?? '';
     const timestamp = Date.now();
+    const joinGeneration = this.localGroupJoinGeneration ?? undefined;
+    this.localGroupJoinGeneration = null;
     const cleanupGeneration = ++this.leaveCleanupGeneration;
 
     this.roomKey = null;
@@ -4948,19 +4956,22 @@ export class GroupCallAudioEngineRuntime {
     }
     this.recordDiagEvent('local-leave-applied', { roomId });
 
-    const signature = await signGroupCallFields({
-      type: 'GC_LEAVE',
-      roomId,
-      fromAddress: localAddress,
-      fromPublicKey: publicKey,
-      timestamp,
-    }).catch(() => '');
+    const signature = broadcastLeave
+      ? await signGroupCallFields({
+          type: 'GC_LEAVE',
+          roomId,
+          fromAddress: localAddress,
+          fromPublicKey: publicKey,
+          timestamp,
+        }).catch(() => '')
+      : '';
     void this.notifyMainOfLeave(
       roomId,
       localAddress,
       publicKey,
       timestamp,
-      signature
+      signature,
+      joinGeneration
     );
     void this.cleanupMediaAfterLeave(cleanupGeneration, roomId);
 
@@ -5005,7 +5016,8 @@ export class GroupCallAudioEngineRuntime {
     localAddress: string,
     publicKey: string,
     timestamp: number,
-    signature: string
+    signature: string,
+    joinGeneration?: number
   ): Promise<void> {
     try {
       await Promise.race([
@@ -5014,7 +5026,8 @@ export class GroupCallAudioEngineRuntime {
           localAddress,
           signature,
           publicKey,
-          timestamp
+          timestamp,
+          joinGeneration
         ) ??
           Promise.resolve({ success: false, error: 'groupcall-api-missing' }),
         new Promise<never>((_, reject) => {
@@ -5031,7 +5044,8 @@ export class GroupCallAudioEngineRuntime {
         localAddress,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        joinGeneration
       );
       this.recordDiagEvent('main-leave-failed', {
         roomId,
@@ -5088,6 +5102,28 @@ export class GroupCallAudioEngineRuntime {
     event: string,
     payload: unknown
   ): Promise<void> {
+    if (event === 'gcall:local-session-taken-over') {
+      const takeover = payload as
+        | { roomId?: string; address?: string; joinGeneration?: number }
+        | null
+        | undefined;
+      const activeRoomId = this.snapshot.roomId;
+      const localAddress = this.userInfo?.address?.trim() ?? '';
+      if (
+        !activeRoomId ||
+        takeover?.roomId !== activeRoomId ||
+        takeover?.address?.trim() !== localAddress ||
+        takeover?.joinGeneration === this.localGroupJoinGeneration
+      ) {
+        return;
+      }
+      this.recordDiagEvent('local-session-taken-over', {
+        roomId: activeRoomId,
+        replacementJoinGeneration: takeover?.joinGeneration ?? null,
+      });
+      await this.leaveGroupCall(false);
+      return;
+    }
     if (event === 'gcall:topology') {
       const topology = payload as GroupCallTopology;
       if (topology?.roomId !== this.snapshot.roomId) return;
@@ -7982,9 +8018,7 @@ export class GroupCallAudioEngineRuntime {
       }
       await this.maybeReplayRetainedKeysAfterTopology(this.topology);
       await this.syncTopologyHeartbeat();
-      this.refreshAudioDataPlaneRoutesForCurrentRoom(
-        `same-topology:${source}`
-      );
+      this.refreshAudioDataPlaneRoutesForCurrentRoom(`same-topology:${source}`);
       return false;
     }
 

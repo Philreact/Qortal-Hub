@@ -25,7 +25,9 @@ const baseProps: React.ComponentProps<typeof ProximityVoiceControl> = {
 };
 
 const nearbyPeer = (address: string) => ({
+  key: `${address}:session-${address.slice(-1)}`,
   address,
+  sessionId: `session-${address.slice(-1)}`,
   sourceId: Number(address.slice(-1)) || 1,
   state: 'connected',
   distance: 120,
@@ -43,12 +45,12 @@ describe('ProximityVoiceControl', () => {
     const onMode = vi.fn();
     render(<ProximityVoiceControl {...baseProps} onEnable={onEnable} onMode={onMode} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Proximity voice' }));
+    fireEvent.click(screen.getByRole('button', { name: /Proximity Voice/ }));
     expect(screen.getByRole('dialog', { name: 'Proximity voice' })).toBeTruthy();
-    expect(screen.getByText('Talk with players near you.')).toBeTruthy();
+    expect(screen.getByText('Voice is off')).toBeTruthy();
     expect(screen.getByText('Nobody nearby')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Enable proximity voice' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Enable voice' }));
     await waitFor(() => expect(onEnable).toHaveBeenCalledTimes(1));
     expect(onMode).toHaveBeenCalledWith('open-mic');
   });
@@ -68,25 +70,26 @@ describe('ProximityVoiceControl', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Proximity voice' }));
-    expect(screen.getByText('Voice active')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Proximity Voice/ }));
+    expect(screen.getByText('Talk with players near you.')).toBeTruthy();
     expect(screen.getByText('Nearby 4')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Mute microphone' }));
     await waitFor(() => expect(onDisable).toHaveBeenCalledTimes(1));
-    expect(screen.getByText('Voice paused')).toBeTruthy();
+    expect(screen.getByText('Voice muted')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Unmute microphone' }));
     await waitFor(() => expect(onEnable).toHaveBeenCalledTimes(1));
   });
 
-  it('opens device and 75% volume settings in a companion panel', async () => {
+  it('shows device and 75% volume settings in the voice panel', async () => {
     render(<ProximityVoiceControl {...baseProps} state="ready" mode="open-mic" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Proximity voice' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Open voice settings' }));
-
-    expect(screen.getByText('Voice settings')).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: 'Proximity microphone' })).toHaveTextContent('System default');
-    expect(screen.getByRole('combobox', { name: 'Proximity speaker' })).toHaveTextContent('System default');
+    fireEvent.click(screen.getByRole('button', { name: /Proximity Voice/ }));
+    expect(screen.getByText('Output')).toBeTruthy();
+    expect(screen.getByText('Microphone')).toBeTruthy();
+    expect(screen.getAllByRole('combobox')).toHaveLength(2);
+    for (const select of screen.getAllByRole('combobox')) {
+      expect(select).toHaveTextContent('System default');
+    }
     expect(screen.getByText('75%')).toBeTruthy();
 
     fireEvent.keyDown(document, { key: 'Escape' });

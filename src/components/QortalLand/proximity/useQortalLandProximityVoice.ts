@@ -16,7 +16,9 @@ export type ProximityVoiceState =
   | 'unavailable';
 
 export type ProximityPeer = {
+  key: string;
   address: string;
+  sessionId: string;
   sourceId: number;
   state: string;
   distance: number | null;
@@ -53,14 +55,14 @@ const INBOUND_MICROBATCH_WAIT_MS = 6;
 
 const isExpectedCapability = (
   value: unknown,
-  expected: { address: string; publicKey: string; groupId: number; sessionId: string }
+  expected: { address: string; publicKey: string; groupId: number; sessionId: string; destinationHash: string }
 ): value is Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const fields = value as Record<string, unknown>;
   const keys = Object.keys(fields).sort();
   const expectedKeys = [
     'address', 'createdAt', 'ephemeralPublicKey', 'expiresAt', 'groupId',
-    'instanceId', 'landSessionId', 'nonce', 'protocolVersion',
+    'destinationHash', 'instanceId', 'landSessionId', 'nonce', 'protocolVersion',
     'signerPublicKey', 'type',
   ].sort();
   if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) return false;
@@ -71,6 +73,7 @@ const isExpectedCapability = (
     && fields.signerPublicKey === expected.publicKey
     && String(fields.groupId) === String(expected.groupId)
     && fields.landSessionId === expected.sessionId
+    && fields.destinationHash === expected.destinationHash
     && fields.instanceId === qortalLandRealtime.getInstanceId()
     && typeof fields.ephemeralPublicKey === 'string' && /^[0-9a-f]{64}$/i.test(fields.ephemeralPublicKey)
     && typeof fields.nonce === 'string' && /^[0-9a-f]{64}$/i.test(fields.nonce)
@@ -125,6 +128,7 @@ export function useQortalLandProximityVoice(options: Options) {
   const { address, publicKey, groupId, sessionId, enabled, suspended, getPosition } = options;
   const blockedAddresses = useAtomValue(blockedAddressesAtom);
   const [state, setState] = useState<ProximityVoiceState>('off');
+  const [localDestinationHash, setLocalDestinationHash] = useState('');
   const [mode, setModeState] = useState<ProximityVoiceMode>(() =>
     localStorage.getItem(`qortalland:proximity:mode:${address}`) === 'open-mic' ? 'open-mic' : 'push-to-talk'
   );
@@ -149,7 +153,7 @@ export function useQortalLandProximityVoice(options: Options) {
   const suspendedRef = useRef(suspended);
   const generationRef = useRef(1);
   const sequenceRef = useRef(0);
-  const sourceAddressRef = useRef(new Map<number, string>());
+  const sourcePeerRef = useRef(new Map<number, { key: string; address: string }>());
   const sourceGenerationRef = useRef(new Map<number, number>());
   const senderRef = useRef<GroupCallAudioSenderEngine | null>(null);
   const receiverRef = useRef<GroupCallAudioReceiveEngine | null>(null);
@@ -163,6 +167,30 @@ export function useQortalLandProximityVoice(options: Options) {
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { suspendedRef.current = suspended; }, [suspended]);
   useEffect(() => { blockedAddressesRef.current = blockedAddresses; }, [blockedAddresses]);
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    if (!enabled) {
+      setLocalDestinationHash('');
+      return () => { cancelled = true; };
+    }
+    const loadDestination = async () => {
+      let hash = '';
+      try {
+        const result = await window.electronAPI?.reticulumGetLocalDestinationHash?.();
+        const candidate = String(result?.destinationHash || '').trim().toLowerCase();
+        if (/^[0-9a-f]{32}$/.test(candidate)) hash = candidate;
+      } catch { hash = ''; }
+      if (cancelled) return;
+      setLocalDestinationHash(hash);
+      if (!hash) retryTimer = window.setTimeout(loadDestination, 1_000);
+    };
+    void loadDestination();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [enabled]);
 
   const send = useCallback((type: string, payload: Record<string, unknown> = {}) => {
     const requestId = crypto.randomUUID();
@@ -253,7 +281,7 @@ export function useQortalLandProximityVoice(options: Options) {
   }, [send]);
 
   const enable = useCallback(async () => {
-    if (!enabled || !publicKey || !qortalLandRealtime.isReady()) {
+    if (!enabled || !publicKey || !localDestinationHash || !qortalLandRealtime.isReady()) {
       setState('unavailable');
       return;
     }
@@ -268,6 +296,7 @@ export function useQortalLandProximityVoice(options: Options) {
       groupId: String(groupId),
       landSessionId: sessionId,
       roomId: position.roomId,
+      localDestinationHash,
     });
     const blocked = Object.keys(blockedAddresses).filter((item) => blockedAddresses[item]);
     for (const blockedAddress of blocked) {
@@ -275,7 +304,7 @@ export function useQortalLandProximityVoice(options: Options) {
     }
     blockedRef.current = new Set(blocked);
     send('ENABLE_PROXIMITY_VOICE', { mode: modeRef.current });
-  }, [address, blockedAddresses, enabled, getPosition, groupId, publicKey, send, sessionId, startAudio]);
+  }, [address, blockedAddresses, enabled, getPosition, groupId, localDestinationHash, publicKey, send, sessionId, startAudio]);
 
   const disable = useCallback(async () => {
     audioFailureStateRef.current = null;
@@ -288,7 +317,7 @@ export function useQortalLandProximityVoice(options: Options) {
     await receiverRef.current?.dispose();
     senderRef.current = null;
     receiverRef.current = null;
-    sourceAddressRef.current.clear();
+    sourcePeerRef.current.clear();
     sourceGenerationRef.current.clear();
     setPeers({});
     setState('off');
@@ -336,7 +365,7 @@ export function useQortalLandProximityVoice(options: Options) {
   }, [handleBackgroundAudioFailure, inputDeviceId, outputDeviceId, startAudio]);
 
   useEffect(() => {
-    if (!enabled || !publicKey || !(window.qortalLandRealtime || window.qortalLandGames)) {
+    if (!enabled || !publicKey || !localDestinationHash || !(window.qortalLandRealtime || window.qortalLandGames)) {
       setState('unavailable');
       return;
     }
@@ -360,6 +389,7 @@ export function useQortalLandProximityVoice(options: Options) {
           groupId: String(groupId),
           landSessionId: sessionId,
           roomId: position.roomId,
+          localDestinationHash,
         });
         const currentBlocked = blockedAddressesRef.current;
         const blocked = Object.keys(currentBlocked).filter((item) => currentBlocked[item]);
@@ -400,7 +430,7 @@ export function useQortalLandProximityVoice(options: Options) {
       }
       if (event.type === 'PROXIMITY_SIGNATURE_REQUIRED') {
         const fields = event.fields;
-        if (!isExpectedCapability(fields, { address, publicKey, groupId, sessionId })) {
+        if (!isExpectedCapability(fields, { address, publicKey, groupId, sessionId, destinationHash: localDestinationHash })) {
           setError('Python returned an invalid proximity voice signing request');
           void disable();
           return;
@@ -438,23 +468,27 @@ export function useQortalLandProximityVoice(options: Options) {
         if (typeof event.streamGeneration === 'number') generationRef.current = event.streamGeneration;
         if (Array.isArray(event.peers)) {
           const restored: Record<string, ProximityPeer> = {};
-          const previousAddresses = new Set(sourceAddressRef.current.values());
-          sourceAddressRef.current.clear();
+          const previousPeerKeys = new Set(Array.from(sourcePeerRef.current.values(), (peer) => peer.key));
+          sourcePeerRef.current.clear();
           sourceGenerationRef.current.clear();
           for (const raw of event.peers) {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
             const peer = raw as Record<string, unknown>;
             const peerAddress = String(peer.address || '');
+            const peerSessionId = String(peer.sessionId || '');
+            const peerKey = String(peer.peerKey || '');
             const sourceId = Number(peer.sourceId || 0);
-            if (!peerAddress || blockedAddressesRef.current[peerAddress] || !Number.isInteger(sourceId) || sourceId <= 0) continue;
+            if (!peerAddress || !peerSessionId || peerKey !== `${peerAddress}:${peerSessionId}` || blockedAddressesRef.current[peerAddress] || !Number.isInteger(sourceId) || sourceId <= 0) continue;
             const gain = Number(peer.gain ?? 0);
             const pan = Number(peer.pan ?? 0);
             const volume = Number(peer.volume ?? 1);
-            sourceAddressRef.current.set(sourceId, peerAddress);
-            previousAddresses.delete(peerAddress);
-            receiverRef.current?.setSourceSpatial(peerAddress, peer.muted === true ? 0 : gain * volume, pan);
-            restored[peerAddress] = {
+            sourcePeerRef.current.set(sourceId, { key: peerKey, address: peerAddress });
+            previousPeerKeys.delete(peerKey);
+            receiverRef.current?.setSourceSpatial(peerKey, peer.muted === true ? 0 : gain * volume, pan);
+            restored[peerKey] = {
+              key: peerKey,
               address: peerAddress,
+              sessionId: peerSessionId,
               sourceId,
               state: String(peer.state || 'nearby'),
               distance: typeof peer.distance === 'number' ? peer.distance : null,
@@ -466,7 +500,7 @@ export function useQortalLandProximityVoice(options: Options) {
               speaking: false,
             };
           }
-          for (const staleAddress of previousAddresses) void receiverRef.current?.removeSource(staleAddress);
+          for (const stalePeerKey of previousPeerKeys) void receiverRef.current?.removeSource(stalePeerKey);
           setPeers(restored);
         }
         if (optedInRef.current && event.enabled === false && qortalLandRealtime.isReady()) {
@@ -477,25 +511,27 @@ export function useQortalLandProximityVoice(options: Options) {
       }
       if (event.type === 'PROXIMITY_PEER_STATE') {
         const peerAddress = String(event.address || '');
+        const peerSessionId = String(event.sessionId || '');
+        const peerKey = String(event.peerKey || '');
         const sourceId = Number(event.sourceId || 0);
-        if (!peerAddress || !Number.isInteger(sourceId) || sourceId <= 0) return;
+        if (!peerAddress || !peerSessionId || peerKey !== `${peerAddress}:${peerSessionId}` || !Number.isInteger(sourceId) || sourceId <= 0) return;
         if (blockedAddressesRef.current[peerAddress]) {
           send('SET_PROXIMITY_PEER_POLICY', { address: peerAddress, blocked: true, muted: true, volume: 0 });
           return;
         }
-        sourceAddressRef.current.set(sourceId, peerAddress);
+        sourcePeerRef.current.set(sourceId, { key: peerKey, address: peerAddress });
         const disconnected = event.state === 'disconnected';
         if (disconnected) {
-          for (const [mappedSourceId, mappedAddress] of sourceAddressRef.current.entries()) {
-            if (mappedAddress === peerAddress) {
-              sourceAddressRef.current.delete(mappedSourceId);
+          for (const [mappedSourceId, mappedPeer] of sourcePeerRef.current.entries()) {
+            if (mappedPeer.key === peerKey) {
+              sourcePeerRef.current.delete(mappedSourceId);
               sourceGenerationRef.current.delete(mappedSourceId);
             }
           }
-          void receiverRef.current?.removeSource(peerAddress);
+          void receiverRef.current?.removeSource(peerKey);
           setPeers((current) => {
             const next = { ...current };
-            delete next[peerAddress];
+            delete next[peerKey];
             return next;
           });
           return;
@@ -503,28 +539,31 @@ export function useQortalLandProximityVoice(options: Options) {
         const gain = Number(event.gain ?? 0);
         const volume = Number(event.volume ?? 1);
         const pan = Number(event.pan ?? 0);
-        receiverRef.current?.setSourceSpatial(peerAddress, gain * volume, pan);
+        receiverRef.current?.setSourceSpatial(peerKey, gain * volume, pan);
         setPeers((current) => ({
           ...current,
-          [peerAddress]: {
+          [peerKey]: {
+            key: peerKey,
             address: peerAddress,
+            sessionId: peerSessionId,
             sourceId,
             state: String(event.state || 'nearby'),
             distance: typeof event.distance === 'number' ? event.distance : null,
             gain, pan, volume,
             audible: event.audible === true,
             muted: event.muted === true,
-            speaking: current[peerAddress]?.speaking ?? false,
+            speaking: current[peerKey]?.speaking ?? false,
           },
         }));
         return;
       }
       if (event.type === 'PROXIMITY_SPEAKING_STATE') {
         const peerAddress = String(event.address || '');
-        if (!peerAddress || peerAddress === address) return;
-        setPeers((current) => current[peerAddress] ? {
+        const peerKey = String(event.peerKey || '');
+        if (!peerAddress || !peerKey || peerAddress === address) return;
+        setPeers((current) => current[peerKey] ? {
           ...current,
-          [peerAddress]: { ...current[peerAddress], speaking: event.speaking === true },
+          [peerKey]: { ...current[peerKey], speaking: event.speaking === true },
         } : current);
       }
     });
@@ -557,17 +596,18 @@ export function useQortalLandProximityVoice(options: Options) {
     const disposeBinary = qortalLandRealtime.onBinary((buffer) => {
       const frame = parseInboundAudio(buffer);
       if (!frame) return;
-      const peerAddress = sourceAddressRef.current.get(frame.sourceId);
-      if (!peerAddress || blockedAddressesRef.current[peerAddress]) return;
+      const sourcePeer = sourcePeerRef.current.get(frame.sourceId);
+      if (!sourcePeer || blockedAddressesRef.current[sourcePeer.address]) return;
+      const peerKey = sourcePeer.key;
       const previousGeneration = sourceGenerationRef.current.get(frame.sourceId);
       if (previousGeneration !== undefined && previousGeneration !== frame.generation) {
-        inboundPackets = inboundPackets.filter((packet) => packet.sourceAddr !== peerAddress);
-        void receiverRef.current?.removeSource(peerAddress);
+        inboundPackets = inboundPackets.filter((packet) => packet.sourceAddr !== peerKey);
+        void receiverRef.current?.removeSource(peerKey);
       }
       sourceGenerationRef.current.set(frame.sourceId, frame.generation);
       receiverRef.current?.noteIncomingAudio(frame.receivedAt);
       inboundPackets.push({
-        sourceAddr: peerAddress,
+        sourceAddr: peerKey,
         seq: frame.sequence,
         opusFrame: frame.opus,
         vad: true,
@@ -587,7 +627,7 @@ export function useQortalLandProximityVoice(options: Options) {
       disposeBinary();
       release();
     };
-  }, [address, disable, enabled, getPosition, groupId, handleBackgroundAudioFailure, publicKey, send, sessionId, updateTransmit]);
+  }, [address, disable, enabled, getPosition, groupId, handleBackgroundAudioFailure, localDestinationHash, publicKey, send, sessionId, updateTransmit]);
 
   useEffect(() => {
     const next = new Set(Object.keys(blockedAddresses).filter((item) => blockedAddresses[item]));
@@ -596,12 +636,18 @@ export function useQortalLandProximityVoice(options: Options) {
       if (!blockedRef.current.has(peerAddress)) {
         try { send('SET_PROXIMITY_PEER_POLICY', { address: peerAddress, blocked: true }); } catch { /* reconnecting */ }
       }
-      void receiverRef.current?.removeSource(peerAddress);
+      for (const sourcePeer of sourcePeerRef.current.values()) {
+        if (sourcePeer.address === peerAddress) void receiverRef.current?.removeSource(sourcePeer.key);
+      }
+      for (const [sourceId, sourcePeer] of sourcePeerRef.current.entries()) {
+        if (sourcePeer.address === peerAddress) {
+          sourcePeerRef.current.delete(sourceId);
+          sourceGenerationRef.current.delete(sourceId);
+        }
+      }
       setPeers((current) => {
-        if (!current[peerAddress]) return current;
-        const updated = { ...current };
-        delete updated[peerAddress];
-        return updated;
+        const entries = Object.entries(current).filter(([, peer]) => peer.address !== peerAddress);
+        return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries);
       });
     }
     for (const peerAddress of blockedRef.current) {
@@ -681,31 +727,34 @@ export function useQortalLandProximityVoice(options: Options) {
   useEffect(() => { disableRef.current = disable; }, [disable]);
   useEffect(() => () => { void disableRef.current(); }, []);
 
-  const setPeerPolicy = useCallback((peerAddress: string, muted: boolean, volume: number) => {
+  const setPeerPolicy = useCallback((peerKey: string, muted: boolean, volume: number) => {
     const normalizedVolume = Math.max(0, Math.min(1, volume));
+    const peer = peers[peerKey];
+    if (!peer) return;
     send('SET_PROXIMITY_PEER_POLICY', {
-      address: peerAddress,
+      address: peer.address,
+      sessionId: peer.sessionId,
       muted,
       volume: normalizedVolume,
     });
     setPeers((current) => {
-      const peer = current[peerAddress];
-      if (!peer) return current;
+      const currentPeer = current[peerKey];
+      if (!currentPeer) return current;
       receiverRef.current?.setSourceSpatial(
-        peerAddress,
-        muted ? 0 : peer.gain * normalizedVolume,
-        peer.pan
+        peerKey,
+        muted ? 0 : currentPeer.gain * normalizedVolume,
+        currentPeer.pan
       );
       return {
         ...current,
-        [peerAddress]: {
-          ...peer,
+        [peerKey]: {
+          ...currentPeer,
           muted,
           volume: normalizedVolume,
         },
       };
     });
-  }, [send]);
+  }, [peers, send]);
 
   return useMemo(() => ({
     state, mode, pttKey, peers: Object.values(peers), error, transmitting,

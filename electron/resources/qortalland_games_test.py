@@ -33,11 +33,13 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         manager = QortalLandGameManager(
             emit=lambda *_args: None,
             log=lambda *_args: None,
-            resolve_peer=lambda _address: "11" * 16,
+            resolve_peer=lambda _address, preferred="": preferred or "11" * 16,
             resolve_identity=lambda _peer: object(),
             build_destination=lambda identity: identity,
             link_id_bytes=lambda _link: b"\x22" * 16,
             enqueue=lambda fn, args: bool(fn(*args) is None or True),
+            resolve_link_peer_hash=lambda _link: "11" * 16,
+            local_destination_hash=lambda: "aa" * 16,
         )
         manager.send_event = lambda event, payload=None: events.append((event, payload or {}))
         return manager, events
@@ -228,6 +230,10 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "groupId": "123",
             "requesterAddress": self.address,
             "recipientAddress": self.address,
+            "sourceSessionId": "source-session",
+            "targetSessionId": "target-session",
+            "sourceDestinationHash": "11" * 16,
+            "targetDestinationHash": "aa" * 16,
             "signerPublicKey": self.public_key,
             "requesterNonce": "11" * 16,
             "linkId": "22" * 16,
@@ -244,6 +250,104 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertLessEqual(len(raw), MAX_CHANNEL_PAYLOAD)
         self.assertEqual(self.manager._decode_handshake(umsgpack.unpackb(raw[4:])), envelope)
 
+    def test_open_game_link_uses_only_the_selected_verified_land_endpoint(self):
+        manager, _events = self.make_manager()
+        manager.land_context = {
+            "address": self.address,
+            "publicKey": self.public_key,
+            "groupId": "123",
+            "landSessionId": "source-session",
+            "roomId": "lounge",
+            "localDestinationHash": "aa" * 16,
+        }
+        manager.resolve_peer = mock.Mock(return_value="22" * 16)
+        manager.resolve_identity = mock.Mock(return_value=object())
+        manager._attempt_open = mock.Mock()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+
+        manager._open({
+            "matchId": match_id,
+            "recipientAddress": "QRecipientAddress11111111111111111",
+            "targetSessionId": "target-session",
+            "targetDestinationHash": "22" * 16,
+            "requesterNonce": "33" * 16,
+            "game": "connect-four",
+        })
+
+        manager.resolve_peer.assert_called_once_with(
+            "QRecipientAddress11111111111111111", "22" * 16
+        )
+        state = manager.matches[match_id]
+        self.assertEqual(state["sourceSessionId"], "source-session")
+        self.assertEqual(state["targetSessionId"], "target-session")
+        self.assertEqual(state["sourceDestinationHash"], "aa" * 16)
+        self.assertEqual(state["targetDestinationHash"], "22" * 16)
+        state["establishTimer"].cancel()
+
+    def test_invite_validation_binds_both_land_sessions_and_link_endpoints(self):
+        manager, _events = self.make_manager()
+        requester_key = RNS.Cryptography.Ed25519PrivateKey.generate()
+        requester_public = _b58encode(requester_key.public_key().public_bytes())
+        requester_address = derive_qortal_address(requester_public)
+        now = int(time.time() * 1000)
+        manager.land_context = {
+            "address": self.address,
+            "publicKey": self.public_key,
+            "groupId": "123",
+            "landSessionId": "target-session",
+            "roomId": "lounge",
+            "localDestinationHash": "aa" * 16,
+        }
+        manager.resolve_peer = lambda address, preferred="": (
+            preferred
+            if address == requester_address and preferred == "11" * 16
+            else None
+        )
+        manager.resolve_link_peer_hash = lambda _link: "11" * 16
+        fields = {
+            "type": "QORTAL_LAND_GAME_INVITE",
+            "protocolVersion": 2,
+            "game": "connect-four",
+            "gameVersion": 1,
+            "rulesVersion": 1,
+            "matchId": "00112233-4455-6677-8899-aabbccddeeff",
+            "groupId": "123",
+            "requesterAddress": requester_address,
+            "recipientAddress": self.address,
+            "sourceSessionId": "source-session",
+            "targetSessionId": "target-session",
+            "sourceDestinationHash": "11" * 16,
+            "targetDestinationHash": "aa" * 16,
+            "signerPublicKey": requester_public,
+            "requesterNonce": "33" * 16,
+            "linkId": "22" * 16,
+            "createdAt": now,
+            "expiresAt": now + 60_000,
+        }
+
+        def envelope(candidate):
+            return {
+                "fields": candidate,
+                "publicKey": requester_public,
+                "signature": _b58encode(
+                    requester_key.sign(canonical_bytes(candidate))
+                ),
+            }
+
+        manager._validate_invite(fields, envelope(fields), object())
+        manager.used_nonces.clear()
+        wrong_session = {**fields, "targetSessionId": "other-session"}
+        with self.assertRaisesRegex(ValueError, "wrong_recipient"):
+            manager._validate_invite(
+                wrong_session, envelope(wrong_session), object()
+            )
+        manager.used_nonces.clear()
+        wrong_endpoint = {**fields, "sourceDestinationHash": "33" * 16}
+        with self.assertRaisesRegex(ValueError, "unverified_peer"):
+            manager._validate_invite(
+                wrong_endpoint, envelope(wrong_endpoint), object()
+            )
+
     def test_compact_resume_request_binds_round_and_fits_classifier_packet(self):
         fields = {
             "type": "QORTAL_LAND_GAME_RESUME_REQUEST",
@@ -252,6 +356,10 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "requesterAddress": self.address,
             "signerPublicKey": self.public_key,
             "linkId": "22" * 16,
+            "sourceSessionId": "source-session",
+            "targetSessionId": "target-session",
+            "sourceDestinationHash": "11" * 16,
+            "targetDestinationHash": "aa" * 16,
             "requesterNonce": "33" * 16,
             "lastAcknowledgedPly": 4,
             "stateHash": "44" * 32,
@@ -427,6 +535,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
                     "groupId": "1",
                     "landSessionId": "land",
                     "roomId": "room",
+                    "localDestinationHash": "aa" * 16,
                 })])
 
             def send(self, value):

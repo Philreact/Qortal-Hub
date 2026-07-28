@@ -5,10 +5,21 @@ import {
   seatForIncomingQortalLandGameMove,
 } from './useQortalLandGame';
 
+const routeFields = {
+  sourceSessionId: 'source-session',
+  targetSessionId: 'target-session',
+  sourceDestinationHash: '11'.repeat(16),
+  targetDestinationHash: '22'.repeat(16),
+};
+
 const match = {
   matchId: '00112233-4455-6677-8899-aabbccddeeff',
   requesterAddress: 'Q-requester',
   recipientAddress: 'Q-recipient',
+  requesterSessionId: routeFields.sourceSessionId,
+  recipientSessionId: routeFields.targetSessionId,
+  requesterDestinationHash: routeFields.sourceDestinationHash,
+  recipientDestinationHash: routeFields.targetDestinationHash,
   requesterNonce: '11'.repeat(16),
   phase: 'opening' as const,
   moves: [],
@@ -21,6 +32,7 @@ describe('Qortal Land game handshake signing guard', () => {
       matchId: match.matchId,
       requesterAddress: match.requesterAddress,
       recipientAddress: match.recipientAddress,
+      ...routeFields,
       signerPublicKey: 'public-key',
       requesterNonce: match.requesterNonce,
       protocolVersion: 2,
@@ -35,6 +47,7 @@ describe('Qortal Land game handshake signing guard', () => {
     const fields = {
       type: 'QORTAL_LAND_GAME_INVITE', matchId: match.matchId,
       requesterAddress: match.requesterAddress, recipientAddress: match.recipientAddress,
+      ...routeFields,
       signerPublicKey: 'public-key', requesterNonce: match.requesterNonce,
       protocolVersion: 2, game: 'checkers', gameVersion: 1, rulesVersion: 1,
     };
@@ -47,6 +60,7 @@ describe('Qortal Land game handshake signing guard', () => {
     const fields = {
       type: 'QORTAL_LAND_GAME_INVITE', matchId: match.matchId,
       requesterAddress: match.requesterAddress, recipientAddress: match.recipientAddress,
+      ...routeFields,
       signerPublicKey: 'public-key', requesterNonce: match.requesterNonce,
       protocolVersion: 2, game: 'chess', gameVersion: 1, rulesVersion: 1,
     };
@@ -58,7 +72,7 @@ describe('Qortal Land game handshake signing guard', () => {
     const fields = {
       type: 'QORTAL_LAND_GAME_RESUME_REQUEST', matchId: match.matchId,
       roundId: match.matchId, requesterAddress: match.requesterAddress,
-      signerPublicKey: 'public-key', lastAcknowledgedPly: 43,
+      signerPublicKey: 'public-key', lastAcknowledgedPly: 43, ...routeFields,
     };
     expect(canSignQortalLandGameHandshake(
       fields,
@@ -86,6 +100,7 @@ describe('Qortal Land game handshake signing guard', () => {
       matchId: match.matchId,
       requesterAddress: match.requesterAddress,
       recipientAddress: match.recipientAddress,
+      ...routeFields,
       signerPublicKey: 'public-key',
       requesterNonce: match.requesterNonce,
       protocolVersion: 2,
@@ -96,6 +111,8 @@ describe('Qortal Land game handshake signing guard', () => {
     expect(canSignQortalLandGameHandshake({ ...fields, matchId: 'other' }, match, match.requesterAddress, 'public-key')).toBe(false);
     expect(canSignQortalLandGameHandshake({ ...fields, recipientAddress: 'Q-other' }, match, match.requesterAddress, 'public-key')).toBe(false);
     expect(canSignQortalLandGameHandshake({ ...fields, signerPublicKey: 'other' }, match, match.requesterAddress, 'public-key')).toBe(false);
+    expect(canSignQortalLandGameHandshake({ ...fields, targetSessionId: 'other-session' }, match, match.requesterAddress, 'public-key')).toBe(false);
+    expect(canSignQortalLandGameHandshake({ ...fields, targetDestinationHash: '33'.repeat(16) }, match, match.requesterAddress, 'public-key')).toBe(false);
   });
 
   it('allows only local busy/superseded declines without replacing the active match', () => {

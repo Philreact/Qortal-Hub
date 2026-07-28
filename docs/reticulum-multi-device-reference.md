@@ -1,0 +1,150 @@
+# Reticulum Multi-Device Reference
+
+This document tracks how Reticulum-backed features behave when the same Qortal
+account is authenticated on more than one computer.
+
+Last reviewed: **2026-07-28**
+
+## Status summary
+
+| Status | Count |
+| --- | ---: |
+| `DONE` | 39 |
+| `UNDONE` | 1 |
+| **Total** | **40** |
+
+## Status meanings
+
+- `DONE`: The current implementation already has the correct multi-device
+  identity or routing model for this feature.
+- `UNDONE`: The feature still needs implementation, an explicit product
+  decision, or additional verification before it can be considered safely
+  multi-device.
+
+`DONE` describes current behavior, not merely a proposed solution.
+
+## Identity model
+
+Reticulum features should distinguish these identity layers:
+
+```text
+Qortal account (authorization and user identity)
+|-- Installation A
+|   |-- persistent chat author stream A
+|   |-- Reticulum destination A
+|   |-- presence runtime session A
+|   `-- Qortal Land session A
+`-- Installation B
+    |-- persistent chat author stream B
+    |-- Reticulum destination B
+    |-- presence runtime session B
+    `-- Qortal Land session B
+```
+
+Account-level actions should apply to the Qortal address. Device-specific,
+real-time interactions must use a verified session or Reticulum destination and
+remain pinned to that endpoint after acceptance.
+
+## Feature status
+
+| Status | Feature | Current behavior | Required or accepted behavior |
+| --- | --- | --- | --- |
+| `DONE` | Reticulum daemon and transport | Each computer runs its own daemon and transport lifecycle. | Keep daemon state and transport health device-local. |
+| `DONE` | Presence liveness | Multiple runtime sessions can remain live for one Qortal address. One session going offline does not remove another live session. | Keep liveness as the union of all live sessions. |
+| `DONE` | Presence Online/Busy/Away status | Status is derived deterministically across live sessions: Busy wins, then Online, then Away. | Keep status independent of heartbeat arrival order. |
+| `DONE` | Presence endpoint routing | Presence exposes every distinct fresh route for an address in stable preference order while retaining the legacy preferred-route query. | Migrate endpoint-aware operations deliberately; never silently change a single-endpoint caller's policy. |
+| `DONE` | Group-chat event identity | Each separately installed application creates a distinct persistent `authorStreamId`. | Continue signing and sequencing events by account plus installation stream. |
+| `DONE` | Group history author streams | Author heads, sequence gaps, and author-tree repair distinguish streams belonging to the same account. | Preserve per-stream history discovery and repair. |
+| `DONE` | Group history multi-device integration coverage | Integration coverage creates two independent installation streams for the same account, exchanges their durable events while another installation is offline, then verifies that the reconnect bootstrap recovers both streams. | Keep the immediate subscription bootstrap multi-stream aware while retaining digest and range repair as bounded fallbacks. |
+| `UNDONE` | Copied application-profile detection | Copying the complete application-data directory can duplicate a persistent author stream or Reticulum identity. | Intentionally deferred because this is rare. If addressed later, detect simultaneous duplicate installation identities and rotate only the copied installation safely. |
+| `DONE` | Group message edits and deletes | Authorization is based on the Qortal address, allowing either authenticated device to modify that account's messages. | Keep mutation authority account-level. |
+| `DONE` | Group reactions | Reaction ownership is account-level, so the same account represents one reacting user across its devices. | Keep reaction identity account-level. |
+| `DONE` | Group mentions and replies | Mentions and replies target the Qortal account. | Deliver them to relevant live devices; read-state synchronization is tracked separately below. |
+| `DONE` | Group typing | Typing state is runtime-session scoped and displayed account-wide while any session remains active. Legacy clients are isolated by verified source endpoint. | Keep typing ephemeral and never let one device's stop/timeout clear another device. |
+| `DONE` | Group unread state safety | Read watermarks are stored in each installation's local database, so devices do not corrupt one another's state. | Safe as device-local state. Cross-device synchronization is a separate optional improvement. |
+| `DONE` | Group read-state synchronization | Reading a channel creates a monotonic account-signed watermark that is sent privately to the account's other verified Reticulum endpoints. Pending signatures survive restart, exact per-scope acknowledgements stop redundant replay, and lost data or acknowledgements retry during normal endpoint discovery. | Keep watermarks private, signature-verified, bounded, monotonic, and independent of group-history fanout. |
+| `DONE` | Group and DM silence storage safety | Silence records are local and scoped to their owning address. | Safe as device-local preferences. Cross-device preference synchronization is optional. |
+| `DONE` | DM endpoint discovery and delivery fanout | DM discovery can retain multiple verified Reticulum destinations for the recipient address. | Continue delivering durable DM notifications and data through all relevant verified endpoints. |
+| `DONE` | DM event sequencing | Every new DM event is signed with the installation's persistent sender stream and uniqueness includes that stream. Legacy events migrate into a legacy stream without signature changes. Timestamp-cursor history repair remains stream-independent and transfers every signed event. | Preserve stream binding in signatures, compact wire encoding, storage, and all future DM synchronization. |
+| `DONE` | DM edits, deletes, and reactions under multiple devices | All DM event types use the persistent sender stream while mutation authority remains account-level. | Preserve account-level authority and stream-scoped sequencing. |
+| `DONE` | DM typing | Typing is runtime-session scoped, fans out to every verified live recipient endpoint, and remains displayed while any sender session is active. | Keep the optional wire field backward compatible and typing non-durable. |
+| `DONE` | DM read-state synchronization | DM reads use the same private signed watermark protocol. A durable conversation watermark also keeps late-arriving history at or below the synchronized point read. | Preserve account ownership, exact conversation validation, endpoint verification, durable pending state, and monotonic application. |
+| `DONE` | Attachments, images, and GIF resources | Resources are content-addressed and each computer stores or downloads them independently. | Keep local storage and allow any verified cache/provider with the content to serve it. |
+| `DONE` | Resource download providers | Downloads can use multiple Reticulum provider destinations and resume verified ranges by file hash. | Keep provider selection endpoint-specific and independent of account status aggregation. |
+| `DONE` | Resource authorization | Requests are authorized against the signed requester and verified Reticulum endpoint, with group or DM access checks. | Preserve endpoint verification and membership/conversation authorization. |
+| `DONE` | Search, discussions, and channel metadata | These are local projections derived from synchronized signed chat events. | No separate device identity changes are required once underlying history is complete. |
+| `DONE` | Cross-device notification clearing | Synchronized watermarks clear Hub/taskbar unread state and suppress mention or DM alerts when late history has already been read on another device. Already-delivered native OS notifications remain subject to each platform's notification center. | Never replay an alert below the signed read watermark, and update app badges without adding per-event summary scans. |
+| `DONE` | Qortal Land avatar/world identity | Remote world state is keyed by Qortal address plus Land session ID, allowing independent sessions. | Keep movement and avatar state session-specific. |
+| `DONE` | Qortal Land member sidebar | Presence snapshots retain every address-plus-session entry. Concurrent sessions appear in their actual rooms and are labeled when an account has more than one active Land session. | Keep one authorization identity per account while preserving session-specific location and availability. |
+| `DONE` | Land movement, room, skin, mood, AFK, and DND transport | These values are transported as Land-session state. | Keep the underlying state session-specific. |
+| `DONE` | Land despawning | Despawning applies to the local Land session. | One idle or departed computer must not despawn another computer's active Land session. |
+| `DONE` | Land chat | Land chat messages contain a session ID and session sequence. | Keep Land chat ephemeral and session-aware. |
+| `DONE` | Land social effects | Signed social actions contain source and target Land session IDs. | Keep effects targeted to the selected session. |
+| `DONE` | Land AFK/DND decisions | Call and game availability is evaluated from the exact avatar/session selected in the world rather than any session sharing its address. | Continue using account aggregation only for deliberately account-level actions. |
+| `DONE` | Qortal Land calls | Interactive signaling binds the source and target Land sessions plus their verified Reticulum destinations into an account-signed compact handshake. It is sent directly to the selected endpoint, and accepted media remains pinned to that destination. Ambient call-status presence remains group-visible by design. | Keep interactive calls exact-session, direct, signed, endpoint-verified, and within the Reticulum frame budget. |
+| `DONE` | Normal DM calls | Every fresh verified Reticulum endpoint is tracked as an invitee. A rejection waits for the other endpoints, the first authenticated acceptance wins, signaling is pinned to its source destination, and a pre-signed cancellation is sent directly to the remaining ringing endpoints. | Keep first-accept-wins atomic and never let a late acceptance or one-device rejection replace the selected endpoint. |
+| `DONE` | Group calls | The participant UI remains account-keyed, while the initial join carries a compact signed device-takeover generation. Reannouncements cannot reclaim a superseded slot; identity, control, media-link, and leave handling stay pinned to the selected Reticulum endpoint, and the displaced installation exits locally without removing the replacement. The encoding remains verifiable by older clients and stays within the Reticulum frame budget. | Keep one active media endpoint per account and preserve explicit first-join takeover semantics. |
+| `DONE` | Qortal Land games | Challenges carry the selected target Land session and verified destination into the game service. The signed invitation binds both sessions and both endpoints; the recipient verifies its exact local session, the source endpoint against the authenticated Reticulum link, and the account ownership of both routes. Link recovery remains pinned to the same signed endpoints. | Keep game invitations and recovery exact-session, endpoint-verified, account-signed, and within the private-link payload budget. |
+| `DONE` | Qortal Land proximity voice | Signed capabilities bind the Land session to its verified Reticulum destination. Remote capabilities, positions, links, policies, and audio sources are keyed by address plus Land session ID, while account blocks remain account-wide. Link handshakes verify both exact sessions and the authenticated Reticulum endpoint. | Keep voice routing exact-session, reject endpoint/session mismatches, and preserve account-level authorization and blocking. |
+| `DONE` | Public-group activity | Activity is intentionally aggregated by account author rather than treating devices as separate members. | Keep public activity account-level. |
+| `DONE` | Membership, admin validation, and channel permissions | Authorization is based on the signed Qortal account and authoritative group membership/admin data. | Keep authorization account-level; device sessions must never grant additional authority. |
+| `DONE` | Reticulum enable/disable setting | The setting applies globally to accounts on the current computer but does not control another computer. | Keep this device-global. Disabling Reticulum should stop only the local installation's Reticulum features and daemon. |
+
+## Endpoint-selection rules
+
+Use these rules when implementing the `UNDONE` items:
+
+1. **Durable account data** such as group messages and DMs is delivered to all
+   relevant verified devices.
+2. **Ordinary account-level calls** may ring all eligible devices, but the first
+   valid acceptance wins and all further signaling is pinned to that endpoint.
+3. **Qortal Land interactions** target the exact Land session selected in the
+   world because each device may be in a different room or state.
+4. **Group calls** permit one active media endpoint per account unless the data
+   model is deliberately expanded to show multiple endpoints as separate
+   participants.
+5. **Ephemeral state** such as typing, idle state, movement, and proximity audio
+   is scoped to a runtime session and then aggregated only for display.
+6. **Authorization** always remains account-level and requires valid Qortal
+   signatures and current group or conversation access.
+
+## Security requirements
+
+- A session-to-destination association must be signed by the Qortal account.
+- The association must expire with the presence or Land session.
+- A caller-provided destination must never be trusted without matching it to a
+  verified account session.
+- Calls, games, and other accepted interactions must remain pinned to the
+  endpoint that completed the authenticated handshake.
+- Offline or superseded sessions must not be able to replace a newer live route.
+- Adding device streams must not weaken event signature, membership, admin, or
+  mutation-ownership validation.
+
+## Remaining work
+
+Only copied application-profile detection remains `UNDONE`. It is intentionally
+deferred because copying a complete application-data profile is rare. If it is
+implemented later, it must safely distinguish the original installation from
+the copy before rotating any persistent stream or Reticulum identity.
+
+## Verification coverage
+
+The `DONE` rows are covered by the following subsystem-level checks:
+
+- Reticulum daemon, transport, presence, resources, calls, group calls, chat,
+  history, metadata, permissions, DMs, read synchronization, and lifecycle:
+  the complete `electron/src` Vitest suite.
+- Qortal Land sessions, routing, calls, games, proximity voice, endpoint
+  verification, and Python bridge behavior:
+  `qortalland_games_test.py`, `qortalland_proximity_test.py`, and
+  `presence_bridge_test.py`.
+- Renderer behavior for Reticulum chat, notifications, Qortal Land, direct
+  calls, games, proximity voice, and group-call media: the focused suites under
+  `src/components/Chat`, `src/components/QortalLand`, `src/hooks`,
+  `src/lib/group-call`, and `src/utils`.
+- Production compatibility: both the Electron TypeScript build and the main
+  Vite production build.
+
+The two-installation group-history scenario explicitly verifies that separate
+author streams belonging to the same Qortal account are both recovered by a
+third installation after it reconnects.

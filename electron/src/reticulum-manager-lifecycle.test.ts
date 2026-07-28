@@ -27,6 +27,11 @@ class CallBridgeStub extends EventEmitter {
   sendCall = vi.fn(
     async (_peerHash: string, _message: Record<string, unknown>) => true
   );
+  sendCallDetailed = vi.fn(
+    async (_peerHash: string, _message: Record<string, unknown>) => ({
+      ok: true as const,
+    })
+  );
 }
 
 class GroupBridgeStub extends EventEmitter {
@@ -258,6 +263,115 @@ describe('Reticulum manager late bridge binding', () => {
     expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(350 * 4);
     expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(5);
+    manager.stop();
+  });
+
+  it('pins a multi-device call to the first accepting endpoint and cancels the others', async () => {
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    (manager as any).verifyPool = {
+      verify: vi.fn(async () => true),
+      stop: vi.fn(),
+    };
+    const accepted: unknown[] = [];
+    manager.on('call:accepted', (payload) => accepted.push(payload));
+    (manager as any).activeCalls.set('call-multi-accept', {
+      callId: 'call-multi-accept',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-a',
+      invitedReticulumPeerHashes: new Set(['peer-a', 'peer-b']),
+      rejectedReticulumPeerHashes: new Set(),
+      cancellationSignature: 'hangup-signature',
+      cancellationPublicKey: 'local-public-key',
+      cancellationTimestamp: 123,
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    (manager as any).handleAccept(
+      {
+        type: 'CALL_ACCEPT',
+        callId: 'call-multi-accept',
+        fromPublicKey: 'peer-public-key',
+        signature: 'accept-signature',
+        timestamp: 124,
+      },
+      'peer-a'
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((manager as any).activeCalls.get('call-multi-accept')).toMatchObject(
+      {
+        state: 'active',
+        acceptedReticulumPeerHash: 'peer-a',
+        reticulumPeerPresenceHash: 'peer-a',
+      }
+    );
+    expect(accepted).toHaveLength(1);
+    expect(bridge.sendCallDetailed).toHaveBeenCalledWith(
+      'peer-b',
+      expect.objectContaining({ t: 'CH', c: 'call-multi-accept' })
+    );
+
+    (manager as any).handleAccept(
+      {
+        type: 'CALL_ACCEPT',
+        callId: 'call-multi-accept',
+        fromPublicKey: 'peer-public-key',
+        signature: 'late-accept-signature',
+        timestamp: 125,
+      },
+      'peer-b'
+    );
+    await Promise.resolve();
+    expect(accepted).toHaveLength(1);
+    manager.stop();
+  });
+
+  it('waits for every invited endpoint before treating a call as rejected', async () => {
+    const manager = new CallManager(
+      presenceStub() as any,
+      new CallBridgeStub() as any
+    );
+    (manager as any).verifyPool = {
+      verify: vi.fn(async () => true),
+      stop: vi.fn(),
+    };
+    const rejected: unknown[] = [];
+    manager.on('call:rejected', (payload) => rejected.push(payload));
+    (manager as any).activeCalls.set('call-multi-reject', {
+      callId: 'call-multi-reject',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-a',
+      invitedReticulumPeerHashes: new Set(['peer-a', 'peer-b']),
+      rejectedReticulumPeerHashes: new Set(),
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+    const rejection = {
+      type: 'CALL_REJECT',
+      callId: 'call-multi-reject',
+      fromPublicKey: 'peer-public-key',
+      signature: 'reject-signature',
+      timestamp: 126,
+    };
+
+    (manager as any).handleReject(rejection, 'peer-a');
+    await Promise.resolve();
+    expect((manager as any).activeCalls.has('call-multi-reject')).toBe(true);
+    expect(rejected).toHaveLength(0);
+
+    (manager as any).handleReject(rejection, 'peer-b');
+    await Promise.resolve();
+    expect((manager as any).activeCalls.has('call-multi-reject')).toBe(false);
+    expect(rejected).toHaveLength(1);
     manager.stop();
   });
 

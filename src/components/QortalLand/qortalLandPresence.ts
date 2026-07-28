@@ -9,6 +9,7 @@ export type QortalLandAvailability = {
 
 export type QortalLandPresenceMember = QortalLandAvailability & {
   address: string;
+  sessionId: string;
   roomId: string;
   lastSeenAt: number;
 };

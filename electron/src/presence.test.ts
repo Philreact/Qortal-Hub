@@ -182,6 +182,149 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.useRealTimers();
   });
 
+  it('aggregates multi-device status deterministically instead of using the latest heartbeat', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const manager = new PresenceManager();
+    const address = 'Q-multi-device-status';
+
+    const applyStatus = (
+      sessionId: string,
+      status: 'online' | 'busy' | 'idle',
+      timestamp: number
+    ) =>
+      (manager as any).applyVerifiedPresenceEnvelope(
+        {
+          id: `${sessionId}-${status}-${timestamp}`,
+          type: 'PRESENCE_HEARTBEAT',
+          senderAddress: address,
+          timestamp,
+          payload: {
+            address,
+            publicKey: 'pk-multi-device-status',
+            sessionId,
+            status,
+          },
+          signature: 'sig',
+        },
+        {
+          kind: 'reticulum',
+          destinationHash: `hash-${sessionId}`,
+        },
+        timestamp
+      );
+
+    expect(applyStatus('laptop-online', 'online', 9_998)).toBe(true);
+    expect(applyStatus('laptop-idle', 'idle', 9_999)).toBe(true);
+    expect(manager.getAddressStatus(address)).toBe('online');
+
+    expect(applyStatus('laptop-busy', 'busy', 10_000)).toBe(true);
+    expect(manager.getAddressStatus(address)).toBe('busy');
+
+    expect(applyStatus('laptop-busy', 'idle', 10_001)).toBe(true);
+    expect(manager.getAddressStatus(address)).toBe('online');
+
+    expect(applyStatus('laptop-online', 'idle', 10_002)).toBe(true);
+    expect(manager.getAddressStatus(address)).toBe('idle');
+    vi.useRealTimers();
+  });
+
+  it('returns every distinct fresh route for live sessions in stable preference order', () => {
+    vi.useFakeTimers();
+    const now = 20_000;
+    vi.setSystemTime(now);
+    const manager = new PresenceManager();
+    const address = 'Q-multi-device-routes';
+
+    const applyRoute = (
+      sessionId: string,
+      timestamp: number,
+      route: Parameters<PresenceManager['handleEnvelope']>[1]
+    ) =>
+      (manager as any).applyVerifiedPresenceEnvelope(
+        {
+          id: `${sessionId}-${timestamp}`,
+          type: 'PRESENCE_HEARTBEAT',
+          senderAddress: address,
+          timestamp,
+          payload: {
+            address,
+            publicKey: 'pk-multi-device-routes',
+            sessionId,
+            status: 'online',
+          },
+          signature: 'sig',
+        },
+        route,
+        timestamp
+      );
+
+    applyRoute('mesh', now - 3, { kind: 'mesh-node', id: 'mesh-peer' });
+    applyRoute('reticulum-old', now - 2, {
+      kind: 'reticulum',
+      destinationHash: 'reticulum-a',
+    });
+    applyRoute('reticulum-new', now - 1, {
+      kind: 'reticulum',
+      destinationHash: 'reticulum-b',
+    });
+    applyRoute('reticulum-duplicate', now, {
+      kind: 'reticulum',
+      destinationHash: 'reticulum-a',
+      viaDestinationHash: 'relay-peer',
+    });
+
+    expect(manager.getRoutesForAddress(address)).toEqual([
+      {
+        kind: 'reticulum',
+        destinationHash: 'reticulum-a',
+        viaDestinationHash: 'relay-peer',
+      },
+      { kind: 'reticulum', destinationHash: 'reticulum-b' },
+      { kind: 'mesh-node', id: 'mesh-peer' },
+    ]);
+    expect(manager.getRouteForAddress(address)).toEqual({
+      kind: 'reticulum',
+      destinationHash: 'reticulum-a',
+      viaDestinationHash: 'relay-peer',
+    });
+    vi.useRealTimers();
+  });
+
+  it('excludes expired sessions and stale routes from multi-device routing', () => {
+    vi.useFakeTimers();
+    const now = 30_000;
+    vi.setSystemTime(now);
+    const manager = new PresenceManager();
+    const address = 'Q-expiring-routes';
+
+    (manager as any).applyVerifiedPresenceEnvelope(
+      {
+        id: 'expiring-route',
+        type: 'PRESENCE_HEARTBEAT',
+        senderAddress: address,
+        timestamp: now,
+        payload: {
+          address,
+          publicKey: 'pk-expiring-routes',
+          sessionId: 'expiring-session',
+          status: 'online',
+        },
+        signature: 'sig',
+      },
+      { kind: 'reticulum', destinationHash: 'expiring-hash' },
+      now
+    );
+
+    expect(manager.getRoutesForAddress(address)).toHaveLength(1);
+    vi.setSystemTime(now + 45_001);
+    expect(manager.isAddressOnline(address)).toBe(true);
+    expect(manager.getRoutesForAddress(address)).toEqual([]);
+    vi.setSystemTime(now + PRESENCE_SESSION_TIMEOUT_MS + 1);
+    expect(manager.isAddressOnline(address)).toBe(false);
+    vi.useRealTimers();
+  });
+
   it('latches verified overlay identity on first envelope; later messages do not churn mesh', () => {
     const manager = new PresenceManager();
     (manager as any).promoteVerifiedReticulumPeer('peer-hash', 'Q-first', 1000);

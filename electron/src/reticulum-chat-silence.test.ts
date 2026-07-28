@@ -12,8 +12,8 @@ import {
   reticulumDmConversationId,
 } from './reticulum-chat-db';
 
-const OWNER = 'Qowner';
-const PEER = 'Qpeer';
+const OWNER = 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91';
+const PEER = 'QeLB8NZBjQkWYkRdw3renvRgB63DWR9E5E';
 const GROUP_ID = 716;
 
 function tempDbPath(): string {

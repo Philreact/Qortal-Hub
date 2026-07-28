@@ -218,6 +218,7 @@ type ReticulumBackgroundEvent = {
   privilegedMentionAuthorized?: boolean;
   targetEventId?: string;
   timestamp?: number;
+  readByOwner?: boolean;
 };
 
 const RETICULUM_RENDERER_ONLINE_SINCE_MS = Date.now();
@@ -2614,6 +2615,7 @@ export const Group = ({
       const eventId = String(event?.eventId || '');
       if (
         event.eventType === 'edit' ||
+        event.readByOwner === true ||
         !eventId ||
         !myAddressRef.current ||
         event.authorAddress === myAddressRef.current ||

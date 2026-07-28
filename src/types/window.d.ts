@@ -556,7 +556,10 @@ declare global {
         signature: string,
         publicKey: string,
         callId: string,
-        timestamp: number
+        timestamp: number,
+        cancellationSignature?: string,
+        cancellationPublicKey?: string,
+        cancellationTimestamp?: number
       ) => Promise<{ success: boolean; callId?: string; error?: string }>;
       accept: (
         callId: string,
@@ -718,6 +721,7 @@ declare global {
       publishDirectEvent: (
         event: unknown
       ) => Promise<{ success: boolean; error?: string }>;
+      getDirectAuthorStreamId: (authorAddress: string) => Promise<string>;
       sendDirectTyping: (
         localAddress: string,
         peerAddress: string,
@@ -935,6 +939,7 @@ declare global {
           groupId: number;
           authorAddress: string;
           sessionId: string;
+          destinationHash?: string;
           sequence: number;
           x: number;
           y: number;
@@ -987,6 +992,10 @@ declare global {
           signature?: string;
           reason?: string;
           roomId?: string;
+          sourceSessionId?: string;
+          targetSessionId?: string;
+          sourceDestinationHash?: string;
+          targetDestinationHash?: string;
           timestamp?: number;
         }) => void
       ) => () => void;
@@ -1145,7 +1154,10 @@ declare global {
         joinGeneration?: number,
         topologyEpochFloor?: number,
         reticulumIdentityPublicKeyBase64?: string,
-        joinRkSignature?: string
+        joinRkSignature?: string,
+        dmVoiceAudioLinkRole?: 'opener' | 'waiter',
+        takeover?: boolean,
+        dmVoicePeerDestinationHash?: string
       ) => Promise<{
         success: boolean;
         error?: string;
@@ -1157,14 +1169,16 @@ declare global {
         localAddress: string,
         signature: string,
         publicKey: string,
-        timestamp: number
+        timestamp: number,
+        joinGeneration?: number
       ) => Promise<{ success: boolean }>;
       leaveSync?: (
         roomId: string,
         localAddress: string,
         signature: string,
         publicKey: string,
-        timestamp: number
+        timestamp: number,
+        joinGeneration?: number
       ) => { success: boolean; error?: string };
       broadcastTopology: (
         roomId: string,

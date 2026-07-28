@@ -9,11 +9,15 @@
  */
 
 import { EventEmitter } from 'events';
-import { log as loggerLog, error as loggerError, warn as loggerWarn } from './logger';
+import {
+  log as loggerLog,
+  error as loggerError,
+  warn as loggerWarn,
+} from './logger';
 import { wireFitsReticulum } from './reticulum-wire-size';
 import { deriveAddressFromPublicKey } from './presence';
 import { VerifyWorkerPool } from './verify-worker-pool';
-import type { PresenceManager } from './presence';
+import type { PresenceManager, PresenceRoute } from './presence';
 import type { ReticulumBridge } from './reticulum-bridge';
 
 const CALL_MAX_HOPS = 4;
@@ -239,6 +243,12 @@ interface CallRecord {
   localAddress: string;
   remoteAddress: string;
   reticulumPeerPresenceHash: string;
+  invitedReticulumPeerHashes?: Set<string>;
+  rejectedReticulumPeerHashes?: Set<string>;
+  acceptedReticulumPeerHash?: string;
+  cancellationSignature?: string;
+  cancellationPublicKey?: string;
+  cancellationTimestamp?: number;
   chatId: string;
   direction: CallDirection;
   state: CallState;
@@ -415,9 +425,7 @@ export class CallManager extends EventEmitter {
     const cutoff = now - CALL_REQUEST_TTL_MS;
     this.pendingVerifiedIncomingWhenNoLocal =
       this.pendingVerifiedIncomingWhenNoLocal.filter(
-        (p) =>
-          p.receivedAt >= cutoff &&
-          p.env.callId !== env.callId
+        (p) => p.receivedAt >= cutoff && p.env.callId !== env.callId
       );
     this.pendingVerifiedIncomingWhenNoLocal.push({
       env,
@@ -451,7 +459,10 @@ export class CallManager extends EventEmitter {
     signature: string,
     publicKey: string,
     callId: string,
-    timestamp: number
+    timestamp: number,
+    cancellationSignature?: string,
+    cancellationPublicKey?: string,
+    cancellationTimestamp?: number
   ): Promise<string | null> {
     const env: CallRequestEnvelope = {
       type: 'CALL_REQUEST',
@@ -464,11 +475,17 @@ export class CallManager extends EventEmitter {
       hopsRemaining: CALL_MAX_HOPS,
     };
 
-    const route = this.presence.getRouteForAddress(targetAddress);
-    if (
-      route?.kind !== 'reticulum' ||
-      this.reticulumBridge?.getState() !== 'ready'
-    ) {
+    const allRoutes: PresenceRoute[] =
+      typeof this.presence.getRoutesForAddress === 'function'
+        ? this.presence.getRoutesForAddress(targetAddress)
+        : [this.presence.getRouteForAddress(targetAddress)].filter(
+            (route): route is PresenceRoute => route !== null
+          );
+    const routes = allRoutes.filter(
+      (route): route is Extract<PresenceRoute, { kind: 'reticulum' }> =>
+        route.kind === 'reticulum'
+    );
+    if (routes.length === 0 || this.reticulumBridge?.getState() !== 'ready') {
       loggerLog(`[Call] No Reticulum route to ${targetAddress}`);
       return null;
     }
@@ -477,7 +494,14 @@ export class CallManager extends EventEmitter {
       callId,
       localAddress,
       remoteAddress: targetAddress,
-      reticulumPeerPresenceHash: route.destinationHash,
+      reticulumPeerPresenceHash: routes[0].destinationHash,
+      invitedReticulumPeerHashes: new Set(
+        routes.map((route) => route.destinationHash)
+      ),
+      rejectedReticulumPeerHashes: new Set(),
+      cancellationSignature,
+      cancellationPublicKey,
+      cancellationTimestamp,
       chatId,
       direction: 'outbound',
       state: 'pending',
@@ -660,7 +684,10 @@ export class CallManager extends EventEmitter {
     );
   }
 
-  private handleAccept(env: CallAcceptEnvelope): void {
+  private handleAccept(
+    env: CallAcceptEnvelope,
+    senderDestinationHash: string
+  ): void {
     const call = this.activeCalls.get(env.callId);
     if (!call || call.direction !== 'outbound') return;
 
@@ -690,15 +717,21 @@ export class CallManager extends EventEmitter {
           return;
         }
         const c = this.activeCalls.get(env.callId);
-        if (!c || c.direction !== 'outbound') return;
+        if (!c || c.direction !== 'outbound' || c.state !== 'pending') return;
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
+        c.acceptedReticulumPeerHash = senderDestinationHash;
+        c.reticulumPeerPresenceHash = senderDestinationHash;
         c.state = 'active';
+        this.cancelOtherRingingEndpoints(c);
         this.emit('call:accepted', { callId: env.callId });
         loggerLog(`[Call] Call ${env.callId.slice(0, 8)}… accepted.`);
       });
   }
 
-  private handleReject(env: CallRejectEnvelope): void {
+  private handleReject(
+    env: CallRejectEnvelope,
+    senderDestinationHash: string
+  ): void {
     const call = this.activeCalls.get(env.callId);
     if (!call) return;
 
@@ -728,7 +761,21 @@ export class CallManager extends EventEmitter {
           return;
         }
         const c = this.activeCalls.get(env.callId);
-        if (!c) return;
+        if (!c || c.state !== 'pending') return;
+        if (c.direction === 'outbound') {
+          const invited = c.invitedReticulumPeerHashes ?? new Set<string>();
+          if (senderDestinationHash) invited.add(senderDestinationHash);
+          c.invitedReticulumPeerHashes = invited;
+          const rejected = c.rejectedReticulumPeerHashes ?? new Set<string>();
+          if (senderDestinationHash) rejected.add(senderDestinationHash);
+          c.rejectedReticulumPeerHashes = rejected;
+          if ([...invited].some((peer) => !rejected.has(peer))) {
+            loggerLog(
+              `[Call] Endpoint rejected ${env.callId.slice(0, 8)}…; waiting for ${invited.size - rejected.size} other endpoint(s).`
+            );
+            return;
+          }
+        }
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
@@ -815,10 +862,10 @@ export class CallManager extends EventEmitter {
 
     switch (env.type) {
       case 'CALL_ACCEPT':
-        this.handleAccept(env);
+        this.handleAccept(env, senderDestinationHash);
         break;
       case 'CALL_REJECT':
-        this.handleReject(env);
+        this.handleReject(env, senderDestinationHash);
         break;
       case 'CALL_HANGUP':
         this.handleHangup(env);
@@ -892,7 +939,10 @@ export class CallManager extends EventEmitter {
           return;
         }
         if (this.localAddresses.size === 0) {
-          this.enqueuePendingVerifiedIncomingRequest(env, senderDestinationHash);
+          this.enqueuePendingVerifiedIncomingRequest(
+            env,
+            senderDestinationHash
+          );
           return;
         }
         try {
@@ -907,6 +957,33 @@ export class CallManager extends EventEmitter {
 
   private sendToCall(call: CallRecord, env: CallWireEnvelope): void {
     this.sendEnvelope(call.remoteAddress, env);
+  }
+
+  private cancelOtherRingingEndpoints(call: CallRecord): void {
+    if (
+      call.direction !== 'outbound' ||
+      !call.cancellationSignature ||
+      !call.cancellationPublicKey ||
+      !Number.isFinite(call.cancellationTimestamp)
+    ) {
+      return;
+    }
+    const acceptedPeer = call.acceptedReticulumPeerHash;
+    const otherPeers = [...(call.invitedReticulumPeerHashes ?? [])].filter(
+      (peer) => peer && peer !== acceptedPeer
+    );
+    if (otherPeers.length === 0) return;
+    const wire = encodeCallWire({
+      type: 'CALL_HANGUP',
+      callId: call.callId,
+      fromPublicKey: call.cancellationPublicKey,
+      signature: call.cancellationSignature,
+      timestamp: call.cancellationTimestamp!,
+    });
+    if (!wireFitsReticulum(wire)) return;
+    for (const peer of otherPeers) {
+      void this.reticulumBridge?.sendCallDetailed(peer, wire).catch(() => {});
+    }
   }
 
   private clearControlRepeatTimers(call: CallRecord): void {
@@ -947,10 +1024,7 @@ export class CallManager extends EventEmitter {
     }
   }
 
-  private sendEnvelope(
-    targetAddress: string,
-    env: CallWireEnvelope
-  ): void {
+  private sendEnvelope(targetAddress: string, env: CallWireEnvelope): void {
     void this.sendEnvelopeWhenReady(targetAddress, env, 0);
   }
 
@@ -1003,7 +1077,11 @@ export class CallManager extends EventEmitter {
 
   private parseReticulumOverlayMeta(
     wire: Record<string, unknown>
-  ): { overlayId: string; targetAddress: string; hopsRemaining: number } | null {
+  ): {
+    overlayId: string;
+    targetAddress: string;
+    hopsRemaining: number;
+  } | null {
     if (
       typeof wire.X !== 'string' ||
       typeof wire.U !== 'string' ||

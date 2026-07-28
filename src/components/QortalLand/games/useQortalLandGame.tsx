@@ -35,7 +35,12 @@ import { ChessGameDialog } from './ChessGameDialog';
 import type { GameChatMessage } from './GameSessionChat';
 import { qortalLandRealtime } from '../realtime/qortalLandRealtime';
 
-type Target = { address: string; name?: string };
+type Target = {
+  address: string;
+  sessionId: string;
+  destinationHash: string;
+  name?: string;
+};
 export type QortalLandGameId = 'connect-four' | 'checkers' | 'chess';
 export type QortalLandGameState = ConnectFourState | CheckersState | ChessState;
 export type QortalLandGameMove = ConnectFourMove | CheckersMove | ChessMove;
@@ -44,7 +49,12 @@ export type QortalLandGameMatchView = Omit<ConnectFourGameView, 'state' | 'moves
   state?: QortalLandGameState;
   moves: QortalLandGameMove[];
 };
-type Match = QortalLandGameMatchView;
+type Match = QortalLandGameMatchView & {
+  requesterSessionId?: string;
+  recipientSessionId?: string;
+  requesterDestinationHash?: string;
+  recipientDestinationHash?: string;
+};
 const GAME_RECONNECTING_ERROR = 'Private game connection interrupted. Reconnecting…';
 
 const isGameId = (value: unknown): value is QortalLandGameId =>
@@ -172,6 +182,13 @@ export const canSignQortalLandGameHandshake = (
       Number(lastAcknowledgedPly) < 0 ||
       Number(lastAcknowledgedPly) > gameMaxPly(currentGame)
     ) return false;
+    if (
+      type === 'QORTAL_LAND_GAME_RESUME_REQUEST' &&
+      (fields.sourceSessionId !== current?.requesterSessionId ||
+        fields.targetSessionId !== current?.recipientSessionId ||
+        fields.sourceDestinationHash !== current?.requesterDestinationHash ||
+        fields.targetDestinationHash !== current?.recipientDestinationHash)
+    ) return false;
   }
   if (
     type === 'QORTAL_LAND_GAME_INVITE' ||
@@ -190,7 +207,11 @@ export const canSignQortalLandGameHandshake = (
         fields.game === (current.game || 'connect-four') &&
         fields.gameVersion === 1 &&
         fields.rulesVersion === 1 &&
-        fields.requesterNonce === current.requesterNonce
+        fields.requesterNonce === current.requesterNonce &&
+        fields.sourceSessionId === current.requesterSessionId &&
+        fields.targetSessionId === current.recipientSessionId &&
+        fields.sourceDestinationHash === current.requesterDestinationHash &&
+        fields.targetDestinationHash === current.recipientDestinationHash
       );
     }
     return fields.roundId === current.roundId;
@@ -240,6 +261,7 @@ export function useQortalLandGame(options: Options) {
     resolvePlayerName,
   } = options;
   const [transportReady, setTransportReady] = useState(false);
+  const [localDestinationHash, setLocalDestinationHash] = useState('');
   const [match, setMatch] = useState<Match | null>(null);
   const [now, setNow] = useState(Date.now());
   const matchRef = useRef<Match | null>(null);
@@ -251,6 +273,36 @@ export function useQortalLandGame(options: Options) {
   const doNotDisturbRef = useRef(doNotDisturb);
 
   useEffect(() => { matchRef.current = match; }, [match]);
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    if (!enabled) {
+      setLocalDestinationHash('');
+      return () => {
+        cancelled = true;
+      };
+    }
+    const loadDestination = async () => {
+      let hash = '';
+      try {
+        const result = await window.electronAPI?.reticulumGetLocalDestinationHash?.();
+        const candidate = String(result?.destinationHash || '').trim().toLowerCase();
+        if (/^[0-9a-f]{32}$/.test(candidate)) hash = candidate;
+      } catch {
+        hash = '';
+      }
+      if (cancelled) return;
+      setLocalDestinationHash(hash);
+      if (!hash) {
+        retryTimer = window.setTimeout(loadDestination, 1_000);
+      }
+    };
+    void loadDestination();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [enabled]);
   useEffect(() => {
     doNotDisturbRef.current = doNotDisturb;
   }, [doNotDisturb]);
@@ -591,6 +643,10 @@ export function useQortalLandGame(options: Options) {
         game: event.game,
         roundId: String(event.matchId),
         recipientAddress: String(event.recipientAddress || address),
+        requesterSessionId: String(event.sourceSessionId || ''),
+        recipientSessionId: String(event.targetSessionId || sessionId),
+        requesterDestinationHash: String(event.sourceDestinationHash || ''),
+        recipientDestinationHash: String(event.targetDestinationHash || ''),
         requesterNonce: String(event.requesterNonce || ''), phase: 'incoming',
         requesterName: resolvePlayerName?.(String(event.requesterAddress)),
         recipientName: 'You',
@@ -606,6 +662,10 @@ export function useQortalLandGame(options: Options) {
       const recipientAddress = String(event.recipientAddress);
       const requesterNonce = String(event.requesterNonce);
       const recipientNonce = String(event.recipientNonce);
+      const requesterSessionId = String(event.requesterSessionId || '');
+      const recipientSessionId = String(event.recipientSessionId || '');
+      const requesterDestinationHash = String(event.requesterDestinationHash || '');
+      const recipientDestinationHash = String(event.recipientDestinationHash || '');
       const roundId = String(event.roundId || event.matchId);
       const transportPhase = String(event.phase || '');
       const eventGame = isGameId(event.game) ? event.game : matchRef.current?.game || 'connect-four';
@@ -617,6 +677,10 @@ export function useQortalLandGame(options: Options) {
           roundId,
           requesterAddress,
           recipientAddress,
+          requesterSessionId,
+          recipientSessionId,
+          requesterDestinationHash,
+          recipientDestinationHash,
           requesterNonce,
           recipientNonce: /^[0-9a-f]{32}$/i.test(recipientNonce) ? recipientNonce : undefined,
           requesterName: requesterAddress === address ? 'You' : resolvePlayerName?.(requesterAddress),
@@ -639,6 +703,10 @@ export function useQortalLandGame(options: Options) {
           roundId: String(pending.roundId || roundId),
           requesterAddress,
           recipientAddress,
+          requesterSessionId,
+          recipientSessionId,
+          requesterDestinationHash,
+          recipientDestinationHash,
           requesterNonce: String(pending.requesterNonce || requesterNonce),
           recipientNonce: undefined,
           requesterName: requesterAddress === address ? 'You' : resolvePlayerName?.(requesterAddress),
@@ -696,7 +764,9 @@ export function useQortalLandGame(options: Options) {
       updateMatch((previous) => ({
         ...(previous || {} as Match), matchId: String(event.matchId), roundId, requesterAddress,
         game: eventGame,
-        recipientAddress, requesterNonce, recipientNonce, startingSeat,
+        recipientAddress, requesterSessionId, recipientSessionId,
+        requesterDestinationHash, recipientDestinationHash,
+        requesterNonce, recipientNonce, startingSeat,
         localSeat,
         phase: ['recovering', 'awaiting_resume_accept', 'awaiting_resume_confirm'].includes(transportPhase)
           ? 'reconnecting'
@@ -774,7 +844,12 @@ export function useQortalLandGame(options: Options) {
   }, [address, failProtocol, handleGameMessage, onPlayerSeen, publicKey, replaceMatch, resolvePlayerName, send, updateMatch]);
 
   useEffect(() => {
-    if (!enabled || !publicKey || !(window.qortalLandRealtime || window.qortalLandGames)) return;
+    if (
+      !enabled ||
+      !publicKey ||
+      !localDestinationHash ||
+      !(window.qortalLandRealtime || window.qortalLandGames)
+    ) return;
     const disposeEvent = qortalLandRealtime.onEvent((event) => {
       if (event.type === 'TRANSPORT_RESTARTED') {
         updateMatch((value) => value ? {
@@ -798,6 +873,7 @@ export function useQortalLandGame(options: Options) {
         qortalLandRealtime.send({
           type: 'SET_LAND_CONTEXT', requestId: crypto.randomUUID(), address, publicKey,
           groupId: String(groupId), landSessionId: sessionId, roomId,
+          localDestinationHash,
         });
         qortalLandRealtime.send({ type: 'GET_ACTIVE_MATCH', requestId: crypto.randomUUID() });
         return;
@@ -817,7 +893,7 @@ export function useQortalLandGame(options: Options) {
       disposeState();
       release();
     };
-  }, [address, enabled, failProtocol, groupId, handleEvent, publicKey, roomId, send, sessionId, updateMatch]);
+  }, [address, enabled, failProtocol, groupId, handleEvent, localDestinationHash, publicKey, roomId, send, sessionId, updateMatch]);
 
   useEffect(() => () => {
     try {
@@ -859,7 +935,12 @@ export function useQortalLandGame(options: Options) {
 
   const challenge = useCallback(async (target: Target, game: QortalLandGameId = 'connect-four') => {
     onActivity?.();
-    if (!transportReady || target.address === address) return;
+    if (
+      !transportReady ||
+      target.address === address ||
+      !target.sessionId ||
+      !/^[0-9a-f]{32}$/.test(target.destinationHash)
+    ) return;
     const existing = matchRef.current;
     if (existing?.phase === 'session-idle') {
       const peer = existing.requesterAddress === address ? existing.recipientAddress : existing.requesterAddress;
@@ -883,6 +964,10 @@ export function useQortalLandGame(options: Options) {
       roundId: matchId,
       requesterAddress: address,
       recipientAddress: target.address,
+      requesterSessionId: sessionId,
+      recipientSessionId: target.sessionId,
+      requesterDestinationHash: localDestinationHash,
+      recipientDestinationHash: target.destinationHash,
       requesterNonce,
       requesterName: 'You',
       recipientName: target.name || resolvePlayerName?.(target.address),
@@ -890,8 +975,15 @@ export function useQortalLandGame(options: Options) {
       moves: [],
       chatMessages: [],
     });
-    send('OPEN_GAME_LINK', { matchId, recipientAddress: target.address, requesterNonce, game });
-  }, [address, onActivity, replaceMatch, resolvePlayerName, send, transportReady]);
+    send('OPEN_GAME_LINK', {
+      matchId,
+      recipientAddress: target.address,
+      targetSessionId: target.sessionId,
+      targetDestinationHash: target.destinationHash,
+      requesterNonce,
+      game,
+    });
+  }, [address, localDestinationHash, onActivity, replaceMatch, resolvePlayerName, send, sessionId, transportReady]);
 
   const respond = useCallback((accepted: boolean) => {
     onActivity?.();

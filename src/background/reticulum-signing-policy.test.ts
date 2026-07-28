@@ -22,6 +22,7 @@ describe('Reticulum wallet signing policy', () => {
       ephemeralPublicKey: '11'.repeat(32),
       groupId: '123',
       landSessionId: 'land-session',
+      destinationHash: 'aa'.repeat(16),
       instanceId: '00112233-4455-4677-8899-aabbccddeeff',
       nonce: '22'.repeat(32),
       createdAt: now,
@@ -31,6 +32,7 @@ describe('Reticulum wallet signing policy', () => {
     expect(() => assertAllowedPresenceSigningPayload({ ...capability, audio: 'bytes' })).toThrow();
     expect(() => assertAllowedPresenceSigningPayload({ ...capability, protocolVersion: 2 })).toThrow();
     expect(() => assertAllowedPresenceSigningPayload({ ...capability, nonce: 'short' })).toThrow();
+    expect(() => assertAllowedPresenceSigningPayload({ ...capability, destinationHash: 'short' })).toThrow();
     expect(() => assertAllowedPresenceSigningPayload({ ...capability, groupId: '2147483648' })).toThrow();
     expect(() => assertAllowedPresenceSigningPayload({ ...capability, expiresAt: now + 5 * 60 * 60 * 1000 })).toThrow();
   });
@@ -42,6 +44,8 @@ describe('Reticulum wallet signing policy', () => {
       matchId: '00112233-4455-4677-8899-aabbccddeeff', groupId: '123',
       requesterAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
       recipientAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
+      sourceSessionId: 'source-session', targetSessionId: 'target-session',
+      sourceDestinationHash: '33'.repeat(16), targetDestinationHash: '44'.repeat(16),
       signerPublicKey: '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE',
       requesterNonce: '11'.repeat(16), linkId: '22'.repeat(16),
       createdAt: 1, expiresAt: 2,
@@ -69,6 +73,10 @@ describe('Reticulum wallet signing policy', () => {
       requesterAddress: invite.requesterAddress,
       signerPublicKey: invite.signerPublicKey,
       linkId: invite.linkId,
+      sourceSessionId: invite.sourceSessionId,
+      targetSessionId: invite.targetSessionId,
+      sourceDestinationHash: invite.sourceDestinationHash,
+      targetDestinationHash: invite.targetDestinationHash,
       requesterNonce: '33'.repeat(16),
       lastAcknowledgedPly: 4,
       stateHash: '44'.repeat(32),
@@ -260,6 +268,28 @@ describe('Reticulum wallet signing policy', () => {
         timestamp: 1,
       },
       {
+        type: 'QORTAL_LAND_SESSION_ROUTE_V1',
+        groupId: 1,
+        sessionId: 's',
+        destinationHash: 'a'.repeat(32),
+        timestamp: 1,
+        expiresAt: 2,
+      },
+      {
+        type: 'QORTAL_LAND_CALL_V2',
+        groupId: 1,
+        callType: 'request',
+        callId: 'call-12345678',
+        toAddress: 'b',
+        sourceSessionId: 'source',
+        targetSessionId: 'target',
+        sourceDestinationHash: 'a'.repeat(32),
+        targetDestinationHash: 'b'.repeat(32),
+        reason: '',
+        roomId: 'lounge',
+        timestamp: 1,
+      },
+      {
         type: 'RCHAT_EVENT_NOTICE_V3',
         eventId: 'e',
         groupId: 1,
@@ -311,6 +341,15 @@ describe('Reticulum wallet signing policy', () => {
         timestamp: 1,
       },
       { type: 'RCHAT_DM_PROBE', requestId: 'r', maxHops: 3, timestamp: 1 },
+      {
+        type: 'RCHAT_READ_SYNC_V1',
+        scopeType: 'dm',
+        ownerAddress: 'a',
+        conversationId: 'c',
+        peerAddress: 'b',
+        upToTimestamp: 1,
+        signedAt: 1,
+      },
       {
         type: 'RCHAT_METADATA_SNAPSHOT',
         createdAt: 1,

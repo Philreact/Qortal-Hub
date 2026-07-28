@@ -60,7 +60,7 @@ COMMAND_FIELDS = {
     "UPDATE_PROXIMITY_POSITION": ({"type", "requestId", "landSessionId", "sequence", "roomId", "x", "y"}, {"type", "requestId", "landSessionId", "sequence", "roomId", "x", "y"}),
     "SET_PROXIMITY_TRANSMIT": ({"type", "requestId", "transmitting", "mode"}, {"type", "requestId", "transmitting"}),
     "SET_PROXIMITY_SUSPENDED": ({"type", "requestId", "suspended"}, {"type", "requestId", "suspended"}),
-    "SET_PROXIMITY_PEER_POLICY": ({"type", "requestId", "address", "muted", "volume", "blocked"}, {"type", "requestId", "address"}),
+    "SET_PROXIMITY_PEER_POLICY": ({"type", "requestId", "address", "sessionId", "muted", "volume", "blocked"}, {"type", "requestId", "address"}),
     "GET_PROXIMITY_STATE": ({"type", "requestId"}, {"type", "requestId"}),
     "GET_PROXIMITY_DIAGNOSTICS": ({"type", "requestId"}, {"type", "requestId"}),
 }
@@ -89,7 +89,7 @@ class QortalLandProximityVoiceManager:
         emit: Callable[[str, Dict[str, Any]], None],
         send_binary: Callable[[bytes, int], bool],
         log: Callable[[str], None],
-        resolve_peer: Callable[[str], Optional[str]],
+        resolve_peer: Callable[[str, str], Optional[str]],
         resolve_identity: Callable[[str], Any],
         build_destination: Callable[[Any], Any],
         link_id_bytes: Callable[[Any], bytes],
@@ -99,6 +99,7 @@ class QortalLandProximityVoiceManager:
         derive_address: Callable[[str], str],
         decode_base58: Callable[[str], bytes],
         enqueue_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
+        resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
     ):
         self.emit = emit
         self.send_binary = send_binary
@@ -113,6 +114,7 @@ class QortalLandProximityVoiceManager:
         self.verify_wallet = verify_wallet
         self.derive_address = derive_address
         self.decode_base58 = decode_base58
+        self.resolve_link_peer_hash = resolve_link_peer_hash
         self.lock = threading.RLock()
         self.context: Optional[Dict[str, Any]] = None
         self.enabled = False
@@ -169,12 +171,17 @@ class QortalLandProximityVoiceManager:
         suffix = f" code={str(code)[:48]}" if code else ""
         self.log(f"[qortalland-proximity] stage={stage} peer={peer}{suffix}")
 
+    @staticmethod
+    def _peer_key(address: str, session_id: str) -> str:
+        return f"{str(address or '').strip()}:{str(session_id or '').strip()}"
+
     def set_context(self, context: Dict[str, Any]) -> None:
         previous = self.context
         if previous and (
             previous.get("address") != context.get("address")
             or previous.get("groupId") != context.get("groupId")
             or previous.get("landSessionId") != context.get("landSessionId")
+            or previous.get("localDestinationHash") != context.get("localDestinationHash")
         ):
             self.disable("land_context_changed")
         self.context = dict(context)
@@ -282,8 +289,12 @@ class QortalLandProximityVoiceManager:
             "ephemeralPublicKey": ephemeral_public,
             "groupId": self.context["groupId"],
             "landSessionId": self.context["landSessionId"],
+            "destinationHash": self.context["localDestinationHash"],
             "instanceId": self.context.get("instanceId", ""),
-            "nonce": secrets.token_hex(32),
+            # The fresh ephemeral key already provides a unique 256-bit value.
+            # Reuse it as the signed nonce so compact discovery does not have to
+            # carry a second redundant 32-byte random value.
+            "nonce": ephemeral_public,
             "createdAt": now_ms,
             "expiresAt": now_ms + CAPABILITY_MAX_AGE_MS,
         }
@@ -373,9 +384,9 @@ class QortalLandProximityVoiceManager:
         self.local_media_max_sequence = -1
         self.source_ids.clear()
         self.next_source_id = 1
-        for address, state in self.links.items():
-            state["sourceId"] = self._source_id(address)
-            self._emit_peer(address, state)
+        for peer_key, state in self.links.items():
+            state["sourceId"] = self._source_id(peer_key)
+            self._emit_peer(peer_key, state)
 
     def renderer_lost(self) -> None:
         if self.enabled and self.renderer_lost_at is None:
@@ -416,6 +427,7 @@ class QortalLandProximityVoiceManager:
 
     def _set_peer_policy(self, message: Dict[str, Any]) -> None:
         address = str(message.get("address") or "")
+        session_id = str(message.get("sessionId") or "")
         if len(address) < 20 or len(address) > 64:
             raise ValueError("invalid_peer_address")
         if "blocked" in message and not isinstance(message.get("blocked"), bool):
@@ -424,19 +436,25 @@ class QortalLandProximityVoiceManager:
             raise ValueError("invalid_peer_mute_policy")
         if message.get("blocked") is True:
             self.blocked_addresses.add(address)
-            self._drop_remote(address, "blocked")
+            for peer_key, capability in list(self.remote_capabilities.items()):
+                if capability.get("address") == address:
+                    self._drop_remote(peer_key, "blocked")
             return
         if message.get("blocked") is False:
             self.blocked_addresses.discard(address)
-        state = self.links.get(address)
-        if not state:
-            return
-        state["muted"] = message.get("muted") is True
         volume = message.get("volume", 1.0)
         if not isinstance(volume, (int, float)) or not math.isfinite(float(volume)):
             raise ValueError("invalid_peer_volume")
-        state["volume"] = max(0.0, min(2.0, float(volume)))
-        self._emit_peer(address, state)
+        targets = [self._peer_key(address, session_id)] if session_id else [
+            key for key, state in self.links.items() if state.get("address") == address
+        ]
+        for peer_key in targets:
+            state = self.links.get(peer_key)
+            if not state:
+                continue
+            state["muted"] = message.get("muted") is True
+            state["volume"] = max(0.0, min(2.0, float(volume)))
+            self._emit_peer(peer_key, state)
 
     def _broadcast(self, enabled: bool) -> None:
         if not self.context:
@@ -484,7 +502,13 @@ class QortalLandProximityVoiceManager:
             ):
                 return True
             address = str(wire.get("a") or "")
-            if not address or not self.context or address == self.context.get("address"):
+            session_id = str(wire.get("s") or "")
+            peer_key = self._peer_key(address, session_id)
+            local_key = self._peer_key(
+                self.context.get("address") if self.context else "",
+                self.context.get("landSessionId") if self.context else "",
+            )
+            if not address or not session_id or not self.context or peer_key == local_key:
                 return True
             if str(wire.get("g") or "") != str(self.context.get("groupId") or ""):
                 return True
@@ -521,13 +545,15 @@ class QortalLandProximityVoiceManager:
                 )
             except Exception:
                 return True
-            resolved_peer = str(self.resolve_peer(address) or "").lower()
+            destination_hash = str(fields.get("destinationHash") or "").lower()
+            resolved_peer = str(self.resolve_peer(address, destination_hash) or "").lower()
             if not resolved_peer:
                 return True
             if wire.get("e") is not True:
-                self._drop_remote(address, "disabled")
+                self._drop_remote(peer_key, "disabled")
                 return True
-            self.remote_capabilities[address] = {
+            self.remote_capabilities[peer_key] = {
+                "address": address, "sessionId": session_id,
                 "fields": fields, "signature": signature, "hash": expected_hash,
                 "peerHash": resolved_peer, "roomId": str(wire.get("u") or ""),
                 "busy": wire.get("b") is True, "at": time.time(),
@@ -541,7 +567,7 @@ class QortalLandProximityVoiceManager:
     def _valid_remote_capability(self, fields: Dict[str, Any], signature: str, address: str) -> bool:
         required = {
             "type", "protocolVersion", "address", "signerPublicKey", "ephemeralPublicKey",
-            "groupId", "landSessionId", "instanceId", "nonce", "createdAt", "expiresAt",
+            "groupId", "landSessionId", "destinationHash", "instanceId", "nonce", "createdAt", "expiresAt",
         }
         if set(fields.keys()) != required or fields.get("type") != "QORTAL_LAND_PROXIMITY_VOICE_SESSION":
             return False
@@ -563,6 +589,9 @@ class QortalLandProximityVoiceManager:
             and self._valid_instance_id(str(fields.get("instanceId")))
             and isinstance(fields.get("landSessionId"), str)
             and 0 < len(str(fields.get("landSessionId"))) <= 24
+            and isinstance(fields.get("destinationHash"), str)
+            and len(str(fields.get("destinationHash"))) == 32
+            and all(char in "0123456789abcdef" for char in str(fields.get("destinationHash")).lower())
             and isinstance(fields.get("nonce"), str)
             and len(str(fields.get("nonce"))) == 64
             and isinstance(fields.get("ephemeralPublicKey"), str)
@@ -581,18 +610,20 @@ class QortalLandProximityVoiceManager:
 
     def on_land_state(self, wire: Dict[str, Any], peer_hash: str) -> None:
         address = str(wire.get("a") or "")
+        session_id = str(wire.get("s") or "")
         x, y = wire.get("x"), wire.get("y")
         timestamp = wire.get("ts")
         if (
-            not address or not isinstance(x, (int, float)) or isinstance(x, bool)
+            not address or not session_id or not isinstance(x, (int, float)) or isinstance(x, bool)
             or not isinstance(y, (int, float)) or isinstance(y, bool)
             or not math.isfinite(float(x)) or not math.isfinite(float(y))
             or not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool)
             or abs(time.time() * 1000 - float(timestamp)) > LAND_STATE_MAX_AGE * 1000
         ):
             return
-        self.remote_positions[address] = {
-            "groupId": str(wire.get("g") or ""), "sessionId": str(wire.get("s") or ""),
+        peer_key = self._peer_key(address, session_id)
+        self.remote_positions[peer_key] = {
+            "address": address, "groupId": str(wire.get("g") or ""), "sessionId": session_id,
             "roomId": str(wire.get("u") or ""), "x": float(x),
             "y": float(y), "peerHash": str(peer_hash or "").lower(),
             "at": time.time(),
@@ -604,10 +635,11 @@ class QortalLandProximityVoiceManager:
             return []
         now = time.time()
         candidates: list[tuple[float, str]] = []
-        for address, capability in self.remote_capabilities.items():
+        for peer_key, capability in self.remote_capabilities.items():
+            address = str(capability.get("address") or "")
             if address in self.blocked_addresses:
                 continue
-            position = self.remote_positions.get(address)
+            position = self.remote_positions.get(peer_key)
             if not position or capability.get("busy"):
                 continue
             if now - capability["at"] > DISCOVERY_MAX_AGE or now - position["at"] > LAND_STATE_MAX_AGE:
@@ -621,25 +653,25 @@ class QortalLandProximityVoiceManager:
             if str(position["groupId"]) != str(self.context["groupId"]):
                 continue
             distance = math.hypot(position["x"] - self.position["x"], position["y"] - self.position["y"])
-            if distance <= PRECONNECT_DISTANCE or (address in self.links and distance <= RELEASE_DISTANCE):
-                candidates.append((distance, address))
+            if distance <= PRECONNECT_DISTANCE or (peer_key in self.links and distance <= RELEASE_DISTANCE):
+                candidates.append((distance, peer_key))
         candidates.sort(key=lambda item: (item[0], item[1]))
-        by_address = {address: distance for distance, address in candidates}
+        by_peer = {peer_key: distance for distance, peer_key in candidates}
         capacity = 5 if now < self.capacity_reduced_until else MAX_PEERS
-        selected = [address for address in self.links if address in by_address]
-        selected.sort(key=lambda address: (by_address[address], address))
+        selected = [peer_key for peer_key in self.links if peer_key in by_peer]
+        selected.sort(key=lambda peer_key: (by_peer[peer_key], peer_key))
         selected = selected[:capacity]
-        for _distance, address in candidates:
+        for _distance, peer_key in candidates:
             if len(selected) >= capacity:
                 break
-            if address not in selected:
-                selected.append(address)
+            if peer_key not in selected:
+                selected.append(peer_key)
         if len(selected) >= capacity:
-            outsiders = [(distance, address) for distance, address in candidates if address not in selected]
+            outsiders = [(distance, peer_key) for distance, peer_key in candidates if peer_key not in selected]
             if outsiders:
                 newcomer_distance, newcomer = outsiders[0]
-                worst = max(selected, key=lambda address: (by_address[address], address))
-                worst_distance = by_address[worst]
+                worst = max(selected, key=lambda peer_key: (by_peer[peer_key], peer_key))
+                worst_distance = by_peer[worst]
                 margin = max(60.0, worst_distance * 0.15)
                 if newcomer_distance <= worst_distance - margin:
                     since = self.replacement_since.setdefault(newcomer, now)
@@ -649,75 +681,87 @@ class QortalLandProximityVoiceManager:
                         self.replacement_since.pop(newcomer, None)
                 else:
                     self.replacement_since.pop(newcomer, None)
-        active_candidates = set(address for _distance, address in candidates)
-        for address in list(self.replacement_since):
-            if address not in active_candidates:
-                self.replacement_since.pop(address, None)
-        return sorted(((by_address[address], address) for address in selected), key=lambda item: (item[0], item[1]))
+        active_candidates = {peer_key for _distance, peer_key in candidates}
+        for peer_key in list(self.replacement_since):
+            if peer_key not in active_candidates:
+                self.replacement_since.pop(peer_key, None)
+        return sorted(((by_peer[peer_key], peer_key) for peer_key in selected), key=lambda item: (item[0], item[1]))
 
     def _reconcile(self) -> None:
-        selected = dict((address, distance) for distance, address in self._eligible())
+        selected = {peer_key: distance for distance, peer_key in self._eligible()}
         now = time.time()
         capacity = 5 if now < self.capacity_reduced_until else MAX_PEERS
-        for address, state in list(self.links.items()):
-            distance = selected.get(address)
+        for peer_key, state in list(self.links.items()):
+            distance = selected.get(peer_key)
             if distance is None:
-                remote_position = self.remote_positions.get(address)
+                remote_position = self.remote_positions.get(peer_key)
                 if (
                     self.position and remote_position
                     and remote_position.get("roomId") != self.position.get("roomId")
                 ):
                     state.setdefault("roomMismatchAt", now)
                     if now - state["roomMismatchAt"] >= 5.0:
-                        self._close_peer(address, "room_changed")
+                        self._close_peer(peer_key, "room_changed")
                     continue
                 state.pop("roomMismatchAt", None)
                 if len(selected) >= capacity and float(state.get("distance") or 9999) <= RELEASE_DISTANCE:
-                    self._close_peer(address, "capacity_rebalanced")
+                    self._close_peer(peer_key, "capacity_rebalanced")
                     continue
                 state.setdefault("outsideAt", now)
                 if now - state["outsideAt"] >= 30 or float(state.get("distance") or 9999) > RELEASE_DISTANCE:
-                    self._close_peer(address, "out_of_range")
+                    self._close_peer(peer_key, "out_of_range")
                 continue
             state.pop("outsideAt", None)
             state.pop("roomMismatchAt", None)
             state["distance"] = distance
-            self._emit_peer(address, state)
-        for address, distance in selected.items():
-            if address in self.links:
+            self._emit_peer(peer_key, state)
+        local_key = self._peer_key(str(self.context["address"]), str(self.context["landSessionId"]))
+        for peer_key, distance in selected.items():
+            if peer_key in self.links:
                 continue
-            if str(self.context["address"]) < address:
-                self._open_peer(address, distance)
+            if local_key < peer_key:
+                self._open_peer(peer_key, distance)
         visible_capacity: set[str] = set()
         if self.enabled and self.position:
             now = time.time()
-            for address, capability in self.remote_capabilities.items():
-                if address in selected or address in self.links or address in self.blocked_addresses:
+            for peer_key, capability in self.remote_capabilities.items():
+                address = str(capability.get("address") or "")
+                if peer_key in selected or peer_key in self.links or address in self.blocked_addresses:
                     continue
-                distance = self._distance_to(address)
+                distance = self._distance_to(peer_key)
                 if (
                     distance <= PRECONNECT_DISTANCE
                     and now - float(capability.get("at") or 0) <= DISCOVERY_MAX_AGE
                     and capability.get("busy") is not True
                 ):
-                    visible_capacity.add(address)
-                    self._emit_peer(address, {
-                        "phase": "capacity", "sourceId": self._source_id(address),
+                    visible_capacity.add(peer_key)
+                    self._emit_peer(peer_key, {
+                        "address": address, "sessionId": capability.get("sessionId"),
+                        "phase": "capacity", "sourceId": self._source_id(peer_key),
                         "authenticated": False, "muted": False, "volume": 1.0,
                     })
-        for address in self.visible_capacity_peers - visible_capacity:
+        for peer_key in self.visible_capacity_peers - visible_capacity:
+            capability = self.remote_capabilities.get(peer_key) or {}
             self.emit("PROXIMITY_PEER_STATE", {
-                "address": address, "state": "disconnected",
-                "sourceId": self.source_ids.get(address, 0), "reason": "not_nearby",
+                "peerKey": peer_key, "address": capability.get("address", ""),
+                "sessionId": capability.get("sessionId", ""), "state": "disconnected",
+                "sourceId": self.source_ids.get(peer_key, 0), "reason": "not_nearby",
             })
         self.visible_capacity_peers = visible_capacity
 
-    def _open_peer(self, address: str, distance: float) -> None:
-        retry = self.link_retry.get(address) or {}
+    def _open_peer(self, peer_key: str, distance: float) -> None:
+        retry = self.link_retry.get(peer_key) or {}
         if time.time() < float(retry.get("nextAt") or 0):
             return
-        capability = self.remote_capabilities.get(address)
-        peer_hash = self.resolve_peer(address) or (capability or {}).get("peerHash")
+        capability = self.remote_capabilities.get(peer_key)
+        if not capability:
+            return
+        address = str(capability.get("address") or "")
+        session_id = str(capability.get("sessionId") or "")
+        advertised_hash = str(capability.get("fields", {}).get("destinationHash") or "").lower()
+        peer_hash = str(self.resolve_peer(address, advertised_hash) or "").lower()
+        if not peer_hash or peer_hash != advertised_hash:
+            return
         identity = self.resolve_identity(peer_hash) if peer_hash else None
         if identity is None:
             self._trace("candidate_waiting_identity", address, throttle=5.0)
@@ -727,35 +771,36 @@ class QortalLandProximityVoiceManager:
             destination_hash = bytes(destination.hash)
             if not RNS.Transport.has_path(destination_hash):
                 now = time.time()
-                if now - self.path_requested_at.get(address, 0) >= 1.0:
-                    self.path_requested_at[address] = now
+                if now - self.path_requested_at.get(peer_key, 0) >= 1.0:
+                    self.path_requested_at[peer_key] = now
                     RNS.Transport.request_path(destination_hash)
                     self._trace("candidate_requesting_path", address, throttle=5.0)
                 return
             state = {
-                "address": address, "peerHash": peer_hash, "distance": distance,
+                "peerKey": peer_key, "address": address, "sessionId": session_id,
+                "peerHash": peer_hash, "distance": distance,
                 "phase": "opening", "createdAt": time.time(), "lastActivity": time.time(),
                 "authenticated": False, "muted": False, "volume": 1.0,
-                "sourceId": self._source_id(address), "txSequence": 0,
+                "sourceId": self._source_id(peer_key), "txSequence": 0,
                 "sendLock": threading.RLock(),
             }
             link = RNS.Link(destination, established_callback=self._outbound_established, closed_callback=self._link_closed)
             state["link"] = link
             with self.lock:
-                self.links[address] = state
-                self.links_by_object[id(link)] = address
+                self.links[peer_key] = state
+                self.links_by_object[id(link)] = peer_key
             self._trace("link_opening", address)
-            self._emit_peer(address, state)
+            self._emit_peer(peer_key, state)
         except Exception as exc:
             self.stats["linkFailures"] += 1
-            self._schedule_retry(address)
+            self._schedule_retry(peer_key)
             self.log(f"[qortalland-proximity] open failed peer={address[:8]} code={str(exc)[:80]}")
 
-    def _schedule_retry(self, address: str) -> None:
-        previous = self.link_retry.get(address) or {}
+    def _schedule_retry(self, peer_key: str) -> None:
+        previous = self.link_retry.get(peer_key) or {}
         attempts = min(6, int(previous.get("attempts") or 0) + 1)
         delay = min(5.0, 0.25 * (2 ** (attempts - 1)))
-        self.link_retry[address] = {"attempts": attempts, "nextAt": time.time() + delay}
+        self.link_retry[peer_key] = {"attempts": attempts, "nextAt": time.time() + delay}
 
     def _outbound_established(self, link) -> None:
         state = self._state_for_link(link)
@@ -766,13 +811,14 @@ class QortalLandProximityVoiceManager:
         hello = {
             "v": PROTOCOL_VERSION, "f": self.context["address"], "t": state["address"],
             "g": str(self.context["groupId"]), "s": self.context["landSessionId"],
+            "o": state["sessionId"],
             "r": self.position["roomId"], "c": self.capability_hash, "l": link_id,
             "n": nonce, "ts": int(time.time() * 1000),
         }
         hello["z"] = self.ephemeral_private.sign(umsgpack.packb(hello))
         raw = LINK_MAGIC + umsgpack.packb(hello)
         if len(raw) > 425:
-            self._close_peer(state["address"], "classifier_oversized")
+            self._close_peer(state["peerKey"], "classifier_oversized")
             return
         state["phase"] = "authenticating"
         state["linkId"] = link_id
@@ -780,7 +826,7 @@ class QortalLandProximityVoiceManager:
         link.set_packet_callback(self._on_packet)
         self._send_packet(state, raw)
         self._trace("classifier_sent", state["address"])
-        self._emit_peer(state["address"], state)
+        self._emit_peer(state["peerKey"], state)
 
     def handle_classifier(self, link, raw: bytes) -> bool:
         if not isinstance(raw, (bytes, bytearray)) or not raw.startswith(LINK_MAGIC):
@@ -792,33 +838,38 @@ class QortalLandProximityVoiceManager:
                 _safe_close(link)
                 return True
             address = str(hello["f"])
+            session_id = str(hello["s"])
+            peer_key = self._peer_key(address, session_id)
             capacity = 5 if time.time() < self.capacity_reduced_until else MAX_PEERS
-            if len(self.links) >= capacity and address not in self.links:
+            if len(self.links) >= capacity and peer_key not in self.links:
                 self._send_control({"link": link}, {"c": "reject", "r": "capacity"})
                 _safe_close(link)
                 return True
-            existing = self.links.get(address)
+            existing = self.links.get(peer_key)
             if existing:
                 _safe_close(existing.get("link"))
-            position = self.remote_positions.get(address) or {}
+            position = self.remote_positions.get(peer_key) or {}
+            remote = self.remote_capabilities.get(peer_key) or {}
             state = {
-                "address": address, "peerHash": str(position.get("peerHash") or ""),
-                "distance": self._distance_to(address), "phase": "connected", "link": link,
+                "peerKey": peer_key, "address": address, "sessionId": session_id,
+                "peerHash": str(remote.get("fields", {}).get("destinationHash") or ""),
+                "distance": self._distance_to(peer_key), "phase": "connected", "link": link,
                 "linkId": bytes(self.link_id_bytes(link) or b""), "authenticated": True,
                 "createdAt": time.time(), "lastActivity": time.time(), "muted": False,
-                "volume": 1.0, "sourceId": self._source_id(address), "txSequence": 0,
+                "volume": 1.0, "sourceId": self._source_id(peer_key), "txSequence": 0,
                 "remoteCapabilityHash": hello["c"], "nonce": hello["n"],
                 "sendLock": threading.RLock(),
             }
             with self.lock:
-                self.links[address] = state
-                self.links_by_object[id(link)] = address
-            self.link_retry.pop(address, None)
+                self.links[peer_key] = state
+                self.links_by_object[id(link)] = peer_key
+            self.link_retry.pop(peer_key, None)
             link.set_packet_callback(self._on_packet)
             link.set_link_closed_callback(self._link_closed)
             accept = {
                 "v": PROTOCOL_VERSION, "a": self.context["address"],
                 "c": "accept", "f": self.context["address"], "t": address,
+                "s": self.context["landSessionId"], "o": session_id,
                 "h": self.capability_hash, "q": hello["c"], "l": state["linkId"],
                 "n": hello["n"], "r": secrets.token_bytes(16),
                 "ts": int(time.time() * 1000),
@@ -829,37 +880,43 @@ class QortalLandProximityVoiceManager:
             state["authAcceptAttempts"] = 1
             self._send_control(state, accept)
             self._trace("accept_sent", address)
-            self._emit_peer(address, state)
+            self._emit_peer(peer_key, state)
         except Exception:
             self.stats["invalidFrames"] += 1
             _safe_close(link)
         return True
 
     def _verify_link_hello(self, link, hello: Dict[str, Any]) -> bool:
-        required = {"v", "f", "t", "g", "s", "r", "c", "l", "n", "ts", "z"}
+        required = {"v", "f", "t", "g", "s", "o", "r", "c", "l", "n", "ts", "z"}
         if (
             set(hello.keys()) != required or hello.get("v") != PROTOCOL_VERSION
             or not self.context or not self.enabled or self.suspended or not self.capability
         ):
             return False
         address = str(hello.get("f") or "")
-        remote = self.remote_capabilities.get(address)
+        session_id = str(hello.get("s") or "")
+        peer_key = self._peer_key(address, session_id)
+        local_key = self._peer_key(str(self.context["address"]), str(self.context["landSessionId"]))
+        remote = self.remote_capabilities.get(peer_key)
         now = time.time()
         # Exactly one side is allowed to initiate, so crossed/duplicate links
         # converge without timing-dependent winner selection.
         if (
             not remote or now - float(remote.get("at") or 0) > DISCOVERY_MAX_AGE
-            or address >= str(self.context["address"])
+            or peer_key >= local_key
             or hello.get("t") != self.context["address"]
+            or hello.get("o") != self.context["landSessionId"]
             or str(hello.get("g")) != str(self.context["groupId"])
         ):
             return False
-        resolved_peer = str(self.resolve_peer(address) or "").lower()
-        if not resolved_peer or resolved_peer != str(remote.get("peerHash") or "").lower():
+        destination_hash = str(remote.get("fields", {}).get("destinationHash") or "").lower()
+        resolved_peer = str(self.resolve_peer(address, destination_hash) or "").lower()
+        link_peer = str(self.resolve_link_peer_hash(link) or "").lower() if self.resolve_link_peer_hash else ""
+        if not resolved_peer or resolved_peer != destination_hash or link_peer != destination_hash:
             return False
         if hello.get("c") != remote["hash"] or hello.get("l") != bytes(self.link_id_bytes(link) or b""):
             return False
-        position = self.remote_positions.get(address) or {}
+        position = self.remote_positions.get(peer_key) or {}
         if (
             not self.position
             or now - float(self.position.get("at") or 0) > LAND_STATE_MAX_AGE
@@ -885,7 +942,7 @@ class QortalLandProximityVoiceManager:
         except Exception:
             return False
         self.used_link_nonces[nonce] = now
-        return self._distance_to(address) <= PRECONNECT_DISTANCE
+        return self._distance_to(peer_key) <= PRECONNECT_DISTANCE
 
     def _send_packet(self, state: Dict[str, Any], raw: bytes) -> None:
         link = state.get("link")
@@ -942,8 +999,8 @@ class QortalLandProximityVoiceManager:
                 self.stats["invalidFrames"] += 1
                 return
             if command == "accept":
-                remote = self.remote_capabilities.get(state["address"])
-                required = {"v", "a", "c", "f", "t", "h", "q", "l", "n", "r", "ts", "z"}
+                remote = self.remote_capabilities.get(state["peerKey"])
+                required = {"v", "a", "c", "f", "t", "s", "o", "h", "q", "l", "n", "r", "ts", "z"}
                 rejection = ""
                 if not remote:
                     rejection = "missing_remote_capability"
@@ -955,8 +1012,12 @@ class QortalLandProximityVoiceManager:
                     rejection = "local_capability_hash"
                 elif control.get("f") != state["address"]:
                     rejection = "sender"
+                elif control.get("s") != state["sessionId"]:
+                    rejection = "sender_session"
                 elif not self.context or control.get("t") != self.context["address"]:
                     rejection = "recipient"
+                elif not self.context or control.get("o") != self.context["landSessionId"]:
+                    rejection = "recipient_session"
                 elif control.get("l") != state.get("linkId"):
                     rejection = "link_id"
                 elif control.get("n") != state.get("nonce"):
@@ -980,12 +1041,12 @@ class QortalLandProximityVoiceManager:
                     return
                 state["authenticated"] = True
                 state["phase"] = "connected"
-                self.link_retry.pop(state["address"], None)
+                self.link_retry.pop(state["peerKey"], None)
                 self._send_control(state, {
                     "c": "auth_ack", "l": state["linkId"], "n": state["nonce"],
                 })
                 self._trace("link_authenticated", state["address"], "outbound")
-                self._emit_peer(state["address"], state)
+                self._emit_peer(state["peerKey"], state)
             elif command == "auth_ack":
                 if (
                     set(control.keys()) != {"v", "ts", "c", "l", "n"}
@@ -999,9 +1060,9 @@ class QortalLandProximityVoiceManager:
                 state.pop("authAcceptAttempts", None)
                 state["authenticated"] = True
                 state["phase"] = "connected"
-                self.link_retry.pop(state["address"], None)
+                self.link_retry.pop(state["peerKey"], None)
                 self._trace("link_authenticated", state["address"], "inbound")
-                self._emit_peer(state["address"], state)
+                self._emit_peer(state["peerKey"], state)
             elif command == "ping":
                 if set(control.keys()) != {"v", "ts", "c"}:
                     return
@@ -1018,22 +1079,28 @@ class QortalLandProximityVoiceManager:
                     return
                 state["remoteSpeaking"] = control.get("a") is True
                 state["speakingUntil"] = time.time() + 0.35 if state["remoteSpeaking"] else 0.0
-                self.emit("PROXIMITY_SPEAKING_STATE", {"address": state["address"], "speaking": state["remoteSpeaking"]})
+                self.emit("PROXIMITY_SPEAKING_STATE", {
+                    "peerKey": state["peerKey"], "address": state["address"],
+                    "sessionId": state["sessionId"], "speaking": state["remoteSpeaking"],
+                })
             elif command in {"pause", "resume"}:
                 if set(control.keys()) != {"v", "ts", "c"}:
                     return
                 state["remotePaused"] = command == "pause"
                 if command == "pause":
-                    self.emit("PROXIMITY_SPEAKING_STATE", {"address": state["address"], "speaking": False})
-                self._emit_peer(state["address"], state)
+                    self.emit("PROXIMITY_SPEAKING_STATE", {
+                        "peerKey": state["peerKey"], "address": state["address"],
+                        "sessionId": state["sessionId"], "speaking": False,
+                    })
+                self._emit_peer(state["peerKey"], state)
             elif command == "close":
                 if not set(control.keys()).issubset({"v", "ts", "c", "r"}):
                     return
-                self._close_peer(state["address"], "remote_closed")
+                self._close_peer(state["peerKey"], "remote_closed")
             elif command == "reject":
                 if set(control.keys()) != {"v", "ts", "c", "r"}:
                     return
-                self._close_peer(state["address"], str(control.get("r") or "rejected")[:40])
+                self._close_peer(state["peerKey"], str(control.get("r") or "rejected")[:40])
             return
         if not raw.startswith(MEDIA_MAGIC) or not state.get("authenticated"):
             return
@@ -1045,7 +1112,7 @@ class QortalLandProximityVoiceManager:
                 or length != len(payload) or not payload or length > MAX_OPUS_BYTES
             ):
                 raise ValueError("invalid media")
-            if state.get("muted") or state.get("remotePaused") or self.suspended or self._distance_to(state["address"]) > AUDIBLE_EXIT_DISTANCE:
+            if state.get("muted") or state.get("remotePaused") or self.suspended or self._distance_to(state["peerKey"]) > AUDIBLE_EXIT_DISTANCE:
                 return
             if state.get("rxGeneration") != generation:
                 retired = state.setdefault("rxRetiredGenerations", set())
@@ -1085,7 +1152,10 @@ class QortalLandProximityVoiceManager:
                 state["speakingUntil"] = time.time() + 0.35
                 if not state.get("remoteSpeaking"):
                     state["remoteSpeaking"] = True
-                    self.emit("PROXIMITY_SPEAKING_STATE", {"address": state["address"], "speaking": True})
+                    self.emit("PROXIMITY_SPEAKING_STATE", {
+                        "peerKey": state["peerKey"], "address": state["address"],
+                        "sessionId": state["sessionId"], "speaking": True,
+                    })
         except Exception:
             self.stats["invalidFrames"] += 1
 
@@ -1117,7 +1187,7 @@ class QortalLandProximityVoiceManager:
                 return True
             self.stats["localFrames"] += 1
             for state in list(self.links.values()):
-                if not state.get("authenticated") or state.get("remotePaused") or self._distance_to(state["address"]) > AUDIBLE_EXIT_DISTANCE:
+                if not state.get("authenticated") or state.get("remotePaused") or self._distance_to(state["peerKey"]) > AUDIBLE_EXIT_DISTANCE:
                     continue
                 frame = RNS_AUDIO_HEADER.pack(MEDIA_MAGIC, PROTOCOL_VERSION, 0, generation, sequence, captured_at & 0xFFFFFFFF, len(payload)) + payload
                 try:
@@ -1192,8 +1262,8 @@ class QortalLandProximityVoiceManager:
             self.disable("renderer_recovery_expired")
             return
         if self.suspended_at is not None and now - self.suspended_at >= 30.0:
-            for address in list(self.links):
-                self._close_peer(address, "call_suspension_timeout")
+            for peer_key in list(self.links):
+                self._close_peer(peer_key, "call_suspension_timeout")
         if self.pending_fields and int(self.pending_fields.get("createdAt") or 0) + CAPABILITY_CLOCK_SKEW_MS <= int(now * 1000):
             self.disable("authorization_expired")
             return
@@ -1231,21 +1301,24 @@ class QortalLandProximityVoiceManager:
         for nonce, used_at in list(self.used_link_nonces.items()):
             if now - used_at > 300:
                 self.used_link_nonces.pop(nonce, None)
-        for address, capability in list(self.remote_capabilities.items()):
+        for peer_key, capability in list(self.remote_capabilities.items()):
             if now - float(capability.get("at") or 0) > DISCOVERY_MAX_AGE:
-                self._drop_remote(address, "discovery_expired")
-        for address, state in list(self.links.items()):
+                self._drop_remote(peer_key, "discovery_expired")
+        for peer_key, state in list(self.links.items()):
             if state.get("remoteSpeaking") and now >= float(state.get("speakingUntil") or 0):
                 state["remoteSpeaking"] = False
-                self.emit("PROXIMITY_SPEAKING_STATE", {"address": address, "speaking": False})
+                self.emit("PROXIMITY_SPEAKING_STATE", {
+                    "peerKey": peer_key, "address": state["address"],
+                    "sessionId": state["sessionId"], "speaking": False,
+                })
             age = now - float(state.get("lastActivity") or state.get("createdAt") or now)
             if state.get("authenticated") and age > LINK_DEAD_AFTER:
-                self._schedule_retry(address)
-                self._close_peer(address, "heartbeat_timeout")
+                self._schedule_retry(peer_key)
+                self._close_peer(peer_key, "heartbeat_timeout")
                 continue
             if not state.get("authenticated") and now - float(state.get("createdAt") or now) > LINK_TIMEOUT:
-                self._schedule_retry(address)
-                self._close_peer(address, "establishment_timeout")
+                self._schedule_retry(peer_key)
+                self._close_peer(peer_key, "establishment_timeout")
                 continue
             if (
                 state.get("authAccept")
@@ -1277,17 +1350,20 @@ class QortalLandProximityVoiceManager:
     def _link_closed(self, link) -> None:
         state = self._state_for_link(link)
         if state:
-            address = state["address"]
+            peer_key = state["peerKey"]
             with self.lock:
                 self.links_by_object.pop(id(link), None)
-                if self.links.get(address, {}).get("link") is link:
-                    self.links.pop(address, None)
-            self._schedule_retry(address)
-            self._trace("link_closed", address, "callback", throttle=1.0)
-            self.emit("PROXIMITY_PEER_STATE", {"address": address, "state": "disconnected", "sourceId": state.get("sourceId", 0)})
+                if self.links.get(peer_key, {}).get("link") is link:
+                    self.links.pop(peer_key, None)
+            self._schedule_retry(peer_key)
+            self._trace("link_closed", state["address"], "callback", throttle=1.0)
+            self.emit("PROXIMITY_PEER_STATE", {
+                "peerKey": peer_key, "address": state["address"], "sessionId": state["sessionId"],
+                "state": "disconnected", "sourceId": state.get("sourceId", 0),
+            })
 
-    def _close_peer(self, address: str, reason: str) -> None:
-        state = self.links.pop(address, None)
+    def _close_peer(self, peer_key: str, reason: str) -> None:
+        state = self.links.pop(peer_key, None)
         if not state:
             return
         link = state.get("link")
@@ -1298,18 +1374,27 @@ class QortalLandProximityVoiceManager:
         except Exception:
             pass
         _safe_close(link)
-        self.emit("PROXIMITY_PEER_STATE", {"address": address, "state": "disconnected", "reason": reason, "sourceId": state.get("sourceId", 0)})
+        self.emit("PROXIMITY_PEER_STATE", {
+            "peerKey": peer_key, "address": state["address"], "sessionId": state["sessionId"],
+            "state": "disconnected", "reason": reason, "sourceId": state.get("sourceId", 0),
+        })
 
-    def _drop_remote(self, address: str, reason: str) -> None:
-        self.remote_capabilities.pop(address, None)
-        self._close_peer(address, reason)
+    def _drop_remote(self, peer_key: str, reason: str) -> None:
+        self.remote_capabilities.pop(peer_key, None)
+        self.remote_positions.pop(peer_key, None)
+        self._close_peer(peer_key, reason)
+        self.source_ids.pop(peer_key, None)
+        self.path_requested_at.pop(peer_key, None)
+        self.link_retry.pop(peer_key, None)
+        self.replacement_since.pop(peer_key, None)
+        self.visible_capacity_peers.discard(peer_key)
 
     def _state_for_link(self, link) -> Optional[Dict[str, Any]]:
-        address = self.links_by_object.get(id(link))
-        return self.links.get(address) if address else None
+        peer_key = self.links_by_object.get(id(link))
+        return self.links.get(peer_key) if peer_key else None
 
-    def _distance_to(self, address: str) -> float:
-        remote = self.remote_positions.get(address)
+    def _distance_to(self, peer_key: str) -> float:
+        remote = self.remote_positions.get(peer_key)
         if (
             not remote or not self.position
             or time.time() - float(remote.get("at") or 0) > LAND_STATE_MAX_AGE
@@ -1318,13 +1403,13 @@ class QortalLandProximityVoiceManager:
             return float("inf")
         return math.hypot(float(remote["x"]) - self.position["x"], float(remote["y"]) - self.position["y"])
 
-    def _source_id(self, address: str) -> int:
-        existing = self.source_ids.get(address)
+    def _source_id(self, peer_key: str) -> int:
+        existing = self.source_ids.get(peer_key)
         if existing:
             return existing
         source_id = self.next_source_id
         self.next_source_id = 1 if source_id >= 65535 else source_id + 1
-        self.source_ids[address] = source_id
+        self.source_ids[peer_key] = source_id
         return source_id
 
     def _gain(self, distance: float) -> float:
@@ -1335,13 +1420,17 @@ class QortalLandProximityVoiceManager:
         t = (distance - FULL_VOLUME_DISTANCE) / (AUDIBLE_DISTANCE - FULL_VOLUME_DISTANCE)
         return max(0.0, min(1.0, 1.0 - (t * t * (3.0 - 2.0 * t))))
 
-    def _emit_peer(self, address: str, state: Dict[str, Any]) -> None:
-        distance = self._distance_to(address)
-        remote = self.remote_positions.get(address) or {}
+    def _emit_peer(self, peer_key: str, state: Dict[str, Any]) -> None:
+        capability = self.remote_capabilities.get(peer_key) or {}
+        address = str(state.get("address") or capability.get("address") or "")
+        session_id = str(state.get("sessionId") or capability.get("sessionId") or "")
+        distance = self._distance_to(peer_key)
+        remote = self.remote_positions.get(peer_key) or {}
         relative_x = 0.0 if not self.position else float(remote.get("x") or self.position["x"]) - self.position["x"]
         self.emit("PROXIMITY_PEER_STATE", {
-            "address": address, "state": state.get("phase", "nearby"),
-            "sourceId": state.get("sourceId", self._source_id(address)),
+            "peerKey": peer_key, "address": address, "sessionId": session_id,
+            "state": state.get("phase", "nearby"),
+            "sourceId": state.get("sourceId", self._source_id(peer_key)),
             "distance": distance if math.isfinite(distance) else None,
             "gain": self._gain(distance), "pan": max(-0.65, min(0.65, relative_x / 300.0)),
             "muted": state.get("muted") is True, "volume": state.get("volume", 1.0),
@@ -1362,12 +1451,14 @@ class QortalLandProximityVoiceManager:
 
     def _emit_snapshot(self, diagnostics: bool = False) -> None:
         peers = []
-        for address, state in self.links.items():
-            distance = self._distance_to(address)
-            remote = self.remote_positions.get(address) or {}
+        for peer_key, state in self.links.items():
+            distance = self._distance_to(peer_key)
+            remote = self.remote_positions.get(peer_key) or {}
             relative_x = 0.0 if not self.position else float(remote.get("x") or self.position["x"]) - self.position["x"]
             peers.append({
-                "address": address, "state": state.get("phase"), "sourceId": state.get("sourceId"),
+                "peerKey": peer_key, "address": state.get("address", ""),
+                "sessionId": state.get("sessionId", ""),
+                "state": state.get("phase"), "sourceId": state.get("sourceId"),
                 "distance": distance if math.isfinite(distance) else None, "gain": self._gain(distance),
                 "pan": max(-0.65, min(0.65, relative_x / 300.0)),
                 "muted": state.get("muted") is True, "volume": state.get("volume", 1.0),

@@ -126,6 +126,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         senderAddress?: string;
         recipientAddress?: string;
         timestamp?: number;
+        readByOwner?: boolean;
       };
       const eventId = String(directEvent.eventId || '');
       if (

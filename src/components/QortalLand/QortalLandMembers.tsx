@@ -93,28 +93,43 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
     return byAddress;
   }, [members, myAddress]);
 
-  const presenceByAddress = useMemo(() => {
-    const byAddress = new Map<string, QortalLandPresenceMember>();
+  const presenceBySession = useMemo(() => {
+    const bySession = new Map<string, QortalLandPresenceMember>();
     for (const presence of landPresence) {
-      const previous = byAddress.get(presence.address);
+      if (!presence.sessionId) continue;
+      const key = `${presence.address}:${presence.sessionId}`;
+      const previous = bySession.get(key);
       if (!previous || presence.lastSeenAt > previous.lastSeenAt) {
-        byAddress.set(presence.address, presence);
+        bySession.set(key, presence);
       }
     }
-    return byAddress;
+    return bySession;
   }, [landPresence]);
+
+  const landAddresses = useMemo(
+    () => new Set([...presenceBySession.values()].map((presence) => presence.address)),
+    [presenceBySession]
+  );
+
+  const sessionCountByAddress = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const presence of presenceBySession.values()) {
+      counts.set(presence.address, (counts.get(presence.address) ?? 0) + 1);
+    }
+    return counts;
+  }, [presenceBySession]);
 
   const sections = useMemo(() => {
     const lounge: Array<{ member: GroupMember; presence: QortalLandPresenceMember }> = [];
     const park: Array<{ member: GroupMember; presence: QortalLandPresenceMember }> = [];
-    for (const presence of presenceByAddress.values()) {
+    for (const presence of presenceBySession.values()) {
       const member = knownMembers.get(presence.address) || { member: presence.address };
       (roomLabel(presence.roomId) === 'park' ? park : lounge).push({ member, presence });
     }
     const online = [...knownMembers.values()]
       .filter(
         (member) =>
-          onlineAddresses.has(member.member) && !presenceByAddress.has(member.member)
+          onlineAddresses.has(member.member) && !landAddresses.has(member.member)
       )
       .map((member) => ({ member, presence: null }));
     const sortByPresenceThenName = (
@@ -122,10 +137,10 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
       right: { member: GroupMember }
     ) => {
       const leftIsPresent =
-        presenceByAddress.has(left.member.member) ||
+        landAddresses.has(left.member.member) ||
         onlineAddresses.has(left.member.member);
       const rightIsPresent =
-        presenceByAddress.has(right.member.member) ||
+        landAddresses.has(right.member.member) ||
         onlineAddresses.has(right.member.member);
       if (leftIsPresent !== rightIsPresent) return leftIsPresent ? -1 : 1;
       return displayName(left.member).localeCompare(displayName(right.member), undefined, {
@@ -136,7 +151,7 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
     park.sort(sortByPresenceThenName);
     online.sort(sortByPresenceThenName);
     return { lounge, park, online };
-  }, [knownMembers, onlineAddresses, presenceByAddress]);
+  }, [knownMembers, landAddresses, onlineAddresses, presenceBySession]);
 
   const rowFontSize = textScale === 'high' ? 15 : textScale === 'medium' ? 14 : 13;
   const sectionData = [
@@ -227,9 +242,10 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
               ) : (
                 rows.map(({ member, presence }) => {
                   const name = displayName(member);
+                  const sessionCount = sessionCountByAddress.get(member.member) ?? 0;
                   return (
                     <Box
-                      key={member.member}
+                      key={presence ? `${member.member}:${presence.sessionId}` : member.member}
                       sx={{
                         alignItems: 'center',
                         borderRadius: '7px',
@@ -264,13 +280,23 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
                           {name.slice(0, 1).toUpperCase()}
                         </Avatar>
                       </PresenceStatusBadge>
-                      <Typography
-                        noWrap
-                        title={name}
-                        sx={{ flex: 1, fontSize: rowFontSize, fontWeight: 650, minWidth: 0 }}
-                      >
-                        {name}
-                      </Typography>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography
+                          noWrap
+                          title={name}
+                          sx={{ fontSize: rowFontSize, fontWeight: 650 }}
+                        >
+                          {name}
+                        </Typography>
+                        {presence && sessionCount > 1 && (
+                          <Typography
+                            noWrap
+                            sx={{ color: 'text.secondary', fontSize: 10.5, lineHeight: 1.15 }}
+                          >
+                            {sessionCount} active sessions
+                          </Typography>
+                        )}
+                      </Box>
                       <QortalLandAvailabilityTags availability={presence} />
                     </Box>
                   );

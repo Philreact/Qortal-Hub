@@ -334,6 +334,25 @@ export type ReticulumChatReadTarget = {
   timestamp: number;
 };
 
+export type ReticulumChatDeviceReadState = {
+  ownerAddress: string;
+  scopeType: 'group' | 'dm';
+  scopeId: string;
+  groupId?: number;
+  channelId?: string;
+  conversationId?: string;
+  peerAddress?: string;
+  upToTimestamp: number;
+  signedAt: number;
+  authorPublicKey: string;
+  signature: string;
+};
+
+export type ReticulumChatPendingDeviceReadState = Omit<
+  ReticulumChatDeviceReadState,
+  'signedAt' | 'authorPublicKey' | 'signature'
+> & { updatedAt: number };
+
 export type ReticulumChatSearchResult = {
   event: ReticulumChatEvent;
   snippet: string;
@@ -532,6 +551,7 @@ type DirectEventRow = {
   sender_address: string;
   recipient_address: string;
   sender_public_key: string;
+  sender_stream_id?: string;
   sender_seq: number;
   timestamp: number;
   event_type: string;
@@ -540,6 +560,7 @@ type DirectEventRow = {
   payload: string;
   payload_hash: string;
   signature: string;
+  legacy_signature?: string | null;
   own_event: number;
   read_at: number;
   stored_at: number;
@@ -813,6 +834,13 @@ function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
     senderAddress: row.sender_address,
     recipientAddress: row.recipient_address,
     senderPublicKey: row.sender_public_key,
+    ...(normalizeReticulumChatAuthorStreamId(row.sender_stream_id)
+      ? {
+          senderStreamId: normalizeReticulumChatAuthorStreamId(
+            row.sender_stream_id
+          ),
+        }
+      : {}),
     senderSeq: row.sender_seq,
     timestamp: row.timestamp,
     eventType: row.event_type as ReticulumDmEvent['eventType'],
@@ -821,6 +849,7 @@ function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
     payload: row.payload,
     payloadHash: row.payload_hash,
     signature: row.signature,
+    ...(row.legacy_signature ? { legacySignature: row.legacy_signature } : {}),
     localDeliveryStatus:
       row.delivery_status === 'pending' ||
       row.delivery_status === 'sent' ||
@@ -1444,6 +1473,7 @@ export class ReticulumChatDatabase {
   private stmtGetPrivilegedMentionStatus: Statement;
   private stmtUpdatePrivilegedMentionStatus: Statement;
   private stmtGetWatermark: Statement;
+  private stmtGetDirectWatermark: Statement;
   private stmtUpsertWatermark: Statement;
   private stmtUpsertMention: Statement;
   private stmtDeleteMentionsForEvent: Statement;
@@ -1974,6 +2004,9 @@ export class ReticulumChatDatabase {
     );
     this.stmtGetWatermark = this.db.prepare(
       'SELECT timestamp FROM reticulum_chat_read_watermarks WHERE group_id = ? AND channel_id = ? AND address = ?'
+    );
+    this.stmtGetDirectWatermark = this.db.prepare(
+      'SELECT timestamp FROM rchat_dm_read_watermarks WHERE conversation_id = ? AND address = ?'
     );
     this.stmtUpsertWatermark = this.db.prepare(`
       INSERT INTO reticulum_chat_read_watermarks (group_id, channel_id, address, timestamp)
@@ -2691,18 +2724,28 @@ export class ReticulumChatDatabase {
     }
     const now = Date.now();
     const status = deliveryStatus || (ownEvent ? 'pending' : 'received');
+    const readWatermarkRow = this.stmtGetDirectWatermark.get(
+      conversationId,
+      event.recipientAddress
+    ) as
+      | { timestamp?: number }
+      | undefined;
+    const readWatermark = Math.max(
+      0,
+      Number(readWatermarkRow?.timestamp) || 0
+    );
     const result = this.db
       .prepare(
         `
       INSERT OR IGNORE INTO rchat_dm_events
         (event_id, conversation_id, sender_address, recipient_address, sender_public_key,
-         sender_seq, timestamp, event_type, target_event_id, reply_to_event_id, payload,
-         payload_hash, signature, own_event, read_at, stored_at, wire_bytes,
+         sender_stream_id, sender_seq, timestamp, event_type, target_event_id, reply_to_event_id, payload,
+         payload_hash, signature, legacy_signature, own_event, read_at, stored_at, wire_bytes,
          delivery_status, delivery_updated_at)
       VALUES
         (@event_id, @conversation_id, @sender_address, @recipient_address, @sender_public_key,
-         @sender_seq, @timestamp, @event_type, @target_event_id, @reply_to_event_id, @payload,
-         @payload_hash, @signature, @own_event, @read_at, @stored_at, @wire_bytes,
+         @sender_stream_id, @sender_seq, @timestamp, @event_type, @target_event_id, @reply_to_event_id, @payload,
+         @payload_hash, @signature, @legacy_signature, @own_event, @read_at, @stored_at, @wire_bytes,
          @delivery_status, @delivery_updated_at)
     `
       )
@@ -2712,6 +2755,9 @@ export class ReticulumChatDatabase {
         sender_address: event.senderAddress,
         recipient_address: event.recipientAddress,
         sender_public_key: event.senderPublicKey,
+        sender_stream_id: normalizeReticulumChatAuthorStreamId(
+          event.senderStreamId
+        ),
         sender_seq: event.senderSeq,
         timestamp: event.timestamp,
         event_type: event.eventType,
@@ -2720,8 +2766,9 @@ export class ReticulumChatDatabase {
         payload: event.payload,
         payload_hash: event.payloadHash,
         signature: event.signature,
+        legacy_signature: event.legacySignature ?? null,
         own_event: ownEvent ? 1 : 0,
-        read_at: ownEvent ? now : 0,
+        read_at: ownEvent || event.timestamp <= readWatermark ? now : 0,
         stored_at: now,
         wire_bytes: Buffer.byteLength(JSON.stringify(event), 'utf8'),
         delivery_status: status,
@@ -3032,6 +3079,26 @@ export class ReticulumChatDatabase {
     return Number(row?.max_seq || 0);
   }
 
+  getOrCreateDirectAuthorStreamId(authorAddress: string): string {
+    const address = String(authorAddress || '').trim();
+    if (!address) throw new Error('Invalid direct-message author address');
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO rchat_author_streams
+           (author_address, stream_id, created_at)
+         VALUES (?, ?, ?)`
+      )
+      .run(address, nodeCrypto.randomBytes(16).toString('hex'), Date.now());
+    const row = this.db
+      .prepare(
+        `SELECT stream_id FROM rchat_author_streams WHERE author_address = ?`
+      )
+      .get(address) as { stream_id?: string } | undefined;
+    const streamId = normalizeReticulumChatAuthorStreamId(row?.stream_id);
+    if (!streamId) throw new Error('Failed to resolve DM author stream');
+    return streamId;
+  }
+
   getDirectSummaries(myAddress: string): ReticulumDmSummary[] {
     const address = String(myAddress || '').trim();
     if (!address) return [];
@@ -3104,9 +3171,22 @@ export class ReticulumChatDatabase {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     const address = String(myAddress || '').trim();
     if (!normalized || !address || !Number.isFinite(upToTimestamp)) return;
-    this.db
-      .prepare(
-        `
+    const watermark = Math.max(0, Math.floor(upToTimestamp));
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+        INSERT INTO rchat_dm_read_watermarks
+          (conversation_id, address, timestamp)
+        VALUES (?, ?, ?)
+        ON CONFLICT(conversation_id, address) DO UPDATE SET
+          timestamp = MAX(timestamp, excluded.timestamp)
+      `
+        )
+        .run(normalized, address, watermark);
+      this.db
+        .prepare(
+          `
         UPDATE rchat_dm_events
         SET read_at = MAX(read_at, ?)
         WHERE conversation_id = ?
@@ -3114,8 +3194,274 @@ export class ReticulumChatDatabase {
           AND timestamp <= ?
           AND read_at = 0
       `
+        )
+        .run(Date.now(), normalized, address, watermark);
+    });
+    transaction();
+  }
+
+  getDirectReadWatermark(conversationId: string, myAddress: string): number {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    const address = String(myAddress || '').trim();
+    if (!normalized || !address) return 0;
+    const row = this.stmtGetDirectWatermark.get(normalized, address) as
+      | { timestamp?: number }
+      | undefined;
+    return Math.max(0, Number(row?.timestamp) || 0);
+  }
+
+  upsertDeviceReadState(state: ReticulumChatDeviceReadState): boolean {
+    const ownerAddress = String(state.ownerAddress || '').trim();
+    const scopeType = state.scopeType;
+    const scopeId = String(state.scopeId || '').trim();
+    const upToTimestamp = Math.floor(Number(state.upToTimestamp));
+    const signedAt = Math.floor(Number(state.signedAt));
+    if (
+      !ownerAddress ||
+      (scopeType !== 'group' && scopeType !== 'dm') ||
+      !scopeId ||
+      !Number.isFinite(upToTimestamp) ||
+      upToTimestamp <= 0 ||
+      !Number.isFinite(signedAt) ||
+      signedAt <= 0 ||
+      !state.authorPublicKey ||
+      !state.signature
+    ) {
+      return false;
+    }
+    const result = this.db
+      .prepare(
+        `
+        INSERT INTO rchat_device_read_state
+          (owner_address, scope_type, scope_id, group_id, channel_id,
+           conversation_id, peer_address, up_to_timestamp, signed_at, author_public_key,
+           signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_address, scope_type, scope_id) DO UPDATE SET
+          group_id = excluded.group_id,
+          channel_id = excluded.channel_id,
+          conversation_id = excluded.conversation_id,
+          peer_address = excluded.peer_address,
+          up_to_timestamp = excluded.up_to_timestamp,
+          signed_at = excluded.signed_at,
+          author_public_key = excluded.author_public_key,
+          signature = excluded.signature
+        WHERE excluded.up_to_timestamp > rchat_device_read_state.up_to_timestamp
+           OR (
+             excluded.up_to_timestamp = rchat_device_read_state.up_to_timestamp
+             AND excluded.signed_at > rchat_device_read_state.signed_at
+           )
+      `
       )
-      .run(Date.now(), normalized, address, Math.floor(upToTimestamp));
+      .run(
+        ownerAddress,
+        scopeType,
+        scopeId,
+        state.groupId ?? null,
+        state.channelId ?? null,
+        state.conversationId ?? null,
+        state.peerAddress ?? null,
+        upToTimestamp,
+        signedAt,
+        state.authorPublicKey,
+        state.signature
+      );
+    return result.changes > 0;
+  }
+
+  getDeviceReadStates(
+    ownerAddress: string,
+    limit = 2_000
+  ): ReticulumChatDeviceReadState[] {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return [];
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit || 2_000)));
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM rchat_device_read_state
+        WHERE owner_address = ?
+        ORDER BY signed_at DESC, scope_type ASC, scope_id ASC
+        LIMIT ?
+      `
+      )
+      .all(owner, safeLimit) as Array<{
+      owner_address: string;
+      scope_type: 'group' | 'dm';
+      scope_id: string;
+      group_id?: number | null;
+      channel_id?: string | null;
+      conversation_id?: string | null;
+      peer_address?: string | null;
+      up_to_timestamp: number;
+      signed_at: number;
+      author_public_key: string;
+      signature: string;
+    }>;
+    return rows.map((row) => ({
+      ownerAddress: row.owner_address,
+      scopeType: row.scope_type,
+      scopeId: row.scope_id,
+      ...(typeof row.group_id === 'number' ? { groupId: row.group_id } : {}),
+      ...(row.channel_id ? { channelId: row.channel_id } : {}),
+      ...(row.conversation_id
+        ? { conversationId: row.conversation_id }
+        : {}),
+      ...(row.peer_address ? { peerAddress: row.peer_address } : {}),
+      upToTimestamp: row.up_to_timestamp,
+      signedAt: row.signed_at,
+      authorPublicKey: row.author_public_key,
+      signature: row.signature,
+    }));
+  }
+
+  getDeviceReadState(
+    ownerAddress: string,
+    scopeType: 'group' | 'dm',
+    scopeId: string
+  ): ReticulumChatDeviceReadState | null {
+    const owner = String(ownerAddress || '').trim();
+    const id = String(scopeId || '').trim();
+    if (!owner || !id) return null;
+    const row = this.db
+      .prepare(
+        `SELECT * FROM rchat_device_read_state
+         WHERE owner_address = ? AND scope_type = ? AND scope_id = ?
+         LIMIT 1`
+      )
+      .get(owner, scopeType, id) as
+      | {
+          owner_address: string;
+          scope_type: 'group' | 'dm';
+          scope_id: string;
+          group_id?: number | null;
+          channel_id?: string | null;
+          conversation_id?: string | null;
+          peer_address?: string | null;
+          up_to_timestamp: number;
+          signed_at: number;
+          author_public_key: string;
+          signature: string;
+        }
+      | undefined;
+    return row
+      ? {
+          ownerAddress: row.owner_address,
+          scopeType: row.scope_type,
+          scopeId: row.scope_id,
+          ...(typeof row.group_id === 'number'
+            ? { groupId: row.group_id }
+            : {}),
+          ...(row.channel_id ? { channelId: row.channel_id } : {}),
+          ...(row.conversation_id
+            ? { conversationId: row.conversation_id }
+            : {}),
+          ...(row.peer_address ? { peerAddress: row.peer_address } : {}),
+          upToTimestamp: row.up_to_timestamp,
+          signedAt: row.signed_at,
+          authorPublicKey: row.author_public_key,
+          signature: row.signature,
+        }
+      : null;
+  }
+
+  upsertPendingDeviceReadState(
+    state: ReticulumChatPendingDeviceReadState
+  ): void {
+    this.db
+      .prepare(
+        `
+        INSERT INTO rchat_pending_device_read_state
+          (owner_address, scope_type, scope_id, group_id, channel_id,
+           conversation_id, peer_address, up_to_timestamp, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_address, scope_type, scope_id) DO UPDATE SET
+          group_id = excluded.group_id,
+          channel_id = excluded.channel_id,
+          conversation_id = excluded.conversation_id,
+          peer_address = excluded.peer_address,
+          up_to_timestamp = MAX(
+            rchat_pending_device_read_state.up_to_timestamp,
+            excluded.up_to_timestamp
+          ),
+          updated_at = excluded.updated_at
+      `
+      )
+      .run(
+        state.ownerAddress,
+        state.scopeType,
+        state.scopeId,
+        state.groupId ?? null,
+        state.channelId ?? null,
+        state.conversationId ?? null,
+        state.peerAddress ?? null,
+        state.upToTimestamp,
+        state.updatedAt
+      );
+  }
+
+  getPendingDeviceReadStates(
+    ownerAddress: string,
+    limit = 5_000
+  ): ReticulumChatPendingDeviceReadState[] {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return [];
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+    const rows = this.db
+      .prepare(
+        `
+        SELECT pending.*
+        FROM rchat_pending_device_read_state pending
+        LEFT JOIN rchat_device_read_state signed
+          ON signed.owner_address = pending.owner_address
+         AND signed.scope_type = pending.scope_type
+         AND signed.scope_id = pending.scope_id
+        WHERE pending.owner_address = ?
+          AND pending.up_to_timestamp > COALESCE(signed.up_to_timestamp, 0)
+        ORDER BY pending.updated_at ASC, pending.scope_type ASC, pending.scope_id ASC
+        LIMIT ?
+      `
+      )
+      .all(owner, safeLimit) as Array<{
+      owner_address: string;
+      scope_type: 'group' | 'dm';
+      scope_id: string;
+      group_id?: number | null;
+      channel_id?: string | null;
+      conversation_id?: string | null;
+      peer_address?: string | null;
+      up_to_timestamp: number;
+      updated_at: number;
+    }>;
+    return rows.map((row) => ({
+      ownerAddress: row.owner_address,
+      scopeType: row.scope_type,
+      scopeId: row.scope_id,
+      ...(typeof row.group_id === 'number' ? { groupId: row.group_id } : {}),
+      ...(row.channel_id ? { channelId: row.channel_id } : {}),
+      ...(row.conversation_id
+        ? { conversationId: row.conversation_id }
+        : {}),
+      ...(row.peer_address ? { peerAddress: row.peer_address } : {}),
+      upToTimestamp: row.up_to_timestamp,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  deletePendingDeviceReadState(
+    ownerAddress: string,
+    scopeType: 'group' | 'dm',
+    scopeId: string,
+    upToTimestamp: number
+  ): void {
+    this.db
+      .prepare(
+        `DELETE FROM rchat_pending_device_read_state
+         WHERE owner_address = ? AND scope_type = ? AND scope_id = ?
+           AND up_to_timestamp <= ?`
+      )
+      .run(ownerAddress, scopeType, scopeId, upToTimestamp);
   }
 
   pruneExpiredMessages(now = Date.now(), limit = 5000): number {
@@ -10693,6 +11039,40 @@ export class ReticulumChatDatabase {
         timestamp INTEGER NOT NULL,
         PRIMARY KEY (group_id, channel_id, address)
       );
+      CREATE TABLE IF NOT EXISTS rchat_dm_read_watermarks (
+        conversation_id TEXT NOT NULL,
+        address TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, address)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_device_read_state (
+        owner_address TEXT NOT NULL,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('group', 'dm')),
+        scope_id TEXT NOT NULL,
+        group_id INTEGER,
+        channel_id TEXT,
+        conversation_id TEXT,
+        peer_address TEXT,
+        up_to_timestamp INTEGER NOT NULL,
+        signed_at INTEGER NOT NULL,
+        author_public_key TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        PRIMARY KEY (owner_address, scope_type, scope_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_device_read_state_owner_time
+        ON rchat_device_read_state (owner_address, signed_at DESC);
+      CREATE TABLE IF NOT EXISTS rchat_pending_device_read_state (
+        owner_address TEXT NOT NULL,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('group', 'dm')),
+        scope_id TEXT NOT NULL,
+        group_id INTEGER,
+        channel_id TEXT,
+        conversation_id TEXT,
+        peer_address TEXT,
+        up_to_timestamp INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_address, scope_type, scope_id)
+      );
       CREATE TABLE IF NOT EXISTS reticulum_chat_mentions (
         event_id TEXT NOT NULL,
         group_id INTEGER NOT NULL,
@@ -10769,6 +11149,7 @@ export class ReticulumChatDatabase {
         sender_address TEXT NOT NULL,
         recipient_address TEXT NOT NULL,
         sender_public_key TEXT NOT NULL,
+        sender_stream_id TEXT NOT NULL DEFAULT '',
         sender_seq INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
         event_type TEXT NOT NULL,
@@ -10777,18 +11158,20 @@ export class ReticulumChatDatabase {
         payload TEXT NOT NULL,
         payload_hash TEXT NOT NULL,
         signature TEXT NOT NULL,
+        legacy_signature TEXT,
         own_event INTEGER NOT NULL DEFAULT 0,
         read_at INTEGER NOT NULL DEFAULT 0,
         stored_at INTEGER NOT NULL,
         wire_bytes INTEGER NOT NULL,
         delivery_status TEXT NOT NULL DEFAULT 'received',
         delivery_updated_at INTEGER NOT NULL DEFAULT 0,
-        UNIQUE (conversation_id, sender_address, sender_seq)
+        UNIQUE (conversation_id, sender_address, sender_stream_id, sender_seq)
       );
       CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_conversation_time
         ON rchat_dm_events (conversation_id, timestamp, event_id);
       CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_sender_seq
-        ON rchat_dm_events (conversation_id, sender_address, sender_seq);
+        ON rchat_dm_events
+          (conversation_id, sender_address, sender_stream_id, sender_seq);
       CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_unread
         ON rchat_dm_events (conversation_id, recipient_address, read_at, timestamp);
       CREATE TABLE IF NOT EXISTS rchat_public_group_activity (
@@ -11102,6 +11485,23 @@ export class ReticulumChatDatabase {
         name: 'dm-delivery-status',
         run: () => this.migrateDirectDeliveryStatusSchema(),
       },
+      {
+        name: 'dm-legacy-signature',
+        run: () => this.migrateDirectLegacySignatureSchema(),
+      },
+      {
+        name: 'dm-author-streams',
+        run: () => this.migrateDirectAuthorStreamSchema(),
+      },
+      {
+        name: 'device-read-state-peer-address',
+        run: () =>
+          this.ensureColumn(
+            'rchat_device_read_state',
+            'peer_address',
+            `ALTER TABLE rchat_device_read_state ADD COLUMN peer_address TEXT`
+          ),
+      },
       { name: 'relay-cache', run: () => this.initRelayCacheSchema() },
       { name: 'group-keys', run: () => this.initGroupKeySchema() },
       {
@@ -11388,6 +11788,34 @@ export class ReticulumChatDatabase {
       {
         table: 'rchat_dm_events',
         columns: ['delivery_status', 'delivery_updated_at'],
+      },
+      {
+        table: 'rchat_dm_read_watermarks',
+        columns: ['conversation_id', 'address', 'timestamp'],
+      },
+      {
+        table: 'rchat_device_read_state',
+        columns: [
+          'owner_address',
+          'scope_type',
+          'scope_id',
+          'peer_address',
+          'up_to_timestamp',
+          'signed_at',
+          'author_public_key',
+          'signature',
+        ],
+      },
+      {
+        table: 'rchat_pending_device_read_state',
+        columns: [
+          'owner_address',
+          'scope_type',
+          'scope_id',
+          'peer_address',
+          'up_to_timestamp',
+          'updated_at',
+        ],
       },
       {
         table: 'rchat_silences',
@@ -11700,6 +12128,91 @@ export class ReticulumChatDatabase {
         ALTER TABLE rchat_dm_events
           ADD COLUMN delivery_updated_at INTEGER NOT NULL DEFAULT 0
       `
+    );
+  }
+
+  private migrateDirectAuthorStreamSchema(): void {
+    const table = this.db
+      .prepare(
+        `SELECT sql FROM sqlite_master
+         WHERE type = 'table' AND name = 'rchat_dm_events'`
+      )
+      .get() as { sql?: string } | undefined;
+    const normalizedSql = String(table?.sql || '')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+    if (
+      normalizedSql.includes('sender_stream_id') &&
+      normalizedSql.includes(
+        'unique (conversation_id, sender_address, sender_stream_id, sender_seq)'
+      )
+    ) {
+      return;
+    }
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.exec(`
+        ALTER TABLE rchat_dm_events RENAME TO rchat_dm_events_pre_stream;
+        CREATE TABLE rchat_dm_events (
+          event_id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          sender_address TEXT NOT NULL,
+          recipient_address TEXT NOT NULL,
+          sender_public_key TEXT NOT NULL,
+          sender_stream_id TEXT NOT NULL DEFAULT '',
+          sender_seq INTEGER NOT NULL,
+          timestamp INTEGER NOT NULL,
+          event_type TEXT NOT NULL,
+          target_event_id TEXT,
+          reply_to_event_id TEXT,
+          payload TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          legacy_signature TEXT,
+          own_event INTEGER NOT NULL DEFAULT 0,
+          read_at INTEGER NOT NULL DEFAULT 0,
+          stored_at INTEGER NOT NULL,
+          wire_bytes INTEGER NOT NULL,
+          delivery_status TEXT NOT NULL DEFAULT 'received',
+          delivery_updated_at INTEGER NOT NULL DEFAULT 0,
+          UNIQUE
+            (conversation_id, sender_address, sender_stream_id, sender_seq)
+        );
+        INSERT INTO rchat_dm_events
+          (event_id, conversation_id, sender_address, recipient_address,
+           sender_public_key, sender_stream_id, sender_seq, timestamp,
+           event_type, target_event_id, reply_to_event_id, payload,
+           payload_hash, signature, legacy_signature, own_event, read_at, stored_at, wire_bytes,
+           delivery_status, delivery_updated_at)
+        SELECT event_id, conversation_id, sender_address, recipient_address,
+               sender_public_key, '', sender_seq, timestamp, event_type,
+               target_event_id, reply_to_event_id, payload, payload_hash,
+               signature, legacy_signature, own_event, read_at, stored_at, wire_bytes,
+               delivery_status, delivery_updated_at
+        FROM rchat_dm_events_pre_stream;
+        DROP TABLE rchat_dm_events_pre_stream;
+        CREATE INDEX idx_rchat_dm_events_conversation_time
+          ON rchat_dm_events (conversation_id, timestamp, event_id);
+        CREATE INDEX idx_rchat_dm_events_sender_seq
+          ON rchat_dm_events
+            (conversation_id, sender_address, sender_stream_id, sender_seq);
+        CREATE INDEX idx_rchat_dm_events_unread
+          ON rchat_dm_events
+            (conversation_id, recipient_address, read_at, timestamp);
+      `);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private migrateDirectLegacySignatureSchema(): void {
+    this.ensureColumn(
+      'rchat_dm_events',
+      'legacy_signature',
+      `ALTER TABLE rchat_dm_events ADD COLUMN legacy_signature TEXT`
     );
   }
 }

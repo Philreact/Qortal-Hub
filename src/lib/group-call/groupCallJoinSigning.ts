@@ -67,7 +67,9 @@ export async function decryptBoxWithMyKeyForGroupCall(payload: {
   )) as { decryptedKey?: string; error?: string };
 }
 
-export async function fetchLocalReticulumDestinationHash(): Promise<string | null> {
+export async function fetchLocalReticulumDestinationHash(): Promise<
+  string | null
+> {
   const fn = (
     window as Window & {
       electronAPI?: {
@@ -139,6 +141,19 @@ function normalizeRkBase64ForGcJoinRkSign(rk: string): string {
   return rk.replace(/=+$/u, '');
 }
 
+/**
+ * The first join encodes takeover in the sign of the existing generation field.
+ * This keeps old clients able to verify the envelope and avoids growing the
+ * Reticulum frame. Logical generations remain unsigned 32-bit values locally.
+ */
+export function encodeGroupCallTakeoverGeneration(generation: number): number {
+  return -1 - (generation >>> 0);
+}
+
+export function decodeGroupCallLogicalGeneration(generation: number): number {
+  return generation < 0 ? (-1 - generation) >>> 0 : generation >>> 0;
+}
+
 export async function signReticulumJoinSplit(params: {
   roomId: string;
   chatId: string;
@@ -146,9 +161,13 @@ export async function signReticulumJoinSplit(params: {
   fromPublicKey: string;
   timestamp: number;
   joinGeneration: number;
+  takeover?: boolean;
   reticulumDestinationHash: string;
   reticulumIdentityPublicKeyBase64: string | null;
 }): Promise<{ joinSig: string; joinRkSig?: string } | null> {
+  const signedJoinGeneration = params.takeover
+    ? encodeGroupCallTakeoverGeneration(params.joinGeneration)
+    : params.joinGeneration;
   const joinSig = await signGroupCallFields({
     type: 'GC_JOIN',
     roomId: params.roomId,
@@ -156,7 +175,7 @@ export async function signReticulumJoinSplit(params: {
     fromAddress: params.fromAddress,
     fromPublicKey: params.fromPublicKey,
     timestamp: params.timestamp,
-    joinGeneration: params.joinGeneration,
+    joinGeneration: signedJoinGeneration,
     reticulumDestinationHash: params.reticulumDestinationHash,
   }).catch(() => '');
   if (!joinSig) return null;
@@ -170,7 +189,7 @@ export async function signReticulumJoinSplit(params: {
     fromAddress: params.fromAddress,
     fromPublicKey: params.fromPublicKey,
     timestamp: params.timestamp,
-    joinGeneration: params.joinGeneration,
+    joinGeneration: signedJoinGeneration,
     reticulumDestinationHash: params.reticulumDestinationHash,
     reticulumIdentityPublicKeyBase64: normalizeRkBase64ForGcJoinRkSign(
       params.reticulumIdentityPublicKeyBase64

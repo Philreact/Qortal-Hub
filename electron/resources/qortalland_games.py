@@ -74,6 +74,7 @@ HANDSHAKE_FIELD_ORDER = {
     "QORTAL_LAND_GAME_INVITE": (
         "type", "protocolVersion", "game", "gameVersion", "rulesVersion",
         "matchId", "groupId", "requesterAddress", "recipientAddress",
+        "sourceSessionId", "targetSessionId", "sourceDestinationHash", "targetDestinationHash",
         "signerPublicKey", "requesterNonce", "linkId", "createdAt", "expiresAt",
     ),
     "QORTAL_LAND_GAME_ACCEPT": (
@@ -91,6 +92,7 @@ HANDSHAKE_FIELD_ORDER = {
     ),
     "QORTAL_LAND_GAME_RESUME_REQUEST": (
         "type", "matchId", "roundId", "requesterAddress", "signerPublicKey", "linkId",
+        "sourceSessionId", "targetSessionId", "sourceDestinationHash", "targetDestinationHash",
         "requesterNonce", "lastAcknowledgedPly", "stateHash", "transcriptHash", "createdAt",
     ),
     "QORTAL_LAND_GAME_RESUME_ACCEPT": (
@@ -113,6 +115,8 @@ HEX_FIELD_LENGTHS = {
     "initialStateHash": 32,
     "stateHash": 32,
     "transcriptHash": 32,
+    "sourceDestinationHash": 16,
+    "targetDestinationHash": 16,
 }
 ADDRESS_FIELDS = {"requesterAddress", "recipientAddress", "responderAddress"}
 
@@ -234,7 +238,7 @@ class QortalLandGameManager:
         self,
         emit: Callable[[str, Dict[str, Any]], None],
         log: Callable[[str], None],
-        resolve_peer: Callable[[str], Optional[str]],
+        resolve_peer: Callable[[str, str], Optional[str]],
         resolve_identity: Callable[[str], Any],
         build_destination: Callable[[Any], Any],
         link_id_bytes: Callable[[Any], bytes],
@@ -242,6 +246,8 @@ class QortalLandGameManager:
         refresh_path: Optional[Callable[[str, str], bool]] = None,
         broadcast_proximity: Optional[Callable[[Dict[str, Any]], None]] = None,
         enqueue_proximity_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
+        resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
+        local_destination_hash: Optional[Callable[[], str]] = None,
     ):
         self.emit = emit
         self.log = log
@@ -251,6 +257,8 @@ class QortalLandGameManager:
         self.link_id_bytes = link_id_bytes
         self.enqueue = enqueue
         self.refresh_path = refresh_path
+        self.resolve_link_peer_hash = resolve_link_peer_hash
+        self.local_destination_hash = local_destination_hash
         self.lock = threading.RLock()
         self.land_context: Optional[Dict[str, Any]] = None
         self.matches: Dict[str, Dict[str, Any]] = {}
@@ -285,6 +293,7 @@ class QortalLandGameManager:
             verify_wallet=verify_signature,
             derive_address=derive_qortal_address,
             decode_base58=_b58decode,
+            resolve_link_peer_hash=resolve_link_peer_hash,
         )
 
     def start_server(self) -> Optional[int]:
@@ -620,12 +629,24 @@ class QortalLandGameManager:
             self._command_result(request_id, False, str(exc)[:160])
 
     def _set_context(self, message: Dict[str, Any]) -> None:
-        required = ("address", "publicKey", "groupId", "landSessionId", "roomId")
+        required = (
+            "address", "publicKey", "groupId", "landSessionId", "roomId",
+            "localDestinationHash",
+        )
         context = {key: str(message.get(key) or "").strip() for key in required}
         if any(not context[key] for key in required):
             raise ValueError("incomplete_land_context")
         if derive_qortal_address(context["publicKey"]) != context["address"]:
             raise ValueError("land_identity_mismatch")
+        if (
+            len(context["landSessionId"]) > 16
+            or len(context["localDestinationHash"]) != 32
+            or any(char not in "0123456789abcdef" for char in context["localDestinationHash"].lower())
+            or self.local_destination_hash is None
+            or context["localDestinationHash"].lower() != str(self.local_destination_hash() or "").lower()
+        ):
+            raise ValueError("land_endpoint_mismatch")
+        context["localDestinationHash"] = context["localDestinationHash"].lower()
         with self.lock:
             previous = dict(self.land_context or {})
             changed_session = bool(previous) and any(
@@ -659,15 +680,25 @@ class QortalLandGameManager:
                 raise ValueError("game_busy")
         match_id = str(message.get("matchId") or "")
         recipient = str(message.get("recipientAddress") or "").strip()
+        target_session_id = str(message.get("targetSessionId") or "").strip()
+        target_destination_hash = str(message.get("targetDestinationHash") or "").strip().lower()
         nonce = str(message.get("requesterNonce") or "").strip().lower()
         game = str(message.get("game") or "connect-four")
         config = GAME_CONFIGS.get(game)
         if not config:
             raise ValueError("unsupported_game")
         uuid.UUID(match_id)
-        if len(bytes.fromhex(nonce)) != 16 or not recipient or recipient == context["address"]:
+        if (
+            len(bytes.fromhex(nonce)) != 16
+            or not recipient
+            or recipient == context["address"]
+            or not target_session_id
+            or len(target_session_id) > 16
+            or len(target_destination_hash) != 32
+            or any(char not in "0123456789abcdef" for char in target_destination_hash)
+        ):
             raise ValueError("invalid_game_invitation")
-        peer_hash = self.resolve_peer(recipient)
+        peer_hash = self.resolve_peer(recipient, target_destination_hash)
         if not peer_hash:
             raise ValueError("recipient_not_verified")
         identity = self.resolve_identity(peer_hash)
@@ -678,6 +709,10 @@ class QortalLandGameManager:
             "roundId": match_id,
             "requester": context["address"],
             "recipient": recipient,
+            "sourceSessionId": context["landSessionId"],
+            "targetSessionId": target_session_id,
+            "sourceDestinationHash": context["localDestinationHash"],
+            "targetDestinationHash": target_destination_hash,
             "requesterPublicKey": context["publicKey"],
             "requesterNonce": nonce,
             "groupId": context["groupId"],
@@ -814,6 +849,10 @@ class QortalLandGameManager:
             "groupId": state["groupId"],
             "requesterAddress": state["requester"],
             "recipientAddress": state["recipient"],
+            "sourceSessionId": state["sourceSessionId"],
+            "targetSessionId": state["targetSessionId"],
+            "sourceDestinationHash": state["sourceDestinationHash"],
+            "targetDestinationHash": state["targetDestinationHash"],
             "signerPublicKey": state["requesterPublicKey"],
             "requesterNonce": state["requesterNonce"],
             "linkId": state["linkId"],
@@ -946,7 +985,7 @@ class QortalLandGameManager:
                 return True
             if fields.get("linkId") != self.link_id_bytes(link).hex():
                 raise ValueError("wrong_link_identifier")
-            self._validate_invite(fields, envelope)
+            self._validate_invite(fields, envelope, link)
             match_id = fields["matchId"]
             with self.lock:
                 context = dict(self.land_context or {})
@@ -967,6 +1006,10 @@ class QortalLandGameManager:
                 "roundId": match_id,
                 "requester": fields["requesterAddress"],
                 "recipient": fields["recipientAddress"],
+                "sourceSessionId": fields["sourceSessionId"],
+                "targetSessionId": fields["targetSessionId"],
+                "sourceDestinationHash": fields["sourceDestinationHash"],
+                "targetDestinationHash": fields["targetDestinationHash"],
                 "requesterPublicKey": fields["signerPublicKey"],
                 "requesterNonce": fields["requesterNonce"],
                 "groupId": fields["groupId"],
@@ -995,6 +1038,10 @@ class QortalLandGameManager:
                     "matchId": match_id,
                     "requesterAddress": state["requester"],
                     "recipientAddress": state["recipient"],
+                    "sourceSessionId": state["sourceSessionId"],
+                    "targetSessionId": state["targetSessionId"],
+                    "sourceDestinationHash": state["sourceDestinationHash"],
+                    "targetDestinationHash": state["targetDestinationHash"],
                     "requesterNonce": state["requesterNonce"],
                     "game": state["game"],
                     "gameVersion": state["gameVersion"],
@@ -1019,6 +1066,10 @@ class QortalLandGameManager:
             "roundId": match_id,
             "requester": fields["requesterAddress"],
             "recipient": fields["recipientAddress"],
+            "sourceSessionId": fields["sourceSessionId"],
+            "targetSessionId": fields["targetSessionId"],
+            "sourceDestinationHash": fields["sourceDestinationHash"],
+            "targetDestinationHash": fields["targetDestinationHash"],
             "requesterPublicKey": fields["signerPublicKey"],
             "requesterNonce": fields["requesterNonce"],
             "groupId": fields["groupId"],
@@ -1086,6 +1137,15 @@ class QortalLandGameManager:
             or fields.get("signerPublicKey") != envelope["publicKey"]
             or derive_qortal_address(envelope["publicKey"]) != state["requester"]
             or fields.get("linkId") != self.link_id_bytes(link).hex()
+            or fields.get("sourceSessionId") != state.get("sourceSessionId")
+            or fields.get("targetSessionId") != state.get("targetSessionId")
+            or fields.get("sourceDestinationHash") != state.get("sourceDestinationHash")
+            or fields.get("targetDestinationHash") != state.get("targetDestinationHash")
+            or context.get("landSessionId") != state.get("targetSessionId")
+            or context.get("localDestinationHash") != state.get("targetDestinationHash")
+            or self.resolve_peer(state["requester"], state.get("sourceDestinationHash") or "") != state.get("sourceDestinationHash")
+            or self.resolve_link_peer_hash is None
+            or str(self.resolve_link_peer_hash(link) or "").strip().lower() != state.get("sourceDestinationHash")
             or not verify_signature(fields, envelope["publicKey"], envelope["signature"])
         ):
             raise ValueError("invalid_resume_request")
@@ -1138,6 +1198,10 @@ class QortalLandGameManager:
             "responderAddress": state["recipient"],
             "signerPublicKey": context.get("publicKey"),
             "linkId": state["linkId"],
+            "sourceSessionId": state.get("sourceSessionId"),
+            "targetSessionId": state.get("targetSessionId"),
+            "sourceDestinationHash": state.get("sourceDestinationHash"),
+            "targetDestinationHash": state.get("targetDestinationHash"),
             "requesterNonce": state["resumeRequesterNonce"],
             "recipientNonce": responder_nonce,
             **local,
@@ -1150,7 +1214,7 @@ class QortalLandGameManager:
         with self.lock:
             return id(link) in self.links_by_object
 
-    def _validate_invite(self, fields: Dict[str, Any], envelope: Dict[str, Any]) -> None:
+    def _validate_invite(self, fields: Dict[str, Any], envelope: Dict[str, Any], link) -> None:
         context = self.land_context
         if not context:
             raise ValueError("unavailable")
@@ -1163,7 +1227,12 @@ class QortalLandGameManager:
             or fields.get("rulesVersion") != config["rulesVersion"]
         ):
             raise ValueError("unsupported")
-        if fields.get("recipientAddress") != context.get("address") or fields.get("groupId") != context.get("groupId"):
+        if (
+            fields.get("recipientAddress") != context.get("address")
+            or fields.get("groupId") != context.get("groupId")
+            or fields.get("targetSessionId") != context.get("landSessionId")
+            or fields.get("targetDestinationHash") != context.get("localDestinationHash")
+        ):
             raise ValueError("wrong_recipient")
         now_ms = int(time.time() * 1000)
         created_at = fields.get("createdAt")
@@ -1189,7 +1258,15 @@ class QortalLandGameManager:
         public_key = envelope["publicKey"]
         if fields.get("signerPublicKey") != public_key or derive_qortal_address(public_key) != fields.get("requesterAddress") or not verify_signature(fields, public_key, envelope["signature"]):
             raise ValueError("invalid_signature")
-        if not self.resolve_peer(str(fields.get("requesterAddress") or "")):
+        source_hash = str(fields.get("sourceDestinationHash") or "").strip().lower()
+        if (
+            not source_hash
+            or self.resolve_peer(str(fields.get("requesterAddress") or ""), source_hash) != source_hash
+            or self.resolve_link_peer_hash is None
+            or str(self.resolve_link_peer_hash(link) or "").strip().lower() != source_hash
+            or not isinstance(fields.get("sourceSessionId"), str)
+            or not 0 < len(str(fields.get("sourceSessionId"))) <= 16
+        ):
             raise ValueError("unverified_peer")
         self.used_nonces[nonce_key] = time.time() + 5 * 60
 
@@ -2373,6 +2450,10 @@ class QortalLandGameManager:
             "rulesVersion": state.get("rulesVersion") or 1,
             "requesterAddress": state["requester"],
             "recipientAddress": state["recipient"],
+            "requesterSessionId": state.get("sourceSessionId"),
+            "recipientSessionId": state.get("targetSessionId"),
+            "requesterDestinationHash": state.get("sourceDestinationHash"),
+            "recipientDestinationHash": state.get("targetDestinationHash"),
             "requesterNonce": state.get("roundRequesterNonce") or state["requesterNonce"],
             "recipientNonce": state.get("roundRecipientNonce") or state.get("recipientNonce"),
             "starter": self._starter(state) if state.get("recipientNonce") else None,

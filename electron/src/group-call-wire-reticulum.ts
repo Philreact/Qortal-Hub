@@ -27,7 +27,8 @@ export const RT_GCALL_MAX_WIRE_JSON_BYTES = RT_RETICULUM_MAX_WIRE_JSON_BYTES;
  * Bump when Reticulum group-call wire encoding changes; grep logs for this string to confirm rebuild.
  * Keep in sync with `PRESENCE_BRIDGE_BUILD` in `electron/resources/presence_bridge.py`.
  */
-export const GC_RETICULUM_WIRE_BUILD_MARKER = 'wire403-qortalland-game-chat-unlimited-v1';
+export const GC_RETICULUM_WIRE_BUILD_MARKER =
+  'wire403-qortalland-game-chat-unlimited-v1';
 
 /** Max payload fragments for topology / key-rotate / SDP (defensive). */
 export const RT_GCALL_MAX_FRAGMENTS = 96;
@@ -156,7 +157,9 @@ export function encodeJoinIdentityWire(env: {
 }): Record<string, unknown> {
   const d = env.reticulumDestinationHash.trim().toLowerCase();
   if (!isRnsIdentityPublicKeyBase64(env.reticulumIdentityPublicKeyBase64)) {
-    throw new Error('encodeJoinIdentityWire: invalid reticulumIdentityPublicKeyBase64');
+    throw new Error(
+      'encodeJoinIdentityWire: invalid reticulumIdentityPublicKeyBase64'
+    );
   }
   const rk = normalizeRkBase64ForWire(env.reticulumIdentityPublicKeyBase64);
   const o: Record<string, unknown> = {
@@ -227,7 +230,9 @@ export function decodeJoinIdentityWire(raw: Record<string, unknown>): {
     timestamp: m,
     reticulumDestinationHash: dRaw.trim().toLowerCase(),
     reticulumIdentityPublicKeyBase64: rkRaw,
-    ...(typeof j === 'number' && Number.isFinite(j) ? { joinGeneration: j } : {}),
+    ...(typeof j === 'number' && Number.isFinite(j)
+      ? { joinGeneration: j }
+      : {}),
   };
 }
 
@@ -278,6 +283,7 @@ export function decodeJoinWire(raw: Record<string, unknown>): {
   reticulumDestinationHash: string;
   reticulumIdentityPublicKeyBase64?: string;
   joinGeneration?: number;
+  takeover?: boolean;
 } | null {
   if (raw.t !== 'GJ') return null;
   const R = raw.R;
@@ -317,7 +323,12 @@ export function decodeJoinWire(raw: Record<string, unknown>): {
     ...(typeof rkRaw === 'string' && isRnsIdentityPublicKeyBase64(rkRaw)
       ? { reticulumIdentityPublicKeyBase64: rkRaw }
       : {}),
-    ...(typeof j === 'number' && Number.isFinite(j) ? { joinGeneration: j } : {}),
+    ...(typeof j === 'number' && Number.isFinite(j)
+      ? { joinGeneration: j }
+      : {}),
+    ...(typeof j === 'number' && Number.isFinite(j) && j < 0
+      ? { takeover: true }
+      : {}),
   };
 }
 
@@ -327,8 +338,9 @@ export function encodeLeaveWire(env: {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  joinGeneration?: number;
 }): Record<string, unknown> {
-  return {
+  const wire: Record<string, unknown> = {
     t: 'GL',
     R: env.roomId,
     a: env.fromAddress,
@@ -336,6 +348,13 @@ export function encodeLeaveWire(env: {
     m: env.timestamp,
     g: env.signature,
   };
+  if (
+    typeof env.joinGeneration === 'number' &&
+    Number.isFinite(env.joinGeneration)
+  ) {
+    wire.j = env.joinGeneration;
+  }
+  return wire;
 }
 
 export function decodeLeaveWire(raw: Record<string, unknown>): {
@@ -345,6 +364,7 @@ export function decodeLeaveWire(raw: Record<string, unknown>): {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  joinGeneration?: number;
 } | null {
   if (raw.t !== 'GL') return null;
   const R = raw.R;
@@ -352,12 +372,20 @@ export function decodeLeaveWire(raw: Record<string, unknown>): {
   const k = raw.k;
   const m = raw.m;
   const g = raw.g;
+  const j = raw.j;
   if (
     typeof R !== 'string' ||
     typeof a !== 'string' ||
     typeof k !== 'string' ||
     typeof m !== 'number' ||
     typeof g !== 'string'
+  ) {
+    return null;
+  }
+  if (
+    j !== undefined &&
+    j !== null &&
+    (typeof j !== 'number' || !Number.isFinite(j))
   ) {
     return null;
   }
@@ -368,6 +396,9 @@ export function decodeLeaveWire(raw: Record<string, unknown>): {
     fromPublicKey: k,
     signature: g,
     timestamp: m,
+    ...(typeof j === 'number' && Number.isFinite(j)
+      ? { joinGeneration: j }
+      : {}),
   };
 }
 
@@ -434,8 +465,7 @@ export function decodeClusterHeartbeatWire(raw: Record<string, unknown>): {
   ) {
     return null;
   }
-  const clusterForwarder =
-    typeof f === 'string' && f.length > 0 ? f : a;
+  const clusterForwarder = typeof f === 'string' && f.length > 0 ? f : a;
   const fromPublicKey = typeof k === 'string' ? k : '';
   return {
     type: 'GC_CLUSTER_HEARTBEAT',
@@ -532,7 +562,10 @@ export function encodeKeyWire(env: {
     m: env.timestamp,
     g: env.signature,
   };
-  if (byteLengthUtf8JsonWithBridgeSender(single) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES) {
+  if (
+    byteLengthUtf8JsonWithBridgeSender(single) <=
+    RT_RETICULUM_MAX_WIRE_JSON_BYTES
+  ) {
     return [single];
   }
   const body = keyFragmentBodyJson({
@@ -631,9 +664,7 @@ export type GkFragmentMeta = {
   f: number;
 };
 
-export function parseGk0(
-  raw: Record<string, unknown>
-): GkFragmentMeta | null {
+export function parseGk0(raw: Record<string, unknown>): GkFragmentMeta | null {
   if (raw.t !== 'GK0') return null;
   const R = raw.R;
   const z = raw.z;
@@ -937,7 +968,10 @@ export function encodeTopologyWire(env: {
     g: env.signature,
     c: env.clusters,
   };
-  if (byteLengthUtf8JsonWithBridgeSender(single) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES) {
+  if (
+    byteLengthUtf8JsonWithBridgeSender(single) <=
+    RT_RETICULUM_MAX_WIRE_JSON_BYTES
+  ) {
     return [single];
   }
   const body = topologyFragmentBodyJson({
@@ -1093,7 +1127,8 @@ export function decodeTopologyFromGt1(
   let timestamp: number;
   try {
     const parsed = JSON.parse(json) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      return null;
     const body = parsed as {
       c?: unknown;
       a?: unknown;
@@ -1241,9 +1276,7 @@ export function parseGk1(
   return { R, z: z.toLowerCase(), x, n, p };
 }
 
-export function parseGq0(
-  raw: Record<string, unknown>
-): GkFragmentMeta | null {
+export function parseGq0(raw: Record<string, unknown>): GkFragmentMeta | null {
   if (raw.t !== 'GQ0') return null;
   const R = raw.R;
   const z = raw.z;

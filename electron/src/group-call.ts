@@ -462,9 +462,32 @@ export function shouldIgnoreLeaveForLocalAddress(
   return localAddresses.has(address);
 }
 
+/** Decode the compact signed takeover representation into the local uint32 id. */
+export function decodeGroupCallLogicalJoinGeneration(
+  generation: number | undefined
+): number | undefined {
+  if (typeof generation !== 'number' || !Number.isFinite(generation)) {
+    return undefined;
+  }
+  return generation < 0 ? (-1 - generation) >>> 0 : generation >>> 0;
+}
+
+function encodeGroupCallSignedJoinGeneration(
+  generation: number | undefined,
+  takeover: boolean
+): number | undefined {
+  const logical = decodeGroupCallLogicalJoinGeneration(generation);
+  if (logical === undefined) return undefined;
+  return takeover ? -1 - logical : logical;
+}
+
 export function shouldRefreshParticipantFromVerifiedJoin(opts: {
   currentJoinedAt: number | undefined;
+  currentJoinGeneration?: number | undefined;
+  currentTakeoverAt?: number | undefined;
   incomingJoinTimestamp: number;
+  incomingJoinGeneration?: number | undefined;
+  incomingTakeover?: boolean;
   lastLeaveTimestamp?: number | undefined;
 }): boolean {
   if (
@@ -480,7 +503,59 @@ export function shouldRefreshParticipantFromVerifiedJoin(opts: {
   ) {
     return true;
   }
+  const currentGeneration = opts.currentJoinGeneration;
+  const incomingGeneration = opts.incomingJoinGeneration;
+  if (
+    typeof currentGeneration === 'number' &&
+    Number.isFinite(currentGeneration) &&
+    typeof incomingGeneration === 'number' &&
+    Number.isFinite(incomingGeneration) &&
+    incomingGeneration !== currentGeneration
+  ) {
+    if (opts.incomingTakeover !== true) return false;
+    const currentTakeoverAt =
+      typeof opts.currentTakeoverAt === 'number' &&
+      Number.isFinite(opts.currentTakeoverAt)
+        ? opts.currentTakeoverAt
+        : opts.currentJoinedAt;
+    return opts.incomingJoinTimestamp > currentTakeoverAt;
+  }
   return opts.incomingJoinTimestamp >= opts.currentJoinedAt;
+}
+
+/** A session-scoped leave must never remove another installation's active slot. */
+export function shouldApplyGroupCallLeaveToSession(opts: {
+  activeJoinGeneration?: number;
+  leavingJoinGeneration?: number;
+  activeReticulumDestinationHash?: string;
+  transportPeerPresenceHash?: string;
+}): boolean {
+  const activeGeneration = opts.activeJoinGeneration;
+  const leavingGeneration = opts.leavingJoinGeneration;
+  const activeHash = (opts.activeReticulumDestinationHash ?? '')
+    .trim()
+    .toLowerCase();
+  const transportHash = (opts.transportPeerPresenceHash ?? '')
+    .trim()
+    .toLowerCase();
+  const endpointMatches =
+    !activeHash || (Boolean(transportHash) && activeHash === transportHash);
+  if (!endpointMatches) return false;
+  if (
+    typeof activeGeneration === 'number' &&
+    Number.isFinite(activeGeneration) &&
+    typeof leavingGeneration === 'number' &&
+    Number.isFinite(leavingGeneration)
+  ) {
+    return activeGeneration === leavingGeneration;
+  }
+  if (
+    typeof leavingGeneration === 'number' &&
+    Number.isFinite(leavingGeneration)
+  ) {
+    return activeGeneration === undefined;
+  }
+  return true;
 }
 
 export function reticulumAudioResetReasonForVerifiedJoin(opts: {
@@ -752,6 +827,8 @@ export interface GcJoinEnvelope {
   reticulumIdentityPublicKeyBase64?: string;
   /** Per logical join session; stable across mesh re-announces from the same client. */
   joinGeneration?: number;
+  /** Explicit first join for this generation; reannouncements omit it. */
+  takeover?: boolean;
   hopsRemaining?: number;
 }
 
@@ -776,6 +853,7 @@ export interface GcLeaveEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  joinGeneration?: number;
   hopsRemaining?: number;
 }
 
@@ -866,6 +944,10 @@ interface RoomParticipant {
   reticulumDestinationHash: string;
   /** From signed GC_JOIN wire `rk` when present. */
   reticulumIdentityPublicKeyBase64?: string;
+  /** Stable logical device session, signed in GC_JOIN/GC_LEAVE. */
+  joinGeneration?: number;
+  /** Timestamp of the explicit join that selected this device session. */
+  takeoverAt: number;
 }
 
 interface GroupRoom {
@@ -891,6 +973,8 @@ interface GroupRoom {
    * link. The caller waits for that incoming bidirectional link.
    */
   dmVoiceAudioLinkRole?: 'opener' | 'waiter';
+  /** Exact verified endpoint selected by an endpoint-aware 1:1 call. */
+  dmVoicePeerDestinationHash?: string;
 }
 
 interface ReticulumAudioPendingFrame {
@@ -1278,6 +1362,10 @@ export function buildGroupRoomBootstrapState(
       publicKey: p.publicKey,
       joinedAt: p.joinedAt,
       reticulumDestinationHash: p.reticulumDestinationHash,
+      takeoverAt: p.takeoverAt,
+      ...(typeof p.joinGeneration === 'number'
+        ? { joinGeneration: p.joinGeneration }
+        : {}),
       ...(p.reticulumIdentityPublicKeyBase64
         ? {
             reticulumIdentityPublicKeyBase64:
@@ -2068,7 +2156,22 @@ export class GroupCallManager extends EventEmitter {
    * reflect the wire sender (transport) when those differ, which would cause
    * `unknown_peer_presence_hash` if resolved before participant state.
    */
-  private resolveReticulumPeerPresenceHash(address: string): string | null {
+  private resolveReticulumPeerPresenceHash(
+    address: string,
+    roomId?: string
+  ): string | null {
+    if (roomId) {
+      const room = this.rooms.get(roomId);
+      const pinned = room?.dmVoicePeerDestinationHash;
+      if (
+        roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+        pinned &&
+        isRnsDestinationHashHex(pinned)
+      ) {
+        this.rememberReticulumPeerPresenceHash(address, pinned);
+        return pinned;
+      }
+    }
     for (const room of this.rooms.values()) {
       const p = room.participants.get(address);
       if (p?.reticulumDestinationHash) {
@@ -2372,6 +2475,25 @@ export class GroupCallManager extends EventEmitter {
   }
 
   private applyVerifiedJobSync(job: GcVerifyPending): void {
+    if (
+      job.kind !== 'join' &&
+      job.kind !== 'join_rk' &&
+      job.kind !== 'link_auth_join'
+    ) {
+      const room = this.rooms.get(job.env.roomId);
+      const selected = room?.participants.get(job.env.fromAddress);
+      const selectedHash = selected?.reticulumDestinationHash
+        ?.trim()
+        .toLowerCase();
+      const transportHash = job.peerPresenceHash?.trim().toLowerCase();
+      if (selectedHash && transportHash && selectedHash !== transportHash) {
+        this.logReticulumFailureThrottled(
+          `superseded-control:${job.env.roomId}:${job.env.fromAddress}:${job.kind}`,
+          `[GCall] Dropped ${job.env.type} from superseded device session room=${job.env.roomId} from=${job.env.fromAddress}`
+        );
+        return;
+      }
+    }
     if (job.kind === 'join' || job.kind === 'link_auth_join') {
       const env = job.env;
       const signed = env.reticulumDestinationHash.trim().toLowerCase();
@@ -2383,7 +2505,6 @@ export class GroupCallManager extends EventEmitter {
           `[GCall] GC_JOIN reticulumDestinationHash differs from transport sender for ${env.fromAddress} — identity hash kept for bridge cache (matches register_peer_identity)`
         );
       }
-      this.rememberReticulumPeerPresenceHash(env.fromAddress, signed);
     } else if (job.kind === 'join_rk') {
       const env = job.env;
       const signed = env.reticulumDestinationHash.trim().toLowerCase();
@@ -2395,8 +2516,7 @@ export class GroupCallManager extends EventEmitter {
           `[GCall] GC_JOIN_RK reticulumDestinationHash differs from transport sender for ${env.fromAddress} — identity hash kept for bridge cache (matches register_peer_identity)`
         );
       }
-      this.rememberReticulumPeerPresenceHash(env.fromAddress, signed);
-    } else {
+    } else if (job.kind !== 'leave') {
       this.rememberReticulumPeerPresenceHash(
         job.env.fromAddress,
         job.peerPresenceHash
@@ -2414,7 +2534,7 @@ export class GroupCallManager extends EventEmitter {
         this.applyVerifiedJoinRk(job.env, job.fromNodeId);
         break;
       case 'leave':
-        this.applyVerifiedLeave(job.env);
+        this.applyVerifiedLeave(job.env, job.peerPresenceHash);
         break;
       case 'topology':
         this.applyVerifiedTopology(job.env);
@@ -3231,7 +3351,13 @@ export class GroupCallManager extends EventEmitter {
       );
     }
     if (frames.length === 0) return;
-    this.sendReticulumToAddress(targetAddress, frames, 'join_replay');
+    this.sendReticulumToAddress(
+      targetAddress,
+      frames,
+      'join_replay',
+      0,
+      roomId
+    );
   }
 
   private relayRetainedJoinIdentityToCurrentRoot(
@@ -3264,7 +3390,13 @@ export class GroupCallManager extends EventEmitter {
     );
     if (frames.length === 0) return;
     this.joinIdentityRootRelayAttempts.set(relayKey, attempts + 1);
-    this.sendReticulumToAddress(rootForwarder, frames, 'join_replay');
+    this.sendReticulumToAddress(
+      rootForwarder,
+      frames,
+      'join_replay',
+      0,
+      roomId
+    );
     loggerLog(
       `[GCall] Relayed verified GC_JOIN identity to current root room=${roomId} joiner=${joinerAddress} root=${rootForwarder} reason=${reason} attempt=${attempts + 1}`
     );
@@ -3445,7 +3577,10 @@ export class GroupCallManager extends EventEmitter {
       roomId,
       excludeAddresses
     )) {
-      const peerPresenceHash = this.resolveReticulumPeerPresenceHash(addr);
+      const peerPresenceHash = this.resolveReticulumPeerPresenceHash(
+        addr,
+        roomId
+      );
       if (peerPresenceHash) out.add(peerPresenceHash);
     }
     return [...out];
@@ -3721,21 +3856,32 @@ export class GroupCallManager extends EventEmitter {
     address: string,
     frames: Record<string, unknown>[],
     retryKind?: GcReticulumRetryKind,
-    attempt = 0
+    attempt = 0,
+    roomId?: string
   ): void {
-    void this.sendReticulumToAddressAsync(address, frames, retryKind, attempt);
+    void this.sendReticulumToAddressAsync(
+      address,
+      frames,
+      retryKind,
+      attempt,
+      roomId
+    );
   }
 
   private async sendReticulumToAddressAsync(
     address: string,
     frames: Record<string, unknown>[],
     retryKind: GcReticulumRetryKind | undefined,
-    attempt: number
+    attempt: number,
+    roomId?: string
   ): Promise<void> {
     const overlayFrames = frames.map((frame) =>
       this.attachReticulumOverlayMeta(frame)
     );
-    const destinationHash = this.resolveReticulumPeerPresenceHash(address);
+    const destinationHash = this.resolveReticulumPeerPresenceHash(
+      address,
+      roomId
+    );
     const result = destinationHash
       ? await this.sendReticulumFramesToHash(destinationHash, overlayFrames)
       : await this.broadcastReticulumFramesViaOverlay(overlayFrames);
@@ -3747,7 +3893,13 @@ export class GroupCallManager extends EventEmitter {
       this.scheduleReticulumRetry(
         GC_RETICULUM_FIRST_CONTACT_RETRY_DELAYS_MS[attempt]!,
         () =>
-          this.sendReticulumToAddress(address, frames, retryKind, attempt + 1)
+          this.sendReticulumToAddress(
+            address,
+            frames,
+            retryKind,
+            attempt + 1,
+            roomId
+          )
       );
       return;
     }
@@ -4357,7 +4509,11 @@ export class GroupCallManager extends EventEmitter {
     reticulumIdentityPublicKeyBase64?: string,
     /** Signature for `GC_JOIN_RK` (second Reticulum frame) when `reticulumIdentityPublicKeyBase64` is set. */
     joinRkSignature?: string,
-    dmVoiceAudioLinkRole?: 'opener' | 'waiter'
+    dmVoiceAudioLinkRole?: 'opener' | 'waiter',
+    /** True only for the user's initial join; recovery reannouncements omit it. */
+    takeover = false,
+    /** Exact peer endpoint selected by QortalLand's signed call handshake. */
+    dmVoicePeerDestinationHash?: string
   ): { callSessionId: string; mediaSessionGeneration: number } {
     this.clearReticulumOverlayLogicalDedupeForRoomLifecycle(roomId, 'join');
     if (this.shouldRejectLocalJoinAtParticipantCap(roomId, localAddress)) {
@@ -4400,6 +4556,33 @@ export class GroupCallManager extends EventEmitter {
       (dmVoiceAudioLinkRole === 'opener' || dmVoiceAudioLinkRole === 'waiter')
         ? dmVoiceAudioLinkRole
         : undefined;
+    const normalizedDmVoicePeerDestinationHash =
+      roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+      typeof dmVoicePeerDestinationHash === 'string' &&
+      isRnsDestinationHashHex(dmVoicePeerDestinationHash)
+        ? dmVoicePeerDestinationHash.trim().toLowerCase()
+        : undefined;
+    if (normalizedDmVoicePeerDestinationHash) {
+      const directParticipants = chatId.startsWith('direct:')
+        ? chatId.slice('direct:'.length).split(':').filter(Boolean)
+        : [];
+      const peerAddress = directParticipants.find(
+        (address) => address !== localAddress
+      );
+      const verified = peerAddress
+        ? this.presence
+            .getRoutesForAddress(peerAddress)
+            .some(
+              (route) =>
+                route.kind === 'reticulum' &&
+                route.destinationHash.trim().toLowerCase() ===
+                  normalizedDmVoicePeerDestinationHash
+            )
+        : false;
+      if (!verified) {
+        throw new Error('unverified_dm_voice_peer_destination');
+      }
+    }
     let room = this.rooms.get(roomId);
     if (!room) {
       const recent = GCALL_DISABLE_ROOM_BOOTSTRAP_CACHE
@@ -4438,6 +4621,12 @@ export class GroupCallManager extends EventEmitter {
         ...(normalizedDmVoiceAudioLinkRole
           ? { dmVoiceAudioLinkRole: normalizedDmVoiceAudioLinkRole }
           : {}),
+        ...(normalizedDmVoicePeerDestinationHash
+          ? {
+              dmVoicePeerDestinationHash:
+                normalizedDmVoicePeerDestinationHash,
+            }
+          : {}),
       };
       this.rooms.set(roomId, room);
     } else {
@@ -4448,17 +4637,37 @@ export class GroupCallManager extends EventEmitter {
       if (normalizedDmVoiceAudioLinkRole) {
         room.dmVoiceAudioLinkRole = normalizedDmVoiceAudioLinkRole;
       }
+      if (normalizedDmVoicePeerDestinationHash) {
+        room.dmVoicePeerDestinationHash =
+          normalizedDmVoicePeerDestinationHash;
+      }
     }
     const rk =
       reticulumIdentityPublicKeyBase64 &&
       isRnsIdentityPublicKeyBase64(reticulumIdentityPublicKeyBase64)
         ? reticulumIdentityPublicKeyBase64
         : undefined;
+    const signedJoinGeneration = encodeGroupCallSignedJoinGeneration(
+      joinGeneration,
+      takeover
+    );
+    const existingLocalParticipant = room.participants.get(localAddress);
+    const sameLocalGeneration =
+      typeof joinGeneration === 'number' &&
+      Number.isFinite(joinGeneration) &&
+      existingLocalParticipant?.joinGeneration === joinGeneration;
     room.participants.set(localAddress, {
       publicKey,
       joinedAt: timestamp,
       reticulumDestinationHash: destNorm,
       ...(rk ? { reticulumIdentityPublicKeyBase64: rk } : {}),
+      ...(typeof joinGeneration === 'number' && Number.isFinite(joinGeneration)
+        ? { joinGeneration: joinGeneration >>> 0 }
+        : {}),
+      takeoverAt:
+        sameLocalGeneration && !takeover
+          ? existingLocalParticipant.takeoverAt
+          : timestamp,
     });
     this.noteBootstrapParticipantActivity(roomId, localAddress, timestamp);
 
@@ -4473,7 +4682,9 @@ export class GroupCallManager extends EventEmitter {
       timestamp,
       reticulumDestinationHash: destNorm,
       ...(rk ? { reticulumIdentityPublicKeyBase64: rk } : {}),
-      ...(joinGeneration !== undefined ? { joinGeneration } : {}),
+      ...(signedJoinGeneration !== undefined
+        ? { joinGeneration: signedJoinGeneration }
+        : {}),
     };
     this.rememberRetainedVerifiedJoin(env);
     if (rk) {
@@ -4487,7 +4698,9 @@ export class GroupCallManager extends EventEmitter {
         timestamp,
         reticulumDestinationHash: destNorm,
         reticulumIdentityPublicKeyBase64: rk,
-        ...(joinGeneration !== undefined ? { joinGeneration } : {}),
+        ...(signedJoinGeneration !== undefined
+          ? { joinGeneration: signedJoinGeneration }
+          : {}),
       });
       const joinOnly = encodeJoinWire({
         ...env,
@@ -4498,7 +4711,9 @@ export class GroupCallManager extends EventEmitter {
         signature: joinRkSignature!,
         timestamp,
         reticulumDestinationHash: destNorm,
-        ...(joinGeneration !== undefined ? { joinGeneration } : {}),
+        ...(signedJoinGeneration !== undefined
+          ? { joinGeneration: signedJoinGeneration }
+          : {}),
         reticulumIdentityPublicKeyBase64: rk,
       });
       const bGj = byteLengthUtf8JsonWithBridgeSender(joinOnly);
@@ -4549,7 +4764,8 @@ export class GroupCallManager extends EventEmitter {
     localAddress: string,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    joinGeneration?: number
   ): void {
     this.clearReticulumOverlayLogicalDedupeForRoomLifecycle(roomId, 'leave');
     const room = this.rooms.get(roomId);
@@ -4568,6 +4784,10 @@ export class GroupCallManager extends EventEmitter {
         fromPublicKey: publicKey,
         signature,
         timestamp,
+        ...(typeof joinGeneration === 'number' &&
+        Number.isFinite(joinGeneration)
+          ? { joinGeneration }
+          : {}),
       };
       if (room) {
         const leaveWire = encodeLeaveWire(env);
@@ -7579,7 +7799,10 @@ export class GroupCallManager extends EventEmitter {
     roomId: string,
     address: string
   ): ReticulumAudioPeerState | null {
-    const peerPresenceHash = this.resolveReticulumPeerPresenceHash(address);
+    const peerPresenceHash = this.resolveReticulumPeerPresenceHash(
+      address,
+      roomId
+    );
     if (!peerPresenceHash) {
       return null;
     }
@@ -8721,7 +8944,10 @@ export class GroupCallManager extends EventEmitter {
     >();
     for (const room of this.rooms.values()) {
       for (const address of this.computeReticulumAudioTargetsForRoom(room)) {
-        const peerPresenceHash = this.resolveReticulumPeerPresenceHash(address);
+        const peerPresenceHash = this.resolveReticulumPeerPresenceHash(
+          address,
+          room.roomId
+        );
         if (!peerPresenceHash) continue;
         const existing = desiredByAddress.get(address);
         if (existing) {
@@ -8742,7 +8968,10 @@ export class GroupCallManager extends EventEmitter {
         now
       );
       if (leaseRooms.size === 0) continue;
-      const peerPresenceHash = this.resolveReticulumPeerPresenceHash(address);
+      const peerPresenceHash = this.resolveReticulumPeerPresenceHash(
+        address,
+        [...leaseRooms][0]
+      );
       if (!peerPresenceHash) continue;
       const existing = desiredByAddress.get(address);
       if (existing) {
@@ -9712,7 +9941,6 @@ export class GroupCallManager extends EventEmitter {
       );
       return;
     }
-    this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
     const room = this.rooms.get(env.roomId);
     if (!room) {
       return;
@@ -9723,9 +9951,6 @@ export class GroupCallManager extends EventEmitter {
       );
       return;
     }
-    if (fromNodeId) {
-      this.participantNodeIds.set(env.fromAddress, fromNodeId);
-    }
     if (!isRnsIdentityPublicKeyBase64(env.reticulumIdentityPublicKeyBase64)) {
       return;
     }
@@ -9733,14 +9958,41 @@ export class GroupCallManager extends EventEmitter {
     if (!existing) {
       return;
     }
+    const incomingGeneration = decodeGroupCallLogicalJoinGeneration(
+      env.joinGeneration
+    );
+    if (
+      typeof existing.joinGeneration === 'number' &&
+      Number.isFinite(existing.joinGeneration) &&
+      (typeof incomingGeneration !== 'number' ||
+        !Number.isFinite(incomingGeneration) ||
+        incomingGeneration !== existing.joinGeneration)
+    ) {
+      return;
+    }
+    const incomingDestinationHash = env.reticulumDestinationHash
+      .trim()
+      .toLowerCase();
+    if (
+      existing.reticulumDestinationHash.trim().toLowerCase() !==
+      incomingDestinationHash
+    ) {
+      return;
+    }
     room.participants.set(env.fromAddress, {
       publicKey: existing.publicKey,
       joinedAt: existing.joinedAt,
-      reticulumDestinationHash: env.reticulumDestinationHash
-        .trim()
-        .toLowerCase(),
+      reticulumDestinationHash: incomingDestinationHash,
       reticulumIdentityPublicKeyBase64: env.reticulumIdentityPublicKeyBase64,
+      ...(typeof existing.joinGeneration === 'number'
+        ? { joinGeneration: existing.joinGeneration }
+        : {}),
+      takeoverAt: existing.takeoverAt,
     });
+    this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
+    if (fromNodeId) {
+      this.participantNodeIds.set(env.fromAddress, fromNodeId);
+    }
     this.noteBootstrapParticipantActivity(
       env.roomId,
       env.fromAddress,
@@ -9759,6 +10011,10 @@ export class GroupCallManager extends EventEmitter {
       joinGeneration: env.joinGeneration,
     };
     this.rememberRetainedVerifiedJoinRk(env);
+    this.rememberReticulumPeerPresenceHash(
+      env.fromAddress,
+      incomingDestinationHash
+    );
     this.registerPeerIdentityFromJoinWire(joinForRegister);
     this.relayRetainedJoinIdentityToCurrentRoot(
       env.roomId,
@@ -9787,7 +10043,6 @@ export class GroupCallManager extends EventEmitter {
       );
       return;
     }
-    this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
     const room = this.rooms.get(env.roomId);
     if (!room) {
       if (this.isWatchedQortalRoom(env.roomId)) {
@@ -9805,11 +10060,6 @@ export class GroupCallManager extends EventEmitter {
         'qortal-non-member-join'
       );
       return;
-    }
-
-    // Cache the address → nodeId mapping for targeted audio delivery.
-    if (fromNodeId) {
-      this.participantNodeIds.set(env.fromAddress, fromNodeId);
     }
 
     const existing = room.participants.get(env.fromAddress);
@@ -9834,11 +10084,19 @@ export class GroupCallManager extends EventEmitter {
     const incomingReticulumDestinationHash = env.reticulumDestinationHash
       .trim()
       .toLowerCase();
+    const incomingLogicalJoinGeneration = decodeGroupCallLogicalJoinGeneration(
+      env.joinGeneration
+    );
     let shouldEmitParticipantJoined = false;
+    let joinWasApplied = false;
     if (
       shouldRefreshParticipantFromVerifiedJoin({
         currentJoinedAt: existing?.joinedAt,
+        currentJoinGeneration: existing?.joinGeneration,
+        currentTakeoverAt: existing?.takeoverAt,
         incomingJoinTimestamp: env.timestamp,
+        incomingJoinGeneration: incomingLogicalJoinGeneration,
+        incomingTakeover: env.takeover,
         lastLeaveTimestamp,
       })
     ) {
@@ -9886,7 +10144,16 @@ export class GroupCallManager extends EventEmitter {
                 env.reticulumIdentityPublicKeyBase64,
             }
           : {}),
+        ...(incomingLogicalJoinGeneration !== undefined
+          ? { joinGeneration: incomingLogicalJoinGeneration }
+          : {}),
+        takeoverAt:
+          existing?.joinGeneration === incomingLogicalJoinGeneration &&
+          typeof existing.takeoverAt === 'number'
+            ? existing.takeoverAt
+            : env.timestamp,
       });
+      joinWasApplied = true;
       this.clearParticipantLeftTombstone(env.roomId, env.fromAddress);
       this.noteBootstrapParticipantActivity(
         env.roomId,
@@ -9896,6 +10163,19 @@ export class GroupCallManager extends EventEmitter {
       if (!env.reticulumIdentityPublicKeyBase64) {
         this.notePendingJoinRkAfterVerifiedGj(env);
       }
+      if (
+        existing &&
+        existing.joinGeneration !== undefined &&
+        incomingLogicalJoinGeneration !== undefined &&
+        existing.joinGeneration !== incomingLogicalJoinGeneration &&
+        this.localAddresses.has(env.fromAddress)
+      ) {
+        this.emit('gcall:local-session-taken-over', {
+          roomId: env.roomId,
+          address: env.fromAddress,
+          joinGeneration: incomingLogicalJoinGeneration,
+        });
+      }
     } else {
       this.logGcJoinDropThrottled(
         env.fromAddress,
@@ -9903,6 +10183,16 @@ export class GroupCallManager extends EventEmitter {
         `[GCall] Skipped GC_JOIN participant update (stale joinTs vs existing): from=${env.fromAddress} room=${env.roomId} incomingTs=${env.timestamp} existingJoinedAt=${existing?.joinedAt ?? 'n/a'}`
       );
     }
+
+    if (!joinWasApplied) return;
+    this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
+    if (fromNodeId) {
+      this.participantNodeIds.set(env.fromAddress, fromNodeId);
+    }
+    this.rememberReticulumPeerPresenceHash(
+      env.fromAddress,
+      incomingReticulumDestinationHash
+    );
 
     this.rememberRetainedVerifiedJoin(env);
     this.registerPeerIdentityFromJoinWire(env);
@@ -9947,9 +10237,8 @@ export class GroupCallManager extends EventEmitter {
         address: env.fromAddress,
         publicKey: env.fromPublicKey,
         timestamp: env.timestamp,
-        ...(typeof env.joinGeneration === 'number' &&
-        Number.isFinite(env.joinGeneration)
-          ? { joinGeneration: env.joinGeneration }
+        ...(incomingLogicalJoinGeneration !== undefined
+          ? { joinGeneration: incomingLogicalJoinGeneration }
           : {}),
       });
     }
@@ -9982,7 +10271,10 @@ export class GroupCallManager extends EventEmitter {
     );
   }
 
-  private applyVerifiedLeave(env: GcLeaveEnvelope): void {
+  private applyVerifiedLeave(
+    env: GcLeaveEnvelope,
+    peerPresenceHash?: string
+  ): void {
     const room = this.rooms.get(env.roomId);
     const participant = room?.participants.get(env.fromAddress);
     if (
@@ -9993,6 +10285,20 @@ export class GroupCallManager extends EventEmitter {
     ) {
       loggerLog(
         `[GCall] Ignored stale GC_LEAVE for ${env.fromAddress} in ${env.roomId} (leaveTs=${env.timestamp}, joinedAt=${participant?.joinedAt ?? 'unknown'})`
+      );
+      return;
+    }
+    if (
+      participant &&
+      !shouldApplyGroupCallLeaveToSession({
+        activeJoinGeneration: participant.joinGeneration,
+        leavingJoinGeneration: env.joinGeneration,
+        activeReticulumDestinationHash: participant.reticulumDestinationHash,
+        transportPeerPresenceHash: peerPresenceHash,
+      })
+    ) {
+      loggerLog(
+        `[GCall] Ignored GC_LEAVE for superseded device session ${env.fromAddress} in ${env.roomId}`
       );
       return;
     }
@@ -10550,6 +10856,15 @@ export class GroupCallManager extends EventEmitter {
                 env.reticulumIdentityPublicKeyBase64,
             }
           : {}),
+        ...(decodeGroupCallLogicalJoinGeneration(env.joinGeneration) !==
+        undefined
+          ? {
+              joinGeneration: decodeGroupCallLogicalJoinGeneration(
+                env.joinGeneration
+              ),
+            }
+          : {}),
+        takeoverAt: env.timestamp,
       });
       participant = room.participants.get(env.fromAddress);
       this.clearParticipantLeftTombstone(env.roomId, env.fromAddress);
@@ -10564,9 +10879,13 @@ export class GroupCallManager extends EventEmitter {
         address: env.fromAddress,
         publicKey: env.fromPublicKey,
         timestamp: env.timestamp,
-        ...(typeof env.joinGeneration === 'number' &&
-        Number.isFinite(env.joinGeneration)
-          ? { joinGeneration: env.joinGeneration }
+        ...(decodeGroupCallLogicalJoinGeneration(env.joinGeneration) !==
+        undefined
+          ? {
+              joinGeneration: decodeGroupCallLogicalJoinGeneration(
+                env.joinGeneration
+              ),
+            }
           : {}),
       });
     }
@@ -10585,6 +10904,23 @@ export class GroupCallManager extends EventEmitter {
       return;
     }
     const signedHash = env.reticulumDestinationHash.trim().toLowerCase();
+    const selectedHash = participant.reticulumDestinationHash
+      .trim()
+      .toLowerCase();
+    const incomingLogicalGeneration = decodeGroupCallLogicalJoinGeneration(
+      env.joinGeneration
+    );
+    if (
+      signedHash !== selectedHash ||
+      (participant.joinGeneration !== undefined &&
+        incomingLogicalGeneration !== participant.joinGeneration)
+    ) {
+      this.closeReticulumAudioLinkQuietly(
+        job.linkId,
+        'link-auth-superseded-device-session'
+      );
+      return;
+    }
     if (signedHash) {
       this.rememberReticulumPeerPresenceHash(env.fromAddress, signedHash);
     }

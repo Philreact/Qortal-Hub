@@ -32,7 +32,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             emit=lambda event, payload: self.events.append((event, payload)),
             send_binary=lambda _frame, _source: True,
             log=lambda _message: None,
-            resolve_peer=lambda _address: None,
+            resolve_peer=lambda _address, preferred="": preferred or None,
             resolve_identity=lambda _peer: None,
             build_destination=lambda identity: identity,
             link_id_bytes=lambda _link: b"\0" * 16,
@@ -48,6 +48,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "groupId": "7",
             "landSessionId": "land-1",
             "roomId": "club",
+            "localDestinationHash": "aa" * 16,
             "instanceId": "00112233-4455-4677-8899-aabbccddeeff",
         })
 
@@ -173,6 +174,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "groupId": str(0x7FFFFFFF),
             "landSessionId": "s" * 24,
             "roomId": "r" * 64,
+            "localDestinationHash": "aa" * 16,
             "instanceId": "00112233-4455-4677-8899-aabbccddeeff",
         })
         self.authorize()
@@ -191,7 +193,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             emit=lambda *_args: None,
             send_binary=lambda *_args: True,
             log=lambda _message: None,
-            resolve_peer=lambda _address: None,
+            resolve_peer=lambda _address, preferred="": preferred or None,
             resolve_identity=lambda _peer: None,
             build_destination=lambda identity: identity,
             link_id_bytes=lambda _link: b"\0" * 16,
@@ -207,6 +209,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "groupId": "7",
             "landSessionId": "land-1",
             "roomId": "club",
+            "localDestinationHash": "bb" * 16,
             "instanceId": "11112233-4455-4677-8899-aabbccddeeff",
         })
         remote._enable({"mode": "push-to-talk"})
@@ -214,16 +217,151 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "signature": _b58encode(remote_wallet.sign(canonical_bytes(remote.pending_fields))),
             "publicKey": remote_public_key,
         })
-        self.manager.resolve_peer = lambda address: "ab" * 16 if address == remote_address else None
+        self.manager.resolve_peer = lambda address, preferred="": preferred if address == remote_address else None
         encoded = _encode_qortalland_proximity_discovery(remote_discovery[-1])
         self.assertIsNotNone(encoded)
         decoded = _decode_qortalland_proximity_discovery(encoded)
         self.assertIsNotNone(decoded)
         tampered = {**decoded, "u": "another-room"}
         self.assertTrue(self.manager.on_discovery(tampered, "cd" * 16))
-        self.assertNotIn(remote_address, self.manager.remote_capabilities)
+        remote_key = self.manager._peer_key(remote_address, "land-1")
+        self.assertNotIn(remote_key, self.manager.remote_capabilities)
         self.assertTrue(self.manager.on_discovery(decoded, "cd" * 16))
-        self.assertIn(remote_address, self.manager.remote_capabilities)
+        self.assertIn(remote_key, self.manager.remote_capabilities)
+
+    def test_same_account_land_sessions_keep_independent_routes_and_audio_sources(self):
+        self.authorize()
+        self.manager._update_position({
+            "landSessionId": "land-1", "sequence": 1,
+            "roomId": "club", "x": 0, "y": 0,
+        })
+        resolved = []
+        self.manager.resolve_peer = lambda address, preferred="": (
+            resolved.append((address, preferred)) or preferred
+        )
+
+        for session_id, destination_hash, x in (
+            ("land-2", "bb" * 16, 20),
+            ("land-3", "cc" * 16, 40),
+        ):
+            discovery = []
+            remote = QortalLandProximityVoiceManager(
+                emit=lambda *_args: None,
+                send_binary=lambda *_args: True,
+                log=lambda _message: None,
+                resolve_peer=lambda _address, preferred="": preferred or None,
+                resolve_identity=lambda _peer: None,
+                build_destination=lambda identity: identity,
+                link_id_bytes=lambda _link: b"\0" * 16,
+                enqueue=lambda fn, args: bool(fn(*args) is not False),
+                broadcast_discovery=discovery.append,
+                verify_wallet=verify_signature,
+                derive_address=derive_qortal_address,
+                decode_base58=_b58decode,
+            )
+            remote.set_context({
+                "address": self.address,
+                "publicKey": self.public_key,
+                "groupId": "7",
+                "landSessionId": session_id,
+                "roomId": "club",
+                "localDestinationHash": destination_hash,
+                "instanceId": f"{x:08x}-4455-4677-8899-aabbccddeeff",
+            })
+            remote._enable({"mode": "push-to-talk"})
+            remote._submit_signature({
+                "signature": _b58encode(self.wallet.sign(canonical_bytes(remote.pending_fields))),
+                "publicKey": self.public_key,
+            })
+            decoded = _decode_qortalland_proximity_discovery(
+                _encode_qortalland_proximity_discovery(discovery[-1])
+            )
+            self.assertTrue(self.manager.on_discovery(decoded, "dd" * 16))
+            self.manager.on_land_state({
+                "a": self.address, "s": session_id, "g": "7", "u": "club",
+                "x": x, "y": 0, "ts": int(time.time() * 1000),
+            }, "dd" * 16)
+
+        keys = [
+            self.manager._peer_key(self.address, "land-2"),
+            self.manager._peer_key(self.address, "land-3"),
+        ]
+        self.assertEqual(set(self.manager.remote_capabilities), set(keys))
+        self.assertEqual(set(self.manager.remote_positions), set(keys))
+        self.assertEqual({peer_key for _distance, peer_key in self.manager._eligible()}, set(keys))
+        self.assertNotEqual(self.manager._source_id(keys[0]), self.manager._source_id(keys[1]))
+        self.assertIn((self.address, "bb" * 16), resolved)
+        self.assertIn((self.address, "cc" * 16), resolved)
+
+    def test_link_hello_is_bound_to_both_land_sessions_and_authenticated_endpoint(self):
+        self.authorize()
+        self.manager._update_position({
+            "landSessionId": "land-1", "sequence": 1,
+            "roomId": "club", "x": 0, "y": 0,
+        })
+        destination_hash = "bb" * 16
+        discovery = []
+        remote = QortalLandProximityVoiceManager(
+            emit=lambda *_args: None,
+            send_binary=lambda *_args: True,
+            log=lambda _message: None,
+            resolve_peer=lambda _address, preferred="": preferred or None,
+            resolve_identity=lambda _peer: None,
+            build_destination=lambda identity: identity,
+            link_id_bytes=lambda _link: b"l" * 16,
+            enqueue=lambda fn, args: bool(fn(*args) is not False),
+            broadcast_discovery=discovery.append,
+            verify_wallet=verify_signature,
+            derive_address=derive_qortal_address,
+            decode_base58=_b58decode,
+        )
+        remote.set_context({
+            "address": self.address, "publicKey": self.public_key,
+            "groupId": "7", "landSessionId": "land-0", "roomId": "club",
+            "localDestinationHash": destination_hash,
+            "instanceId": "11112233-4455-4677-8899-aabbccddeeff",
+        })
+        remote._enable({"mode": "push-to-talk"})
+        remote._submit_signature({
+            "signature": _b58encode(self.wallet.sign(canonical_bytes(remote.pending_fields))),
+            "publicKey": self.public_key,
+        })
+        decoded = _decode_qortalland_proximity_discovery(
+            _encode_qortalland_proximity_discovery(discovery[-1])
+        )
+        self.manager.resolve_peer = lambda address, preferred="": (
+            preferred if address == self.address and preferred == destination_hash else None
+        )
+        self.manager.resolve_link_peer_hash = lambda _link: destination_hash
+        self.assertTrue(self.manager.on_discovery(decoded, "dd" * 16))
+        self.manager.on_land_state({
+            "a": self.address, "s": "land-0", "g": "7", "u": "club",
+            "x": 20, "y": 0, "ts": int(time.time() * 1000),
+        }, "dd" * 16)
+        peer_key = self.manager._peer_key(self.address, "land-0")
+        capability = self.manager.remote_capabilities[peer_key]
+        link = object()
+        hello = {
+            "v": 1, "f": self.address, "t": self.address, "g": "7",
+            "s": "land-0", "o": "land-1", "r": "club",
+            "c": capability["hash"], "l": b"\0" * 16,
+            "n": b"n" * 16, "ts": int(time.time() * 1000),
+        }
+        hello["z"] = remote.ephemeral_private.sign(umsgpack.packb(hello))
+        self.assertTrue(self.manager._verify_link_hello(link, hello))
+
+        wrong_target = {**hello, "o": "land-other", "n": b"o" * 16}
+        signed_wrong_target = dict(wrong_target)
+        signed_wrong_target.pop("z")
+        wrong_target["z"] = remote.ephemeral_private.sign(umsgpack.packb(signed_wrong_target))
+        self.assertFalse(self.manager._verify_link_hello(link, wrong_target))
+
+        self.manager.resolve_link_peer_hash = lambda _link: "cc" * 16
+        wrong_link = {**hello, "n": b"p" * 16}
+        signed_wrong_link = dict(wrong_link)
+        signed_wrong_link.pop("z")
+        wrong_link["z"] = remote.ephemeral_private.sign(umsgpack.packb(signed_wrong_link))
+        self.assertFalse(self.manager._verify_link_hello(link, wrong_link))
 
     def test_inbound_link_retries_accept_until_optional_auth_ack(self):
         self.authorize()
@@ -233,7 +371,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         nonce = b"n" * 16
         accept = {"c": "accept", "marker": "test"}
         state = {
-            "address": address,
+            "peerKey": f"{address}:land-2", "address": address, "sessionId": "land-2",
             "link": link,
             "linkId": link_id,
             "nonce": nonce,
@@ -246,8 +384,8 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "lastActivity": time.time(),
             "sourceId": 1,
         }
-        self.manager.links[address] = state
-        self.manager.links_by_object[id(link)] = address
+        self.manager.links[state["peerKey"]] = state
+        self.manager.links_by_object[id(link)] = state["peerKey"]
         sent = []
         self.manager._send_control = lambda _state, payload: sent.append(payload)
         self.manager._reconcile = lambda: None

@@ -64,4 +64,10 @@ describe('Reticulum DM OS notifications', () => {
       shouldNotify({ event: { ...event, timestamp: NOW - 60_001 } })
     ).toBe(false);
   });
+
+  it('does not notify for an event already read on another device', () => {
+    expect(
+      shouldNotify({ event: { ...event, readByOwner: true } })
+    ).toBe(false);
+  });
 });

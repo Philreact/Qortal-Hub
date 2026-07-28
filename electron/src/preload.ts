@@ -1722,6 +1722,11 @@ try {
           success: boolean;
           error?: string;
         }>,
+      getDirectAuthorStreamId: async (authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectAuthorStreamId',
+          authorAddress
+        ) as Promise<string>,
       sendDirectTyping: async (
         localAddress: string,
         peerAddress: string,
@@ -2192,6 +2197,7 @@ try {
           groupId: number;
           authorAddress: string;
           sessionId: string;
+          destinationHash?: string;
           sequence: number;
           x: number;
           y: number;
@@ -2211,6 +2217,7 @@ try {
               groupId: number;
               authorAddress: string;
               sessionId: string;
+              destinationHash?: string;
               sequence: number;
               x: number;
               y: number;
@@ -2314,6 +2321,10 @@ try {
           signature?: string;
           reason?: string;
           roomId?: string;
+          sourceSessionId?: string;
+          targetSessionId?: string;
+          sourceDestinationHash?: string;
+          targetDestinationHash?: string;
           timestamp?: number;
         }) => void
       ) => {
@@ -2330,6 +2341,10 @@ try {
               signature?: string;
               reason?: string;
               roomId?: string;
+              sourceSessionId?: string;
+              targetSessionId?: string;
+              sourceDestinationHash?: string;
+              targetDestinationHash?: string;
               timestamp?: number;
             }
           );
@@ -2541,6 +2556,11 @@ try {
           success: boolean;
           error?: string;
         }>,
+      getDirectAuthorStreamId: async (authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectAuthorStreamId',
+          authorAddress
+        ) as Promise<string>,
       sendDirectTyping: async (
         localAddress: string,
         peerAddress: string,
@@ -3011,6 +3031,7 @@ try {
           groupId: number;
           authorAddress: string;
           sessionId: string;
+          destinationHash?: string;
           sequence: number;
           x: number;
           y: number;
@@ -3030,6 +3051,7 @@ try {
               groupId: number;
               authorAddress: string;
               sessionId: string;
+              destinationHash?: string;
               sequence: number;
               x: number;
               y: number;
@@ -3133,6 +3155,10 @@ try {
           signature?: string;
           reason?: string;
           roomId?: string;
+          sourceSessionId?: string;
+          targetSessionId?: string;
+          sourceDestinationHash?: string;
+          targetDestinationHash?: string;
           timestamp?: number;
         }) => void
       ) => {
@@ -3149,6 +3175,10 @@ try {
               signature?: string;
               reason?: string;
               roomId?: string;
+              sourceSessionId?: string;
+              targetSessionId?: string;
+              sourceDestinationHash?: string;
+              targetDestinationHash?: string;
               timestamp?: number;
             }
           );
@@ -3187,7 +3217,10 @@ try {
       signature: string,
       publicKey: string,
       callId: string,
-      timestamp: number
+      timestamp: number,
+      cancellationSignature?: string,
+      cancellationPublicKey?: string,
+      cancellationTimestamp?: number
     ) =>
       ipcRenderer.invoke(
         'call:initiate',
@@ -3197,7 +3230,10 @@ try {
         signature,
         publicKey,
         callId,
-        timestamp
+        timestamp,
+        cancellationSignature,
+        cancellationPublicKey,
+        cancellationTimestamp
       ),
 
     /** Accept an incoming call identified by callId. */
@@ -3307,7 +3343,9 @@ try {
       topologyEpochFloor?: number,
       reticulumIdentityPublicKeyBase64?: string,
       joinRkSignature?: string,
-      dmVoiceAudioLinkRole?: 'opener' | 'waiter'
+      dmVoiceAudioLinkRole?: 'opener' | 'waiter',
+      takeover?: boolean,
+      dmVoicePeerDestinationHash?: string
     ) =>
       ipcRenderer.invoke(
         'gcall:join',
@@ -3322,7 +3360,9 @@ try {
         topologyEpochFloor,
         reticulumIdentityPublicKeyBase64,
         joinRkSignature,
-        dmVoiceAudioLinkRole
+        dmVoiceAudioLinkRole,
+        takeover,
+        dmVoicePeerDestinationHash
       ) as Promise<{
         success: boolean;
         error?: string;
@@ -3336,7 +3376,8 @@ try {
       localAddress: string,
       signature: string,
       publicKey: string,
-      timestamp: number
+      timestamp: number,
+      joinGeneration?: number
     ) =>
       ipcRenderer.invoke(
         'gcall:leave',
@@ -3344,7 +3385,8 @@ try {
         localAddress,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        joinGeneration
       ),
 
     leaveSync: (
@@ -3352,7 +3394,8 @@ try {
       localAddress: string,
       signature: string,
       publicKey: string,
-      timestamp: number
+      timestamp: number,
+      joinGeneration?: number
     ) =>
       ipcRenderer.sendSync(
         'gcall:leaveSync',
@@ -3360,7 +3403,8 @@ try {
         localAddress,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        joinGeneration
       ) as { success: boolean; error?: string },
 
     reportTransportHealth: async (
@@ -3622,6 +3666,7 @@ try {
       const channels = [
         'gcall:participant-joined',
         'gcall:participant-left',
+        'gcall:local-session-taken-over',
         'gcall:topology',
         'gcall:cluster-heartbeat',
         'gcall:heartbeat',

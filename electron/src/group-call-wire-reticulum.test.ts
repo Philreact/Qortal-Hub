@@ -5,6 +5,7 @@ import {
   decodeJoinIdentityWire,
   decodeJoinWire,
   decodeJoinWireFailureReason,
+  decodeLeaveWire,
   decodeKeyRequestFromGq1,
   decodeKeyWireFromGk1,
   decodeTopologyFromGt1,
@@ -12,6 +13,7 @@ import {
   encodeClusterHeartbeatWire,
   encodeJoinIdentityWire,
   encodeJoinWire,
+  encodeLeaveWire,
   encodeKeyRequestWire,
   encodeKeyWire,
   encodeTopologyWire,
@@ -101,7 +103,7 @@ describe('group-call-wire-reticulum', () => {
       signature: 'sig',
       timestamp: 12_345,
       reticulumDestinationHash: d32,
-      joinGeneration: 7,
+      joinGeneration: -8,
     };
     const w = encodeJoinWire(env);
     expect(w.t).toBe('GJ');
@@ -116,9 +118,32 @@ describe('group-call-wire-reticulum', () => {
       signature: 'sig',
       timestamp: 12_345,
       reticulumDestinationHash: d32,
+      joinGeneration: -8,
+      takeover: true,
+    });
+    expect(
+      decodeJoinWireFailureReason(w as Record<string, unknown>)
+    ).toBeNull();
+  });
+
+  it('round-trips session-aware leave wire', () => {
+    const wire = encodeLeaveWire({
+      roomId: 'gcall-qortal-1',
+      fromAddress: 'Qa',
+      fromPublicKey: 'pk',
+      signature: 'sig',
+      timestamp: 12_345,
       joinGeneration: 7,
     });
-    expect(decodeJoinWireFailureReason(w as Record<string, unknown>)).toBeNull();
+    expect(decodeLeaveWire(wire)).toEqual({
+      type: 'GC_LEAVE',
+      roomId: 'gcall-qortal-1',
+      fromAddress: 'Qa',
+      fromPublicKey: 'pk',
+      signature: 'sig',
+      timestamp: 12_345,
+      joinGeneration: 7,
+    });
   });
 
   it('decodeJoinWireFailureReason explains bad d', () => {
@@ -193,7 +218,9 @@ describe('group-call-wire-reticulum', () => {
     expect(gi.t).toBe('GI');
     expect(wireFitsReticulum(gi)).toBe(true);
     const backGi = decodeJoinIdentityWire(gi as Record<string, unknown>);
-    expect(backGi?.reticulumIdentityPublicKeyBase64).toBe(rk.replace(/=+$/u, ''));
+    expect(backGi?.reticulumIdentityPublicKeyBase64).toBe(
+      rk.replace(/=+$/u, '')
+    );
   });
 
   it('round-trips single-packet topology', () => {
@@ -306,9 +333,9 @@ describe('group-call-wire-reticulum', () => {
       c: env.clusters,
     };
 
-    expect(
-      bridgeWireJsonBytes(predictedSingle)
-    ).toBeGreaterThan(RT_GCALL_MAX_WIRE_JSON_BYTES);
+    expect(bridgeWireJsonBytes(predictedSingle)).toBeGreaterThan(
+      RT_GCALL_MAX_WIRE_JSON_BYTES
+    );
 
     const frames = encodeTopologyWire(env);
     expect(frames.length).toBeGreaterThan(1);
@@ -465,5 +492,4 @@ describe('group-call-wire-reticulum', () => {
       timestamp: 1_734_567_890_234,
     });
   });
-
 });

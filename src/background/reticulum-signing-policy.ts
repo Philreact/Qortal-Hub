@@ -20,42 +20,110 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
     'ephemeralPublicKey',
     'groupId',
     'landSessionId',
+    'destinationHash',
     'instanceId',
     'nonce',
     'createdAt',
     'expiresAt',
   ]),
   QORTAL_LAND_GAME_INVITE: schema([
-    'type', 'protocolVersion', 'game', 'gameVersion', 'rulesVersion',
-    'matchId', 'groupId', 'requesterAddress', 'recipientAddress',
-    'signerPublicKey', 'requesterNonce', 'linkId', 'createdAt', 'expiresAt',
+    'type',
+    'protocolVersion',
+    'game',
+    'gameVersion',
+    'rulesVersion',
+    'matchId',
+    'groupId',
+    'requesterAddress',
+    'recipientAddress',
+    'sourceSessionId',
+    'targetSessionId',
+    'sourceDestinationHash',
+    'targetDestinationHash',
+    'signerPublicKey',
+    'requesterNonce',
+    'linkId',
+    'createdAt',
+    'expiresAt',
   ]),
   QORTAL_LAND_GAME_ACCEPT: schema([
-    'type', 'inviteHash', 'matchId', 'requesterNonce', 'recipientNonce',
-    'responderAddress', 'signerPublicKey', 'linkId', 'createdAt',
+    'type',
+    'inviteHash',
+    'matchId',
+    'requesterNonce',
+    'recipientNonce',
+    'responderAddress',
+    'signerPublicKey',
+    'linkId',
+    'createdAt',
   ]),
   QORTAL_LAND_GAME_DECLINE: schema([
-    'type', 'inviteHash', 'matchId', 'responderAddress', 'signerPublicKey',
-    'reason', 'linkId', 'createdAt',
+    'type',
+    'inviteHash',
+    'matchId',
+    'responderAddress',
+    'signerPublicKey',
+    'reason',
+    'linkId',
+    'createdAt',
   ]),
   QORTAL_LAND_GAME_CONFIRM: schema([
-    'type', 'acceptHash', 'matchId', 'requesterNonce', 'recipientNonce',
-    'starter', 'initialStateHash', 'requesterAddress', 'signerPublicKey',
-    'linkId', 'createdAt',
+    'type',
+    'acceptHash',
+    'matchId',
+    'requesterNonce',
+    'recipientNonce',
+    'starter',
+    'initialStateHash',
+    'requesterAddress',
+    'signerPublicKey',
+    'linkId',
+    'createdAt',
   ]),
   QORTAL_LAND_GAME_RESUME_REQUEST: schema([
-    'type', 'matchId', 'roundId', 'requesterAddress', 'signerPublicKey', 'linkId',
-    'requesterNonce', 'lastAcknowledgedPly', 'stateHash', 'transcriptHash', 'createdAt',
+    'type',
+    'matchId',
+    'roundId',
+    'requesterAddress',
+    'signerPublicKey',
+    'linkId',
+    'sourceSessionId',
+    'targetSessionId',
+    'sourceDestinationHash',
+    'targetDestinationHash',
+    'requesterNonce',
+    'lastAcknowledgedPly',
+    'stateHash',
+    'transcriptHash',
+    'createdAt',
   ]),
   QORTAL_LAND_GAME_RESUME_ACCEPT: schema([
-    'type', 'matchId', 'roundId', 'responderAddress', 'signerPublicKey', 'linkId',
-    'requesterNonce', 'recipientNonce', 'lastAcknowledgedPly', 'stateHash',
-    'transcriptHash', 'createdAt',
+    'type',
+    'matchId',
+    'roundId',
+    'responderAddress',
+    'signerPublicKey',
+    'linkId',
+    'requesterNonce',
+    'recipientNonce',
+    'lastAcknowledgedPly',
+    'stateHash',
+    'transcriptHash',
+    'createdAt',
   ]),
   QORTAL_LAND_GAME_RESUME_CONFIRM: schema([
-    'type', 'matchId', 'roundId', 'requesterAddress', 'signerPublicKey', 'linkId',
-    'requesterNonce', 'recipientNonce', 'lastAcknowledgedPly', 'stateHash',
-    'transcriptHash', 'createdAt',
+    'type',
+    'matchId',
+    'roundId',
+    'requesterAddress',
+    'signerPublicKey',
+    'linkId',
+    'requesterNonce',
+    'recipientNonce',
+    'lastAcknowledgedPly',
+    'stateHash',
+    'transcriptHash',
+    'createdAt',
   ]),
   PRESENCE_ANNOUNCE: schema([
     'type',
@@ -182,6 +250,28 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
 };
 
 const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
+  QORTAL_LAND_CALL_V2: schema([
+    'type',
+    'groupId',
+    'callType',
+    'callId',
+    'toAddress',
+    'sourceSessionId',
+    'targetSessionId',
+    'sourceDestinationHash',
+    'targetDestinationHash',
+    'reason',
+    'roomId',
+    'timestamp',
+  ]),
+  QORTAL_LAND_SESSION_ROUTE_V1: schema([
+    'type',
+    'groupId',
+    'sessionId',
+    'destinationHash',
+    'timestamp',
+    'expiresAt',
+  ]),
   QORTAL_LAND_AUTH: schema([
     'type',
     'ephemeralPublicKey',
@@ -231,6 +321,10 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'timestamp',
   ]),
   RCHAT_DM_PROBE: schema(['type', 'requestId', 'maxHops', 'timestamp']),
+  RCHAT_READ_SYNC_V1: schema(
+    ['type', 'scopeType', 'ownerAddress', 'upToTimestamp', 'signedAt'],
+    ['groupId', 'channelId', 'conversationId', 'peerAddress']
+  ),
   RCHAT_METADATA_SNAPSHOT: schema([
     'type',
     'createdAt',
@@ -368,6 +462,20 @@ const directEventSchema = schema([
   'timestamp',
 ]);
 
+const directEventStreamSchema = schema([
+  'conversationId',
+  'eventId',
+  'eventType',
+  'payload',
+  'payloadHash',
+  'recipientAddress',
+  'replyToEventId',
+  'senderSeq',
+  'senderStreamId',
+  'targetEventId',
+  'timestamp',
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return false;
@@ -436,6 +544,8 @@ const GAME_HEX_BYTES: Readonly<Record<string, number>> = {
   requesterNonce: 16,
   stateHash: 32,
   transcriptHash: 32,
+  sourceDestinationHash: 16,
+  targetDestinationHash: 16,
 };
 
 function assertSafeGameHandshake(payload: Record<string, unknown>): void {
@@ -512,7 +622,13 @@ function assertSafeGameHandshake(payload: Record<string, unknown>): void {
       payload.rulesVersion !== 1 ||
       typeof payload.groupId !== 'string' ||
       payload.groupId.length === 0 ||
-      payload.groupId.length > 64
+      payload.groupId.length > 64 ||
+      typeof payload.sourceSessionId !== 'string' ||
+      payload.sourceSessionId.length === 0 ||
+      payload.sourceSessionId.length > 16 ||
+      typeof payload.targetSessionId !== 'string' ||
+      payload.targetSessionId.length === 0 ||
+      payload.targetSessionId.length > 16
     ) {
       throw new Error('Game invitation version or group is invalid');
     }
@@ -552,8 +668,12 @@ function assertSafeProximityCapability(payload: Record<string, unknown>): void {
     typeof payload.landSessionId !== 'string' ||
     payload.landSessionId.length < 1 ||
     payload.landSessionId.length > 24 ||
+    typeof payload.destinationHash !== 'string' ||
+    !/^[0-9a-f]{32}$/i.test(payload.destinationHash) ||
     typeof payload.instanceId !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.instanceId) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.instanceId
+    ) ||
     typeof payload.createdAt !== 'number' ||
     !Number.isSafeInteger(payload.createdAt) ||
     typeof payload.expiresAt !== 'number' ||
@@ -620,7 +740,7 @@ export function assertAllowedReticulumSigningPayload(
   assertPayload(
     payload,
     rchatSchemas,
-    [groupEventSchema, directEventSchema],
+    [groupEventSchema, directEventSchema, directEventStreamSchema],
     RCHAT_SIGNING_MAX_BYTES
   );
 }
