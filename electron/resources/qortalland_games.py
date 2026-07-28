@@ -698,12 +698,15 @@ class QortalLandGameManager:
             or any(char not in "0123456789abcdef" for char in target_destination_hash)
         ):
             raise ValueError("invalid_game_invitation")
-        peer_hash = self.resolve_peer(recipient, target_destination_hash)
-        if not peer_hash:
-            raise ValueError("recipient_not_verified")
-        identity = self.resolve_identity(peer_hash)
-        if identity is None:
-            raise ValueError("recipient_identity_unavailable")
+        # The selected endpoint comes from the account-signed Land session
+        # route. The general presence peer cache is only a useful fast-path;
+        # it can legitimately be asymmetric or lag behind Land state. The
+        # remote endpoint still has to prove the exact target session and the
+        # resulting link is cryptographically bound during the handshake.
+        peer_hash = (
+            self.resolve_peer(recipient, target_destination_hash)
+            or target_destination_hash
+        )
         state = {
             "matchId": match_id,
             "roundId": match_id,
@@ -774,7 +777,26 @@ class QortalLandGameManager:
         try:
             identity = self.resolve_identity(state["peerHash"])
             if identity is None:
-                raise ValueError("recipient_identity_unavailable")
+                refreshed = False
+                if self.refresh_path is not None:
+                    try:
+                        refreshed = self.refresh_path(
+                            state["peerHash"],
+                            "game_identity_unavailable",
+                        ) is True
+                    except Exception as exc:
+                        self.log(
+                            f"[qortalland-game] identity refresh failed match={match_id[:8]} "
+                            f"peer={str(state['peerHash'])[:8]} code={str(exc)[:80]}"
+                        )
+                if not refreshed:
+                    RNS.Transport.request_path(bytes.fromhex(state["peerHash"]))
+                self.log(
+                    f"[qortalland-game] identity refresh requested match={match_id[:8]} "
+                    f"peer={str(state['peerHash'])[:8]} hard={str(self.refresh_path is not None).lower()}"
+                )
+                self._schedule_open_retry(match_id)
+                return
             destination = self.build_destination(identity)
             destination_hash = bytes(destination.hash)
             if destination_hash.hex() != str(state["peerHash"]).lower():
@@ -1130,6 +1152,9 @@ class QortalLandGameManager:
         context = self.land_context or {}
         if not state or state.get("phase") != "recovering" or state.get("outbound"):
             raise ValueError("resume_match_unavailable")
+        # The signed source hash must equal the identity that owns this exact
+        # Reticulum link. Do not additionally depend on the global presence
+        # address cache, which may lag or retain another account for the node.
         if (
             fields.get("requesterAddress") != state["requester"]
             or fields.get("roundId") != (state.get("roundId") or state["matchId"])
@@ -1143,7 +1168,6 @@ class QortalLandGameManager:
             or fields.get("targetDestinationHash") != state.get("targetDestinationHash")
             or context.get("landSessionId") != state.get("targetSessionId")
             or context.get("localDestinationHash") != state.get("targetDestinationHash")
-            or self.resolve_peer(state["requester"], state.get("sourceDestinationHash") or "") != state.get("sourceDestinationHash")
             or self.resolve_link_peer_hash is None
             or str(self.resolve_link_peer_hash(link) or "").strip().lower() != state.get("sourceDestinationHash")
             or not verify_signature(fields, envelope["publicKey"], envelope["signature"])
@@ -1259,9 +1283,11 @@ class QortalLandGameManager:
         if fields.get("signerPublicKey") != public_key or derive_qortal_address(public_key) != fields.get("requesterAddress") or not verify_signature(fields, public_key, envelope["signature"]):
             raise ValueError("invalid_signature")
         source_hash = str(fields.get("sourceDestinationHash") or "").strip().lower()
+        # The wallet signature binds the Qortal address to source_hash, while
+        # the live link identity proves that the sender controls source_hash.
+        # This remains authoritative if the separate presence cache is stale.
         if (
             not source_hash
-            or self.resolve_peer(str(fields.get("requesterAddress") or ""), source_hash) != source_hash
             or self.resolve_link_peer_hash is None
             or str(self.resolve_link_peer_hash(link) or "").strip().lower() != source_hash
             or not isinstance(fields.get("sourceSessionId"), str)

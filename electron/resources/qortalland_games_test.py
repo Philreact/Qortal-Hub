@@ -72,6 +72,28 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         request_path.assert_called_once_with(bytes.fromhex("11" * 16))
         manager._schedule_open_retry.assert_called_once_with(match_id)
 
+    def test_missing_identity_refreshes_route_and_retries(self):
+        refreshes = []
+        manager, _events = self.make_manager()
+        manager.resolve_identity = lambda _peer: None
+        manager.refresh_path = lambda peer, reason: refreshes.append((peer, reason)) or True
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "establishing",
+            "establishDeadline": time.time() + 30,
+            "openAttempts": 0,
+        }
+        manager._schedule_open_retry = mock.Mock()
+
+        with mock.patch.object(RNS.Transport, "request_path") as request_path:
+            manager._attempt_open(match_id)
+
+        self.assertEqual(refreshes, [("11" * 16, "game_identity_unavailable")])
+        request_path.assert_not_called()
+        manager._schedule_open_retry.assert_called_once_with(match_id)
+
     def test_socket_writer_drains_media_without_waiting_on_empty_control_queue(self):
         manager, _events = self.make_manager()
 
@@ -250,7 +272,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertLessEqual(len(raw), MAX_CHANNEL_PAYLOAD)
         self.assertEqual(self.manager._decode_handshake(umsgpack.unpackb(raw[4:])), envelope)
 
-    def test_open_game_link_uses_only_the_selected_verified_land_endpoint(self):
+    def test_open_game_link_uses_selected_land_endpoint_when_peer_cache_lags(self):
         manager, _events = self.make_manager()
         manager.land_context = {
             "address": self.address,
@@ -260,7 +282,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "roomId": "lounge",
             "localDestinationHash": "aa" * 16,
         }
-        manager.resolve_peer = mock.Mock(return_value="22" * 16)
+        manager.resolve_peer = mock.Mock(return_value=None)
         manager.resolve_identity = mock.Mock(return_value=object())
         manager._attempt_open = mock.Mock()
         match_id = "00112233-4455-6677-8899-aabbccddeeff"
@@ -298,11 +320,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             "roomId": "lounge",
             "localDestinationHash": "aa" * 16,
         }
-        manager.resolve_peer = lambda address, preferred="": (
-            preferred
-            if address == requester_address and preferred == "11" * 16
-            else None
-        )
+        manager.resolve_peer = lambda _address, preferred="": None
         manager.resolve_link_peer_hash = lambda _link: "11" * 16
         fields = {
             "type": "QORTAL_LAND_GAME_INVITE",

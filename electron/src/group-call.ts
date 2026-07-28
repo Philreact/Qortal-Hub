@@ -505,11 +505,29 @@ export function shouldRefreshParticipantFromVerifiedJoin(opts: {
   }
   const currentGeneration = opts.currentJoinGeneration;
   const incomingGeneration = opts.incomingJoinGeneration;
-  if (
+  const currentIsSessionAware =
     typeof currentGeneration === 'number' &&
-    Number.isFinite(currentGeneration) &&
+    Number.isFinite(currentGeneration);
+  const incomingIsSessionAware =
     typeof incomingGeneration === 'number' &&
-    Number.isFinite(incomingGeneration) &&
+    Number.isFinite(incomingGeneration);
+  // Once ownership is session-aware, a legacy announcement cannot prove that
+  // it belongs to the selected installation. Conversely, upgrading a legacy
+  // slot to a session-aware owner is an ownership change and must carry the
+  // same explicit takeover marker as a switch between two modern clients.
+  if (currentIsSessionAware !== incomingIsSessionAware) {
+    if (currentIsSessionAware) return false;
+    if (opts.incomingTakeover !== true) return false;
+    const currentTakeoverAt =
+      typeof opts.currentTakeoverAt === 'number' &&
+      Number.isFinite(opts.currentTakeoverAt)
+        ? opts.currentTakeoverAt
+        : opts.currentJoinedAt;
+    return opts.incomingJoinTimestamp > currentTakeoverAt;
+  }
+  if (
+    currentIsSessionAware &&
+    incomingIsSessionAware &&
     incomingGeneration !== currentGeneration
   ) {
     if (opts.incomingTakeover !== true) return false;
@@ -521,6 +539,38 @@ export function shouldRefreshParticipantFromVerifiedJoin(opts: {
     return opts.incomingJoinTimestamp > currentTakeoverAt;
   }
   return opts.incomingJoinTimestamp >= opts.currentJoinedAt;
+}
+
+/**
+ * Preserve the ownership timestamp only when a real current participant is
+ * re-announcing the same logical session. In particular, two absent legacy
+ * generations (`undefined === undefined`) must not be mistaken for an
+ * existing session: that used to dereference an absent participant during the
+ * first verified DM/group-call join.
+ */
+export function resolveVerifiedJoinTakeoverAt(opts: {
+  currentJoinedAt?: number;
+  currentJoinGeneration?: number;
+  currentTakeoverAt?: number;
+  incomingJoinGeneration?: number;
+  incomingJoinTimestamp: number;
+}): number {
+  const hasCurrentParticipant =
+    typeof opts.currentJoinedAt === 'number' &&
+    Number.isFinite(opts.currentJoinedAt);
+  const currentTakeoverAt =
+    typeof opts.currentTakeoverAt === 'number' &&
+    Number.isFinite(opts.currentTakeoverAt)
+      ? opts.currentTakeoverAt
+      : undefined;
+  if (
+    hasCurrentParticipant &&
+    currentTakeoverAt !== undefined &&
+    opts.currentJoinGeneration === opts.incomingJoinGeneration
+  ) {
+    return currentTakeoverAt;
+  }
+  return opts.incomingJoinTimestamp;
 }
 
 /** A session-scoped leave must never remove another installation's active slot. */
@@ -937,7 +987,7 @@ export type GcEnvelope =
 
 // ── Room state ────────────────────────────────────────────────────────────────
 
-interface RoomParticipant {
+export interface RoomParticipant {
   publicKey: string;
   joinedAt: number;
   /** From signed GC_JOIN (compact wire `d`). */
@@ -948,6 +998,69 @@ interface RoomParticipant {
   joinGeneration?: number;
   /** Timestamp of the explicit join that selected this device session. */
   takeoverAt: number;
+}
+
+function buildRoomParticipantRecord(input: {
+  publicKey: string;
+  joinedAt: number;
+  reticulumDestinationHash: string;
+  reticulumIdentityPublicKeyBase64?: string;
+  joinGeneration?: number;
+  takeoverAt?: number;
+}): RoomParticipant {
+  if (!Number.isFinite(input.joinedAt)) {
+    throw new Error('Invalid group-call participant join timestamp');
+  }
+  if (!isRnsDestinationHashHex(input.reticulumDestinationHash)) {
+    throw new Error('Invalid group-call participant Reticulum destination');
+  }
+  const joinedAt = input.joinedAt;
+  const joinGeneration = decodeGroupCallLogicalJoinGeneration(
+    input.joinGeneration
+  );
+  return {
+    publicKey: input.publicKey,
+    joinedAt,
+    reticulumDestinationHash: input.reticulumDestinationHash
+      .trim()
+      .toLowerCase(),
+    ...(input.reticulumIdentityPublicKeyBase64 &&
+    isRnsIdentityPublicKeyBase64(input.reticulumIdentityPublicKeyBase64)
+      ? {
+          reticulumIdentityPublicKeyBase64:
+            input.reticulumIdentityPublicKeyBase64,
+        }
+      : {}),
+    ...(joinGeneration !== undefined ? { joinGeneration } : {}),
+    takeoverAt:
+      typeof input.takeoverAt === 'number' && Number.isFinite(input.takeoverAt)
+        ? input.takeoverAt
+        : joinedAt,
+  };
+}
+
+/** The single construction path for an authenticated remote GC_JOIN. */
+export function buildParticipantFromVerifiedJoin(
+  existing: RoomParticipant | undefined,
+  env: GcJoinEnvelope
+): RoomParticipant {
+  const incomingJoinGeneration = decodeGroupCallLogicalJoinGeneration(
+    env.joinGeneration
+  );
+  return buildRoomParticipantRecord({
+    publicKey: env.fromPublicKey,
+    joinedAt: env.timestamp,
+    reticulumDestinationHash: env.reticulumDestinationHash,
+    reticulumIdentityPublicKeyBase64: env.reticulumIdentityPublicKeyBase64,
+    joinGeneration: incomingJoinGeneration,
+    takeoverAt: resolveVerifiedJoinTakeoverAt({
+      currentJoinedAt: existing?.joinedAt,
+      currentJoinGeneration: existing?.joinGeneration,
+      currentTakeoverAt: existing?.takeoverAt,
+      incomingJoinGeneration,
+      incomingJoinTimestamp: env.timestamp,
+    }),
+  });
 }
 
 interface GroupRoom {
@@ -1362,7 +1475,10 @@ export function buildGroupRoomBootstrapState(
       publicKey: p.publicKey,
       joinedAt: p.joinedAt,
       reticulumDestinationHash: p.reticulumDestinationHash,
-      takeoverAt: p.takeoverAt,
+      takeoverAt:
+        typeof p.takeoverAt === 'number' && Number.isFinite(p.takeoverAt)
+          ? p.takeoverAt
+          : p.joinedAt,
       ...(typeof p.joinGeneration === 'number'
         ? { joinGeneration: p.joinGeneration }
         : {}),
@@ -4656,19 +4772,26 @@ export class GroupCallManager extends EventEmitter {
       typeof joinGeneration === 'number' &&
       Number.isFinite(joinGeneration) &&
       existingLocalParticipant?.joinGeneration === joinGeneration;
-    room.participants.set(localAddress, {
-      publicKey,
-      joinedAt: timestamp,
-      reticulumDestinationHash: destNorm,
-      ...(rk ? { reticulumIdentityPublicKeyBase64: rk } : {}),
-      ...(typeof joinGeneration === 'number' && Number.isFinite(joinGeneration)
-        ? { joinGeneration: joinGeneration >>> 0 }
-        : {}),
-      takeoverAt:
-        sameLocalGeneration && !takeover
-          ? existingLocalParticipant.takeoverAt
-          : timestamp,
-    });
+    room.participants.set(
+      localAddress,
+      buildRoomParticipantRecord({
+        publicKey,
+        joinedAt: timestamp,
+        reticulumDestinationHash: destNorm,
+        reticulumIdentityPublicKeyBase64: rk,
+        joinGeneration,
+        takeoverAt:
+          sameLocalGeneration && !takeover
+            ? resolveVerifiedJoinTakeoverAt({
+                currentJoinedAt: existingLocalParticipant?.joinedAt,
+                currentJoinGeneration: existingLocalParticipant?.joinGeneration,
+                currentTakeoverAt: existingLocalParticipant?.takeoverAt,
+                incomingJoinGeneration: joinGeneration,
+                incomingJoinTimestamp: timestamp,
+              })
+            : timestamp,
+      })
+    );
     this.noteBootstrapParticipantActivity(roomId, localAddress, timestamp);
 
     const wireChatId = compactDmVoiceJoinWireChatId(roomId, chatId);
@@ -9979,16 +10102,17 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return;
     }
-    room.participants.set(env.fromAddress, {
-      publicKey: existing.publicKey,
-      joinedAt: existing.joinedAt,
-      reticulumDestinationHash: incomingDestinationHash,
-      reticulumIdentityPublicKeyBase64: env.reticulumIdentityPublicKeyBase64,
-      ...(typeof existing.joinGeneration === 'number'
-        ? { joinGeneration: existing.joinGeneration }
-        : {}),
-      takeoverAt: existing.takeoverAt,
-    });
+    room.participants.set(
+      env.fromAddress,
+      buildRoomParticipantRecord({
+        publicKey: existing.publicKey,
+        joinedAt: existing.joinedAt,
+        reticulumDestinationHash: incomingDestinationHash,
+        reticulumIdentityPublicKeyBase64: env.reticulumIdentityPublicKeyBase64,
+        joinGeneration: existing.joinGeneration,
+        takeoverAt: existing.takeoverAt,
+      })
+    );
     this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
     if (fromNodeId) {
       this.participantNodeIds.set(env.fromAddress, fromNodeId);
@@ -10133,26 +10257,10 @@ export class GroupCallManager extends EventEmitter {
           audioStateResetReason
         );
       }
-      room.participants.set(env.fromAddress, {
-        publicKey: env.fromPublicKey,
-        joinedAt: env.timestamp,
-        reticulumDestinationHash: incomingReticulumDestinationHash,
-        ...(env.reticulumIdentityPublicKeyBase64 &&
-        isRnsIdentityPublicKeyBase64(env.reticulumIdentityPublicKeyBase64)
-          ? {
-              reticulumIdentityPublicKeyBase64:
-                env.reticulumIdentityPublicKeyBase64,
-            }
-          : {}),
-        ...(incomingLogicalJoinGeneration !== undefined
-          ? { joinGeneration: incomingLogicalJoinGeneration }
-          : {}),
-        takeoverAt:
-          existing?.joinGeneration === incomingLogicalJoinGeneration &&
-          typeof existing.takeoverAt === 'number'
-            ? existing.takeoverAt
-            : env.timestamp,
-      });
+      room.participants.set(
+        env.fromAddress,
+        buildParticipantFromVerifiedJoin(existing, env)
+      );
       joinWasApplied = true;
       this.clearParticipantLeftTombstone(env.roomId, env.fromAddress);
       this.noteBootstrapParticipantActivity(
@@ -10179,8 +10287,8 @@ export class GroupCallManager extends EventEmitter {
     } else {
       this.logGcJoinDropThrottled(
         env.fromAddress,
-        'stale_join_ts',
-        `[GCall] Skipped GC_JOIN participant update (stale joinTs vs existing): from=${env.fromAddress} room=${env.roomId} incomingTs=${env.timestamp} existingJoinedAt=${existing?.joinedAt ?? 'n/a'}`
+        'join_not_authoritative',
+        `[GCall] Skipped GC_JOIN participant update (stale timestamp or superseded device session): from=${env.fromAddress} room=${env.roomId} incomingTs=${env.timestamp} existingJoinedAt=${existing?.joinedAt ?? 'n/a'}`
       );
     }
 
@@ -10845,27 +10953,18 @@ export class GroupCallManager extends EventEmitter {
         return;
       }
       const signedHash = env.reticulumDestinationHash.trim().toLowerCase();
-      room.participants.set(env.fromAddress, {
-        publicKey: env.fromPublicKey,
-        joinedAt: env.timestamp,
-        reticulumDestinationHash: signedHash,
-        ...(env.reticulumIdentityPublicKeyBase64 &&
-        isRnsIdentityPublicKeyBase64(env.reticulumIdentityPublicKeyBase64)
-          ? {
-              reticulumIdentityPublicKeyBase64:
-                env.reticulumIdentityPublicKeyBase64,
-            }
-          : {}),
-        ...(decodeGroupCallLogicalJoinGeneration(env.joinGeneration) !==
-        undefined
-          ? {
-              joinGeneration: decodeGroupCallLogicalJoinGeneration(
-                env.joinGeneration
-              ),
-            }
-          : {}),
-        takeoverAt: env.timestamp,
-      });
+      room.participants.set(
+        env.fromAddress,
+        buildRoomParticipantRecord({
+          publicKey: env.fromPublicKey,
+          joinedAt: env.timestamp,
+          reticulumDestinationHash: signedHash,
+          reticulumIdentityPublicKeyBase64:
+            env.reticulumIdentityPublicKeyBase64,
+          joinGeneration: env.joinGeneration,
+          takeoverAt: env.timestamp,
+        })
+      );
       participant = room.participants.get(env.fromAddress);
       this.clearParticipantLeftTombstone(env.roomId, env.fromAddress);
       this.rememberRetainedVerifiedJoin(env);

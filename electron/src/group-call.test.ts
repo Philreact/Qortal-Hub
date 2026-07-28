@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   GroupCallManager,
+  buildParticipantFromVerifiedJoin,
   decodeGroupCallLogicalJoinGeneration,
   reticulumAudioResetReasonForVerifiedJoin,
+  resolveVerifiedJoinTakeoverAt,
   shouldApplyGroupCallLeaveToSession,
   shouldRefreshParticipantFromVerifiedJoin,
 } from './group-call';
@@ -25,6 +27,49 @@ describe('group-call multi-device participant ownership', () => {
     ).toBe(true);
   });
 
+  it('initializes first-seen legacy joins instead of treating two absent generations as an existing session', () => {
+    expect(
+      resolveVerifiedJoinTakeoverAt({
+        incomingJoinTimestamp: 3_000,
+      })
+    ).toBe(3_000);
+    expect(
+      buildParticipantFromVerifiedJoin(undefined, {
+        type: 'GC_JOIN',
+        roomId: 'dmv:test',
+        chatId: 'direct:Q-local:Q-peer',
+        fromAddress: 'Q-peer',
+        fromPublicKey: 'peer-public-key',
+        signature: 'signature',
+        timestamp: 3_000,
+        reticulumDestinationHash: 'A'.repeat(32),
+      })
+    ).toMatchObject({
+      joinedAt: 3_000,
+      takeoverAt: 3_000,
+      reticulumDestinationHash: 'a'.repeat(32),
+    });
+  });
+
+  it('preserves takeover time for real same-session reannouncements only', () => {
+    expect(
+      resolveVerifiedJoinTakeoverAt({
+        currentJoinedAt: 2_000,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+      })
+    ).toBe(1_000);
+    expect(
+      resolveVerifiedJoinTakeoverAt({
+        currentJoinedAt: 2_000,
+        currentJoinGeneration: 10,
+        currentTakeoverAt: 1_000,
+        incomingJoinGeneration: 20,
+        incomingJoinTimestamp: 3_000,
+      })
+    ).toBe(3_000);
+  });
+
   it('rejects a different device generation unless it is an explicit takeover', () => {
     expect(
       shouldRefreshParticipantFromVerifiedJoin({
@@ -35,6 +80,37 @@ describe('group-call multi-device participant ownership', () => {
         incomingJoinGeneration: 20,
       })
     ).toBe(false);
+  });
+
+  it('does not let a legacy join overwrite a selected session-aware device', () => {
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 2_000,
+        currentJoinGeneration: 10,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+      })
+    ).toBe(false);
+  });
+
+  it('requires an explicit takeover when upgrading a legacy participant slot', () => {
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 2_000,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+        incomingJoinGeneration: 10,
+      })
+    ).toBe(false);
+    expect(
+      shouldRefreshParticipantFromVerifiedJoin({
+        currentJoinedAt: 2_000,
+        currentTakeoverAt: 1_000,
+        incomingJoinTimestamp: 3_000,
+        incomingJoinGeneration: 10,
+        incomingTakeover: true,
+      })
+    ).toBe(true);
   });
 
   it('accepts a newer explicit takeover and rejects a delayed older takeover', () => {

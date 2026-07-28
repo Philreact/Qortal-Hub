@@ -3,7 +3,7 @@
 This document tracks how Reticulum-backed features behave when the same Qortal
 account is authenticated on more than one computer.
 
-Last reviewed: **2026-07-28**
+Last reviewed: **2026-07-29**
 
 ## Status summary
 
@@ -45,6 +45,24 @@ Account-level actions should apply to the Qortal address. Device-specific,
 real-time interactions must use a verified session or Reticulum destination and
 remain pinned to that endpoint after acceptance.
 
+## Authoritative record boundaries
+
+There is deliberately no single global "current device" record. A global
+winner would make one laptop's activity silently reroute unrelated features on
+another laptop. Each scope has one authoritative binding instead:
+
+| Scope | Authoritative binding | Role of general presence |
+| --- | --- | --- |
+| Durable group/DM chat | Account signature plus persistent installation author stream | Endpoint discovery and delivery fanout |
+| Normal DM/group-call media | Verified signed `GC_JOIN` participant record | Initial discovery only |
+| Qortal Land state/calls | Account-signed group, Land session, and destination route | Bootstrap hint only |
+| Qortal Land games | Signed Land route plus the authenticated live game link | Path/identity discovery only |
+
+All participant creation paths normalize through the same room-record builder.
+First-seen joins initialize ownership, same-session announcements preserve it,
+explicit newer takeovers replace it, and stale or superseded sessions cannot
+mutate the selected participant.
+
 ## Feature status
 
 | Status | Feature | Current behavior | Required or accepted behavior |
@@ -82,7 +100,7 @@ remain pinned to that endpoint after acceptance.
 | `DONE` | Land social effects | Signed social actions contain source and target Land session IDs. | Keep effects targeted to the selected session. |
 | `DONE` | Land AFK/DND decisions | Call and game availability is evaluated from the exact avatar/session selected in the world rather than any session sharing its address. | Continue using account aggregation only for deliberately account-level actions. |
 | `DONE` | Qortal Land calls | Interactive signaling binds the source and target Land sessions plus their verified Reticulum destinations into an account-signed compact handshake. It is sent directly to the selected endpoint, and accepted media remains pinned to that destination. Ambient call-status presence remains group-visible by design. | Keep interactive calls exact-session, direct, signed, endpoint-verified, and within the Reticulum frame budget. |
-| `DONE` | Normal DM calls | Every fresh verified Reticulum endpoint is tracked as an invitee. A rejection waits for the other endpoints, the first authenticated acceptance wins, signaling is pinned to its source destination, and a pre-signed cancellation is sent directly to the remaining ringing endpoints. | Keep first-accept-wins atomic and never let a late acceptance or one-device rejection replace the selected endpoint. |
+| `DONE` | Normal DM calls | Every fresh verified Reticulum endpoint is tracked as an invitee. A rejection waits for the other endpoints, the first authenticated acceptance wins, and a pre-signed cancellation is sent directly to the remaining ringing endpoints. Account-signed call signaling selects the interaction; the verified signed `GC_JOIN` is the authoritative media endpoint binding, including when signaling arrived through a relay. | Keep first-accept-wins atomic, keep media routing on the verified participant record, and never infer an origin endpoint from a relay hop. |
 | `DONE` | Group calls | The participant UI remains account-keyed, while the initial join carries a compact signed device-takeover generation. Reannouncements cannot reclaim a superseded slot; identity, control, media-link, and leave handling stay pinned to the selected Reticulum endpoint, and the displaced installation exits locally without removing the replacement. The encoding remains verifiable by older clients and stays within the Reticulum frame budget. | Keep one active media endpoint per account and preserve explicit first-join takeover semantics. |
 | `DONE` | Qortal Land games | Challenges carry the selected target Land session and verified destination into the game service. The signed invitation binds both sessions and both endpoints; the recipient verifies its exact local session, the source endpoint against the authenticated Reticulum link, and the account ownership of both routes. Link recovery remains pinned to the same signed endpoints. | Keep game invitations and recovery exact-session, endpoint-verified, account-signed, and within the private-link payload budget. |
 | `DONE` | Qortal Land proximity voice | Signed capabilities bind the Land session to its verified Reticulum destination. Remote capabilities, positions, links, policies, and audio sources are keyed by address plus Land session ID, while account blocks remain account-wide. Link handshakes verify both exact sessions and the authenticated Reticulum endpoint. | Keep voice routing exact-session, reject endpoint/session mismatches, and preserve account-level authorization and blocking. |

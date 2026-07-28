@@ -15706,13 +15706,10 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     const route = verifyReticulumLandSessionRouteWire(wire, this.now());
     if (!route) return;
-    if (
-      !this.getVerifiedDmPeerHashes(route.authorAddress).includes(
-        route.destinationHash
-      )
-    ) {
-      return;
-    }
+    // The account signature is the authoritative address-to-session endpoint
+    // binding for Qortal Land. Requiring the separate presence/DM cache here
+    // creates an asymmetric bootstrap dependency: valid relayed Land state can
+    // arrive before that cache has learned the reverse endpoint mapping.
     const isMember = await this.isValidatedGroupMember(
       route.groupId,
       route.authorAddress
@@ -16152,12 +16149,14 @@ export class ReticulumChatManager extends EventEmitter {
               targetDestinationHash: localPeer,
             })
           : null;
+      // The wallet signature binds both Land sessions and both endpoints, and
+      // sourcePeer is the actual direct Reticulum ingress identity. That is a
+      // stronger source proof than a potentially stale presence/DM cache.
       if (
         !call ||
         call.groupId !== groupId ||
         !sourcePeer ||
         sourcePeer !== call.sourceDestinationHash ||
-        !this.getVerifiedDmPeerHashes(call.fromAddress).includes(sourcePeer) ||
         !localPeer ||
         localPeer !== call.targetDestinationHash
       ) {

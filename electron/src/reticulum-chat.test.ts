@@ -11153,13 +11153,9 @@ describe('reticulum chat manager', () => {
         getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
       } as any,
       now: () => 100_000,
-      getVerifiedReticulumPeers: () => [
-        {
-          destinationHash: signerDestination,
-          address: signer.address,
-          lastSeen: 100_000,
-        },
-      ],
+      // A valid Land route must not depend on the separate presence/DM peer
+      // cache being populated in this direction.
+      getVerifiedReticulumPeers: () => [],
       validateGroupMember: async (_groupId, address) =>
         address === signer.address,
     });
@@ -12468,13 +12464,10 @@ describe('reticulum chat manager', () => {
         off: () => undefined,
         getLocalDestinationHash: () => targetDestinationHash,
       } as any,
-      getVerifiedReticulumPeers: () => [
-        {
-          destinationHash: sourceDestinationHash,
-          address: caller.address,
-          lastSeen: timestamp,
-        },
-      ],
+      // Direct calls authenticate their source through the wallet signature
+      // and actual Reticulum ingress endpoint, even if the general peer cache
+      // has not learned the reverse address mapping yet.
+      getVerifiedReticulumPeers: () => [],
       now: () => timestamp,
       validateGroupMember: async (_groupId, address) =>
         address === caller.address || address === recipient.address,
