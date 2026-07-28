@@ -39,6 +39,7 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { DIRECT_VOICE_CALL_NAV_SLOT_ID } from '../Desktop/GlobalQortalNavBar';
+import { useLivePortalTarget } from '../../hooks/useLivePortalTarget';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
 import { DirectVoiceDebugPanel } from './DirectVoiceDebugPanel';
 import { getPrimaryNameForAvatar } from './groupApi';
@@ -76,7 +77,7 @@ export function DirectVoiceCallNavWidget() {
     toggleHearCall,
     toggleMute,
   } = useVoiceCallContext();
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const portalTarget = useLivePortalTarget(DIRECT_VOICE_CALL_NAV_SLOT_ID);
 
   const showCallError = useCallback(
     (message: string) => {
@@ -146,10 +147,6 @@ export function DirectVoiceCallNavWidget() {
     showCallError,
     userInfo?.publicKey,
   ]);
-
-  useEffect(() => {
-    setPortalTarget(document.getElementById(DIRECT_VOICE_CALL_NAV_SLOT_ID));
-  }, []);
 
   const activeDirect =
     isDirectVoiceCallChatId(activeCallChatId) &&

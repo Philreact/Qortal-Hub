@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Avatar,
@@ -26,6 +26,7 @@ import {
 } from '../../atoms/global';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { QORTAL_GROUP_CALL_NAV_SLOT_ID } from '../Desktop/GlobalQortalNavBar';
+import { useLivePortalTarget } from '../../hooks/useLivePortalTarget';
 import {
   addrHue,
   initialsFromDisplayLabel,
@@ -57,11 +58,7 @@ export function QortalGroupVoiceCallNavWidget() {
     memberGateGroupName,
     memberPrimaryNames,
   } = useGroupCallContext();
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-
-  useEffect(() => {
-    setPortalTarget(document.getElementById(QORTAL_GROUP_CALL_NAV_SLOT_ID));
-  }, []);
+  const portalTarget = useLivePortalTarget(QORTAL_GROUP_CALL_NAV_SLOT_ID);
 
   const isQortal =
     typeof roomId === 'string' && roomId.startsWith('gcall-qortal-');
