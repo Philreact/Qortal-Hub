@@ -12459,8 +12459,8 @@ describe('reticulum chat manager', () => {
     const recipient = createDmIdentity();
     const sourceDestinationHash = '1'.repeat(32);
     const targetDestinationHash = '2'.repeat(32);
-    const sourceSessionId = 'source-session';
-    const targetSessionId = 'target-session';
+    const sourceSessionId = '1'.repeat(16);
+    const targetSessionId = '2'.repeat(16);
     const timestamp = Date.now();
     const callId = 'land-call-v2-1234';
     const signedFields = buildReticulumLandCallV2SignedFields({
@@ -12490,8 +12490,12 @@ describe('reticulum chat manager', () => {
       y: 'q',
       c: callId,
       b: recipient.address,
-      f: sourceSessionId,
-      r: targetSessionId,
+      f: Buffer.from(sourceSessionId, 'hex')
+        .toString('base64url')
+        .replace(/=+$/g, ''),
+      j: Buffer.from(targetSessionId, 'hex')
+        .toString('base64url')
+        .replace(/=+$/g, ''),
       p: caller.publicKey,
       z: signature,
       u: 'lounge',
@@ -12514,6 +12518,24 @@ describe('reticulum chat manager', () => {
     );
     expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+
+    // The bridge always stamps `r` with the authenticated sender endpoint.
+    // That transport metadata must not overwrite any signed Land call field.
+    const transportedWire = {
+      ...wire,
+      r: sourceDestinationHash,
+    } as Extract<ReticulumChatWire, { k: 'lc2' }>;
+    expect(
+      verifyReticulumLandCallV2Wire(transportedWire, timestamp, {
+        sourceDestinationHash,
+        targetDestinationHash,
+      })
+    ).toEqual(
+      expect.objectContaining({
+        sourceSessionId,
+        targetSessionId,
+      })
     );
 
     const emitted: Array<Record<string, unknown>> = [];
@@ -12552,11 +12574,11 @@ describe('reticulum chat manager', () => {
 
       // A relayed copy from the wrong endpoint must neither deliver nor poison
       // dedupe for the subsequent authentic direct delivery.
-      manager.handleWire(wire, '3'.repeat(32));
+      manager.handleWire(transportedWire, '3'.repeat(32));
       await flushQueuedWork();
       expect(emitted).toHaveLength(0);
 
-      manager.handleWire(wire, sourceDestinationHash);
+      manager.handleWire(transportedWire, sourceDestinationHash);
       await flushQueuedWork();
       expect(emitted).toHaveLength(1);
       expect(emitted[0]).toEqual(
@@ -12570,7 +12592,7 @@ describe('reticulum chat manager', () => {
         })
       );
 
-      manager.handleWire(wire, sourceDestinationHash);
+      manager.handleWire(transportedWire, sourceDestinationHash);
       await flushQueuedWork();
       expect(emitted).toHaveLength(1);
     } finally {

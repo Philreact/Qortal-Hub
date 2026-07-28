@@ -1644,7 +1644,7 @@ export type ReticulumChatWire =
       c: string;
       b: string;
       f: string;
-      r: string;
+      j: string;
       p: string;
       z: string;
       n?: string;
@@ -2676,7 +2676,11 @@ export function verifyReticulumLandCallV2Wire(
     const callId = typeof wire.c === 'string' ? wire.c.trim() : '';
     const toAddress = typeof wire.b === 'string' ? wire.b.trim() : '';
     const sourceSessionId = expandLandSessionIdFromWire(wire.f);
-    const targetSessionId = expandLandSessionIdFromWire(wire.r);
+    // `r` is reserved by the Reticulum bridge for the authenticated sender
+    // destination and is stamped onto every transported wire. Keep the Land
+    // target session in its own field so transport cannot overwrite signed
+    // call data after the sender has verified it.
+    const targetSessionId = expandLandSessionIdFromWire(wire.j);
     const sourceDestinationHash = String(
       endpoints?.sourceDestinationHash || ''
     ).trim().toLowerCase();
@@ -10051,7 +10055,7 @@ export class ReticulumChatManager extends EventEmitter {
         c: callId,
         b: toAddress,
         f: compactLandSessionIdForWire(sourceSessionId),
-        r: compactLandSessionIdForWire(targetSessionId),
+        j: compactLandSessionIdForWire(targetSessionId),
         p: signed.authorPublicKey,
         z: signed.signature,
         ...(reason ? { n: reason } : {}),
