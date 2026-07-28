@@ -17806,7 +17806,575 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('correlates fallback metadata page offers with their pending digest repair', () => {
+  it('suppresses an unchanged no-progress digest repair when the peer head is behind', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const localEvent = signedEvent({
+      eventId: 'event-local-newer-than-peer',
+      groupId: 59,
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(localEvent, true)).toBe(true);
+    const localDigest = (manager as any).buildGroupDigestSnapshot(59);
+    const remoteLatest = {
+      eventId: 'event-remote-older-head',
+      feedTimestamp: 80_000,
+    };
+    const remoteDigestHash = 'e'.repeat(64);
+    const fingerprint = (manager as any).digestRepairFingerprint(
+      remoteDigestHash,
+      localDigest.digestHash,
+      remoteLatest,
+      localDigest.latest
+    );
+    expect(
+      (manager as any).digestRepairFingerprint(
+        remoteDigestHash,
+        'd'.repeat(64),
+        remoteLatest,
+        { eventId: 'event-even-newer-local-head', feedTimestamp: 95_000 }
+      )
+    ).toBe(fingerprint);
+    (manager as any).markDigestRepairNoProgress(
+      'peer-behind-no-progress',
+      59,
+      fingerprint
+    );
+
+    const stats = (manager as any).processGroupDigestRepair({
+      key: 'peer-behind-no-progress:59',
+      peerHash: 'peer-behind-no-progress',
+      providerPeerHash: 'peer-behind-no-progress',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: remoteLatest,
+      remoteDigestHash,
+      enqueuedAt: 100_000,
+      coalescedCount: 0,
+    });
+
+    expect(stats.metadataRepairRequested).toBe(false);
+    expect(stats.windowRepairRequests).toBe(0);
+    expect(stats.peerBehindPushes).toBe(1);
+    manager.close();
+  });
+
+  it('closes the parent digest repair when its continuation is already suppressed', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 100_000,
+    });
+    const peer = 'peer-blocked-continuation';
+    const groupId = 59;
+    const cursor = { eventId: 'event-known-cursor', feedTimestamp: 90_000 };
+    const fingerprint = 'digest-blocked-continuation';
+    const requestKey = (manager as any).directHistoryPageRequestKey(
+      peer,
+      groupId,
+      '*',
+      'before',
+      cursor,
+      false,
+      'metadata'
+    );
+    (manager as any).historyPageNoProgressSuppressions.set(requestKey, 200_000);
+
+    await (manager as any).requestLinkedHistoryPage(
+      peer,
+      groupId,
+      '*',
+      cursor,
+      'before',
+      false,
+      'metadata-page-more-known-overlap',
+      peer,
+      'metadata',
+      fingerprint,
+      2
+    );
+
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        peer,
+        groupId,
+        fingerprint
+      )
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('bounds an unchanged digest compatibility scan to the digest window', async () => {
+    const dbPath = tempDbPath();
+    const manager = new ReticulumChatManager({
+      dbPath,
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const event = signedEvent({
+      eventId: 'event-digest-budget-known',
+      groupId: 59,
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const page = {
+      v: 1,
+      g: 59,
+      c: '*',
+      d: 'before',
+      more: true,
+      start: { id: event.eventId, ts: event.timestamp },
+      end: { id: event.eventId, ts: event.timestamp },
+      wh: (manager as any).db.computeWindowHash([event]),
+      events: [event],
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto
+      .createHash('sha256')
+      .update(blob, 'utf8')
+      .digest('hex');
+    const transferId = 'digest-page-budget-terminal';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    const fingerprint = 'digest-page-budget-fingerprint';
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).eventPageOffers.set(transferId, {
+      transferId,
+      groupId: 59,
+      channelId: '*',
+      direction: 'before',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: 1,
+      sourcePeerHash: 'peer-digest-budget',
+      digestRepairFingerprint: fingerprint,
+      digestRepairPageCount: 2,
+    });
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-digest-budget',
+    });
+
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        'peer-digest-budget',
+        59,
+        fingerprint
+      )
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('preserves the digest repair budget across legacy event batches', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const event = signedEvent({
+      eventId: 'event-legacy-digest-budget-known',
+      groupId: 59,
+      timestamp: 90_000,
+    });
+    expect((manager as any).db.insertEvent(event, true)).toBe(true);
+    const peer = 'peer-legacy-digest-budget';
+    const fingerprint = 'legacy-digest-budget-fingerprint';
+    const sendRepairFeedRequest = vi
+      .spyOn(manager as any, 'sendRepairFeedRequest')
+      .mockImplementation(() => undefined);
+    const wire = {
+      c: '*',
+      batch: {
+        dir: 'before',
+        more: true,
+        start: { id: event.eventId, ts: event.timestamp },
+        end: { id: event.eventId, ts: event.timestamp },
+        wh: (manager as any).db.computeWindowHash([event]),
+        events: [event],
+      },
+    };
+
+    (manager as any).trackPendingDigestRepairFingerprint(
+      peer,
+      59,
+      fingerprint,
+      1,
+      '*',
+      'before'
+    );
+    await (manager as any).handleEventBatch(59, wire, peer);
+
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(1);
+    const continuation = (manager as any).takePendingDigestRepairFingerprint(
+      peer,
+      59,
+      '*',
+      'before'
+    );
+    expect(continuation).toEqual({ fingerprint, pageCount: 2 });
+
+    (manager as any).trackPendingDigestRepairFingerprint(
+      peer,
+      59,
+      continuation.fingerprint,
+      continuation.pageCount,
+      '*',
+      'before'
+    );
+    await (manager as any).handleEventBatch(59, wire, peer);
+
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(1);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(peer, 59, fingerprint)
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('does not refresh an unanswered legacy digest fallback forever', async () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => now,
+    });
+    const sendRepairFeedRequest = vi
+      .spyOn(manager as any, 'sendRepairFeedRequest')
+      .mockImplementation(() => undefined);
+    const peer = 'peer-unanswered-legacy-digest';
+    const fingerprint = 'unanswered-legacy-digest-fingerprint';
+    const request = () =>
+      (manager as any).requestLinkedHistoryPage(
+        peer,
+        59,
+        '*',
+        { eventId: 'event-unanswered-legacy-head', feedTimestamp: 90_000 },
+        'before',
+        true,
+        'legacy-digest-fallback',
+        peer,
+        undefined,
+        fingerprint
+      );
+
+    await request();
+    const firstPending = [
+      ...(manager as any).pendingDigestRepairFingerprints.values(),
+    ][0];
+    expect(firstPending).toMatchObject({
+      fingerprint,
+      attempts: 1,
+      nextRetryAt: 130_000,
+      expiresAt: 220_000,
+    });
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(1);
+
+    now = 110_000;
+    await request();
+    const duplicatePending = [
+      ...(manager as any).pendingDigestRepairFingerprints.values(),
+    ][0];
+    expect(duplicatePending).toMatchObject({
+      fingerprint,
+      attempts: 1,
+      expiresAt: 220_000,
+    });
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(1);
+
+    now = 130_001;
+    await request();
+    const retriedPending = [
+      ...(manager as any).pendingDigestRepairFingerprints.values(),
+    ][0];
+    expect(retriedPending).toMatchObject({
+      fingerprint,
+      attempts: 2,
+      expiresAt: 220_000,
+    });
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(2);
+
+    now = 140_000;
+    await request();
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(2);
+
+    now = 220_001;
+    await request();
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(2);
+    expect((manager as any).pendingDigestRepairFingerprints.size).toBe(0);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(peer, 59, fingerprint)
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('bounds linked digest repair requests that never receive an offer', async () => {
+    let now = 100_000;
+    const acceptReticulumChatResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true as const });
+    const cancelReticulumResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true as const });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed,
+        cancelReticulumResourceDetailed,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+      } as any,
+      now: () => now,
+    });
+    vi.spyOn(manager as any, 'ensureResourcePeerIdentity').mockResolvedValue(
+      'resource-identity'
+    );
+    vi.spyOn(manager as any, 'ensureResourceSession').mockResolvedValue({
+      ok: true as const,
+    });
+    vi.spyOn(manager as any, 'buildSignedHistoryPageRequest').mockResolvedValue(
+      {
+        c: '*',
+        d: 'before',
+        before: { id: 'event-unanswered-linked-head', ts: 90_000 },
+        inc: 1,
+        limit: 100,
+        a: 'Qrequester',
+        pk: 'public-key',
+        ts: now,
+        sig: 'signature',
+      }
+    );
+    const peer = 'peer-unanswered-linked-digest';
+    const fingerprint = 'unanswered-linked-digest-fingerprint';
+    const request = () =>
+      (manager as any).requestLinkedHistoryPage(
+        peer,
+        59,
+        '*',
+        { eventId: 'event-unanswered-linked-head', feedTimestamp: 90_000 },
+        'before',
+        true,
+        'linked-digest-no-response',
+        peer,
+        undefined,
+        fingerprint
+      );
+
+    await request();
+    expect(acceptReticulumChatResourceDetailed).toHaveBeenCalledTimes(1);
+    expect(
+      [...(manager as any).directHistoryPageRequests.values()][0]
+    ).toMatchObject({
+      digestRepairFingerprint: fingerprint,
+      digestRepairRequestAttempt: 1,
+    });
+
+    now = 220_001;
+    await request();
+    expect(acceptReticulumChatResourceDetailed).toHaveBeenCalledTimes(2);
+    expect(cancelReticulumResourceDetailed).toHaveBeenCalledTimes(1);
+    expect(
+      [...(manager as any).directHistoryPageRequests.values()][0]
+    ).toMatchObject({
+      digestRepairFingerprint: fingerprint,
+      digestRepairRequestAttempt: 2,
+    });
+
+    now = 340_002;
+    await request();
+    expect(acceptReticulumChatResourceDetailed).toHaveBeenCalledTimes(2);
+    expect(cancelReticulumResourceDetailed).toHaveBeenCalledTimes(2);
+    expect((manager as any).directHistoryPageRequests.size).toBe(0);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(peer, 59, fingerprint)
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('does not apply a digest retry budget to a normal history request', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 340_002,
+    });
+    const sendRepairFeedRequest = vi
+      .spyOn(manager as any, 'sendRepairFeedRequest')
+      .mockImplementation(() => undefined);
+    const peer = 'peer-normal-history-after-digest';
+    const cursor = {
+      eventId: 'event-normal-history-after-digest',
+      feedTimestamp: 90_000,
+    };
+    const requestKey = (manager as any).directHistoryPageRequestKey(
+      peer,
+      59,
+      '*',
+      'before',
+      cursor,
+      true
+    );
+    const transferId = 'stale-digest-request-before-normal-history';
+    (manager as any).trackDirectHistoryPageRequest(requestKey, {
+      transferId,
+      groupId: 59,
+      channelId: '*',
+      direction: 'before',
+      includeCursor: true,
+      pageHash: '',
+      sizeBytes: 1024,
+      eventCount: 100,
+      start: cursor,
+      sourcePeerHash: peer,
+      requestedAt: 100_000,
+      digestRepairFingerprint: 'old-digest-repair-fingerprint',
+      digestRepairPageCount: 1,
+      digestRepairRequestAttempt: 2,
+    });
+
+    await (manager as any).requestLinkedHistoryPage(
+      peer,
+      59,
+      '*',
+      cursor,
+      'before',
+      true,
+      'normal-history-request'
+    );
+
+    expect(sendRepairFeedRequest).toHaveBeenCalledTimes(1);
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        peer,
+        59,
+        'old-digest-repair-fingerprint'
+      )
+    ).toBe(false);
+    manager.close();
+  });
+
+  it('treats a provider with no history as terminal for the unchanged digest state', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 100_000,
+    });
+    const transferId = 'digest-no-history-terminal';
+    const fingerprint = 'digest-no-history-fingerprint';
+    (manager as any).directHistoryPageRequests.set(transferId, {
+      transferId,
+      groupId: 59,
+      channelId: '*',
+      direction: 'before',
+      pageHash: '',
+      sizeBytes: 1024,
+      eventCount: 100,
+      sourcePeerHash: 'peer-no-history',
+      digestRepairFingerprint: fingerprint,
+    });
+
+    (manager as any).handleEventPageResourceFailure(
+      transferId,
+      'no_history_events'
+    );
+
+    expect(
+      (manager as any).isDigestRepairNoProgressSuppressed(
+        'peer-no-history',
+        59,
+        fingerprint
+      )
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('keeps metadata and message history requests semantically separate', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+    });
+    const args = [
+      'peer-priority-dedupe',
+      59,
+      '*',
+      'before',
+      { eventId: 'event-priority-dedupe', feedTimestamp: 90_000 },
+      true,
+    ] as const;
+    const normalKey = (manager as any).directHistoryPageRequestKey(
+      ...args,
+      undefined
+    );
+    const metadataKey = (manager as any).directHistoryPageRequestKey(
+      ...args,
+      'metadata'
+    );
+
+    expect(metadataKey).not.toBe(normalKey);
+    manager.close();
+  });
+
+  it('attaches digest repair state to the normal visible-window scan', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 100_000,
+    });
+    const requestPage = vi
+      .spyOn(manager as any, 'requestLinkedHistoryPage')
+      .mockResolvedValue(undefined);
+    vi.spyOn(manager as any, 'sendFeedPageToPeer').mockResolvedValue(undefined);
+    const remoteLatest = {
+      eventId: 'event-remote-window',
+      feedTimestamp: 80_000,
+    };
+    const localLatest = {
+      eventId: 'event-local-window',
+      feedTimestamp: 90_000,
+    };
+
+    expect(
+      (manager as any).requestVisibleWindowRepair(
+        'peer-window-repair',
+        59,
+        '*',
+        remoteLatest,
+        localLatest,
+        'group-window-mismatch',
+        'digest-window-fingerprint'
+      )
+    ).toBe(true);
+    expect(requestPage).toHaveBeenCalledWith(
+      'peer-window-repair',
+      59,
+      '*',
+      remoteLatest,
+      'before',
+      true,
+      'group-window-mismatch',
+      'peer-window-repair',
+      undefined,
+      'digest-window-fingerprint'
+    );
+    manager.close();
+  });
+
+  it('correlates fallback message-history pages with their pending digest repair', () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -17829,11 +18397,10 @@ describe('reticulum chat manager', () => {
 
     (manager as any).handleEventPageOffer(
       {
-        transferId: 'fallback-metadata-page',
+        transferId: 'fallback-history-page',
         groupId: 59,
         channelId: '*',
         direction: 'before',
-        priority: 'metadata',
         pageHash: 'a'.repeat(64),
         sizeBytes: 100,
         eventCount: 1,
@@ -17842,7 +18409,7 @@ describe('reticulum chat manager', () => {
     );
 
     expect(
-      (manager as any).eventPageOffers.get('fallback-metadata-page')
+      (manager as any).eventPageOffers.get('fallback-history-page')
         ?.digestRepairFingerprint
     ).toBe(fingerprint);
     manager.close();
