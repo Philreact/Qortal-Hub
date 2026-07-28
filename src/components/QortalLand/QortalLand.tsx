@@ -2923,6 +2923,28 @@ export function QortalLand({
   );
   const [characterPreviewFacing, setCharacterPreviewFacing] =
     useState<QortalLandCharacterPreviewFacing>('front');
+
+  const resolveCurrentLandActionTarget = useCallback(
+    (target: LandActionTarget): LandActionTarget | null => {
+      if (target.authorAddress === myAddress) return target;
+      const player = remotePlayersRef.current.get(target.key);
+      if (
+        !player ||
+        player.authorAddress !== target.authorAddress ||
+        player.sessionId !== target.sessionId
+      ) {
+        return null;
+      }
+      return {
+        ...target,
+        authorAddress: player.authorAddress,
+        sessionId: player.sessionId,
+        destinationHash: player.destinationHash,
+        roomId: player.roomId,
+      };
+    },
+    [myAddress]
+  );
   const [devPngPropsEnabled, setDevPngPropsEnabled] = useState(() =>
     shouldShowQortalLandDevelopmentPngProps()
   );
@@ -4552,7 +4574,9 @@ export function QortalLand({
   ]);
 
   const sendSocialAction = useCallback(async (actionType: LandSocialActionType) => {
-    const target = actionTarget;
+    const target = actionTarget
+      ? resolveCurrentLandActionTarget(actionTarget)
+      : null;
     const now = Date.now();
     if (
       !target ||
@@ -4615,6 +4639,7 @@ export function QortalLand({
     myAddress,
     reticulumReady,
     recordLandActivity,
+    resolveCurrentLandActionTarget,
     sendingSocialAction,
     sessionId,
     socialActionCooldownUntil,
@@ -4732,23 +4757,33 @@ export function QortalLand({
 
   const startLandCall = useCallback(
     (target: LandActionTarget) => {
+      const currentTarget = resolveCurrentLandActionTarget(target);
       if (!myAddress || landVoiceCall.callState !== 'idle') return;
-      if (isAddressInLandCall(target.authorAddress)) return;
-      if (!target.destinationHash) return;
-      const targetIsDnd = remotePlayersRef.current.get(target.key)?.dnd === true;
+      if (!currentTarget || !currentTarget.destinationHash) return;
+      if (isAddressInLandCall(currentTarget.authorAddress)) return;
+      const targetIsDnd =
+        remotePlayersRef.current.get(currentTarget.key)?.dnd === true;
       if (targetIsDnd) return;
       recordLandActivity();
-      const chatId = buildDirectVoiceCallChatId(myAddress, target.authorAddress);
-      pendingLandCallTargetRef.current = target;
+      const chatId = buildDirectVoiceCallChatId(
+        myAddress,
+        currentTarget.authorAddress
+      );
+      pendingLandCallTargetRef.current = currentTarget;
       setActionTarget(null);
-      setActiveLandCallPeerAddress(target.authorAddress);
-      void landVoiceCall.initiateCall(target.authorAddress, chatId, signLandCallFields);
+      setActiveLandCallPeerAddress(currentTarget.authorAddress);
+      void landVoiceCall.initiateCall(
+        currentTarget.authorAddress,
+        chatId,
+        signLandCallFields
+      );
     },
     [
       isAddressInLandCall,
       landVoiceCall,
       myAddress,
       recordLandActivity,
+      resolveCurrentLandActionTarget,
       signLandCallFields,
     ]
   );
@@ -4816,17 +4851,19 @@ export function QortalLand({
       const voiceEnabled = payload.voiceEnabled === true;
       const voiceMuted = voiceEnabled && payload.voiceMuted === true;
       const skinId = normalizeQortalLandSkinId(payload.skinId);
+      const destinationHash = payload.destinationHash;
       const availabilityChanged =
         !existing ||
         existing.roomId !== roomId ||
         existing.afk !== afk ||
         existing.dnd !== dnd ||
         existing.voiceEnabled !== voiceEnabled ||
-        existing.voiceMuted !== voiceMuted;
+        existing.voiceMuted !== voiceMuted ||
+        existing.destinationHash !== destinationHash;
       remotePlayersRef.current.set(key, {
         authorAddress: payload.authorAddress,
         sessionId: payload.sessionId,
-        destinationHash: payload.destinationHash || existing?.destinationHash,
+        destinationHash,
         sequence: payload.sequence,
         roomId,
         x: payload.x,
@@ -9095,6 +9132,8 @@ export function QortalLand({
                 event?.stopPropagation?.();
                 const bounds = containerRef.current?.getBoundingClientRect();
                 if (!bounds) return;
+                const currentPlayer = remotePlayersRef.current.get(key);
+                if (!currentPlayer) return;
                 const pointerEvent = pointer?.event as PointerEvent | undefined;
                 const menuX = clampNumber(
                   (pointerEvent?.clientX ?? bounds.left + bounds.width / 2) - bounds.left,
@@ -9108,10 +9147,10 @@ export function QortalLand({
                 );
                 setActionTarget({
                   key,
-                  authorAddress: player.authorAddress,
-                  sessionId: player.sessionId,
-                  destinationHash: player.destinationHash,
-                  roomId: player.roomId,
+                  authorAddress: currentPlayer.authorAddress,
+                  sessionId: currentPlayer.sessionId,
+                  destinationHash: currentPlayer.destinationHash,
+                  roomId: currentPlayer.roomId,
                   anchorX: menuX,
                   anchorY: menuY,
                   menuX,
@@ -9323,6 +9362,9 @@ export function QortalLand({
   const actionTargetDnd = actionTarget
     ? remotePlayersRef.current.get(actionTarget.key)?.dnd === true
     : false;
+  const currentActionTarget = actionTarget
+    ? resolveCurrentLandActionTarget(actionTarget)
+    : null;
   const localLandCallActive = ['calling', 'ringing', 'connected'].includes(landVoiceCall.callState);
   const canStartLandCall =
     Boolean(actionTarget) &&
@@ -9332,7 +9374,7 @@ export function QortalLand({
     !actionTargetInCall &&
     !actionTargetInGame &&
     !actionTargetDnd &&
-    Boolean(actionTarget?.destinationHash) &&
+    Boolean(currentActionTarget?.destinationHash) &&
     actionTarget?.authorAddress !== myAddress;
   const canStartLandGame =
     Boolean(actionTarget) &&
@@ -9343,6 +9385,7 @@ export function QortalLand({
     !actionTargetInCall &&
     !actionTargetInGame &&
     !actionTargetDnd &&
+    Boolean(currentActionTarget?.destinationHash) &&
     actionTarget?.authorAddress !== myAddress;
   const activeLandCallPeerName = activeLandCallPeerAddress
     ? displayNameForAddress(activeLandCallPeerAddress, primaryNameCacheRef.current)
@@ -10986,13 +11029,14 @@ export function QortalLand({
                     fullWidth
                     key={game}
                     onClick={() => {
-                      const target = actionTarget;
+                      const target = resolveCurrentLandActionTarget(actionTarget);
+                      if (!target?.destinationHash) return;
                       setActionTarget(null);
                       setShowGamePicker(false);
                       void landGame.challenge({
                         address: target.authorAddress,
                         sessionId: target.sessionId,
-                        destinationHash: target.destinationHash || '',
+                        destinationHash: target.destinationHash,
                         name: displayNameForAddress(target.authorAddress, primaryNameCacheRef.current),
                       }, game);
                     }}
