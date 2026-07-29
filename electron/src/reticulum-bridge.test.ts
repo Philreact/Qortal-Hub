@@ -25,16 +25,49 @@ vi.mock('./presence', async (importOriginal) => {
   };
 });
 
+vi.mock('./logger', () => ({
+  error: vi.fn(),
+  log: vi.fn(),
+  warn: vi.fn(),
+}));
+
 import {
   decodeReticulumAudioMessage,
   encodeReticulumAudioBatch,
 } from './reticulum-audio-ipc';
 import { persistReticulumSharedTransportState } from './reticulum-daemon';
+import { error as loggerError } from './logger';
 import { base58Decode, getPresenceManager } from './presence';
 import type { PresenceEnvelope } from './presence';
 import { ReticulumBridge } from './reticulum-bridge';
 
 describe('ReticulumBridge presence subscriptions', () => {
+  it('logs structured Python bridge error diagnostics', () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    const errorLogger = vi.mocked(loggerError);
+    errorLogger.mockClear();
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'error',
+      payload: {
+        code: 'scheduler_task_failed',
+        message: "'NoneType' object is not subscriptable",
+        detail:
+          'Traceback (most recent call last):\n  File "presence_bridge.py", line 1',
+        lane: 'control-send',
+        task: 'cmd:fanout_reticulum_chat',
+      },
+    });
+
+    expect(errorLogger).toHaveBeenCalledWith(
+      '[ReticulumBridge] Python error event code=scheduler_task_failed lane=control-send task=cmd:fanout_reticulum_chat: ' +
+        "'NoneType' object is not subscriptable\n" +
+        'Traceback (most recent call last):\n  File "presence_bridge.py", line 1'
+    );
+  });
+
   it('syncs transport peers separately from expiring account endpoint leases', async () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

@@ -59,6 +59,26 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         signature = _b58encode(self.wallet.sign(canonical_bytes(fields)))
         self.manager._submit_signature({"signature": signature, "publicKey": self.public_key})
 
+    def test_tick_is_idle_until_land_context_exists(self):
+        self.manager.context = None
+        self.manager._reconcile = lambda: self.fail("reconcile ran without land context")
+
+        self.manager.tick()
+
+    def test_reconcile_is_idle_without_land_context(self):
+        self.manager.context = None
+        self.manager._eligible = lambda: self.fail("eligibility ran without land context")
+
+        self.manager._reconcile()
+
+    def test_tick_reconciles_when_land_context_exists(self):
+        reconciled = []
+        self.manager._reconcile = lambda: reconciled.append(True)
+
+        self.manager.tick()
+
+        self.assertEqual(reconciled, [True])
+
     def test_enable_requires_wallet_signature_and_disable_clears_secrets(self):
         self.authorize()
         self.assertTrue(self.manager.enabled)

@@ -697,6 +697,9 @@ class QortalLandProximityVoiceManager:
         return sorted(((by_peer[peer_key], peer_key) for peer_key in selected), key=lambda item: (item[0], item[1]))
 
     def _reconcile(self) -> None:
+        context = self.context
+        if not context:
+            return
         selected = {peer_key: distance for distance, peer_key in self._eligible()}
         now = time.time()
         capacity = 5 if now < self.capacity_reduced_until else MAX_PEERS
@@ -724,7 +727,7 @@ class QortalLandProximityVoiceManager:
             state.pop("roomMismatchAt", None)
             state["distance"] = distance
             self._emit_peer(peer_key, state)
-        local_key = self._peer_key(str(self.context["address"]), str(self.context["landSessionId"]))
+        local_key = self._peer_key(str(context["address"]), str(context["landSessionId"]))
         for peer_key, distance in selected.items():
             if peer_key in self.links:
                 continue
@@ -1281,6 +1284,8 @@ class QortalLandProximityVoiceManager:
                 with self.lock:
                     self.media_drain_scheduled = False
     def tick(self) -> None:
+        if not self.context:
+            return
         now = time.time()
         if self.renderer_lost_at is not None and now - self.renderer_lost_at >= 30.0:
             self.disable("renderer_recovery_expired")

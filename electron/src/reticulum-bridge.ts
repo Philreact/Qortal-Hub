@@ -845,7 +845,14 @@ type BridgeEventFrame =
   | {
       type: 'event';
       event: 'error';
-      payload?: { code?: string; message?: string; detail?: string };
+      payload?: {
+        code?: string;
+        message?: string;
+        detail?: string;
+        lane?: string;
+        task?: string;
+        action?: string;
+      };
     }
   | {
       type: 'event';
@@ -5002,11 +5009,26 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         return;
       }
       case 'error': {
+        const payload = frame.payload;
         const message =
-          frame.payload?.message ??
-          frame.payload?.detail ??
+          payload?.message ??
+          payload?.detail ??
           'Reticulum bridge reported an error';
-        loggerError('[ReticulumBridge] Python error event:', message);
+        const context = [
+          payload?.code ? `code=${payload.code}` : '',
+          payload?.lane ? `lane=${payload.lane}` : '',
+          payload?.task ? `task=${payload.task}` : '',
+          payload?.action ? `action=${payload.action}` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        const detail =
+          payload?.detail && payload.detail !== message
+            ? `\n${payload.detail}`
+            : '';
+        loggerError(
+          `[ReticulumBridge] Python error event${context ? ` ${context}` : ''}: ${message}${detail}`
+        );
         return;
       }
       case 'transport_state': {
