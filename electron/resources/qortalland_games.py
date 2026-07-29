@@ -249,6 +249,7 @@ class QortalLandGameManager:
         resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
         local_destination_hash: Optional[Callable[[], str]] = None,
         identify_link: Optional[Callable[[Any], None]] = None,
+        path_available: Optional[Callable[[bytes], bool]] = None,
     ):
         self.emit = emit
         self.log = log
@@ -261,6 +262,7 @@ class QortalLandGameManager:
         self.resolve_link_peer_hash = resolve_link_peer_hash
         self.local_destination_hash = local_destination_hash
         self.identify_link = identify_link
+        self.path_available = path_available or RNS.Transport.has_path
         self.lock = threading.RLock()
         self.land_context: Optional[Dict[str, Any]] = None
         self.matches: Dict[str, Dict[str, Any]] = {}
@@ -297,6 +299,7 @@ class QortalLandGameManager:
             decode_base58=_b58decode,
             resolve_link_peer_hash=resolve_link_peer_hash,
             identify_link=identify_link,
+            path_available=self.path_available,
         )
 
     def start_server(self) -> Optional[int]:
@@ -804,7 +807,7 @@ class QortalLandGameManager:
             destination_hash = bytes(destination.hash)
             if destination_hash.hex() != str(state["peerHash"]).lower():
                 raise ValueError("recipient_destination_mismatch")
-            if not RNS.Transport.has_path(destination_hash):
+            if not self.path_available(destination_hash):
                 refreshed = False
                 if self.refresh_path is not None:
                     try:

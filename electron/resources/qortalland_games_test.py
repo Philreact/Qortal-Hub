@@ -45,7 +45,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         manager.send_event = lambda event, payload=None: events.append((event, payload or {}))
         return manager, events
 
-    def test_missing_path_uses_bridge_hard_refresh(self):
+    def test_missing_path_uses_configured_route_recovery(self):
         refreshes = []
 
         class Destination:
@@ -72,6 +72,36 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(refreshes, [("11" * 16, "game_link_no_path")])
         request_path.assert_called_once_with(bytes.fromhex("11" * 16))
         manager._schedule_open_retry.assert_called_once_with(match_id)
+
+    def test_authoritative_shared_path_starts_link_without_refresh(self):
+        refreshes = []
+
+        class Destination:
+            hash = bytes.fromhex("11" * 16)
+
+        manager, _events = self.make_manager()
+        manager.build_destination = lambda _identity: Destination()
+        manager.path_available = lambda _destination_hash: True
+        manager.refresh_path = lambda peer, reason: refreshes.append((peer, reason)) or False
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "establishing",
+            "establishDeadline": time.time() + 30,
+            "openAttempts": 0,
+        }
+
+        link = object()
+        with mock.patch.object(RNS.Transport, "has_path", return_value=False), mock.patch.object(
+            RNS, "Link", return_value=link
+        ) as open_link:
+            manager._attempt_open(match_id)
+
+        open_link.assert_called_once()
+        self.assertEqual(manager.matches[match_id]["link"], link)
+        self.assertEqual(manager.matches[match_id]["openAttempts"], 1)
+        self.assertEqual(refreshes, [])
 
     def test_missing_identity_refreshes_route_and_retries(self):
         refreshes = []

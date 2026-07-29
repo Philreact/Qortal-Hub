@@ -41,6 +41,14 @@ _identity = None
 _destination = None
 _announce_handler = None
 _reticulum_config_dir = ""
+# A shared-instance client does not own the authoritative Transport.path_table.
+# Keep a very short cache for the uncommon local-miss/RPC-fallback path so
+# high-frequency features (notably call media) never turn route checks into an
+# RPC per packet.
+_reticulum_path_availability_cache: Dict[str, Tuple[float, bool]] = {}
+_reticulum_path_availability_cache_lock = threading.Lock()
+_RETICULUM_PATH_POSITIVE_CACHE_SECONDS = 1.0
+_RETICULUM_PATH_NEGATIVE_CACHE_SECONDS = 0.05
 _known_peers: Dict[str, Any] = {}
 _candidate_peers: Dict[str, Dict[str, Any]] = {}
 _verified_overlay_peers: Dict[str, Dict[str, Any]] = {}
@@ -6705,11 +6713,7 @@ def _request_path_if_eligible(peer_key: str, h: bytes, nudge_budget: list[int]) 
     last_rp = st.get("last_request_path_at")
     if isinstance(last_rp, (int, float)) and (now - float(last_rp)) < _REQUEST_PATH_COOLDOWN_SECONDS:
         return
-    has_path = True
-    try:
-        has_path = bool(RNS.Transport.has_path(h))
-    except Exception:
-        has_path = False
+    has_path = _reticulum_has_path(h)
     last_ok = st.get("last_send_ok")
     recently_sent = isinstance(last_ok, (int, float)) and (now - float(last_ok)) < 180.0
     if has_path and recently_sent:
@@ -6734,10 +6738,57 @@ def _request_path_if_eligible(peer_key: str, h: bytes, nudge_budget: list[int]) 
 
 
 def _reticulum_has_path(destination_hash: bytes) -> bool:
+    """Return path availability from the owner of the active path table.
+
+    Local Transport state is authoritative for an embedded Reticulum instance.
+    When this bridge is a client of shared rnsd, however, a local miss does not
+    mean the daemon has no route. In that case query the daemon through its
+    bounded RPC and briefly cache the answer.
+    """
     try:
-        return bool(RNS.Transport.has_path(destination_hash))
+        if RNS.Transport.has_path(destination_hash):
+            return True
     except Exception:
+        pass
+    reticulum = _reticulum
+    if (
+        reticulum is None
+        or getattr(reticulum, "is_connected_to_shared_instance", False) is not True
+        or not hasattr(reticulum, "get_path_snapshot")
+    ):
         return False
+    cache_key = destination_hash_hex(destination_hash)
+    now = time.monotonic()
+    with _reticulum_path_availability_cache_lock:
+        cached = _reticulum_path_availability_cache.get(cache_key)
+    if cached is not None and now - cached[0] <= (
+        _RETICULUM_PATH_POSITIVE_CACHE_SECONDS
+        if cached[1]
+        else _RETICULUM_PATH_NEGATIVE_CACHE_SECONDS
+    ):
+        return cached[1]
+    available = False
+    try:
+        available = isinstance(reticulum.get_path_snapshot(destination_hash), dict)
+    except Exception:
+        available = False
+    with _reticulum_path_availability_cache_lock:
+        _reticulum_path_availability_cache[cache_key] = (now, available)
+        if len(_reticulum_path_availability_cache) > 512:
+            oldest = min(
+                _reticulum_path_availability_cache,
+                key=lambda key: _reticulum_path_availability_cache[key][0],
+            )
+            _reticulum_path_availability_cache.pop(oldest, None)
+    return available
+
+
+def _invalidate_reticulum_path_availability(destination_hash: bytes) -> None:
+    with _reticulum_path_availability_cache_lock:
+        _reticulum_path_availability_cache.pop(
+            destination_hash_hex(destination_hash),
+            None,
+        )
 
 
 def _reticulum_path_snapshot(destination_hash: bytes) -> Dict[str, Any]:
@@ -6865,6 +6916,7 @@ def _format_reticulum_path_snapshot(info: Dict[str, Any]) -> str:
 
 
 def _drop_reticulum_path(destination_hash: bytes) -> bool:
+    _invalidate_reticulum_path_availability(destination_hash)
     dropped = False
     try:
         if _reticulum is not None and hasattr(_reticulum, "drop_path"):
@@ -7276,15 +7328,6 @@ def _classify_call_media_path_state(peer_hash: str, destination_hash: bytes) -> 
     dest_hex = destination_hash_hex(destination_hash)
     if state.get("destination_hash_hex") != dest_hex:
         state = _reset_call_media_state(peer_hash, destination_hash)
-    has_path = False
-    try:
-        has_path = bool(RNS.Transport.has_path(destination_hash))
-    except Exception:
-        has_path = False
-    if not has_path:
-        if str(state.get("path_state") or "unknown") == "unknown":
-            return "unknown"
-        return str(state.get("path_state") or "unknown")
     last_send_ok = state.get("last_send_ok")
     last_send_fail = state.get("last_send_fail")
     last_inbound = state.get("last_inbound_at")
@@ -7297,8 +7340,14 @@ def _classify_call_media_path_state(peer_hash: str, destination_hash: bytes) -> 
     recent_fail = isinstance(last_send_fail, (int, float)) and (
         now - float(last_send_fail)
     ) <= _PACKET_PATH_RECENT_FAILURE_SECONDS
+    # Proven packet traffic is stronger evidence than either the child or
+    # daemon path table and keeps the media hot path free of shared-instance RPC.
     if (recent_ok or recent_inbound) and not recent_fail:
         return "fresh"
+    if not _reticulum_has_path(destination_hash):
+        if str(state.get("path_state") or "unknown") == "unknown":
+            return "unknown"
+        return str(state.get("path_state") or "unknown")
     current = str(state.get("path_state") or "unknown")
     if current in ("failing", "recovering"):
         return current
@@ -7389,10 +7438,7 @@ def _ensure_call_media_path(
         if allow_wait and await_seconds > 0:
             resolved = _await_destination_path(destination_hash, await_seconds)
         else:
-            try:
-                resolved = bool(RNS.Transport.has_path(destination_hash))
-            except Exception:
-                resolved = False
+            resolved = _reticulum_has_path(destination_hash)
     if resolved:
         current = str(state.get("path_state") or "unknown")
         if current == "unknown":
@@ -7407,10 +7453,7 @@ def _ensure_call_media_path(
         _mark_audio_queue_state_dirty()
         return str(state.get("path_state") or "fresh"), True
     if not force_refresh_cached_path:
-        try:
-            resolved = bool(RNS.Transport.has_path(destination_hash))
-        except Exception:
-            resolved = False
+        resolved = _reticulum_has_path(destination_hash)
     else:
         resolved = False
     if resolved:
@@ -7446,16 +7489,10 @@ def _ensure_call_media_path(
 
 def _await_destination_path(destination_hash: bytes, timeout_seconds: float) -> bool:
     if timeout_seconds <= 0:
-        try:
-            return bool(RNS.Transport.has_path(destination_hash))
-        except Exception:
-            return False
+        return _reticulum_has_path(destination_hash)
     deadline = time.time() + timeout_seconds
     while True:
-        try:
-            resolved = bool(RNS.Transport.has_path(destination_hash))
-        except Exception:
-            resolved = False
+        resolved = _reticulum_has_path(destination_hash)
         if resolved:
             return True
         remaining = deadline - time.time()
@@ -8081,6 +8118,35 @@ def _forward_qortalland_proximity(wire: Dict[str, Any], source_peer_hash: str) -
             _send_wire_to_overlay_peer(peer_hash, wire_bytes, "qortalland_proximity", queue_if_pending=False)
 
 
+def _refresh_qortalland_game_path(peer_hash: str, reason: str) -> bool:
+    """Recover game routes without discarding a route that has not failed.
+
+    A missing bridge-local identity/path can occur while shared rnsd still has
+    a valid route. Only an actual failed private-link attempt justifies the
+    destructive path replacement; discovery misses receive a harmless announce
+    nudge instead.
+    """
+    peer = str(peer_hash or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer):
+        return False
+    destination_hash = bytes.fromhex(peer)
+    if reason == "game_link_attempt_closed":
+        return _force_overlay_peer_path_refresh(
+            peer,
+            target="qortalland-game",
+            reason=reason,
+            await_seconds=0.0,
+        )
+    requested = _nudge_cached_reticulum_path(
+        destination_hash,
+        peer,
+        target="qortalland-game",
+        reason=reason,
+        cooldown_seconds=1.0,
+    )
+    return requested or _reticulum_has_path(destination_hash)
+
+
 def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
     global _qortalland_game_manager
     if _qortalland_game_manager is None:
@@ -8093,16 +8159,12 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
             link_id_bytes=lambda link: _rns_link_id_bytes(link) or b"",
             enqueue=_enqueue_game_control,
             enqueue_proximity_media=_enqueue_proximity_media,
-            refresh_path=lambda peer_hash, reason: _force_overlay_peer_path_refresh(
-                peer_hash,
-                target="qortalland-game",
-                reason=reason,
-                await_seconds=0.0,
-            ),
+            refresh_path=_refresh_qortalland_game_path,
             broadcast_proximity=_broadcast_qortalland_proximity,
             resolve_link_peer_hash=_qortalland_game_link_peer_hash,
             local_destination_hash=_qortalland_local_destination_hash,
             identify_link=_identify_qortalland_private_link,
+            path_available=_reticulum_has_path,
         )
     return _qortalland_game_manager
 

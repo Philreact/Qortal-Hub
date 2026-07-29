@@ -207,6 +207,33 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         self.assertNotEqual(self.manager.stream_generation, first_generation)
         self.assertEqual(self.manager.source_ids, {})
 
+    def test_authoritative_shared_path_opens_peer_when_local_table_misses(self):
+        peer_hash = "11" * 16
+        peer_key = "Q-remote:land-remote"
+
+        class Destination:
+            hash = bytes.fromhex(peer_hash)
+
+        self.manager.remote_capabilities[peer_key] = {
+            "address": "Q-remote",
+            "sessionId": "land-remote",
+            "fields": {"destinationHash": peer_hash},
+        }
+        self.manager.resolve_peer = lambda _address, preferred="": preferred
+        self.manager.resolve_identity = lambda _peer: object()
+        self.manager.build_destination = lambda _identity: Destination()
+        self.manager.path_available = lambda _destination_hash: True
+        link = object()
+
+        with patch.object(RNS.Transport, "has_path", return_value=False), patch.object(
+            RNS, "Link", return_value=link
+        ) as open_link, patch.object(RNS.Transport, "request_path") as request_path:
+            self.manager._open_peer(peer_key, 10.0)
+
+        open_link.assert_called_once()
+        request_path.assert_not_called()
+        self.assertEqual(self.manager.links[peer_key]["link"], link)
+
     def test_malformed_proximity_classifier_is_consumed_and_closed(self):
         class Link:
             closed = False

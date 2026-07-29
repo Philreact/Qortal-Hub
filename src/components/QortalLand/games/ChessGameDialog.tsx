@@ -321,8 +321,6 @@ export function ChessGameDialog({
     await onPlayMove(selectedFrom, index);
   };
 
-  if (match.phase === 'opening') return null;
-
   if (match.phase === 'waiting') {
     return (
       <GameInvitationSentDialog

@@ -197,8 +197,6 @@ export function CheckersGameDialog({
   const localColor = localSeat === 1 ? '#eab72f' : '#d93659';
   const opponentColor = localSeat === 1 ? '#d93659' : '#eab72f';
 
-  if (match.phase === 'opening') return null;
-
   if (match.phase === 'waiting') {
     return (
       <GameInvitationSentDialog

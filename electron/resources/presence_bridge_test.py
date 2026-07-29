@@ -34,6 +34,124 @@ def load_bridge():
     return module
 
 
+class ReticulumPathVisibilityTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.destination_hash = bytes.fromhex("11" * 16)
+
+    def test_shared_daemon_path_is_authoritative_when_local_table_misses(self):
+        daemon = mock.Mock()
+        daemon.is_connected_to_shared_instance = True
+        daemon.get_path_snapshot.return_value = {
+            "hops": 2,
+            "timestamp": time.time(),
+        }
+        self.bridge._reticulum = daemon
+
+        with mock.patch.object(RNS.Transport, "has_path", return_value=False):
+            self.assertTrue(self.bridge._reticulum_has_path(self.destination_hash))
+            self.assertTrue(self.bridge._reticulum_has_path(self.destination_hash))
+
+        daemon.get_path_snapshot.assert_called_once_with(self.destination_hash)
+
+    def test_embedded_instance_uses_local_path_without_rpc(self):
+        reticulum = mock.Mock()
+        reticulum.is_connected_to_shared_instance = False
+        self.bridge._reticulum = reticulum
+
+        with mock.patch.object(RNS.Transport, "has_path", return_value=False):
+            self.assertFalse(self.bridge._reticulum_has_path(self.destination_hash))
+
+        reticulum.get_path_snapshot.assert_not_called()
+
+    def test_dropping_path_invalidates_shared_availability_cache(self):
+        daemon = mock.Mock()
+        daemon.is_connected_to_shared_instance = True
+        daemon.get_path_snapshot.side_effect = [
+            {"hops": 2, "timestamp": time.time()},
+            None,
+        ]
+        daemon.drop_path.return_value = True
+        self.bridge._reticulum = daemon
+
+        with mock.patch.object(RNS.Transport, "has_path", return_value=False), mock.patch.object(
+            RNS.Transport, "expire_path", return_value=False
+        ), mock.patch.object(RNS.Transport, "mark_path_unresponsive"):
+            self.assertTrue(self.bridge._reticulum_has_path(self.destination_hash))
+            self.assertTrue(self.bridge._drop_reticulum_path(self.destination_hash))
+            self.assertFalse(self.bridge._reticulum_has_path(self.destination_hash))
+
+        self.assertEqual(daemon.get_path_snapshot.call_count, 2)
+
+    def test_game_discovery_miss_nudges_without_dropping_path(self):
+        peer_hash = self.destination_hash.hex()
+        with mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ) as nudge, mock.patch.object(
+            self.bridge,
+            "_force_overlay_peer_path_refresh",
+        ) as force_refresh:
+            self.assertTrue(
+                self.bridge._refresh_qortalland_game_path(
+                    peer_hash,
+                    "game_link_no_path",
+                )
+            )
+
+        nudge.assert_called_once()
+        force_refresh.assert_not_called()
+
+    def test_game_failed_link_can_still_replace_bad_path(self):
+        peer_hash = self.destination_hash.hex()
+        with mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+        ) as nudge, mock.patch.object(
+            self.bridge,
+            "_force_overlay_peer_path_refresh",
+            return_value=True,
+        ) as force_refresh:
+            self.assertTrue(
+                self.bridge._refresh_qortalland_game_path(
+                    peer_hash,
+                    "game_link_attempt_closed",
+                )
+            )
+
+        force_refresh.assert_called_once_with(
+            peer_hash,
+            target="qortalland-game",
+            reason="game_link_attempt_closed",
+            await_seconds=0.0,
+        )
+        nudge.assert_not_called()
+
+    def test_recent_media_success_avoids_route_rpc(self):
+        peer_hash = self.destination_hash.hex()
+        state = self.bridge._get_call_media_state(peer_hash)
+        state.update({
+            "destination_hash_hex": peer_hash,
+            "path_state": "fresh",
+            "last_send_ok": time.time(),
+            "last_send_fail": None,
+            "last_inbound_at": None,
+        })
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            side_effect=AssertionError("route lookup should not run for recent traffic"),
+        ):
+            self.assertEqual(
+                self.bridge._classify_call_media_path_state(
+                    peer_hash,
+                    self.destination_hash,
+                ),
+                "fresh",
+            )
+
+
 class FakeLink:
     def __init__(self):
         self.closed_callback = None

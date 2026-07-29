@@ -101,6 +101,7 @@ class QortalLandProximityVoiceManager:
         enqueue_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
         resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
         identify_link: Optional[Callable[[Any], None]] = None,
+        path_available: Optional[Callable[[bytes], bool]] = None,
     ):
         self.emit = emit
         self.send_binary = send_binary
@@ -117,6 +118,7 @@ class QortalLandProximityVoiceManager:
         self.decode_base58 = decode_base58
         self.resolve_link_peer_hash = resolve_link_peer_hash
         self.identify_link = identify_link
+        self.path_available = path_available or RNS.Transport.has_path
         self.lock = threading.RLock()
         self.context: Optional[Dict[str, Any]] = None
         self.enabled = False
@@ -783,7 +785,7 @@ class QortalLandProximityVoiceManager:
         try:
             destination = self.build_destination(identity)
             destination_hash = bytes(destination.hash)
-            if not RNS.Transport.has_path(destination_hash):
+            if not self.path_available(destination_hash):
                 now = time.time()
                 if now - self.path_requested_at.get(peer_key, 0) >= 1.0:
                     self.path_requested_at[peer_key] = now

@@ -17,6 +17,13 @@ const renderGame = (state = createCheckersState(1), onPlayMove = vi.fn().mockRes
 };
 
 describe('Checkers game dialog', () => {
+  it('shows immediate feedback while opening the private game link', () => {
+    renderGame(createCheckersState(1), vi.fn(), { phase: 'opening', state: undefined });
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Preparing the Checkers game…')).toBeInTheDocument();
+  });
+
   it('renders an accessible 64-square board and plays a selected move', async () => {
     const play = renderGame();
     expect(screen.getAllByRole('gridcell')).toHaveLength(64);

@@ -22,6 +22,13 @@ const renderGame = (
 };
 
 describe('Chess game dialog', () => {
+  it('shows immediate feedback while opening the private game link', () => {
+    renderGame(createChessState(1), vi.fn(), vi.fn(), { phase: 'opening', state: undefined });
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Preparing the Chess game...')).toBeInTheDocument();
+  });
+
   it('renders an accessible board and submits a legal move', async () => {
     const { onPlayMove: play } = renderGame();
     expect(screen.getAllByRole('gridcell')).toHaveLength(64);
