@@ -385,6 +385,36 @@ export function resolveDmVoiceAudioLinkOpenDecision(input: {
   return input.nowMs - createdAtMs >= graceMs ? 'open' : 'defer';
 }
 
+/**
+ * Overlay control can arrive through a relay. Use the stamped original
+ * endpoint for participant ownership; the immediate link peer is only the
+ * transport hop and is retained separately for loop prevention.
+ */
+export function resolveGroupCallSourcePeerHash(
+  senderDestinationHash: string,
+  transportPeerPresenceHash: string
+): string {
+  const original = senderDestinationHash.trim().toLowerCase();
+  if (/^[0-9a-f]{32}$/.test(original)) return original;
+  const transport = transportPeerPresenceHash.trim().toLowerCase();
+  return /^[0-9a-f]{32}$/.test(transport) ? transport : '';
+}
+
+/**
+ * Once a participant join is wallet-verified, its signed destination is the
+ * authoritative device route. A relayed control frame may name the relay as
+ * its transport sender on older bridges, but must not replace that route.
+ */
+export function resolveVerifiedGroupCallControlPeerHash(
+  selectedParticipantHash: string | undefined,
+  transportPeerHash: string | undefined
+): string {
+  const selected = selectedParticipantHash?.trim().toLowerCase() ?? '';
+  if (/^[0-9a-f]{32}$/.test(selected)) return selected;
+  const transport = transportPeerHash?.trim().toLowerCase() ?? '';
+  return /^[0-9a-f]{32}$/.test(transport) ? transport : '';
+}
+
 type ReticulumMediaTransportKind = 'link' | 'packet';
 
 const GC_RETICULUM_PACKET_MEDIA_ENABLED = false;
@@ -2654,11 +2684,14 @@ export class GroupCallManager extends EventEmitter {
       const transportHash = job.peerPresenceHash?.trim().toLowerCase();
       if (selectedHash && transportHash && selectedHash !== transportHash) {
         this.logReticulumFailureThrottled(
-          `superseded-control:${job.env.roomId}:${job.env.fromAddress}:${job.kind}`,
-          `[GCall] Dropped ${job.env.type} from superseded device session room=${job.env.roomId} from=${job.env.fromAddress}`
+          `relayed-control:${job.env.roomId}:${job.env.fromAddress}:${job.kind}`,
+          `[GCall] ${job.env.type} arrived through a different transport hop; keeping the participant's verified device route room=${job.env.roomId} from=${job.env.fromAddress}`
         );
-        return;
       }
+      job.peerPresenceHash = resolveVerifiedGroupCallControlPeerHash(
+        selectedHash,
+        transportHash
+      );
     }
     if (job.kind === 'join' || job.kind === 'link_auth_join') {
       const env = job.env;
@@ -4392,6 +4425,7 @@ export class GroupCallManager extends EventEmitter {
   ): void {
     const now = Date.now();
     this.maybeSweepReticulumWireLogicalKeys(now);
+    const transportPeerPresenceHash = peerPresenceHash;
 
     let overlayLogicalKey: string | null = null;
     const overlayMeta = this.parseReticulumOverlayMeta(wire);
@@ -4430,10 +4464,14 @@ export class GroupCallManager extends EventEmitter {
         };
         void this.broadcastReticulumFramesViaOverlay(
           [forwarded],
-          peerPresenceHash ? [peerPresenceHash] : []
+          transportPeerPresenceHash ? [transportPeerPresenceHash] : []
         ).then(() => {});
       }
     }
+    peerPresenceHash = resolveGroupCallSourcePeerHash(
+      senderDestinationHash,
+      transportPeerPresenceHash
+    );
     this.sweepExpiredReticulumReassembly(now);
 
     const t = wire.t;
@@ -4466,8 +4504,8 @@ export class GroupCallManager extends EventEmitter {
     }
 
     const syntheticFrom =
-      senderDestinationHash.length > 0
-        ? `reticulum:${senderDestinationHash}`
+      peerPresenceHash.length > 0
+        ? `reticulum:${peerPresenceHash}`
         : undefined;
 
     if (t === 'GJ') {

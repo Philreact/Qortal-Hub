@@ -100,6 +100,7 @@ class QortalLandProximityVoiceManager:
         decode_base58: Callable[[str], bytes],
         enqueue_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
         resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
+        identify_link: Optional[Callable[[Any], None]] = None,
     ):
         self.emit = emit
         self.send_binary = send_binary
@@ -115,6 +116,7 @@ class QortalLandProximityVoiceManager:
         self.derive_address = derive_address
         self.decode_base58 = decode_base58
         self.resolve_link_peer_hash = resolve_link_peer_hash
+        self.identify_link = identify_link
         self.lock = threading.RLock()
         self.context: Optional[Dict[str, Any]] = None
         self.enabled = False
@@ -805,6 +807,17 @@ class QortalLandProximityVoiceManager:
     def _outbound_established(self, link) -> None:
         state = self._state_for_link(link)
         if not state or not self.capability or not self.ephemeral_private or not self.position:
+            return
+        try:
+            if self.identify_link is None:
+                raise RuntimeError("link_identity_unavailable")
+            self.identify_link(link)
+        except Exception as exc:
+            self.log(
+                f"[qortalland-proximity] link identify failed peer={state['address'][:8]} "
+                f"code={str(exc)[:80]}"
+            )
+            self._close_peer(state["peerKey"], "link_identity_failed")
             return
         link_id = bytes(self.link_id_bytes(link) or b"")
         nonce = secrets.token_bytes(16)

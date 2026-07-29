@@ -41,6 +41,7 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             verify_wallet=verify_signature,
             derive_address=derive_qortal_address,
             decode_base58=_b58decode,
+            identify_link=lambda _link: None,
         )
         self.manager.set_context({
             "address": self.address,
@@ -66,6 +67,36 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         self.assertFalse(self.manager.enabled)
         self.assertIsNone(self.manager.ephemeral_private)
         self.assertEqual(self.manager.capability_signature, "")
+
+    def test_outbound_link_identifies_before_classifier(self):
+        self.authorize()
+        self.manager._update_position({
+            "landSessionId": "land-1", "sequence": 1,
+            "roomId": "club", "x": 10, "y": 10,
+        })
+        order = []
+        self.manager.identify_link = lambda _link: order.append("identify")
+
+        class Link:
+            def set_packet_callback(self, _callback):
+                order.append("callback")
+
+        link = Link()
+        peer_key = "peer:session"
+        self.manager.links[peer_key] = {
+            "peerKey": peer_key,
+            "address": "Q-peer",
+            "sessionId": "peer-session",
+            "link": link,
+            "phase": "opening",
+        }
+        self.manager.links_by_object[id(link)] = peer_key
+        self.manager._send_packet = lambda _state, _raw: order.append("classifier") or True
+
+        self.manager._outbound_established(link)
+
+        self.assertEqual(order[0], "identify")
+        self.assertLess(order.index("identify"), order.index("classifier"))
 
     def test_rejects_tampered_session_signature(self):
         self.manager._enable({"mode": "push-to-talk"})

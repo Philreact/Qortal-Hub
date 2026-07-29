@@ -248,6 +248,7 @@ class QortalLandGameManager:
         enqueue_proximity_media: Optional[Callable[[Callable[..., Any], tuple], bool]] = None,
         resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
         local_destination_hash: Optional[Callable[[], str]] = None,
+        identify_link: Optional[Callable[[Any], None]] = None,
     ):
         self.emit = emit
         self.log = log
@@ -259,6 +260,7 @@ class QortalLandGameManager:
         self.refresh_path = refresh_path
         self.resolve_link_peer_hash = resolve_link_peer_hash
         self.local_destination_hash = local_destination_hash
+        self.identify_link = identify_link
         self.lock = threading.RLock()
         self.land_context: Optional[Dict[str, Any]] = None
         self.matches: Dict[str, Dict[str, Any]] = {}
@@ -294,6 +296,7 @@ class QortalLandGameManager:
             derive_address=derive_qortal_address,
             decode_base58=_b58decode,
             resolve_link_peer_hash=resolve_link_peer_hash,
+            identify_link=identify_link,
         )
 
     def start_server(self) -> Optional[int]:
@@ -853,6 +856,8 @@ class QortalLandGameManager:
         self.log(
             f"[qortalland-game] link established match={state['matchId'][:8]} peer={str(state.get('peerHash') or '')[:8]} attempt={int(state.get('openAttempts') or 0)}"
         )
+        if not self._identify_outbound_link(state, link):
+            return
         self._configure_channel(state)
         state["phase"] = "awaiting_invite_signature"
         state["linkId"] = self.link_id_bytes(link).hex()
@@ -2444,6 +2449,8 @@ class QortalLandGameManager:
         state = self._state_for_link(link)
         if not state or state.get("phase") != "recovering":
             return
+        if not self._identify_outbound_link(state, link):
+            return
         state["linkId"] = self.link_id_bytes(link).hex()
         state["resumeRequesterNonce"] = secrets.token_hex(16)
         state["lastActivity"] = time.time()
@@ -2461,6 +2468,30 @@ class QortalLandGameManager:
             "createdAt": int(time.time() * 1000),
         }
         self._require_signature(state, fields["type"], fields)
+
+    def _identify_outbound_link(self, state: Dict[str, Any], link) -> bool:
+        """Prove the initiating Reticulum endpoint before signed game traffic."""
+        try:
+            if self.identify_link is None:
+                raise RuntimeError("link_identity_unavailable")
+            self.identify_link(link)
+            return True
+        except Exception as exc:
+            match_id = str(state.get("matchId") or "")
+            self.log(
+                f"[qortalland-game] link identify failed match={match_id[:8]} "
+                f"peer={str(state.get('peerHash') or '')[:8]} code={str(exc)[:80]}"
+            )
+            self.send_event(
+                "GAME_ERROR",
+                {
+                    "matchId": match_id,
+                    "code": "link_identity_failed",
+                    "message": "Could not authenticate the private game link",
+                },
+            )
+            self._close_match(match_id, "link_identity_failed")
+            return False
 
     def _state_for_link(self, link) -> Optional[Dict[str, Any]]:
         with self.lock:

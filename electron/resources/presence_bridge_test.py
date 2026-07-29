@@ -173,6 +173,24 @@ class PresenceBridgeWireEncodingTest(unittest.TestCase):
         self.assertEqual(wire["r"], "44" * 16)
         self.assertEqual(wire["w"], read_state)
 
+    def test_group_signal_relay_preserves_original_sender(self):
+        encoded = self.bridge._encode_group_signal_wire(
+            {"t": "GJ", "r": "11" * 16}
+        )
+
+        self.assertTrue(encoded["ok"])
+        wire = json.loads(encoded["wire_bytes"].decode("utf-8"))
+        self.assertEqual(wire["r"], "11" * 16)
+
+    def test_call_signal_relay_preserves_original_sender(self):
+        encoded = self.bridge._encode_call_signal_wire(
+            {"t": "CR", "r": "22" * 16}
+        )
+
+        self.assertTrue(encoded["ok"])
+        wire = json.loads(encoded["wire_bytes"].decode("utf-8"))
+        self.assertEqual(wire["r"], "22" * 16)
+
 
 class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
     def setUp(self):

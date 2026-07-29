@@ -7818,6 +7818,12 @@ def _qortalland_local_destination_hash() -> str:
     return destination_hash_hex(_destination.hash) if _destination is not None else ""
 
 
+def _identify_qortalland_private_link(link: Any) -> None:
+    if _identity is None:
+        raise RuntimeError("reticulum_identity_unavailable")
+    link.identify(_identity)
+
+
 def _enqueue_game_control(fn: Callable[..., Any], args: tuple) -> bool:
     return _enqueue_scheduler_task(
         "game-control",
@@ -8002,6 +8008,7 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
             broadcast_proximity=_broadcast_qortalland_proximity,
             resolve_link_peer_hash=_qortalland_game_link_peer_hash,
             local_destination_hash=_qortalland_local_destination_hash,
+            identify_link=_identify_qortalland_private_link,
         )
     return _qortalland_game_manager
 
@@ -18535,7 +18542,14 @@ def handle_stop(req_id: str) -> None:
 
 def _encode_group_signal_wire(msg: Dict[str, Any]) -> Dict[str, Any]:
     out = _normalize_json_numbers(dict(msg))
-    out["r"] = destination_hash_hex(_destination.hash)
+    # `r` identifies the original endpoint. Relays must preserve it; replacing
+    # it with each transport hop makes calls and media bind to the relay.
+    origin = str(out.get("r") or "").strip().lower()
+    out["r"] = (
+        origin
+        if _valid_presence_destination_hash_hex(origin)
+        else destination_hash_hex(_destination.hash)
+    )
     wire_bytes = _call_wire_json_bytes(out)
     if len(wire_bytes) > _MAX_ENCRYPTED_WIRE_BYTES:
         return {
@@ -18601,7 +18615,12 @@ def _send_group_signal_wire_to_peer(peer_hash: str, wire_bytes: bytes) -> Option
 
 def _encode_call_signal_wire(msg: Dict[str, Any]) -> Dict[str, Any]:
     out = _normalize_json_numbers(dict(msg))
-    out["r"] = destination_hash_hex(_destination.hash)
+    origin = str(out.get("r") or "").strip().lower()
+    out["r"] = (
+        origin
+        if _valid_presence_destination_hash_hex(origin)
+        else destination_hash_hex(_destination.hash)
+    )
     wire_bytes = _call_wire_json_bytes(out)
     if len(wire_bytes) > _MAX_ENCRYPTED_WIRE_BYTES:
         return {

@@ -28,7 +28,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.public_key = _b58encode(self.private_key.public_key().public_bytes())
         self.address = derive_qortal_address(self.public_key)
 
-    def make_manager(self):
+    def make_manager(self, identify_link=lambda _link: None):
         events = []
         manager = QortalLandGameManager(
             emit=lambda *_args: None,
@@ -40,6 +40,7 @@ class QortalLandGameProtocolTest(unittest.TestCase):
             enqueue=lambda fn, args: bool(fn(*args) is None or True),
             resolve_link_peer_hash=lambda _link: "11" * 16,
             local_destination_hash=lambda: "aa" * 16,
+            identify_link=identify_link,
         )
         manager.send_event = lambda event, payload=None: events.append((event, payload or {}))
         return manager, events
@@ -93,6 +94,57 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(refreshes, [("11" * 16, "game_identity_unavailable")])
         request_path.assert_not_called()
         manager._schedule_open_retry.assert_called_once_with(match_id)
+
+    def test_outbound_game_link_identifies_before_signed_handshake(self):
+        order = []
+        manager, _events = self.make_manager(
+            identify_link=lambda _link: order.append("identify")
+        )
+        link = object()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "establishing",
+            "openAttempts": 1,
+        }
+        manager.links_by_object[id(link)] = match_id
+        manager._configure_channel = lambda _state: order.append("channel")
+        manager._invite_fields = lambda _state: {}
+        manager._require_signature = lambda *_args: order.append("signature")
+
+        manager._outbound_established(link)
+
+        self.assertEqual(order, ["identify", "channel", "signature"])
+
+    def test_outbound_game_link_identity_failure_stops_handshake(self):
+        manager, events = self.make_manager(
+            identify_link=lambda _link: (_ for _ in ()).throw(RuntimeError("no identity"))
+        )
+        link = object()
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "establishing",
+            "openAttempts": 1,
+            "link": link,
+        }
+        manager.links_by_object[id(link)] = match_id
+        manager._configure_channel = mock.Mock()
+        manager._teardown = mock.Mock()
+
+        manager._outbound_established(link)
+
+        manager._configure_channel.assert_not_called()
+        manager._teardown.assert_called_once_with(link)
+        self.assertNotIn(match_id, manager.matches)
+        self.assertTrue(
+            any(
+                event == "GAME_ENDED" and payload.get("outcome") == "link_identity_failed"
+                for event, payload in events
+            )
+        )
 
     def test_socket_writer_drains_media_without_waiting_on_empty_control_queue(self):
         manager, _events = self.make_manager()

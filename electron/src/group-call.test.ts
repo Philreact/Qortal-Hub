@@ -6,10 +6,35 @@ import {
   reticulumAudioResetReasonForVerifiedJoin,
   resolveVerifiedJoinTakeoverAt,
   resolveDmVoiceAudioLinkOpenDecision,
+  resolveGroupCallSourcePeerHash,
+  resolveVerifiedGroupCallControlPeerHash,
   resolveGroupCallSignedJoinGeneration,
   shouldApplyGroupCallLeaveToSession,
   shouldRefreshParticipantFromVerifiedJoin,
 } from './group-call';
+
+describe('group-call relayed endpoint ownership', () => {
+  it('uses the original sender instead of the relay hop', () => {
+    expect(
+      resolveGroupCallSourcePeerHash('a'.repeat(32), 'b'.repeat(32))
+    ).toBe('a'.repeat(32));
+  });
+
+  it('falls back to the transport peer for legacy direct frames', () => {
+    expect(resolveGroupCallSourcePeerHash('', 'b'.repeat(32))).toBe(
+      'b'.repeat(32)
+    );
+  });
+
+  it('keeps the wallet-verified participant route for relayed controls', () => {
+    expect(
+      resolveVerifiedGroupCallControlPeerHash(
+        'a'.repeat(32),
+        'b'.repeat(32)
+      )
+    ).toBe('a'.repeat(32));
+  });
+});
 
 describe('DM voice audio-link ownership recovery', () => {
   it('opens immediately for the preferred opener', () => {
