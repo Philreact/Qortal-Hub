@@ -7,29 +7,35 @@ import {
 export type ReticulumMessageExpiryOption = {
   durationMs: number;
   label: string;
+  shortLabel: string;
 };
 
 export const RETICULUM_MESSAGE_EXPIRY_OPTIONS: readonly ReticulumMessageExpiryOption[] =
   [
     {
       durationMs: TIME_DAYS_1_IN_MILLISECONDS,
-      label: '24 hours',
+      label: '1 day',
+      shortLabel: '1D',
     },
     {
       durationMs: 2 * TIME_DAYS_1_IN_MILLISECONDS,
-      label: '48 hours',
+      label: '2 days',
+      shortLabel: '2D',
     },
     {
       durationMs: 3 * TIME_DAYS_1_IN_MILLISECONDS,
-      label: '72 hours',
+      label: '3 days',
+      shortLabel: '3D',
     },
     {
       durationMs: TIME_WEEKS_1_IN_MILLISECONDS,
       label: '1 week',
+      shortLabel: '1W',
     },
     {
       durationMs: TIME_MONTHS_1_IN_MILLISECONDS,
       label: '1 month',
+      shortLabel: '1M',
     },
   ];
 

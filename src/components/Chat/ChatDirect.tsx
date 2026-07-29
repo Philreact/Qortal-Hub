@@ -80,6 +80,7 @@ import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 import { fileToBase64 } from '../../utils/fileReading';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
+import { MessageSizeLimitLip } from './MessageSizeLimitLip';
 import {
   compressReticulumImageFile,
   convertReticulumGifFile,
@@ -447,6 +448,7 @@ export const ChatDirect = ({
   const socketRef = useRef(null);
   const timeoutIdRef = useRef(null);
   const [messageSize, setMessageSize] = useState(0);
+  const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
   const groupSocketTimeoutRef = useRef(null);
   const [replyMessage, setReplyMessage] = useState(null);
   const [qchatFileTransferStates, setQchatFileTransferStates] = useState({});
@@ -2373,7 +2375,10 @@ export const ChatDirect = ({
 
   const sendMessage = async () => {
     try {
-      if (messageSize > MAX_SIZE_MESSAGE) return;
+      if (messageSize > MAX_SIZE_MESSAGE) {
+        setMessageSizeLimitShakeKey((key) => key + 1);
+        return;
+      }
       if (
         reticulumDirectEnabled &&
         (isCompressingReticulumGif || isCompressingReticulumImage)
@@ -3288,6 +3293,14 @@ export const ChatDirect = ({
           zIndex: isFocusedParent ? 5 : 'unset',
         }}
       >
+        {reticulumDirectUiEnabled && (
+          <MessageSizeLimitLip
+            floating
+            maximum={MAX_SIZE_MESSAGE}
+            shakeKey={messageSizeLimitShakeKey}
+            size={messageSize}
+          />
+        )}
         <Box
           sx={{
             display: 'flex',

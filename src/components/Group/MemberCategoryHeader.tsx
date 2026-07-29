@@ -8,10 +8,16 @@ import {
 } from '@mui/material';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 
-export type MemberCategoryType = 'admins' | 'lounge' | 'park' | 'members';
+export type MemberCategoryType =
+  | 'admins'
+  | 'lounge'
+  | 'park'
+  | 'members'
+  | 'offline';
 
 type Props = {
   count: number;
+  totalCount?: number;
   expanded: boolean;
   first: boolean;
   icon: ReactNode;
@@ -90,6 +96,19 @@ const CategoryMotif = ({ type }: { type: MemberCategoryType }) => {
     );
   }
 
+  if (type === 'offline') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 120 44">
+        <g fill="currentColor">
+          <path d="M48 28h19v4L55 41h12v4H48v-4l12-9H48v-4Z" />
+          <path d="M66 16h22v4L74 30h14v4H66v-4l15-10H66v-4Z" />
+          <path d="M88 3h26v5L97 20h17v5H88v-5l18-12H88V3Z" />
+          <path d="M107-9h31v6l-20 14h20v6h-31v-6l22-14h-22v-6Z" />
+        </g>
+      </svg>
+    );
+  }
+
   return (
     <svg aria-hidden="true" viewBox="0 0 120 44">
       <path
@@ -113,6 +132,7 @@ const CategoryMotif = ({ type }: { type: MemberCategoryType }) => {
 
 export const MemberCategoryHeader = ({
   count,
+  totalCount,
   expanded,
   first,
   icon,
@@ -126,6 +146,7 @@ export const MemberCategoryHeader = ({
     lounge: theme.palette.mode === 'dark' ? '#a68bd7' : '#7152a1',
     park: theme.palette.mode === 'dark' ? '#72b89e' : '#347d63',
     members: theme.palette.mode === 'dark' ? '#6ca6cf' : '#356f9c',
+    offline: theme.palette.mode === 'dark' ? '#8d94a3' : '#5f6673',
   };
   const baseGraphicOpacity = theme.palette.mode === 'dark' ? 0.1 : 0.095;
   const graphicOpacity = baseGraphicOpacity + (expanded ? 0.02 : 0);
@@ -252,7 +273,7 @@ export const MemberCategoryHeader = ({
           mr: 0.25,
         }}
       >
-        {count}
+        {totalCount == null ? count : `${count}/${totalCount}`}
       </Typography>
       <IconButton
         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}

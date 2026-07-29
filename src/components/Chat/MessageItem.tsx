@@ -94,6 +94,8 @@ import {
 import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
+import { useAtomValue } from 'jotai';
+import { reticulumHighlightOwnMessagesAtom } from '../../atoms/global';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
@@ -388,6 +390,9 @@ export const MessageItemComponent = ({
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
+  const highlightOwnReticulumMessages = useAtomValue(
+    reticulumHighlightOwnMessagesAtom
+  );
   const [anchorEl, setAnchorEl] = useState(null);
   const [selectedReaction, setSelectedReaction] = useState(null);
   const [userInfo, setUserInfo] = useState(null);
@@ -1916,6 +1921,68 @@ export const MessageItemComponent = ({
     !isReticulumDiscussionInitialPost &&
     (!reticulumDiscussionView ||
       String(message?.repliedTo || '') !== reticulumDiscussionRootId);
+  const reticulumDiscussionButton =
+    hasReticulumDiscussion && onOpenReticulumDiscussion ? (
+      <Tooltip
+        title={`View ${reticulumDiscussionReplyCount} ${
+          reticulumDiscussionReplyCount === 1 ? 'reply' : 'replies'
+        }`}
+        slotProps={{
+          tooltip: {
+            sx: {
+              backgroundColor:
+                theme.palette.mode === 'light' ? '#f8fafc' : undefined,
+              border:
+                theme.palette.mode === 'light'
+                  ? '1px solid rgba(15, 23, 42, 0.16)'
+                  : undefined,
+              color: theme.palette.mode === 'light' ? '#111827' : undefined,
+              fontWeight: 600,
+            },
+          },
+        }}
+      >
+        <ButtonBase
+          aria-label={`View ${reticulumDiscussionReplyCount} ${
+            reticulumDiscussionReplyCount === 1 ? 'reply' : 'replies'
+          }`}
+          onClick={() => onOpenReticulumDiscussion(message)}
+          sx={{
+            alignItems: 'center',
+            backgroundColor:
+              theme.palette.mode === 'light'
+                ? alpha('#174ea6', 0.14)
+                : alpha(theme.palette.primary.main, 0.12),
+            border:
+              theme.palette.mode === 'light'
+                ? '1px solid rgba(23, 78, 166, 0.24)'
+                : '1px solid transparent',
+            borderRadius: '50%',
+            color:
+              theme.palette.mode === 'light'
+                ? '#174ea6'
+                : theme.palette.primary.main,
+            display: 'inline-flex',
+            flexShrink: 0,
+            fontSize: '10px',
+            fontWeight: 700,
+            height: 24,
+            justifyContent: 'center',
+            lineHeight: 1,
+            minWidth: 24,
+            px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
+            '&:hover': {
+              backgroundColor:
+                theme.palette.mode === 'light'
+                  ? alpha('#174ea6', 0.22)
+                  : alpha(theme.palette.primary.main, 0.2),
+            },
+          }}
+        >
+          +{reticulumDiscussionReplyCount}
+        </ButtonBase>
+      </Tooltip>
+    ) : null;
 
   if (shouldSuppressUnvalidatedGroupWelcome) return null;
 
@@ -1995,6 +2062,18 @@ export const MessageItemComponent = ({
               boxShadow: `inset 3px 0 0 ${theme.palette.warning.main}`,
             }),
             ...(isOwn &&
+              reticulumChatEnabled &&
+              highlightOwnReticulumMessages &&
+              !isOfficialGroupWelcome &&
+              !isScrollTarget && {
+                backgroundColor: alpha(
+                  theme.palette.mode === 'dark'
+                    ? theme.palette.common.white
+                    : theme.palette.common.black,
+                  theme.palette.mode === 'dark' ? 0.028 : 0.025
+                ),
+              }),
+            ...(isOwn &&
               !reticulumChatEnabled &&
               !isScrollTarget && {
                 backgroundColor: alpha(theme.palette.primary.main, 0.045),
@@ -2031,6 +2110,13 @@ export const MessageItemComponent = ({
                     ? isCurrentUserMentioned
                       ? alpha(theme.palette.warning.main, 0.1)
                       : alpha(theme.palette.primary.main, 0.14)
+                    : isOwn && highlightOwnReticulumMessages
+                      ? alpha(
+                          theme.palette.mode === 'dark'
+                            ? theme.palette.common.white
+                            : theme.palette.common.black,
+                          theme.palette.mode === 'dark' ? 0.045 : 0.04
+                        )
                     : alpha(theme.palette.text.primary, 0.035)
                   : undefined,
               },
@@ -2316,74 +2402,7 @@ export const MessageItemComponent = ({
                   </Typography>
                 )}
 
-                {hasReticulumDiscussion && onOpenReticulumDiscussion && (
-                  <Tooltip
-                    title={`View ${reticulumDiscussionReplyCount} ${
-                      reticulumDiscussionReplyCount === 1 ? 'reply' : 'replies'
-                    }`}
-                    slotProps={{
-                      tooltip: {
-                        sx: {
-                          backgroundColor:
-                            theme.palette.mode === 'light'
-                              ? '#f8fafc'
-                              : undefined,
-                          border:
-                            theme.palette.mode === 'light'
-                              ? '1px solid rgba(15, 23, 42, 0.16)'
-                              : undefined,
-                          color:
-                            theme.palette.mode === 'light'
-                              ? '#111827'
-                              : undefined,
-                          fontWeight: 600,
-                        },
-                      },
-                    }}
-                  >
-                    <ButtonBase
-                      aria-label={`View ${reticulumDiscussionReplyCount} ${
-                        reticulumDiscussionReplyCount === 1
-                          ? 'reply'
-                          : 'replies'
-                      }`}
-                      onClick={() => onOpenReticulumDiscussion(message)}
-                      sx={{
-                        alignItems: 'center',
-                        backgroundColor:
-                          theme.palette.mode === 'light'
-                            ? alpha('#174ea6', 0.14)
-                            : alpha(theme.palette.primary.main, 0.12),
-                        border:
-                          theme.palette.mode === 'light'
-                            ? '1px solid rgba(23, 78, 166, 0.24)'
-                            : '1px solid transparent',
-                        borderRadius: '50%',
-                        color:
-                          theme.palette.mode === 'light'
-                            ? '#174ea6'
-                            : theme.palette.primary.main,
-                        display: 'inline-flex',
-                        flexShrink: 0,
-                        fontSize: '10px',
-                        fontWeight: 700,
-                        height: 24,
-                        justifyContent: 'center',
-                        lineHeight: 1,
-                        minWidth: 24,
-                        px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
-                        '&:hover': {
-                          backgroundColor:
-                            theme.palette.mode === 'light'
-                              ? alpha('#174ea6', 0.22)
-                              : alpha(theme.palette.primary.main, 0.2),
-                        },
-                      }}
-                    >
-                      +{reticulumDiscussionReplyCount}
-                    </ButtonBase>
-                  </Tooltip>
-                )}
+                {!collapseGroupedHeader && reticulumDiscussionButton}
 
                 {message?.isEdit && !isUpdating && !isTemp && (
                   <Typography
@@ -3632,6 +3651,18 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
+            {collapseGroupedHeader && reticulumDiscussionButton && (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  marginTop: '4px',
+                }}
+              >
+                {reticulumDiscussionButton}
+              </Box>
+            )}
+
             {/* Sending / updating status */}
             {(isUpdating || isTemp) && (
               <Typography
@@ -4316,6 +4347,43 @@ export const ReplyPreview = ({
     return normalizeMessageHtmlContent(message?.messageText);
   }, [message?.messageText]);
 
+  if (isEdit) {
+    return (
+      <Box
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          gap: '6px',
+          minHeight: '28px',
+          padding: '4px 2px',
+          width: '100%',
+        }}
+      >
+        <EditIcon
+          sx={{
+            color: theme.palette.text.secondary,
+            flexShrink: 0,
+            fontSize: '14px',
+          }}
+        />
+        <Typography
+          sx={{
+            color: theme.palette.text.secondary,
+            fontSize: '11px',
+            fontWeight: 600,
+            letterSpacing: '0.02em',
+            textTransform: 'uppercase',
+          }}
+        >
+          {t('core:message.generic.editing_message', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+          :
+        </Typography>
+      </Box>
+    );
+  }
+
   return (
     <Box
       sx={{
@@ -4340,68 +4408,36 @@ export const ReplyPreview = ({
         }}
       />
       <Box sx={{ padding: '8px 12px', minWidth: 0 }}>
-        {isEdit ? (
-          <Box
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: '6px',
+            marginBottom: '4px',
+          }}
+        >
+          <ReplyIcon
             sx={{
-              alignItems: 'center',
-              display: 'flex',
-              gap: '6px',
-              marginBottom: '4px',
+              color: theme.palette.text.secondary,
+              fontSize: '14px',
+              flexShrink: 0,
+            }}
+          />
+          <Typography
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '11px',
+              fontWeight: 600,
+              letterSpacing: '0.02em',
+              textTransform: 'uppercase',
             }}
           >
-            <EditIcon
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '14px',
-                flexShrink: 0,
-              }}
-            />
-            <Typography
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '11px',
-                fontWeight: 600,
-                letterSpacing: '0.02em',
-                textTransform: 'uppercase',
-              }}
-            >
-              {t('core:message.generic.editing_message', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-          </Box>
-        ) : (
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              gap: '6px',
-              marginBottom: '4px',
-            }}
-          >
-            <ReplyIcon
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '14px',
-                flexShrink: 0,
-              }}
-            />
-            <Typography
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '11px',
-                fontWeight: 600,
-                letterSpacing: '0.02em',
-                textTransform: 'uppercase',
-              }}
-            >
-              {t('core:message.generic.replied_to', {
-                person: message?.senderName || message?.senderAddress,
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-          </Box>
-        )}
+            {t('core:message.generic.replied_to', {
+              person: message?.senderName || message?.senderAddress,
+              postProcess: 'capitalizeFirstChar',
+            })}
+          </Typography>
+        </Box>
 
         {reticulumOnlyContent ? (
           replyMessageText ? (

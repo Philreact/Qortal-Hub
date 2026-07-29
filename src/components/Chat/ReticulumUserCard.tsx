@@ -6,6 +6,7 @@ import {
   Button,
   Divider,
   IconButton,
+  Menu,
   Popover,
   Tooltip,
   Typography,
@@ -15,7 +16,7 @@ import { alpha } from '@mui/material/styles';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded';
 import NorthEastRoundedIcon from '@mui/icons-material/NorthEastRounded';
-import BlockOutlinedIcon from '@mui/icons-material/BlockOutlined';
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import { getBaseApiReact } from '../../App';
 import { getNameInfo } from '../Group/groupApi';
@@ -24,6 +25,10 @@ import { statusDotColor } from '../../hooks/usePresence';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
+import {
+  ReticulumHideUserAction,
+  type ReticulumSilenceContext,
+} from './ReticulumHideUserAction';
 
 export type ReticulumUserCardData = {
   address: string;
@@ -45,6 +50,7 @@ type ReticulumUserCardProps = {
   boundaryHeight?: number;
   data: ReticulumUserCardData;
   onClose: () => void;
+  silenceContext?: ReticulumSilenceContext;
 };
 
 type CardProfile = {
@@ -82,6 +88,7 @@ export const ReticulumUserCard = ({
   boundaryHeight,
   data,
   onClose,
+  silenceContext,
 }: ReticulumUserCardProps) => {
   const theme = useTheme();
   const open = Boolean(anchorEl || anchorPosition);
@@ -94,6 +101,7 @@ export const ReticulumUserCard = ({
   const [isMinterResolved, setIsMinterResolved] = useState(data.isMinterResolved);
   const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState<string | null>(null);
+  const [hideMenuAnchor, setHideMenuAnchor] = useState<HTMLElement | null>(null);
   const cardContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -225,11 +233,6 @@ export const ReticulumUserCard = ({
 
   const handleViewProfile = () => {
     executeEvent('openUserLookupDrawer', { addressOrName: data.address });
-    onClose();
-  };
-
-  const handleBlock = () => {
-    executeEvent('blockUserFromOutside', { user: data.address });
     onClose();
   };
 
@@ -421,10 +424,46 @@ export const ReticulumUserCard = ({
               <Button variant="outlined" startIcon={<NorthEastRoundedIcon />} onClick={handleSendQort} sx={secondaryActionSx}>
                 Send QORT
               </Button>
-              <Button aria-label="Block user" variant="outlined" onClick={handleBlock} sx={blockActionSx}>
-                <BlockOutlinedIcon />
+              <Button
+                aria-label="Hide user"
+                disabled={!silenceContext}
+                variant="outlined"
+                onClick={(event) => setHideMenuAnchor(event.currentTarget)}
+                sx={blockActionSx}
+              >
+                <VisibilityOffRoundedIcon />
               </Button>
             </Box>
+            {silenceContext && (
+              <Menu
+                anchorEl={hideMenuAnchor}
+                open={Boolean(hideMenuAnchor)}
+                onClose={() => setHideMenuAnchor(null)}
+                anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+                transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+                slotProps={{
+                  paper: {
+                    sx: {
+                      backgroundColor: theme.palette.background.paper,
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: '8px',
+                      mt: 0.75,
+                      minWidth: 210,
+                    },
+                  },
+                }}
+              >
+                <ReticulumHideUserAction
+                  address={data.address}
+                  context={silenceContext}
+                  handleClose={() => {
+                    setHideMenuAnchor(null);
+                    onClose();
+                  }}
+                  initiallyShowDurations
+                />
+              </Menu>
+            )}
           </>
         )}
       </Box>

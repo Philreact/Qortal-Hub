@@ -23,6 +23,8 @@ import { MessageItem } from './MessageItem';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
+import { ReactionPicker } from '../ReactionPicker';
+import { MessageSizeLimitLip } from './MessageSizeLimitLip';
 
 const RETICULUM_BLUE = '#2563eb';
 
@@ -111,6 +113,7 @@ export const ReticulumDiscussionDialog = ({
   const [formattingResetKey, setFormattingResetKey] = useState(0);
   const [focused, setFocused] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
+  const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rootMessage = messages[0] || null;
@@ -159,7 +162,10 @@ export const ReticulumDiscussionDialog = ({
     if (!hasText && files.length === 0) return;
     const messageText = editor.getJSON() as Record<string, unknown>;
     const payloadSize = JSON.stringify(messageText).length + 300;
-    if (payloadSize > MAX_SIZE_MESSAGE) return;
+    if (payloadSize > MAX_SIZE_MESSAGE) {
+      setMessageSizeLimitShakeKey((key) => key + 1);
+      return;
+    }
     setSending(true);
     try {
       if (
@@ -184,7 +190,6 @@ export const ReticulumDiscussionDialog = ({
     loading ||
     !canWrite ||
     closeDisabled ||
-    messageSize > MAX_SIZE_MESSAGE ||
     (!editor?.getText().trim() && files.length === 0);
 
   return (
@@ -461,6 +466,13 @@ export const ReticulumDiscussionDialog = ({
           p: '16px 18px',
         }}
       >
+        <Box sx={{ mb: messageSize > MAX_SIZE_MESSAGE ? 1.25 : 0 }}>
+          <MessageSizeLimitLip
+            maximum={MAX_SIZE_MESSAGE}
+            shakeKey={messageSizeLimitShakeKey}
+            size={messageSize}
+          />
+        </Box>
         {(files.length > 0 || preparingFile) && (
           <Box
             sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1, px: 0.25 }}
@@ -541,7 +553,14 @@ export const ReticulumDiscussionDialog = ({
           </Box>
         )}
 
-        <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.25 }}>
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: 1,
+            minHeight: 44,
+          }}
+        >
           <Tiptap
             collapseFormattingTraySignal={formattingResetKey}
             compactChat
@@ -561,39 +580,75 @@ export const ReticulumDiscussionDialog = ({
             setEditorRef={setEditor}
             setIsFocusedParent={setFocused}
           />
-          <ReticulumMessageExpiryButton
-            channelExpiryDurationMs={channelExpiryDurationMs}
-            disabled={loading || closeDisabled}
-            disabledReason="Wait until the discussion is ready"
-            onChange={setExpiryDurationMs}
-            value={expiryDurationMs}
-          />
-          <Button
-            disabled={sendDisabled}
-            onClick={() => void send()}
-            startIcon={
-              sending ? (
-                <CircularProgress color="inherit" size={16} />
-              ) : (
-                <SendRoundedIcon sx={{ fontSize: 18 }} />
-              )
-            }
+          <Tooltip title="Choose Emoji">
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'inline-flex',
+                flexShrink: 0,
+                justifyContent: 'center',
+              }}
+            >
+              <ReactionPicker
+                compactComposer
+                neutralIcon
+                onReaction={(emoji: string) => {
+                  editor?.chain().focus().insertContent(emoji).run();
+                }}
+              />
+            </Box>
+          </Tooltip>
+          <Box
             sx={{
-              backgroundColor: RETICULUM_BLUE,
+              alignItems: 'stretch',
+              border: '1px solid',
+              borderColor: 'divider',
               borderRadius: '10px',
-              color: 'common.white',
+              display: 'inline-flex',
               flexShrink: 0,
-              fontWeight: 650,
-              height: 44,
-              minWidth: 92,
-              px: '18px',
-              textTransform: 'none',
-              '&:hover': { backgroundColor: '#1e40af' },
+              height: 38,
+              overflow: 'hidden',
             }}
-            variant="contained"
           >
-            Send
-          </Button>
+            <ReticulumMessageExpiryButton
+              channelExpiryDurationMs={channelExpiryDurationMs}
+              disabled={loading || closeDisabled}
+              disabledReason="Wait until the discussion is ready"
+              onChange={setExpiryDurationMs}
+              segmented
+              value={expiryDurationMs}
+            />
+            <Button
+              disabled={sendDisabled}
+              onClick={() => void send()}
+              startIcon={
+                sending ? (
+                  <CircularProgress color="inherit" size={16} />
+                ) : (
+                  <SendRoundedIcon sx={{ fontSize: 18 }} />
+                )
+              }
+              sx={{
+                backgroundColor: RETICULUM_BLUE,
+                borderRadius: 0,
+                color: 'common.white',
+                flexShrink: 0,
+                fontWeight: 650,
+                height: 38,
+                minWidth: 82,
+                px: '14px',
+                textTransform: 'none',
+                '&:hover': { backgroundColor: '#1e40af' },
+                '&.Mui-focusVisible': {
+                  boxShadow: (theme) =>
+                    `inset 0 0 0 2px ${theme.palette.common.white}`,
+                },
+              }}
+              variant="contained"
+            >
+              Send
+            </Button>
+          </Box>
         </Box>
         {!canWrite && (
           <Typography

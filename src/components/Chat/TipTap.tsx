@@ -518,6 +518,7 @@ type TiptapProps = {
   insertImage?: (image: any) => void;
   insertFiles?: (files: File[]) => void | Promise<void>;
   compactChat?: boolean;
+  compactEditorMaxHeight?: number;
   compactActions?: ReactNode;
   placeholder?: string;
   collapseFormattingTraySignal?: number;
@@ -555,6 +556,7 @@ const Tiptap = ({
   insertImage,
   insertFiles,
   compactChat = false,
+  compactEditorMaxHeight,
   compactActions,
   placeholder,
   collapseFormattingTraySignal,
@@ -827,8 +829,12 @@ const Tiptap = ({
         attributes: {
           class: 'tiptap-prosemirror',
           style: compactChat
-            ? `overflow: auto; max-height: 120px`
-            : `overflow: auto; max-height: 250px`,
+            ? `overflow-y: auto; overflow-x: hidden; max-height: ${
+                compactEditorMaxHeight == null
+                  ? '50vh'
+                  : `${compactEditorMaxHeight}px`
+              }`
+            : `overflow-y: auto; overflow-x: hidden; max-height: 50vh`,
         },
         handleKeyDown(view, event) {
           const mentionSuggestionActive =

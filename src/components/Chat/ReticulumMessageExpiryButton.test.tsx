@@ -21,7 +21,7 @@ describe('ReticulumMessageExpiryButton', () => {
     await user.click(
       screen.getByRole('button', { name: 'Set message expiry' })
     );
-    await user.click(screen.getByRole('menuitem', { name: /^24 hours$/ }));
+    await user.click(screen.getByRole('menuitem', { name: /^1 day$/ }));
 
     expect(onChange).toHaveBeenCalledWith(TIME_DAYS_1_IN_MILLISECONDS);
   });
@@ -39,9 +39,9 @@ describe('ReticulumMessageExpiryButton', () => {
       screen.getByRole('button', { name: 'Set message expiry' })
     );
 
-    expect(screen.getByRole('menuitem', { name: /^24 hours$/ })).toBeEnabled();
-    expect(screen.getByRole('menuitem', { name: /^48 hours$/ })).toBeEnabled();
-    expect(screen.getByRole('menuitem', { name: /72 hours/ })).toHaveAttribute(
+    expect(screen.getByRole('menuitem', { name: /^1 day$/ })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: /^2 days$/ })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: /3 days/ })).toHaveAttribute(
       'aria-disabled',
       'true'
     );
@@ -61,7 +61,7 @@ describe('ReticulumMessageExpiryButton', () => {
 
     expect(
       screen.getByRole('button', { name: 'Set message expiry' })
-    ).toHaveTextContent('48');
+    ).toHaveTextContent('2D');
 
     rerender(
       <ReticulumMessageExpiryButton
@@ -73,7 +73,7 @@ describe('ReticulumMessageExpiryButton', () => {
 
     expect(
       screen.getByRole('button', { name: 'Set message expiry' })
-    ).toHaveTextContent('24');
+    ).toHaveTextContent('1D');
 
     rerender(
       <ReticulumMessageExpiryButton
@@ -83,7 +83,7 @@ describe('ReticulumMessageExpiryButton', () => {
     );
     expect(
       screen.getByRole('button', { name: 'Set message expiry' })
-    ).toHaveTextContent('72');
+    ).toHaveTextContent('3D');
 
     rerender(
       <ReticulumMessageExpiryButton
