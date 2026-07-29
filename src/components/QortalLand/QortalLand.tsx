@@ -3402,6 +3402,7 @@ export function QortalLand({
 
   const landVoiceCall = useVoiceCall({
     callApi: landCallApi,
+    callApiSignsSignals: true,
     skipSystemReadiness: true,
     skipDirectFriendValidation: true,
     getPeerPublicKey: (address) => landCallPeerPublicKeysRef.current.get(address),
@@ -4736,25 +4737,6 @@ export function QortalLand({
     sessionId,
   ]);
 
-  const signLandCallFields = useCallback(
-    async (fields: Record<string, unknown>) => {
-      if (!userInfo?.publicKey) {
-        throw new Error('Missing local public key');
-      }
-      const response = await window.sendMessage?.('signPresenceMessage', fields, 10_000) as
-        | { signature?: string; error?: string }
-        | undefined;
-      if (!response?.signature || response.error) {
-        throw new Error(response?.error || 'Unable to sign QortalLand call');
-      }
-      return {
-        signature: response.signature,
-        publicKey: userInfo.publicKey,
-      };
-    },
-    [userInfo?.publicKey]
-  );
-
   const startLandCall = useCallback(
     (target: LandActionTarget) => {
       const currentTarget = resolveCurrentLandActionTarget(target);
@@ -4771,12 +4753,7 @@ export function QortalLand({
       );
       pendingLandCallTargetRef.current = currentTarget;
       setActionTarget(null);
-      setActiveLandCallPeerAddress(currentTarget.authorAddress);
-      void landVoiceCall.initiateCall(
-        currentTarget.authorAddress,
-        chatId,
-        signLandCallFields
-      );
+      void landVoiceCall.initiateCall(currentTarget.authorAddress, chatId);
     },
     [
       isAddressInLandCall,
@@ -4784,7 +4761,6 @@ export function QortalLand({
       myAddress,
       recordLandActivity,
       resolveCurrentLandActionTarget,
-      signLandCallFields,
     ]
   );
 
@@ -5155,29 +5131,20 @@ export function QortalLand({
           Boolean(activeLandCallIdRef.current) ||
           landGameActiveRef.current;
         if (localBusy) {
-          void (async () => {
-            const timestamp = Date.now();
-            const signed = await signLandCallFields({
-              type: 'CALL_REJECT',
-              callId,
-              timestamp,
-            });
-            await sendLandCallSignal({
-              callType: 'reject',
-              callId,
-              fromAddress: myAddress,
-              toAddress: fromAddress,
-              chatId,
-              fromPublicKey: signed.publicKey,
-              signature: signed.signature,
-              reason: 'busy',
-              roomId: currentRoomRef.current,
-              sourceSessionId: peer.sourceSessionId,
-              targetSessionId: peer.targetSessionId,
-              targetDestinationHash: peer.targetDestinationHash,
-              timestamp,
-            });
-          })().catch(() => {});
+          const timestamp = Date.now();
+          void sendLandCallSignal({
+            callType: 'reject',
+            callId,
+            fromAddress: myAddress,
+            toAddress: fromAddress,
+            chatId,
+            reason: 'busy',
+            roomId: currentRoomRef.current,
+            sourceSessionId: peer.sourceSessionId,
+            targetSessionId: peer.targetSessionId,
+            targetDestinationHash: peer.targetDestinationHash,
+            timestamp,
+          }).catch(() => {});
           return;
         }
         landCallPeersRef.current.set(callId, peer);
@@ -5261,7 +5228,6 @@ export function QortalLand({
     myAddress,
     queuePrimaryNameLookups,
     sendLandCallSignal,
-    signLandCallFields,
     touchLandCallPresence,
     touchLandGamePresence,
     sessionId,

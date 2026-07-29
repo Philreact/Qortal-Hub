@@ -543,8 +543,7 @@ export function shouldRefreshParticipantFromVerifiedJoin(opts: {
   const currentGeneration = opts.currentJoinGeneration;
   const incomingGeneration = opts.incomingJoinGeneration;
   const currentIsSessionAware =
-    typeof currentGeneration === 'number' &&
-    Number.isFinite(currentGeneration);
+    typeof currentGeneration === 'number' && Number.isFinite(currentGeneration);
   const incomingIsSessionAware =
     typeof incomingGeneration === 'number' &&
     Number.isFinite(incomingGeneration);
@@ -2315,6 +2314,14 @@ export class GroupCallManager extends EventEmitter {
   ): string | null {
     if (roomId) {
       const room = this.rooms.get(roomId);
+      const participantHash = room?.participants
+        .get(address)
+        ?.reticulumDestinationHash?.trim()
+        .toLowerCase();
+      if (participantHash && isRnsDestinationHashHex(participantHash)) {
+        this.rememberReticulumPeerPresenceHash(address, participantHash);
+        return participantHash;
+      }
       const pinned = room?.dmVoicePeerDestinationHash;
       if (
         roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
@@ -2325,12 +2332,18 @@ export class GroupCallManager extends EventEmitter {
         return pinned;
       }
     }
-    for (const room of this.rooms.values()) {
-      const p = room.participants.get(address);
-      if (p?.reticulumDestinationHash) {
-        const h = p.reticulumDestinationHash.trim().toLowerCase();
-        this.rememberReticulumPeerPresenceHash(address, h);
-        return h;
+    // A participant record is authoritative only for its own room. Borrowing
+    // one from another room can select a different laptop logged into the same
+    // account. Cross-room lookup is retained only for callers with no room
+    // context; room-scoped callers fall back to fresh presence discovery.
+    if (!roomId) {
+      for (const room of this.rooms.values()) {
+        const p = room.participants.get(address);
+        if (p?.reticulumDestinationHash) {
+          const h = p.reticulumDestinationHash.trim().toLowerCase();
+          this.rememberReticulumPeerPresenceHash(address, h);
+          return h;
+        }
       }
     }
     const route = this.presence.getRouteForAddress(address);
@@ -4666,7 +4679,9 @@ export class GroupCallManager extends EventEmitter {
     /** True only for the user's initial join; recovery reannouncements omit it. */
     takeover = false,
     /** Exact peer endpoint selected by QortalLand's signed call handshake. */
-    dmVoicePeerDestinationHash?: string
+    dmVoicePeerDestinationHash?: string,
+    /** Set only by main after resolving an active authenticated CallManager record. */
+    dmVoicePeerDestinationHashVerifiedByCall = false
   ): { callSessionId: string; mediaSessionGeneration: number } {
     this.clearReticulumOverlayLogicalDedupeForRoomLifecycle(roomId, 'join');
     if (this.shouldRejectLocalJoinAtParticipantCap(roomId, localAddress)) {
@@ -4722,16 +4737,18 @@ export class GroupCallManager extends EventEmitter {
       const peerAddress = directParticipants.find(
         (address) => address !== localAddress
       );
-      const verified = peerAddress
-        ? this.presence
-            .getRoutesForAddress(peerAddress)
-            .some(
-              (route) =>
-                route.kind === 'reticulum' &&
-                route.destinationHash.trim().toLowerCase() ===
-                  normalizedDmVoicePeerDestinationHash
-            )
-        : false;
+      const verified =
+        dmVoicePeerDestinationHashVerifiedByCall ||
+        (peerAddress
+          ? this.presence
+              .getRoutesForAddress(peerAddress)
+              .some(
+                (route) =>
+                  route.kind === 'reticulum' &&
+                  route.destinationHash.trim().toLowerCase() ===
+                    normalizedDmVoicePeerDestinationHash
+              )
+          : false);
       if (!verified) {
         throw new Error('unverified_dm_voice_peer_destination');
       }
@@ -4776,8 +4793,7 @@ export class GroupCallManager extends EventEmitter {
           : {}),
         ...(normalizedDmVoicePeerDestinationHash
           ? {
-              dmVoicePeerDestinationHash:
-                normalizedDmVoicePeerDestinationHash,
+              dmVoicePeerDestinationHash: normalizedDmVoicePeerDestinationHash,
             }
           : {}),
       };
@@ -4791,8 +4807,7 @@ export class GroupCallManager extends EventEmitter {
         room.dmVoiceAudioLinkRole = normalizedDmVoiceAudioLinkRole;
       }
       if (normalizedDmVoicePeerDestinationHash) {
-        room.dmVoicePeerDestinationHash =
-          normalizedDmVoicePeerDestinationHash;
+        room.dmVoicePeerDestinationHash = normalizedDmVoicePeerDestinationHash;
       }
     }
     const rk =
@@ -4804,9 +4819,8 @@ export class GroupCallManager extends EventEmitter {
       joinGeneration,
       takeover
     );
-    const logicalJoinGeneration = decodeGroupCallLogicalJoinGeneration(
-      signedJoinGeneration
-    );
+    const logicalJoinGeneration =
+      decodeGroupCallLogicalJoinGeneration(signedJoinGeneration);
     const effectiveTakeover =
       takeover ||
       (typeof signedJoinGeneration === 'number' && signedJoinGeneration < 0);

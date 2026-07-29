@@ -1157,7 +1157,8 @@ declare global {
         joinRkSignature?: string,
         dmVoiceAudioLinkRole?: 'opener' | 'waiter',
         takeover?: boolean,
-        dmVoicePeerDestinationHash?: string
+        dmVoicePeerDestinationHash?: string,
+        dmVoiceCallId?: string
       ) => Promise<{
         success: boolean;
         error?: string;

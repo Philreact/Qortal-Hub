@@ -229,6 +229,7 @@ export async function joinDirectVoiceReticulumRoom(opts: {
   reticulumIdentityPublicKeyBase64?: string | null;
   dmVoiceAudioLinkRole?: 'opener' | 'waiter';
   peerDestinationHash?: string;
+  callId?: string;
 }): Promise<{
   success: boolean;
   callSessionId?: string;
@@ -267,9 +268,15 @@ export async function joinDirectVoiceReticulumRoom(opts: {
     signatures.joinRkSig,
     opts.dmVoiceAudioLinkRole,
   ] as const;
-  const res = opts.peerDestinationHash
-    ? await gc.join(...baseArgs, undefined, opts.peerDestinationHash)
-    : await gc.join(...baseArgs);
+  const res =
+    opts.peerDestinationHash || opts.callId
+      ? await gc.join(
+          ...baseArgs,
+          undefined,
+          opts.peerDestinationHash,
+          opts.callId
+        )
+      : await gc.join(...baseArgs);
   return res;
 }
 

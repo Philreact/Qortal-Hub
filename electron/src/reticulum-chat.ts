@@ -726,6 +726,16 @@ export type ReticulumLandSessionRoute = {
   expiresAt: number;
 };
 
+type ReticulumLandCallMediaRoute = {
+  groupId: number;
+  callId: string;
+  chatId: string;
+  localAddress: string;
+  remoteAddress: string;
+  peerDestinationHash: string;
+  updatedAt: number;
+};
+
 type ReticulumLocalLandAuthSession = {
   authorAddress: string;
   groupId: number;
@@ -1980,6 +1990,8 @@ const RETICULUM_LAND_AUTH_REQ_RESPONSE_MS = 3_000;
 const RETICULUM_LAND_AUTH_REQ_MAX = 4096;
 const RETICULUM_LAND_STATE_SEQUENCE_MAX = 4096;
 const RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS = 30_000;
+const RETICULUM_LAND_CALL_MEDIA_ROUTE_TTL_MS = 24 * 60 * 60_000;
+const RETICULUM_LAND_CALL_MEDIA_ROUTE_MAX = 512;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 2 * 60_000;
 const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MS = [
   5_000,
@@ -2061,6 +2073,8 @@ const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_MAX = 4096;
 const RETICULUM_CHAT_READ_SYNC_ACK_MAX = 20_000;
+const RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS = 1_000;
+const RETICULUM_CHAT_READ_SYNC_RETRY_MAX_MS = 30_000;
 const RETICULUM_CHAT_CONTROL_RETRY_MS = 3_000;
 const RETICULUM_CHAT_CONTROL_RETRY_TICK_MS = 250;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX_ATTEMPTS = 10;
@@ -2681,12 +2695,12 @@ export function verifyReticulumLandCallV2Wire(
     // target session in its own field so transport cannot overwrite signed
     // call data after the sender has verified it.
     const targetSessionId = expandLandSessionIdFromWire(wire.j);
-    const sourceDestinationHash = String(
-      endpoints?.sourceDestinationHash || ''
-    ).trim().toLowerCase();
-    const targetDestinationHash = String(
-      endpoints?.targetDestinationHash || ''
-    ).trim().toLowerCase();
+    const sourceDestinationHash = String(endpoints?.sourceDestinationHash || '')
+      .trim()
+      .toLowerCase();
+    const targetDestinationHash = String(endpoints?.targetDestinationHash || '')
+      .trim()
+      .toLowerCase();
     const fromPublicKey = typeof wire.p === 'string' ? wire.p.trim() : '';
     const signature = typeof wire.z === 'string' ? wire.z.trim() : '';
     const reason = typeof wire.n === 'string' ? wire.n.trim().slice(0, 32) : '';
@@ -6409,6 +6423,12 @@ export class ReticulumChatManager extends EventEmitter {
   private localLandAuthGroupGenerations = new Map<number, number>();
   private landAuthSessions = new Map<string, ReticulumLandAuthSession>();
   private landSessionRoutes = new Map<string, ReticulumLandSessionRoute>();
+  /**
+   * Exact peer selected by an authenticated Qortal Land call exchange. This is
+   * deliberately separate from account-wide presence: another installation of
+   * the same account must not become the media endpoint for an existing call.
+   */
+  private landCallMediaRoutes = new Map<string, ReticulumLandCallMediaRoute>();
   private latestVerifiedLandStateSequences = new Map<string, number>();
   private latestVerifiedLandStates = new Map<
     string,
@@ -6539,6 +6559,8 @@ export class ReticulumChatManager extends EventEmitter {
   private pendingReadSync = new Map<string, ReticulumChatPendingReadSync>();
   private readSyncFlushScheduled = false;
   private readSyncFlushActive = false;
+  private readSyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readSyncRetryDelayMs = RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS;
   private readSyncLastSignedAt = new Map<string, number>();
   private readSyncPeerAcks = new Map<string, number>();
   private readSyncReplayActive = false;
@@ -7290,6 +7312,10 @@ export class ReticulumChatManager extends EventEmitter {
 
   close(): void {
     this.isClosed = true;
+    if (this.readSyncRetryTimer) clearTimeout(this.readSyncRetryTimer);
+    this.readSyncRetryTimer = null;
+    this.pendingReadSync.clear();
+    this.readSyncFlushScheduled = false;
     this.flushPublicGroupActivityStates();
     if (this.publicGroupActivityRefreshTimer) {
       clearTimeout(this.publicGroupActivityRefreshTimer);
@@ -7381,6 +7407,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearLocalLandAuthSessions();
     this.landAuthSessions.clear();
     this.landSessionRoutes.clear();
+    this.landCallMediaRoutes.clear();
     this.latestVerifiedLandStateSequences.clear();
     this.latestVerifiedLandStates.clear();
     this.latestVerifiedLandActionSequences.clear();
@@ -9115,12 +9142,109 @@ export class ReticulumChatManager extends EventEmitter {
     return `${groupId}:${authorAddress.trim()}:${sessionId.trim()}`;
   }
 
+  private landCallMediaRouteKey(
+    callId: string,
+    chatId: string,
+    localAddress: string
+  ): string {
+    return JSON.stringify([callId.trim(), chatId.trim(), localAddress.trim()]);
+  }
+
+  private pruneLandCallMediaRoutes(now = this.now()): void {
+    const cutoff = now - RETICULUM_LAND_CALL_MEDIA_ROUTE_TTL_MS;
+    for (const [key, route] of this.landCallMediaRoutes) {
+      if (route.updatedAt <= cutoff) this.landCallMediaRoutes.delete(key);
+    }
+    if (this.landCallMediaRoutes.size <= RETICULUM_LAND_CALL_MEDIA_ROUTE_MAX)
+      return;
+    const excess =
+      this.landCallMediaRoutes.size - RETICULUM_LAND_CALL_MEDIA_ROUTE_MAX;
+    const oldest = [...this.landCallMediaRoutes.entries()]
+      .sort((a, b) => a[1].updatedAt - b[1].updatedAt)
+      .slice(0, excess);
+    for (const [key] of oldest) this.landCallMediaRoutes.delete(key);
+  }
+
+  private retainLandCallMediaRoute(input: {
+    groupId: number;
+    callId: string;
+    localAddress: string;
+    remoteAddress: string;
+    peerDestinationHash: string;
+  }): void {
+    const callId = input.callId.trim();
+    const localAddress = input.localAddress.trim();
+    const remoteAddress = input.remoteAddress.trim();
+    const peerDestinationHash = input.peerDestinationHash.trim().toLowerCase();
+    const chatId = buildLandDirectCallChatId(localAddress, remoteAddress);
+    if (
+      !callId ||
+      !localAddress ||
+      !remoteAddress ||
+      !peerDestinationHash ||
+      !chatId
+    ) {
+      return;
+    }
+    this.pruneLandCallMediaRoutes();
+    this.landCallMediaRoutes.set(
+      this.landCallMediaRouteKey(callId, chatId, localAddress),
+      {
+        groupId: input.groupId,
+        callId,
+        chatId,
+        localAddress,
+        remoteAddress,
+        peerDestinationHash,
+        updatedAt: this.now(),
+      }
+    );
+    this.pruneLandCallMediaRoutes();
+  }
+
+  private clearLandCallMediaRoute(
+    callId: string,
+    localAddress: string,
+    remoteAddress: string
+  ): void {
+    const chatId = buildLandDirectCallChatId(localAddress, remoteAddress);
+    this.landCallMediaRoutes.delete(
+      this.landCallMediaRouteKey(callId, chatId, localAddress)
+    );
+  }
+
+  /**
+   * Return the exact endpoint authenticated by a signed Qortal Land call.
+   * The main-process media join consumes this record instead of trusting a
+   * renderer hint or an account-wide presence route.
+   */
+  getActiveLandCallMediaPeerDestinationHash(
+    chatId: string,
+    localAddress: string,
+    callId: string
+  ): string | null {
+    this.pruneLandCallMediaRoutes();
+    const route = this.landCallMediaRoutes.get(
+      this.landCallMediaRouteKey(callId, chatId, localAddress)
+    );
+    if (
+      !route ||
+      route.chatId !== chatId.trim() ||
+      route.localAddress !== localAddress.trim() ||
+      route.callId !== callId.trim()
+    ) {
+      return null;
+    }
+    return route.peerDestinationHash;
+  }
+
   private pruneLandSessionRoutes(now = this.now()): void {
     for (const [key, route] of this.landSessionRoutes) {
       if (route.expiresAt <= now) this.landSessionRoutes.delete(key);
     }
     if (this.landSessionRoutes.size <= RETICULUM_LAND_AUTH_SESSION_MAX) return;
-    const excess = this.landSessionRoutes.size - RETICULUM_LAND_AUTH_SESSION_MAX;
+    const excess =
+      this.landSessionRoutes.size - RETICULUM_LAND_AUTH_SESSION_MAX;
     const oldest = [...this.landSessionRoutes.entries()]
       .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
       .slice(0, excess);
@@ -9470,19 +9594,20 @@ export class ReticulumChatManager extends EventEmitter {
     );
     const result = await this.sendLocalGroupLiveControl(wire);
     if (result.ok !== true) {
-      this.localLandAuthSentAt.delete(key);
-      throw new Error(
-        result.error || result.reason || 'QortalLand auth send failed'
+      if (!this.shouldRetryControlSend(wire, result.reason)) {
+        this.localLandAuthSentAt.delete(key);
+        throw new Error(
+          result.error || result.reason || 'QortalLand auth send failed'
+        );
+      }
+      loggerWarn(
+        `[ReticulumChat] land_auth_delivery_queued group=${groupId} session=${sessionId} reason=${result.error ?? result.reason}`
       );
     }
     // Route binding is deliberately separate from the legacy Land auth wire.
     // Older clients retain normal Land visibility, while endpoint-aware
     // clients can securely target this exact runtime session.
-    void this.announceLocalLandSessionRoute(
-      groupId,
-      authorAddress,
-      sessionId
-    );
+    void this.announceLocalLandSessionRoute(groupId, authorAddress, sessionId);
   }
 
   private async announceLocalLandSessionRoute(
@@ -9517,7 +9642,11 @@ export class ReticulumChatManager extends EventEmitter {
       z: signed.signature,
     };
     const route = verifyReticulumLandSessionRouteWire(wire, timestamp);
-    if (!route || route.authorAddress !== authorAddress || !wireFitsReticulum(wire))
+    if (
+      !route ||
+      route.authorAddress !== authorAddress ||
+      !wireFitsReticulum(wire)
+    )
       return;
     this.landSessionRoutes.set(
       this.landAuthSessionKey(groupId, authorAddress, sessionId),
@@ -9525,8 +9654,9 @@ export class ReticulumChatManager extends EventEmitter {
     );
     const result = await this.sendLocalGroupLiveControl(wire);
     if (result.ok !== true) {
+      const queued = this.shouldRetryControlSend(wire, result.reason);
       loggerWarn(
-        `[ReticulumChat] land_session_route_send_failed group=${groupId} session=${sessionId} reason=${result.error ?? result.reason}`
+        `[ReticulumChat] land_session_route_${queued ? 'delivery_queued' : 'send_failed'} group=${groupId} session=${sessionId} reason=${result.error ?? result.reason}`
       );
     }
   }
@@ -10080,6 +10210,17 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] land_call_v2_send group=${groupId} type=${callType} call=${callId.slice(0, 12)} target_session=${targetSessionId} result=${result.ok === true ? 'ok' : result.reason}`
       );
       if (result.ok === true) {
+        if (callType === 'request' || callType === 'accept') {
+          this.retainLandCallMediaRoute({
+            groupId,
+            callId,
+            localAddress: fromAddress,
+            remoteAddress: toAddress,
+            peerDestinationHash: targetDestinationHash,
+          });
+        } else if (callType === 'reject' || callType === 'hangup') {
+          this.clearLandCallMediaRoute(callId, fromAddress, toAddress);
+        }
         this.applyLandCall(groupId, wire, {
           sourceDestinationHash,
           targetDestinationHash,
@@ -11355,6 +11496,10 @@ export class ReticulumChatManager extends EventEmitter {
     const signed = await signer(
       buildReticulumChatReadSyncSignedFields(base)
     ).catch(() => null);
+    // The signer may outlive the manager during shutdown. Never resume into
+    // SQLite after close; the unsigned watermark remains in the durable
+    // pending table and will be picked up by the next manager instance.
+    if (this.isClosed) return null;
     if (!signed || signed.authorAddress !== pending.ownerAddress) return null;
     const state: ReticulumChatDeviceReadState = {
       ownerAddress: pending.ownerAddress,
@@ -11498,7 +11643,16 @@ export class ReticulumChatManager extends EventEmitter {
         ];
         this.pendingReadSync.delete(key);
         const state = await this.buildSignedReadState(pending);
-        if (!state) continue;
+        if (this.isClosed) return;
+        if (!state) {
+          // Signing can fail transiently while an account is unlocking or the
+          // signer is being rebound. The pending row is already durable; use
+          // one bounded backoff timer instead of spinning or requiring a
+          // restart to finish synchronization.
+          this.scheduleReadSyncRetry();
+          continue;
+        }
+        this.readSyncRetryDelayMs = RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS;
         this.db.upsertDeviceReadState(state);
         this.db.deletePendingDeviceReadState(
           state.ownerAddress,
@@ -11517,6 +11671,29 @@ export class ReticulumChatManager extends EventEmitter {
         if (pending) this.queueReadSync(pending);
       }
     }
+  }
+
+  private scheduleReadSyncRetry(): void {
+    if (this.isClosed || !this.signLocalFields || this.readSyncRetryTimer)
+      return;
+    const delay = this.readSyncRetryDelayMs;
+    this.readSyncRetryDelayMs = Math.min(
+      RETICULUM_CHAT_READ_SYNC_RETRY_MAX_MS,
+      Math.max(
+        RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS,
+        this.readSyncRetryDelayMs * 2
+      )
+    );
+    this.readSyncRetryTimer = setTimeout(() => {
+      this.readSyncRetryTimer = null;
+      if (this.isClosed) return;
+      if (this.readSyncFlushActive) {
+        this.scheduleReadSyncRetry();
+        return;
+      }
+      this.hydrateAllPendingReadSync();
+    }, delay);
+    this.readSyncRetryTimer.unref?.();
   }
 
   private hydratePendingReadSync(ownerAddress: string): void {
@@ -11554,7 +11731,10 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private hydrateAllPendingReadSync(): void {
-    if (this.readSyncFlushActive) return;
+    if (this.readSyncFlushActive) {
+      this.scheduleReadSyncRetry();
+      return;
+    }
     for (const ownerAddress of new Set([
       ...this.localDmAddresses,
       ...this.localGroupAddresses.values(),
@@ -14257,11 +14437,7 @@ export class ReticulumChatManager extends EventEmitter {
       // verified account binding. This supports multiple authenticated local
       // accounts without allowing one account's endpoint to ACK another's.
       for (const candidate of this.localDmAddresses) {
-        const state = this.db.getDeviceReadState(
-          candidate,
-          scopeType,
-          scopeId
-        );
+        const state = this.db.getDeviceReadState(candidate, scopeType, scopeId);
         if (
           state &&
           this.getVerifiedDmPeerHashes(candidate).includes(sourcePeer)
@@ -14280,11 +14456,7 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       return;
     }
-    const state = this.db.getDeviceReadState(
-      ownerAddress,
-      scopeType,
-      scopeId
-    );
+    const state = this.db.getDeviceReadState(ownerAddress, scopeType, scopeId);
     if (!state || state.upToTimestamp !== upToTimestamp) return;
 
     this.readSyncPeerAcks.set(
@@ -15536,8 +15708,14 @@ export class ReticulumChatManager extends EventEmitter {
           h: 0,
         } as ReticulumChatWire)
       : wire;
+    // Land auth and its signed session route are low-frequency prerequisites
+    // for exact-device calls, games, and proximity voice. Retry those bounded
+    // controls across brief route/bridge loss. Movement, typing, and other
+    // high-frequency live state deliberately remain best-effort.
+    const useRetryQueue = wire.k === 'land_auth' || wire.k === 'land_route_v1';
     return this.sendGroupRoutedControl(groupId, routedWire, {
       fallbackFanout: true,
+      useRetryQueue,
       context: `local-${wire.k}`,
     });
   }
@@ -15729,11 +15907,7 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (!isMember || this.isClosed) return;
     if (
-      this.shouldDropDuplicateInboundControlWire(
-        wire,
-        route.groupId,
-        peerHash
-      )
+      this.shouldDropDuplicateInboundControlWire(wire, route.groupId, peerHash)
     ) {
       return;
     }
@@ -16192,17 +16366,11 @@ export class ReticulumChatManager extends EventEmitter {
       ) {
         return;
       }
-      if (
-        this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)
-      ) {
+      if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash)) {
         return;
       }
       const localTarget = this.localLandAuthSessions.get(
-        this.landAuthSessionKey(
-          groupId,
-          call.toAddress,
-          call.targetSessionId
-        )
+        this.landAuthSessionKey(groupId, call.toAddress, call.targetSessionId)
       );
       if (!localTarget || localTarget.authorAddress !== call.toAddress) return;
       const [fromIsMember, toIsMember] = await Promise.all([
@@ -16210,6 +16378,21 @@ export class ReticulumChatManager extends EventEmitter {
         this.isValidatedGroupMember(groupId, call.toAddress),
       ]);
       if (!fromIsMember || !toIsMember || this.isClosed) return;
+      if (call.callType === 'request' || call.callType === 'accept') {
+        this.retainLandCallMediaRoute({
+          groupId,
+          callId: call.callId,
+          localAddress: call.toAddress,
+          remoteAddress: call.fromAddress,
+          peerDestinationHash: sourcePeer,
+        });
+      } else if (call.callType === 'reject' || call.callType === 'hangup') {
+        this.clearLandCallMediaRoute(
+          call.callId,
+          call.toAddress,
+          call.fromAddress
+        );
+      }
       loggerLog(
         `[ReticulumChat] land_call_v2_received group=${groupId} type=${call.callType} call=${call.callId.slice(0, 12)} source_session=${call.sourceSessionId} target_session=${call.targetSessionId}`
       );
@@ -32165,11 +32348,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
   ): void {
     if (wire.k === 'lc2') {
-      const call = verifyReticulumLandCallV2Wire(
-        wire,
-        this.now(),
-        endpoints
-      );
+      const call = verifyReticulumLandCallV2Wire(wire, this.now(), endpoints);
       if (!call || call.groupId !== groupId) return;
       this.emit('landCall', {
         groupId,
@@ -32818,6 +32997,8 @@ export class ReticulumChatManager extends EventEmitter {
 
   private isRetryableControlWire(wire: ReticulumChatWire): boolean {
     switch (wire.k) {
+      case 'land_auth':
+      case 'land_route_v1':
       case 'group_state_digest_v3':
       case 'feed_req':
       case 'range_req':

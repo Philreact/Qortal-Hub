@@ -241,6 +241,40 @@ describe('Reticulum manager late bridge binding', () => {
     manager.stop();
   });
 
+  it('keeps a routed call request alive through a brief bridge readiness flap', async () => {
+    vi.useFakeTimers();
+    const presence = presenceStub();
+    presence.getRouteForAddress.mockReturnValue({
+      kind: 'reticulum',
+      destinationHash: 'a'.repeat(32),
+    });
+    const bridge = new CallBridgeStub();
+    let ready = false;
+    vi.spyOn(bridge, 'getState').mockImplementation(() =>
+      ready ? 'ready' : ('starting' as any)
+    );
+    const manager = new CallManager(presence as any, bridge as any);
+
+    manager.start();
+    await expect(
+      manager.initiateCall(
+        'Q-peer',
+        'direct:Q-local:Q-peer',
+        'Q-local',
+        'sig',
+        'pub',
+        'call-bridge-flap',
+        Date.now()
+      )
+    ).resolves.toBe('call-bridge-flap');
+    expect(bridge.fanoutCallDetailed).not.toHaveBeenCalled();
+
+    ready = true;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(1);
+    manager.stop();
+  });
+
   it('repeats CALL_ACCEPT so the caller is not stuck waiting after one lost packet', async () => {
     vi.useFakeTimers();
     const bridge = new CallBridgeStub();
@@ -260,9 +294,56 @@ describe('Reticulum manager late bridge binding', () => {
 
     manager.acceptCall('call-accept-repeat', 'sig', 'pub', Date.now());
 
-    expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(1);
+    expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(1);
+    expect(bridge.sendCallDetailed).toHaveBeenLastCalledWith(
+      'peer-hash',
+      expect.objectContaining({ t: 'CA', c: 'call-accept-repeat' })
+    );
     await vi.advanceTimersByTimeAsync(350 * 4);
-    expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(5);
+    expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(5);
+    manager.stop();
+  });
+
+  it('pins an inbound call reply to the authenticated source device instead of the preferred account route', () => {
+    const presence = presenceStub();
+    presence.getRouteForAddress.mockReturnValue({
+      kind: 'reticulum',
+      destinationHash: 'other-laptop',
+    });
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presence as any, bridge as any);
+    manager.setLocalAddresses(['Q-local']);
+    manager.start();
+
+    (manager as any).applyVerifiedIncomingRequest(
+      {
+        type: 'CALL_REQUEST',
+        callId: 'call-source-device',
+        fromAddress: 'Q-peer',
+        fromPublicKey: 'peer-public-key',
+        chatId: 'direct:Q-local:Q-peer',
+        signature: 'request-signature',
+        timestamp: Date.now(),
+      },
+      { senderDestinationHash: 'calling-laptop' }
+    );
+
+    manager.acceptCall(
+      'call-source-device',
+      'accept-signature',
+      'local-public-key',
+      Date.now()
+    );
+
+    expect(bridge.sendCallDetailed).toHaveBeenCalledWith(
+      'calling-laptop',
+      expect.objectContaining({ t: 'CA', c: 'call-source-device' })
+    );
+    expect(bridge.sendCallDetailed).not.toHaveBeenCalledWith(
+      'other-laptop',
+      expect.anything()
+    );
+    expect(bridge.fanoutCallDetailed).not.toHaveBeenCalled();
     manager.stop();
   });
 
@@ -270,9 +351,11 @@ describe('Reticulum manager late bridge binding', () => {
     const bridge = new CallBridgeStub();
     const manager = new CallManager(presenceStub() as any, bridge as any);
     (manager as any).verifyPool = {
+      start: vi.fn(),
       verify: vi.fn(async () => true),
       stop: vi.fn(),
     };
+    manager.start();
     const accepted: unknown[] = [];
     manager.on('call:accepted', (payload) => accepted.push(payload));
     (manager as any).activeCalls.set('call-multi-accept', {
@@ -329,6 +412,58 @@ describe('Reticulum manager late bridge binding', () => {
     );
     await Promise.resolve();
     expect(accepted).toHaveLength(1);
+    manager.stop();
+  });
+
+  it('retries cancellation to other ringing devices after a transient send failure', async () => {
+    vi.useFakeTimers();
+    const bridge = new CallBridgeStub();
+    bridge.sendCallDetailed
+      .mockResolvedValueOnce({ ok: false as const, reason: 'bridge-overloaded' })
+      .mockResolvedValue({ ok: true as const });
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    (manager as any).verifyPool = {
+      start: vi.fn(),
+      verify: vi.fn(async () => true),
+      stop: vi.fn(),
+    };
+    manager.start();
+    (manager as any).activeCalls.set('call-cancel-retry', {
+      callId: 'call-cancel-retry',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-a',
+      invitedReticulumPeerHashes: new Set(['peer-a', 'peer-b']),
+      rejectedReticulumPeerHashes: new Set(),
+      cancellationSignature: 'hangup-signature',
+      cancellationPublicKey: 'local-public-key',
+      cancellationTimestamp: 123,
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    (manager as any).handleAccept(
+      {
+        type: 'CALL_ACCEPT',
+        callId: 'call-cancel-retry',
+        fromPublicKey: 'peer-public-key',
+        signature: 'accept-signature',
+        timestamp: 124,
+      },
+      'peer-a'
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(2);
+    expect(bridge.sendCallDetailed).toHaveBeenLastCalledWith(
+      'peer-b',
+      expect.objectContaining({ t: 'CH', c: 'call-cancel-retry' })
+    );
     manager.stop();
   });
 
@@ -402,6 +537,59 @@ describe('Reticulum manager late bridge binding', () => {
     expect(manager.getActiveOutboundAcceptedPayloads()).toEqual([
       { callId: 'call-active-outbound' },
     ]);
+  });
+
+  it('exposes only the authenticated active device route to the media join path', () => {
+    const manager = new CallManager(presenceStub() as any, null);
+    const chatId = 'direct:Q-local:Q-peer';
+
+    (manager as any).activeCalls.set('active-outbound', {
+      callId: 'active-outbound',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'initial-route',
+      acceptedReticulumPeerHash: 'answering-laptop',
+      chatId,
+      direction: 'outbound',
+      state: 'active',
+      startedAt: Date.now(),
+    });
+
+    expect(
+      manager.getActiveMediaPeerDestinationHash(
+        chatId,
+        'Q-local',
+        'active-outbound'
+      )
+    ).toBe('answering-laptop');
+    expect(
+      manager.getActiveMediaPeerDestinationHash(
+        chatId,
+        'Q-local',
+        'different-call'
+      )
+    ).toBeNull();
+    expect(
+      manager.getActiveMediaPeerDestinationHash(chatId, 'Q-other-account')
+    ).toBeNull();
+
+    (manager as any).activeCalls.set('active-inbound', {
+      callId: 'active-inbound',
+      localAddress: 'Q-local-2',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'calling-laptop',
+      chatId: 'direct:Q-local-2:Q-peer',
+      direction: 'inbound',
+      state: 'active',
+      startedAt: Date.now(),
+    });
+
+    expect(
+      manager.getActiveMediaPeerDestinationHash(
+        'direct:Q-local-2:Q-peer',
+        'Q-local-2'
+      )
+    ).toBe('calling-laptop');
   });
 
   it('does not drop a compact inbound direct call before local addresses are registered', () => {
@@ -505,6 +693,36 @@ describe('Reticulum manager late bridge binding', () => {
         fromAddress: caller,
         chatId: `direct:${[local, caller].sort().join(':')}`,
       })
+    );
+    manager.stop();
+  });
+
+  it('uses the authenticated direct link peer for legacy call frames without a stamped source', () => {
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    const handleRequestSpy = vi
+      .spyOn(manager as any, 'handleRequestReticulum')
+      .mockImplementation(() => {});
+
+    manager.start();
+    bridge.emit(
+      'call-message',
+      {
+        t: 'CR',
+        c: 'legacy-direct-call',
+        a: 'Q-peer',
+        k: 'peer-public-key',
+        g: 'peer-signature',
+        m: Date.now(),
+        U: 'Q-local',
+      },
+      '',
+      'authenticated-link-peer'
+    );
+
+    expect(handleRequestSpy).toHaveBeenCalledWith(
+      'authenticated-link-peer',
+      expect.objectContaining({ callId: 'legacy-direct-call' })
     );
     manager.stop();
   });

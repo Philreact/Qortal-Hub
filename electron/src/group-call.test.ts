@@ -55,6 +55,53 @@ describe('group-call signed join generation transport', () => {
 });
 
 describe('group-call multi-device participant ownership', () => {
+  function routeManager(): any {
+    const manager = Object.create(GroupCallManager.prototype) as any;
+    manager.reticulumPeerPresenceHashByAddress = new Map();
+    manager.reticulumAddressByPeerPresenceHash = new Map();
+    manager.promoteAwaitingRouteReticulumAudio = vi.fn();
+    manager.presence = {
+      getRouteForAddress: vi.fn(() => ({
+        kind: 'reticulum',
+        destinationHash: 'c'.repeat(32),
+      })),
+    };
+    manager.rooms = new Map([
+      [
+        'room-a',
+        {
+          participants: new Map([
+            ['Q-peer', { reticulumDestinationHash: 'a'.repeat(32) }],
+          ]),
+        },
+      ],
+      [
+        'room-b',
+        {
+          participants: new Map([
+            ['Q-peer', { reticulumDestinationHash: 'b'.repeat(32) }],
+          ]),
+        },
+      ],
+      ['room-without-peer', { participants: new Map() }],
+    ]);
+    return manager;
+  }
+
+  it('uses the participant endpoint from the requested room', () => {
+    const manager = routeManager();
+    expect(manager.resolveReticulumPeerPresenceHash('Q-peer', 'room-b')).toBe(
+      'b'.repeat(32)
+    );
+  });
+
+  it('does not borrow a device endpoint from an unrelated room', () => {
+    const manager = routeManager();
+    expect(
+      manager.resolveReticulumPeerPresenceHash('Q-peer', 'room-without-peer')
+    ).toBe('c'.repeat(32));
+  });
+
   it('decodes the signed compact takeover generation', () => {
     expect(decodeGroupCallLogicalJoinGeneration(-8)).toBe(7);
     expect(decodeGroupCallLogicalJoinGeneration(7)).toBe(7);

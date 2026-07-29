@@ -417,6 +417,36 @@ export class CallManager extends EventEmitter {
     return out;
   }
 
+  /**
+   * Return the authenticated device selected for an active 1:1 call.
+   * This is consumed by the main-process media join path so renderer state or
+   * a later account-wide presence update cannot reroute media to another
+   * computer logged into the same account.
+   */
+  getActiveMediaPeerDestinationHash(
+    chatId: string,
+    localAddress: string,
+    callId?: string
+  ): string | null {
+    for (const call of this.activeCalls.values()) {
+      if (
+        call.state !== 'active' ||
+        call.chatId !== chatId ||
+        call.localAddress !== localAddress ||
+        (callId && call.callId !== callId)
+      ) {
+        continue;
+      }
+      const endpoint =
+        call.direction === 'outbound'
+          ? call.acceptedReticulumPeerHash
+          : call.reticulumPeerPresenceHash;
+      const normalized = endpoint?.trim().toLowerCase() ?? '';
+      if (normalized) return normalized;
+    }
+    return null;
+  }
+
   private enqueuePendingVerifiedIncomingRequest(
     env: CallRequestEnvelope,
     senderDestinationHash: string
@@ -485,7 +515,7 @@ export class CallManager extends EventEmitter {
       (route): route is Extract<PresenceRoute, { kind: 'reticulum' }> =>
         route.kind === 'reticulum'
     );
-    if (routes.length === 0 || this.reticulumBridge?.getState() !== 'ready') {
+    if (routes.length === 0) {
       loggerLog(`[Call] No Reticulum route to ${targetAddress}`);
       return null;
     }
@@ -648,17 +678,14 @@ export class CallManager extends EventEmitter {
     const localRecipient = this.localCallRecipientAddress(env);
     if (!localRecipient) return;
 
-    const presenceRoute = this.presence.getRouteForAddress(env.fromAddress);
-    const retHash =
-      presenceRoute?.kind === 'reticulum'
-        ? presenceRoute.destinationHash
-        : ctx.senderDestinationHash;
-
     const record: CallRecord = {
       callId: env.callId,
       localAddress: localRecipient,
       remoteAddress: env.fromAddress,
-      reticulumPeerPresenceHash: retHash,
+      // The authenticated ingress endpoint is the exact device that placed
+      // this call. A generic account presence route may belong to another
+      // laptop, so all replies for this interaction remain pinned here.
+      reticulumPeerPresenceHash: ctx.senderDestinationHash,
       chatId: env.chatId,
       direction: 'inbound',
       state: 'pending',
@@ -785,7 +812,10 @@ export class CallManager extends EventEmitter {
       });
   }
 
-  private handleHangup(env: CallHangupEnvelope): void {
+  private handleHangup(
+    env: CallHangupEnvelope,
+    senderDestinationHash: string
+  ): void {
     const call = this.activeCalls.get(env.callId);
     if (!call) return;
 
@@ -816,6 +846,20 @@ export class CallManager extends EventEmitter {
         }
         const c = this.activeCalls.get(env.callId);
         if (!c) return;
+        const expectedEndpoint =
+          c.direction === 'outbound'
+            ? c.acceptedReticulumPeerHash
+            : c.reticulumPeerPresenceHash;
+        if (
+          expectedEndpoint &&
+          senderDestinationHash &&
+          senderDestinationHash !== expectedEndpoint
+        ) {
+          loggerLog(
+            `[Call] Dropped CALL_HANGUP from unselected endpoint callId=${env.callId.slice(0, 8)}…`
+          );
+          return;
+        }
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
@@ -830,6 +874,12 @@ export class CallManager extends EventEmitter {
     senderDestinationHash: string,
     peerPresenceHash: string
   ): void {
+    // `r` is the original sender's stamped call destination. Direct legacy
+    // frames may omit it, in which case the authenticated link peer is the
+    // only safe fallback. Never prefer the relay/link peer when `r` exists.
+    const sourceEndpoint = (senderDestinationHash || peerPresenceHash)
+      .trim()
+      .toLowerCase();
     const overlayMeta = this.parseReticulumOverlayMeta(wire);
     if (overlayMeta) {
       if (this.hasSeenReticulumOverlayId(overlayMeta.overlayId)) return;
@@ -856,19 +906,19 @@ export class CallManager extends EventEmitter {
     if (!env) return;
 
     if (env.type === 'CALL_REQUEST') {
-      this.handleRequestReticulum(senderDestinationHash, env);
+      if (sourceEndpoint) this.handleRequestReticulum(sourceEndpoint, env);
       return;
     }
 
     switch (env.type) {
       case 'CALL_ACCEPT':
-        this.handleAccept(env, senderDestinationHash);
+        this.handleAccept(env, sourceEndpoint);
         break;
       case 'CALL_REJECT':
-        this.handleReject(env, senderDestinationHash);
+        this.handleReject(env, sourceEndpoint);
         break;
       case 'CALL_HANGUP':
-        this.handleHangup(env);
+        this.handleHangup(env, sourceEndpoint);
         break;
       default:
         break;
@@ -956,7 +1006,81 @@ export class CallManager extends EventEmitter {
   }
 
   private sendToCall(call: CallRecord, env: CallWireEnvelope): void {
-    this.sendEnvelope(call.remoteAddress, env);
+    const peers = new Set<string>();
+    if (call.direction === 'inbound') {
+      peers.add(call.reticulumPeerPresenceHash);
+    } else if (call.acceptedReticulumPeerHash) {
+      peers.add(call.acceptedReticulumPeerHash);
+    } else if (call.invitedReticulumPeerHashes?.size) {
+      for (const peer of call.invitedReticulumPeerHashes) peers.add(peer);
+    } else {
+      peers.add(call.reticulumPeerPresenceHash);
+    }
+    const wire = encodeCallWire(env);
+    if (!wireFitsReticulum(wire)) {
+      loggerWarn('[Call] Skipping pinned call send: wire exceeds limit');
+      return;
+    }
+    for (const peer of peers) {
+      const normalized = peer.trim().toLowerCase();
+      if (normalized) this.sendPinnedCallWireWhenReady(normalized, wire, 0);
+    }
+  }
+
+  private sendPinnedCallWireWhenReady(
+    peerDestinationHash: string,
+    wire: Record<string, unknown>,
+    attempt: number
+  ): void {
+    if (!this.started) return;
+    const bridge = this.reticulumBridge;
+    if (!bridge || bridge.getState() !== 'ready') {
+      if (attempt >= CALL_SEND_MAX_ATTEMPTS) {
+        loggerWarn(
+          `[Call] Abandoned pinned send after retries peer=${peerDestinationHash.slice(0, 16)}`
+        );
+        return;
+      }
+      const timer = setTimeout(
+        () =>
+          this.sendPinnedCallWireWhenReady(
+            peerDestinationHash,
+            wire,
+            attempt + 1
+          ),
+        CALL_SEND_RETRY_MS
+      );
+      timer.unref?.();
+      return;
+    }
+    void bridge
+      .sendCallDetailed(peerDestinationHash, wire)
+      .then((result) => {
+        if (result.ok === true || attempt >= CALL_SEND_MAX_ATTEMPTS) return;
+        const timer = setTimeout(
+          () =>
+            this.sendPinnedCallWireWhenReady(
+              peerDestinationHash,
+              wire,
+              attempt + 1
+            ),
+          CALL_SEND_RETRY_MS
+        );
+        timer.unref?.();
+      })
+      .catch(() => {
+        if (attempt >= CALL_SEND_MAX_ATTEMPTS) return;
+        const timer = setTimeout(
+          () =>
+            this.sendPinnedCallWireWhenReady(
+              peerDestinationHash,
+              wire,
+              attempt + 1
+            ),
+          CALL_SEND_RETRY_MS
+        );
+        timer.unref?.();
+      });
   }
 
   private cancelOtherRingingEndpoints(call: CallRecord): void {
@@ -982,7 +1106,7 @@ export class CallManager extends EventEmitter {
     });
     if (!wireFitsReticulum(wire)) return;
     for (const peer of otherPeers) {
-      void this.reticulumBridge?.sendCallDetailed(peer, wire).catch(() => {});
+      this.sendPinnedCallWireWhenReady(peer, wire, 0);
     }
   }
 
@@ -1075,9 +1199,7 @@ export class CallManager extends EventEmitter {
     };
   }
 
-  private parseReticulumOverlayMeta(
-    wire: Record<string, unknown>
-  ): {
+  private parseReticulumOverlayMeta(wire: Record<string, unknown>): {
     overlayId: string;
     targetAddress: string;
     hopsRemaining: number;

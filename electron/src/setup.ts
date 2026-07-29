@@ -6144,11 +6144,43 @@ ipcMain.handle(
     joinRkSignature?: string,
     dmVoiceAudioLinkRole?: 'opener' | 'waiter',
     takeover?: boolean,
-    dmVoicePeerDestinationHash?: string
+    dmVoicePeerDestinationHash?: string,
+    dmVoiceCallId?: string
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
     try {
+      const isDirectVoiceRoom =
+        roomId.startsWith('dmv:') && chatId.startsWith('direct:');
+      const authenticatedCallDestination = isDirectVoiceRoom
+        ? (getCallManager()?.getActiveMediaPeerDestinationHash(
+            chatId,
+            localAddress,
+            dmVoiceCallId
+          ) ?? null)
+        : null;
+      const authenticatedLandCallDestination =
+        isDirectVoiceRoom && dmVoiceCallId
+          ? (getReticulumChatManager()?.getActiveLandCallMediaPeerDestinationHash(
+              chatId,
+              localAddress,
+              dmVoiceCallId
+            ) ?? null)
+          : null;
+      const authenticatedMediaDestination =
+        authenticatedCallDestination ?? authenticatedLandCallDestination;
+      // Current direct-call clients always provide a call id. When they do,
+      // never downgrade to a renderer or account-presence route: wait for an
+      // exact main-process authenticated call record instead.
+      if (
+        isDirectVoiceRoom &&
+        dmVoiceCallId &&
+        !authenticatedMediaDestination
+      ) {
+        throw new Error('unverified_dm_voice_peer_destination');
+      }
+      const selectedDmVoicePeerDestinationHash =
+        authenticatedMediaDestination ?? dmVoicePeerDestinationHash;
       const session = mgr.joinRoom(
         roomId,
         chatId,
@@ -6163,7 +6195,8 @@ ipcMain.handle(
         joinRkSignature,
         dmVoiceAudioLinkRole,
         takeover,
-        dmVoicePeerDestinationHash
+        selectedDmVoicePeerDestinationHash,
+        Boolean(authenticatedMediaDestination)
       );
       return {
         success: true,

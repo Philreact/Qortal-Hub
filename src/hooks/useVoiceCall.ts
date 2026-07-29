@@ -156,7 +156,7 @@ export interface UseVoiceCallReturn {
   initiateCall: (
     targetAddress: string,
     chatId: string,
-    sign: (
+    sign?: (
       fields: Record<string, unknown>
     ) => Promise<{ signature: string; publicKey: string }>
   ) => void;
@@ -176,7 +176,10 @@ export type VoiceCallApi = {
     signature: string,
     publicKey: string,
     callId: string,
-    timestamp: number
+    timestamp: number,
+    cancellationSignature?: string,
+    cancellationPublicKey?: string,
+    cancellationTimestamp?: number
   ) => Promise<{ success: boolean; callId?: string; error?: string }>;
   accept?: (
     callId: string,
@@ -205,6 +208,13 @@ export type VoiceCallApi = {
 
 export interface UseVoiceCallOptions {
   callApi?: VoiceCallApi;
+  /**
+   * The custom API signs the complete transport envelope itself. This is used
+   * by QortalLand V2, whose main-process signature binds both Land sessions
+   * and both Reticulum destinations. Legacy renderer signatures are neither
+   * authoritative nor consumed by that protocol.
+   */
+  callApiSignsSignals?: boolean;
   skipSystemReadiness?: boolean;
   skipDirectFriendValidation?: boolean;
   getPeerPublicKey?: (address: string) => string | undefined;
@@ -314,6 +324,16 @@ export function useVoiceCall(
   useEffect(() => {
     publicKeyRef.current = userInfo?.publicKey ?? '';
   }, [userInfo?.publicKey]);
+  const authorizeCallSignal = useCallback(
+    (fields: Record<string, unknown>) =>
+      optionsRef.current.callApiSignsSignals === true
+        ? Promise.resolve({
+            signature: '',
+            publicKey: publicKeyRef.current,
+          })
+        : signPresenceFields(fields, publicKeyRef.current),
+    []
+  );
 
   const isOutboundCallRef = useRef(false);
   const registeredCallLocalAddressRef = useRef<string | null>(null);
@@ -1026,10 +1046,7 @@ export function useVoiceCall(
         (state === 'connected' || state === 'calling' || state === 'ringing');
       if (needsHangup && id) {
         const timestamp = Date.now();
-        void signPresenceFields(
-          { type: 'CALL_HANGUP', callId: id, timestamp },
-          publicKeyRef.current
-        )
+        void authorizeCallSignal({ type: 'CALL_HANGUP', callId: id, timestamp })
           .then(({ signature, publicKey }) =>
             callApiRef.current?.hangup?.(id, signature, publicKey, timestamp)
           )
@@ -1041,7 +1058,7 @@ export function useVoiceCall(
       }
       enqueueTeardownReticulumMedia();
     };
-  }, [clearDurationTimer, enqueueTeardownReticulumMedia]);
+  }, [authorizeCallSignal, clearDurationTimer, enqueueTeardownReticulumMedia]);
 
   const endCall = useCallback(
     async (sendHangup = false) => {
@@ -1075,10 +1092,11 @@ export function useVoiceCall(
         const timestamp = Date.now();
         applyLocalCallEnd();
         try {
-          const { signature, publicKey } = await signPresenceFields(
-            { type: 'CALL_HANGUP', callId: id, timestamp },
-            publicKeyRef.current
-          );
+          const { signature, publicKey } = await authorizeCallSignal({
+            type: 'CALL_HANGUP',
+            callId: id,
+            timestamp,
+          });
           await callApiRef.current?.hangup?.(
             id,
             signature,
@@ -1098,6 +1116,7 @@ export function useVoiceCall(
     [
       clearDurationTimer,
       enqueueTeardownReticulumMedia,
+      authorizeCallSignal,
       updateCallState,
       updateIncomingCall,
     ]
@@ -1669,8 +1688,8 @@ export function useVoiceCall(
       reticulumDestinationHash: retHash,
       reticulumIdentityPublicKeyBase64,
       dmVoiceAudioLinkRole: isOutboundCallRef.current ? 'waiter' : 'opener',
-      peerDestinationHash:
-        optionsRef.current.getPeerDestinationHash?.(peer),
+      peerDestinationHash: optionsRef.current.getPeerDestinationHash?.(peer),
+      callId: callIdRef.current ?? undefined,
     });
 
     if (!joinRes.success || !joinRes.callSessionId) {
@@ -1927,10 +1946,11 @@ export function useVoiceCall(
 
         const rejectIncoming = async (reason: string) => {
           const rejectTs = Date.now();
-          const { signature, publicKey } = await signPresenceFields(
-            { type: 'CALL_REJECT', callId: incCallId, timestamp: rejectTs },
-            publicKeyRef.current
-          );
+          const { signature, publicKey } = await authorizeCallSignal({
+            type: 'CALL_REJECT',
+            callId: incCallId,
+            timestamp: rejectTs,
+          });
           await callApiRef.current?.reject?.(
             incCallId,
             reason,
@@ -2146,7 +2166,7 @@ export function useVoiceCall(
     async (
       targetAddress: string,
       chatId: string,
-      sign: (
+      sign?: (
         fields: Record<string, unknown>
       ) => Promise<{ signature: string; publicKey: string }>
     ) => {
@@ -2164,20 +2184,45 @@ export function useVoiceCall(
       const timestamp = Date.now();
       const myPublicKey = userInfo?.publicKey ?? '';
 
-      const { signature, publicKey } = await sign({
+      const requestFields = {
         type: 'CALL_REQUEST',
         callId,
         chatId,
         fromAddress: localAddress,
         fromPublicKey: myPublicKey,
         timestamp,
-      });
+      };
+      let authorization: { signature: string; publicKey: string };
+      let cancellation: { signature: string; publicKey: string };
       const cancellationTimestamp = timestamp;
-      const cancellation = await sign({
-        type: 'CALL_HANGUP',
-        callId,
-        timestamp: cancellationTimestamp,
-      });
+      try {
+        const apiOwnsSignatures =
+          optionsRef.current.callApiSignsSignals === true;
+        if (!apiOwnsSignatures && !sign) {
+          throw new Error('Call signaling signer is unavailable');
+        }
+        authorization = apiOwnsSignatures
+          ? await authorizeCallSignal(requestFields)
+          : await sign!(requestFields);
+        const cancellationFields = {
+          type: 'CALL_HANGUP',
+          callId,
+          timestamp: cancellationTimestamp,
+        };
+        cancellation = apiOwnsSignatures
+          ? await authorizeCallSignal(cancellationFields)
+          : await sign!(cancellationFields);
+      } catch (error) {
+        pushDirectVoiceUiLog('warn', 'call authorization failed', {
+          error: String(error),
+        });
+        showGlobalCallSnack(
+          'error',
+          i18n.t('core:voice_call.failed') ?? 'Voice call failed'
+        );
+        return;
+      }
+      const { signature, publicKey } = authorization;
 
       isOutboundCallRef.current = true;
       peerAddressRef.current = targetAddress;
@@ -2187,18 +2232,25 @@ export function useVoiceCall(
       setCallMediaReady(false);
       updateCallState('calling');
 
-      const result = await callApiRef.current?.initiate?.(
-        targetAddress,
-        chatId,
-        localAddress,
-        signature,
-        publicKey,
-        callId,
-        timestamp,
-        cancellation.signature,
-        cancellation.publicKey,
-        cancellationTimestamp
-      );
+      let result:
+        | { success: boolean; callId?: string; error?: string }
+        | undefined;
+      try {
+        result = await callApiRef.current?.initiate?.(
+          targetAddress,
+          chatId,
+          localAddress,
+          signature,
+          publicKey,
+          callId,
+          timestamp,
+          cancellation.signature,
+          cancellation.publicKey,
+          cancellationTimestamp
+        );
+      } catch (error) {
+        result = { success: false, error: String(error) };
+      }
 
       if (!result?.success) {
         pushDirectVoiceUiLog('warn', 'call.initiate failed', {
@@ -2210,6 +2262,11 @@ export function useVoiceCall(
         activeCallChatIdRef.current = null;
         setActiveCallChatId(null);
         updateCallState('idle');
+        showGlobalCallSnack(
+          'error',
+          result?.error ||
+            (i18n.t('core:voice_call.failed') ?? 'Voice call failed')
+        );
       } else {
         pushDirectVoiceUiLog('log', 'call.initiate ok (waiting for peer)', {
           callIdTrunc: callId.slice(0, 8),
@@ -2219,6 +2276,8 @@ export function useVoiceCall(
     },
     [
       showSystemNotReadyForCall,
+      authorizeCallSignal,
+      showGlobalCallSnack,
       updateCallState,
       userInfo?.address,
       userInfo?.publicKey,
@@ -2267,10 +2326,11 @@ export function useVoiceCall(
     startDurationTimer();
 
     const acceptTs = Date.now();
-    const { signature, publicKey } = await signPresenceFields(
-      { type: 'CALL_ACCEPT', callId: incoming.callId, timestamp: acceptTs },
-      publicKeyRef.current
-    );
+    const { signature, publicKey } = await authorizeCallSignal({
+      type: 'CALL_ACCEPT',
+      callId: incoming.callId,
+      timestamp: acceptTs,
+    });
     const acceptResult = await callApiRef.current?.accept?.(
       incoming.callId,
       signature,
@@ -2296,6 +2356,7 @@ export function useVoiceCall(
     });
   }, [
     endCall,
+    authorizeCallSignal,
     flushPendingDmVoiceGcallKey,
     startDurationTimer,
     startReticulumMediaSession,
@@ -2310,10 +2371,11 @@ export function useVoiceCall(
 
     try {
       const rejectTs = Date.now();
-      const { signature, publicKey } = await signPresenceFields(
-        { type: 'CALL_REJECT', callId: incoming.callId, timestamp: rejectTs },
-        publicKeyRef.current
-      );
+      const { signature, publicKey } = await authorizeCallSignal({
+        type: 'CALL_REJECT',
+        callId: incoming.callId,
+        timestamp: rejectTs,
+      });
       const rejectResult = await callApiRef.current?.reject?.(
         incoming.callId,
         'rejected',
@@ -2338,7 +2400,7 @@ export function useVoiceCall(
     // earlier lets QortalLand cleanup discard the caller route before send.
     updateIncomingCall(null);
     updateCallState('idle');
-  }, [updateCallState, updateIncomingCall]);
+  }, [authorizeCallSignal, updateCallState, updateIncomingCall]);
 
   const hangUp = useCallback(async () => {
     await endCall(true);

@@ -3345,7 +3345,8 @@ try {
       joinRkSignature?: string,
       dmVoiceAudioLinkRole?: 'opener' | 'waiter',
       takeover?: boolean,
-      dmVoicePeerDestinationHash?: string
+      dmVoicePeerDestinationHash?: string,
+      dmVoiceCallId?: string
     ) =>
       ipcRenderer.invoke(
         'gcall:join',
@@ -3362,7 +3363,8 @@ try {
         joinRkSignature,
         dmVoiceAudioLinkRole,
         takeover,
-        dmVoicePeerDestinationHash
+        dmVoicePeerDestinationHash,
+        dmVoiceCallId
       ) as Promise<{
         success: boolean;
         error?: string;

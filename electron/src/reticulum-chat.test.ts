@@ -1261,9 +1261,9 @@ describe('reticulum chat protocol', () => {
       expect(deviceB.getDirectSummaries(owner.address)[0]?.unreadCount).toBe(1);
 
       deviceB.handleWire(captured as any, deviceAHash);
-      expect((deviceB as any).db.getDeviceReadStates(owner.address)).toHaveLength(
-        1
-      );
+      expect(
+        (deviceB as any).db.getDeviceReadStates(owner.address)
+      ).toHaveLength(1);
       expect(
         (deviceB as any).db.getDirectReadWatermark(
           first.conversationId,
@@ -1367,9 +1367,7 @@ describe('reticulum chat protocol', () => {
         groupId,
         channelId: 'general',
         timestamp: Date.now() - 1_000,
-        mentionAddressHashes: [
-          hashReticulumChatMentionAddress(owner.address),
-        ],
+        mentionAddressHashes: [hashReticulumChatMentionAddress(owner.address)],
       });
       expect((deviceB as any).acceptValidatedEvent(event, false)).toBe(true);
       expect(deviceB.getChatSummaries(owner.address)[0]?.unreadCount).toBe(1);
@@ -1393,15 +1391,11 @@ describe('reticulum chat protocol', () => {
       );
       expect(deviceB.getChatSummaries(owner.address)[0]?.unreadCount).toBe(1);
       deviceB.handleWire(captured as any, deviceAHash);
-      expect((deviceB as any).db.getDeviceReadStates(owner.address)).toHaveLength(
-        1
-      );
       expect(
-        (deviceB as any).db.getReadWatermark(
-          groupId,
-          'general',
-          owner.address
-        )
+        (deviceB as any).db.getDeviceReadStates(owner.address)
+      ).toHaveLength(1);
+      expect(
+        (deviceB as any).db.getReadWatermark(groupId, 'general', owner.address)
       ).toBe(event.timestamp);
       expect(deviceB.getChatSummaries(owner.address)[0]?.unreadCount).toBe(0);
 
@@ -1434,11 +1428,7 @@ describe('reticulum chat protocol', () => {
       hasGoodOverlayHealth: () => false,
     });
     beforeRestart.setLocalDmAddresses([owner.address]);
-    beforeRestart.markDirectRead(
-      owner.address,
-      peer.address,
-      upToTimestamp
-    );
+    beforeRestart.markDirectRead(owner.address, peer.address, upToTimestamp);
     beforeRestart.close();
 
     const remoteHash = '7'.repeat(32);
@@ -1482,6 +1472,107 @@ describe('reticulum chat protocol', () => {
     } finally {
       afterRestart.close();
     }
+  });
+
+  it('retries a transient read-state signing failure without requiring a restart', async () => {
+    vi.useFakeTimers();
+    const owner = createDmIdentity();
+    const peer = createDmIdentity();
+    const remoteHash = '9'.repeat(32);
+    const signed = createDmSigner(owner);
+    let signingAttempts = 0;
+    const sent: ReticulumChatWire[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: async (fields) => {
+        if (fields.type !== 'RCHAT_READ_SYNC_V1') return signed(fields);
+        signingAttempts += 1;
+        return signingAttempts === 1 ? null : signed(fields);
+      },
+      hasGoodOverlayHealth: () => false,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: remoteHash,
+          address: owner.address,
+          lastSeen: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => '8'.repeat(32),
+        sendReticulumChatDetailed: async (
+          _target: string,
+          wire: ReticulumChatWire
+        ) => {
+          sent.push(wire);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    try {
+      manager.setLocalDmAddresses([owner.address]);
+      manager.markDirectRead(owner.address, peer.address, Date.now() - 500);
+      await flushAsyncWork(16);
+      expect(signingAttempts).toBe(1);
+      expect(sent.filter((wire) => wire.k === 'read_sync')).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushAsyncWork(16);
+      expect(signingAttempts).toBe(2);
+      expect(sent.filter((wire) => wire.k === 'read_sync')).toHaveLength(1);
+      expect(
+        (manager as any).db.getPendingDeviceReadStates(owner.address)
+      ).toEqual([]);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not resume a pending read-state signature into a closed database', async () => {
+    const owner = createDmIdentity();
+    const peer = createDmIdentity();
+    const signed = createDmSigner(owner);
+    let releaseSigner!: () => void;
+    const signerGate = new Promise<void>((resolve) => {
+      releaseSigner = resolve;
+    });
+    let signerStarted!: () => void;
+    const signerDidStart = new Promise<void>((resolve) => {
+      signerStarted = resolve;
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: async (fields) => {
+        signerStarted();
+        await signerGate;
+        return signed(fields);
+      },
+      hasGoodOverlayHealth: () => false,
+    });
+    manager.setLocalDmAddresses([owner.address]);
+    const conversationId = reticulumDmConversationId(
+      owner.address,
+      peer.address
+    );
+    (manager as any).pendingReadSync.set(
+      `${owner.address}:d:${conversationId}`,
+      {
+        scopeType: 'dm',
+        ownerAddress: owner.address,
+        conversationId,
+        peerAddress: peer.address,
+        upToTimestamp: Date.now() - 500,
+      }
+    );
+
+    const flush = (manager as any).flushReadSyncQueue() as Promise<void>;
+    await signerDidStart;
+    manager.close();
+    releaseSigner();
+
+    await expect(flush).resolves.toBeUndefined();
   });
 
   it('keeps public group activity in bounded rolling counters', () => {
@@ -11210,16 +11301,13 @@ describe('reticulum chat manager', () => {
       signerDestination,
       100_000
     );
-    expect(verifyReticulumLandSessionRouteWire(routeWire, 100_000)).toMatchObject(
-      {
-        authorAddress: signer.address,
-        destinationHash: signerDestination,
-      }
-    );
-    manager.handleWire(
-      { ...routeWire, d: 'e'.repeat(32) },
-      peerC
-    );
+    expect(
+      verifyReticulumLandSessionRouteWire(routeWire, 100_000)
+    ).toMatchObject({
+      authorAddress: signer.address,
+      destinationHash: signerDestination,
+    });
+    manager.handleWire({ ...routeWire, d: 'e'.repeat(32) }, peerC);
     await flushQueuedWork();
     expect((manager as any).landSessionRoutes.size).toBe(0);
 
@@ -11715,12 +11803,7 @@ describe('reticulum chat manager', () => {
     expect(emitted[0]).not.toHaveProperty('destinationHash');
 
     manager.handleWire(
-      signer.landRouteWire(
-        73,
-        'late-route',
-        destinationHash,
-        100_000
-      ),
+      signer.landRouteWire(73, 'late-route', destinationHash, 100_000),
       'peer-source'
     );
     await vi.waitFor(() => expect(emitted).toHaveLength(2));
@@ -12591,6 +12674,13 @@ describe('reticulum chat manager', () => {
           targetDestinationHash,
         })
       );
+      expect(
+        manager.getActiveLandCallMediaPeerDestinationHash(
+          `direct:${[caller.address, recipient.address].sort().join(':')}`,
+          recipient.address,
+          callId
+        )
+      ).toBe(sourceDestinationHash);
 
       manager.handleWire(transportedWire, sourceDestinationHash);
       await flushQueuedWork();
@@ -12716,11 +12806,103 @@ describe('reticulum chat manager', () => {
           targetSessionId,
         })
       );
-      expect(byteLengthUtf8JsonWithBridgeSender(direct[0].wire)).toBeLessThanOrEqual(
-        RT_RETICULUM_MAX_WIRE_JSON_BYTES
+      expect(
+        byteLengthUtf8JsonWithBridgeSender(direct[0].wire)
+      ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
+      const chatId = `direct:${[caller.address, recipient.address]
+        .sort()
+        .join(':')}`;
+      expect(
+        manager.getActiveLandCallMediaPeerDestinationHash(
+          chatId,
+          caller.address,
+          'outbound-land-call'
+        )
+      ).toBe(targetDestinationHash);
+
+      const hangup = await manager.sendLandCall(73, {
+        callType: 'hangup',
+        callId: 'outbound-land-call',
+        fromAddress: caller.address,
+        toAddress: recipient.address,
+        sourceSessionId,
+        targetSessionId,
+        targetDestinationHash,
+        timestamp,
+      });
+      expect(hangup).toEqual({ ok: true });
+      expect(
+        manager.getActiveLandCallMediaPeerDestinationHash(
+          chatId,
+          caller.address,
+          'outbound-land-call'
+        )
+      ).toBeNull();
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('retries low-frequency QortalLand auth and route controls after transient transport loss', async () => {
+    vi.useFakeTimers();
+    const signer = createLandAuthSigner();
+    const sentKinds: string[] = [];
+    let authFailuresRemaining = 1;
+    let routeFailuresRemaining = 1;
+    let currentNow = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        fanoutReticulumChatDetailed: async (
+          messages: Array<Record<string, unknown>>
+        ) => {
+          const kind = String(messages[0]?.k || '');
+          sentKinds.push(kind);
+          if (kind === 'land_auth' && authFailuresRemaining-- > 0) {
+            return { ok: false as const, reason: 'bridge-overloaded' as const };
+          }
+          if (kind === 'land_route_v1' && routeFailuresRemaining-- > 0) {
+            return { ok: false as const, reason: 'no-route' as const };
+          }
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => currentNow,
+      signLocalFields: signer.signLocalFields,
+      validateGroupMember: async (_groupId, address) =>
+        address === signer.address,
+    });
+    try {
+      manager.setLocalGroupMemberships([
+        { groupId: 73, localAddress: signer.address },
+      ]);
+      manager.subscribeGroup(73);
+      await manager.sendLandState(73, signer.address, {
+        sessionId: 'retry-session',
+        sequence: 1,
+        x: 10,
+        y: 20,
+      });
+      await flushAsyncWork(16);
+
+      expect(sentKinds.filter((kind) => kind === 'land_auth')).toHaveLength(1);
+      expect(sentKinds.filter((kind) => kind === 'land_route_v1')).toHaveLength(
+        1
+      );
+
+      currentNow += 3_000;
+      await vi.advanceTimersByTimeAsync(3_000);
+      await flushAsyncWork(16);
+      expect(sentKinds.filter((kind) => kind === 'land_auth')).toHaveLength(2);
+      expect(sentKinds.filter((kind) => kind === 'land_route_v1')).toHaveLength(
+        2
       );
     } finally {
       manager.close();
+      vi.useRealTimers();
     }
   });
 
@@ -29106,22 +29288,26 @@ describe('reticulum chat manager', () => {
       recipientHash
     );
     const deliveredTransfers = new Set<string>();
-    await vi.waitUntil(() => {
-      for (const [transferId, resource] of outboundResources) {
-        if (
-          deliveredTransfers.has(transferId) ||
-          !acceptedTransfers.has(transferId)
-        ) continue;
-        deliveredTransfers.add(transferId);
-        recipient!.handleResourceEvent({
-          status: 'received',
-          transferId,
-          peerPresenceHash: providerHash,
-          path: resource.filePath,
-        });
-      }
-      return recipient!.getHistory(groupId, 'general', 10).length === 2;
-    }, { timeout: 10_000, interval: 10 });
+    await vi.waitUntil(
+      () => {
+        for (const [transferId, resource] of outboundResources) {
+          if (
+            deliveredTransfers.has(transferId) ||
+            !acceptedTransfers.has(transferId)
+          )
+            continue;
+          deliveredTransfers.add(transferId);
+          recipient!.handleResourceEvent({
+            status: 'received',
+            transferId,
+            peerPresenceHash: providerHash,
+            path: resource.filePath,
+          });
+        }
+        return recipient!.getHistory(groupId, 'general', 10).length === 2;
+      },
+      { timeout: 10_000, interval: 10 }
+    );
     const recovered = recipient.getHistory(groupId, 'general', 10);
     expect(recovered.map((event) => event.eventId).sort()).toEqual([
       firstEvent.eventId,

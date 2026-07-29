@@ -130,6 +130,63 @@ describe('useVoiceCall', () => {
     expect(resume).toHaveBeenCalled();
   });
 
+  it('lets an endpoint-bound custom call API own signaling signatures', async () => {
+    const callApi = {
+      onEvent: vi.fn(() => vi.fn()),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      initiate: vi.fn(async () => ({ success: true })),
+      hangup: vi.fn(async () => ({ success: true })),
+    };
+    const rendererSigner = vi.fn(async () => {
+      throw new Error('legacy renderer signing should not run');
+    });
+    Object.assign(window as any, {
+      call: callApi,
+      groupCall: { onEvent: vi.fn(() => vi.fn()) },
+      sendMessage: vi.fn(async () => {
+        throw new Error('legacy renderer signing should not run');
+      }),
+    });
+    const store = createStore();
+    store.set(userInfoAtom, { address: 'Qme', publicKey: 'pub' });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+    const { result } = renderHook(
+      () =>
+        useVoiceCall({
+          callApi,
+          callApiSignsSignals: true,
+          skipSystemReadiness: true,
+        }),
+      { wrapper }
+    );
+
+    await act(async () => {
+      await result.current.initiateCall(
+        'Qpeer',
+        buildDirectVoiceCallChatId('Qme', 'Qpeer'),
+        rendererSigner
+      );
+    });
+
+    expect(rendererSigner).not.toHaveBeenCalled();
+    expect((window as any).sendMessage).not.toHaveBeenCalled();
+    expect(callApi.initiate).toHaveBeenCalledWith(
+      'Qpeer',
+      buildDirectVoiceCallChatId('Qme', 'Qpeer'),
+      'Qme',
+      '',
+      'pub',
+      expect.any(String),
+      expect.any(Number),
+      '',
+      'pub',
+      expect.any(Number)
+    );
+    expect(result.current.callState).toBe('calling');
+  });
+
   it('starts in idle state', () => {
     Object.assign(window as any, {
       call: { onEvent: vi.fn(() => vi.fn()), setLocalAddresses: vi.fn() },

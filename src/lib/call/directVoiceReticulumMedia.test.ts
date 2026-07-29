@@ -99,6 +99,50 @@ describe('directVoiceReticulumMedia', () => {
     expect(signatures).toEqual({ joinSig: 'join-sig' });
   });
 
+  it('forwards the exact call id with the selected media endpoint', async () => {
+    const join = vi.fn(async () => ({
+      success: true,
+      callSessionId: 'media-session',
+      mediaSessionGeneration: 1,
+    }));
+    Object.assign(window as any, {
+      sendMessage: vi.fn(async () => ({ signature: 'join-signature' })),
+      groupCall: {
+        join,
+        setLocalAddresses: vi.fn(async () => {}),
+      },
+    });
+
+    await joinDirectVoiceReticulumRoom({
+      roomId: 'dmv:0123456789abcdef01',
+      chatId: 'direct:Qa:Qb',
+      address: 'Qa',
+      publicKey: 'qortal-pub',
+      reticulumDestinationHash: 'a'.repeat(32),
+      dmVoiceAudioLinkRole: 'waiter',
+      peerDestinationHash: 'b'.repeat(32),
+      callId: 'exact-call-id',
+    });
+
+    expect(join).toHaveBeenCalledWith(
+      'dmv:0123456789abcdef01',
+      'direct:Qa:Qb',
+      'Qa',
+      'join-signature',
+      'qortal-pub',
+      expect.any(Number),
+      'a'.repeat(32),
+      undefined,
+      0,
+      undefined,
+      undefined,
+      'waiter',
+      undefined,
+      'b'.repeat(32),
+      'exact-call-id'
+    );
+  });
+
   it('clears the DM local-address registration when leaving the Reticulum room', async () => {
     const leave = vi.fn(async () => {});
     const setLocalAddresses = vi.fn(async () => {});
