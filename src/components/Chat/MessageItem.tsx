@@ -94,6 +94,7 @@ import {
 import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
+import { createReticulumImageRequestGate } from './reticulumImageRequestGate';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
@@ -109,7 +110,10 @@ const RETICULUM_INLINE_IMAGE_FALLBACK_WIDTH = 480;
 const RETICULUM_INLINE_IMAGE_FALLBACK_ASPECT_RATIO = '4 / 3';
 const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
 
-const reticulumImageResourceRequestTimes = new Map<string, number>();
+const reticulumImageRequestGate = createReticulumImageRequestGate(
+  RETICULUM_IMAGE_REQUEST_BACKOFF_MS,
+  RETICULUM_IMAGE_REQUEST_TRACK_LIMIT
+);
 const reticulumMintershipCache = new Map<string, boolean>();
 const reticulumMintershipRequests = new Map<string, Promise<boolean>>();
 
@@ -174,27 +178,6 @@ const getReticulumMintership = (address: string): Promise<boolean> => {
 
   reticulumMintershipRequests.set(normalizedAddress, request);
   return request;
-};
-
-const shouldRequestReticulumImageResource = (key: string, nowMs: number) => {
-  const previousRequestAt = reticulumImageResourceRequestTimes.get(key);
-  if (
-    typeof previousRequestAt === 'number' &&
-    nowMs - previousRequestAt < RETICULUM_IMAGE_REQUEST_BACKOFF_MS
-  ) {
-    return false;
-  }
-  reticulumImageResourceRequestTimes.set(key, nowMs);
-  if (
-    reticulumImageResourceRequestTimes.size >
-    RETICULUM_IMAGE_REQUEST_TRACK_LIMIT
-  ) {
-    const oldestKey = reticulumImageResourceRequestTimes.keys().next().value;
-    if (oldestKey) {
-      reticulumImageResourceRequestTimes.delete(oldestKey);
-    }
-  }
-  return true;
 };
 
 const normalizeMessageHtmlContent = (raw: unknown): string | null => {
@@ -662,6 +645,8 @@ export const MessageItemComponent = ({
     typeof message.images[0] === 'object'
       ? message.images[0]
       : null;
+  const imageResourceManifestRef = useRef(imageResourceManifest);
+  imageResourceManifestRef.current = imageResourceManifest;
   const imageResourceFileHash =
     typeof imageResourceManifest?.fileHash === 'string'
       ? imageResourceManifest.fileHash
@@ -847,7 +832,7 @@ export const MessageItemComponent = ({
   }, [imageResourceId]);
   const retryReticulumImageDownload = useCallback(() => {
     if (reticulumImageRequestKey) {
-      reticulumImageResourceRequestTimes.delete(reticulumImageRequestKey);
+      reticulumImageRequestGate.clear(reticulumImageRequestKey);
     }
     setReticulumImageDownloadIssue(null);
     setResourceReloadNonce((value) => value + 1);
@@ -934,8 +919,10 @@ export const MessageItemComponent = ({
     let availabilityTimer: number | null = null;
     const key = reticulumImageRequestKey;
     const nowMs = Date.now();
-    const previousRequestAt = reticulumImageResourceRequestTimes.get(key);
-    const requestAllowed = shouldRequestReticulumImageResource(key, nowMs);
+    const requestBackoffRemainingMs = reticulumImageRequestGate.getRemainingMs(
+      key,
+      nowMs
+    );
 
     const clearAvailabilityTimer = () => {
       if (availabilityTimer === null) return;
@@ -952,7 +939,7 @@ export const MessageItemComponent = ({
             .then((status) => {
               if (cancelled) return;
               if (status?.success && status.complete) {
-                reticulumImageResourceRequestTimes.delete(key);
+                reticulumImageRequestGate.clear(key);
                 setReticulumImageDownloadIssue(null);
                 setResourceReloadNonce((value) => value + 1);
                 return;
@@ -980,11 +967,11 @@ export const MessageItemComponent = ({
       );
     };
 
-    if (!requestAllowed) {
+    if (requestBackoffRemainingMs > 0) {
       const remainingAvailabilityWait = Math.max(
         0,
         RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS -
-          (nowMs - (previousRequestAt ?? nowMs))
+          (RETICULUM_IMAGE_REQUEST_BACKOFF_MS - requestBackoffRemainingMs)
       );
       scheduleAvailabilityCheck(remainingAvailabilityWait);
       return () => {
@@ -994,7 +981,6 @@ export const MessageItemComponent = ({
     }
 
     setReticulumImageDownloadIssue(null);
-    scheduleAvailabilityCheck(RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS);
     void (async () => {
       try {
         const status =
@@ -1002,25 +988,51 @@ export const MessageItemComponent = ({
         if (cancelled) return;
         if (status?.success && status.complete) {
           clearAvailabilityTimer();
-          reticulumImageResourceRequestTimes.delete(key);
+          reticulumImageRequestGate.clear(key);
           setReticulumImageDownloadIssue(null);
           return;
         }
+
+        const requestStartedAt = Date.now();
+        if (!reticulumImageRequestGate.claim(key, requestStartedAt)) {
+          const remainingMs = reticulumImageRequestGate.getRemainingMs(
+            key,
+            requestStartedAt
+          );
+          scheduleAvailabilityCheck(
+            Math.max(
+              0,
+              RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS -
+                (RETICULUM_IMAGE_REQUEST_BACKOFF_MS - remainingMs)
+            )
+          );
+          return;
+        }
+
+        const currentManifest = imageResourceManifestRef.current;
+        if (!currentManifest || currentManifest.fileHash !== imageResourceId) {
+          reticulumImageRequestGate.clear(key);
+          setReticulumImageDownloadIssue('error');
+          return;
+        }
+
+        scheduleAvailabilityCheck(RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS);
 
         const response = isReticulumDirectResourceMessage
           ? await window.reticulumChat?.requestDirectResource?.(
               myAddress,
               reticulumDirectPeerAddress,
-              imageResourceManifest,
+              currentManifest,
               reticulumResourceEventId || undefined
             )
           : await window.reticulumChat?.requestResource?.(
               reticulumResourceGroupId,
-              imageResourceManifest,
+              currentManifest,
               reticulumResourceEventId || undefined
             );
-        if (cancelled) return;
         if (!response?.success) {
+          reticulumImageRequestGate.clear(key);
+          if (cancelled) return;
           clearAvailabilityTimer();
           setReticulumImageDownloadIssue('error');
           console.warn(
@@ -1030,6 +1042,7 @@ export const MessageItemComponent = ({
           );
         }
       } catch (error) {
+        reticulumImageRequestGate.clear(key);
         if (cancelled) return;
         clearAvailabilityTimer();
         setReticulumImageDownloadIssue('error');
@@ -1047,7 +1060,6 @@ export const MessageItemComponent = ({
     };
   }, [
     imageResourceId,
-    imageResourceManifest,
     isReticulumResourceImage,
     isReticulumDirectResourceMessage,
     myAddress,
@@ -1407,7 +1419,7 @@ export const MessageItemComponent = ({
       ) {
         if (payload.complete === true) {
           if (reticulumImageRequestKey) {
-            reticulumImageResourceRequestTimes.delete(reticulumImageRequestKey);
+            reticulumImageRequestGate.clear(reticulumImageRequestKey);
           }
           setReticulumImageDownloadIssue(null);
           setResourceReloadNonce((value) => value + 1);
@@ -1541,7 +1553,9 @@ export const MessageItemComponent = ({
         reticulumFileName
       );
       if (!result?.success) {
-        setFileOpenError(result?.error || 'The operating system could not open this file.');
+        setFileOpenError(
+          result?.error || 'The operating system could not open this file.'
+        );
         return;
       }
       setIsFileOpenWarningOpen(false);
