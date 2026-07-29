@@ -19,11 +19,7 @@ function promoteVerifiedPeers(
     const suffix = String(i + startAt).padStart(2, '0');
     const hash = `peer-${suffix}`;
     hashes.push(hash);
-    (manager as any).promoteVerifiedReticulumPeer(
-      hash,
-      `Q-address-${suffix}`,
-      1_000 + i + startAt
-    );
+    (manager as any).promoteVerifiedReticulumPeer(hash, 1_000 + i + startAt);
   }
   return hashes;
 }
@@ -72,6 +68,59 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
 
     expect(verify).toHaveBeenCalledTimes(1);
     expect(manager.isAddressOnline(address)).toBe(true);
+  });
+
+  it('accepts a signed route-bound relayed presence and rejects a changed origin', async () => {
+    const destinationHash = 'a'.repeat(32);
+    const sessionId = `PqqqqqqqqqqqqqqqqqqqqqgABCDEFGHIJKLM`;
+    expect(sessionId).toHaveLength(36);
+    const keyPair = nacl.sign.keyPair();
+    const publicKey = encodeBytesBase58(keyPair.publicKey);
+    const address = deriveAddressFromPublicKey(publicKey);
+    const envelope = {
+      id: 'route-bound-presence',
+      type: 'PRESENCE_HEARTBEAT' as const,
+      senderAddress: address,
+      timestamp: Date.now(),
+      payload: {
+        address,
+        publicKey,
+        sessionId,
+        status: 'online' as const,
+      },
+      signature: 'sig',
+    };
+
+    const accepted = new PresenceManager();
+    (accepted as any).verifyPool = { verify: vi.fn(async () => true) };
+    await expect(
+      accepted.handleEnvelope(envelope, {
+        kind: 'reticulum',
+        destinationHash,
+        viaDestinationHash: 'b'.repeat(32),
+      })
+    ).resolves.toBe(true);
+    expect(accepted.getRoutesForAddress(address)).toEqual([
+      {
+        kind: 'reticulum',
+        destinationHash,
+        viaDestinationHash: 'b'.repeat(32),
+      },
+    ]);
+
+    const changed = new PresenceManager();
+    (changed as any).verifyPool = { verify: vi.fn(async () => true) };
+    await expect(
+      changed.handleEnvelope(
+        { ...envelope, id: 'route-bound-presence-changed' },
+        {
+          kind: 'reticulum',
+          destinationHash: 'c'.repeat(32),
+          viaDestinationHash: 'b'.repeat(32),
+        }
+      )
+    ).resolves.toBe(false);
+    expect(changed.getRoutesForAddress(address)).toEqual([]);
   });
 
   it('does not let an older offline envelope remove a newer live session', () => {
@@ -275,18 +324,13 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     });
 
     expect(manager.getRoutesForAddress(address)).toEqual([
-      {
-        kind: 'reticulum',
-        destinationHash: 'reticulum-a',
-        viaDestinationHash: 'relay-peer',
-      },
       { kind: 'reticulum', destinationHash: 'reticulum-b' },
+      { kind: 'reticulum', destinationHash: 'reticulum-a' },
       { kind: 'mesh-node', id: 'mesh-peer' },
     ]);
     expect(manager.getRouteForAddress(address)).toEqual({
       kind: 'reticulum',
-      destinationHash: 'reticulum-a',
-      viaDestinationHash: 'relay-peer',
+      destinationHash: 'reticulum-b',
     });
     vi.useRealTimers();
   });
@@ -325,25 +369,18 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.useRealTimers();
   });
 
-  it('latches verified overlay identity on first envelope; later messages do not churn mesh', () => {
+  it('keeps transport verification independent from account endpoint leases', () => {
     const manager = new PresenceManager();
-    (manager as any).promoteVerifiedReticulumPeer('peer-hash', 'Q-first', 1000);
-    expect(
-      manager
-        .getReticulumVerifiedPeers()
-        .find((p) => p.destinationHash === 'peer-hash')?.address
-    ).toBe('Q-first');
+    (manager as any).promoteVerifiedReticulumPeer('peer-hash', 1000);
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
+      { destinationHash: 'peer-hash', lastSeen: 1000 },
+    ]);
+    expect(manager.getReticulumAccountEndpointLeases()).toEqual([]);
     const neighbors1 = manager.getReticulumVerifiedNeighborHashes();
-    (manager as any).promoteVerifiedReticulumPeer(
-      'peer-hash',
-      'Q-second',
-      2000
-    );
-    expect(
-      manager
-        .getReticulumVerifiedPeers()
-        .find((p) => p.destinationHash === 'peer-hash')?.address
-    ).toBe('Q-first');
+    (manager as any).promoteVerifiedReticulumPeer('peer-hash', 2000);
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
+      { destinationHash: 'peer-hash', lastSeen: 2000 },
+    ]);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(neighbors1);
   });
 
@@ -378,15 +415,14 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     ).toBe(true);
 
     expect(manager.isAddressOnline('Q-forwarded')).toBe(true);
-    expect(manager.getReticulumVerifiedPeers()).toEqual([
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
-        destinationHash: 'origin-hash',
-        address: 'Q-forwarded',
+        destinationHash: 'forwarder-hash',
         lastSeen: now,
       },
     ]);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
-      'origin-hash',
+      'forwarder-hash',
     ]);
   });
 
@@ -401,14 +437,12 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     manager.markReticulumOverlayPeerVerified(
       'origin-hash',
       'group_signal',
-      undefined,
       2_000
     );
 
-    expect(manager.getReticulumVerifiedPeers()).toEqual([
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
         destinationHash: 'origin-hash',
-        address: '',
         lastSeen: 2_000,
       },
     ]);
@@ -420,34 +454,31 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     manager.markReticulumOverlayPeerVerified(
       'origin-hash',
       'call_signal',
-      undefined,
       3_000
     );
 
-    expect(manager.getReticulumVerifiedPeers()).toEqual([
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
         destinationHash: 'origin-hash',
-        address: '',
         lastSeen: 3_000,
       },
     ]);
     expect(verifiedEvents).toHaveLength(1);
   });
 
-  it('immediately resyncs when signed presence binds an address-less verified peer', () => {
+  it('emits an endpoint sync when a signed presence session creates a lease', () => {
     const manager = new PresenceManager();
     const overlayChanges: unknown[] = [];
+    const endpointChanges: unknown[] = [];
     manager.on('reticulum-overlay-changed', (event) =>
       overlayChanges.push(event)
     );
+    manager.on('reticulum-account-endpoints-changed', (event) =>
+      endpointChanges.push(event)
+    );
     const now = Date.now();
 
-    manager.markReticulumOverlayPeerVerified(
-      'origin-hash',
-      'call_signal',
-      undefined,
-      now
-    );
+    manager.markReticulumOverlayPeerVerified('origin-hash', 'call_signal', now);
     expect(overlayChanges).toHaveLength(1);
 
     expect(
@@ -473,44 +504,77 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       )
     ).toBe(true);
 
-    expect(manager.getReticulumVerifiedPeers()).toEqual([
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
         destinationHash: 'origin-hash',
-        address: 'Q-bound',
         lastSeen: now + 1,
       },
     ]);
-    expect(overlayChanges).toHaveLength(2);
-  });
-
-  it('never replaces an existing verified destination address binding', () => {
-    const manager = new PresenceManager();
-    const overlayChanges: unknown[] = [];
-    manager.on('reticulum-overlay-changed', (event) =>
-      overlayChanges.push(event)
-    );
-
-    (manager as any).promoteVerifiedReticulumPeer(
-      'origin-hash',
-      'Q-original',
-      1_000,
-      'presence-direct'
-    );
-    (manager as any).promoteVerifiedReticulumPeer(
-      'origin-hash',
-      'Q-conflicting',
-      2_000,
-      'presence-direct'
-    );
-
-    expect(manager.getReticulumVerifiedPeers()).toEqual([
-      {
+    expect(manager.getReticulumAccountEndpointLeases()).toEqual([
+      expect.objectContaining({
         destinationHash: 'origin-hash',
-        address: 'Q-original',
-        lastSeen: 2_000,
-      },
+        address: 'Q-bound',
+        sessionId: 'sid-bound',
+        verification: 'direct-legacy',
+      }),
     ]);
     expect(overlayChanges).toHaveLength(1);
+    expect(endpointChanges).toHaveLength(1);
+  });
+
+  it('supports account switching on one destination without stale ownership', () => {
+    const manager = new PresenceManager();
+    const now = Date.now();
+    const destinationHash = 'aa'.repeat(16);
+    const sessionA = 'PqqqqqqqqqqqqqqqqqqqqqgAAAAAAAAAAAAA';
+    const sessionB = 'PqqqqqqqqqqqqqqqqqqqqqgBBBBBBBBBBBBB';
+    const apply = (
+      address: string,
+      sessionId: string,
+      type: 'PRESENCE_HEARTBEAT' | 'PRESENCE_OFFLINE',
+      timestamp: number
+    ) =>
+      (manager as any).applyVerifiedPresenceEnvelope(
+        {
+          id: `${address}-${type}-${timestamp}`,
+          type,
+          senderAddress: address,
+          timestamp,
+          payload: {
+            address,
+            publicKey: `pk-${address}`,
+            sessionId,
+            status: type === 'PRESENCE_OFFLINE' ? 'offline' : 'online',
+          },
+          signature: `sig-${address}`,
+        },
+        { kind: 'reticulum', destinationHash },
+        timestamp
+      );
+
+    expect(apply('Q-account-a', sessionA, 'PRESENCE_HEARTBEAT', now)).toBe(
+      true
+    );
+    expect(apply('Q-account-b', sessionB, 'PRESENCE_HEARTBEAT', now + 1)).toBe(
+      true
+    );
+    expect(manager.getReticulumVerifiedTransportPeers()).toHaveLength(1);
+    expect(
+      manager.getReticulumAccountEndpointLeases().map((lease) => lease.address)
+    ).toEqual(['Q-account-a', 'Q-account-b']);
+
+    expect(apply('Q-account-a', sessionA, 'PRESENCE_OFFLINE', now + 2)).toBe(
+      true
+    );
+    expect(manager.getReticulumVerifiedTransportPeers()).toHaveLength(1);
+    expect(manager.getReticulumAccountEndpointLeases()).toEqual([
+      expect.objectContaining({
+        address: 'Q-account-b',
+        destinationHash,
+        sessionId: sessionB,
+        verification: 'direct-bound',
+      }),
+    ]);
   });
 
   it('allows a fanned-out presence proof to verify an announce-backed candidate', () => {
@@ -544,15 +608,14 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       )
     ).toBe(true);
 
-    expect(manager.getReticulumVerifiedPeers()).toEqual([
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
-        destinationHash: 'origin-hash',
-        address: 'Q-announced',
+        destinationHash: 'forwarder-hash',
         lastSeen: now + 1,
       },
     ]);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
-      'origin-hash',
+      'forwarder-hash',
     ]);
   });
 
@@ -592,9 +655,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     manager.cleanupExpired();
 
     expect(manager.isAddressOnline(address)).toBe(true);
-    expect(manager.getReticulumFanoutDestinationHashes()).toEqual([
-      'delayed-origin-hash',
-    ]);
+    // A legacy relayed envelope still contributes presence/status, but its
+    // unsigned origin must not become an endpoint or overlay target.
+    expect(manager.getReticulumFanoutDestinationHashes()).toEqual([]);
 
     vi.setSystemTime(receiveAt + PRESENCE_SESSION_TIMEOUT_MS + 1);
     manager.cleanupExpired();
@@ -621,7 +684,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       hashes.slice(0, RETICULUM_OVERLAY_MAX_NEIGHBORS)
     );
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes);
   });
 
@@ -737,7 +802,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     manager.noteReticulumOverlayLinkClosed(hashes[0], 'closed');
 
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
       ...hashes.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),
@@ -761,7 +828,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     });
 
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
       hashes.slice(1)
@@ -789,7 +858,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     );
 
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
       hashes.slice(1)
@@ -811,13 +882,14 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.setSystemTime(10_100);
     (manager as any).promoteVerifiedReticulumPeer(
       hashes[0],
-      'Q-address-00',
       10_100,
       'presence-relayed'
     );
 
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(
       hashes.slice(1)
@@ -839,7 +911,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.setSystemTime(9_999 + RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS + 1);
 
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes.slice(1));
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
       ...hashes.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),
@@ -860,15 +934,13 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.setSystemTime(9_999);
     manager.noteReticulumOverlayLinkClosed(hashes[0], 'closed');
     vi.setSystemTime(10_100);
-    (manager as any).promoteVerifiedReticulumPeer(
-      hashes[0],
-      'Q-address-00',
-      10_100
-    );
+    (manager as any).promoteVerifiedReticulumPeer(hashes[0], 10_100);
     vi.setSystemTime(10_100 + RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS + 1);
 
     expect(
-      manager.getReticulumVerifiedPeers().map((peer) => peer.destinationHash)
+      manager
+        .getReticulumVerifiedTransportPeers()
+        .map((peer) => peer.destinationHash)
     ).toEqual(hashes);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
       ...hashes.slice(1, RETICULUM_OVERLAY_MAX_NEIGHBORS),

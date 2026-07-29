@@ -684,10 +684,20 @@ export type ReticulumChatLocalGroupMembership =
       isAdmin?: unknown;
     };
 
-type ReticulumChatVerifiedReticulumPeer = {
+type ReticulumChatVerifiedTransportPeer = {
+  destinationHash: string;
+  lastSeen?: number;
+  /** Legacy runtime callback shape; production uses account endpoint leases. */
+  address?: string;
+};
+
+type ReticulumChatAccountEndpointLease = {
   destinationHash: string;
   address: string;
-  lastSeen?: number;
+  sessionId: string;
+  lastSeen: number;
+  expiresAt: number;
+  verification: 'direct-bound' | 'direct-legacy' | 'relayed-bound';
 };
 
 type ReticulumChatResourceFindRoute = {
@@ -1692,7 +1702,8 @@ export interface ReticulumChatManagerOptions {
     address: string
   ) => Promise<boolean | null>;
   validateGroupAdmin?: (groupId: number, address: string) => Promise<boolean>;
-  getVerifiedReticulumPeers?: () => ReticulumChatVerifiedReticulumPeer[];
+  getVerifiedReticulumPeers?: () => ReticulumChatVerifiedTransportPeer[];
+  getAccountEndpointLeases?: () => ReticulumChatAccountEndpointLease[];
   hasGoodOverlayHealth?: () => boolean;
   resourceStore?: ReticulumResourceStore | null;
 }
@@ -6008,7 +6019,8 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     address: string
   ) => Promise<boolean>;
-  private getVerifiedReticulumPeers?: () => ReticulumChatVerifiedReticulumPeer[];
+  private getVerifiedReticulumPeers?: () => ReticulumChatVerifiedTransportPeer[];
+  private getAccountEndpointLeases?: () => ReticulumChatAccountEndpointLease[];
   private hasGoodOverlayHealth?: () => boolean;
   private resourceStore: ReticulumResourceStore | null;
   private bridge: ReticulumBridge | null;
@@ -6602,6 +6614,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.validateGroupMember = options.validateGroupMember;
     this.validateGroupAdmin = options.validateGroupAdmin;
     this.getVerifiedReticulumPeers = options.getVerifiedReticulumPeers;
+    this.getAccountEndpointLeases = options.getAccountEndpointLeases;
     this.hasGoodOverlayHealth = options.hasGoodOverlayHealth;
     this.resourceStore = options.resourceStore ?? null;
     this.bridge = options.bridge ?? null;
@@ -7264,6 +7277,7 @@ export class ReticulumChatManager extends EventEmitter {
       | 'validateGroupMember'
       | 'validateGroupAdmin'
       | 'getVerifiedReticulumPeers'
+      | 'getAccountEndpointLeases'
       | 'hasGoodOverlayHealth'
       | 'resourceStore'
     >
@@ -7279,6 +7293,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.validateGroupMember = options.validateGroupMember;
     this.validateGroupAdmin = options.validateGroupAdmin;
     this.getVerifiedReticulumPeers = options.getVerifiedReticulumPeers;
+    this.getAccountEndpointLeases = options.getAccountEndpointLeases;
     this.hasGoodOverlayHealth = options.hasGoodOverlayHealth;
     if (signerChanged) {
       this.clearLocalLandAuthSessions();
@@ -14663,6 +14678,40 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  private getAccountEndpointLeasesForRouting(): ReticulumChatAccountEndpointLease[] {
+    const leases = this.getAccountEndpointLeases?.();
+    if (leases) {
+      const now = this.now();
+      return leases.filter(
+        (lease) =>
+          typeof lease?.address === 'string' &&
+          lease.address.length > 0 &&
+          Boolean(this.normalizeResourcePeerHash(lease.destinationHash)) &&
+          Number.isFinite(lease.expiresAt) &&
+          lease.expiresAt > now
+      );
+    }
+    // Runtime compatibility for tests or an older main-process caller during a
+    // rolling restart. These records remain in-memory and do not cross the
+    // Reticulum wire; production supplies explicit expiring leases.
+    return (this.getVerifiedReticulumPeers?.() ?? [])
+      .filter(
+        (
+          peer
+        ): peer is ReticulumChatVerifiedTransportPeer & {
+          address: string;
+        } => typeof peer.address === 'string' && peer.address.length > 0
+      )
+      .map((peer) => ({
+        destinationHash: peer.destinationHash,
+        address: peer.address,
+        sessionId: 'legacy-runtime-callback',
+        lastSeen: Number(peer.lastSeen || this.now()),
+        expiresAt: this.now() + 45_000,
+        verification: 'direct-legacy' as const,
+      }));
+  }
+
   private scheduleActiveDmLinkPrune(): void {
     if (this.activeDmLinkPruneTimer || this.activeDmLinkPreferences.size === 0)
       return;
@@ -14679,7 +14728,7 @@ export class ReticulumChatManager extends EventEmitter {
     const normalizedPeerAddress = String(peerAddress || '').trim();
     if (!normalizedPeerAddress) return [];
     const seen = new Set<string>();
-    const peers = (this.getVerifiedReticulumPeers?.() ?? [])
+    const peers = this.getAccountEndpointLeasesForRouting()
       .filter((peer) => peer.address === normalizedPeerAddress)
       .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
     const hashes: string[] = [];
@@ -19048,10 +19097,11 @@ export class ReticulumChatManager extends EventEmitter {
     const verified = (this.getVerifiedReticulumPeers?.() ?? []).sort(
       (a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0)
     );
+    const authorEndpoints = this.getAccountEndpointLeasesForRouting()
+      .filter((candidate) => candidate.address?.trim() === range.a)
+      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
     const candidates = [
-      ...verified
-        .filter((candidate) => candidate.address?.trim() === range.a)
-        .map((candidate) => candidate.destinationHash),
+      ...authorEndpoints.map((candidate) => candidate.destinationHash),
       preferredPeer,
       ...verified
         .filter((candidate) => {
@@ -26343,7 +26393,7 @@ export class ReticulumChatManager extends EventEmitter {
         if (peer && peer !== localPeerHash) peers.add(peer);
       }
     }
-    for (const peer of this.getVerifiedReticulumPeers?.() ?? []) {
+    for (const peer of this.getAccountEndpointLeasesForRouting()) {
       if (peer.address !== normalizedPeerAddress) continue;
       const destinationHash = this.normalizeResourcePeerHash(
         peer.destinationHash
@@ -33582,6 +33632,7 @@ export function startReticulumChatManager(
     | 'validateGroupMember'
     | 'validateGroupAdmin'
     | 'getVerifiedReticulumPeers'
+    | 'getAccountEndpointLeases'
     | 'hasGoodOverlayHealth'
     | 'resourceStore'
   > = {}
@@ -33598,6 +33649,7 @@ export function startReticulumChatManager(
     validateGroupMember: options.validateGroupMember,
     validateGroupAdmin: options.validateGroupAdmin,
     getVerifiedReticulumPeers: options.getVerifiedReticulumPeers,
+    getAccountEndpointLeases: options.getAccountEndpointLeases,
     hasGoodOverlayHealth: options.hasGoodOverlayHealth,
     resourceStore: options.resourceStore,
   });

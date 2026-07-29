@@ -1138,8 +1138,14 @@ export class GroupCallAudioEngineRuntime {
   private audioDataPlaneKeepAliveTimer: number | null = null;
   private audioDataPlaneLastPongAtMs = 0;
   private audioDataPlaneClosingReason = '';
-  private readonly audioDataPlaneAddressByPeerHash = new Map<string, string>();
-  private readonly audioDataPlaneAddressByLinkId = new Map<string, string>();
+  private readonly audioDataPlaneAddressesByPeerHash = new Map<
+    string,
+    Set<string>
+  >();
+  private readonly audioDataPlaneAddressesByLinkId = new Map<
+    string,
+    Set<string>
+  >();
   private audioDataPlaneInboundFrames = 0;
   private audioDataPlaneInboundBytes = 0;
   private audioDataPlaneInboundLastLogAtMs = 0;
@@ -1895,8 +1901,8 @@ export class GroupCallAudioEngineRuntime {
     this.audioDataPlaneSessionPromise = null;
     this.audioDataPlaneLastPongAtMs = 0;
     this.audioDataPlaneClosingReason = '';
-    this.audioDataPlaneAddressByPeerHash.clear();
-    this.audioDataPlaneAddressByLinkId.clear();
+    this.audioDataPlaneAddressesByPeerHash.clear();
+    this.audioDataPlaneAddressesByLinkId.clear();
     if (reason) {
       this.recordThrottledDiagEvent('audio-data-plane-closed', reason, {
         reason,
@@ -1909,19 +1915,33 @@ export class GroupCallAudioEngineRuntime {
       Extract<GcallAudioDataPlaneSession, { ok: true }>['routes']
     >
   ): void {
+    // The bridge response is a complete route snapshot for the current room.
+    // Replace, rather than append, so account switches and participant leaves
+    // cannot retain stale destination ownership in the audio surface.
+    this.audioDataPlaneAddressesByPeerHash.clear();
+    this.audioDataPlaneAddressesByLinkId.clear();
+    const addRoute = (
+      map: Map<string, Set<string>>,
+      key: string,
+      address: string
+    ) => {
+      const addresses = map.get(key) ?? new Set<string>();
+      addresses.add(address);
+      map.set(key, addresses);
+    };
     for (const route of routes) {
       const address = route.address?.trim() ?? '';
       if (!address) continue;
       const linkId = route.linkId?.trim() ?? '';
       if (linkId) {
-        this.audioDataPlaneAddressByLinkId.set(linkId, address);
+        addRoute(this.audioDataPlaneAddressesByLinkId, linkId, address);
       }
       for (const hash of [
         route.peerPresenceHash?.trim().toLowerCase() ?? '',
         route.peerDestinationHash?.trim().toLowerCase() ?? '',
       ]) {
         if (hash) {
-          this.audioDataPlaneAddressByPeerHash.set(hash, address);
+          addRoute(this.audioDataPlaneAddressesByPeerHash, hash, address);
         }
       }
     }
@@ -1930,19 +1950,26 @@ export class GroupCallAudioEngineRuntime {
   private resolveAudioDataPlaneFrameAddress(
     frame: GcallAudioDataPlaneInboundFrame
   ): string {
-    const linkAddress = frame.linkId
-      ? this.audioDataPlaneAddressByLinkId.get(frame.linkId)
-      : undefined;
-    if (linkAddress) return linkAddress;
+    if (frame.linkId) {
+      const linkCandidates =
+        this.audioDataPlaneAddressesByLinkId.get(frame.linkId) ?? new Set();
+      if (linkCandidates.size === 1) return [...linkCandidates][0]!;
+      if (linkCandidates.size > 1) return '';
+    }
+    const candidates = new Set<string>();
     for (const hash of [
       frame.peerPresenceHash.trim().toLowerCase(),
       frame.peerDestinationHash.trim().toLowerCase(),
     ]) {
       if (!hash) continue;
-      const address = this.audioDataPlaneAddressByPeerHash.get(hash);
-      if (address) return address;
+      for (const address of this.audioDataPlaneAddressesByPeerHash.get(hash) ??
+        []) {
+        candidates.add(address);
+      }
     }
-    return '';
+    // The same installation destination can be reused after an account
+    // switch. Never guess when a current route snapshot is ambiguous.
+    return candidates.size === 1 ? [...candidates][0]! : '';
   }
 
   private async handleAudioDataPlaneInboundBuffer(

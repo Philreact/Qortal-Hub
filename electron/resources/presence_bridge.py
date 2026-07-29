@@ -44,6 +44,10 @@ _reticulum_config_dir = ""
 _known_peers: Dict[str, Any] = {}
 _candidate_peers: Dict[str, Dict[str, Any]] = {}
 _verified_overlay_peers: Dict[str, Dict[str, Any]] = {}
+# Wallet-authenticated, expiring account -> Reticulum endpoint leases. Kept
+# separate from transport peers because one installation can serve different
+# Qortal accounts over time (or several active account sessions).
+_account_endpoint_leases: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _overlay_peer_failures: Dict[str, Dict[str, Any]] = {}
 # Outbound peers we chose for our presence overlay fanout.
 _active_overlay_neighbors: Dict[str, float] = {}
@@ -6080,9 +6084,11 @@ def _note_overlay_peer_failure(peer_key: str, reason: str) -> None:
 
 
 def _set_verified_overlay_peers(
-    verified_peers: list[Dict[str, Any]], active_neighbor_hashes: list[str]
+    verified_peers: list[Dict[str, Any]],
+    active_neighbor_hashes: list[str],
+    account_endpoint_leases: Optional[list[Dict[str, Any]]] = None,
 ) -> None:
-    global _verified_overlay_peers
+    global _verified_overlay_peers, _account_endpoint_leases
     now = time.time()
     local_hex = _local_presence_hash_hex()
     next_verified: Dict[str, Dict[str, Any]] = {}
@@ -6090,9 +6096,8 @@ def _set_verified_overlay_peers(
         if not isinstance(peer, dict):
             continue
         peer_hash = str(peer.get("destinationHash") or "").strip().lower()
-        address = str(peer.get("address") or "").strip()
         last_seen = peer.get("lastSeen")
-        if not peer_hash or not address or not isinstance(last_seen, (int, float)):
+        if not peer_hash or not isinstance(last_seen, (int, float)):
             continue
         if local_hex and peer_hash == local_hex:
             continue
@@ -6113,10 +6118,83 @@ def _set_verified_overlay_peers(
             if not isinstance(prev_seen, (int, float)) or last_seen_seconds > float(prev_seen):
                 st["last_seen_inbound"] = last_seen_seconds
         next_verified[peer_hash] = {
-            "address": address,
             "last_seen": float(last_seen),
         }
-    _verified_overlay_peers = next_verified
+    next_leases: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    raw_leases = (
+        list(account_endpoint_leases)
+        if isinstance(account_endpoint_leases, list)
+        else []
+    )
+    # Compatibility with a main process that still sends the former embedded
+    # address. It is short-lived and never restores the old immutable mapping.
+    if not raw_leases:
+        for peer in verified_peers:
+            if not isinstance(peer, dict):
+                continue
+            address = str(peer.get("address") or "").strip()
+            peer_hash = str(peer.get("destinationHash") or "").strip().lower()
+            last_seen = peer.get("lastSeen")
+            last_seen_seconds = _coerce_epoch_seconds(last_seen)
+            if address and peer_hash and last_seen_seconds is not None:
+                raw_leases.append(
+                    {
+                        "address": address,
+                        "destinationHash": peer_hash,
+                        "sessionId": "legacy-overlay-sync",
+                        "lastSeen": last_seen,
+                        "expiresAt": (last_seen_seconds + 95.0) * 1000.0,
+                        "verification": "direct-legacy",
+                    }
+                )
+    verification_rank = {
+        "relayed-bound": 1,
+        "direct-legacy": 2,
+        "direct-bound": 3,
+    }
+    for lease in raw_leases:
+        if not isinstance(lease, dict):
+            continue
+        address = str(lease.get("address") or "").strip()
+        peer_hash = str(lease.get("destinationHash") or "").strip().lower()
+        session_id = str(lease.get("sessionId") or "").strip()
+        verification = str(lease.get("verification") or "").strip()
+        last_seen_seconds = _coerce_epoch_seconds(lease.get("lastSeen"))
+        expires_seconds = _coerce_epoch_seconds(lease.get("expiresAt"))
+        if (
+            not address
+            or not _valid_presence_destination_hash_hex(peer_hash)
+            or not session_id
+            or verification not in verification_rank
+            or last_seen_seconds is None
+            or expires_seconds is None
+            or expires_seconds <= now
+        ):
+            continue
+        by_destination = next_leases.setdefault(address, {})
+        existing = by_destination.get(peer_hash)
+        candidate = {
+            "address": address,
+            "destination_hash": peer_hash,
+            "session_id": session_id,
+            "last_seen": last_seen_seconds,
+            "expires_at": expires_seconds,
+            "verification": verification,
+        }
+        if existing is None or (
+            verification_rank[verification],
+            last_seen_seconds,
+        ) > (
+            verification_rank.get(str(existing.get("verification") or ""), 0),
+            float(existing.get("last_seen") or 0),
+        ):
+            by_destination[peer_hash] = candidate
+    # Game/proximity services can resolve routes from their own threads. Swap
+    # both views atomically so account switching cannot expose a new transport
+    # snapshot with stale account ownership (or the reverse).
+    with _state_lock:
+        _verified_overlay_peers = next_verified
+        _account_endpoint_leases = next_leases
 
     for peer_hash in list(_active_overlay_neighbors.keys()):
         if not _overlay_peer_has_established_link(peer_hash):
@@ -7790,18 +7868,34 @@ def _resolve_verified_game_peer(address: str, preferred_hash: str = "") -> Optio
     preferred = str(preferred_hash or "").strip().lower()
     if not target:
         return None
+    now = time.time()
     with _state_lock:
+        leases = _account_endpoint_leases.get(target) or {}
         if preferred:
-            details = _verified_overlay_peers.get(preferred)
+            details = leases.get(preferred)
             return (
                 preferred
                 if isinstance(details, dict)
-                and str(details.get("address") or "") == target
+                and float(details.get("expires_at") or 0) > now
                 else None
             )
-        for peer_hash, details in _verified_overlay_peers.items():
-            if isinstance(details, dict) and str(details.get("address") or "") == target:
-                return peer_hash
+        ranked = sorted(
+            (
+                details
+                for details in leases.values()
+                if isinstance(details, dict)
+                and float(details.get("expires_at") or 0) > now
+            ),
+            key=lambda details: (
+                {"direct-bound": 3, "direct-legacy": 2, "relayed-bound": 1}.get(
+                    str(details.get("verification") or ""), 0
+                ),
+                float(details.get("last_seen") or 0),
+            ),
+            reverse=True,
+        )
+        if ranked:
+            return str(ranked[0].get("destination_hash") or "") or None
     return None
 
 
@@ -8851,6 +8945,36 @@ def _valid_presence_destination_hash_hex(peer_hash: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _presence_route_bound_destination_hash(session_id: Any) -> Optional[str]:
+    """Decode the destination committed by a new wallet-signed presence id."""
+    if (
+        not isinstance(session_id, str)
+        or len(session_id) != 36
+        or not session_id.startswith("P")
+    ):
+        return None
+    encoded = session_id[1:23]
+    entropy = session_id[23:]
+    if len(entropy) != 13:
+        return None
+    allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    if any(ch not in allowed for ch in encoded) or any(
+        ch not in allowed for ch in entropy
+    ):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "==")
+    except Exception:
+        return None
+    if len(raw) != 16:
+        return None
+    # Reject non-canonical encodings so one route has one representation.
+    canonical = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    if canonical != encoded:
+        return None
+    return raw.hex()
 
 
 def _dedup_age_ts(state: Dict[str, Any], both_established: bool) -> float:
@@ -11063,12 +11187,17 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
         log("[presence_bridge] ignored malformed presence packet sender_hash")
         return False
     origin_peer_hash = sender_hash
+    signed_session_origin = _presence_route_bound_destination_hash(session_id)
     if isinstance(origin_hash, str) and origin_hash.strip():
         candidate_origin_hash = origin_hash.strip().lower()
         if not _valid_presence_destination_hash_hex(candidate_origin_hash):
             log("[presence_bridge] ignored malformed presence packet origin_hash")
             return False
         origin_peer_hash = candidate_origin_hash
+    elif signed_session_origin is not None:
+        # New clients commit the originating endpoint inside the wallet-signed
+        # session id. This avoids the 39-byte `o` field on every relayed frame.
+        origin_peer_hash = signed_session_origin
 
     payload: Dict[str, Any] = {
         "address": address,
@@ -15750,6 +15879,9 @@ def make_presence_wire(
     if not isinstance(payload, dict):
         raise RuntimeError("Presence envelope missing payload")
     local_sender_hash = destination_hash_hex(_destination.hash)
+    signed_session_origin = _presence_route_bound_destination_hash(
+        payload.get("sessionId")
+    )
 
     wire = {
         "t": envelope.get("type"),
@@ -15766,15 +15898,34 @@ def make_presence_wire(
         if origin_peer_hash:
             if not _valid_presence_destination_hash_hex(origin_peer_hash):
                 raise RuntimeError("Invalid originalSenderHash")
-            if origin_peer_hash != local_sender_hash:
+            if (
+                signed_session_origin is not None
+                and signed_session_origin != origin_peer_hash
+            ):
+                raise RuntimeError("Signed presence route does not match originalSenderHash")
+            if (
+                origin_peer_hash != local_sender_hash
+                and signed_session_origin != origin_peer_hash
+            ):
                 wire["o"] = origin_peer_hash
+    elif (
+        signed_session_origin is not None
+        and signed_session_origin != local_sender_hash
+    ):
+        raise RuntimeError("Signed presence route does not match local destination")
     if "status" in payload:
         wire["s"] = payload.get("status")
     if "clientVersion" in payload:
         wire["c"] = payload.get("clientVersion")
     if isinstance(overlay_hops_remaining, int) and overlay_hops_remaining >= 0:
         wire["q"] = overlay_hops_remaining
-    return json.dumps(wire, separators=(",", ":")).encode("utf-8")
+    wire_bytes = json.dumps(wire, separators=(",", ":")).encode("utf-8")
+    if len(wire_bytes) > _MAX_ENCRYPTED_WIRE_BYTES:
+        raise RuntimeError(
+            f"Presence wire size {len(wire_bytes)} exceeds encrypted MDU "
+            f"{_MAX_ENCRYPTED_WIRE_BYTES}"
+        )
+    return wire_bytes
 
 
 def announce_local_destination(reason: str = "unspecified") -> None:
@@ -18481,9 +18632,11 @@ def handle_forward_presence(req_id: str, payload: Dict[str, Any]) -> None:
 def handle_overlay_sync_state(req_id: str, payload: Dict[str, Any]) -> None:
     verified_raw = payload.get("verifiedPeers")
     active_raw = payload.get("activeNeighborHashes")
+    leases_raw = payload.get("accountEndpointLeases")
     verified = verified_raw if isinstance(verified_raw, list) else []
     active = active_raw if isinstance(active_raw, list) else []
-    _set_verified_overlay_peers(verified, [str(h) for h in active])
+    leases = leases_raw if isinstance(leases_raw, list) else []
+    _set_verified_overlay_peers(verified, [str(h) for h in active], leases)
     queued = _enqueue_scheduler_task(
         "overlay-control",
         "overlay-sync-maintenance",

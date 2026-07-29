@@ -35,6 +35,46 @@ import type { PresenceEnvelope } from './presence';
 import { ReticulumBridge } from './reticulum-bridge';
 
 describe('ReticulumBridge presence subscriptions', () => {
+  it('syncs transport peers separately from expiring account endpoint leases', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'overlay-sync-1',
+      ok: true,
+    }));
+    const verifiedPeers = [
+      { destinationHash: 'a'.repeat(32), lastSeen: 1_000 },
+    ];
+    const activeNeighborHashes = ['a'.repeat(32)];
+    const accountEndpointLeases = [
+      {
+        destinationHash: 'a'.repeat(32),
+        address: 'Qaccount',
+        sessionId: 'presence-session',
+        lastSeen: 1_000,
+        expiresAt: 46_000,
+        verification: 'direct-bound' as const,
+      },
+    ];
+
+    await expect(
+      bridge.syncOverlayState(
+        verifiedPeers,
+        activeNeighborHashes,
+        accountEndpointLeases
+      )
+    ).resolves.toBe(true);
+    expect(internal.sendCommand).toHaveBeenCalledWith('overlay_sync_state', {
+      verifiedPeers,
+      activeNeighborHashes,
+      accountEndpointLeases,
+    });
+    expect(verifiedPeers[0]).not.toHaveProperty('address');
+  });
+
   it('publishes a game bootstrap only for the current Python instance', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;
@@ -1632,14 +1672,16 @@ describe('ReticulumBridge chat forwarding support', () => {
       },
     });
 
-    expect(seen).toEqual([[
-      { t: 'RCHAT', k: 'land_state', g: 73 },
-      'sender-hash',
-      'peer-hash',
-      'link-1',
-      true,
-      9,
-    ]]);
+    expect(seen).toEqual([
+      [
+        { t: 'RCHAT', k: 'land_state', g: 73 },
+        'sender-hash',
+        'peer-hash',
+        'link-1',
+        true,
+        9,
+      ],
+    ]);
   });
 
   it('atomically configures validated Land forwarding state', async () => {
@@ -1731,10 +1773,11 @@ describe('ReticulumBridge chat forwarding support', () => {
     }));
 
     await expect(
-      bridge.sendReticulumChatTargetsDetailed(
-        ['peer-a'],
-        { t: 'RCHAT', k: 'group_state_digest_v3', g: 73 }
-      )
+      bridge.sendReticulumChatTargetsDetailed(['peer-a'], {
+        t: 'RCHAT',
+        k: 'group_state_digest_v3',
+        g: 73,
+      })
     ).resolves.toEqual({
       ok: true,
       deliveredPeerHashes: ['peer-a'],

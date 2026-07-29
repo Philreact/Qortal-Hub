@@ -248,7 +248,10 @@ class ProximityVoiceManagerTest(unittest.TestCase):
             "signature": _b58encode(remote_wallet.sign(canonical_bytes(remote.pending_fields))),
             "publicKey": remote_public_key,
         })
-        self.manager.resolve_peer = lambda address, preferred="": preferred if address == remote_address else None
+        # A freshly signed Land capability must not depend on the separate
+        # presence-lease cache having caught up yet. The exact RNS endpoint is
+        # still authenticated when the private link handshake completes.
+        self.manager.resolve_peer = lambda _address, preferred="": None
         encoded = _encode_qortalland_proximity_discovery(remote_discovery[-1])
         self.assertIsNotNone(encoded)
         decoded = _decode_qortalland_proximity_discovery(encoded)

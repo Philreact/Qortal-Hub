@@ -13,6 +13,11 @@ import {
   statusMapAtom,
   UserStatus,
 } from '../atoms/presence';
+import {
+  createCompactWireId,
+  createRouteBoundId,
+  routeBoundIdMatchesDestination,
+} from '../lib/reticulum/routeBoundId';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -82,7 +87,7 @@ function buildEnvelope(
   signature: string
 ): PresenceEnvelope {
   return {
-    id: crypto.randomUUID(),
+    id: createCompactWireId(),
     type,
     senderAddress: payload.address,
     timestamp,
@@ -223,6 +228,35 @@ export function usePresence(): {
     offlinePropagationTimersRef.current = [];
   }, []);
 
+  const ensureRouteBoundSessionId = useCallback(async (): Promise<
+    string | null
+  > => {
+    const getLocalDestinationHash =
+      window.electronAPI?.reticulumGetLocalDestinationHash;
+    if (typeof getLocalDestinationHash !== 'function') return null;
+    try {
+      const result = await getLocalDestinationHash();
+      const destinationHash = result?.destinationHash?.trim().toLowerCase();
+      if (!destinationHash || !/^[0-9a-f]{32}$/.test(destinationHash)) {
+        return null;
+      }
+      const current = sessionIdRef.current;
+      if (
+        current &&
+        routeBoundIdMatchesDestination('presence', current, destinationHash)
+      ) {
+        return current;
+      }
+      const next = createRouteBoundId('presence', destinationHash);
+      if (!next) return null;
+      sessionIdRef.current = next;
+      hasAnnouncedRef.current = false;
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const sendOfflineCallback = useCallback(async (): Promise<void> => {
     const ui = userInfoRef.current;
     const sessionId = sessionIdRef.current;
@@ -277,7 +311,7 @@ export function usePresence(): {
 
   const sendAnnounce = useCallback(async (): Promise<boolean> => {
     const ui = userInfoRef.current;
-    const sessionId = sessionIdRef.current;
+    const sessionId = await ensureRouteBoundSessionId();
     const statusVal = getEffectiveStatus();
     if (statusVal === 'offline') return false;
     if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence)
@@ -311,15 +345,20 @@ export function usePresence(): {
       console.error('[Presence] Announce failed:', err);
       return false;
     }
-  }, [getEffectiveStatus]);
+  }, [ensureRouteBoundSessionId, getEffectiveStatus]);
 
   const sendHeartbeat = useCallback(async (): Promise<boolean> => {
     if (heartbeatInFlightRef.current) return false;
     const ui = userInfoRef.current;
-    const sessionId = sessionIdRef.current;
+    const sessionId = await ensureRouteBoundSessionId();
     const statusVal = getEffectiveStatus();
     if (statusVal === 'offline') return false;
-    if (!hasAnnouncedRef.current) return false;
+    if (!hasAnnouncedRef.current) {
+      // Before the initial bootstrap, status/lock effects must not bypass the
+      // remote-hub readiness wait. Once the scheduler is active, however, a
+      // changed local Reticulum destination needs a fresh signed announce.
+      return heartbeatActiveRef.current ? sendAnnounce() : false;
+    }
     if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence)
       return false;
     const status = statusVal;
@@ -351,7 +390,7 @@ export function usePresence(): {
     } finally {
       heartbeatInFlightRef.current = false;
     }
-  }, [getEffectiveStatus]);
+  }, [ensureRouteBoundSessionId, getEffectiveStatus, sendAnnounce]);
 
   const announceWhenRemoteHubsReady = useCallback(
     (shouldCancel: () => boolean): Promise<boolean> => {
@@ -522,7 +561,7 @@ export function usePresence(): {
       return;
     }
 
-    sessionIdRef.current = crypto.randomUUID();
+    sessionIdRef.current = null;
     hasAnnouncedRef.current = false;
     let cancelled = false;
 

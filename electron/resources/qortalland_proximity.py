@@ -548,7 +548,14 @@ class QortalLandProximityVoiceManager:
             except Exception:
                 return True
             destination_hash = str(fields.get("destinationHash") or "").lower()
-            resolved_peer = str(self.resolve_peer(address, destination_hash) or "").lower()
+            # The wallet-signed capability is the source of truth for this
+            # exact Land session. Presence leases are only a fast-path and may
+            # briefly lag after login, account switching, or bridge restart.
+            # The subsequent link handshake still verifies that Reticulum
+            # connected to this precise advertised destination.
+            resolved_peer = str(
+                self.resolve_peer(address, destination_hash) or destination_hash
+            ).lower()
             if not resolved_peer:
                 return True
             if wire.get("e") is not True:
@@ -761,7 +768,9 @@ class QortalLandProximityVoiceManager:
         address = str(capability.get("address") or "")
         session_id = str(capability.get("sessionId") or "")
         advertised_hash = str(capability.get("fields", {}).get("destinationHash") or "").lower()
-        peer_hash = str(self.resolve_peer(address, advertised_hash) or "").lower()
+        peer_hash = str(
+            self.resolve_peer(address, advertised_hash) or advertised_hash
+        ).lower()
         if not peer_hash or peer_hash != advertised_hash:
             return
         identity = self.resolve_identity(peer_hash) if peer_hash else None
@@ -923,7 +932,9 @@ class QortalLandProximityVoiceManager:
         ):
             return False
         destination_hash = str(remote.get("fields", {}).get("destinationHash") or "").lower()
-        resolved_peer = str(self.resolve_peer(address, destination_hash) or "").lower()
+        resolved_peer = str(
+            self.resolve_peer(address, destination_hash) or destination_hash
+        ).lower()
         link_peer = str(self.resolve_link_peer_hash(link) or "").lower() if self.resolve_link_peer_hash else ""
         if not resolved_peer or resolved_peer != destination_hash or link_peer != destination_hash:
             return False

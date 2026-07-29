@@ -2268,6 +2268,7 @@ export type ReticulumOverlayPeerStatus = {
   /** True if the remote peer initiated this overlay link. */
   incoming?: boolean;
   address?: string;
+  addresses?: string[];
   connectedAt: number;
 };
 
@@ -2628,7 +2629,7 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
     const bridgeStatus = bridge?.getConnectivitySnapshot();
     if (!bridgeStatus) return base;
     const verifiedOverlayPeerCount =
-      getPresenceManager()?.getReticulumVerifiedPeers().length ?? 0;
+      getPresenceManager()?.getReticulumVerifiedTransportPeers().length ?? 0;
     const localHash =
       bridge.getLocalDestinationHash()?.trim().toLowerCase() ?? '';
     const activePeerHashes = new Set<string>();
@@ -3719,11 +3720,14 @@ export function registerReticulumIpcHandlers(): void {
         if (!bridge) return [];
         const localHash =
           bridge.getLocalDestinationHash()?.trim().toLowerCase() ?? '';
-        const peersByHash = new Map(
-          (getPresenceManager()?.getReticulumVerifiedPeers() ?? []).map(
-            (peer) => [peer.destinationHash.toLowerCase(), peer.address]
-          )
-        );
+        const addressesByHash = new Map<string, string[]>();
+        for (const lease of getPresenceManager()?.getReticulumAccountEndpointLeases() ??
+          []) {
+          const key = lease.destinationHash.toLowerCase();
+          const addresses = addressesByHash.get(key) ?? [];
+          if (!addresses.includes(lease.address)) addresses.push(lease.address);
+          addressesByHash.set(key, addresses);
+        }
         const uniqueByHash = new Map<string, ReticulumOverlayPeerStatus>();
         for (const peer of bridge.getOverlayLinkSnapshots()) {
           const peerHash = peer.peerPresenceHash.trim();
@@ -3732,13 +3736,15 @@ export function registerReticulumIpcHandlers(): void {
           if (localHash && peerKey === localHash) continue;
           const current = uniqueByHash.get(peerKey);
           if (current && current.connectedAt <= peer.connectedAt) continue;
+          const addresses = addressesByHash.get(peerKey) ?? [];
           uniqueByHash.set(peerKey, {
             linkId: peer.linkId,
             peerPresenceHash: peer.peerPresenceHash,
             incoming: peer.incoming,
-            ...(peersByHash.get(peerKey)
+            ...(addresses.length > 0
               ? {
-                  address: peersByHash.get(peerKey),
+                  address: addresses[0],
+                  addresses,
                 }
               : {}),
             connectedAt: peer.connectedAt,
@@ -3773,11 +3779,14 @@ export function registerReticulumIpcHandlers(): void {
         if (!bridge) return { destinationHash: null, overlayPeers: [] };
         const destinationHash =
           bridge.getLocalDestinationHash()?.trim().toLowerCase() || null;
-        const peersByHash = new Map(
-          (getPresenceManager()?.getReticulumVerifiedPeers() ?? []).map(
-            (peer) => [peer.destinationHash.toLowerCase(), peer.address]
-          )
-        );
+        const addressesByHash = new Map<string, string[]>();
+        for (const lease of getPresenceManager()?.getReticulumAccountEndpointLeases() ??
+          []) {
+          const key = lease.destinationHash.toLowerCase();
+          const addresses = addressesByHash.get(key) ?? [];
+          if (!addresses.includes(lease.address)) addresses.push(lease.address);
+          addressesByHash.set(key, addresses);
+        }
         const uniqueByHash = new Map<string, ReticulumOverlayPeerStatus>();
         for (const peer of bridge.getOverlayLinkSnapshots()) {
           const peerHash = peer.peerPresenceHash.trim();
@@ -3786,13 +3795,15 @@ export function registerReticulumIpcHandlers(): void {
           if (destinationHash && peerKey === destinationHash) continue;
           const current = uniqueByHash.get(peerKey);
           if (current && current.connectedAt <= peer.connectedAt) continue;
+          const addresses = addressesByHash.get(peerKey) ?? [];
           uniqueByHash.set(peerKey, {
             linkId: peer.linkId,
             peerPresenceHash: peer.peerPresenceHash,
             incoming: peer.incoming,
-            ...(peersByHash.get(peerKey)
+            ...(addresses.length > 0
               ? {
-                  address: peersByHash.get(peerKey),
+                  address: addresses[0],
+                  addresses,
                 }
               : {}),
             connectedAt: peer.connectedAt,

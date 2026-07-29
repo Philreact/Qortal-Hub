@@ -72,6 +72,7 @@ import {
   type GroupCallAudioSenderFrame,
 } from '../lib/group-call/groupCallAudioSenderEngine';
 import AudioDecryptWorker from '../workers/audio-decrypt.worker?worker';
+import { createRouteBoundId } from '../lib/reticulum/routeBoundId';
 
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
@@ -239,6 +240,19 @@ async function signPresenceFields(
     };
   } catch {
     return { signature: '', publicKey };
+  }
+}
+
+async function createDirectCallId(): Promise<string | null> {
+  const getLocalDestinationHash =
+    window.electronAPI?.reticulumGetLocalDestinationHash;
+  if (typeof getLocalDestinationHash !== 'function') return null;
+  try {
+    const result = await getLocalDestinationHash();
+    const destinationHash = result?.destinationHash?.trim().toLowerCase();
+    return destinationHash ? createRouteBoundId('call', destinationHash) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -2180,7 +2194,18 @@ export function useVoiceCall(
         return;
       }
 
-      const callId = optionsRef.current.createCallId?.() || crypto.randomUUID();
+      const apiOwnsSignatures = optionsRef.current.callApiSignsSignals === true;
+      const callId =
+        optionsRef.current.createCallId?.() ||
+        (apiOwnsSignatures ? crypto.randomUUID() : await createDirectCallId());
+      if (!callId) {
+        pushDirectVoiceUiLog('warn', 'local Reticulum call route unavailable');
+        showGlobalCallSnack(
+          'error',
+          i18n.t('core:voice_call.failed') ?? 'Voice call failed'
+        );
+        return;
+      }
       const timestamp = Date.now();
       const myPublicKey = userInfo?.publicKey ?? '';
 
@@ -2196,8 +2221,6 @@ export function useVoiceCall(
       let cancellation: { signature: string; publicKey: string };
       const cancellationTimestamp = timestamp;
       try {
-        const apiOwnsSignatures =
-          optionsRef.current.callApiSignsSignals === true;
         if (!apiOwnsSignatures && !sign) {
           throw new Error('Call signaling signer is unavailable');
         }

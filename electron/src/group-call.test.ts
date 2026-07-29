@@ -15,9 +15,9 @@ import {
 
 describe('group-call relayed endpoint ownership', () => {
   it('uses the original sender instead of the relay hop', () => {
-    expect(
-      resolveGroupCallSourcePeerHash('a'.repeat(32), 'b'.repeat(32))
-    ).toBe('a'.repeat(32));
+    expect(resolveGroupCallSourcePeerHash('a'.repeat(32), 'b'.repeat(32))).toBe(
+      'a'.repeat(32)
+    );
   });
 
   it('falls back to the transport peer for legacy direct frames', () => {
@@ -28,10 +28,7 @@ describe('group-call relayed endpoint ownership', () => {
 
   it('keeps the wallet-verified participant route for relayed controls', () => {
     expect(
-      resolveVerifiedGroupCallControlPeerHash(
-        'a'.repeat(32),
-        'b'.repeat(32)
-      )
+      resolveVerifiedGroupCallControlPeerHash('a'.repeat(32), 'b'.repeat(32))
     ).toBe('a'.repeat(32));
   });
 });
@@ -82,14 +79,18 @@ describe('group-call signed join generation transport', () => {
 describe('group-call multi-device participant ownership', () => {
   function routeManager(): any {
     const manager = Object.create(GroupCallManager.prototype) as any;
-    manager.reticulumPeerPresenceHashByAddress = new Map();
-    manager.reticulumAddressByPeerPresenceHash = new Map();
     manager.promoteAwaitingRouteReticulumAudio = vi.fn();
     manager.presence = {
       getRouteForAddress: vi.fn(() => ({
         kind: 'reticulum',
         destinationHash: 'c'.repeat(32),
       })),
+      getRoutesForAddress: vi.fn(() => [
+        {
+          kind: 'reticulum',
+          destinationHash: 'c'.repeat(32),
+        },
+      ]),
     };
     manager.rooms = new Map([
       [
@@ -125,6 +126,79 @@ describe('group-call multi-device participant ownership', () => {
     expect(
       manager.resolveReticulumPeerPresenceHash('Q-peer', 'room-without-peer')
     ).toBe('c'.repeat(32));
+  });
+
+  it('does not guess between different device endpoints without room context', () => {
+    const manager = routeManager();
+    manager.presence.getRouteForAddress.mockReturnValue(null);
+
+    expect(manager.resolveReticulumPeerPresenceHash('Q-peer')).toBeNull();
+  });
+
+  it('does not attribute a reused device destination to the wrong account across rooms', () => {
+    const manager = routeManager();
+    const sharedHash = 'd'.repeat(32);
+    manager.rooms = new Map([
+      [
+        'old-account-room',
+        {
+          participants: new Map([
+            ['Q-old', { reticulumDestinationHash: sharedHash }],
+          ]),
+        },
+      ],
+      [
+        'new-account-room',
+        {
+          participants: new Map([
+            ['Q-new', { reticulumDestinationHash: sharedHash }],
+          ]),
+        },
+      ],
+    ]);
+    manager.reticulumAudioAddressByLinkId = new Map([['shared-link', 'Q-new']]);
+    manager.reticulumAudioPeersByAddress = new Map();
+    manager.localAddresses = new Set();
+
+    expect(
+      manager.resolveReticulumAudioAddress(
+        'shared-link',
+        sharedHash,
+        'old-account-room'
+      )
+    ).toBe('Q-old');
+    expect(
+      manager.resolveReticulumAudioAddress(
+        'shared-link',
+        sharedHash,
+        'new-account-room'
+      )
+    ).toBe('Q-new');
+    expect(
+      manager.resolveReticulumAudioAddress('unknown-link', sharedHash)
+    ).toBeNull();
+  });
+
+  it('keeps the signed room participant route authoritative over another device route', () => {
+    const manager = routeManager();
+    manager.reticulumAudioAddressByLinkId = new Map();
+    manager.reticulumAudioPeersByAddress = new Map();
+    manager.localAddresses = new Set();
+
+    expect(
+      manager.resolveReticulumAudioAddress(
+        'unknown-link',
+        'a'.repeat(32),
+        'room-b'
+      )
+    ).toBeNull();
+    expect(
+      manager.resolveReticulumAudioAddress(
+        'unknown-link',
+        'b'.repeat(32),
+        'room-b'
+      )
+    ).toBe('Q-peer');
   });
 
   it('decodes the signed compact takeover generation', () => {

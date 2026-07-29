@@ -26,6 +26,9 @@ function electronApiWithGoodReadiness(extra: Record<string, unknown> = {}) {
   return {
     getSystemCallReadiness: vi.fn(async () => goodSystemReadiness()),
     refreshSystemCallReadiness: vi.fn(async () => goodSystemReadiness()),
+    reticulumGetLocalDestinationHash: vi.fn(async () => ({
+      destinationHash: 'a'.repeat(32),
+    })),
     ...extra,
   };
 }

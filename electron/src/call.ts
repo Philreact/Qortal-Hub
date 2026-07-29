@@ -20,6 +20,7 @@ import { deriveAddressFromPublicKey } from './presence';
 import { VerifyWorkerPool } from './verify-worker-pool';
 import type { PresenceManager, PresenceRoute } from './presence';
 import type { ReticulumBridge } from './reticulum-bridge';
+import { getRouteBoundDestinationHash } from './reticulum-route-bound-id';
 
 const CALL_MAX_HOPS = 4;
 const CALL_REQUEST_TTL_MS = 60_000;
@@ -51,6 +52,39 @@ export const CALL_MESSAGE_TYPES = new Set<string>([
   'CALL_HANGUP',
 ]);
 
+export function resolveDirectCallSourceEndpoint(
+  verifiedRouteHashes: readonly string[],
+  stampedSourceHash: string,
+  transportPeerHash: string
+): string | null {
+  const routes = [
+    ...new Set(
+      verifiedRouteHashes
+        .map((hash) => hash.trim().toLowerCase())
+        .filter((hash) => /^[0-9a-f]{32}$/.test(hash))
+    ),
+  ];
+  const stamped = stampedSourceHash.trim().toLowerCase();
+  if (routes.includes(stamped)) return stamped;
+  const transport = transportPeerHash.trim().toLowerCase();
+  if (routes.includes(transport)) return transport;
+  // An older relay may have replaced the source hint. A single verified
+  // account route is unambiguous and is safer than selecting the relay.
+  if (routes.length === 1) return routes[0]!;
+  // With several account devices, wait for a copy carrying one of their
+  // verified routes rather than guessing which device owns this call.
+  if (routes.length > 1) return null;
+  // A genuinely unstamped legacy frame can only identify the authenticated
+  // immediate link peer. Once `r` exists, however, accepting an unverified
+  // transport fallback would let a relay become the media destination.
+  if (!stamped && transport) return transport;
+  // Compatibility for old direct callers. Current relays preserve `r`, so a
+  // relayed frame normally has different origin/transport values. Route-bound
+  // calls below do not rely on this legacy-only heuristic.
+  if (stamped && stamped === transport) return stamped;
+  return null;
+}
+
 function buildDirectCallChatId(addressA: string, addressB: string): string {
   return `direct:${[addressA, addressB].sort().join(':')}`;
 }
@@ -65,6 +99,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
       // For direct calls the chatId is derivable from sender + overlay target address,
       // so omit it to stay under Reticulum's encrypted MDU.
@@ -80,6 +117,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
     case 'CALL_REJECT':
       return {
@@ -91,6 +131,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
     case 'CALL_HANGUP':
       return {
@@ -99,6 +142,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
     default:
       return {};
@@ -127,6 +173,10 @@ function decodeCompactCallWire(
             ? buildDirectCallChatId(wire.a, wire.U)
             : null;
       if (!chatId) return null;
+      const reticulumDestinationHash = getRouteBoundDestinationHash(
+        'call',
+        wire.c
+      );
       return {
         type: 'CALL_REQUEST',
         callId: wire.c,
@@ -135,6 +185,7 @@ function decodeCompactCallWire(
         chatId,
         signature: wire.g,
         timestamp: wire.m,
+        ...(reticulumDestinationHash ? { reticulumDestinationHash } : {}),
       };
     }
     case CALL_WIRE_ACCEPT:
@@ -199,6 +250,7 @@ export interface CallRequestEnvelope {
   chatId: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -208,6 +260,7 @@ export interface CallAcceptEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -218,6 +271,7 @@ export interface CallRejectEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -227,6 +281,7 @@ export interface CallHangupEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -495,6 +550,20 @@ export class CallManager extends EventEmitter {
     cancellationPublicKey?: string,
     cancellationTimestamp?: number
   ): Promise<string | null> {
+    const boundLocalDestination = getRouteBoundDestinationHash('call', callId);
+    const currentLocalDestination =
+      this.reticulumBridge?.getLocalDestinationHash?.()?.trim().toLowerCase() ??
+      '';
+    if (
+      boundLocalDestination &&
+      (!currentLocalDestination ||
+        boundLocalDestination !== currentLocalDestination)
+    ) {
+      loggerWarn(
+        `[Call] Refusing call with stale local route binding callId=${callId.slice(0, 8)}…`
+      );
+      return null;
+    }
     const env: CallRequestEnvelope = {
       type: 'CALL_REQUEST',
       callId,
@@ -503,6 +572,9 @@ export class CallManager extends EventEmitter {
       chatId,
       signature,
       timestamp,
+      ...(boundLocalDestination
+        ? { reticulumDestinationHash: boundLocalDestination }
+        : {}),
       hopsRemaining: CALL_MAX_HOPS,
     };
 
@@ -878,14 +950,94 @@ export class CallManager extends EventEmitter {
     // `r` is the original sender's stamped call destination. Direct legacy
     // frames may omit it, in which case the authenticated link peer is the
     // only safe fallback. Never prefer the relay/link peer when `r` exists.
-    const sourceEndpoint = (senderDestinationHash || peerPresenceHash)
+    let sourceEndpoint = (senderDestinationHash || peerPresenceHash)
       .trim()
       .toLowerCase();
+    const env = this.parseCallEnvelope(wire);
+    if (!env) return;
     const overlayMeta = this.parseReticulumOverlayMeta(wire);
+    const call = this.activeCalls.get(env.callId);
+    const boundCallerDestination = getRouteBoundDestinationHash(
+      'call',
+      env.callId
+    );
+    const expectedSourceAddress =
+      env.type === 'CALL_REQUEST' ? env.fromAddress : call?.remoteAddress;
+    const targetIsLocal = overlayMeta
+      ? this.localAddresses.has(overlayMeta.targetAddress)
+      : Boolean(call);
+    if (
+      expectedSourceAddress &&
+      (targetIsLocal || Boolean(call) || this.localAddresses.size === 0)
+    ) {
+      let resolvedSource: string | null = null;
+      const wireSource = senderDestinationHash.trim().toLowerCase();
+      const transportSource = peerPresenceHash.trim().toLowerCase();
+      const callerAuthoredControl =
+        env.type === 'CALL_REQUEST' || call?.direction === 'inbound';
+
+      if (boundCallerDestination && callerAuthoredControl) {
+        // The call id is wallet-signed by the caller and embeds its exact
+        // Reticulum destination. Use that binding even if an older relay
+        // replaced `r` with its own transport hash; the request is not applied
+        // until its wallet signature is verified. Current senders also verify
+        // this binding against their local bridge destination before sending.
+        resolvedSource = boundCallerDestination;
+      } else if (call?.direction === 'outbound') {
+        // Responses come from one of the exact routes invited by this caller.
+        // This remains deterministic for legacy callees without consulting a
+        // mutable presence cache after the call has started.
+        const invited = new Set(
+          [
+            ...(call.invitedReticulumPeerHashes ?? []),
+            call.acceptedReticulumPeerHash,
+            call.reticulumPeerPresenceHash,
+          ]
+            .filter((hash): hash is string => Boolean(hash))
+            .map((hash) => hash.trim().toLowerCase())
+        );
+        resolvedSource = invited.has(wireSource)
+          ? wireSource
+          : invited.has(transportSource)
+            ? transportSource
+            : null;
+      } else {
+        const sourceRoutes: PresenceRoute[] =
+          typeof this.presence.getRoutesForAddress === 'function'
+            ? this.presence.getRoutesForAddress(expectedSourceAddress)
+            : [this.presence.getRouteForAddress(expectedSourceAddress)].filter(
+                (route): route is PresenceRoute => route !== null
+              );
+        const verifiedRouteHashes = sourceRoutes
+          .filter(
+            (route): route is Extract<PresenceRoute, { kind: 'reticulum' }> =>
+              route.kind === 'reticulum'
+          )
+          .map((route) => route.destinationHash);
+        resolvedSource = resolveDirectCallSourceEndpoint(
+          verifiedRouteHashes,
+          senderDestinationHash,
+          peerPresenceHash
+        );
+      }
+      if (!resolvedSource) {
+        loggerLog(
+          `[Call] Ignored ${env.type} with an unauthenticated device route callId=${env.callId.slice(0, 8)}… from=${expectedSourceAddress}`
+        );
+        // Do not remember the overlay id: a direct/authentic device copy with
+        // the same id may still arrive and must remain processable.
+        return;
+      }
+      if (resolvedSource !== sourceEndpoint) {
+        loggerLog(
+          `[Call] Replaced relay route with verified call endpoint callId=${env.callId.slice(0, 8)}… relay=${sourceEndpoint.slice(0, 8)} endpoint=${resolvedSource.slice(0, 8)}`
+        );
+      }
+      sourceEndpoint = resolvedSource;
+    }
     if (overlayMeta) {
       if (this.hasSeenReticulumOverlayId(overlayMeta.overlayId)) return;
       this.rememberReticulumOverlayId(overlayMeta.overlayId);
-      const targetIsLocal = this.localAddresses.has(overlayMeta.targetAddress);
       if (overlayMeta.hopsRemaining > 0) {
         const forwarded = {
           ...wire,
@@ -902,9 +1054,6 @@ export class CallManager extends EventEmitter {
         );
       }
     }
-
-    const env = this.parseCallEnvelope(wire);
-    if (!env) return;
 
     if (env.type === 'CALL_REQUEST') {
       if (sourceEndpoint) this.handleRequestReticulum(sourceEndpoint, env);

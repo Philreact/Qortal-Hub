@@ -1895,10 +1895,6 @@ export class GroupCallManager extends EventEmitter {
 
   /** Cache address → nodeId learned from GC_JOIN, retained for diagnostics / legacy compatibility. */
   private participantNodeIds = new Map<string, string>();
-  /** Fallback address → peer presence hash learned from verified inbound Reticulum traffic. */
-  private reticulumPeerPresenceHashByAddress = new Map<string, string>();
-  /** Reverse Reticulum hash lookup for inbound audio/link events with no address context. */
-  private reticulumAddressByPeerPresenceHash = new Map<string, string>();
   private reticulumAudioAwaitingRouteByAddress = new Map<
     string,
     ReticulumAudioAwaitingRouteState
@@ -2310,25 +2306,14 @@ export class GroupCallManager extends EventEmitter {
     if (!address || !peerPresenceHash) return;
     const normalized = this.normalizePeerPresenceHashForAudio(peerPresenceHash);
     if (!normalized) return;
-    const previous = this.reticulumPeerPresenceHashByAddress.get(address);
-    if (previous) {
-      this.reticulumAddressByPeerPresenceHash.delete(
-        this.normalizePeerPresenceHashForAudio(previous)
-      );
-    }
-    this.reticulumPeerPresenceHashByAddress.set(address, normalized);
-    this.reticulumAddressByPeerPresenceHash.set(normalized, address);
+    // Do not cache destination ownership independently of signed room or
+    // presence state. One installation destination may represent different
+    // accounts over time, so such a cache can become stale after logout.
     this.promoteAwaitingRouteReticulumAudio(address);
   }
 
-  private forgetReticulumPeerPresenceHash(address: string): void {
-    const previous = this.reticulumPeerPresenceHashByAddress.get(address);
-    if (previous) {
-      this.reticulumAddressByPeerPresenceHash.delete(
-        this.normalizePeerPresenceHashForAudio(previous)
-      );
-    }
-    this.reticulumPeerPresenceHashByAddress.delete(address);
+  private forgetReticulumPeerPresenceHash(_address: string): void {
+    // Ownership is derived from live signed room/presence state, not cached.
   }
 
   /**
@@ -2362,26 +2347,29 @@ export class GroupCallManager extends EventEmitter {
         return pinned;
       }
     }
-    // A participant record is authoritative only for its own room. Borrowing
-    // one from another room can select a different laptop logged into the same
-    // account. Cross-room lookup is retained only for callers with no room
-    // context; room-scoped callers fall back to fresh presence discovery.
+    // A participant record is authoritative only for its own room. For a
+    // caller without room context, use a room route only when every active
+    // room agrees on the same destination.
+    const candidates = new Set<string>();
     if (!roomId) {
       for (const room of this.rooms.values()) {
-        const p = room.participants.get(address);
-        if (p?.reticulumDestinationHash) {
-          const h = p.reticulumDestinationHash.trim().toLowerCase();
-          this.rememberReticulumPeerPresenceHash(address, h);
-          return h;
-        }
+        const hash = room.participants
+          .get(address)
+          ?.reticulumDestinationHash?.trim()
+          .toLowerCase();
+        if (hash && isRnsDestinationHashHex(hash)) candidates.add(hash);
       }
     }
     const route = this.presence.getRouteForAddress(address);
     if (route?.kind === 'reticulum') {
-      this.rememberReticulumPeerPresenceHash(address, route.destinationHash);
-      return route.destinationHash;
+      const hash = route.destinationHash.trim().toLowerCase();
+      if (roomId) {
+        this.rememberReticulumPeerPresenceHash(address, hash);
+        return hash;
+      }
+      if (isRnsDestinationHashHex(hash)) candidates.add(hash);
     }
-    return this.reticulumPeerPresenceHashByAddress.get(address) ?? null;
+    return candidates.size === 1 ? [...candidates][0]! : null;
   }
 
   private attachReticulumBridgeListeners(): void {
@@ -2798,8 +2786,6 @@ export class GroupCallManager extends EventEmitter {
     this.localAddresses.clear();
     this.localAddressesBySource.clear();
     this.participantNodeIds.clear();
-    this.reticulumPeerPresenceHashByAddress.clear();
-    this.reticulumAddressByPeerPresenceHash.clear();
     for (const state of this.reticulumAudioAwaitingRouteByAddress.values()) {
       if (state.retryTimer) clearTimeout(state.retryTimer);
     }
@@ -4504,9 +4490,7 @@ export class GroupCallManager extends EventEmitter {
     }
 
     const syntheticFrom =
-      peerPresenceHash.length > 0
-        ? `reticulum:${peerPresenceHash}`
-        : undefined;
+      peerPresenceHash.length > 0 ? `reticulum:${peerPresenceHash}` : undefined;
 
     if (t === 'GJ') {
       const env = decodeJoinWire(wire);
@@ -5620,17 +5604,51 @@ export class GroupCallManager extends EventEmitter {
       const d = p?.reticulumDestinationHash?.trim().toLowerCase();
       if (d && d === w) return true;
     }
-    const route = this.presence.getRouteForAddress(address);
-    if (route?.kind === 'reticulum') {
+    for (const route of this.presence.getRoutesForAddress(address)) {
+      if (route.kind !== 'reticulum') continue;
       const rh = route.destinationHash.trim().toLowerCase();
       if (rh === w) return true;
     }
-    const cached = this.reticulumPeerPresenceHashByAddress
-      .get(address)
+    return false;
+  }
+
+  /**
+   * Room-scoped endpoint ownership. A general presence route or participant in
+   * another room must never override the wallet-verified destination selected
+   * for this room.
+   */
+  private addressMatchesWirePeerPresenceHashInRoom(
+    wantNormalized: string,
+    address: string,
+    roomId: string
+  ): boolean {
+    const want = wantNormalized.trim().toLowerCase();
+    const room = this.rooms.get(roomId);
+    const participant = room?.participants.get(address);
+    if (!want || !room || !participant) return false;
+
+    const participantHash = participant.reticulumDestinationHash
       ?.trim()
       .toLowerCase();
-    if (cached && cached === w) return true;
-    return false;
+    if (participantHash && isRnsDestinationHashHex(participantHash)) {
+      return participantHash === want;
+    }
+
+    if (roomId.startsWith(DM_VOICE_ROOM_PREFIX)) {
+      const pinned = room.dmVoicePeerDestinationHash?.trim().toLowerCase();
+      const dmPeer = this.resolveDmVoicePeerFromRoomId(roomId);
+      if (pinned && dmPeer === address && isRnsDestinationHashHex(pinned)) {
+        return pinned === want;
+      }
+    }
+
+    // Legacy participant rows may not contain a signed destination. In that
+    // case only a fresh wallet-authenticated presence route is an acceptable
+    // fallback for the same account.
+    return this.presence.getRoutesForAddress(address).some((route) => {
+      if (route.kind !== 'reticulum') return false;
+      return route.destinationHash.trim().toLowerCase() === want;
+    });
   }
 
   /**
@@ -5678,11 +5696,17 @@ export class GroupCallManager extends EventEmitter {
       if (
         byLinkId &&
         (!want ||
-          this.addressMatchesWirePeerPresenceHash(want, byLinkId) ||
-          this.normalizePeerPresenceHashForAudio(
-            this.reticulumAudioPeersByAddress.get(byLinkId)?.peerPresenceHash ??
-              ''
-          ) === want)
+          (roomId
+            ? this.addressMatchesWirePeerPresenceHashInRoom(
+                want,
+                byLinkId,
+                roomId
+              )
+            : this.addressMatchesWirePeerPresenceHash(want, byLinkId) ||
+              this.normalizePeerPresenceHashForAudio(
+                this.reticulumAudioPeersByAddress.get(byLinkId)
+                  ?.peerPresenceHash ?? ''
+              ) === want))
       ) {
         return byLinkId;
       }
@@ -5690,45 +5714,53 @@ export class GroupCallManager extends EventEmitter {
     if (!want) {
       return this.resolveDmVoicePeerFromRoomId(roomId);
     }
-    const cachedAddress = this.reticulumAddressByPeerPresenceHash.get(want);
-    if (cachedAddress) return cachedAddress;
-    for (const [address, state] of this.reticulumAudioPeersByAddress) {
-      if (
-        this.normalizePeerPresenceHashForAudio(state.peerPresenceHash) ===
-          want ||
-        this.addressMatchesWirePeerPresenceHash(want, address)
-      ) {
-        return address;
-      }
-    }
-    const matchParticipantsInRoom = (
-      room: GroupRoom | undefined
-    ): string | null => {
-      if (!room) return null;
-      for (const addr of room.participants.keys()) {
-        if (this.addressMatchesWirePeerPresenceHash(want, addr)) {
-          return addr;
+    const candidates = new Set<string>();
+    const collectRoomCandidates = (candidateRoomId: string): void => {
+      const room = this.rooms.get(candidateRoomId);
+      if (!room) return;
+      for (const address of room.participants.keys()) {
+        if (
+          this.addressMatchesWirePeerPresenceHashInRoom(
+            want,
+            address,
+            candidateRoomId
+          )
+        ) {
+          candidates.add(address);
         }
       }
-      return null;
     };
+
     if (roomId) {
-      const hit = matchParticipantsInRoom(this.rooms.get(roomId));
-      if (hit) return hit;
-      const room = this.rooms.get(roomId);
-      if (room) {
-        const remoteParticipants = [...room.participants.keys()].filter(
-          (address) => address && !this.localAddresses.has(address)
-        );
-        if (remoteParticipants.length === 1) return remoteParticipants[0]!;
+      collectRoomCandidates(roomId);
+      for (const [address, state] of this.reticulumAudioPeersByAddress) {
+        if (
+          state.rooms.has(roomId) &&
+          this.addressMatchesWirePeerPresenceHashInRoom(want, address, roomId)
+        ) {
+          candidates.add(address);
+        }
       }
     } else {
-      for (const r of this.rooms.values()) {
-        const hit = matchParticipantsInRoom(r);
-        if (hit) return hit;
+      for (const candidateRoomId of this.rooms.keys()) {
+        collectRoomCandidates(candidateRoomId);
+      }
+      for (const [address, state] of this.reticulumAudioPeersByAddress) {
+        if (
+          this.normalizePeerPresenceHashForAudio(state.peerPresenceHash) ===
+            want ||
+          this.addressMatchesWirePeerPresenceHash(want, address)
+        ) {
+          candidates.add(address);
+        }
       }
     }
-    return this.resolveDmVoicePeerFromRoomId(roomId);
+
+    // A device destination can legitimately have leases for different
+    // accounts over time. Without one unambiguous room-scoped owner, do not
+    // guess: link-auth or a later signed participant update will resolve it.
+    if (candidates.size === 1) return [...candidates][0]!;
+    return null;
   }
 
   private findRoomIdContainingParticipant(address: string): string | null {

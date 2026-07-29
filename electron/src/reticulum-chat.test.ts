@@ -5944,13 +5944,29 @@ describe('reticulum chat manager', () => {
       getVerifiedReticulumPeers: () => [
         {
           destinationHash: peerHash,
-          address: peer.address,
           lastSeen: Date.now(),
         },
         {
           destinationHash: secondPeerHash,
-          address: peer.address,
           lastSeen: Date.now() - 1,
+        },
+      ],
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: peerHash,
+          address: peer.address,
+          sessionId: 'peer-device-1',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 45_000,
+          verification: 'direct-bound',
+        },
+        {
+          destinationHash: secondPeerHash,
+          address: peer.address,
+          sessionId: 'peer-device-2',
+          lastSeen: Date.now() - 1,
+          expiresAt: Date.now() + 45_000,
+          verification: 'relayed-bound',
         },
       ],
       bridge: {
@@ -6048,8 +6064,17 @@ describe('reticulum chat manager', () => {
       getVerifiedReticulumPeers: () => [
         {
           destinationHash: peerHash,
-          address: peer.address,
           lastSeen: Date.now(),
+        },
+      ],
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: peerHash,
+          address: peer.address,
+          sessionId: 'peer-device-1',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 45_000,
+          verification: 'direct-bound',
         },
       ],
       bridge: {

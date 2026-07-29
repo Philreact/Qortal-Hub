@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { CallManager, startCallManager, stopCallManager } from './call';
+import {
+  CallManager,
+  resolveDirectCallSourceEndpoint,
+  startCallManager,
+  stopCallManager,
+} from './call';
 import { GroupCallManager } from './group-call';
 import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
@@ -16,6 +21,10 @@ import {
 class CallBridgeStub extends EventEmitter {
   getState(): 'ready' {
     return 'ready';
+  }
+
+  getLocalDestinationHash(): string {
+    return 'a'.repeat(32);
   }
 
   fanoutCallDetailed = vi.fn(
@@ -70,10 +79,15 @@ class PresenceTransportStub {
 }
 
 function presenceStub() {
+  const getRouteForAddress = vi.fn(() => null as any);
   return {
     on: vi.fn(),
     off: vi.fn(),
-    getRouteForAddress: vi.fn(() => null),
+    getRouteForAddress,
+    getRoutesForAddress: vi.fn(() => {
+      const route = getRouteForAddress();
+      return route ? [route] : [];
+    }),
     getReticulumActiveNeighborHashes: vi.fn(() => []),
     getNodeIdForAddress: vi.fn(() => null),
   };
@@ -86,6 +100,22 @@ afterEach(() => {
 });
 
 describe('Reticulum manager late bridge binding', () => {
+  it('never selects an unrelated relay as a direct-call endpoint', () => {
+    const deviceA = 'a'.repeat(32);
+    const deviceB = 'b'.repeat(32);
+    const relay = 'c'.repeat(32);
+
+    expect(resolveDirectCallSourceEndpoint([deviceA], relay, relay)).toBe(
+      deviceA
+    );
+    expect(
+      resolveDirectCallSourceEndpoint([deviceA, deviceB], relay, relay)
+    ).toBeNull();
+    expect(
+      resolveDirectCallSourceEndpoint([deviceA, deviceB], deviceB, relay)
+    ).toBe(deviceB);
+  });
+
   it('rebinds PresenceManager transports and republishes cached local presence', async () => {
     const firstTransport = new PresenceTransportStub();
     const secondTransport = new PresenceTransportStub();
@@ -644,7 +674,13 @@ describe('Reticulum manager late bridge binding', () => {
   it('relays inbound direct call overlays even when the target address is local', () => {
     vi.useFakeTimers();
     const bridge = new CallBridgeStub();
-    const manager = new CallManager(presenceStub() as any, bridge as any);
+    const presence = presenceStub();
+    const senderHash = 'b'.repeat(32);
+    const transportHash = 'c'.repeat(32);
+    presence.getRoutesForAddress.mockReturnValue([
+      { kind: 'reticulum', destinationHash: senderHash },
+    ]);
+    const manager = new CallManager(presence as any, bridge as any);
     const callId = '123e4567-e89b-12d3-a456-426614174002';
     const caller = `Q${'c'.repeat(33)}`;
     const local = `Q${'a'.repeat(33)}`;
@@ -671,8 +707,8 @@ describe('Reticulum manager late bridge binding', () => {
         L: 4,
         X: 'overlay-cr-target-local',
       },
-      'sender-hash',
-      'sender-peer-hash'
+      senderHash,
+      transportHash
     );
 
     expect(bridge.fanoutCallDetailed).toHaveBeenCalledTimes(1);
@@ -686,10 +722,10 @@ describe('Reticulum manager late bridge binding', () => {
           X: 'overlay-cr-target-local',
         }),
       ],
-      ['sender-peer-hash']
+      [transportHash]
     );
     expect(handleRequestSpy).toHaveBeenCalledWith(
-      'sender-hash',
+      senderHash,
       expect.objectContaining({
         type: 'CALL_REQUEST',
         callId,
@@ -726,6 +762,90 @@ describe('Reticulum manager late bridge binding', () => {
     expect(handleRequestSpy).toHaveBeenCalledWith(
       'authenticated-link-peer',
       expect.objectContaining({ callId: 'legacy-direct-call' })
+    );
+    manager.stop();
+  });
+
+  it('does not let an old relay poison DM call routing or overlay dedupe', () => {
+    const bridge = new CallBridgeStub();
+    const presence = presenceStub() as any;
+    const deviceA = 'a'.repeat(32);
+    const deviceB = 'b'.repeat(32);
+    const relay = 'c'.repeat(32);
+    presence.getRoutesForAddress = vi.fn(() => [
+      { kind: 'reticulum', destinationHash: deviceA },
+      { kind: 'reticulum', destinationHash: deviceB },
+    ]);
+    const manager = new CallManager(presence, bridge as any);
+    const handleAcceptSpy = vi
+      .spyOn(manager as any, 'handleAccept')
+      .mockImplementation(() => {});
+    (manager as any).activeCalls.set('call-mixed-relay', {
+      callId: 'call-mixed-relay',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: deviceA,
+      invitedReticulumPeerHashes: new Set([deviceA, deviceB]),
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+    manager.setLocalAddresses(['Q-local']);
+    manager.start();
+
+    const wire = {
+      t: 'CA',
+      c: 'call-mixed-relay',
+      k: 'peer-public-key',
+      g: 'peer-signature',
+      m: Date.now(),
+      U: 'Q-local',
+      L: 2,
+      X: 'same-overlay-id',
+    };
+    bridge.emit('call-message', wire, relay, relay);
+    expect(handleAcceptSpy).not.toHaveBeenCalled();
+
+    bridge.emit('call-message', wire, deviceB, relay);
+    expect(handleAcceptSpy).toHaveBeenCalledTimes(1);
+    expect(handleAcceptSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: 'call-mixed-relay' }),
+      deviceB
+    );
+    manager.stop();
+  });
+
+  it('uses the signed route-bound call id through a legacy relay', () => {
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    const callerDestination = 'b'.repeat(32);
+    const relayDestination = 'c'.repeat(32);
+    const callId = `Cu7u7u7u7u7u7u7u7u7u7uwABCDEFGHIJKLM`;
+    expect(callId).toHaveLength(36);
+    const handleRequestSpy = vi
+      .spyOn(manager as any, 'handleRequestReticulum')
+      .mockImplementation(() => {});
+    manager.setLocalAddresses(['Q-local']);
+    manager.start();
+
+    const wire = {
+      t: 'CR',
+      c: callId,
+      a: 'Q-caller',
+      k: 'caller-public-key',
+      g: 'caller-signature',
+      m: Date.now(),
+      U: 'Q-local',
+      L: 1,
+      X: 'route-bound-call-overlay',
+      r: relayDestination,
+    };
+
+    bridge.emit('call-message', wire, relayDestination, relayDestination);
+    expect(handleRequestSpy).toHaveBeenCalledWith(
+      callerDestination,
+      expect.objectContaining({ callId })
     );
     manager.stop();
   });
@@ -800,6 +920,40 @@ describe('Reticulum manager late bridge binding', () => {
     expect(sentWire).not.toHaveProperty('H');
     expect(sentWire).not.toHaveProperty('type');
     expect(sentWire.X).toMatch(/^[0-9a-f]{16}$/);
+    expect(byteLengthUtf8JsonWithBridgeSender(sentWire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    manager.stop();
+  });
+
+  it('keeps route-bound direct call requests within the encrypted MDU', async () => {
+    const presence = presenceStub();
+    presence.getRouteForAddress.mockReturnValue({
+      kind: 'reticulum',
+      destinationHash: 'b'.repeat(32),
+    });
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presence as any, bridge as any);
+    const local = `Q${'a'.repeat(33)}`;
+    const peer = `Q${'b'.repeat(33)}`;
+    const chatId = `direct:${[local, peer].sort().join(':')}`;
+    const callId = `CqqqqqqqqqqqqqqqqqqqqqgABCDEFGHIJKLM`;
+
+    manager.start();
+    await expect(
+      manager.initiateCall(
+        peer,
+        chatId,
+        local,
+        'S'.repeat(88),
+        'P'.repeat(44),
+        callId,
+        1_775_545_146_838
+      )
+    ).resolves.toBe(callId);
+
+    const sentWire = vi.mocked(bridge.fanoutCallDetailed).mock.calls[0]![0][0]!;
+    expect(sentWire.r).toBe('a'.repeat(32));
     expect(byteLengthUtf8JsonWithBridgeSender(sentWire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );

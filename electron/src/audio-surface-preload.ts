@@ -4,6 +4,10 @@ import type {
   AudioSurfaceCommandResultEnvelope,
   AudioSurfaceEvent,
 } from './audio-surface-ipc';
+import {
+  invokeGroupCallJoin,
+  type GroupCallJoinIpcArguments,
+} from './group-call-ipc-contract';
 
 const HOST_COMMAND = 'audio-surface:host-command' as const;
 let gcallFullStreamOnEventRefCount = 0;
@@ -41,32 +45,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 });
 
 contextBridge.exposeInMainWorld('groupCall', {
-  join: async (
-    roomId: string,
-    chatId: string,
-    localAddress: string,
-    signature: string,
-    publicKey: string,
-    timestamp: number,
-    reticulumDestinationHash: string,
-    joinGeneration?: number,
-    topologyEpochFloor?: number,
-    reticulumIdentityPublicKeyBase64?: string,
-    joinRkSignature?: string
-  ) =>
-    ipcRenderer.invoke(
-      'gcall:join',
-      roomId,
-      chatId,
-      localAddress,
-      signature,
-      publicKey,
-      timestamp,
-      reticulumDestinationHash,
-      joinGeneration,
-      topologyEpochFloor,
-      reticulumIdentityPublicKeyBase64,
-      joinRkSignature
+  join: async (...args: GroupCallJoinIpcArguments) =>
+    invokeGroupCallJoin(
+      (channel, ...invokeArgs) => ipcRenderer.invoke(channel, ...invokeArgs),
+      ...args
     ),
   leave: async (
     roomId: string,

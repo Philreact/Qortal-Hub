@@ -110,6 +110,7 @@ type ReticulumOverlayPeerStatus = {
   peerPresenceHash: string;
   incoming?: boolean;
   address?: string;
+  addresses?: string[];
   connectedAt: number;
 };
 
@@ -873,14 +874,17 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                                     </TableCell>
                                     <TableCell
                                       sx={{
-                                        fontFamily: peer.address
-                                          ? 'inherit'
-                                          : 'monospace',
+                                        fontFamily:
+                                          peer.addresses?.length || peer.address
+                                            ? 'inherit'
+                                            : 'monospace',
                                         fontSize: '0.75rem',
                                         wordBreak: 'break-all',
                                       }}
                                     >
-                                      {peer.address || 'Unknown'}
+                                      {peer.addresses?.length
+                                        ? peer.addresses.join(', ')
+                                        : peer.address || 'Unknown'}
                                     </TableCell>
                                     <TableCell sx={{ fontSize: '0.75rem' }}>
                                       {peer.incoming === true

@@ -122,6 +122,7 @@ import {
   GC_MESSAGE_TYPES,
 } from './group-call';
 import type { GcEnvelope } from './group-call';
+import type { GroupCallJoinIpcArguments } from './group-call-ipc-contract';
 import {
   getReticulumBridge,
   startReticulumBridge,
@@ -2727,13 +2728,15 @@ async function startReticulumManagers(): Promise<void> {
       validateGroupMember: validateQortalGroupMember,
       validateGroupAdmin: validateQortalGroupAdmin,
       getVerifiedReticulumPeers: () =>
-        getPresenceManager()?.getReticulumVerifiedPeers() ?? [],
+        getPresenceManager()?.getReticulumVerifiedTransportPeers() ?? [],
+      getAccountEndpointLeases: () =>
+        getPresenceManager()?.getReticulumAccountEndpointLeases() ?? [],
       hasGoodOverlayHealth: () => {
         const manager = getPresenceManager();
         if (!manager) return false;
         return (
           manager.getReticulumActiveNeighborHashes().length > 0 ||
-          manager.getReticulumVerifiedPeers().length > 0
+          manager.getReticulumVerifiedTransportPeers().length > 0
         );
       },
       resourceStore,
@@ -3022,12 +3025,12 @@ async function syncReticulumOverlayStateToBridge(
     return;
   }
   const verifiedPeers: ReticulumOverlayVerifiedPeer[] = manager
-    .getReticulumVerifiedPeers()
+    .getReticulumVerifiedTransportPeers()
     .map((peer) => ({
       destinationHash: peer.destinationHash,
-      address: peer.address,
       lastSeen: peer.lastSeen,
     }));
+  const accountEndpointLeases = manager.getReticulumAccountEndpointLeases();
   const activeNeighborHashes = manager.getReticulumActiveNeighborHashes();
   const overlayNeighborHashes =
     activeNeighborHashes.length > 0
@@ -3038,7 +3041,8 @@ async function syncReticulumOverlayStateToBridge(
   try {
     const ok = await bridge.syncOverlayState(
       verifiedPeers,
-      overlayNeighborHashes
+      overlayNeighborHashes,
+      accountEndpointLeases
     );
     if (!ok) {
       scheduleReticulumOverlayStateSyncRetry(manager, attempt, sequence);
@@ -3391,6 +3395,9 @@ export function attachPresenceListeners(
       scheduleReticulumChatSubscriptionReplay();
       getReticulumChatManager()?.notifyOverlayHealthChanged(true);
     }
+  });
+  manager.on('reticulum-account-endpoints-changed', () => {
+    void syncReticulumOverlayStateToBridge(manager);
   });
   manager.on(
     'reticulum-candidate-failed',
@@ -6142,24 +6149,24 @@ export function attachGroupCallListeners(
 
 ipcMain.handle(
   'gcall:join',
-  async (
-    _event,
-    roomId: string,
-    chatId: string,
-    localAddress: string,
-    signature: string,
-    publicKey: string,
-    timestamp: number,
-    reticulumDestinationHash: string,
-    joinGeneration?: number,
-    topologyEpochFloor?: number,
-    reticulumIdentityPublicKeyBase64?: string,
-    joinRkSignature?: string,
-    dmVoiceAudioLinkRole?: 'opener' | 'waiter',
-    takeover?: boolean,
-    dmVoicePeerDestinationHash?: string,
-    dmVoiceCallId?: string
-  ) => {
+  async (_event, ...args: GroupCallJoinIpcArguments) => {
+    const [
+      roomId,
+      chatId,
+      localAddress,
+      signature,
+      publicKey,
+      timestamp,
+      reticulumDestinationHash,
+      joinGeneration,
+      topologyEpochFloor,
+      reticulumIdentityPublicKeyBase64,
+      joinRkSignature,
+      dmVoiceAudioLinkRole,
+      takeover,
+      dmVoicePeerDestinationHash,
+      dmVoiceCallId,
+    ] = args;
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
     try {

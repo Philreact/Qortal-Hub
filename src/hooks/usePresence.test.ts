@@ -84,6 +84,9 @@ describe('usePresence', () => {
         reticulumGetStatus: vi.fn(async () => ({
           onlineRemoteHubInterfaces,
         })),
+        reticulumGetLocalDestinationHash: vi.fn(async () => ({
+          destinationHash: 'a'.repeat(32),
+        })),
       },
       presence: {
         announce,
@@ -145,6 +148,12 @@ describe('usePresence', () => {
     });
 
     expect(announce).toHaveBeenCalledTimes(1);
+    expect((announce.mock.lastCall?.[0] as any)?.id).toMatch(
+      /^[A-Za-z0-9_-]{16}$/
+    );
+    expect((announce.mock.lastCall?.[0] as any)?.payload?.sessionId).toMatch(
+      /^P[A-Za-z0-9_-]{35}$/
+    );
     expect(startHeartbeatScheduler).toHaveBeenCalledTimes(1);
     expect(heartbeat).not.toHaveBeenCalled();
 

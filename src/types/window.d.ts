@@ -235,6 +235,7 @@ declare global {
           peerPresenceHash: string;
           incoming?: boolean;
           address?: string;
+          addresses?: string[];
           connectedAt: number;
         }>
       >;
@@ -245,6 +246,7 @@ declare global {
           peerPresenceHash: string;
           incoming?: boolean;
           address?: string;
+          addresses?: string[];
           connectedAt: number;
         }>;
       }>;

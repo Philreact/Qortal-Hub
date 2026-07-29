@@ -189,6 +189,7 @@ type ReticulumDetailsPeer = {
   peerPresenceHash: string;
   incoming?: boolean;
   address?: string;
+  addresses?: string[];
   connectedAt: number;
 };
 
@@ -3999,9 +4000,13 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             {minutes === 0
                               ? td('idle_auto_lock_disabled', 'Disabled')
                               : minutes < 60
-                                ? td('idle_auto_lock_minutes', '{{count}} min', {
-                                    count: minutes,
-                                  })
+                                ? td(
+                                    'idle_auto_lock_minutes',
+                                    '{{count}} min',
+                                    {
+                                      count: minutes,
+                                    }
+                                  )
                                 : td(
                                     'idle_auto_lock_hours',
                                     minutes === 60 ? '1 hour' : '3 hours',
@@ -5057,7 +5062,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   >
                     {peer.peerPresenceHash}
                   </Typography>
-                  {peer.address ? (
+                  {peer.addresses?.length || peer.address ? (
                     <Typography
                       sx={{
                         color: theme.palette.text.secondary,
@@ -5066,7 +5071,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         overflowWrap: 'anywhere',
                       }}
                     >
-                      {peer.address}
+                      {peer.addresses?.length
+                        ? peer.addresses.join(', ')
+                        : peer.address}
                     </Typography>
                   ) : null}
                 </Box>

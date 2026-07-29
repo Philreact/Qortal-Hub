@@ -10,6 +10,10 @@ import type {
   AudioSurfaceCommandResultEnvelope,
   AudioSurfaceEvent,
 } from './audio-surface-ipc';
+import {
+  invokeGroupCallJoin,
+  type GroupCallJoinIpcArguments,
+} from './group-call-ipc-contract';
 
 // Sandbox-safe minimal Capacitor bridge. The repo's electron-plugins module is
 // currently empty, so we only need to preserve the platform marker here.
@@ -582,6 +586,7 @@ try {
           peerPresenceHash: string;
           incoming?: boolean;
           address?: string;
+          addresses?: string[];
           connectedAt: number;
         }>
       >,
@@ -593,6 +598,7 @@ try {
           peerPresenceHash: string;
           incoming?: boolean;
           address?: string;
+          addresses?: string[];
           connectedAt: number;
         }>;
       }>,
@@ -3331,40 +3337,10 @@ try {
      * Join a group call room.
      * The renderer must pre-sign the join envelope before calling this.
      */
-    join: async (
-      roomId: string,
-      chatId: string,
-      localAddress: string,
-      signature: string,
-      publicKey: string,
-      timestamp: number,
-      reticulumDestinationHash: string,
-      joinGeneration?: number,
-      topologyEpochFloor?: number,
-      reticulumIdentityPublicKeyBase64?: string,
-      joinRkSignature?: string,
-      dmVoiceAudioLinkRole?: 'opener' | 'waiter',
-      takeover?: boolean,
-      dmVoicePeerDestinationHash?: string,
-      dmVoiceCallId?: string
-    ) =>
-      ipcRenderer.invoke(
-        'gcall:join',
-        roomId,
-        chatId,
-        localAddress,
-        signature,
-        publicKey,
-        timestamp,
-        reticulumDestinationHash,
-        joinGeneration,
-        topologyEpochFloor,
-        reticulumIdentityPublicKeyBase64,
-        joinRkSignature,
-        dmVoiceAudioLinkRole,
-        takeover,
-        dmVoicePeerDestinationHash,
-        dmVoiceCallId
+    join: async (...args: GroupCallJoinIpcArguments) =>
+      invokeGroupCallJoin(
+        (channel, ...invokeArgs) => ipcRenderer.invoke(channel, ...invokeArgs),
+        ...args
       ) as Promise<{
         success: boolean;
         error?: string;

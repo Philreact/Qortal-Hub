@@ -585,8 +585,16 @@ export type ReticulumConnectivitySnapshot = {
 
 export type ReticulumOverlayVerifiedPeer = {
   destinationHash: string;
-  address: string;
   lastSeen: number;
+};
+
+export type ReticulumOverlayAccountEndpointLease = {
+  destinationHash: string;
+  address: string;
+  sessionId: string;
+  lastSeen: number;
+  expiresAt: number;
+  verification: 'direct-bound' | 'direct-legacy' | 'relayed-bound';
 };
 
 export type ReticulumOverlayLinkSnapshot = {
@@ -618,6 +626,7 @@ type BridgeEventFrame =
         route?: {
           kind: 'reticulum';
           destinationHash: string;
+          viaDestinationHash?: string;
           linkId?: string;
           overlayHopsRemaining?: number;
         };
@@ -3040,13 +3049,15 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   async syncOverlayState(
     verifiedPeers: ReticulumOverlayVerifiedPeer[],
-    activeNeighborHashes: string[]
+    activeNeighborHashes: string[],
+    accountEndpointLeases: ReticulumOverlayAccountEndpointLease[] = []
   ): Promise<boolean> {
     await this.start();
     if (this.state !== 'ready') return false;
     const resp = await this.sendCommand('overlay_sync_state', {
       verifiedPeers,
       activeNeighborHashes,
+      accountEndpointLeases,
     });
     if (!resp.ok && this.isBridgeCommandBacklogResponse(resp)) {
       throw new Error(
@@ -3573,7 +3584,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     // prepareStop() detaches this child before terminating it. Any late EPIPE
     // from that child is therefore expected and must not affect a replacement
     // bridge (or escape as an unhandled stream error).
-    if (this.child !== child || !this.desiredRunning || this.state === 'stopped') {
+    if (
+      this.child !== child ||
+      !this.desiredRunning ||
+      this.state === 'stopped'
+    ) {
       return;
     }
     const code = (error as NodeJS.ErrnoException).code;

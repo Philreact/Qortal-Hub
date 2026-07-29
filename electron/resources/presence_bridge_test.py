@@ -191,6 +191,130 @@ class PresenceBridgeWireEncodingTest(unittest.TestCase):
         wire = json.loads(encoded["wire_bytes"].decode("utf-8"))
         self.assertEqual(wire["r"], "22" * 16)
 
+    def test_route_bound_presence_fits_encrypted_mdu_direct_and_relayed(self):
+        origin_raw = bytes.fromhex("55" * 16)
+        origin_route = base64.urlsafe_b64encode(origin_raw).decode("ascii").rstrip("=")
+        local_route = base64.urlsafe_b64encode(bytes.fromhex("44" * 16)).decode(
+            "ascii"
+        ).rstrip("=")
+        envelope = {
+            "type": "PRESENCE_ANNOUNCE",
+            "id": "x" * 16,
+            "timestamp": 9_999_999_999_999,
+            "signature": "z" * 88,
+            "payload": {
+                "address": "Q" + ("a" * 33),
+                "publicKey": "k" * 44,
+                "sessionId": "P" + local_route + ("e" * 13),
+                "status": "online",
+                "clientVersion": "1.0.0",
+            },
+        }
+
+        direct = self.bridge.make_presence_wire(envelope, 4)
+        relayed_envelope = {
+            **envelope,
+            "payload": {
+                **envelope["payload"],
+                "sessionId": "P" + origin_route + ("e" * 13),
+            },
+        }
+        relayed = self.bridge.make_presence_wire(
+            relayed_envelope,
+            3,
+            origin_sender_hash="55" * 16,
+        )
+
+        self.assertLessEqual(len(direct), self.bridge._MAX_ENCRYPTED_WIRE_BYTES)
+        self.assertLessEqual(len(relayed), self.bridge._MAX_ENCRYPTED_WIRE_BYTES)
+        self.assertNotIn("o", json.loads(relayed.decode("utf-8")))
+
+    def test_oversized_legacy_presence_is_rejected_before_packet_send(self):
+        envelope = {
+            "type": "PRESENCE_ANNOUNCE",
+            "id": "x" * 36,
+            "timestamp": 9_999_999_999_999,
+            "signature": "z" * 88,
+            "payload": {
+                "address": "Q" + ("a" * 33),
+                "publicKey": "k" * 44,
+                "sessionId": "legacy-session-id".ljust(36, "x"),
+                "status": "online",
+                "clientVersion": "1.0.0",
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "exceeds encrypted MDU"):
+            self.bridge.make_presence_wire(envelope, 4)
+
+    def test_stale_route_bound_presence_is_not_republished_after_route_change(self):
+        stale_route = base64.urlsafe_b64encode(bytes.fromhex("55" * 16)).decode(
+            "ascii"
+        ).rstrip("=")
+        envelope = {
+            "type": "PRESENCE_HEARTBEAT",
+            "id": "x" * 16,
+            "timestamp": 9_999_999_999_999,
+            "signature": "z" * 88,
+            "payload": {
+                "address": "Q" + ("a" * 33),
+                "publicKey": "k" * 44,
+                "sessionId": "P" + stale_route + ("e" * 13),
+                "status": "online",
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "local destination"):
+            self.bridge.make_presence_wire(envelope, 4)
+
+    def test_presence_route_binding_decoder_rejects_noncanonical_ids(self):
+        route = base64.urlsafe_b64encode(bytes.fromhex("55" * 16)).decode("ascii").rstrip("=")
+        session_id = "P" + route + ("e" * 13)
+        self.assertEqual(
+            self.bridge._presence_route_bound_destination_hash(session_id),
+            "55" * 16,
+        )
+        self.assertIsNone(
+            self.bridge._presence_route_bound_destination_hash("P" + ("!" * 35))
+        )
+
+    def test_route_bound_presence_recovers_signed_origin_from_relay(self):
+        origin_raw = bytes.fromhex("55" * 16)
+        route = base64.urlsafe_b64encode(origin_raw).decode("ascii").rstrip("=")
+        emitted = []
+        message = {
+            "t": "PRESENCE_HEARTBEAT",
+            "i": "x" * 16,
+            "a": "Q" + ("a" * 33),
+            "k": "k" * 44,
+            "n": "P" + route + ("e" * 13),
+            "m": 9_999_999_999_999,
+            "g": "z" * 88,
+            "r": "44" * 16,
+            "s": "online",
+            "q": 3,
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_event",
+            side_effect=lambda event, payload: emitted.append((event, payload)),
+        ):
+            accepted = self.bridge._emit_presence_message(message, "relay-link")
+
+        self.assertTrue(accepted)
+        self.assertEqual(emitted[0][0], "presence_message")
+        self.assertEqual(
+            emitted[0][1]["route"],
+            {
+                "kind": "reticulum",
+                "destinationHash": "55" * 16,
+                "viaDestinationHash": "44" * 16,
+                "overlayHopsRemaining": 3,
+                "linkId": "relay-link",
+            },
+        )
+
 
 class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
     def setUp(self):
@@ -4348,6 +4472,107 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.assertNotIn("receipt", job)
         self.assertFalse(
             any(call.args[0] == "auth_sent" for call in emit.call_args_list)
+        )
+
+
+class PresenceBridgeAccountEndpointLeaseTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.bridge._destination = FakeDestination()
+
+    def lease(self, address, destination, session, verification="direct-bound", offset=0):
+        now_ms = int(time.time() * 1000)
+        return {
+            "address": address,
+            "destinationHash": destination,
+            "sessionId": session,
+            "lastSeen": now_ms + offset,
+            "expiresAt": now_ms + 45_000 + offset,
+            "verification": verification,
+        }
+
+    def test_one_transport_can_serve_multiple_signed_account_leases(self):
+        destination = "aa" * 16
+        self.bridge._set_verified_overlay_peers(
+            [{"destinationHash": destination, "lastSeen": int(time.time() * 1000)}],
+            [destination],
+            [
+                self.lease("Q-account-a", destination, "session-a"),
+                self.lease("Q-account-b", destination, "session-b"),
+            ],
+        )
+
+        self.assertNotIn("address", self.bridge._verified_overlay_peers[destination])
+        self.assertEqual(
+            self.bridge._resolve_verified_game_peer("Q-account-a", destination),
+            destination,
+        )
+        self.assertEqual(
+            self.bridge._resolve_verified_game_peer("Q-account-b", destination),
+            destination,
+        )
+
+    def test_account_switch_removes_only_the_ended_lease(self):
+        destination = "aa" * 16
+        self.bridge._set_verified_overlay_peers(
+            [{"destinationHash": destination, "lastSeen": int(time.time() * 1000)}],
+            [destination],
+            [
+                self.lease("Q-account-a", destination, "session-a"),
+                self.lease("Q-account-b", destination, "session-b"),
+            ],
+        )
+        self.bridge._set_verified_overlay_peers(
+            [{"destinationHash": destination, "lastSeen": int(time.time() * 1000)}],
+            [destination],
+            [self.lease("Q-account-b", destination, "session-b", offset=1)],
+        )
+
+        self.assertIsNone(
+            self.bridge._resolve_verified_game_peer("Q-account-a", destination)
+        )
+        self.assertEqual(
+            self.bridge._resolve_verified_game_peer("Q-account-b", destination),
+            destination,
+        )
+        self.assertIn(destination, self.bridge._verified_overlay_peers)
+
+    def test_expired_account_lease_is_never_resolved(self):
+        destination = "aa" * 16
+        expired = self.lease("Q-account-a", destination, "session-a")
+        expired["expiresAt"] = int(time.time() * 1000) - 1
+        self.bridge._set_verified_overlay_peers(
+            [{"destinationHash": destination, "lastSeen": int(time.time() * 1000)}],
+            [destination],
+            [expired],
+        )
+
+        self.assertIsNone(
+            self.bridge._resolve_verified_game_peer("Q-account-a", destination)
+        )
+        self.assertIn(destination, self.bridge._verified_overlay_peers)
+
+    def test_unpreferred_resolution_uses_strongest_fresh_lease(self):
+        relayed = "aa" * 16
+        direct = "bb" * 16
+        self.bridge._set_verified_overlay_peers(
+            [
+                {"destinationHash": relayed, "lastSeen": int(time.time() * 1000)},
+                {"destinationHash": direct, "lastSeen": int(time.time() * 1000)},
+            ],
+            [relayed, direct],
+            [
+                self.lease(
+                    "Q-account", relayed, "session-relayed", "relayed-bound", 10
+                ),
+                self.lease(
+                    "Q-account", direct, "session-direct", "direct-bound", 0
+                ),
+            ],
+        )
+
+        self.assertEqual(
+            self.bridge._resolve_verified_game_peer("Q-account"), direct
         )
 
 

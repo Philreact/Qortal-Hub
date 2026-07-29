@@ -17,6 +17,7 @@ import {
 } from './logger';
 import { runEd25519VerifySync } from './ed25519-verify-common';
 import { VerifyWorkerPool } from './verify-worker-pool';
+import { getRouteBoundDestinationHash } from './reticulum-route-bound-id';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +162,10 @@ export interface PresenceSession {
   route: PresenceRoute;
   routeLastValidated: number;
   routeExpiresAt: number | null;
+  /** The signed session id commits to this Reticulum route. */
+  reticulumRouteBindingVerified: boolean;
+  /** Safe for endpoint-bound traffic (bound route, or direct legacy ingress). */
+  endpointRouteUsable: boolean;
   clientVersion?: string;
   status: UserStatus;
   signatureValid: true;
@@ -266,7 +271,6 @@ type ReticulumCandidatePeer = {
 
 type VerifiedReticulumPeer = {
   destinationHash: string;
-  address: string;
   lastSeen: number;
   verifiedAt: number;
   linkClosedAt: number | null;
@@ -274,10 +278,28 @@ type VerifiedReticulumPeer = {
   linkCooldownUntil: number | null;
 };
 
-export type ReticulumVerifiedPeerSnapshot = {
+export type ReticulumVerifiedTransportPeerSnapshot = {
+  destinationHash: string;
+  lastSeen: number;
+};
+
+export type ReticulumAccountEndpointVerification =
+  | 'direct-bound'
+  | 'direct-legacy'
+  | 'relayed-bound';
+
+/**
+ * A short-lived, wallet-authenticated association between a Qortal account
+ * and a Reticulum installation. Unlike the transport peer record, this lease
+ * is removed by signed offline state and naturally expires with presence.
+ */
+export type ReticulumAccountEndpointLeaseSnapshot = {
   destinationHash: string;
   address: string;
+  sessionId: string;
   lastSeen: number;
+  expiresAt: number;
+  verification: ReticulumAccountEndpointVerification;
 };
 
 // ── Utility: Base58 (ported from src/encryption/Base58.ts) ───────────────────
@@ -752,12 +774,25 @@ function shouldPreferAggregateRoute(
   current: PresenceSession | null,
   now: number
 ): boolean {
-  if (!isRouteFresh(candidate, now)) return false;
+  if (
+    !isRouteFresh(candidate, now) ||
+    candidate.endpointRouteUsable === false
+  ) {
+    return false;
+  }
   if (!current) return true;
   const candidateIsReticulum = candidate.route.kind === 'reticulum';
   const currentIsReticulum = current.route.kind === 'reticulum';
   if (candidateIsReticulum !== currentIsReticulum) {
     return candidateIsReticulum;
+  }
+  if (
+    candidateIsReticulum &&
+    currentIsReticulum &&
+    candidate.reticulumRouteBindingVerified !==
+      current.reticulumRouteBindingVerified
+  ) {
+    return candidate.reticulumRouteBindingVerified;
   }
   return candidate.lastSeen > current.lastSeen;
 }
@@ -1014,6 +1049,25 @@ export class PresenceManager extends EventEmitter {
       );
       return false;
     }
+    const signedReticulumDestination = getRouteBoundDestinationHash(
+      'presence',
+      p.sessionId
+    );
+    if (
+      route.kind === 'reticulum' &&
+      signedReticulumDestination &&
+      signedReticulumDestination !== route.destinationHash.trim().toLowerCase()
+    ) {
+      this.noteReticulumCandidateFailure(
+        route.viaDestinationHash ?? route.destinationHash,
+        'signed presence route mismatch',
+        now
+      );
+      loggerLog(
+        `[Presence] Rejected route-bound envelope with mismatched Reticulum origin ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)}`
+      );
+      return false;
+    }
     logPresenceHotPath(
       `[Presence] Signature verified ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)}`
     );
@@ -1030,6 +1084,17 @@ export class PresenceManager extends EventEmitter {
     const p = envelope.payload as PresenceAnnouncePayload;
     const { address, publicKey, sessionId } = p;
     const legacyPeerIds = routeToLegacyPeerIds(route);
+    const signedReticulumDestination = getRouteBoundDestinationHash(
+      'presence',
+      sessionId
+    );
+    const reticulumRouteBindingVerified =
+      route.kind === 'reticulum' &&
+      signedReticulumDestination === route.destinationHash.trim().toLowerCase();
+    const endpointRouteUsable =
+      route.kind !== 'reticulum' ||
+      reticulumRouteBindingVerified ||
+      !route.viaDestinationHash;
     const routeExpiresAt = getRouteExpiry(route, now);
     const key = `${address}:${sessionId}`;
     const existing = this.sessions.get(key);
@@ -1073,12 +1138,32 @@ export class PresenceManager extends EventEmitter {
     this.rememberAcceptedEnvelope(envelope, now);
 
     if (route.kind === 'reticulum') {
-      this.markReticulumOverlayPeerVerified(
-        route.destinationHash,
-        route.viaDestinationHash ? 'presence-relayed' : 'presence-direct',
-        address,
-        now
-      );
+      if (route.viaDestinationHash) {
+        // The relay is the transport peer that directly authenticated on this
+        // link. The signed origin is useful as a dial candidate and endpoint
+        // lease, but must not be promoted to a verified transport peer until
+        // it authenticates directly.
+        this.markReticulumOverlayPeerVerified(
+          route.viaDestinationHash,
+          'presence-relay-transport',
+          now
+        );
+        if (reticulumRouteBindingVerified) {
+          this.noteReticulumCandidateDiscovered(
+            route.destinationHash,
+            'presence-relayed-bound',
+            now
+          );
+        }
+      } else {
+        this.markReticulumOverlayPeerVerified(
+          route.destinationHash,
+          reticulumRouteBindingVerified
+            ? 'presence-direct-bound'
+            : 'presence-direct-legacy',
+          now
+        );
+      }
     }
 
     if (envelope.type === 'PRESENCE_OFFLINE') {
@@ -1106,6 +1191,8 @@ export class PresenceManager extends EventEmitter {
         route,
         routeLastValidated: now,
         routeExpiresAt,
+        reticulumRouteBindingVerified,
+        endpointRouteUsable,
         clientVersion:
           envelope.type === 'PRESENCE_ANNOUNCE'
             ? (p as PresenceAnnouncePayload).clientVersion
@@ -1115,6 +1202,17 @@ export class PresenceManager extends EventEmitter {
         signatureValid: true,
       });
       this.addSessionKey(address, key);
+      if (
+        route.kind === 'reticulum' &&
+        (!existing ||
+          existing.route.kind !== 'reticulum' ||
+          existing.route.destinationHash !== route.destinationHash ||
+          existing.route.viaDestinationHash !== route.viaDestinationHash ||
+          existing.reticulumRouteBindingVerified !==
+            reticulumRouteBindingVerified)
+      ) {
+        this.emitReticulumAccountEndpointsChanged();
+      }
       if (route.kind === 'local') {
         this.lastLocalEnvelope = envelope as PresenceEnvelope;
       }
@@ -1226,7 +1324,8 @@ export class PresenceManager extends EventEmitter {
       if (
         !session ||
         !isSessionLive(session, now) ||
-        !isRouteFresh(session, now)
+        !isRouteFresh(session, now) ||
+        session.endpointRouteUsable === false
       ) {
         continue;
       }
@@ -1244,6 +1343,12 @@ export class PresenceManager extends EventEmitter {
 
     return [...freshestSessionByRoute.values()]
       .sort((left, right) => {
+        if (
+          left.reticulumRouteBindingVerified !==
+          right.reticulumRouteBindingVerified
+        ) {
+          return left.reticulumRouteBindingVerified ? -1 : 1;
+        }
         const priorityDifference =
           getPresenceRoutePriority(right.route) -
           getPresenceRoutePriority(left.route);
@@ -1318,6 +1423,7 @@ export class PresenceManager extends EventEmitter {
     for (const session of this.sessions.values()) {
       if (session.route.kind !== 'reticulum') continue;
       if (!isSessionLive(session, now)) continue;
+      if (session.endpointRouteUsable === false) continue;
       const h = session.route.destinationHash;
       if (typeof h !== 'string' || h.length === 0 || seen.has(h)) continue;
       if (this.isSelfReticulumHash(h)) continue;
@@ -1327,7 +1433,8 @@ export class PresenceManager extends EventEmitter {
     return out;
   }
 
-  getReticulumVerifiedPeers(): ReticulumVerifiedPeerSnapshot[] {
+  /** Transport topology only. A device may serve different Qortal accounts. */
+  getReticulumVerifiedTransportPeers(): ReticulumVerifiedTransportPeerSnapshot[] {
     const now = Date.now();
     this.pruneReticulumOverlayState(now);
     return [...this.verifiedReticulumPeers.values()]
@@ -1335,9 +1442,84 @@ export class PresenceManager extends EventEmitter {
       .sort((a, b) => a.verifiedAt - b.verifiedAt || b.lastSeen - a.lastSeen)
       .map((peer) => ({
         destinationHash: peer.destinationHash,
-        address: peer.address,
         lastSeen: peer.lastSeen,
       }));
+  }
+
+  /**
+   * Returns current account-to-device leases derived from accepted presence
+   * sessions. No independent cache is maintained, so offline, expiry and route
+   * invalidation cannot leave a stale account owner attached to a device.
+   */
+  getReticulumAccountEndpointLeases(): ReticulumAccountEndpointLeaseSnapshot[] {
+    const now = Date.now();
+    const bestByAccountAndDestination = new Map<
+      string,
+      ReticulumAccountEndpointLeaseSnapshot
+    >();
+    const verificationPriority: Record<
+      ReticulumAccountEndpointVerification,
+      number
+    > = {
+      'direct-bound': 3,
+      'direct-legacy': 2,
+      'relayed-bound': 1,
+    };
+
+    for (const session of this.sessions.values()) {
+      if (
+        session.route.kind !== 'reticulum' ||
+        !isSessionLive(session, now) ||
+        !isRouteFresh(session, now) ||
+        session.endpointRouteUsable === false ||
+        this.isSelfReticulumHash(session.route.destinationHash)
+      ) {
+        continue;
+      }
+      const verification: ReticulumAccountEndpointVerification =
+        session.route.viaDestinationHash &&
+        session.reticulumRouteBindingVerified
+          ? 'relayed-bound'
+          : session.reticulumRouteBindingVerified
+            ? 'direct-bound'
+            : 'direct-legacy';
+      const livenessExpiresAt =
+        getSessionLivenessAt(session) + PRESENCE_SESSION_TIMEOUT_MS;
+      const expiresAt =
+        session.routeExpiresAt === null
+          ? livenessExpiresAt
+          : Math.min(livenessExpiresAt, session.routeExpiresAt);
+      if (expiresAt <= now) continue;
+      const lease: ReticulumAccountEndpointLeaseSnapshot = {
+        destinationHash: session.route.destinationHash.trim().toLowerCase(),
+        address: session.address,
+        sessionId: session.sessionId,
+        lastSeen: session.lastSeen,
+        expiresAt,
+        verification,
+      };
+      const key = `${lease.address}:${lease.destinationHash}`;
+      const current = bestByAccountAndDestination.get(key);
+      if (
+        !current ||
+        verificationPriority[lease.verification] >
+          verificationPriority[current.verification] ||
+        (verificationPriority[lease.verification] ===
+          verificationPriority[current.verification] &&
+          lease.lastSeen > current.lastSeen)
+      ) {
+        bestByAccountAndDestination.set(key, lease);
+      }
+    }
+
+    return [...bestByAccountAndDestination.values()].sort(
+      (a, b) =>
+        a.address.localeCompare(b.address) ||
+        verificationPriority[b.verification] -
+          verificationPriority[a.verification] ||
+        b.lastSeen - a.lastSeen ||
+        a.destinationHash.localeCompare(b.destinationHash)
+    );
   }
 
   /**
@@ -1493,13 +1675,12 @@ export class PresenceManager extends EventEmitter {
   markReticulumOverlayPeerVerified(
     destinationHash: string,
     source: string = 'qortal-overlay',
-    address?: string,
     now: number = Date.now()
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
     if (this.isSelfReticulumHash(hash)) return;
-    this.promoteVerifiedReticulumPeer(hash, address ?? '', now, source);
+    this.promoteVerifiedReticulumPeer(hash, now, source);
   }
 
   /** Returns the most-recently-seen active status for an address, or null. */
@@ -1513,12 +1694,16 @@ export class PresenceManager extends EventEmitter {
     const now = Date.now();
     const changedAddresses = new Set<string>();
     let expiredSessions = 0;
+    let expiredReticulumEndpoints = false;
 
     for (const [key, session] of this.sessions.entries()) {
       const livenessAt = getSessionLivenessAt(session);
       if (now - livenessAt > PRESENCE_SESSION_TIMEOUT_MS) {
         this.sessions.delete(key);
         this.removeSessionKey(session.address, key);
+        if (session.route.kind === 'reticulum') {
+          expiredReticulumEndpoints = true;
+        }
         changedAddresses.add(session.address);
         expiredSessions++;
         loggerLog(
@@ -1546,6 +1731,9 @@ export class PresenceManager extends EventEmitter {
 
     for (const address of changedAddresses) {
       this.emitPresenceUpdate(address, now);
+    }
+    if (expiredReticulumEndpoints) {
+      this.emitReticulumAccountEndpointsChanged();
     }
     this.pruneReticulumOverlayState(now);
     if (expiredSessions > 0) {
@@ -1617,6 +1805,9 @@ export class PresenceManager extends EventEmitter {
     }
     this.pruneReticulumOverlayState();
     if (removedSessions > 0) {
+      if (routeKind === 'reticulum') {
+        this.emitReticulumAccountEndpointsChanged();
+      }
       loggerLog(
         `[Presence] Invalidated ${removedSessions} session(s) after transport degradation routeKind=${routeKind}`
       );
@@ -1628,9 +1819,13 @@ export class PresenceManager extends EventEmitter {
     loggerLog(
       `[Presence] Removing session address=${address} sessionId=${sessionId}`
     );
+    const removed = this.sessions.get(key);
     this.sessions.delete(key);
     this.removeSessionKey(address, key);
     this.emitPresenceUpdate(address);
+    if (removed?.route.kind === 'reticulum') {
+      this.emitReticulumAccountEndpointsChanged();
+    }
     this.pruneReticulumOverlayState();
   }
 
@@ -1751,19 +1946,15 @@ export class PresenceManager extends EventEmitter {
    */
   private promoteVerifiedReticulumPeer(
     destinationHash: string,
-    address: string,
     now: number,
     source: string = 'presence'
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
     if (this.isSelfReticulumHash(hash)) return;
-    const normalizedAddress = address.trim();
     this.reticulumCandidates.delete(hash);
     const existing = this.verifiedReticulumPeers.get(hash);
     if (existing) {
-      const addressWasBackfilled =
-        !existing.address && Boolean(normalizedAddress);
       const wasClosed = existing.linkClosedAt !== null;
       const canClearClosedState =
         !wasClosed ||
@@ -1772,9 +1963,6 @@ export class PresenceManager extends EventEmitter {
           now >= existing.linkCooldownUntil);
       this.verifiedReticulumPeers.set(hash, {
         destinationHash: hash,
-        // A destination's first authenticated, non-empty Qortal address is
-        // immutable. Later conflicting claims must never replace it.
-        address: existing.address || normalizedAddress,
         lastSeen: now,
         verifiedAt: existing.verifiedAt,
         linkClosedAt: canClearClosedState ? null : existing.linkClosedAt,
@@ -1786,17 +1974,13 @@ export class PresenceManager extends EventEmitter {
       if (wasClosed && canClearClosedState) {
         this.recomputeReticulumActiveNeighbors(now);
       }
-      if ((wasClosed && canClearClosedState) || addressWasBackfilled) {
-        // The bridge's game resolver indexes verified peers by Qortal address.
-        // Push a newly authenticated address immediately instead of leaving
-        // the bridge with the earlier address-less verification snapshot.
+      if (wasClosed && canClearClosedState) {
         this.emitReticulumOverlayChanged();
       }
       return;
     }
     this.verifiedReticulumPeers.set(hash, {
       destinationHash: hash,
-      address: normalizedAddress,
       lastSeen: now,
       verifiedAt: now,
       linkClosedAt: null,
@@ -1806,7 +1990,6 @@ export class PresenceManager extends EventEmitter {
     this.recomputeReticulumActiveNeighbors(now);
     this.emit('reticulum-peer-verified', {
       destinationHash: hash,
-      address: normalizedAddress,
       lastSeen: now,
       source,
     });
@@ -1965,6 +2148,12 @@ export class PresenceManager extends EventEmitter {
       publishFanout: this.activeReticulumPublishHashes.length,
     });
   }
+
+  private emitReticulumAccountEndpointsChanged(): void {
+    this.emit('reticulum-account-endpoints-changed', {
+      leases: this.getReticulumAccountEndpointLeases().length,
+    });
+  }
 }
 
 // ── Helpers for the renderer (exported for use via IPC) ──────────────────────
@@ -2004,7 +2193,10 @@ export function buildEnvelope(
   signature: string
 ): PresenceEnvelope {
   return {
-    id: nodeCrypto.randomUUID(),
+    // The id is only a short-lived deduplication token, not signed identity.
+    // 96 random bits are ample and keep the complete Reticulum presence frame
+    // below the encrypted MDU even with maximum Base58 field lengths.
+    id: nodeCrypto.randomBytes(12).toString('base64url'),
     type,
     senderAddress: payload.address,
     timestamp,
