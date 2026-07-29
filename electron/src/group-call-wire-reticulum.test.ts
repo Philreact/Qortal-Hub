@@ -192,6 +192,43 @@ describe('group-call-wire-reticulum', () => {
     expect(wireFitsReticulum(w)).toBe(true);
   });
 
+  it('compacts only an oversized worst-case GC_JOIN and restores its destination', () => {
+    const d32 = 'ab'.repeat(16);
+    const w = encodeJoinWire({
+      roomId: 'gcall-qortal-2147483647',
+      chatId: 'group:2147483647',
+      fromAddress: 'Q'.repeat(34),
+      fromPublicKey: 'p'.repeat(44),
+      signature: 'z'.repeat(88),
+      timestamp: 9_999_999_999_999,
+      reticulumDestinationHash: d32,
+      joinGeneration: -4_294_967_296,
+    });
+
+    expect(w.d).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(w.d).not.toBe(d32);
+    expect(bridgeWireJsonBytes(w)).toBeLessThanOrEqual(
+      RT_GCALL_MAX_WIRE_JSON_BYTES
+    );
+    expect(wireFitsReticulum(w)).toBe(true);
+    expect(decodeJoinWire(w)?.reticulumDestinationHash).toBe(d32);
+    expect(decodeJoinWireFailureReason(w)).toBeNull();
+  });
+
+  it('measures the actual overlay id instead of replacing it with a placeholder', () => {
+    const wire = {
+      t: 'GJ',
+      X: 'x'.repeat(20),
+      L: 4,
+    };
+    const expected = Buffer.byteLength(
+      JSON.stringify({ ...wire, r: '0'.repeat(32) }),
+      'utf8'
+    );
+
+    expect(bridgeWireJsonBytes(wire)).toBe(expected);
+  });
+
   it('GC_JOIN+GI split: GJ without rk and GI with unpadded rk both fit Reticulum MDU', () => {
     const d32 = 'a'.repeat(32);
     const rk = Buffer.alloc(64, 7).toString('base64');

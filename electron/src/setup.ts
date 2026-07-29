@@ -4544,6 +4544,13 @@ ipcMain.handle(
       timestamp?: unknown;
     }
   ) => {
+    const callType = String(call?.callType ?? 'unknown').slice(0, 16);
+    const callId = String(call?.callId ?? '').slice(0, 12);
+    if (['request', 'accept', 'reject', 'hangup'].includes(callType)) {
+      loggerLog(
+        `[ReticulumChat] land_call_send_attempt group=${groupId} type=${callType} call=${callId}`
+      );
+    }
     const settings = await readAppSettings();
     if (!isReticulumChatEffectivelyEnabled(settings)) {
       return { success: false, error: 'Reticulum chat is disabled' };
@@ -4556,10 +4563,16 @@ ipcMain.handle(
       const result = await manager.sendLandCall(groupId, call);
       if (!result.ok) {
         const failed = result as Exclude<typeof result, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] land_call_send_rejected group=${groupId} type=${callType} call=${callId} reason=${failed.error ?? failed.reason}`
+        );
         return { success: false, error: failed.error ?? failed.reason };
       }
       return { success: true };
     } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] land_call_send_exception group=${groupId} type=${callType} call=${callId} reason=${err instanceof Error ? err.message : String(err)}`
+      );
       return {
         success: false,
         error:
@@ -6700,6 +6713,7 @@ ipcMain.handle('audio-surface:is-ready', async (event) => {
 ipcMain.handle(
   'audio-surface:send-command',
   async (_event, command: AudioSurfaceCommand) => {
+    const commandStartedAt = Date.now();
     if (!isMainShellSender(_event.sender)) {
       loggerLog(
         '[GCall:audio-surface] send-command: rejected (not main shell)',
@@ -6762,6 +6776,19 @@ ipcMain.handle(
       error:
         error instanceof Error ? error.message : 'audio-surface-command-failed',
     }));
+    const commandDurationMs = Date.now() - commandStartedAt;
+    if (
+      commandDurationMs >= 250 &&
+      (command.type === 'stop-direct-voice-media' ||
+        command.type === 'stop-direct-voice-receive')
+    ) {
+      loggerWarn('[GCall:audio-surface] slow direct-voice stop', {
+        type: command.type,
+        durationMs: commandDurationMs,
+        ok: (response as { ok?: boolean }).ok,
+        error: (response as { error?: string }).error,
+      });
+    }
     if (
       command.type === 'join-group-call' ||
       (response as { ok?: boolean }).ok === false

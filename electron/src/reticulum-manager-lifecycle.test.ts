@@ -419,7 +419,10 @@ describe('Reticulum manager late bridge binding', () => {
     vi.useFakeTimers();
     const bridge = new CallBridgeStub();
     bridge.sendCallDetailed
-      .mockResolvedValueOnce({ ok: false as const, reason: 'bridge-overloaded' })
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: 'bridge-overloaded',
+      })
       .mockResolvedValue({ ok: true as const });
     const manager = new CallManager(presenceStub() as any, bridge as any);
     (manager as any).verifyPool = {
@@ -796,6 +799,7 @@ describe('Reticulum manager late bridge binding', () => {
     expect(firstFanout![1]).toEqual([]);
     expect(sentWire).not.toHaveProperty('H');
     expect(sentWire).not.toHaveProperty('type');
+    expect(sentWire.X).toMatch(/^[0-9a-f]{16}$/);
     expect(byteLengthUtf8JsonWithBridgeSender(sentWire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );

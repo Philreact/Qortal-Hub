@@ -150,6 +150,30 @@ class FakeDestination:
         self.hash = bytes.fromhex("44" * 16)
 
 
+class PresenceBridgeWireEncodingTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.bridge._destination = FakeDestination()
+
+    def test_group_signal_stamps_transport_sender_without_overwriting_payload(self):
+        read_state = {
+            "y": "d",
+            "q": "Q-peer",
+            "u": 123,
+            "n": 124,
+            "p": "public-key",
+            "z": "signature",
+        }
+        encoded = self.bridge._encode_group_signal_wire(
+            {"t": "RCHAT", "k": "read_sync", "w": read_state}
+        )
+
+        self.assertTrue(encoded["ok"])
+        wire = json.loads(encoded["wire_bytes"].decode("utf-8"))
+        self.assertEqual(wire["r"], "44" * 16)
+        self.assertEqual(wire["w"], read_state)
+
+
 class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()

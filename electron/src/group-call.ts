@@ -3781,7 +3781,7 @@ export class GroupCallManager extends EventEmitter {
   }
 
   private nextReticulumOverlayId(): string {
-    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    return nodeCrypto.randomBytes(8).toString('hex');
   }
 
   private attachReticulumOverlayMeta(

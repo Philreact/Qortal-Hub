@@ -3413,7 +3413,7 @@ export function QortalLand({
         ? peer.targetDestinationHash
         : undefined;
     },
-    createCallId: () => createSessionId().slice(0, 20),
+    createCallId: () => createSessionId().slice(0, 16),
     suppressGlobalSnackbars: true,
   });
   const landVoiceCallStateRef = useRef(landVoiceCall.callState);

@@ -87,10 +87,8 @@ import {
   warn as loggerWarn,
 } from './logger';
 import {
-  byteLengthUtf8JsonWithBridgeSender,
   byteLengthUtf8JsonWithBridgeSenderOnly,
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
-  wireFitsReticulum,
   wireFitsReticulumChat,
 } from './reticulum-wire-size';
 import {
@@ -731,7 +729,9 @@ type ReticulumLandCallMediaRoute = {
   callId: string;
   chatId: string;
   localAddress: string;
+  localSessionId: string;
   remoteAddress: string;
+  remoteSessionId: string;
   peerDestinationHash: string;
   updatedAt: number;
 };
@@ -808,7 +808,7 @@ export type ReticulumChatProtocolFeature =
   | 'group_keys'
   | 'dm'
   | 'dm_author_streams_v1'
-  | 'read_sync_v1';
+  | 'read_sync_v2';
 
 export type ReticulumChatDigestWire = {
   c: string;
@@ -1047,7 +1047,7 @@ export type ReticulumDmEventWire =
 /** Compact, account-signed read watermark sent only to the account's devices. */
 export type ReticulumChatReadSyncWire = {
   y: 'g' | 'd';
-  c: string;
+  c?: string;
   g?: number;
   q?: string;
   u: number;
@@ -1137,13 +1137,18 @@ export function verifyReticulumChatReadSyncWire(
         signature: wire.z,
       };
     } else if (wire.y === 'd') {
-      const conversationId = normalizeReticulumDmConversationId(wire.c);
       const peerAddress = String(wire.q || '').trim();
+      const conversationId = reticulumDmConversationId(
+        ownerAddress,
+        peerAddress
+      );
+      const suppliedConversationId =
+        wire.c == null ? '' : normalizeReticulumDmConversationId(wire.c);
       if (
         !conversationId ||
         !isValidQortalAddress(peerAddress) ||
         peerAddress === ownerAddress ||
-        reticulumDmConversationId(ownerAddress, peerAddress) !== conversationId
+        (wire.c != null && suppliedConversationId !== conversationId)
       ) {
         return null;
       }
@@ -1277,8 +1282,8 @@ type ReticulumDmPageResource = {
 
 export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'hello_v3'; v: 3; f: ReticulumChatProtocolFeature[] }
-  | { t: 'RCHAT'; k: 'read_sync'; r: ReticulumChatReadSyncWire }
-  | { t: 'RCHAT'; k: 'read_sync_ack'; r: ReticulumChatReadSyncAckWire }
+  | { t: 'RCHAT'; k: 'read_sync'; w: ReticulumChatReadSyncWire }
+  | { t: 'RCHAT'; k: 'read_sync_ack'; w: ReticulumChatReadSyncAckWire }
   | {
       t: 'RCHAT';
       k: 'group_sub';
@@ -1369,7 +1374,7 @@ export type ReticulumChatWire =
       g: number;
       n: ReticulumChatAuthorTreeNodeWire;
     }
-  | { t: 'RCHAT'; v: 3; k: 'author_tree_reset_v3'; g: number; r: string }
+  | { t: 'RCHAT'; v: 3; k: 'author_tree_reset_v3'; g: number; x: string }
   | {
       t: 'RCHAT';
       v: 3;
@@ -1423,7 +1428,7 @@ export type ReticulumChatWire =
       t: 'RCHAT';
       k: 'resource_receipt';
       g: number;
-      r: ReticulumChatResourceReceiptWire;
+      w: ReticulumChatResourceReceiptWire;
     }
   | {
       t: 'RCHAT';
@@ -1506,7 +1511,7 @@ export type ReticulumChatWire =
       sp?: string;
       rk?: string;
     }
-  | { t: 'RCHAT'; k: 'dm_resource_receipt'; r: ReticulumDmResourceReceiptWire }
+  | { t: 'RCHAT'; k: 'dm_resource_receipt'; w: ReticulumDmResourceReceiptWire }
   | { t: 'RCHAT'; k: 'dm_page_offer'; p: ReticulumDmPageOfferWire }
   | {
       t: 'RCHAT';
@@ -1723,7 +1728,7 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'author_merkle_v1',
   'dm',
   'dm_author_streams_v1',
-  'read_sync_v1',
+  'read_sync_v2',
   ...(!isDisabledRelayCache ? ['relay_cache' as const] : []),
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
@@ -7042,7 +7047,7 @@ export class ReticulumChatManager extends EventEmitter {
           t: 'RCHAT',
           k: 'resource_receipt',
           g: groupId,
-          r: receipt,
+          w: receipt,
         });
         if (!result.ok) continue;
         sent = true;
@@ -7146,7 +7151,7 @@ export class ReticulumChatManager extends EventEmitter {
         const result = await this.sendToPeer(peer, {
           t: 'RCHAT',
           k: 'dm_resource_receipt',
-          r: receipt,
+          w: receipt,
         });
         if (!result.ok) continue;
         sent = true;
@@ -8113,10 +8118,10 @@ export class ReticulumChatManager extends EventEmitter {
       q: requestId,
       e: entries,
     };
-    while (response.e.length > 0 && !wireFitsReticulum(response)) {
+    while (response.e.length > 0 && !wireFitsReticulumChat(response)) {
       response.e.pop();
     }
-    if (wireFitsReticulum(response)) {
+    if (wireFitsReticulumChat(response)) {
       await this.sendToPeerOnce(peerHash, response);
     }
   }
@@ -9169,18 +9174,24 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number;
     callId: string;
     localAddress: string;
+    localSessionId: string;
     remoteAddress: string;
+    remoteSessionId: string;
     peerDestinationHash: string;
   }): void {
     const callId = input.callId.trim();
     const localAddress = input.localAddress.trim();
     const remoteAddress = input.remoteAddress.trim();
+    const localSessionId = input.localSessionId.trim();
+    const remoteSessionId = input.remoteSessionId.trim();
     const peerDestinationHash = input.peerDestinationHash.trim().toLowerCase();
     const chatId = buildLandDirectCallChatId(localAddress, remoteAddress);
     if (
       !callId ||
       !localAddress ||
+      !localSessionId ||
       !remoteAddress ||
+      !remoteSessionId ||
       !peerDestinationHash ||
       !chatId
     ) {
@@ -9194,7 +9205,9 @@ export class ReticulumChatManager extends EventEmitter {
         callId,
         chatId,
         localAddress,
+        localSessionId,
         remoteAddress,
+        remoteSessionId,
         peerDestinationHash,
         updatedAt: this.now(),
       }
@@ -9236,6 +9249,35 @@ export class ReticulumChatManager extends EventEmitter {
       return null;
     }
     return route.peerDestinationHash;
+  }
+
+  private getRetainedLandCallPeerRoute(input: {
+    groupId: number;
+    callId: string;
+    localAddress: string;
+    localSessionId: string;
+    remoteAddress: string;
+    remoteSessionId: string;
+    peerDestinationHash: string;
+  }): ReticulumLandCallMediaRoute | null {
+    const chatId = buildLandDirectCallChatId(
+      input.localAddress,
+      input.remoteAddress
+    );
+    this.pruneLandCallMediaRoutes();
+    const route = this.landCallMediaRoutes.get(
+      this.landCallMediaRouteKey(input.callId, chatId, input.localAddress)
+    );
+    return route &&
+      route.groupId === input.groupId &&
+      route.localAddress === input.localAddress.trim() &&
+      route.localSessionId === input.localSessionId.trim() &&
+      route.remoteAddress === input.remoteAddress.trim() &&
+      route.remoteSessionId === input.remoteSessionId.trim() &&
+      route.peerDestinationHash ===
+        input.peerDestinationHash.trim().toLowerCase()
+      ? route
+      : null;
   }
 
   private pruneLandSessionRoutes(now = this.now()): void {
@@ -9582,7 +9624,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!verifyReticulumLandAuthWire(wire, now)) {
       throw new Error('Invalid QortalLand state signature');
     }
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       throw new Error('QortalLand auth exceeds Reticulum wire size');
     }
     this.localLandAuthSentAt.set(key, now);
@@ -9645,7 +9687,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (
       !route ||
       route.authorAddress !== authorAddress ||
-      !wireFitsReticulum(wire)
+      !wireFitsReticulumChat(wire)
     )
       return;
     this.landSessionRoutes.set(
@@ -9812,7 +9854,7 @@ export class ReticulumChatManager extends EventEmitter {
       ts: timestamp,
       z: base58Encode(signature),
     };
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       throw new Error('QortalLand state exceeds Reticulum wire size');
     }
     void this.sendLocalGroupLiveControl(wire);
@@ -9950,7 +9992,7 @@ export class ReticulumChatManager extends EventEmitter {
         ...(roomId ? { u: roomId } : {}),
         ts: this.now(),
       };
-      if (!wireFitsReticulum(wire)) {
+      if (!wireFitsReticulumChat(wire)) {
         return {
           ok: false,
           reason: 'send-command-failed',
@@ -10009,7 +10051,7 @@ export class ReticulumChatManager extends EventEmitter {
       ts: timestamp,
       z: base58Encode(signature),
     };
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       return {
         ok: false,
         reason: 'send-command-failed',
@@ -10123,14 +10165,39 @@ export class ReticulumChatManager extends EventEmitter {
         toAddress,
         targetSessionId
       );
+      // A verified incoming call already binds its caller account, Land
+      // session and authenticated Reticulum ingress endpoint. Replies for that
+      // exact call may use the retained binding even if the independent Land
+      // route announcement expired or was missed between receipt and accept.
+      const retainedCallRoute =
+        callType === 'request'
+          ? null
+          : this.getRetainedLandCallPeerRoute({
+              groupId,
+              callId,
+              localAddress: fromAddress,
+              localSessionId: sourceSessionId,
+              remoteAddress: toAddress,
+              remoteSessionId: targetSessionId,
+              peerDestinationHash: targetDestinationHash,
+            });
+      if (
+        retainedCallRoute &&
+        (!targetRoute || targetRoute.destinationHash !== targetDestinationHash)
+      ) {
+        loggerWarn(
+          `[ReticulumChat] land_call_v2_route_fallback group=${groupId} type=${callType} call=${callId.slice(0, 12)} target_session=${targetSessionId} cache=${targetRoute ? 'mismatch' : 'missing'}`
+        );
+      }
       if (
         !sourceDestinationHash ||
         !sourceSessionId ||
         sourceSessionId.length > RETICULUM_LAND_SESSION_ID_MAX_LENGTH ||
         !targetSessionId ||
         targetSessionId.length > RETICULUM_LAND_SESSION_ID_MAX_LENGTH ||
-        !targetRoute ||
-        targetRoute.destinationHash !== targetDestinationHash
+        ((!targetRoute ||
+          targetRoute.destinationHash !== targetDestinationHash) &&
+          !retainedCallRoute)
       ) {
         return {
           ok: false,
@@ -10156,6 +10223,10 @@ export class ReticulumChatManager extends EventEmitter {
           error: 'QortalLand call signing is unavailable',
         };
       }
+      // Interactive call controls do not need room or rejection details for
+      // routing. Those fields made the signed packet's size depend on the
+      // Base58 signature length and intermittently exceed the encrypted MDU.
+      const signedReason = '';
       const signed = await signer({
         type: 'QORTAL_LAND_CALL_V2',
         groupId,
@@ -10166,8 +10237,8 @@ export class ReticulumChatManager extends EventEmitter {
         targetSessionId,
         sourceDestinationHash,
         targetDestinationHash,
-        reason,
-        roomId,
+        reason: signedReason,
+        roomId: '',
         timestamp,
       }).catch(() => null);
       if (!signed || signed.authorAddress !== fromAddress) {
@@ -10188,8 +10259,9 @@ export class ReticulumChatManager extends EventEmitter {
         j: compactLandSessionIdForWire(targetSessionId),
         p: signed.authorPublicKey,
         z: signed.signature,
-        ...(reason ? { n: reason } : {}),
-        ...(roomId ? { u: roomId } : {}),
+        // Room presence already travels in Land state/status. Keeping it and
+        // nonessential rejection text out of this endpoint control leaves
+        // deterministic room for maximum Base58 key/signature lengths.
         s: timestamp,
       };
       if (
@@ -10197,7 +10269,10 @@ export class ReticulumChatManager extends EventEmitter {
           sourceDestinationHash,
           targetDestinationHash,
         }) ||
-        !wireFitsReticulum(wire)
+        // lc2 is endpoint-bound and is never overlay-forwarded. Measure the
+        // actual direct RCHAT envelope (`r` only), not the larger hypothetical
+        // X/L overlay envelope used by fanout controls.
+        !wireFitsReticulumChat(wire)
       ) {
         return {
           ok: false,
@@ -10215,7 +10290,9 @@ export class ReticulumChatManager extends EventEmitter {
             groupId,
             callId,
             localAddress: fromAddress,
+            localSessionId: sourceSessionId,
             remoteAddress: toAddress,
+            remoteSessionId: targetSessionId,
             peerDestinationHash: targetDestinationHash,
           });
         } else if (callType === 'reject' || callType === 'hangup') {
@@ -10307,7 +10384,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(roomId && !signedControl ? { u: roomId } : {}),
       s: timestamp,
     };
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       return {
         ok: false,
         reason: 'send-command-failed',
@@ -11463,12 +11540,11 @@ export class ReticulumChatManager extends EventEmitter {
     const wire: Extract<ReticulumChatWire, { k: 'read_sync' }> = {
       t: 'RCHAT',
       k: 'read_sync',
-      r: {
+      w: {
         y: state.scopeType === 'group' ? 'g' : 'd',
-        c:
-          state.scopeType === 'group'
-            ? String(state.channelId || '')
-            : String(state.conversationId || ''),
+        ...(state.scopeType === 'group'
+          ? { c: String(state.channelId || '') }
+          : {}),
         ...(state.scopeType === 'group' ? { g: state.groupId } : {}),
         ...(state.scopeType === 'dm' ? { q: state.peerAddress } : {}),
         u: state.upToTimestamp,
@@ -11477,8 +11553,8 @@ export class ReticulumChatManager extends EventEmitter {
         z: state.signature,
       },
     };
-    return verifyReticulumChatReadSyncWire(wire.r, this.now()) &&
-      wireFitsReticulum(wire)
+    return verifyReticulumChatReadSyncWire(wire.w, this.now()) &&
+      wireFitsReticulumChat(wire)
       ? wire
       : null;
   }
@@ -11527,7 +11603,7 @@ export class ReticulumChatManager extends EventEmitter {
     return this.getVerifiedDmPeerHashes(ownerAddress).filter((peerHash) => {
       if (peerHash === localPeer) return false;
       const features = this.peerProtocolFeatures.get(peerHash);
-      return !features || features.has('read_sync_v1');
+      return !features || features.has('read_sync_v2');
     });
   }
 
@@ -11550,7 +11626,7 @@ export class ReticulumChatManager extends EventEmitter {
     const wire: Extract<ReticulumChatWire, { k: 'read_sync_ack' }> = {
       t: 'RCHAT',
       k: 'read_sync_ack',
-      r: {
+      w: {
         y: state.scopeType === 'group' ? 'g' : 'd',
         c:
           state.scopeType === 'group'
@@ -11560,7 +11636,7 @@ export class ReticulumChatManager extends EventEmitter {
         u: state.upToTimestamp,
       },
     };
-    if (!wireFitsReticulum(wire)) return;
+    if (!wireFitsReticulumChat(wire)) return;
     await this.sendToPeerOnce(peerHash, wire);
   }
 
@@ -13453,7 +13529,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'author_tree_reset_v3': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        void this.handleAuthorTreeReset(groupId, wire.r, peerHash);
+        void this.handleAuthorTreeReset(groupId, wire.x, peerHash);
         return;
       }
       case 'relay_query': {
@@ -13530,7 +13606,7 @@ export class ReticulumChatManager extends EventEmitter {
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         void this.handleResourceReceipt(
           groupId,
-          wire.r as ReticulumChatResourceReceiptWire,
+          wire.w as ReticulumChatResourceReceiptWire,
           peerHash
         );
         return;
@@ -13615,7 +13691,7 @@ export class ReticulumChatManager extends EventEmitter {
         return;
       case 'dm_resource_receipt':
         void this.handleDirectResourceReceipt(
-          wire.r as ReticulumDmResourceReceiptWire,
+          wire.w as ReticulumDmResourceReceiptWire,
           peerHash
         );
         return;
@@ -13817,7 +13893,7 @@ export class ReticulumChatManager extends EventEmitter {
       (feature) =>
         feature !== 'range_auth_v1' &&
         feature !== 'dm_author_streams_v1' &&
-        feature !== 'read_sync_v1'
+        feature !== 'read_sync_v2'
     ).every((feature) => features.has(feature));
   }
 
@@ -14337,7 +14413,7 @@ export class ReticulumChatManager extends EventEmitter {
     wire: Extract<ReticulumChatWire, { k: 'read_sync' }>,
     peerHash: string
   ): void {
-    const state = verifyReticulumChatReadSyncWire(wire.r, this.now());
+    const state = verifyReticulumChatReadSyncWire(wire.w, this.now());
     if (!state) return;
     const sourcePeer = this.routePeerHash(peerHash) ?? peerHash.toLowerCase();
     if (
@@ -14402,7 +14478,7 @@ export class ReticulumChatManager extends EventEmitter {
     peerHash: string
   ): void {
     const sourcePeer = this.routePeerHash(peerHash) ?? peerHash.toLowerCase();
-    const upToTimestamp = Math.floor(Number(wire.r?.u));
+    const upToTimestamp = Math.floor(Number(wire.w?.u));
     if (
       !sourcePeer ||
       !Number.isSafeInteger(upToTimestamp) ||
@@ -14414,23 +14490,23 @@ export class ReticulumChatManager extends EventEmitter {
     let ownerAddress = '';
     let scopeType: 'group' | 'dm';
     let scopeId = '';
-    if (wire.r.y === 'g') {
-      const groupId = Number(wire.r.g);
-      const channelId = normalizeReticulumChatChannelId(wire.r.c);
+    if (wire.w.y === 'g') {
+      const groupId = Number(wire.w.g);
+      const channelId = normalizeReticulumChatChannelId(wire.w.c);
       if (
         !Number.isSafeInteger(groupId) ||
         groupId <= 0 ||
-        typeof wire.r.c !== 'string' ||
-        wire.r.c.trim().toLowerCase() !== channelId
+        typeof wire.w.c !== 'string' ||
+        wire.w.c.trim().toLowerCase() !== channelId
       ) {
         return;
       }
       ownerAddress = this.localGroupAddresses.get(groupId) || '';
       scopeType = 'group';
       scopeId = `${groupId}:${channelId}`;
-    } else if (wire.r.y === 'd') {
-      const conversationId = normalizeReticulumDmConversationId(wire.r.c);
-      if (!conversationId || wire.r.c !== conversationId) return;
+    } else if (wire.w.y === 'd') {
+      const conversationId = normalizeReticulumDmConversationId(wire.w.c);
+      if (!conversationId || wire.w.c !== conversationId) return;
       scopeType = 'dm';
       scopeId = conversationId;
       // Resolve the owner through both the local state and the endpoint's
@@ -14747,7 +14823,7 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     if (!verifyReticulumDmRequest(request.q, timestamp)) return null;
-    return wireFitsReticulum(request) ? request : null;
+    return wireFitsReticulumChat(request) ? request : null;
   }
 
   private dmPageNoProgressKey(
@@ -15251,7 +15327,7 @@ export class ReticulumChatManager extends EventEmitter {
         h: hop + 1,
       },
     };
-    if (!wireFitsReticulum(forwarded)) return;
+    if (!wireFitsReticulumChat(forwarded)) return;
     const localPeerHash = this.getLocalResourcePeerHash();
     void this.fanout(forwarded, [
       reversePeerHash,
@@ -15314,7 +15390,7 @@ export class ReticulumChatManager extends EventEmitter {
         h: hop + 1,
       },
     };
-    if (!wireFitsReticulum(forwarded)) return;
+    if (!wireFitsReticulumChat(forwarded)) return;
     const localPeerHash = this.getLocalResourcePeerHash();
     void this.fanout(forwarded, [
       reversePeerHash,
@@ -15448,7 +15524,7 @@ export class ReticulumChatManager extends EventEmitter {
           : {}),
       },
     };
-    if (wireFitsReticulum(offer)) void this.sendToPeer(peer, offer);
+    if (wireFitsReticulumChat(offer)) void this.sendToPeer(peer, offer);
   }
 
   private async handleDirectPageOffer(
@@ -15819,7 +15895,7 @@ export class ReticulumChatManager extends EventEmitter {
       a: authorAddress,
       s: sessionId,
     };
-    if (!wireFitsReticulum(wire)) return;
+    if (!wireFitsReticulumChat(wire)) return;
     if (this.localGroupIds.has(groupId) && this.subscribedGroups.has(groupId)) {
       void this.sendLocalGroupLiveControl(wire).then((result) => {
         if (result.ok !== true) this.recentLandAuthRequests.delete(key);
@@ -16383,7 +16459,9 @@ export class ReticulumChatManager extends EventEmitter {
           groupId,
           callId: call.callId,
           localAddress: call.toAddress,
+          localSessionId: call.targetSessionId,
           remoteAddress: call.fromAddress,
+          remoteSessionId: call.sourceSessionId,
           peerDestinationHash: sourcePeer,
         });
       } else if (call.callType === 'reject' || call.callType === 'hangup') {
@@ -17077,7 +17155,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...(kind === 'relay_query' ? {} : { rid: requestId }),
       h: hops + 1,
     } as ReticulumChatWire;
-    if (kind === 'event_req' && !wireFitsReticulum(forwarded)) {
+    if (kind === 'event_req' && !wireFitsReticulumChat(forwarded)) {
       delete (
         forwarded as Partial<Extract<ReticulumChatWire, { k: 'event_req' }>>
       ).rid;
@@ -17896,13 +17974,13 @@ export class ReticulumChatManager extends EventEmitter {
           id: requestId,
           ranges: candidateRanges.map(authorRangeToWire),
         };
-        if (wireFitsReticulum(candidate)) {
+        if (wireFitsReticulumChat(candidate)) {
           responseRanges = candidateRanges;
           continue;
         }
         await sendResponse();
         if (
-          wireFitsReticulum({
+          wireFitsReticulumChat({
             ...candidate,
             ranges: [authorRangeToWire(range)],
           })
@@ -19208,7 +19286,7 @@ export class ReticulumChatManager extends EventEmitter {
         ranges: [authorRangeToWire(pagedRange)],
         limit: RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS,
       };
-      if (!wireFitsReticulum(wire)) {
+      if (!wireFitsReticulumChat(wire)) {
         this.db.scheduleMissingRange(
           groupId,
           normalizedRange.a,
@@ -19376,14 +19454,14 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     if (this.isClosed) return { ok: false, reason: 'bridge-unavailable' };
-    if (!wireFitsReticulum(wire) && wire.q && legacyRequestId) {
+    if (!wireFitsReticulumChat(wire) && wire.q && legacyRequestId) {
       delete wire.q;
       wire.id = legacyRequestId;
       wire.ranges = ranges.map(authorRangeToWire);
       wire.limit = limit;
       requestId = legacyRequestId;
     }
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       return { ok: false, reason: 'wire-too-large' };
     }
     this.pendingAuthorRangeRequests.set(requestId, {
@@ -22019,7 +22097,7 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     if (!verifyReticulumDmNotify(notify.d, timestamp)) return null;
-    if (!wireFitsReticulum(notify)) return null;
+    if (!wireFitsReticulumChat(notify)) return null;
     this.pruneDmDiscoveryRoutes(timestamp);
     this.recentDmDiscoveryKeys.set(
       `notify:${requestId}`,
@@ -22053,7 +22131,7 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     if (!verifyReticulumDmProbe(probe.q, timestamp)) return null;
-    if (!wireFitsReticulum(probe)) return null;
+    if (!wireFitsReticulumChat(probe)) return null;
     this.pruneDmDiscoveryRoutes(timestamp);
     this.recentDmDiscoveryKeys.set(
       `probe:${requestId}`,
@@ -22767,7 +22845,7 @@ export class ReticulumChatManager extends EventEmitter {
       };
       if (
         this.metadataSnapshotHasAdminPrivateChannels(snapshot) ||
-        !wireFitsReticulum(wire)
+        !wireFitsReticulumChat(wire)
       ) {
         loggerInfo(
           `[ReticulumChat] metadata_snapshot_offer_too_large group=${groupId} peer=${peer.slice(0, 16)} bytes=${Buffer.byteLength(JSON.stringify(wire), 'utf8')} context=${reason}`
@@ -23525,7 +23603,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     if (
       this.metadataSnapshotHasAdminPrivateChannels(snapshot) ||
-      !wireFitsReticulum(response)
+      !wireFitsReticulumChat(response)
     ) {
       loggerInfo(
         `[ReticulumChat] metadata_snapshot_offer_too_large group=${groupId} peer=${peerHash.slice(0, 16)} bytes=${Buffer.byteLength(JSON.stringify(response), 'utf8')} context=request`
@@ -23638,7 +23716,7 @@ export class ReticulumChatManager extends EventEmitter {
         ? { fh: compactSha256ForWire(advertisedFullSnapshotHash) }
         : {}),
     };
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       this.outboundMetadataSnapshotResources.delete(transferId);
       this.safeUnlink(filePath);
       loggerWarn(
@@ -24004,7 +24082,7 @@ export class ReticulumChatManager extends EventEmitter {
         channelHeadsHash: stateHeads.channelHash,
       },
     };
-    if (wireFitsReticulum(wire)) return wire;
+    if (wireFitsReticulumChat(wire)) return wire;
     const compactDigest: ReticulumChatGroupStateDigestWire = {
       ...(digest.latest ? { latest: this.cursorToWire(digest.latest) } : {}),
       eventHash: digest.digestHash,
@@ -24028,7 +24106,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...wire,
       d: compactDigest,
     };
-    if (wireFitsReticulum(compactWire)) return compactWire;
+    if (wireFitsReticulumChat(compactWire)) return compactWire;
     compactWire = {
       ...wire,
       d: {
@@ -24038,7 +24116,7 @@ export class ReticulumChatManager extends EventEmitter {
         authorTreeCount: authorTree.count,
       },
     };
-    if (wireFitsReticulum(compactWire)) return compactWire;
+    if (wireFitsReticulumChat(compactWire)) return compactWire;
     compactWire = {
       ...wire,
       d: {
@@ -24047,7 +24125,7 @@ export class ReticulumChatManager extends EventEmitter {
         authorTreeCount: authorTree.count,
       },
     };
-    if (wireFitsReticulum(compactWire)) return compactWire;
+    if (wireFitsReticulumChat(compactWire)) return compactWire;
     compactWire = {
       ...wire,
       d: {
@@ -24055,7 +24133,7 @@ export class ReticulumChatManager extends EventEmitter {
         authorTreeCount: authorTree.count,
       },
     };
-    return wireFitsReticulum(compactWire) ? compactWire : null;
+    return wireFitsReticulumChat(compactWire) ? compactWire : null;
   }
 
   private handleGroupStateDigest(
@@ -24426,7 +24504,7 @@ export class ReticulumChatManager extends EventEmitter {
         g: groupId,
         q: request,
       };
-      if (!wireFitsReticulum(wire)) {
+      if (!wireFitsReticulumChat(wire)) {
         abandonRequest();
         return;
       }
@@ -24526,7 +24604,7 @@ export class ReticulumChatManager extends EventEmitter {
         g: groupId,
         p: { type, more: false, heads: [] },
       };
-      if (wireFitsReticulum(wire)) await this.sendToPeer(peerHash, wire);
+      if (wireFitsReticulumChat(wire)) await this.sendToPeer(peerHash, wire);
       return;
     }
     for (let count = allHeads.length; count > 0; count -= 1) {
@@ -24544,7 +24622,7 @@ export class ReticulumChatManager extends EventEmitter {
           heads: pageHeads,
         },
       };
-      if (!wireFitsReticulum(wire)) continue;
+      if (!wireFitsReticulumChat(wire)) continue;
       await this.sendToPeer(peerHash, wire);
       return;
     }
@@ -24714,7 +24792,7 @@ export class ReticulumChatManager extends EventEmitter {
         ...(normalizedOffset > 0 ? { o: normalizedOffset } : {}),
       },
     };
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       this.authorTreeRequests.delete(key);
       return;
     }
@@ -24756,7 +24834,7 @@ export class ReticulumChatManager extends EventEmitter {
         v: 3,
         k: 'author_tree_reset_v3',
         g: groupId,
-        r: compactSha256ForWire(current.root),
+        x: compactSha256ForWire(current.root),
       });
       return;
     }
@@ -24782,7 +24860,7 @@ export class ReticulumChatManager extends EventEmitter {
           ],
         },
       };
-      if (!wireFitsReticulum(wire)) {
+      if (!wireFitsReticulumChat(wire)) {
         loggerWarn(
           `[ReticulumChat] author_tree_node_too_large group=${groupId} path=${path || 'root'} peer=${peerHash.slice(0, 16)}`
         );
@@ -24819,7 +24897,7 @@ export class ReticulumChatManager extends EventEmitter {
           ...(more ? { next: offset + count, m: true } : {}),
         },
       };
-      if (!wireFitsReticulum(wire)) continue;
+      if (!wireFitsReticulumChat(wire)) continue;
       if (count === 0 && available.length > 0) break;
       await this.sendToPeer(peerHash, wire);
       return;
@@ -25793,9 +25871,9 @@ export class ReticulumChatManager extends EventEmitter {
     const digestWire = this.groupKeyDigestToWire(key);
     if (!verifyReticulumChatGroupKeyDigest(groupId, digestWire.d, createdAt))
       return null;
-    if (!wireFitsReticulum(digestWire)) {
+    if (!wireFitsReticulumChat(digestWire)) {
       loggerWarn(
-        `[ReticulumChat] Refusing to create oversized group key digest group=${groupId} bytes=${byteLengthUtf8JsonWithBridgeSender(digestWire)}`
+        `[ReticulumChat] Refusing to create oversized group key digest group=${groupId} bytes=${byteLengthUtf8JsonWithBridgeSenderOnly(digestWire)}`
       );
       return null;
     }
@@ -25831,9 +25909,9 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const wire = this.groupKeyDigestToWire(digest);
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       loggerWarn(
-        `[ReticulumChat] group_key_digest skipped group=${digest.groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+        `[ReticulumChat] group_key_digest skipped group=${digest.groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSenderOnly(wire)}`
       );
       return;
     }
@@ -25870,7 +25948,7 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const wire = this.groupKeyDigestToWire(digest);
-    if (!wireFitsReticulum(wire)) return;
+    if (!wireFitsReticulumChat(wire)) return;
     this.recentGroupKeyDigestsSent.set(rateKey, now);
     void this.sendToPeer(peer, wire);
   }
@@ -25931,9 +26009,9 @@ export class ReticulumChatManager extends EventEmitter {
     };
     if (!verifyReticulumChatGroupKeyRequest(digest.groupId, wire.q, now))
       return;
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       loggerWarn(
-        `[ReticulumChat] group_key_request skipped group=${digest.groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+        `[ReticulumChat] group_key_request skipped group=${digest.groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSenderOnly(wire)}`
       );
       return;
     }
@@ -26003,9 +26081,9 @@ export class ReticulumChatManager extends EventEmitter {
       },
     };
     if (!verifyReticulumChatGroupKeyResponse(groupId, wire.w, now)) return null;
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       loggerWarn(
-        `[ReticulumChat] group_key_response skipped group=${groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+        `[ReticulumChat] group_key_response skipped group=${groupId} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSenderOnly(wire)}`
       );
       return null;
     }
@@ -26441,9 +26519,9 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return null;
     }
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       loggerWarn(
-        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+        `[ReticulumChat] resource_find_build_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSenderOnly(wire)}`
       );
       return null;
     }
@@ -26588,9 +26666,9 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return null;
     }
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       loggerWarn(
-        `[ReticulumChat] dm_resource_find_build_failed conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSender(wire)}`
+        `[ReticulumChat] dm_resource_find_build_failed conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large bytes=${byteLengthUtf8JsonWithBridgeSenderOnly(wire)}`
       );
       return null;
     }
@@ -27034,7 +27112,7 @@ export class ReticulumChatManager extends EventEmitter {
       m: RETICULUM_CHAT_IDENTITY_REQUEST_MAX_HOPS,
       x: expiresAt,
     };
-    if (!wireFitsReticulum(wire)) return Promise.resolve(null);
+    if (!wireFitsReticulumChat(wire)) return Promise.resolve(null);
     this.recentLocalIdentityRequestIds.set(requestId, expiresAt);
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
@@ -27107,7 +27185,7 @@ export class ReticulumChatManager extends EventEmitter {
         rk: normalized,
         rid: requestId,
       };
-      if (!wireFitsReticulum(offer)) return;
+      if (!wireFitsReticulumChat(offer)) return;
       const result = await this.sendToPeer(reversePeerHash, offer);
       if (result.ok) {
         loggerLog(
@@ -27121,7 +27199,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...wire,
       h: wire.h + 1,
     };
-    if (!wireFitsReticulum(forwarded)) return;
+    if (!wireFitsReticulumChat(forwarded)) return;
     void this.fanoutOnce(forwarded, [
       reversePeerHash,
       ...(localPeerHash ? [localPeerHash] : []),
@@ -27162,7 +27240,7 @@ export class ReticulumChatManager extends EventEmitter {
       rk: publicKey,
       rid: requestId,
     };
-    if (!wireFitsReticulum(relayed)) return;
+    if (!wireFitsReticulumChat(relayed)) return;
     void this.sendToPeer(route.reversePeerHash, relayed);
   }
 
@@ -27330,7 +27408,7 @@ export class ReticulumChatManager extends EventEmitter {
         rid: requestId,
         sp: this.compactResourcePeerHash(localPeerHash),
       };
-      if (!wireFitsReticulum(response)) {
+      if (!wireFitsReticulumChat(response)) {
         loggerWarn(
           `[ReticulumChat] resource_have_skipped group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large`
         );
@@ -27369,7 +27447,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...wire,
       h: hop + 1,
     };
-    if (!wireFitsReticulum(forwarded)) {
+    if (!wireFitsReticulumChat(forwarded)) {
       loggerWarn(
         `[ReticulumChat] resource_find_forward_skip group=${groupId} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large`
       );
@@ -27434,7 +27512,7 @@ export class ReticulumChatManager extends EventEmitter {
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
       };
-      if (!wireFitsReticulum(response)) return;
+      if (!wireFitsReticulumChat(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);
       return;
     }
@@ -27556,7 +27634,7 @@ export class ReticulumChatManager extends EventEmitter {
         rid: requestId,
         sp: this.compactResourcePeerHash(localPeerHash),
       };
-      if (!wireFitsReticulum(response)) {
+      if (!wireFitsReticulumChat(response)) {
         loggerWarn(
           `[ReticulumChat] dm_resource_have_skipped conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large`
         );
@@ -27594,7 +27672,7 @@ export class ReticulumChatManager extends EventEmitter {
         h: hop + 1,
       },
     };
-    if (!wireFitsReticulum(forwarded)) {
+    if (!wireFitsReticulumChat(forwarded)) {
       loggerWarn(
         `[ReticulumChat] dm_resource_find_forward_skip conversation=${conversationId.slice(0, 16)} file=${fileHash.slice(0, 12)} rid=${requestId.slice(0, 12)} reason=wire_too_large`
       );
@@ -27662,7 +27740,7 @@ export class ReticulumChatManager extends EventEmitter {
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
       };
-      if (!wireFitsReticulum(response)) return;
+      if (!wireFitsReticulumChat(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);
       return;
     }
@@ -27991,7 +28069,7 @@ export class ReticulumChatManager extends EventEmitter {
           events,
           ...(more ? { more: true, nextOffset: offset + events.length } : {}),
         };
-        if (wireFitsReticulum(wire)) return wire;
+        if (wireFitsReticulumChat(wire)) return wire;
       }
     }
     return null;
@@ -28167,7 +28245,7 @@ export class ReticulumChatManager extends EventEmitter {
         ...(blobId ? { bid: blobId } : {}),
       },
     };
-    if (wireFitsReticulum(wire)) void this.sendToPeer(peer, wire);
+    if (wireFitsReticulumChat(wire)) void this.sendToPeer(peer, wire);
   }
 
   private async offerRelayCachedEventResource(
@@ -28661,7 +28739,7 @@ export class ReticulumChatManager extends EventEmitter {
       });
     }
     const wire = buildEventOfferControlWire(groupId, offer);
-    if (!wireFitsReticulum(wire)) {
+    if (!wireFitsReticulumChat(wire)) {
       this.outboundRelayStoreEventResources.delete(transferId);
       this.outboundEventResources.delete(transferId);
       this.liveEventResourceDiagnostics.delete(transferId);

@@ -14,7 +14,28 @@ export const RT_RETICULUM_MAX_WIRE_JSON_BYTES = 383;
 
 /** Same length as real `r` on the wire (was incorrectly 64, over-counting by ~32 bytes). */
 const BRIDGE_SENDER_HASH_PLACEHOLDER = '0'.repeat(32);
-const OVERLAY_MESSAGE_ID_PLACEHOLDER = 'overlay000000';
+/** Call/group-call overlay ids are fixed-width 64-bit hex values. */
+const OVERLAY_MESSAGE_ID_PLACEHOLDER = '0'.repeat(16);
+
+function withBridgeSender(
+  obj: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...obj,
+    // `r` is transport-owned. Python always replaces any inbound-hop value
+    // with the authenticated sender of this hop before encoding.
+    r: BRIDGE_SENDER_HASH_PLACEHOLDER,
+  };
+}
+
+function withOverlayDefaults(
+  obj: Record<string, unknown>
+): Record<string, unknown> {
+  const out = withBridgeSender(obj);
+  if (typeof out.X !== 'string') out.X = OVERLAY_MESSAGE_ID_PLACEHOLDER;
+  if (typeof out.L !== 'number') out.L = 0;
+  return out;
+}
 
 /**
  * Exact UTF-8 byte length after Python adds only `r`. Reticulum chat uses this
@@ -23,13 +44,7 @@ const OVERLAY_MESSAGE_ID_PLACEHOLDER = 'overlay000000';
 export function byteLengthUtf8JsonWithBridgeSenderOnly(
   obj: Record<string, unknown>
 ): number {
-  return Buffer.byteLength(
-    JSON.stringify({
-      ...obj,
-      r: BRIDGE_SENDER_HASH_PLACEHOLDER,
-    }),
-    'utf8'
-  );
+  return Buffer.byteLength(JSON.stringify(withBridgeSender(obj)), 'utf8');
 }
 
 /**
@@ -39,15 +54,7 @@ export function byteLengthUtf8JsonWithBridgeSenderOnly(
 export function byteLengthUtf8JsonWithBridgeSender(
   obj: Record<string, unknown>
 ): number {
-  return Buffer.byteLength(
-    JSON.stringify({
-      ...obj,
-      r: BRIDGE_SENDER_HASH_PLACEHOLDER,
-      X: OVERLAY_MESSAGE_ID_PLACEHOLDER,
-      L: 0,
-    }),
-    'utf8'
-  );
+  return Buffer.byteLength(JSON.stringify(withOverlayDefaults(obj)), 'utf8');
 }
 
 export function byteLengthUtf8JsonWithBridgeSenderAndTarget(
@@ -56,10 +63,7 @@ export function byteLengthUtf8JsonWithBridgeSenderAndTarget(
 ): number {
   return Buffer.byteLength(
     JSON.stringify({
-      ...obj,
-      r: BRIDGE_SENDER_HASH_PLACEHOLDER,
-      X: OVERLAY_MESSAGE_ID_PLACEHOLDER,
-      L: 0,
+      ...withOverlayDefaults(obj),
       U: targetAddress,
     }),
     'utf8'
@@ -67,9 +71,14 @@ export function byteLengthUtf8JsonWithBridgeSenderAndTarget(
 }
 
 export function wireFitsReticulum(obj: Record<string, unknown>): boolean {
-  return byteLengthUtf8JsonWithBridgeSender(obj) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES;
+  return (
+    byteLengthUtf8JsonWithBridgeSender(obj) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES
+  );
 }
 
 export function wireFitsReticulumChat(obj: Record<string, unknown>): boolean {
-  return byteLengthUtf8JsonWithBridgeSenderOnly(obj) <= RT_RETICULUM_MAX_WIRE_JSON_BYTES;
+  return (
+    byteLengthUtf8JsonWithBridgeSenderOnly(obj) <=
+    RT_RETICULUM_MAX_WIRE_JSON_BYTES
+  );
 }

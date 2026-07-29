@@ -9,6 +9,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { randomBytes } from 'crypto';
 import {
   log as loggerLog,
   error as loggerError,
@@ -1183,7 +1184,7 @@ export class CallManager extends EventEmitter {
   }
 
   private nextReticulumOverlayId(): string {
-    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    return randomBytes(8).toString('hex');
   }
 
   private attachReticulumOverlayMeta(

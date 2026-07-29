@@ -28,7 +28,7 @@ export const RT_GCALL_MAX_WIRE_JSON_BYTES = RT_RETICULUM_MAX_WIRE_JSON_BYTES;
  * Keep in sync with `PRESENCE_BRIDGE_BUILD` in `electron/resources/presence_bridge.py`.
  */
 export const GC_RETICULUM_WIRE_BUILD_MARKER =
-  'wire403-qortalland-game-chat-unlimited-v1';
+  'wire404-multidevice-size-safe-v1';
 
 /** Max payload fragments for topology / key-rotate / SDP (defensive). */
 export const RT_GCALL_MAX_FRAGMENTS = 96;
@@ -51,6 +51,24 @@ export function isHex64(s: unknown): s is string {
 /** Reticulum/RNS destination address: 16 bytes, 32 hex chars (see Reticulum manual). */
 export function isRnsDestinationHashHex(s: unknown): s is string {
   return typeof s === 'string' && /^[0-9a-f]{32}$/i.test(s);
+}
+
+/** Compact 16-byte destination used only when the normal GC_JOIN would exceed the MDU. */
+function compactRnsDestinationHashForWire(destinationHash: string): string {
+  return Buffer.from(destinationHash, 'hex').toString('base64url');
+}
+
+function rnsDestinationHashFromWire(value: unknown): string | null {
+  if (isRnsDestinationHashHex(value)) return value.trim().toLowerCase();
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(value)) {
+    return null;
+  }
+  try {
+    const bytes = Buffer.from(value, 'base64url');
+    return bytes.length === 16 ? bytes.toString('hex') : null;
+  } catch {
+    return null;
+  }
 }
 
 /** RNS.Identity full public key: 64 bytes, standard or unpadded base64 (wire key `rk`). */
@@ -139,6 +157,14 @@ export function encodeJoinWire(env: {
   ) {
     o.j = env.joinGeneration;
   }
+  // Preserve the established hex form for normal rooms and mixed-version
+  // peers. Only use the equivalent 22-character base64url form when the
+  // complete overlay packet would otherwise exceed Reticulum's MDU.
+  if (
+    byteLengthUtf8JsonWithBridgeSender(o) > RT_RETICULUM_MAX_WIRE_JSON_BYTES
+  ) {
+    o.d = compactRnsDestinationHashForWire(d);
+  }
   return o;
 }
 
@@ -193,7 +219,7 @@ export function decodeJoinIdentityWireFailureReason(
   if (typeof m !== 'number') return 'bad_m';
   if (typeof g !== 'string') return 'bad_g';
   if (typeof dRaw !== 'string') return 'bad_d';
-  if (!isRnsDestinationHashHex(dRaw)) return 'bad_d_hex';
+  if (!rnsDestinationHashFromWire(dRaw)) return 'bad_d_hex';
   if (typeof rkRaw !== 'string' || !isRnsIdentityPublicKeyBase64(rkRaw)) {
     return 'bad_rk';
   }
@@ -228,7 +254,7 @@ export function decodeJoinIdentityWire(raw: Record<string, unknown>): {
     fromAddress: a,
     signature: g,
     timestamp: m,
-    reticulumDestinationHash: dRaw.trim().toLowerCase(),
+    reticulumDestinationHash: rnsDestinationHashFromWire(dRaw)!,
     reticulumIdentityPublicKeyBase64: rkRaw,
     ...(typeof j === 'number' && Number.isFinite(j)
       ? { joinGeneration: j }
@@ -261,7 +287,7 @@ export function decodeJoinWireFailureReason(
   if (typeof m !== 'number') return 'bad_m';
   if (typeof g !== 'string') return 'bad_g';
   if (typeof dRaw !== 'string') return 'bad_d_missing_or_not_string';
-  if (!isRnsDestinationHashHex(dRaw)) {
+  if (!rnsDestinationHashFromWire(dRaw)) {
     const t = String(dRaw).trim();
     return `bad_d_not_hex32(len=${t.length})`;
   }
@@ -301,7 +327,7 @@ export function decodeJoinWire(raw: Record<string, unknown>): {
     typeof k !== 'string' ||
     typeof m !== 'number' ||
     typeof g !== 'string' ||
-    !isRnsDestinationHashHex(dRaw)
+    !rnsDestinationHashFromWire(dRaw)
   ) {
     return null;
   }
@@ -319,7 +345,7 @@ export function decodeJoinWire(raw: Record<string, unknown>): {
     fromPublicKey: k,
     signature: g,
     timestamp: m,
-    reticulumDestinationHash: (dRaw as string).trim().toLowerCase(),
+    reticulumDestinationHash: rnsDestinationHashFromWire(dRaw)!,
     ...(typeof rkRaw === 'string' && isRnsIdentityPublicKeyBase64(rkRaw)
       ? { reticulumIdentityPublicKeyBase64: rkRaw }
       : {}),

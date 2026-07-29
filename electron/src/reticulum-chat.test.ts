@@ -1246,7 +1246,18 @@ describe('reticulum chat protocol', () => {
       deviceA.markDirectRead(owner.address, peer.address, first.timestamp);
       await flushQueuedWork();
       expect(captured).not.toBeNull();
-      expect(verifyReticulumChatReadSyncWire(captured!.r)?.ownerAddress).toBe(
+      // `r` belongs to the Python bridge and is replaced by the authenticated
+      // hop sender. Application read data must remain under `w`, and the DM
+      // conversation id is derived from the two signed account addresses.
+      expect(captured).not.toHaveProperty('r');
+      expect(captured!.w).not.toHaveProperty('c');
+      expect(wireFitsReticulumChat(captured!)).toBe(true);
+      const bridgeStamped = {
+        ...captured!,
+        r: deviceAHash,
+      };
+      expect(bridgeStamped.w).toEqual(captured!.w);
+      expect(verifyReticulumChatReadSyncWire(captured!.w)?.ownerAddress).toBe(
         owner.address
       );
       expect((deviceB as any).localDmAddresses.has(owner.address)).toBe(true);
@@ -1276,7 +1287,7 @@ describe('reticulum chat protocol', () => {
       const ack: Extract<ReticulumChatWire, { k: 'read_sync_ack' }> = {
         t: 'RCHAT',
         k: 'read_sync_ack',
-        r: {
+        w: {
           y: 'd',
           c: first.conversationId,
           u: first.timestamp,
@@ -1375,7 +1386,7 @@ describe('reticulum chat protocol', () => {
       deviceA.markRead(groupId, 'general', event.timestamp, owner.address);
       await flushQueuedWork();
       expect(captured).not.toBeNull();
-      expect(verifyReticulumChatReadSyncWire(captured!.r)?.ownerAddress).toBe(
+      expect(verifyReticulumChatReadSyncWire(captured!.w)?.ownerAddress).toBe(
         owner.address
       );
       expect((deviceB as any).localGroupAddresses.get(groupId)).toBe(
@@ -1465,7 +1476,7 @@ describe('reticulum chat protocol', () => {
           wire.k === 'read_sync'
       );
       expect(readWires).toHaveLength(1);
-      expect(readWires[0].r.u).toBe(upToTimestamp);
+      expect(readWires[0].w.u).toBe(upToTimestamp);
       expect(
         (afterRestart as any).db.getPendingDeviceReadStates(owner.address)
       ).toEqual([]);
@@ -1735,7 +1746,7 @@ describe('reticulum chat protocol', () => {
       authorPublicKey,
       timestamp: now,
     });
-    const receipt: Extract<ReticulumChatWire, { k: 'resource_receipt' }>['r'] =
+    const receipt: Extract<ReticulumChatWire, { k: 'resource_receipt' }>['w'] =
       {
         f: 'f'.repeat(64),
         s: 1_024,
@@ -1784,7 +1795,7 @@ describe('reticulum chat protocol', () => {
     const receipt: Extract<
       ReticulumChatWire,
       { k: 'dm_resource_receipt' }
-    >['r'] = {
+    >['w'] = {
       c: conversationId,
       b: peer.address,
       f: 'e'.repeat(64),
@@ -1838,7 +1849,7 @@ describe('reticulum chat protocol', () => {
     expect(wire.q).not.toHaveProperty('c');
     expect(wire.q).not.toHaveProperty('p');
     expect(wire.q).not.toHaveProperty('z');
-    expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeLessThanOrEqual(
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(wire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     expect(wireFitsReticulum(wire)).toBe(true);
@@ -1856,7 +1867,7 @@ describe('reticulum chat protocol', () => {
     };
 
     expect(wire).not.toHaveProperty('rk');
-    expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeLessThanOrEqual(
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(wire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
     expect(wireFitsReticulum(wire)).toBe(true);
@@ -12539,7 +12550,7 @@ describe('reticulum chat manager', () => {
 
   it('delivers a signed QortalLand call only to its exact verified Land session endpoint', async () => {
     const caller = createDmIdentity();
-    const recipient = createDmIdentity();
+    const recipient = createLandAuthSigner();
     const sourceDestinationHash = '1'.repeat(32);
     const targetDestinationHash = '2'.repeat(32);
     const sourceSessionId = '1'.repeat(16);
@@ -12599,7 +12610,7 @@ describe('reticulum chat manager', () => {
         targetDestinationHash,
       })
     );
-    expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeLessThanOrEqual(
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(wire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
 
@@ -12622,18 +12633,30 @@ describe('reticulum chat manager', () => {
     );
 
     const emitted: Array<Record<string, unknown>> = [];
+    const direct: Array<{
+      peer: string;
+      wire: Extract<ReticulumChatWire, { k: 'lc2' }>;
+    }> = [];
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
         on: () => undefined,
         off: () => undefined,
         getLocalDestinationHash: () => targetDestinationHash,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          outgoingWire: Extract<ReticulumChatWire, { k: 'lc2' }>
+        ) => {
+          direct.push({ peer, wire: outgoingWire });
+          return { ok: true as const };
+        },
       } as any,
       // Direct calls authenticate their source through the wallet signature
       // and actual Reticulum ingress endpoint, even if the general peer cache
       // has not learned the reverse address mapping yet.
       getVerifiedReticulumPeers: () => [],
       now: () => timestamp,
+      signLocalFields: recipient.signLocalFields,
       validateGroupMember: async (_groupId, address) =>
         address === caller.address || address === recipient.address,
     });
@@ -12685,9 +12708,60 @@ describe('reticulum chat manager', () => {
       manager.handleWire(transportedWire, sourceDestinationHash);
       await flushQueuedWork();
       expect(emitted).toHaveLength(1);
+
+      // The independent Land route announcement may be missed or expire while
+      // the incoming call is still ringing. Its signed request and
+      // authenticated ingress endpoint are already sufficient to reply to the
+      // exact caller selected by this call.
+      expect((manager as any).landSessionRoutes.size).toBe(0);
+      const accept = await manager.sendLandCall(73, {
+        callType: 'accept',
+        callId,
+        fromAddress: recipient.address,
+        toAddress: caller.address,
+        sourceSessionId: targetSessionId,
+        targetSessionId: sourceSessionId,
+        targetDestinationHash: sourceDestinationHash,
+        timestamp,
+      });
+      expect(accept).toEqual({ ok: true });
+      expect(direct).toContainEqual(
+        expect.objectContaining({
+          peer: sourceDestinationHash,
+          wire: expect.objectContaining({ k: 'lc2', y: 'a', c: callId }),
+        })
+      );
     } finally {
       manager.close();
     }
+  });
+
+  it('keeps worst-case direct QortalLand call controls below the encrypted MDU', () => {
+    const wire: Extract<ReticulumChatWire, { k: 'lc2' }> = {
+      t: 'RCHAT',
+      k: 'lc2',
+      g: Number.MAX_SAFE_INTEGER,
+      y: 'q',
+      c: 'c'.repeat(16),
+      b: 'Q'.repeat(34),
+      f: 's'.repeat(11),
+      j: 't'.repeat(11),
+      p: 'p'.repeat(44),
+      z: 'z'.repeat(88),
+      s: 9_999_999_999_999,
+    };
+
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(wire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    expect(
+      byteLengthUtf8JsonWithBridgeSenderOnly({ ...wire, u: 'club' })
+    ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
+    // This packet intentionally has no X/L: it is sent to one authenticated
+    // endpoint and is not an overlay-fanout control.
+    expect(byteLengthUtf8JsonWithBridgeSender(wire)).toBeGreaterThan(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
   });
 
   it('signs and sends a QortalLand call directly to the selected session endpoint', async () => {
@@ -12695,9 +12769,9 @@ describe('reticulum chat manager', () => {
     const recipient = createLandAuthSigner();
     const sourceDestinationHash = '1'.repeat(32);
     const targetDestinationHash = '2'.repeat(32);
-    const sourceSessionId = 'caller-session';
-    const targetSessionId = 'target-session';
-    const timestamp = 100_000;
+    const sourceSessionId = '1'.repeat(16);
+    const targetSessionId = '2'.repeat(16);
+    const timestamp = 1_785_329_927_285;
     const direct: Array<{
       peer: string;
       wire: Extract<ReticulumChatWire, { k: 'lc2' }>;
@@ -12779,7 +12853,7 @@ describe('reticulum chat manager', () => {
 
       const result = await manager.sendLandCall(73, {
         callType: 'request',
-        callId: 'outbound-land-call',
+        callId: 'a'.repeat(16),
         fromAddress: caller.address,
         toAddress: recipient.address,
         sourceSessionId,
@@ -12793,6 +12867,8 @@ describe('reticulum chat manager', () => {
       expect(fanout).toHaveLength(0);
       expect(direct).toHaveLength(1);
       expect(direct[0].peer).toBe(targetDestinationHash);
+      expect(direct[0].wire).not.toHaveProperty('u');
+      expect(direct[0].wire).not.toHaveProperty('n');
       expect(
         verifyReticulumLandCallV2Wire(direct[0].wire, timestamp, {
           sourceDestinationHash,
@@ -12804,6 +12880,8 @@ describe('reticulum chat manager', () => {
           toAddress: recipient.address,
           sourceSessionId,
           targetSessionId,
+          reason: '',
+          roomId: '',
         })
       );
       expect(
@@ -12816,13 +12894,13 @@ describe('reticulum chat manager', () => {
         manager.getActiveLandCallMediaPeerDestinationHash(
           chatId,
           caller.address,
-          'outbound-land-call'
+          'a'.repeat(16)
         )
       ).toBe(targetDestinationHash);
 
       const hangup = await manager.sendLandCall(73, {
         callType: 'hangup',
-        callId: 'outbound-land-call',
+        callId: 'a'.repeat(16),
         fromAddress: caller.address,
         toAddress: recipient.address,
         sourceSessionId,
@@ -12835,7 +12913,7 @@ describe('reticulum chat manager', () => {
         manager.getActiveLandCallMediaPeerDestinationHash(
           chatId,
           caller.address,
-          'outbound-land-call'
+          'a'.repeat(16)
         )
       ).toBeNull();
     } finally {
