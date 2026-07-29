@@ -51,6 +51,9 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import AccessibilityNewOutlinedIcon from '@mui/icons-material/AccessibilityNewOutlined';
 import NotificationsNoneRoundedIcon from '@mui/icons-material/NotificationsNoneRounded';
+import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import {
   groupAnnouncementSelector,
   groupChatTimestampSelector,
@@ -64,6 +67,7 @@ import {
   qortalGroupMeshCallMaxParticipantsAtom,
   qortalGroupMeshCallParticipantCountAtom,
   qortalGroupSelfGcallRoomIdAtom,
+  reticulumHighlightOwnMessagesAtom,
   reticulumChatTextScaleAtom,
   timestampEnterDataSelector,
 } from '../../atoms/global';
@@ -112,9 +116,14 @@ const ReticulumChatSettingsDialog = ({
 }) => {
   const theme = useTheme();
   const [activeSection, setActiveSection] = useState<
-    'accessibility' | 'notifications'
-  >('accessibility');
+    'text-size' | 'messages' | 'notifications'
+  >('text-size');
+  const [accessibilityExpanded, setAccessibilityExpanded] = useState(true);
+  const [notificationsExpanded, setNotificationsExpanded] = useState(true);
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
+  const [highlightOwnMessages, setHighlightOwnMessages] = useAtom(
+    reticulumHighlightOwnMessagesAtom
+  );
   const [mentionNotificationsEnabled, setMentionNotificationsEnabled] =
     useState(true);
 
@@ -167,6 +176,23 @@ const ReticulumChatSettingsDialog = ({
         : theme.palette.action.hover,
     },
   });
+  const categoryButtonSx = {
+    alignItems: 'center',
+    color: 'text.secondary',
+    display: 'flex',
+    fontSize: 11,
+    fontWeight: 650,
+    height: 32,
+    justifyContent: 'space-between',
+    letterSpacing: '0.08em',
+    lineHeight: '16px',
+    px: 0,
+    textTransform: 'uppercase',
+    width: '100%',
+    '&:hover': {
+      color: 'text.primary',
+    },
+  };
 
   return (
     <Dialog
@@ -223,50 +249,59 @@ const ReticulumChatSettingsDialog = ({
             width: 220,
           }}
         >
-          <Typography
-            sx={{
-              color: 'text.secondary',
-              fontSize: 11,
-              fontWeight: 650,
-              letterSpacing: '0.08em',
-              lineHeight: '16px',
-              mb: 1.25,
-              textTransform: 'uppercase',
-            }}
-          >
-            Accessibility
-          </Typography>
           <ButtonBase
-            onClick={() => setActiveSection('accessibility')}
-            sx={navButtonSx(activeSection === 'accessibility')}
+            aria-expanded={accessibilityExpanded}
+            onClick={() => setAccessibilityExpanded((expanded) => !expanded)}
+            sx={categoryButtonSx}
           >
-            <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} /> Text size
+            <span>Accessibility</span>
+            {accessibilityExpanded ? (
+              <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
+            ) : (
+              <ChevronRightRoundedIcon sx={{ fontSize: 18 }} />
+            )}
           </ButtonBase>
-          <Typography
-            sx={{
-              color: 'text.secondary',
-              fontSize: 11,
-              fontWeight: 650,
-              letterSpacing: '0.08em',
-              lineHeight: '16px',
-              mb: 1.25,
-              mt: 3,
-              textTransform: 'uppercase',
-            }}
-          >
-            Notifications
-          </Typography>
+          {accessibilityExpanded && (
+            <>
+              <ButtonBase
+                onClick={() => setActiveSection('text-size')}
+                sx={navButtonSx(activeSection === 'text-size')}
+              >
+                <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} /> Text size
+              </ButtonBase>
+              <ButtonBase
+                onClick={() => setActiveSection('messages')}
+                sx={navButtonSx(activeSection === 'messages')}
+              >
+                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19 }} /> Messages
+              </ButtonBase>
+            </>
+          )}
           <ButtonBase
-            onClick={() => setActiveSection('notifications')}
-            sx={navButtonSx(activeSection === 'notifications')}
+            aria-expanded={notificationsExpanded}
+            onClick={() => setNotificationsExpanded((expanded) => !expanded)}
+            sx={{ ...categoryButtonSx, mt: 2.25 }}
           >
-            <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} /> Mentions
+            <span>Notifications</span>
+            {notificationsExpanded ? (
+              <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
+            ) : (
+              <ChevronRightRoundedIcon sx={{ fontSize: 18 }} />
+            )}
           </ButtonBase>
+          {notificationsExpanded && (
+            <ButtonBase
+              onClick={() => setActiveSection('notifications')}
+              sx={navButtonSx(activeSection === 'notifications')}
+            >
+              <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} /> Mentions
+            </ButtonBase>
+          )}
         </Box>
         <DialogContent
           sx={{ flex: 1, minHeight: 0, overflowY: 'auto', p: '28px' }}
         >
-          {activeSection === 'accessibility' ? (
+          {activeSection === 'text-size' ? (
             <>
               <Typography
                 component="h2"
@@ -348,6 +383,74 @@ const ReticulumChatSettingsDialog = ({
                     </ButtonBase>
                   );
                 })}
+              </Box>
+            </>
+          ) : activeSection === 'messages' ? (
+            <>
+              <Typography
+                component="h2"
+                sx={{
+                  color: 'text.primary',
+                  fontSize: 20,
+                  fontWeight: 650,
+                  lineHeight: '26px',
+                }}
+              >
+                Messages
+              </Typography>
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  fontWeight: 400,
+                  lineHeight: '20px',
+                  maxWidth: 460,
+                  mt: 0.75,
+                }}
+              >
+                Adjust how your own messages appear in Reticulum Q-Chat.
+              </Typography>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: 'background.default',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '10px',
+                  display: 'flex',
+                  gap: 2,
+                  justifyContent: 'space-between',
+                  mt: 2.5,
+                  px: 2,
+                  py: 1.5,
+                }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      color: 'text.primary',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      lineHeight: '20px',
+                    }}
+                  >
+                    Highlight my messages
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: 13,
+                      lineHeight: '18px',
+                      mt: 0.25,
+                    }}
+                  >
+                    Add a faint background to messages you send.
+                  </Typography>
+                </Box>
+                <Switch
+                  checked={highlightOwnMessages === true}
+                  inputProps={{ 'aria-label': 'Highlight my messages' }}
+                  onChange={(_, checked) => setHighlightOwnMessages(checked)}
+                />
               </Box>
             </>
           ) : activeSection === 'notifications' ? (

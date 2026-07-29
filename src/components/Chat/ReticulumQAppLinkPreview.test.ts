@@ -9,6 +9,8 @@ import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   formatReticulumQAppDisplayLink,
+  getQuitterPostSummary,
+  normalizeQTubeDescription,
   parseReticulumQAppLinks,
   ReticulumQAppLinkPreviews,
   resolveReticulumPreviewImageUrl,
@@ -133,6 +135,66 @@ describe('resolveReticulumPreviewImageUrl', () => {
         'publication-id'
       )
     ).toBe('data:image/webp;base64,UklGRmVtYmVkZGVkLXdlYnA=');
+  });
+});
+
+describe('normalizeQTubeDescription', () => {
+  it('replaces internal category metadata with the public fallback', () => {
+    expect(
+      normalizeQTubeDescription('**category:4;subcategory:499;code:9psFj**')
+    ).toBe('Watch this video on Q-Tube.');
+  });
+
+  it('keeps a real description while removing trailing internal metadata', () => {
+    expect(
+      normalizeQTubeDescription(
+        'A useful video. **category:4;subcategory:499;code:9psFj**'
+      )
+    ).toBe('A useful video.');
+  });
+
+  it('uses the same fallback for an empty description', () => {
+    expect(normalizeQTubeDescription('')).toBe('Watch this video on Q-Tube.');
+  });
+});
+
+describe('getQuitterPostSummary', () => {
+  it('uses the post text when one is present', () => {
+    expect(
+      getQuitterPostSummary({
+        text: 'A normal Quitter post',
+        images: [{ name: 'photo.webp' }],
+      })
+    ).toBe('A normal Quitter post');
+  });
+
+  it('identifies an image-only post as a photo', () => {
+    expect(
+      getQuitterPostSummary({
+        text: '',
+        images: [{ name: 'photo.webp' }],
+        videos: [],
+      })
+    ).toBe('Shared a photo');
+  });
+
+  it('identifies a video-only post and keeps an available title', () => {
+    expect(
+      getQuitterPostSummary(
+        {
+          text: '',
+          images: [],
+          videos: [{ identifier: 'video-metadata' }],
+        },
+        'A Q-Tube video'
+      )
+    ).toBe('Shared a video: A Q-Tube video');
+  });
+
+  it('uses a neutral fallback when the post has no text or media', () => {
+    expect(getQuitterPostSummary({ text: '', images: [], videos: [] })).toBe(
+      'View this post on Quitter'
+    );
   });
 });
 

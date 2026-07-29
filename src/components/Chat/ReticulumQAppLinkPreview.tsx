@@ -69,6 +69,37 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const safeString = (value: unknown) =>
   typeof value === 'string' ? value.trim() : '';
 
+const Q_TUBE_INTERNAL_METADATA_PATTERN =
+  /\*{0,2}\s*category\s*:[^;\r\n*]+(?:\s*;\s*(?:subcategory|code)\s*:[^;\r\n*]+)*\s*\*{0,2}/gi;
+
+export const normalizeQTubeDescription = (value: unknown) => {
+  const description = safeString(value)
+    .replace(Q_TUBE_INTERNAL_METADATA_PATTERN, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return description || 'Watch this video on Q-Tube.';
+};
+
+const hasMediaItems = (value: unknown) =>
+  Array.isArray(value) &&
+  value.some(
+    (item) =>
+      (typeof item === 'string' && item.trim().length > 0) || isRecord(item)
+  );
+
+export const getQuitterPostSummary = (
+  documentValue: Record<string, unknown>,
+  mediaTitle = ''
+) => {
+  const text = safeString(documentValue.text);
+  if (text) return text;
+  if (hasMediaItems(documentValue.images)) return 'Shared a photo';
+  if (hasMediaItems(documentValue.videos)) {
+    return mediaTitle ? `Shared a video: ${mediaTitle}` : 'Shared a video';
+  }
+  return 'View this post on Quitter';
+};
+
 const safeNumber = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
 
@@ -338,12 +369,13 @@ const loadPreview = async (
     (searchEntry && safeNumber(searchEntry.created)) || null;
 
   if (link.kind === 'qtube') {
+    const description =
+      safeString(documentValue.fullDescription) ||
+      safeString(documentValue.description) ||
+      safeString(searchMetadata?.description);
     return {
       author: link.author,
-      body:
-        safeString(documentValue.fullDescription) ||
-        safeString(documentValue.description) ||
-        safeString(searchMetadata?.description),
+      body: normalizeQTubeDescription(description),
       createdAt:
         safeNumber(documentValue.created) ||
         safeNumber(documentValue.timestamp) ||
@@ -384,9 +416,7 @@ const loadPreview = async (
     }
     return {
       author: safeString(documentValue.name) || link.author,
-      body:
-        text ||
-        (mediaTitle ? `Shared a video: ${mediaTitle}` : 'Shared a video'),
+      body: getQuitterPostSummary(documentValue, mediaTitle),
       createdAt: safeNumber(documentValue.timestamp) || searchCreatedAt,
       title: '',
     };
@@ -890,7 +920,7 @@ function QTubePreview({
                 WebkitLineClamp: 4,
               }}
             >
-              {data.body || 'Open this video in Q-Tube.'}
+              {normalizeQTubeDescription(data.body)}
             </Typography>
             <Typography
               sx={{

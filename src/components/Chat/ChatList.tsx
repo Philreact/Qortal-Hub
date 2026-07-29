@@ -1,4 +1,11 @@
-import { useCallback, useState, useEffect, useRef, useMemo } from 'react';
+import {
+  useCallback,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useMemo,
+} from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
@@ -178,6 +185,12 @@ export const ChatList = ({
   const lastReticulumReadEntryTokenRef = useRef<number | null>(null);
   const reticulumViewWasActiveRef = useRef(false);
   const reticulumPinnedToBottomRef = useRef(false);
+  const reticulumFollowBottomRef = useRef(false);
+  const lastScrollMetricsRef = useRef({
+    clientHeight: 0,
+    scrollHeight: 0,
+    scrollTop: 0,
+  });
   const pendingInitialReticulumBottomRef = useRef(false);
   const pendingInitialReticulumUnreadIndexRef = useRef<number | null>(null);
   const initialReticulumRevealTimeoutRef = useRef<ReturnType<
@@ -330,6 +343,12 @@ export const ChatList = ({
     previousMessageCountRef.current = 0;
     reticulumUnreadPromptShownRef.current = false;
     reticulumPinnedToBottomRef.current = false;
+    reticulumFollowBottomRef.current = false;
+    lastScrollMetricsRef.current = {
+      clientHeight: 0,
+      scrollHeight: 0,
+      scrollTop: 0,
+    };
     pendingInitialReticulumBottomRef.current = false;
     pendingInitialReticulumUnreadIndexRef.current = null;
     setReticulumUnreadBoundaryIndex(null);
@@ -356,9 +375,10 @@ export const ChatList = ({
       scrollElement.scrollHeight -
         scrollElement.scrollTop -
         scrollElement.clientHeight <=
-      4;
+      1;
     if (reticulumChatEnabled) {
       reticulumPinnedToBottomRef.current = isPinned;
+      reticulumFollowBottomRef.current = isPinned;
     }
     return isPinned;
   }, [reticulumChatEnabled]);
@@ -394,16 +414,60 @@ export const ChatList = ({
     const scrollElement = parentRef.current as HTMLDivElement | null;
     if (!scrollElement) return;
     if (reticulumChatEnabled) {
-      reticulumPinnedToBottomRef.current =
+      const isPinned =
         scrollElement.scrollHeight -
           scrollElement.scrollTop -
           scrollElement.clientHeight <=
-        4;
+        1;
+      const previousMetrics = lastScrollMetricsRef.current;
+      const contentSizeChanged =
+        previousMetrics.scrollHeight !== 0 &&
+        (previousMetrics.scrollHeight !== scrollElement.scrollHeight ||
+          previousMetrics.clientHeight !== scrollElement.clientHeight);
+
+      reticulumPinnedToBottomRef.current = isPinned;
+      // A reaction, image, embed, or measured virtual row can change the
+      // scroll height without any reader input. Do not mistake that layout
+      // movement for the reader deliberately leaving the bottom.
+      if (!contentSizeChanged || isPinned) {
+        reticulumFollowBottomRef.current = isPinned;
+      }
+      lastScrollMetricsRef.current = {
+        clientHeight: scrollElement.clientHeight,
+        scrollHeight: scrollElement.scrollHeight,
+        scrollTop: scrollElement.scrollTop,
+      };
+      if (isPinned) {
+        setShowScrollButton(false);
+        setShowScrollDownButton(false);
+      }
     }
     if (scrollElement.scrollTop <= 160) {
       void loadOlderFromTop();
     }
   }, [loadOlderFromTop, reticulumChatEnabled]);
+
+  useLayoutEffect(() => {
+    if (!reticulumChatEnabled || !reticulumFollowBottomRef.current) return;
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement) return;
+
+    const pinToBottom = () => {
+      const currentElement = parentRef.current as HTMLDivElement | null;
+      if (!currentElement || !reticulumFollowBottomRef.current) return;
+      currentElement.scrollTop = currentElement.scrollHeight;
+      reticulumPinnedToBottomRef.current = true;
+      lastScrollMetricsRef.current = {
+        clientHeight: currentElement.clientHeight,
+        scrollHeight: currentElement.scrollHeight,
+        scrollTop: currentElement.scrollTop,
+      };
+    };
+
+    pinToBottom();
+    const frameId = window.requestAnimationFrame(pinToBottom);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [reticulumChatEnabled, virtualContentHeight]);
 
   const cancelReticulumScrollRetries = useCallback(() => {
     if (!reticulumChatEnabled) return;
@@ -444,7 +508,7 @@ export const ChatList = ({
       const { scrollTop, scrollHeight, clientHeight } = currentElement;
       const hasScrollableOverflow = scrollHeight > clientHeight + 4;
       const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-      return hasScrollableOverflow && distanceFromBottom > 300;
+      return hasScrollableOverflow && distanceFromBottom > 4;
     };
 
     if (!shouldShowScrollDownButton()) {
@@ -555,9 +619,7 @@ export const ChatList = ({
       latestMessage?.sender === myAddress ||
       latestMessage?.message?.sender === myAddress;
     const followIncomingReticulumMessages =
-      reticulumChatEnabled &&
-      hasNewMessages &&
-      (isPinnedToBottom() || isLatestMessageMine);
+      reticulumChatEnabled && hasNewMessages && isPinnedToBottom();
     previousMessageCountRef.current = totalMessages.length;
 
     setMessages(totalMessages);
@@ -626,9 +688,10 @@ export const ChatList = ({
         );
 
         if (reticulumChatEnabled) {
-          // Reticulum maintains its own unread boundary and prompt. Do not let
-          // the legacy Q-Chat unread button compete with its landing scroll.
-          setShowScrollButton(false);
+          if (!isInitialLoad && hasNewMessages) {
+            setShowScrollButton(true);
+            setShowScrollDownButton(false);
+          }
         } else if (parentRef.current) {
           const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
           const atBottom = scrollTop + clientHeight >= scrollHeight - 10; // Adjust threshold as needed
@@ -743,9 +806,15 @@ export const ChatList = ({
         const scrollElement = parentRef.current as HTMLDivElement | null;
         if (!scrollElement) return;
         reticulumPinnedToBottomRef.current = true;
+        reticulumFollowBottomRef.current = true;
         // Directly pinning avoids scrollToIndex's recursive dynamic-size retry.
         // Scheduled calls below still follow late Reticulum row measurements.
         scrollElement.scrollTop = scrollElement.scrollHeight;
+        lastScrollMetricsRef.current = {
+          clientHeight: scrollElement.clientHeight,
+          scrollHeight: scrollElement.scrollHeight,
+          scrollTop: scrollElement.scrollTop,
+        };
       };
       pinToBottom();
       scrollRetryFrameRef.current = window.requestAnimationFrame(() => {
@@ -1019,11 +1088,12 @@ export const ChatList = ({
                   scrollbarColor: 'transparent transparent',
                   scrollbarWidth: 'thin',
                   '&::-webkit-scrollbar': { width: '6px' },
-                  '&::-webkit-scrollbar-button, &::-webkit-scrollbar-button:single-button': {
-                    display: 'none',
-                    height: 0,
-                    width: 0,
-                  },
+                  '&::-webkit-scrollbar-button, &::-webkit-scrollbar-button:single-button':
+                    {
+                      display: 'none',
+                      height: 0,
+                      width: 0,
+                    },
                   '&::-webkit-scrollbar-track': {
                     backgroundColor: 'transparent',
                   },
@@ -1202,9 +1272,7 @@ export const ChatList = ({
                             String(message?.signature || '')
                           ] || 0
                         }
-                        onOpenReticulumDiscussion={
-                          onOpenReticulumDiscussion
-                        }
+                        onOpenReticulumDiscussion={onOpenReticulumDiscussion}
                         reticulumGroupAvatarOwnerName={
                           reticulumGroupAvatarOwnerName
                         }
@@ -1228,7 +1296,7 @@ export const ChatList = ({
           </Box>
         </Box>
 
-        {!reticulumChatEnabled && showScrollButton && (
+        {showScrollButton && (
           <Button
             onClick={() => scrollToBottom()}
             startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}

@@ -125,6 +125,7 @@ import {
   useReticulumGroupChat,
 } from '../../hooks/useReticulumGroupChat';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
+import { MessageSizeLimitLip } from './MessageSizeLimitLip';
 import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
 import {
   ReticulumDiscussionDialog,
@@ -1461,6 +1462,31 @@ export const ChatGroup = ({
   const [reticulumUnhidingAddress, setReticulumUnhidingAddress] = useState('');
   const [reticulumHiddenUsersError, setReticulumHiddenUsersError] =
     useState('');
+  useEffect(() => {
+    const openHiddenMembers = (event: Event) => {
+      const requestedGroupId = Number(
+        (event as CustomEvent<{ groupId?: number }>).detail?.groupId
+      );
+      const activeGroupId = Number(
+        typeof selectedGroup === 'object'
+          ? selectedGroup?.groupId ?? selectedGroup?.id
+          : selectedGroup
+      );
+      if (
+        !Number.isInteger(requestedGroupId) ||
+        requestedGroupId <= 0 ||
+        requestedGroupId !== activeGroupId
+      ) {
+        return;
+      }
+      setReticulumHiddenUsersError('');
+      setIsReticulumHiddenUsersDialogOpen(true);
+    };
+
+    subscribeToEvent('openReticulumHiddenMembers', openHiddenMembers);
+    return () =>
+      unsubscribeFromEvent('openReticulumHiddenMembers', openHiddenMembers);
+  }, [selectedGroup]);
   const [isOpenQManager, setIsOpenQManager] = useState(null);
   const [reticulumAdminAnchorEl, setReticulumAdminAnchorEl] =
     useState<HTMLElement | null>(null);
@@ -1472,6 +1498,7 @@ export const ChatGroup = ({
   const reticulumAdminPopoverRef = useRef<HTMLDivElement | null>(null);
   const [isDeleteImage, setIsDeleteImage] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
+  const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
   const groupNameLabelRef = useRef<HTMLSpanElement | null>(null);
   const [isGroupNameTruncated, setIsGroupNameTruncated] = useState(false);
   const [chatImagesToSave, setChatImagesToSave] = useState([]);
@@ -5551,7 +5578,10 @@ export const ChatGroup = ({
 
   const sendMessage = async () => {
     try {
-      if (messageSize > MAX_SIZE_MESSAGE) return;
+      if (messageSize > MAX_SIZE_MESSAGE) {
+        setMessageSizeLimitShakeKey((key) => key + 1);
+        return;
+      }
       if (
         reticulumChatEnabled &&
         (isCompressingReticulumImage || isCompressingReticulumGif)
@@ -9184,6 +9214,14 @@ export const ChatGroup = ({
                     zIndex: isFocusedParent ? 5 : 'unset',
                   }}
                 >
+                  {reticulumChatEnabled && (
+                    <MessageSizeLimitLip
+                      floating
+                      maximum={MAX_SIZE_MESSAGE}
+                      shakeKey={messageSizeLimitShakeKey}
+                      size={messageSize}
+                    />
+                  )}
                   <Box
                     sx={{
                       display: 'flex',
@@ -9531,6 +9569,7 @@ export const ChatGroup = ({
                       display: 'flex',
                       flexShrink: 0,
                       gap: '8px',
+                      minHeight: reticulumChatEnabled ? '44px' : undefined,
                       paddingBottom: reticulumChatEnabled ? 0 : '2px',
                     }}
                   >
@@ -9545,6 +9584,7 @@ export const ChatGroup = ({
                             }}
                           >
                             <ReactionPicker
+                              compactComposer
                               neutralIcon
                               onReaction={(emoji: string) => {
                                 editorRef.current
@@ -9556,6 +9596,24 @@ export const ChatGroup = ({
                             />
                           </Box>
                         </Tooltip>
+                      </>
+                    )}
+                    <Box
+                      sx={
+                        reticulumChatEnabled
+                          ? {
+                              alignItems: 'stretch',
+                              border: `1px solid ${theme.palette.divider}`,
+                              borderRadius: '10px',
+                              display: 'inline-flex',
+                              flexShrink: 0,
+                              height: '38px',
+                              overflow: 'hidden',
+                            }
+                          : { display: 'contents' }
+                      }
+                    >
+                      {reticulumChatEnabled && (
                         <ReticulumMessageExpiryButton
                           channelExpiryDurationMs={
                             selectedReticulumChannelExpiryDurationMs
@@ -9570,11 +9628,11 @@ export const ChatGroup = ({
                               : 'You cannot write in this channel'
                           }
                           onChange={setReticulumMessageExpiryDurationMs}
+                          segmented
                           value={reticulumMessageExpiryDurationMs}
                         />
-                      </>
-                    )}
-                    <CustomButton
+                      )}
+                      <CustomButton
                       onClick={() => {
                         if (
                           isSending ||
@@ -9596,11 +9654,11 @@ export const ChatGroup = ({
                             : reticulumChatEnabled
                               ? RETICULUM_ACTIVE_BLUE
                               : theme.palette.background.paper,
-                        border: '1px solid',
+                        border: reticulumChatEnabled ? 'none' : '1px solid',
                         borderColor: reticulumChatEnabled
-                          ? RETICULUM_ACTIVE_BLUE
+                          ? 'transparent'
                           : theme.palette.divider,
-                        borderRadius: '8px',
+                        borderRadius: reticulumChatEnabled ? 0 : '8px',
                         color: reticulumChatEnabled
                           ? theme.palette.common.white
                           : theme.palette.text.primary,
@@ -9616,6 +9674,7 @@ export const ChatGroup = ({
                         fontSize: '14px',
                         fontWeight: 500,
                         justifyContent: 'center',
+                        height: reticulumChatEnabled ? '38px' : undefined,
                         minHeight: reticulumChatEnabled ? '38px' : '44px',
                         minWidth: reticulumChatEnabled ? '74px' : '88px',
                         padding: reticulumChatEnabled
@@ -9644,7 +9703,7 @@ export const ChatGroup = ({
                             : 'inherit',
                         },
                       }}
-                    >
+                      >
                       {isSending ||
                       isCompressingReticulumGif ||
                       isCompressingReticulumImage ? (
@@ -9662,7 +9721,8 @@ export const ChatGroup = ({
                           Send
                         </>
                       )}
-                    </CustomButton>
+                      </CustomButton>
+                    </Box>
                   </Box>
                 </Box>
               )}
@@ -12272,10 +12332,10 @@ export const ChatGroup = ({
         >
           <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.25 }}>
             <VisibilityOffRoundedIcon sx={{ color: 'text.secondary' }} />
-            Hidden Users
+            Hidden Members
           </Box>
           <IconButton
-            aria-label="Close hidden users"
+            aria-label="Close hidden members"
             disabled={Boolean(reticulumUnhidingAddress)}
             onClick={() => {
               setIsReticulumHiddenUsersDialogOpen(false);

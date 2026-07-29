@@ -184,6 +184,13 @@ export const reticulumChatTextScaleAtom =
     electronStorage as any
   );
 
+/** Persisted, Reticulum-only preference for subtly distinguishing sent messages. */
+export const reticulumHighlightOwnMessagesAtom = atomWithStorage<boolean>(
+  'qortal_reticulum_highlight_own_messages',
+  false,
+  electronStorage as any
+);
+
 /** Persisted: true = Q-Wallets embedded workspace opens edge-to-edge. */
 export const qWalletsWorkspaceFullScreenAtom = atomWithStorage<boolean>(
   'qortal_q_wallets_workspace_full_screen',

@@ -5,10 +5,10 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
-  SvgIcon,
   Tooltip,
   useTheme,
 } from '@mui/material';
+import AllInclusiveRoundedIcon from '@mui/icons-material/AllInclusiveRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import { CustomStyledMenu } from '../ContextMenu';
 import {
@@ -22,6 +22,7 @@ type ReticulumMessageExpiryButtonProps = {
   disabled?: boolean;
   disabledReason?: string;
   onChange: (durationMs: number | undefined) => void;
+  segmented?: boolean;
   value?: number;
 };
 
@@ -50,26 +51,12 @@ const expiryMenuItemSx = {
   '& .MuiSvgIcon-root': { fontSize: 18 },
 };
 
-function BombIcon() {
-  return (
-    <SvgIcon viewBox="0 0 24 24">
-      <path d="M11.25 7a7.25 7.25 0 1 0 7.25 7.25A7.25 7.25 0 0 0 11.25 7Zm3.5 2.15a5.3 5.3 0 0 0-1.7-.75l2.18-2.18 2.55 2.55-2.18 2.18a5.3 5.3 0 0 0-.85-1.8ZM18.2 3h1.55v2.2H18.2V3Zm2.6 3.05H23V7.6h-2.2V6.05Zm-4.65-4.1h1.55v2.2h-1.55v-2.2Z" />
-    </SvgIcon>
-  );
-}
-
 const expiryIndicatorLabel = (durationMs?: number): string | null => {
   if (!durationMs) return null;
   const option = RETICULUM_MESSAGE_EXPIRY_OPTIONS.find(
     (candidate) => candidate.durationMs === durationMs
   );
-  if (!option) return null;
-  if (option.label === '24 hours') return '24';
-  if (option.label === '48 hours') return '48';
-  if (option.label === '72 hours') return '72';
-  if (option.label === '1 week') return '1W';
-  if (option.label === '1 month') return '1M';
-  return null;
+  return option?.shortLabel ?? null;
 };
 
 export function ReticulumMessageExpiryButton({
@@ -77,6 +64,7 @@ export function ReticulumMessageExpiryButton({
   disabled = false,
   disabledReason,
   onChange,
+  segmented = false,
   value,
 }: ReticulumMessageExpiryButtonProps) {
   const theme = useTheme();
@@ -95,9 +83,11 @@ export function ReticulumMessageExpiryButton({
   );
   const tooltip = disabled
     ? disabledReason || 'Message expiry is unavailable'
-    : value
-      ? `Message expiry: ${formatReticulumExpiryDuration(value)}`
-      : `Message expiry: ${channelDefaultLabel}`;
+    : segmented
+      ? 'Message expiry'
+      : value
+        ? `Message expiry: ${formatReticulumExpiryDuration(value)}`
+        : `Message expiry: ${channelDefaultLabel}`;
 
   useEffect(() => {
     if (disabled) setAnchorEl(null);
@@ -111,7 +101,17 @@ export function ReticulumMessageExpiryButton({
   return (
     <>
       <Tooltip title={tooltip}>
-        <span>
+        <Box
+          component="span"
+          sx={
+            segmented
+              ? {
+                  display: 'flex',
+                  height: '100%',
+                }
+              : undefined
+          }
+        >
           <IconButton
             aria-label="Set message expiry"
             aria-haspopup="menu"
@@ -124,15 +124,41 @@ export function ReticulumMessageExpiryButton({
             sx={{
               backgroundColor: value
                 ? theme.palette.action.selected
-                : 'transparent',
-              border: `1px solid ${theme.palette.divider}`,
-              borderRadius: '8px',
+                : segmented
+                  ? theme.palette.background.default
+                  : 'transparent',
+              border: segmented
+                ? 'none'
+                : `1px solid ${theme.palette.divider}`,
+              borderRadius: segmented ? 0 : '8px',
               color: value
                 ? theme.palette.text.primary
                 : theme.palette.text.secondary,
               flexShrink: 0,
-              height: 34,
-              width: 34,
+              height: segmented ? 38 : 34,
+              position: 'relative',
+              width: segmented ? 40 : 34,
+              '&::after': segmented
+                ? {
+                    backgroundColor: theme.palette.divider,
+                    content: '""',
+                    height: 20,
+                    position: 'absolute',
+                    right: 0,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    width: '1px',
+                  }
+                : undefined,
+              '&:hover': segmented
+                ? {
+                    backgroundColor: theme.palette.action.hover,
+                    color: theme.palette.text.primary,
+                  }
+                : undefined,
+              '&.Mui-focusVisible': {
+                boxShadow: `inset 0 0 0 2px ${theme.palette.primary.main}`,
+              },
             }}
           >
             {indicatorLabel ? (
@@ -150,10 +176,13 @@ export function ReticulumMessageExpiryButton({
                 {indicatorLabel}
               </Box>
             ) : (
-              <BombIcon />
+              <AllInclusiveRoundedIcon
+                sx={{ color: 'inherit' }}
+                titleAccess="No expiry"
+              />
             )}
           </IconButton>
-        </span>
+        </Box>
       </Tooltip>
       <CustomStyledMenu
         reticulumMenu

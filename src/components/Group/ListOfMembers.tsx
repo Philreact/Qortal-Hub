@@ -2,6 +2,7 @@ import {
   Avatar,
   alpha,
   Box,
+  ButtonBase,
   IconButton,
   ListItem,
   ListItemAvatar,
@@ -15,6 +16,8 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import Groups2RoundedIcon from '@mui/icons-material/Groups2Rounded';
 import LocalFloristRoundedIcon from '@mui/icons-material/LocalFloristRounded';
 import NightlifeRoundedIcon from '@mui/icons-material/NightlifeRounded';
+import BedtimeRoundedIcon from '@mui/icons-material/BedtimeRounded';
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { LoadingButton } from '@mui/lab';
@@ -35,6 +38,7 @@ import {
 } from '../QortalLand/qortalLandPresence';
 import { QortalLandAvailabilityTags } from '../QortalLand/QortalLandAvailabilityTags';
 import { MemberCategoryHeader } from './MemberCategoryHeader';
+import { executeEvent } from '../../utils/events';
 
 const MEMBER_ROW_HEIGHT = 64;
 const QORTAL_LAND_REMOTE_TTL_MS = 30_000;
@@ -62,6 +66,7 @@ const ListOfMembers = ({
     lounge: true,
     park: true,
     members: true,
+    offline: true,
   });
   const [landPresence, setLandPresence] = useState(
     () => getQortalLandPresence(Number(groupId))?.members ?? []
@@ -238,15 +243,16 @@ const ListOfMembers = ({
 
     const labelForMember = (member) =>
       (member?.primaryName || member?.name || member?.member || '').toString();
-    const sortByPresenceThenName = (left, right) => {
-      const leftIsPresent =
-        onlineAddresses.has(left?.member) || statusMap.has(left?.member);
-      const rightIsPresent =
-        onlineAddresses.has(right?.member) || statusMap.has(right?.member);
-      if (leftIsPresent !== rightIsPresent) return leftIsPresent ? -1 : 1;
+    const sortByName = (left, right) => {
       return labelForMember(left).localeCompare(labelForMember(right), undefined, {
         sensitivity: 'base',
       });
+    };
+    const sortAdmins = (left, right) => {
+      const leftIsOwner = left?.member === ownerAddress;
+      const rightIsOwner = right?.member === ownerAddress;
+      if (leftIsOwner !== rightIsOwner) return leftIsOwner ? -1 : 1;
+      return sortByName(left, right);
     };
     const memberByAddress = new Map(
       (members || []).map((member) => [member?.member, member])
@@ -259,39 +265,53 @@ const ListOfMembers = ({
     const allMembers = [...memberByAddress.values()].filter(
       (member) => member?.member
     );
-    const admins = allMembers
+    const isMemberOnline = (member) =>
+      landPresenceByAddress.has(member?.member) ||
+      onlineAddresses.has(member?.member) ||
+      statusMap.has(member?.member);
+    const allAdmins = allMembers
       .filter(
         (member) =>
           member?.member === ownerAddress || Boolean(member?.isAdmin)
-      )
-      .sort(sortByPresenceThenName);
-    const regularMembers = allMembers
+      );
+    const admins = allAdmins
+      .filter(isMemberOnline)
+      .sort(sortAdmins);
+    const allRegularMembers = allMembers
       .filter(
         (member) =>
           member?.member !== ownerAddress && !Boolean(member?.isAdmin)
       );
-    const loungeMembers = regularMembers
+    const loungeMembers = allRegularMembers
       .filter(
         (member) =>
+          isMemberOnline(member) &&
           landPresenceByAddress.has(member.member) &&
           landPresenceByAddress.get(member.member)?.roomId !== 'park'
       )
-      .sort(sortByPresenceThenName);
-    const parkMembers = regularMembers
+      .sort(sortByName);
+    const parkMembers = allRegularMembers
       .filter(
         (member) =>
+          isMemberOnline(member) &&
           landPresenceByAddress.get(member.member)?.roomId === 'park'
       )
-      .sort(sortByPresenceThenName);
-    const remainingMembers = regularMembers
+      .sort(sortByName);
+    const remainingMembers = allRegularMembers
       .filter(
-        (member) => !landPresenceByAddress.has(member.member)
+        (member) =>
+          isMemberOnline(member) &&
+          !landPresenceByAddress.has(member.member)
       )
-      .sort(sortByPresenceThenName);
+      .sort(sortByName);
+    const offlineMembers = allMembers
+      .filter((member) => !isMemberOnline(member))
+      .sort(sortByName);
 
     return [
       {
         count: admins.length,
+        totalCount: allAdmins.length,
         expanded: expandedSections.admins,
         first: true,
         label: 'Admins',
@@ -303,6 +323,7 @@ const ListOfMembers = ({
         : []),
       {
         count: loungeMembers.length,
+        totalCount: allRegularMembers.length,
         expanded: expandedSections.lounge,
         first: false,
         label: 'Lounge',
@@ -314,6 +335,7 @@ const ListOfMembers = ({
         : []),
       {
         count: parkMembers.length,
+        totalCount: allRegularMembers.length,
         expanded: expandedSections.park,
         first: false,
         label: 'Park',
@@ -325,6 +347,7 @@ const ListOfMembers = ({
         : []),
       {
         count: remainingMembers.length,
+        totalCount: allRegularMembers.length,
         expanded: expandedSections.members,
         first: false,
         label: 'Members',
@@ -334,12 +357,28 @@ const ListOfMembers = ({
       ...(expandedSections.members
         ? remainingMembers.map((member) => ({ member, type: 'member' }))
         : []),
+      {
+        count: offlineMembers.length,
+        expanded: expandedSections.offline,
+        first: false,
+        label: 'Offline',
+        section: 'offline',
+        type: 'section',
+      },
+      ...(expandedSections.offline
+        ? offlineMembers.map((member) => ({
+            member,
+            offline: true,
+            type: 'member',
+          }))
+        : []),
     ];
   }, [
     categorizedReticulumMembers,
     expandedSections.admins,
     expandedSections.lounge,
     expandedSections.members,
+    expandedSections.offline,
     expandedSections.park,
     landPresenceByAddress,
     members,
@@ -603,11 +642,14 @@ const ListOfMembers = ({
             ? NightlifeRoundedIcon
             : row.section === 'park'
               ? LocalFloristRoundedIcon
-              : Groups2RoundedIcon;
+              : row.section === 'offline'
+                ? BedtimeRoundedIcon
+                : Groups2RoundedIcon;
       return (
         <div key={key} style={style}>
           <MemberCategoryHeader
             count={row.count}
+            totalCount={row.totalCount}
             expanded={expanded}
             first={row.first}
             icon={<SectionIcon sx={{ fontSize: 17 }} />}
@@ -626,6 +668,7 @@ const ListOfMembers = ({
 
     const member = row?.member;
     if (!member) return null;
+    const isOfflineRow = row?.offline === true;
     const memberLabel = compact
       ? member?.primaryName || member?.name || 'Member'
       : member?.primaryName || member?.member;
@@ -637,8 +680,9 @@ const ListOfMembers = ({
     const memberRole =
       member?.member === ownerAddress ? 'Owner' : member?.isAdmin ? 'Admin' : null;
     const memberLandPresence = landPresenceByAddress.get(member?.member) ?? null;
-    const memberRoleColor =
-      memberRole === 'Owner'
+    const memberRoleColor = isOfflineRow
+      ? theme.palette.text.secondary
+      : memberRole === 'Owner'
         ? theme.palette.mode === 'dark'
           ? '#ffb454'
           : '#a84a00'
@@ -667,6 +711,18 @@ const ListOfMembers = ({
                   : undefined,
             roleColor: memberRole ? memberRoleColor : undefined,
             status: statusMap.get(member.member) ?? null,
+          }
+        : undefined;
+    const reticulumSilenceContext =
+      reticulumUserCards &&
+      currentAddress &&
+      member?.member &&
+      (member.member !== currentAddress || memberRole === 'Owner')
+        ? {
+            disabled: memberRole === 'Owner',
+            groupId: Number(groupId),
+            ownerAddress: currentAddress,
+            scopeType: 'group' as const,
           }
         : undefined;
     const memberContent = (
@@ -885,6 +941,7 @@ const ListOfMembers = ({
               fullWidth
               name={memberLabel}
               reticulumUserCard={reticulumUserCard}
+              reticulumSilenceContext={reticulumSilenceContext}
             >
               <ListItemButton
                 onContextMenu={
@@ -903,7 +960,12 @@ const ListOfMembers = ({
                     compact && reticulumUserCards ? compactRowHeight : 50,
                   px: 1,
                   py: 0.5,
+                  opacity: isOfflineRow ? 0.58 : 1,
+                  transition: 'opacity 140ms ease',
                   width: '100%',
+                  '&:hover': {
+                    opacity: isOfflineRow ? 0.78 : 1,
+                  },
                 }}
               >
                 {memberContent}
@@ -925,6 +987,7 @@ const ListOfMembers = ({
                       : undefined,
                 px: compact ? 1 : undefined,
                 py: compact ? 0.5 : undefined,
+                opacity: isOfflineRow ? 0.58 : 1,
               }}
             >
               {memberContent}
@@ -995,6 +1058,38 @@ const ListOfMembers = ({
           )}
         </AutoSizer>
       </div>
+      {categorizedReticulumMembers && (
+        <ButtonBase
+          aria-label="Open hidden members"
+          onClick={() =>
+            executeEvent('openReticulumHiddenMembers', {
+              groupId: Number(groupId),
+            })
+          }
+          sx={{
+            alignItems: 'center',
+            borderTop: `1px solid ${theme.palette.divider}`,
+            color: 'text.secondary',
+            display: 'flex',
+            flexShrink: 0,
+            fontSize: 12,
+            fontWeight: 650,
+            gap: 0.85,
+            justifyContent: 'center',
+            minHeight: 38,
+            px: 1.5,
+            transition: 'background-color 140ms ease, color 140ms ease',
+            width: '100%',
+            '&:hover': {
+              backgroundColor: alpha(theme.palette.text.primary, 0.045),
+              color: 'text.primary',
+            },
+          }}
+        >
+          <VisibilityOffRoundedIcon sx={{ fontSize: 17 }} />
+          Hidden Members
+        </ButtonBase>
+      )}
     </div>
   );
 };
