@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 import { mergeReticulumPayloadWithVerifiedEnvelope } from '../utils/reticulumEventEnvelope';
+import { TIME_MONTHS_1_IN_MILLISECONDS } from '../constants/constants';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
 
@@ -24,6 +25,7 @@ export type ReticulumDmEvent = {
   senderName?: string;
   localDeliveryStatus?: 'pending' | 'sent' | 'received';
   localDeliveryUpdatedAt?: number;
+  expiresAt?: number | null;
 };
 
 type ReticulumDmChatReference = {
@@ -114,6 +116,10 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     reticulumDirect: true,
     reticulumDeliveryStatus: event.localDeliveryStatus,
     reticulumDeliveryUpdatedAt: event.localDeliveryUpdatedAt,
+    expiresAt:
+      event.expiresAt == null || !Number.isFinite(Number(event.expiresAt))
+        ? null
+        : Number(event.expiresAt),
   });
 };
 
@@ -312,7 +318,6 @@ export function useReticulumDirectChat(
     }
     const generation = activeConversationGenerationRef.current + 1;
     activeConversationGenerationRef.current = generation;
-    const historyVisibilityRevision = visibilityRevisionRef.current;
     let cancelled = false;
     let currentConversationId = '';
     const currentConversationIdPromise = conversationIdFor(
@@ -322,33 +327,51 @@ export function useReticulumDirectChat(
       if (!cancelled) currentConversationId = conversationId;
       return conversationId;
     });
-    void window.reticulumChat
-      ?.getDirectHistory?.(myAddress, peerAddress, 200)
-      ?.then((history) => {
-        if (cancelled || !Array.isArray(history)) return;
-        void addPrimaryNamesToDirectEvents(
-          history as ReticulumDmEvent[],
-          primaryNameCacheRef.current
-        ).then((enriched) => {
+    const refreshHistory = (reconcileExpiry = false) => {
+      const expectedVisibilityRevision = visibilityRevisionRef.current;
+      return window.reticulumChat
+        ?.getDirectHistory?.(myAddress, peerAddress, 200)
+        ?.then((history) => {
+          if (cancelled || !Array.isArray(history)) return;
+          void addPrimaryNamesToDirectEvents(
+            history as ReticulumDmEvent[],
+            primaryNameCacheRef.current
+          ).then((enriched) => {
+            if (
+              !cancelled &&
+              activeConversationGenerationRef.current === generation &&
+              visibilityRevisionRef.current === expectedVisibilityRevision
+            ) {
+              if (reconcileExpiry) {
+                const now = Date.now();
+                setEvents((previous) =>
+                  mergeEvents(
+                    enriched,
+                    previous.filter(
+                      (event) =>
+                        event.expiresAt == null || event.expiresAt > now
+                    )
+                  )
+                );
+              } else {
+                setEvents(enriched);
+              }
+              setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
+            }
+          });
+        })
+        .catch(() => {
           if (
             !cancelled &&
             activeConversationGenerationRef.current === generation &&
-            visibilityRevisionRef.current === historyVisibilityRevision
+            visibilityRevisionRef.current === expectedVisibilityRevision
           ) {
-            setEvents(enriched);
+            setEvents([]);
             setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
           }
         });
-      })
-      .catch(() => {
-        if (
-          !cancelled &&
-          activeConversationGenerationRef.current === generation
-        ) {
-          setEvents([]);
-          setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
-        }
-      });
+    };
+    void refreshHistory();
     const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
       const candidate = event as ReticulumDmEvent;
       if (
@@ -440,12 +463,25 @@ export function useReticulumDirectChat(
           );
         });
     });
+    const offSummary = window.reticulumChat?.onDirectSummaryChanged?.(
+      (payload) => {
+        if (payload.reason !== 'expiry') return;
+        const applyExpiry = (conversationId: string) => {
+          if (!cancelled && payload.conversationId === conversationId) {
+            void refreshHistory(true);
+          }
+        };
+        if (currentConversationId) applyExpiry(currentConversationId);
+        else void currentConversationIdPromise.then(applyExpiry);
+      }
+    );
     return () => {
       cancelled = true;
       activeConversationGenerationRef.current += 1;
       off?.();
       offTyping?.();
       offSilence?.();
+      offSummary?.();
       setTypingUsers(new Set());
       if (batchTimerRef.current) {
         clearTimeout(batchTimerRef.current);
@@ -462,11 +498,13 @@ export function useReticulumDirectChat(
       messageText,
       otherData,
       peerAddressOverride,
+      expiryDurationMs,
     }: {
       chatReference?: string;
       messageText: string;
       otherData?: Record<string, unknown>;
       peerAddressOverride?: string;
+      expiryDurationMs?: number | null;
     }) => {
       const actualPeerAddress = String(
         peerAddressOverride || peerAddress || ''
@@ -480,14 +518,35 @@ export function useReticulumDirectChat(
       );
       const timestamp = Date.now();
       const eventId = randomDirectEventId();
+      const type = String(otherData?.type || '');
+      const eventType =
+        type === 'edit'
+          ? 'edit'
+          : type === 'reaction' && otherData?.contentState === false
+            ? 'reaction_remove'
+            : type === 'reaction'
+              ? 'reaction_add'
+              : type === 'delete'
+                ? 'delete'
+                : 'message';
       const hasOtherData = hasPayloadData(otherData);
+      const effectiveExpiryDurationMs =
+        eventType === 'message'
+          ? expiryDurationMs === null
+            ? null
+            : (expiryDurationMs ?? TIME_MONTHS_1_IN_MILLISECONDS)
+          : undefined;
+      const hasExpiry = eventType === 'message';
       const payload =
-        !chatReference && !hasOtherData
+        !chatReference && !hasOtherData && !hasExpiry
           ? messageText
           : JSON.stringify({
               ...(chatReference ? { chatReference } : {}),
               messageText,
               ...(hasOtherData ? { otherData } : {}),
+              ...(hasExpiry
+                ? { expiryDurationMs: effectiveExpiryDurationMs ?? 0 }
+                : {}),
             });
       const payloadHash = await sha256Hex(payload);
       const senderStreamId =
@@ -504,17 +563,6 @@ export function useReticulumDirectChat(
         ...existingSeqs.map((seq) => seq + 1)
       );
       lastSenderSeqRef.current = senderSeq;
-      const type = String(otherData?.type || '');
-      const eventType =
-        type === 'edit'
-          ? 'edit'
-          : type === 'reaction' && otherData?.contentState === false
-            ? 'reaction_remove'
-            : type === 'reaction'
-              ? 'reaction_add'
-              : type === 'delete'
-                ? 'delete'
-                : 'message';
       const baseFields = {
         conversationId,
         eventId,
@@ -566,8 +614,15 @@ export function useReticulumDirectChat(
       await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       const result = await window.reticulumChat?.publishDirectEvent?.(event);
       if (result?.success) {
+        const optimisticEvent: ReticulumDmEvent = {
+          ...event,
+          expiresAt:
+            eventType === 'message' && effectiveExpiryDurationMs != null
+              ? timestamp + effectiveExpiryDurationMs
+              : null,
+        };
         const enriched = await addPrimaryNamesToDirectEvents(
-          [event],
+          [optimisticEvent],
           primaryNameCacheRef.current
         );
         setEvents((prev) => mergeEvents(prev, enriched));

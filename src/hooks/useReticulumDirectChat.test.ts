@@ -31,6 +31,7 @@ describe('Reticulum DM event projection', () => {
       targetEventId: 'verified-target',
       replyToEventId: 'verified-reply',
       timestamp: 42,
+      expiresAt: 1234,
       payload: JSON.stringify({
         chatReference: 'spoofed-target',
         messageText: 'hello',
@@ -43,6 +44,7 @@ describe('Reticulum DM event projection', () => {
           senderName: 'Mallory',
           recipientAddress: 'mallory-recipient',
           timestamp: 1,
+          expiresAt: 2,
           messageText: 'spoofed message',
           chatReference: 'spoofed-target',
           repliedTo: 'spoofed-reply',
@@ -63,6 +65,7 @@ describe('Reticulum DM event projection', () => {
       senderName: 'Alice',
       recipientAddress: 'bob',
       timestamp: 42,
+      expiresAt: 1234,
       chatReference: 'verified-target',
       repliedTo: 'verified-reply',
       messageText: 'hello',

@@ -19,11 +19,12 @@ import {
 
 type ReticulumMessageExpiryButtonProps = {
   channelExpiryDurationMs?: number;
+  direct?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   onChange: (durationMs: number | undefined) => void;
   segmented?: boolean;
-  value?: number;
+  value?: number | null;
 };
 
 const expiryMenuItemSx = {
@@ -61,6 +62,7 @@ const expiryIndicatorLabel = (durationMs?: number): string | null => {
 
 export function ReticulumMessageExpiryButton({
   channelExpiryDurationMs,
+  direct = false,
   disabled = false,
   disabledReason,
   onChange,
@@ -69,7 +71,8 @@ export function ReticulumMessageExpiryButton({
 }: ReticulumMessageExpiryButtonProps) {
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
-  const effectiveExpiryDurationMs = value ?? channelExpiryDurationMs;
+  const effectiveExpiryDurationMs =
+    value === null ? undefined : (value ?? channelExpiryDurationMs);
   const indicatorLabel = expiryIndicatorLabel(effectiveExpiryDurationMs);
   const channelDefaultSummary = channelExpiryDurationMs
     ? `Maximum ${formatReticulumExpiryDuration(channelExpiryDurationMs)}`
@@ -85,9 +88,11 @@ export function ReticulumMessageExpiryButton({
     ? disabledReason || 'Message expiry is unavailable'
     : segmented
       ? 'Message expiry'
-      : value
-        ? `Message expiry: ${formatReticulumExpiryDuration(value)}`
-        : `Message expiry: ${channelDefaultLabel}`;
+      : value === null
+        ? 'Message expiry: No expiry'
+        : value
+          ? `Message expiry: ${formatReticulumExpiryDuration(value)}`
+          : `Message expiry: ${channelDefaultLabel}`;
 
   useEffect(() => {
     if (disabled) setAnchorEl(null);
@@ -122,18 +127,18 @@ export function ReticulumMessageExpiryButton({
             }
             size="small"
             sx={{
-              backgroundColor: value
-                ? theme.palette.action.selected
-                : segmented
-                  ? theme.palette.background.default
-                  : 'transparent',
-              border: segmented
-                ? 'none'
-                : `1px solid ${theme.palette.divider}`,
+              backgroundColor:
+                value !== undefined
+                  ? theme.palette.action.selected
+                  : segmented
+                    ? theme.palette.background.default
+                    : 'transparent',
+              border: segmented ? 'none' : `1px solid ${theme.palette.divider}`,
               borderRadius: segmented ? 0 : '8px',
-              color: value
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
+              color:
+                value !== undefined
+                  ? theme.palette.text.primary
+                  : theme.palette.text.secondary,
               flexShrink: 0,
               height: segmented ? 38 : 34,
               position: 'relative',
@@ -202,16 +207,22 @@ export function ReticulumMessageExpiryButton({
       >
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
           <MenuItem
-            selected={value === undefined}
+            selected={direct ? value === null : value === undefined}
             onClick={() => select(undefined)}
             sx={expiryMenuItemSx}
           >
             <ListItemIcon>
-              {value === undefined ? <CheckRoundedIcon /> : null}
+              {direct ? (
+                value === null ? (
+                  <CheckRoundedIcon />
+                ) : null
+              ) : value === undefined ? (
+                <CheckRoundedIcon />
+              ) : null}
             </ListItemIcon>
             <ListItemText
-              primary="Channel default"
-              secondary={channelDefaultSummary}
+              primary={direct ? 'No expiry' : 'Channel default'}
+              secondary={direct ? 'Do not auto-delete' : channelDefaultSummary}
             />
           </MenuItem>
           {RETICULUM_MESSAGE_EXPIRY_OPTIONS.map((option) => {

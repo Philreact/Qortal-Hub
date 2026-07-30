@@ -935,14 +935,10 @@ export const Group = ({
   const [mountedLandGroupId, setMountedLandGroupId] = useState<string | null>(
     null
   );
-  const [
-    reticulumChatMembersPanelOpen,
-    setReticulumChatMembersPanelOpen,
-  ] = useState(true);
-  const [
-    reticulumLandMembersPanelOpen,
-    setReticulumLandMembersPanelOpen,
-  ] = useState(false);
+  const [reticulumChatMembersPanelOpen, setReticulumChatMembersPanelOpen] =
+    useState(true);
+  const [reticulumLandMembersPanelOpen, setReticulumLandMembersPanelOpen] =
+    useState(false);
   const [reticulumSearchOverlayOpen, setReticulumSearchOverlayOpen] =
     useState(false);
   const [reticulumJoinRequestCount, setReticulumJoinRequestCount] = useState(0);
@@ -1906,6 +1902,34 @@ export const Group = ({
     [myAddress, reticulumChatEnabled, setReticulumDirectSummaries]
   );
 
+  const refreshReticulumDirectSummary = useCallback(
+    async (peerAddress: string) => {
+      const peer = String(peerAddress || '').trim();
+      if (!myAddress || !reticulumChatEnabled || !peer) return;
+      try {
+        const summaries = await window.reticulumChat?.getDirectSummaries?.(
+          myAddress,
+          peer
+        );
+        const summary = Array.isArray(summaries)
+          ? summaries.find(
+              (candidate: any) =>
+                String(candidate?.peerAddress || '').trim() === peer
+            )
+          : undefined;
+        setReticulumDirectSummaries((previous) => {
+          const next = { ...previous };
+          if (summary) next[peer] = summary;
+          else delete next[peer];
+          return next;
+        });
+      } catch (error) {
+        console.error('[ReticulumChat] Failed to refresh DM summary:', error);
+      }
+    },
+    [myAddress, reticulumChatEnabled, setReticulumDirectSummaries]
+  );
+
   const scheduleReticulumDirectSummariesRefresh = useCallback(
     (delayMs = 150) => {
       if (reticulumDirectSummariesRefreshTimerRef.current) {
@@ -1961,7 +1985,11 @@ export const Group = ({
   useEffect(() => {
     if (!reticulumChatEnabled || !myAddress) return;
     const offSummaryChanged = window.reticulumChat?.onDirectSummaryChanged?.(
-      () => {
+      (payload) => {
+        if (payload.reason === 'expiry' && payload.peerAddress) {
+          void refreshReticulumDirectSummary(payload.peerAddress);
+          return;
+        }
         scheduleReticulumDirectSummariesRefresh();
       }
     );
@@ -1975,6 +2003,7 @@ export const Group = ({
     };
   }, [
     myAddress,
+    refreshReticulumDirectSummary,
     reticulumChatEnabled,
     scheduleReticulumDirectSummariesRefresh,
   ]);
@@ -4030,10 +4059,7 @@ export const Group = ({
         Boolean(event?.detail?.open ?? event?.open)
       );
     };
-    subscribeToEvent(
-      'reticulumSearchOverlayOpenState',
-      syncSearchOverlayState
-    );
+    subscribeToEvent('reticulumSearchOverlayOpenState', syncSearchOverlayState);
     return () =>
       unsubscribeFromEvent(
         'reticulumSearchOverlayOpenState',

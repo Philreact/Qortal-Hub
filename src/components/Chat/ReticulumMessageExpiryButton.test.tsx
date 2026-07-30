@@ -119,4 +119,23 @@ describe('ReticulumMessageExpiryButton', () => {
     expect(button).toBeDisabled();
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
+
+  it('offers and selects no expiry for direct messages', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ReticulumMessageExpiryButton
+        direct
+        onChange={onChange}
+        value={TIME_MONTHS_1_IN_MILLISECONDS}
+      />
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: 'Set message expiry' })
+    );
+    await user.click(screen.getByRole('menuitem', { name: /No expiry/ }));
+
+    expect(onChange).toHaveBeenCalledWith(undefined);
+  });
 });

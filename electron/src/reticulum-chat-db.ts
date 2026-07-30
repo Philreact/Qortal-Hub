@@ -92,6 +92,15 @@ function eventPassesAuthorExclusion(
 }
 
 const RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS = 60 * 1000;
+const RETICULUM_DM_EXPIRY_DAY_MS = 24 * 60 * 60 * 1000;
+export const RETICULUM_DM_DEFAULT_EXPIRY_MS = 30 * RETICULUM_DM_EXPIRY_DAY_MS;
+const RETICULUM_DM_ALLOWED_EXPIRY_MS = new Set([
+  RETICULUM_DM_EXPIRY_DAY_MS,
+  2 * RETICULUM_DM_EXPIRY_DAY_MS,
+  3 * RETICULUM_DM_EXPIRY_DAY_MS,
+  7 * RETICULUM_DM_EXPIRY_DAY_MS,
+  RETICULUM_DM_DEFAULT_EXPIRY_MS,
+]);
 const RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES = 32;
 const RETICULUM_CHAT_VISIBLE_EVENT_SQL =
   "(expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)";
@@ -567,6 +576,23 @@ type DirectEventRow = {
   wire_bytes: number;
   delivery_status?: string;
   delivery_updated_at?: number;
+  expires_at?: number | null;
+  message_expiry_duration_ms?: number | null;
+};
+
+export type ReticulumDmExpiryPreference = {
+  ownerAddress: string;
+  peerAddress: string;
+  durationMs: number | null;
+  updatedAt: number;
+};
+
+export type ReticulumDmExpiryPruneResult = {
+  eventIds: string[];
+  conversations: Array<{
+    conversationId: string;
+    peerAddresses: string[];
+  }>;
 };
 
 type SilenceRow = {
@@ -880,6 +906,10 @@ function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
     ...(Number.isFinite(Number(row.delivery_updated_at))
       ? { localDeliveryUpdatedAt: Number(row.delivery_updated_at) }
       : {}),
+    expiresAt:
+      row.expires_at == null || !Number.isFinite(Number(row.expires_at))
+        ? null
+        : Number(row.expires_at),
   };
 }
 
@@ -1335,6 +1365,43 @@ function messageExpiryDurationFromPayload(payload: string): number | undefined {
   }
 }
 
+type ReticulumDmExpiryPayload =
+  | { valid: true; specified: false; durationMs: null }
+  | { valid: true; specified: true; durationMs: number | null }
+  | { valid: false; specified: true; durationMs: null };
+
+export function directMessageExpiryFromPayload(
+  payload: string
+): ReticulumDmExpiryPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return { valid: true, specified: false, durationMs: null };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: true, specified: false, durationMs: null };
+  }
+  const record = parsed as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, 'expiryDurationMs')) {
+    return { valid: true, specified: false, durationMs: null };
+  }
+  if (typeof record.expiryDurationMs !== 'number') {
+    return { valid: false, specified: true, durationMs: null };
+  }
+  const duration = record.expiryDurationMs;
+  if (duration === 0) {
+    return { valid: true, specified: true, durationMs: null };
+  }
+  if (
+    !Number.isSafeInteger(duration) ||
+    !RETICULUM_DM_ALLOWED_EXPIRY_MS.has(duration)
+  ) {
+    return { valid: false, specified: true, durationMs: null };
+  }
+  return { valid: true, specified: true, durationMs: duration };
+}
+
 function stripSearchHtml(text: string): string {
   return text
     .replace(/<\s*br\s*\/?>/gi, ' ')
@@ -1484,6 +1551,7 @@ export class ReticulumChatDatabase {
   private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
   private generalChannelExpiryPolicyAppliedAt = 0;
   private lastExpiryPruneAt = 0;
+  private lastDirectExpiryPruneAt = 0;
   private memoryMeta = new Map<
     string,
     {
@@ -2673,6 +2741,7 @@ export class ReticulumChatDatabase {
     this.migrateProjectedSearchIndex();
     this.scrubExistingDeletedMessagePayloads();
     this.pruneExpiredMessages();
+    this.pruneExpiredDirectMessages();
   }
 
   close(): void {
@@ -2754,6 +2823,93 @@ export class ReticulumChatDatabase {
     }
   }
 
+  private recordExpiredDirectEventMarker(
+    event: ReticulumDmEvent,
+    expiredAt = Date.now()
+  ): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO rchat_dm_expired_event_markers
+          (event_id, conversation_id, sender_address, recipient_address,
+           sender_stream_id, sender_seq, timestamp, expired_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        event.eventId,
+        event.conversationId,
+        event.senderAddress,
+        event.recipientAddress,
+        normalizeReticulumChatAuthorStreamId(event.senderStreamId),
+        event.senderSeq,
+        event.timestamp,
+        expiredAt
+      );
+  }
+
+  hasDirectExpiredEventMarker(eventId: string): boolean {
+    if (!eventId) return false;
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM rchat_dm_expired_event_markers
+         WHERE event_id = ? LIMIT 1`
+      )
+      .get(eventId);
+  }
+
+  private directEventExpiryState(event: ReticulumDmEvent): {
+    valid: boolean;
+    expiresAt: number | null;
+    messageExpiryDurationMs: number | null;
+    targetExpired: boolean;
+  } {
+    if (event.eventType === 'message') {
+      const expiry = directMessageExpiryFromPayload(event.payload);
+      if (!expiry.valid) {
+        return {
+          valid: false,
+          expiresAt: null,
+          messageExpiryDurationMs: null,
+          targetExpired: false,
+        };
+      }
+      return {
+        valid: true,
+        expiresAt:
+          expiry.specified && expiry.durationMs != null
+            ? event.timestamp + expiry.durationMs
+            : null,
+        messageExpiryDurationMs:
+          expiry.specified && expiry.durationMs != null
+            ? expiry.durationMs
+            : null,
+        targetExpired: false,
+      };
+    }
+    if (!event.targetEventId) {
+      return {
+        valid: true,
+        expiresAt: null,
+        messageExpiryDurationMs: null,
+        targetExpired: false,
+      };
+    }
+    const target = this.db
+      .prepare(
+        `SELECT expires_at FROM rchat_dm_events
+         WHERE event_id = ? AND conversation_id = ? LIMIT 1`
+      )
+      .get(event.targetEventId, event.conversationId) as
+      | { expires_at?: number | null }
+      | undefined;
+    return {
+      valid: true,
+      expiresAt: target?.expires_at == null ? null : Number(target.expires_at),
+      messageExpiryDurationMs: null,
+      targetExpired:
+        !target && this.hasDirectExpiredEventMarker(event.targetEventId),
+    };
+  }
+
   insertDirectEvent(
     event: ReticulumDmEvent,
     ownEvent: boolean,
@@ -2781,27 +2937,45 @@ export class ReticulumChatDatabase {
             event_type?: string;
           }
         | undefined;
-      if (
-        !target ||
-        target.conversation_id !== conversationId ||
-        target.sender_address !== event.senderAddress ||
-        target.event_type !== 'message'
-      ) {
+      const expiredTarget = !target
+        ? (this.db
+            .prepare(
+              `SELECT conversation_id, sender_address
+               FROM rchat_dm_expired_event_markers
+               WHERE event_id = ? LIMIT 1`
+            )
+            .get(event.targetEventId) as
+            | { conversation_id?: string; sender_address?: string }
+            | undefined)
+        : undefined;
+      const validLiveTarget =
+        target?.conversation_id === conversationId &&
+        target.sender_address === event.senderAddress &&
+        target.event_type === 'message';
+      const validExpiredTarget =
+        expiredTarget?.conversation_id === conversationId &&
+        expiredTarget.sender_address === event.senderAddress;
+      if (!validLiveTarget && !validExpiredTarget) {
         return false;
       }
     }
     const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
+    const expiry = this.directEventExpiryState(event);
+    if (!expiry.valid) return false;
+    if (
+      expiry.targetExpired ||
+      (expiry.expiresAt !== null && expiry.expiresAt <= now)
+    ) {
+      this.recordExpiredDirectEventMarker(event, now);
+      return false;
+    }
     const status = deliveryStatus || (ownEvent ? 'pending' : 'received');
     const readWatermarkRow = this.stmtGetDirectWatermark.get(
       conversationId,
       event.recipientAddress
-    ) as
-      | { timestamp?: number }
-      | undefined;
-    const readWatermark = Math.max(
-      0,
-      Number(readWatermarkRow?.timestamp) || 0
-    );
+    ) as { timestamp?: number } | undefined;
+    const readWatermark = Math.max(0, Number(readWatermarkRow?.timestamp) || 0);
     const result = this.db
       .prepare(
         `
@@ -2809,12 +2983,14 @@ export class ReticulumChatDatabase {
         (event_id, conversation_id, sender_address, recipient_address, sender_public_key,
          sender_stream_id, sender_seq, timestamp, event_type, target_event_id, reply_to_event_id, payload,
          payload_hash, signature, legacy_signature, own_event, read_at, stored_at, wire_bytes,
-         delivery_status, delivery_updated_at)
+         delivery_status, delivery_updated_at, expires_at,
+         message_expiry_duration_ms)
       VALUES
         (@event_id, @conversation_id, @sender_address, @recipient_address, @sender_public_key,
          @sender_stream_id, @sender_seq, @timestamp, @event_type, @target_event_id, @reply_to_event_id, @payload,
          @payload_hash, @signature, @legacy_signature, @own_event, @read_at, @stored_at, @wire_bytes,
-         @delivery_status, @delivery_updated_at)
+         @delivery_status, @delivery_updated_at, @expires_at,
+         @message_expiry_duration_ms)
     `
       )
       .run({
@@ -2841,6 +3017,8 @@ export class ReticulumChatDatabase {
         wire_bytes: Buffer.byteLength(JSON.stringify(event), 'utf8'),
         delivery_status: status,
         delivery_updated_at: now,
+        expires_at: expiry.expiresAt,
+        message_expiry_duration_ms: expiry.messageExpiryDurationMs,
       });
     return result.changes > 0;
   }
@@ -3009,8 +3187,12 @@ export class ReticulumChatDatabase {
   getDirectEvent(eventId: string): ReticulumDmEvent | null {
     if (!eventId) return null;
     const row = this.db
-      .prepare('SELECT * FROM rchat_dm_events WHERE event_id = ? LIMIT 1')
-      .get(eventId) as DirectEventRow | undefined;
+      .prepare(
+        `SELECT * FROM rchat_dm_events
+         WHERE event_id = ? AND (expires_at IS NULL OR expires_at > ?)
+         LIMIT 1`
+      )
+      .get(eventId, Date.now()) as DirectEventRow | undefined;
     return row ? rowToDirectEvent(row) : null;
   }
 
@@ -3041,6 +3223,8 @@ export class ReticulumChatDatabase {
   ): ReticulumDmEvent[] {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     if (!normalized) return [];
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
     const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const excludedSenders = [
       ...new Set(
@@ -3058,6 +3242,7 @@ export class ReticulumChatDatabase {
         SELECT * FROM (
           SELECT * FROM rchat_dm_events
           WHERE conversation_id = ?
+            AND (expires_at IS NULL OR expires_at > ?)
             ${excludedClause}
           ORDER BY timestamp DESC, event_id DESC
           LIMIT ?
@@ -3065,7 +3250,7 @@ export class ReticulumChatDatabase {
         ORDER BY timestamp ASC, event_id ASC
       `
       )
-      .all(normalized, ...excludedSenders, safeLimit) as DirectEventRow[];
+      .all(normalized, now, ...excludedSenders, safeLimit) as DirectEventRow[];
     return rows.map(rowToDirectEvent);
   }
 
@@ -3077,11 +3262,14 @@ export class ReticulumChatDatabase {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     if (!normalized) return [];
     const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
     const rows = this.db
       .prepare(
         `
         SELECT * FROM rchat_dm_events
         WHERE conversation_id = ? AND timestamp > ?
+          AND (expires_at IS NULL OR expires_at > ?)
         ORDER BY timestamp ASC, event_id ASC
         LIMIT ?
       `
@@ -3089,6 +3277,7 @@ export class ReticulumChatDatabase {
       .all(
         normalized,
         Math.max(0, Math.floor(afterTimestamp || 0)),
+        now,
         safeLimit
       ) as DirectEventRow[];
     return rows.map(rowToDirectEvent);
@@ -3097,16 +3286,19 @@ export class ReticulumChatDatabase {
   getDirectLatestEvent(conversationId: string): ReticulumDmEvent | null {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     if (!normalized) return null;
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
     const row = this.db
       .prepare(
         `
         SELECT * FROM rchat_dm_events
         WHERE conversation_id = ?
+          AND (expires_at IS NULL OR expires_at > ?)
         ORDER BY timestamp DESC, event_id DESC
         LIMIT 1
       `
       )
-      .get(normalized) as DirectEventRow | undefined;
+      .get(normalized, now) as DirectEventRow | undefined;
     return row ? rowToDirectEvent(row) : null;
   }
 
@@ -3117,17 +3309,53 @@ export class ReticulumChatDatabase {
     const normalized = normalizeReticulumDmConversationId(conversationId);
     const sender = String(senderAddress || '').trim();
     if (!normalized || !sender) return null;
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
     const row = this.db
       .prepare(
         `
         SELECT * FROM rchat_dm_events
         WHERE conversation_id = ? AND sender_address = ?
+          AND (expires_at IS NULL OR expires_at > ?)
         ORDER BY timestamp DESC, event_id DESC
         LIMIT 1
       `
       )
-      .get(normalized, sender) as DirectEventRow | undefined;
+      .get(normalized, sender, now) as DirectEventRow | undefined;
     return row ? rowToDirectEvent(row) : null;
+  }
+
+  getDirectSyncCursorFromSender(
+    conversationId: string,
+    senderAddress: string
+  ): { eventId: string; timestamp: number; senderAddress: string } | null {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    const sender = String(senderAddress || '').trim();
+    if (!normalized || !sender) return null;
+    const row = this.db
+      .prepare(
+        `SELECT event_id, timestamp, sender_address
+         FROM (
+           SELECT event_id, timestamp, sender_address
+           FROM rchat_dm_events
+           WHERE conversation_id = ? AND sender_address = ?
+           UNION ALL
+           SELECT event_id, timestamp, sender_address
+           FROM rchat_dm_expired_event_markers
+           WHERE conversation_id = ? AND sender_address = ?
+         )
+         ORDER BY timestamp DESC, event_id DESC
+         LIMIT 1`
+      )
+      .get(normalized, sender, normalized, sender) as
+      | { event_id?: string; timestamp?: number; sender_address?: string }
+      | undefined;
+    if (!row?.event_id || !Number.isFinite(Number(row.timestamp))) return null;
+    return {
+      eventId: row.event_id,
+      timestamp: Number(row.timestamp),
+      senderAddress: String(row.sender_address || sender),
+    };
   }
 
   getDirectAuthorMaxSeq(conversationId: string, senderAddress: string): number {
@@ -3136,12 +3364,16 @@ export class ReticulumChatDatabase {
     const row = this.db
       .prepare(
         `
-        SELECT MAX(sender_seq) AS max_seq
-        FROM rchat_dm_events
-        WHERE conversation_id = ? AND sender_address = ?
+        SELECT MAX(sender_seq) AS max_seq FROM (
+          SELECT sender_seq FROM rchat_dm_events
+          WHERE conversation_id = ? AND sender_address = ?
+          UNION ALL
+          SELECT sender_seq FROM rchat_dm_expired_event_markers
+          WHERE conversation_id = ? AND sender_address = ?
+        )
       `
       )
-      .get(normalized, senderAddress) as
+      .get(normalized, senderAddress, normalized, senderAddress) as
       | { max_seq?: number | null }
       | undefined;
     return Number(row?.max_seq || 0);
@@ -3167,26 +3399,103 @@ export class ReticulumChatDatabase {
     return streamId;
   }
 
-  getDirectSummaries(myAddress: string): ReticulumDmSummary[] {
+  getDirectExpiryPreference(
+    ownerAddress: string,
+    peerAddress: string
+  ): ReticulumDmExpiryPreference {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerAddress || '').trim();
+    const row = this.db
+      .prepare(
+        `SELECT duration_ms, updated_at
+         FROM rchat_dm_expiry_preferences
+         WHERE owner_address = ? AND peer_address = ? LIMIT 1`
+      )
+      .get(owner, peer) as
+      | { duration_ms?: number | null; updated_at?: number }
+      | undefined;
+    return {
+      ownerAddress: owner,
+      peerAddress: peer,
+      durationMs:
+        row === undefined
+          ? RETICULUM_DM_DEFAULT_EXPIRY_MS
+          : row.duration_ms == null
+            ? null
+            : Number(row.duration_ms),
+      updatedAt: Number(row?.updated_at || 0),
+    };
+  }
+
+  setDirectExpiryPreference(
+    ownerAddress: string,
+    peerAddress: string,
+    durationMs: number | null,
+    now = Date.now()
+  ): ReticulumDmExpiryPreference | null {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerAddress || '').trim();
+    if (!owner || !peer || owner === peer) return null;
+    if (
+      durationMs !== null &&
+      (!Number.isSafeInteger(durationMs) ||
+        !RETICULUM_DM_ALLOWED_EXPIRY_MS.has(durationMs))
+    ) {
+      return null;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO rchat_dm_expiry_preferences
+          (owner_address, peer_address, duration_ms, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(owner_address, peer_address) DO UPDATE SET
+           duration_ms = excluded.duration_ms,
+           updated_at = excluded.updated_at`
+      )
+      .run(owner, peer, durationMs, Math.max(1, Math.floor(now)));
+    return this.getDirectExpiryPreference(owner, peer);
+  }
+
+  getDirectSummaries(
+    myAddress: string,
+    peerAddress?: string
+  ): ReticulumDmSummary[] {
     const address = String(myAddress || '').trim();
     if (!address) return [];
+    const peer = String(peerAddress || '').trim();
+    const conversationId = peer ? reticulumDmConversationId(address, peer) : '';
+    if (peer && !conversationId) return [];
+    const conversationClause = conversationId
+      ? 'AND e.conversation_id = ?'
+      : '';
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
     const rows = this.db
       .prepare(
         `
         SELECT e.*
         FROM rchat_dm_events e
         WHERE (e.sender_address = ? OR e.recipient_address = ?)
+          ${conversationClause}
+          AND (e.expires_at IS NULL OR e.expires_at > ?)
           AND e.event_id = (
             SELECT latest.event_id
             FROM rchat_dm_events latest
             WHERE latest.conversation_id = e.conversation_id
+              AND (latest.expires_at IS NULL OR latest.expires_at > ?)
             ORDER BY latest.timestamp DESC, latest.event_id DESC
             LIMIT 1
           )
         ORDER BY e.timestamp DESC, e.event_id DESC
       `
       )
-      .all(address, address) as DirectEventRow[];
+      .all(
+        address,
+        address,
+        ...(conversationId ? [conversationId] : []),
+        now,
+        now
+      ) as DirectEventRow[];
     return rows.map((row) => {
       const event = rowToDirectEvent(row);
       const peerAddress =
@@ -3203,6 +3512,7 @@ export class ReticulumChatDatabase {
             AND incoming.sender_address <> ?
             AND incoming.event_type = 'message'
             AND incoming.read_at = 0
+            AND (incoming.expires_at IS NULL OR incoming.expires_at > ?)
             AND NOT EXISTS (
               SELECT 1
               FROM rchat_silences silence
@@ -3218,7 +3528,7 @@ export class ReticulumChatDatabase {
             )
         `
         )
-        .get(event.conversationId, address, address, address, Date.now()) as
+        .get(event.conversationId, address, address, now, address, now) as
         | { count?: number }
         | undefined;
       return {
@@ -3373,9 +3683,7 @@ export class ReticulumChatDatabase {
       scopeId: row.scope_id,
       ...(typeof row.group_id === 'number' ? { groupId: row.group_id } : {}),
       ...(row.channel_id ? { channelId: row.channel_id } : {}),
-      ...(row.conversation_id
-        ? { conversationId: row.conversation_id }
-        : {}),
+      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
       ...(row.peer_address ? { peerAddress: row.peer_address } : {}),
       upToTimestamp: row.up_to_timestamp,
       signedAt: row.signed_at,
@@ -3508,9 +3816,7 @@ export class ReticulumChatDatabase {
       scopeId: row.scope_id,
       ...(typeof row.group_id === 'number' ? { groupId: row.group_id } : {}),
       ...(row.channel_id ? { channelId: row.channel_id } : {}),
-      ...(row.conversation_id
-        ? { conversationId: row.conversation_id }
-        : {}),
+      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
       ...(row.peer_address ? { peerAddress: row.peer_address } : {}),
       upToTimestamp: row.up_to_timestamp,
       updatedAt: row.updated_at,
@@ -3631,6 +3937,97 @@ export class ReticulumChatDatabase {
     if (now - this.lastExpiryPruneAt < RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS)
       return;
     this.pruneExpiredMessages(now);
+  }
+
+  pruneExpiredDirectMessages(
+    now = Date.now(),
+    limit = 250
+  ): ReticulumDmExpiryPruneResult {
+    const batchLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const roots = this.db
+      .prepare(
+        `SELECT event_id
+         FROM rchat_dm_events
+         WHERE event_type = 'message'
+           AND expires_at IS NOT NULL
+           AND expires_at <= ?
+         ORDER BY expires_at ASC, event_id ASC
+         LIMIT ?`
+      )
+      .all(now, batchLimit) as Array<{ event_id?: string }>;
+    const rootIds = roots
+      .map((row) => String(row.event_id || ''))
+      .filter(Boolean);
+    if (rootIds.length === 0) {
+      this.lastDirectExpiryPruneAt = now;
+      return { eventIds: [], conversations: [] };
+    }
+    const getEvents = this.db.prepare(
+      `SELECT * FROM rchat_dm_events
+       WHERE event_id = ? OR target_event_id = ?`
+    );
+    const deleteEvent = this.db.prepare(
+      `DELETE FROM rchat_dm_events WHERE event_id = ?`
+    );
+    const affectedEventIds: string[] = [];
+    const affectedConversations = new Map<string, Set<string>>();
+    const transaction = this.db.transaction((ids: string[]) => {
+      for (const rootEventId of ids) {
+        const rows = getEvents.all(
+          rootEventId,
+          rootEventId
+        ) as DirectEventRow[];
+        for (const row of rows) {
+          const event = rowToDirectEvent(row);
+          this.recordExpiredDirectEventMarker(event, now);
+          deleteEvent.run(event.eventId);
+          affectedEventIds.push(event.eventId);
+          const peers =
+            affectedConversations.get(event.conversationId) ??
+            new Set<string>();
+          peers.add(event.senderAddress);
+          peers.add(event.recipientAddress);
+          affectedConversations.set(event.conversationId, peers);
+        }
+      }
+    });
+    transaction(rootIds);
+    this.lastDirectExpiryPruneAt = now;
+    return {
+      eventIds: affectedEventIds,
+      conversations: [...affectedConversations].map(
+        ([conversationId, peerAddresses]) => ({
+          conversationId,
+          peerAddresses: [...peerAddresses],
+        })
+      ),
+    };
+  }
+
+  private pruneExpiredDirectMessagesThrottled(now = Date.now()): void {
+    if (
+      now - this.lastDirectExpiryPruneAt <
+      RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.pruneExpiredDirectMessages(now);
+  }
+
+  getNextDirectExpiryAt(now = Date.now()): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT MIN(expires_at) AS expires_at
+         FROM rchat_dm_events
+         WHERE expires_at IS NOT NULL`
+      )
+      .get() as { expires_at?: number | null } | undefined;
+    if (row?.expires_at == null) return null;
+    const expiresAt = Number(row?.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+    // If a large expiry batch exceeds the bounded prune transaction, schedule
+    // another immediate batch instead of leaving overdue rows behind.
+    return expiresAt > now ? expiresAt : now + 1;
   }
 
   private rootMessageExpiryState(root: ReticulumChatEvent): {
@@ -11342,6 +11739,8 @@ export class ReticulumChatDatabase {
         wire_bytes INTEGER NOT NULL,
         delivery_status TEXT NOT NULL DEFAULT 'received',
         delivery_updated_at INTEGER NOT NULL DEFAULT 0,
+        expires_at INTEGER,
+        message_expiry_duration_ms INTEGER,
         UNIQUE (conversation_id, sender_address, sender_stream_id, sender_seq)
       );
       CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_conversation_time
@@ -11671,6 +12070,18 @@ export class ReticulumChatDatabase {
         run: () => this.migrateDirectAuthorStreamSchema(),
       },
       {
+        name: 'dm-message-expiry',
+        run: () => this.migrateDirectExpirySchema(),
+      },
+      {
+        name: 'dm-message-expiry-queue-index',
+        run: () => this.migrateDirectExpiryQueueIndex(),
+      },
+      {
+        name: 'dm-message-expiry-marker-sequence-index',
+        run: () => this.migrateDirectExpiryMarkerSequenceIndex(),
+      },
+      {
         name: 'device-read-state-peer-address',
         run: () =>
           this.ensureColumn(
@@ -11907,6 +12318,7 @@ export class ReticulumChatDatabase {
           'author_stream_id',
           'payload_hash',
           'retention_state',
+          'expires_at',
           'message_expiry_duration_ms',
         ],
       },
@@ -11964,7 +12376,29 @@ export class ReticulumChatDatabase {
       },
       {
         table: 'rchat_dm_events',
-        columns: ['delivery_status', 'delivery_updated_at'],
+        columns: [
+          'delivery_status',
+          'delivery_updated_at',
+          'expires_at',
+          'message_expiry_duration_ms',
+        ],
+      },
+      {
+        table: 'rchat_dm_expired_event_markers',
+        columns: [
+          'event_id',
+          'conversation_id',
+          'sender_address',
+          'recipient_address',
+          'sender_stream_id',
+          'sender_seq',
+          'timestamp',
+          'expired_at',
+        ],
+      },
+      {
+        table: 'rchat_dm_expiry_preferences',
+        columns: ['owner_address', 'peer_address', 'duration_ms', 'updated_at'],
       },
       {
         table: 'rchat_dm_read_watermarks',
@@ -12068,6 +12502,14 @@ export class ReticulumChatDatabase {
       `
         ALTER TABLE reticulum_chat_events
           ADD COLUMN message_expiry_duration_ms INTEGER
+      `
+    );
+    this.ensureColumn(
+      'rchat_event_headers',
+      'expires_at',
+      `
+        ALTER TABLE rchat_event_headers
+          ADD COLUMN expires_at INTEGER
       `
     );
     this.ensureColumn(
@@ -12391,5 +12833,63 @@ export class ReticulumChatDatabase {
       'legacy_signature',
       `ALTER TABLE rchat_dm_events ADD COLUMN legacy_signature TEXT`
     );
+  }
+
+  private migrateDirectExpirySchema(): void {
+    this.ensureColumn(
+      'rchat_dm_events',
+      'expires_at',
+      `ALTER TABLE rchat_dm_events ADD COLUMN expires_at INTEGER`
+    );
+    this.ensureColumn(
+      'rchat_dm_events',
+      'message_expiry_duration_ms',
+      `ALTER TABLE rchat_dm_events ADD COLUMN message_expiry_duration_ms INTEGER`
+    );
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_expires
+        ON rchat_dm_events (expires_at) WHERE expires_at IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS rchat_dm_expired_event_markers (
+        event_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        sender_address TEXT NOT NULL,
+        recipient_address TEXT NOT NULL,
+        sender_stream_id TEXT NOT NULL DEFAULT '',
+        sender_seq INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        expired_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_expired_sender_cursor
+        ON rchat_dm_expired_event_markers
+          (conversation_id, sender_address, timestamp, event_id);
+      CREATE TABLE IF NOT EXISTS rchat_dm_expiry_preferences (
+        owner_address TEXT NOT NULL,
+        peer_address TEXT NOT NULL,
+        duration_ms INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_address, peer_address)
+      );
+    `);
+  }
+
+  private migrateDirectExpiryQueueIndex(): void {
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_rchat_dm_events_expires;
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_expiry_queue
+        ON rchat_dm_events (expires_at, event_id)
+        WHERE expires_at IS NOT NULL;
+    `);
+  }
+
+  private migrateDirectExpiryMarkerSequenceIndex(): void {
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_rchat_dm_expiry_preferences_owner;
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_expired_sender_seq
+        ON rchat_dm_expired_event_markers
+          (conversation_id, sender_address, sender_seq);
+      CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_expiry_target
+        ON rchat_dm_events (target_event_id)
+        WHERE target_event_id IS NOT NULL;
+    `);
   }
 }

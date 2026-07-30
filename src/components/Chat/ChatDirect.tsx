@@ -70,6 +70,7 @@ import {
   MAX_SIZE_MESSAGE,
   MESSAGE_LIMIT_WARNING,
   MIN_REQUIRED_QORTS,
+  TIME_MONTHS_1_IN_MILLISECONDS,
   TIME_MINUTES_2_IN_MILLISECONDS,
 } from '../../constants/constants.ts';
 import { useVoiceCallContext } from '../../context/VoiceCallContext';
@@ -89,6 +90,7 @@ import {
 } from './reticulumImagePreparation';
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 import { shouldBlockChatForLowBalance } from './chatTransportBalance';
+import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 
 const uid = new ShortUniqueId({ length: 5 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
@@ -492,6 +494,11 @@ export const ChatDirect = ({
     !isNewChat && reticulumDirectUiEnabled && !reticulumDirectEnabled;
   const [reticulumDirectLinkActive, setReticulumDirectLinkActive] =
     useState(false);
+  const [reticulumDirectExpiryDurationMs, setReticulumDirectExpiryDurationMs] =
+    useState<number | null>(TIME_MONTHS_1_IN_MILLISECONDS);
+  const [reticulumDirectExpiryLoading, setReticulumDirectExpiryLoading] =
+    useState(false);
+  const reticulumDirectExpiryLoadRef = useRef(0);
   const [reticulumPeerSilence, setReticulumPeerSilence] =
     useState<ReticulumDirectSilenceState | null>(null);
   const [reticulumSilenceBusy, setReticulumSilenceBusy] = useState(false);
@@ -1245,6 +1252,64 @@ export const ChatDirect = ({
     return resolveDirectTarget(directToValue, nameSearchResults || []);
   }, [directToValue, nameSearchResults]);
 
+  const reticulumDirectExpiryPeerAddress = String(
+    (isNewChat ? resolvedNewChatTarget?.address : selectedDirect?.address) || ''
+  ).trim();
+
+  useEffect(() => {
+    const generation = reticulumDirectExpiryLoadRef.current + 1;
+    reticulumDirectExpiryLoadRef.current = generation;
+    setReticulumDirectExpiryDurationMs(TIME_MONTHS_1_IN_MILLISECONDS);
+    if (
+      !reticulumDirectUiEnabled ||
+      !myAddress ||
+      !reticulumDirectExpiryPeerAddress
+    ) {
+      setReticulumDirectExpiryLoading(false);
+      return;
+    }
+    setReticulumDirectExpiryLoading(true);
+    const request = window.reticulumChat?.getDirectExpiryPreference?.(
+      myAddress,
+      reticulumDirectExpiryPeerAddress
+    );
+    if (!request) {
+      setReticulumDirectExpiryLoading(false);
+      return;
+    }
+    void request
+      .then((result) => {
+        if (
+          reticulumDirectExpiryLoadRef.current !== generation ||
+          !result?.success ||
+          !result.preference
+        ) {
+          return;
+        }
+        setReticulumDirectExpiryDurationMs(result.preference.durationMs);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (reticulumDirectExpiryLoadRef.current === generation) {
+          setReticulumDirectExpiryLoading(false);
+        }
+      });
+  }, [myAddress, reticulumDirectExpiryPeerAddress, reticulumDirectUiEnabled]);
+
+  const changeReticulumDirectExpiry = useCallback(
+    (durationMs: number | undefined) => {
+      const normalized = durationMs ?? null;
+      setReticulumDirectExpiryDurationMs(normalized);
+      if (!myAddress || !reticulumDirectExpiryPeerAddress) return;
+      void window.reticulumChat?.setDirectExpiryPreference?.(
+        myAddress,
+        reticulumDirectExpiryPeerAddress,
+        normalized
+      );
+    },
+    [myAddress, reticulumDirectExpiryPeerAddress]
+  );
+
   const [friendActionBusy, setFriendActionBusy] = useState(false);
 
   const handleToggleDmFriend = useCallback(
@@ -1369,7 +1434,12 @@ export const ChatDirect = ({
   ]);
 
   const sendChatDirect = async (
-    { chatReference = undefined, messageText, otherData }: any,
+    {
+      chatReference = undefined,
+      messageText,
+      otherData,
+      expiryDurationMs,
+    }: any,
     address,
     publicKeyOfRecipient,
     isNewChatVar
@@ -1387,6 +1457,7 @@ export const ChatDirect = ({
           messageText,
           otherData,
           peerAddressOverride: directTo,
+          expiryDurationMs,
         });
         if (!result?.success) {
           throw new Error(result?.error || 'Reticulum direct message failed');
@@ -1406,6 +1477,13 @@ export const ChatDirect = ({
             senderName: myName,
           });
           setNewChat(null);
+          void window.reticulumChat?.setDirectExpiryPreference?.(
+            myAddress,
+            directTo,
+            expiryDurationMs === undefined
+              ? TIME_MONTHS_1_IN_MILLISECONDS
+              : expiryDurationMs
+          );
         }
         return {
           clearQueueOnSuccess: true,
@@ -2384,7 +2462,7 @@ export const ChatDirect = ({
         (isCompressingReticulumGif || isCompressingReticulumImage)
       )
         return;
-      if (reticulumDirectPending) return;
+      if (reticulumDirectPending || reticulumDirectExpiryLoading) return;
       if (
         shouldBlockChatForLowBalance(
           balance,
@@ -2417,7 +2495,17 @@ export const ChatDirect = ({
         const message = JSON.stringify(htmlContent);
 
         if (isNewChat) {
-          await sendChatDirect({ messageText: htmlContent }, null, null, true);
+          await sendChatDirect(
+            {
+              messageText: htmlContent,
+              ...(reticulumDirectUiEnabled
+                ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
+                : {}),
+            },
+            null,
+            null,
+            true
+          );
           return;
         }
         let repliedTo = replyMessage?.signature;
@@ -2445,7 +2533,14 @@ export const ChatDirect = ({
         };
         const sendMessageFunc = async () => {
           return await sendChatDirect(
-            { chatReference, messageText: htmlContent, otherData },
+            {
+              chatReference,
+              messageText: htmlContent,
+              otherData,
+              ...(reticulumDirectEnabled && !onEditMessage
+                ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
+                : {}),
+            },
             selectedDirect?.address,
             publicKeyOfRecipient,
             false
@@ -3484,13 +3579,31 @@ export const ChatDirect = ({
               </span>
             </Tooltip>
           )}
+          {reticulumDirectUiEnabled && (
+            <ReticulumMessageExpiryButton
+              direct
+              disabled={
+                Boolean(onEditMessage) ||
+                reticulumDirectPending ||
+                reticulumDirectExpiryLoading
+              }
+              disabledReason={
+                onEditMessage
+                  ? 'Expiry cannot be changed while editing'
+                  : 'Message expiry is unavailable while chat loads'
+              }
+              onChange={changeReticulumDirectExpiry}
+              value={reticulumDirectExpiryDurationMs}
+            />
+          )}
           <CustomButton
             onClick={() => {
               if (
                 isSending ||
                 isCompressingReticulumGif ||
                 isCompressingReticulumImage ||
-                reticulumDirectPending
+                reticulumDirectPending ||
+                reticulumDirectExpiryLoading
               )
                 return;
               sendMessage();
@@ -3517,7 +3630,8 @@ export const ChatDirect = ({
                 isSending ||
                 isCompressingReticulumGif ||
                 isCompressingReticulumImage ||
-                reticulumDirectPending
+                reticulumDirectPending ||
+                reticulumDirectExpiryLoading
                   ? 'default'
                   : 'pointer',
               display: 'inline-flex',
@@ -3534,7 +3648,8 @@ export const ChatDirect = ({
                 isSending ||
                 isCompressingReticulumGif ||
                 isCompressingReticulumImage ||
-                reticulumDirectPending
+                reticulumDirectPending ||
+                reticulumDirectExpiryLoading
                   ? {}
                   : {
                       backgroundColor: reticulumDirectUiEnabled

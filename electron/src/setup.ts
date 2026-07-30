@@ -4063,6 +4063,46 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'reticulumChat:getDirectExpiryPreference',
+  async (_event, ownerAddress: string, peerAddress: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    return {
+      success: true,
+      preference: manager.getDirectExpiryPreference(
+        String(ownerAddress || '').trim(),
+        String(peerAddress || '').trim()
+      ),
+    };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:setDirectExpiryPreference',
+  async (
+    _event,
+    ownerAddress: string,
+    peerAddress: string,
+    durationMs: number | null
+  ) => {
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    const preference = manager.setDirectExpiryPreference(
+      String(ownerAddress || '').trim(),
+      String(peerAddress || '').trim(),
+      durationMs == null ? null : Number(durationMs)
+    );
+    return preference
+      ? { success: true, preference }
+      : { success: false, error: 'Invalid DM expiry preference' };
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:sendDirectTyping',
   async (
     _event,
@@ -4103,14 +4143,17 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:getDirectSummaries',
-  async (_event, myAddress: string) => {
+  async (_event, myAddress: string, peerAddress?: string) => {
     const settings = await readAppSettings();
     if (!isReticulumChatEffectivelyEnabled(settings)) return [];
     const manager = getReticulumChatManager();
     if (!manager) return [];
     const address = typeof myAddress === 'string' ? myAddress.trim() : '';
     if (address) manager.setLocalDmAddresses([address]);
-    return manager.getDirectSummaries(address);
+    return manager.getDirectSummaries(
+      address,
+      typeof peerAddress === 'string' ? peerAddress.trim() : undefined
+    );
   }
 );
 
@@ -5470,10 +5513,7 @@ ipcMain.handle(
             snapshotVersion: 0,
           },
           () =>
-            manager.getChannelMetadataBundle(
-              groupId,
-              includeArchived === true
-            )
+            manager.getChannelMetadataBundle(groupId, includeArchived === true)
         )
       : {
           channels: [],

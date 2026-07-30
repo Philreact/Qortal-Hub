@@ -39,6 +39,7 @@ import {
   normalizeReticulumChatCategoryId,
   compareMetadataEntityRevisionHeads,
   compareMetadataEntityRevisions,
+  directMessageExpiryFromPayload,
   hashReticulumChatMentionAddress,
   hashReticulumChatMetadataEntityState,
   isReticulumChatBuiltInChannelId,
@@ -59,6 +60,7 @@ import {
   type ReticulumChatSilenceRecord,
   type ReticulumChatSilenceScope,
   type ReticulumPublicGroupActivitySummary,
+  type ReticulumDmExpiryPreference,
 } from './reticulum-chat-db';
 import {
   RETICULUM_CHAT_AUTHOR_TREE_DEPTH,
@@ -202,6 +204,8 @@ export interface ReticulumDmEvent {
   localDeliveryUpdatedAt?: number;
   /** Local projection hint: this event is at or below a synchronized read watermark. */
   readByOwner?: true;
+  /** Local database projection; derived from the signed payload, never trusted from wire input. */
+  expiresAt?: number | null;
 }
 
 export interface ReticulumLandChatMessage {
@@ -3743,6 +3747,12 @@ export function validateReticulumDmEventShape(
     return false;
   if (hashReticulumChatPayload(e.payload) !== e.payloadHash.toLowerCase())
     return false;
+  if (
+    e.eventType === 'message' &&
+    !directMessageExpiryFromPayload(e.payload).valid
+  ) {
+    return false;
+  }
   if (e.targetEventId != null && typeof e.targetEventId !== 'string')
     return false;
   if (e.replyToEventId != null && typeof e.replyToEventId !== 'string')
@@ -6445,6 +6455,8 @@ export class ReticulumChatManager extends EventEmitter {
     { attempts: number; nextAttemptAt: number }
   >();
   private directDmPageRequests = new Map<string, ReticulumDmPageOffer>();
+  private directExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+  private directExpiryAt = 0;
   private outboundLandChatOffers = new Map<string, ReticulumLandChatOffer>();
   private inboundLandChatRequests = new Map<string, ReticulumLandChatRequest>();
   private localLandAuthSentAt = new Map<string, number>();
@@ -6639,6 +6651,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceStore = options.resourceStore ?? null;
     this.bridge = options.bridge ?? null;
     this.db = new ReticulumChatDatabase(this.dbPath);
+    this.scheduleNextDirectExpiry();
     for (const record of this.db.getPublicGroupActivityRecords(1000)) {
       if (!record.localStateJson) continue;
       this.publicGroupActivityStates.set(
@@ -7494,6 +7507,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.dmNotifyRoutes.clear();
     this.dmConversationRouteIds.clear();
     this.directDmPageRequests.clear();
+    if (this.directExpiryTimer) clearTimeout(this.directExpiryTimer);
+    this.directExpiryTimer = null;
+    this.directExpiryAt = 0;
     this.eventRelayRoutes.clear();
     this.resourceTransfer?.close();
     this.directResourceTransfer?.close();
@@ -8733,6 +8749,65 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getDirectHistory(conversationId, limit, excludedSenders);
   }
 
+  private scheduleNextDirectExpiry(): void {
+    if (this.isClosed) return;
+    const now = this.now();
+    const nextExpiry = this.db.getNextDirectExpiryAt(now);
+    if (nextExpiry == null) {
+      if (this.directExpiryTimer) clearTimeout(this.directExpiryTimer);
+      this.directExpiryTimer = null;
+      this.directExpiryAt = 0;
+      return;
+    }
+    if (this.directExpiryTimer && this.directExpiryAt === nextExpiry) return;
+    if (this.directExpiryTimer) clearTimeout(this.directExpiryTimer);
+    this.directExpiryAt = nextExpiry;
+    this.directExpiryTimer = setTimeout(
+      () => {
+        this.directExpiryTimer = null;
+        this.directExpiryAt = 0;
+        if (this.isClosed) return;
+        const pruned = this.db.pruneExpiredDirectMessages(this.now());
+        for (const conversation of pruned.conversations) {
+          for (const localAddress of this.localDmAddresses) {
+            if (!conversation.peerAddresses.includes(localAddress)) continue;
+            const peerAddress = conversation.peerAddresses.find(
+              (address) => address !== localAddress
+            );
+            this.emit('directSummaryChanged', {
+              conversationId: conversation.conversationId,
+              ...(peerAddress ? { peerAddress } : {}),
+              reason: 'expiry',
+            });
+          }
+        }
+        this.scheduleNextDirectExpiry();
+      },
+      Math.max(1, Math.min(2_147_000_000, nextExpiry - now))
+    );
+    this.directExpiryTimer.unref?.();
+  }
+
+  getDirectExpiryPreference(
+    ownerAddress: string,
+    peerAddress: string
+  ): ReticulumDmExpiryPreference {
+    return this.db.getDirectExpiryPreference(ownerAddress, peerAddress);
+  }
+
+  setDirectExpiryPreference(
+    ownerAddress: string,
+    peerAddress: string,
+    durationMs: number | null
+  ): ReticulumDmExpiryPreference | null {
+    return this.db.setDirectExpiryPreference(
+      ownerAddress,
+      peerAddress,
+      durationMs,
+      this.now()
+    );
+  }
+
   getDirectAuthorStreamId(authorAddress: string): string {
     return this.db.getOrCreateDirectAuthorStreamId(authorAddress);
   }
@@ -8745,8 +8820,11 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
-  getDirectSummaries(myAddress: string): ReticulumDmSummary[] {
-    return this.db.getDirectSummaries(myAddress).map((summary) => {
+  getDirectSummaries(
+    myAddress: string,
+    peerAddress?: string
+  ): ReticulumDmSummary[] {
+    return this.db.getDirectSummaries(myAddress, peerAddress).map((summary) => {
       if (
         !this.isAuthorSilenced(
           myAddress,
@@ -10830,9 +10908,7 @@ export class ReticulumChatManager extends EventEmitter {
       direction === 'after'
         ? messageEvents.slice(0, safeLimit)
         : messageEvents.slice(-safeLimit);
-    const selectedIds = new Set(
-      selectedMessages.map((event) => event.eventId)
-    );
+    const selectedIds = new Set(selectedMessages.map((event) => event.eventId));
     const selectedEvents = events
       .filter(
         (event) =>
@@ -15197,10 +15273,9 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     const tracePrefix = `[ReticulumChat] dm_missing_request conversation=${conversationId.slice(0, 16)} source=${String(sourcePeerHash || '').slice(0, 16)} inbound=${String(inboundPeerHash || '').slice(0, 16)} rid=${String(options.requestId || '').slice(0, 12)}`;
     const localLatest = this.db.getDirectLatestEvent(conversationId);
-    const senderLatest = this.db.getDirectLatestEventFromSender(
-      conversationId,
-      addressA
-    );
+    const senderLatest =
+      this.db.getDirectSyncCursorFromSender(conversationId, addressA) ??
+      this.db.getDirectLatestEventFromSender(conversationId, addressA);
     const cursorLatest =
       senderLatest ||
       (localLatest && localLatest.senderAddress === addressA
@@ -20811,6 +20886,12 @@ export class ReticulumChatManager extends EventEmitter {
     const event = candidate;
     if (!this.acceptsDirectConversation(event)) return false;
     if (!verifyReticulumDmEvent(event)) return false;
+    if (
+      event.eventType === 'message' &&
+      !directMessageExpiryFromPayload(event.payload).valid
+    ) {
+      return false;
+    }
     if (this.db.hasDirectEvent(event.eventId)) return false;
     const inserted = this.db.insertDirectEvent(
       event,
@@ -20818,9 +20899,11 @@ export class ReticulumChatManager extends EventEmitter {
       options.deliveryStatus
     );
     if (inserted) {
-      this.syncDirectResourceReferences(event, ownEvent);
+      this.scheduleNextDirectExpiry();
+      const storedEvent = this.db.getDirectEvent(event.eventId) ?? event;
+      this.syncDirectResourceReferences(storedEvent, ownEvent);
       const emittedEvent: ReticulumDmEvent = {
-        ...event,
+        ...storedEvent,
         localDeliveryStatus:
           options.deliveryStatus || (ownEvent ? 'pending' : 'received'),
         localDeliveryUpdatedAt: now,
@@ -20841,7 +20924,9 @@ export class ReticulumChatManager extends EventEmitter {
         peerAddress,
       });
     }
-    return inserted;
+    // A valid event whose signed expiry has elapsed still advances the DM
+    // history cursor through its compact marker, but is never emitted.
+    return inserted || this.db.hasDirectExpiredEventMarker(event.eventId);
   }
 
   private acceptValidatedEvent(
@@ -29634,6 +29719,8 @@ export class ReticulumChatManager extends EventEmitter {
         ownerId: manifest.ownerId,
         locallyAuthored: ownEvent,
         createdAt: event.timestamp,
+        expiresAt:
+          event.expiresAt == null ? undefined : Number(event.expiresAt),
       });
     }
   }

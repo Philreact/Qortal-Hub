@@ -1733,6 +1733,44 @@ try {
           'reticulumChat:getDirectAuthorStreamId',
           authorAddress
         ) as Promise<string>,
+      getDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectExpiryPreference',
+          ownerAddress,
+          peerAddress
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
+      setDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string,
+        durationMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setDirectExpiryPreference',
+          ownerAddress,
+          peerAddress,
+          durationMs
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
       sendDirectTyping: async (
         localAddress: string,
         peerAddress: string,
@@ -1755,10 +1793,11 @@ try {
           peerAddress,
           limit
         ) as Promise<unknown[]>,
-      getDirectSummaries: async (myAddress: string) =>
+      getDirectSummaries: async (myAddress: string, peerAddress?: string) =>
         ipcRenderer.invoke(
           'reticulumChat:getDirectSummaries',
-          myAddress
+          myAddress,
+          peerAddress
         ) as Promise<unknown[]>,
       markDirectRead: async (
         myAddress: string,
@@ -2137,10 +2176,20 @@ try {
         };
       },
       onDirectSummaryChanged: (
-        cb: (payload: { conversationId?: string; peerAddress?: string }) => void
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
+          reason?: 'expiry';
+        }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
-          cb(payload as { conversationId?: string; peerAddress?: string });
+          cb(
+            payload as {
+              conversationId?: string;
+              peerAddress?: string;
+              reason?: 'expiry';
+            }
+          );
         };
         ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
         ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
@@ -2639,6 +2688,44 @@ try {
           'reticulumChat:getDirectAuthorStreamId',
           authorAddress
         ) as Promise<string>,
+      getDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectExpiryPreference',
+          ownerAddress,
+          peerAddress
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
+      setDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string,
+        durationMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setDirectExpiryPreference',
+          ownerAddress,
+          peerAddress,
+          durationMs
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
       sendDirectTyping: async (
         localAddress: string,
         peerAddress: string,
@@ -2661,10 +2748,11 @@ try {
           peerAddress,
           limit
         ) as Promise<unknown[]>,
-      getDirectSummaries: async (myAddress: string) =>
+      getDirectSummaries: async (myAddress: string, peerAddress?: string) =>
         ipcRenderer.invoke(
           'reticulumChat:getDirectSummaries',
-          myAddress
+          myAddress,
+          peerAddress
         ) as Promise<unknown[]>,
       markDirectRead: async (
         myAddress: string,
@@ -3014,10 +3102,20 @@ try {
         };
       },
       onDirectSummaryChanged: (
-        cb: (payload: { conversationId?: string; peerAddress?: string }) => void
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
+          reason?: 'expiry';
+        }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
-          cb(payload as { conversationId?: string; peerAddress?: string });
+          cb(
+            payload as {
+              conversationId?: string;
+              peerAddress?: string;
+              reason?: 'expiry';
+            }
+          );
         };
         ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
         ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');

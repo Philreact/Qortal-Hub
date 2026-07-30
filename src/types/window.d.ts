@@ -724,6 +724,33 @@ declare global {
         event: unknown
       ) => Promise<{ success: boolean; error?: string }>;
       getDirectAuthorStreamId: (authorAddress: string) => Promise<string>;
+      getDirectExpiryPreference: (
+        ownerAddress: string,
+        peerAddress: string
+      ) => Promise<{
+        success: boolean;
+        preference?: {
+          ownerAddress: string;
+          peerAddress: string;
+          durationMs: number | null;
+          updatedAt: number;
+        };
+        error?: string;
+      }>;
+      setDirectExpiryPreference: (
+        ownerAddress: string,
+        peerAddress: string,
+        durationMs: number | null
+      ) => Promise<{
+        success: boolean;
+        preference?: {
+          ownerAddress: string;
+          peerAddress: string;
+          durationMs: number | null;
+          updatedAt: number;
+        };
+        error?: string;
+      }>;
       sendDirectTyping: (
         localAddress: string,
         peerAddress: string,
@@ -734,7 +761,10 @@ declare global {
         peerAddress: string,
         limit?: number
       ) => Promise<unknown[]>;
-      getDirectSummaries: (myAddress: string) => Promise<unknown[]>;
+      getDirectSummaries: (
+        myAddress: string,
+        peerAddress?: string
+      ) => Promise<unknown[]>;
       markDirectRead: (
         myAddress: string,
         peerAddress: string,
@@ -957,7 +987,11 @@ declare global {
         }) => void
       ) => () => void;
       onDirectSummaryChanged: (
-        cb: (payload: { conversationId?: string; peerAddress?: string }) => void
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
+          reason?: 'expiry';
+        }) => void
       ) => () => void;
       onSilenceChanged: (
         cb: (payload: {

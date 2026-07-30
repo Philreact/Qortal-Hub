@@ -6261,7 +6261,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('publishes direct DMs as compact notify packets instead of inline events', async () => {
+  it('keeps expiring maximum-size direct DMs out of the live wire packet', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
     const recipientPeerHash = 'b'.repeat(32);
@@ -6292,13 +6292,17 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalDmAddresses([sender.address]);
     await flushAsyncWork();
+    const payload = JSON.stringify({
+      messageText: 'x'.repeat(4_000),
+      expiryDurationMs: 30 * 24 * 60 * 60 * 1_000,
+    });
     const event = signedDmEvent({
       sender,
       recipient,
       eventId: '0123456789abcdef',
       senderSeq: Date.now() * 1000,
       timestamp: Date.now(),
-      payload: 'x'.repeat(512),
+      payload,
     });
 
     const result = await manager.publishDirectEvent(event);
@@ -6307,10 +6311,21 @@ describe('reticulum chat manager', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].peer).toBe(recipientPeerHash);
     expect(sent[0].wire.k).toBe('dm_notify');
+    expect(JSON.stringify(sent[0].wire)).not.toContain('expiryDurationMs');
+    expect(JSON.stringify(sent[0].wire)).not.toContain('x'.repeat(100));
     expect(wireFitsReticulum(sent[0].wire)).toBe(true);
     expect(
       byteLengthUtf8JsonWithBridgeSender(sent[0].wire)
     ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
+    const page = (manager as any).buildDirectDmPageResourceBlob(
+      event.conversationId,
+      [event],
+      0,
+      false,
+      true
+    );
+    expect(page).not.toBeNull();
+    expect(page.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
     manager.close();
   });
 

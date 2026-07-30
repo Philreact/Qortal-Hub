@@ -19,6 +19,8 @@ type MockStore = {
   reticulumChatSilences: ReticulumChatRow[];
   reticulumPublicGroupActivity: ReticulumChatRow[];
   reticulumDmEvents: ReticulumChatRow[];
+  reticulumDmExpiredEventMarkers: ReticulumChatRow[];
+  reticulumDmExpiryPreferences: ReticulumChatRow[];
   reticulumDmReadWatermarks: ReticulumChatRow[];
   reticulumDeviceReadStates: ReticulumChatRow[];
   reticulumPendingDeviceReadStates: ReticulumChatRow[];
@@ -160,14 +162,50 @@ class Statement {
         .slice(0, Number(limit));
     }
     if (this.sql.includes('FROM rchat_dm_events')) {
+      if (
+        this.sql.includes("event_type = 'message'") &&
+        this.sql.includes('expires_at <= ?')
+      ) {
+        const [now, limit = 1000] = args;
+        return this.store.reticulumDmEvents
+          .filter(
+            (row) =>
+              row.event_type === 'message' &&
+              row.expires_at != null &&
+              Number(row.expires_at) <= Number(now)
+          )
+          .sort(
+            (a, b) =>
+              Number(a.expires_at) - Number(b.expires_at) ||
+              String(a.event_id).localeCompare(String(b.event_id))
+          )
+          .slice(0, Number(limit));
+      }
+      if (this.sql.includes('WHERE event_id = ? OR target_event_id = ?')) {
+        const [eventId, targetEventId] = args;
+        return this.store.reticulumDmEvents.filter(
+          (row) =>
+            row.event_id === eventId || row.target_event_id === targetEventId
+        );
+      }
       if (this.sql.includes('SELECT e.*')) {
         const [address] = args;
+        const conversationId = this.sql.includes('AND e.conversation_id = ?')
+          ? args[2]
+          : '';
+        const now = Number(args[args.length - 1]);
         const latestByConversation = new Map<string, ReticulumChatRow>();
         for (const row of this.store.reticulumDmEvents) {
           if (
             row.sender_address !== address &&
             row.recipient_address !== address
           ) {
+            continue;
+          }
+          if (conversationId && row.conversation_id !== conversationId) {
+            continue;
+          }
+          if (row.expires_at != null && Number(row.expires_at) <= now) {
             continue;
           }
           const existing = latestByConversation.get(row.conversation_id);
@@ -431,9 +469,7 @@ class Statement {
         const hasEventCursor =
           this.sql.includes('root_event_id < ?') ||
           this.sql.includes('root_event_id > ?');
-        const cursorEventId = hasEventCursor
-          ? String(args[nowIndex + 3])
-          : '';
+        const cursorEventId = hasEventCursor ? String(args[nowIndex + 3]) : '';
         const excludedStart = nowIndex + (hasEventCursor ? 4 : 2);
         const excluded = new Set(
           args.slice(excludedStart, -1).map((value) => String(value))
@@ -868,6 +904,48 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_dm_expiry_preferences')) {
+      const [ownerAddress, peerAddress] = args;
+      return this.store.reticulumDmExpiryPreferences.find(
+        (row) =>
+          row.owner_address === ownerAddress && row.peer_address === peerAddress
+      );
+    }
+    if (
+      this.sql.includes('FROM (') &&
+      this.sql.includes('FROM rchat_dm_expired_event_markers')
+    ) {
+      const [conversationId, senderAddress] = args;
+      const rows = [
+        ...this.store.reticulumDmEvents,
+        ...this.store.reticulumDmExpiredEventMarkers,
+      ]
+        .filter(
+          (row) =>
+            row.conversation_id === conversationId &&
+            row.sender_address === senderAddress
+        )
+        .sort(
+          (a, b) =>
+            Number(b.timestamp) - Number(a.timestamp) ||
+            String(b.event_id).localeCompare(String(a.event_id))
+        );
+      if (this.sql.includes('MAX(sender_seq) AS max_seq')) {
+        return {
+          max_seq: rows.reduce(
+            (highest, row) => Math.max(highest, Number(row.sender_seq) || 0),
+            0
+          ),
+        };
+      }
+      return rows[0];
+    }
+    if (this.sql.includes('FROM rchat_dm_expired_event_markers')) {
+      const row = this.store.reticulumDmExpiredEventMarkers.find(
+        (item) => item.event_id === args[0]
+      );
+      return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
+    }
     if (this.sql.includes('FROM rchat_device_read_state')) {
       const [ownerAddress, scopeType, scopeId] = args;
       return this.store.reticulumDeviceReadStates.find(
@@ -939,13 +1017,22 @@ class Statement {
       );
     }
     if (this.sql.includes('FROM rchat_dm_events')) {
+      if (this.sql.includes('SELECT MIN(expires_at) AS expires_at')) {
+        const expiries = this.store.reticulumDmEvents
+          .map((row) => Number(row.expires_at))
+          .filter((expiresAt) => Number.isFinite(expiresAt) && expiresAt > 0);
+        return {
+          expires_at: expiries.length > 0 ? Math.min(...expiries) : null,
+        };
+      }
       if (this.sql.includes('COUNT(*) AS count')) {
         const [
           conversationId,
           recipientAddress,
           senderAddress,
+          expiryNow,
           ownerAddress,
-          now,
+          silenceNow,
         ] = args;
         return {
           count: this.store.reticulumDmEvents.filter((row) => {
@@ -959,6 +1046,12 @@ class Statement {
             ) {
               return false;
             }
+            if (
+              row.expires_at != null &&
+              Number(row.expires_at) <= Number(expiryNow)
+            ) {
+              return false;
+            }
             return !this.store.reticulumChatSilences.some(
               (silence) =>
                 silence.owner_address === ownerAddress &&
@@ -966,7 +1059,7 @@ class Statement {
                 silence.scope_type === 'dm' &&
                 silence.scope_id === row.conversation_id &&
                 (silence.expires_at == null ||
-                  Number(silence.expires_at) > Number(now) ||
+                  Number(silence.expires_at) > Number(silenceNow) ||
                   Number(row.timestamp) <= Number(silence.ignored_through))
             );
           }).length,
@@ -1338,6 +1431,67 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (this.sql.includes('INSERT INTO rchat_dm_expiry_preferences')) {
+      const [ownerAddress, peerAddress, durationMs, updatedAt] = args;
+      const index = this.store.reticulumDmExpiryPreferences.findIndex(
+        (row) =>
+          row.owner_address === ownerAddress && row.peer_address === peerAddress
+      );
+      const row = {
+        owner_address: ownerAddress,
+        peer_address: peerAddress,
+        duration_ms: durationMs,
+        updated_at: updatedAt,
+      };
+      if (index >= 0) this.store.reticulumDmExpiryPreferences[index] = row;
+      else this.store.reticulumDmExpiryPreferences.push(row);
+      return { changes: 1, lastInsertRowid: Math.max(1, index + 1) };
+    }
+    if (
+      this.sql.includes('INSERT OR IGNORE INTO rchat_dm_expired_event_markers')
+    ) {
+      const [
+        eventId,
+        conversationId,
+        senderAddress,
+        recipientAddress,
+        senderStreamId,
+        senderSeq,
+        timestamp,
+        expiredAt,
+      ] = args;
+      if (
+        this.store.reticulumDmExpiredEventMarkers.some(
+          (row) => row.event_id === eventId
+        )
+      ) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      this.store.reticulumDmExpiredEventMarkers.push({
+        event_id: eventId,
+        conversation_id: conversationId,
+        sender_address: senderAddress,
+        recipient_address: recipientAddress,
+        sender_stream_id: senderStreamId,
+        sender_seq: senderSeq,
+        timestamp,
+        expired_at: expiredAt,
+      });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumDmExpiredEventMarkers.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM rchat_dm_events WHERE event_id = ?')) {
+      const before = this.store.reticulumDmEvents.length;
+      this.store.reticulumDmEvents = this.store.reticulumDmEvents.filter(
+        (row) => row.event_id !== args[0]
+      );
+      return {
+        changes: before - this.store.reticulumDmEvents.length,
+        lastInsertRowid: 0,
+      };
+    }
     if (this.sql.includes('INSERT INTO rchat_dm_read_watermarks')) {
       const [conversationId, address, timestamp] = args;
       const existing = this.store.reticulumDmReadWatermarks.find(
@@ -2791,6 +2945,8 @@ class MockDatabase {
       reticulumChatSilences: [],
       reticulumPublicGroupActivity: [],
       reticulumDmEvents: [],
+      reticulumDmExpiredEventMarkers: [],
+      reticulumDmExpiryPreferences: [],
       reticulumDmReadWatermarks: [],
       reticulumDeviceReadStates: [],
       reticulumPendingDeviceReadStates: [],
