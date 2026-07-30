@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
+import { mergeReticulumPayloadWithVerifiedEnvelope } from '../utils/reticulumEventEnvelope';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
 
@@ -86,28 +87,34 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     event.senderName?.trim() ||
     event.authorPrimaryName?.trim() ||
     event.senderAddress;
-  return {
+  return mergeReticulumPayloadWithVerifiedEnvelope(otherData, {
     id: event.eventId,
+    eventId: event.eventId,
     signature: event.eventId,
-    chatReference: payload.chatReference || event.targetEventId,
-    repliedTo: otherData.repliedTo || event.replyToEventId,
+    conversationId: event.conversationId,
+    eventType: event.eventType,
+    chatReference: event.targetEventId || payload.chatReference,
+    repliedTo: event.replyToEventId || otherData.repliedTo,
+    targetEventId: event.targetEventId,
+    replyToEventId: event.replyToEventId,
     timestamp: event.timestamp,
     sender: event.senderAddress,
+    senderAddress: event.senderAddress,
     senderName,
+    authorPrimaryName: event.authorPrimaryName,
     recipientAddress: event.recipientAddress,
+    senderPublicKey: event.senderPublicKey,
+    senderStreamId: event.senderStreamId,
+    senderSeq: event.senderSeq,
     text: payload.messageText || '',
     message: payload.messageText || '',
+    messageText: payload.messageText || '',
     unread: false,
     reticulumChat: true,
     reticulumDirect: true,
     reticulumDeliveryStatus: event.localDeliveryStatus,
     reticulumDeliveryUpdatedAt: event.localDeliveryUpdatedAt,
-    decryptedData: {
-      ...otherData,
-      data: otherData.data,
-    },
-    ...otherData,
-  };
+  });
 };
 
 export const projectReticulumDmEvents = (events: ReticulumDmEvent[]) => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   projectReticulumDmEvents,
+  reticulumDmEventToChatMessage,
   type ReticulumDmEvent,
 } from './useReticulumDirectChat';
 
@@ -20,6 +21,60 @@ const event = (
 });
 
 describe('Reticulum DM event projection', () => {
+  it('does not let DM payload data replace verified event metadata', () => {
+    const message = event({
+      eventId: 'message-1',
+      eventType: 'edit',
+      senderAddress: 'alice',
+      recipientAddress: 'bob',
+      senderName: 'Alice',
+      targetEventId: 'verified-target',
+      replyToEventId: 'verified-reply',
+      timestamp: 42,
+      payload: JSON.stringify({
+        chatReference: 'spoofed-target',
+        messageText: 'hello',
+        otherData: {
+          id: 'spoofed-id',
+          signature: 'spoofed-signature',
+          eventType: 'delete',
+          sender: 'mallory',
+          senderAddress: 'mallory',
+          senderName: 'Mallory',
+          recipientAddress: 'mallory-recipient',
+          timestamp: 1,
+          messageText: 'spoofed message',
+          chatReference: 'spoofed-target',
+          repliedTo: 'spoofed-reply',
+          reticulumChat: false,
+          reticulumDirect: false,
+          reticulumDeliveryStatus: 'pending',
+          decryptedData: { content: 'spoofed' },
+        },
+      }),
+    });
+
+    expect(reticulumDmEventToChatMessage(message)).toMatchObject({
+      id: 'message-1',
+      signature: 'message-1',
+      eventType: 'edit',
+      sender: 'alice',
+      senderAddress: 'alice',
+      senderName: 'Alice',
+      recipientAddress: 'bob',
+      timestamp: 42,
+      chatReference: 'verified-target',
+      repliedTo: 'verified-reply',
+      messageText: 'hello',
+      reticulumChat: true,
+      reticulumDirect: true,
+      reticulumDeliveryStatus: undefined,
+      decryptedData: expect.objectContaining({
+        sender: 'mallory',
+      }),
+    });
+  });
+
   it('projects reaction state onto its target without rendering action events', () => {
     const message = event({
       eventId: 'message-1',

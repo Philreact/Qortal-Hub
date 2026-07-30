@@ -27,6 +27,14 @@ export type ReactionsMap = {
   [reactionType: string]: ReactionItem[];
 };
 
+const getReactionLayoutSignature = (reactions: ReactionsMap | null) => {
+  if (!reactions) return '';
+  const visibleReactions = Object.entries(reactions)
+    .map(([reaction, items]) => [reaction, items?.length ?? 0] as const)
+    .filter(([, count]) => count > 0);
+  return visibleReactions.length > 0 ? JSON.stringify(visibleReactions) : '';
+};
+
 const getMessageTimestampMs = (message: any): number | null => {
   const value = Number(message?.timestamp);
   if (!Number.isFinite(value) || value <= 0) return null;
@@ -208,6 +216,10 @@ export const ChatList = ({
   const reticulumPinnedToBottomRef = useRef(false);
   const reticulumFollowBottomRef = useRef(false);
   const reticulumReadingPositionLockedRef = useRef(false);
+  const reticulumReactionLayoutRef = useRef<{
+    chatIdentity: string;
+    signatures: Map<string, string>;
+  }>({ chatIdentity: '', signatures: new Map() });
   const lastScrollMetricsRef = useRef({
     clientHeight: 0,
     scrollHeight: 0,
@@ -1504,6 +1516,7 @@ export const ChatList = ({
         replyIndex,
         replyExpiredMeta,
         reactions,
+        reactionLayoutSignature: getReactionLayoutSignature(reactions),
         isUpdating,
       };
     });
@@ -1513,6 +1526,67 @@ export const ChatList = ({
     reticulumChatEnabled,
     reticulumUnreadBoundaryIndex,
     tempChatReferences,
+  ]);
+
+  useLayoutEffect(() => {
+    if (
+      reticulumChatEnabled &&
+      (appliedInitialMessagesRef.current !== initialMessages ||
+        appliedTempMessagesRef.current !== tempMessages)
+    ) {
+      // The parent has supplied a replacement history/search window, but the
+      // internal row state is still the previous window until the sync effect
+      // runs. Do not measure that stale combination of rows and references.
+      return;
+    }
+    const previous = reticulumReactionLayoutRef.current;
+    const nextSignatures = new Map<string, string>();
+    const changedIndexes: number[] = [];
+    const canCompare =
+      reticulumChatEnabled && previous.chatIdentity === chatIdentity;
+
+    processedRows.forEach((row, index) => {
+      const key = String(getMessageKey(messages[index], index));
+      const signature = row.reactionLayoutSignature;
+      nextSignatures.set(key, signature);
+      if (
+        canCompare &&
+        previous.signatures.has(key) &&
+        previous.signatures.get(key) !== signature
+      ) {
+        changedIndexes.push(index);
+      }
+    });
+
+    reticulumReactionLayoutRef.current = {
+      chatIdentity,
+      signatures: nextSignatures,
+    };
+
+    if (!reticulumChatEnabled || changedIndexes.length === 0) return;
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement) return;
+
+    // Reaction rows change a virtual message's real height. Measure only the
+    // mounted rows that actually changed, before paint, so the following
+    // absolute-positioned row never uses the previous cached height. Rows from
+    // a new channel/history/search window establish a baseline above and do
+    // not add work to initial positioning.
+    changedIndexes.forEach((index) => {
+      const row = scrollElement.querySelector<HTMLElement>(
+        `[data-index="${index}"]`
+      );
+      if (row) rowVirtualizer.measureElement(row);
+    });
+  }, [
+    chatIdentity,
+    getMessageKey,
+    initialMessages,
+    messages,
+    processedRows,
+    reticulumChatEnabled,
+    rowVirtualizer,
+    tempMessages,
   ]);
 
   const { t } = useTranslation([

@@ -10899,6 +10899,7 @@ export class ReticulumChatManager extends EventEmitter {
     event: ReticulumChatEvent,
     includeReadState = false
   ): ReticulumChatEvent & {
+    expiresAt: number | null;
     directMentionAuthorized?: true;
     privilegedMentionAuthorized?: true;
     replyTargetDeleted?: true;
@@ -10929,8 +10930,10 @@ export class ReticulumChatManager extends EventEmitter {
           normalizeReticulumChatChannelId(event.channelId),
           localAddress
         );
+    const expiresAt = this.db.getEventExpiresAtForRenderer(event);
     const rendererEvent = {
       ...event,
+      expiresAt: undefined,
       directMentionAuthorized: undefined,
       privilegedMentionAuthorized: undefined,
       replyTargetDeleted: undefined,
@@ -10938,6 +10941,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     return {
       ...rendererEvent,
+      expiresAt,
       ...(directMentionAuthorized
         ? { directMentionAuthorized: true as const }
         : {}),

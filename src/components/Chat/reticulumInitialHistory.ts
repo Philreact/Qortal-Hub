@@ -1,3 +1,5 @@
+import { mergeReticulumPayloadWithVerifiedEnvelope } from '../../utils/reticulumEventEnvelope';
+
 export type ReticulumHistoryChatItem = Record<string, any>;
 
 export type ReticulumHistoryReferences = Record<
@@ -18,6 +20,34 @@ type BuildReticulumInitialHistoryOptions = {
 
 export const reticulumHistoryItemSpecialId = (item: ReticulumHistoryChatItem) =>
   item?.specialId || item?.decryptedData?.specialId;
+
+export const buildReticulumEditReference = (
+  item: ReticulumHistoryChatItem
+): ReticulumHistoryChatItem =>
+  mergeReticulumPayloadWithVerifiedEnvelope(
+    item.decryptedData || item,
+    {
+      // Content comes from the decrypted payload, but identity and ordering
+      // metadata must come from the verified event envelope. Besides
+      // preventing spoofing, retaining senderName lets the live reducer
+      // recognize that this edit already received its name refresh.
+      id: item.id,
+      signature: item.signature,
+      groupId: item.groupId,
+      channelId: item.channelId,
+      sender: item.sender,
+      senderName: item.senderName,
+      timestamp: item.timestamp,
+      expiresAt: item.expiresAt,
+      chatReference: item.chatReference,
+      eventType: item.eventType,
+      repliedTo: item.repliedTo,
+      reticulumChat: item.reticulumChat,
+      directMentionAuthorized: item.directMentionAuthorized === true,
+      privilegedMentionAuthorized:
+        item.privilegedMentionAuthorized === true,
+    }
+  );
 
 /**
  * Applies an ordered, already-converted Reticulum history batch in memory.
@@ -110,12 +140,7 @@ export const buildReticulumInitialHistoryState = (
       if (itemType === 'edit' || nextItem.isEdited) {
         chatReferences[target] = {
           ...existingReference,
-          edit: {
-            ...(nextItem.decryptedData || nextItem),
-            directMentionAuthorized: nextItem.directMentionAuthorized === true,
-            privilegedMentionAuthorized:
-              nextItem.privilegedMentionAuthorized === true,
-          },
+          edit: buildReticulumEditReference(nextItem),
         };
         continue;
       }

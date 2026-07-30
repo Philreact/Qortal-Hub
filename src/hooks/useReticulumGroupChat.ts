@@ -20,6 +20,7 @@ type ReticulumChatHookEvent = {
   groupId?: unknown;
   senderName?: unknown;
   authorPrimaryName?: unknown;
+  expiresAt?: number | null;
   [key: string]: unknown;
 };
 

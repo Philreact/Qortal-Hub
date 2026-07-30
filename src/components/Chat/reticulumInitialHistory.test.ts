@@ -143,6 +143,36 @@ describe('buildReticulumInitialHistoryState', () => {
     });
   });
 
+  it('retains authoritative edit envelope metadata after decrypting content', () => {
+    const result = buildReticulumInitialHistoryState([
+      message('message-1'),
+      {
+        signature: 'edit-1',
+        eventType: 'edit',
+        chatReference: 'message-1',
+        sender: 'sender-a',
+        senderName: 'Alice',
+        timestamp: 42,
+        privilegedMentionAuthorized: true,
+        decryptedData: {
+          message: 'edited',
+          sender: 'spoofed-sender',
+          senderName: 'Spoofed name',
+          timestamp: 1,
+        },
+      },
+    ]);
+
+    expect(result.chatReferences['message-1'].edit).toMatchObject({
+      message: 'edited',
+      sender: 'sender-a',
+      senderName: 'Alice',
+      signature: 'edit-1',
+      timestamp: 42,
+      privilegedMentionAuthorized: true,
+    });
+  });
+
   it('claims filtered events while keeping them out of rendered state', () => {
     const result = buildReticulumInitialHistoryState(
       [message('visible'), message('blocked', { sender: 'blocked-user' })],

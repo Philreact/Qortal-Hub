@@ -168,10 +168,12 @@ import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { applyReticulumJoinUnreadBaseline } from './reticulumJoinUnreadBaseline';
 import { projectReticulumReactionReferences } from '../../utils/reticulumReactionProjection';
 import {
+  buildReticulumEditReference,
   buildReticulumInitialHistoryState,
   reticulumHistoryItemSpecialId,
 } from './reticulumInitialHistory';
 import { normalizeReticulumChatHtmlContent } from './reticulumMessageHtml';
+import { mergeReticulumPayloadWithVerifiedEnvelope } from '../../utils/reticulumEventEnvelope';
 import {
   buildReticulumMessageExpiryPayload,
   formatReticulumExpiryDuration,
@@ -4371,13 +4373,7 @@ export const ChatGroup = ({
           if (itemType === 'edit' || nextItem?.isEdited) {
             organized[targetReference] = {
               ...(organized[targetReference] || {}),
-              edit: {
-                ...(nextItem.decryptedData || nextItem),
-                directMentionAuthorized:
-                  nextItem.directMentionAuthorized === true,
-                privilegedMentionAuthorized:
-                  nextItem.privilegedMentionAuthorized === true,
-              },
+              edit: buildReticulumEditReference(nextItem),
             };
             return organized;
           }
@@ -4492,6 +4488,7 @@ export const ChatGroup = ({
       if (!isChannelMetadataEvent && eventChannelId !== activeChannelId) {
         return null;
       }
+      const eventExpiresAt = Number(event.expiresAt);
       const baseItem = {
         signature: event.eventId,
         id: event.eventId,
@@ -4506,6 +4503,10 @@ export const ChatGroup = ({
           reticulumMemberNameByAddress.get(event.authorAddress) ||
           (event.authorAddress === myAddress ? myName : undefined),
         timestamp: event.timestamp,
+        expiresAt:
+          Number.isFinite(eventExpiresAt) && eventExpiresAt > 0
+            ? Math.floor(eventExpiresAt)
+            : null,
         data: event.encryptedPayload,
         chatReference: event.targetEventId || undefined,
         eventType: event.eventType,
@@ -4602,14 +4603,30 @@ export const ChatGroup = ({
             }
           : {}),
       };
+      const payloadHasDataField = Object.prototype.hasOwnProperty.call(
+        normalizedDecryptedData,
+        'data'
+      );
       return {
-        ...baseItem,
-        ...normalizedDecryptedData,
-        decryptedData: normalizedDecryptedData,
+        ...mergeReticulumPayloadWithVerifiedEnvelope(
+          normalizedDecryptedData,
+          {
+            ...baseItem,
+            chatReference:
+              event.targetEventId || normalizedDecryptedData.chatReference,
+            repliedTo:
+              event.replyToEventId || normalizedDecryptedData.repliedTo,
+          }
+        ),
+        // `data` is an application-content field in older chat payloads, not
+        // event identity. Preserve the previous payload-first behavior for it
+        // while keeping the raw event payload as the fallback.
+        data: payloadHasDataField
+          ? normalizedDecryptedData.data
+          : baseItem.data,
         message: normalizedText,
         messageText: normalizedText,
         text: normalizedText,
-        eventType: event.eventType,
         isNotEncrypted: reticulumChatEnabled || isPrivate === false,
         unread: event.authorAddress === myAddress ? false : true,
       };

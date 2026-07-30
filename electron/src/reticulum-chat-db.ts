@@ -604,6 +604,26 @@ type MessageProjectionRow = {
   has_attachment?: number | null;
 };
 
+// Expiry is local projection state, not part of the signed Reticulum event.
+// Keep it associated with rows converted for local reads without adding an
+// enumerable property that could accidentally enter a wire serialization.
+const rendererExpiresAtByEvent = new WeakMap<
+  ReticulumChatEvent,
+  number | null
+>();
+
+function rememberRendererExpiresAt<T extends ReticulumChatEvent>(
+  event: T,
+  value: unknown
+): T {
+  const expiresAt = Number(value);
+  rendererExpiresAtByEvent.set(
+    event,
+    Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : null
+  );
+  return event;
+}
+
 export function buildReticulumDiscussionIndex(
   rows: ReadonlyArray<{ discussion_root_id: string; reply_count: number }>
 ): {
@@ -807,7 +827,7 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
   const authorStreamId = normalizeReticulumChatAuthorStreamId(
     row.author_stream_id
   );
-  return {
+  const event: ReticulumChatEvent = {
     eventId: row.event_id,
     groupId: row.group_id,
     channelId: normalizeReticulumChatChannelId(row.channel_id),
@@ -825,6 +845,7 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
     ...(mentionTargets.length > 0 ? { mentionTargets } : {}),
     signature: row.signature,
   };
+  return rememberRendererExpiresAt(event, row.expires_at);
 }
 
 function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
@@ -882,7 +903,7 @@ function messageProjectionRowToEvent(
   const authorStreamId = normalizeReticulumChatAuthorStreamId(
     row.author_stream_id
   );
-  return {
+  const event: ReticulumChatEvent = {
     eventId: row.root_event_id,
     groupId: row.group_id,
     channelId: normalizeReticulumChatChannelId(row.channel_id),
@@ -899,6 +920,7 @@ function messageProjectionRowToEvent(
     ...(mentionTargets.length > 0 ? { mentionTargets } : {}),
     signature: row.signature,
   };
+  return rememberRendererExpiresAt(event, row.expires_at);
 }
 
 export function normalizeReticulumDmConversationId(value: unknown): string {
@@ -3713,6 +3735,14 @@ export class ReticulumChatDatabase {
       | undefined;
     const expiresAt = Number(row?.expires_at);
     return Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : null;
+  }
+
+  getEventExpiresAtForRenderer(event: ReticulumChatEvent): number | null {
+    const projectedExpiry = rendererExpiresAtByEvent.get(event);
+    if (projectedExpiry !== undefined) return projectedExpiry;
+    const memoryExpiry = this.memoryMeta.get(event.eventId);
+    if (memoryExpiry) return memoryExpiry.expiresAt;
+    return this.getEventExpiresAt(event.eventId);
   }
 
   getChannelExpiryReconciliationTargets(groupId?: number): Array<{

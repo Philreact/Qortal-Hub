@@ -8742,6 +8742,137 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('exposes resolved message expiry to the renderer without changing stored wire events', async () => {
+    const dbPath = tempDbPath();
+    let manager = new ReticulumChatManager({ dbPath });
+    const groupId = 257;
+    const timestamp = Date.now();
+    const channelExpiryDurationMs = 60 * 60 * 1_000;
+    const messageExpiryDurationMs = 10 * 60 * 1_000;
+    manager.setLocalGroupMemberships([groupId]);
+    (manager as any).db.upsertChannel({
+      groupId,
+      channelId: 'expiring',
+      name: 'expiring',
+      position: 2,
+      archived: false,
+      writeMode: 'members',
+      readMode: 'members',
+      expiryDurationMs: channelExpiryDurationMs,
+      createdBy: 'Qadmin',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    (manager as any).db.upsertChannel({
+      groupId,
+      channelId: 'durable',
+      name: 'durable',
+      position: 3,
+      archived: false,
+      writeMode: 'members',
+      readMode: 'members',
+      createdBy: 'Qadmin',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const channelExpiryEvent = signedEvent({
+      eventId: 'renderer-channel-expiry',
+      groupId,
+      channelId: 'expiring',
+      authorSeq: 1,
+      timestamp,
+      encryptedPayload: JSON.stringify({ messageText: 'channel default' }),
+    });
+    const messageExpiryEvent = signedEvent({
+      eventId: 'renderer-message-expiry',
+      groupId,
+      channelId: 'expiring',
+      authorSeq: 2,
+      timestamp: timestamp + 1,
+      encryptedPayload: JSON.stringify({
+        messageText: 'message override',
+        expiryDurationMs: messageExpiryDurationMs,
+      }),
+    });
+    const durableEvent = signedEvent({
+      eventId: 'renderer-no-expiry',
+      groupId,
+      channelId: 'durable',
+      authorSeq: 3,
+      timestamp: timestamp + 2,
+      encryptedPayload: JSON.stringify({ messageText: 'no expiry' }),
+    });
+    expect((manager as any).db.insertEvent(channelExpiryEvent, false)).toBe(
+      true
+    );
+    expect((manager as any).db.insertEvent(messageExpiryEvent, false)).toBe(
+      true
+    );
+    expect((manager as any).db.insertEvent(durableEvent, false)).toBe(true);
+
+    expect(manager.getMessageHistory(groupId, 'expiring', 10)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventId: channelExpiryEvent.eventId,
+          expiresAt: timestamp + channelExpiryDurationMs,
+        }),
+        expect.objectContaining({
+          eventId: messageExpiryEvent.eventId,
+          expiresAt: timestamp + 1 + messageExpiryDurationMs,
+        }),
+      ])
+    );
+    expect(manager.getMessageHistory(groupId, 'durable', 10)).toEqual([
+      expect.objectContaining({
+        eventId: durableEvent.eventId,
+        expiresAt: null,
+      }),
+    ]);
+    expect(
+      manager.indexSearchText(
+        channelExpiryEvent.eventId,
+        'renderer channel expiry'
+      )
+    ).toBe(true);
+    await expect(
+      manager.searchEvents('renderer channel expiry', { groupIds: [groupId] })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        event: expect.objectContaining({
+          eventId: channelExpiryEvent.eventId,
+          expiresAt: timestamp + channelExpiryDurationMs,
+        }),
+      }),
+    ]);
+    expect(
+      JSON.stringify(
+        (manager as any).db.getRecentMessageEvents(groupId, 10, 'expiring')
+      )
+    ).not.toContain('expiresAt');
+    manager.close();
+
+    manager = new ReticulumChatManager({ dbPath });
+    manager.setLocalGroupMemberships([groupId]);
+    const fallbackExpiryLookup = vi.spyOn(
+      (manager as any).db,
+      'getEventExpiresAt'
+    );
+    expect(manager.getMessageHistory(groupId, 'expiring', 10)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventId: channelExpiryEvent.eventId,
+          expiresAt: timestamp + channelExpiryDurationMs,
+        }),
+        expect.objectContaining({
+          eventId: messageExpiryEvent.eventId,
+          expiresAt: timestamp + 1 + messageExpiryDurationMs,
+        }),
+      ])
+    );
+    expect(fallbackExpiryLookup).not.toHaveBeenCalled();
+    manager.close();
+  });
+
   it('uses the current edit authorization when rendering projected history', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     const [root, edit] = signedAuthorEvents([
@@ -29327,7 +29458,9 @@ describe('reticulum chat manager', () => {
     expect(
       manager.indexSearchText(event.eventId, 'departed group secret')
     ).toBe(true);
-    expect(manager.getHistory(groupId, 10)).toContainEqual(event);
+    expect(manager.getHistory(groupId, 10)).toContainEqual(
+      expect.objectContaining(event)
+    );
     await expect(
       manager.searchEvents('departed group secret', { groupIds: [groupId] })
     ).resolves.toHaveLength(1);

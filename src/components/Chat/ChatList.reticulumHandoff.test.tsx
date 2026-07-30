@@ -190,6 +190,126 @@ describe('Reticulum ChatList channel handoff', () => {
     expect(virtualizer.scrollToIndex).not.toHaveBeenCalled();
   });
 
+  it('remeasures only an existing Reticulum row whose reactions changed', () => {
+    const initialMessages = [message('message-1'), message('message-2')];
+    const { container, rerender } = render(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-channel"
+        initialMessages={initialMessages}
+      />
+    );
+
+    virtualizer.measureElement.mockClear();
+    rerender(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-channel"
+        initialMessages={initialMessages}
+        chatReferences={{
+          'message-1': {
+            reactions: {
+              '👍': [{ sender: 'Qremote' }],
+            },
+          },
+        }}
+      />
+    );
+
+    const changedRow = container.querySelector('[data-index="0"]');
+    expect(changedRow).not.toBeNull();
+    expect(virtualizer.measureElement).toHaveBeenCalledTimes(1);
+    expect(virtualizer.measureElement).toHaveBeenCalledWith(changedRow);
+
+    virtualizer.measureElement.mockClear();
+    rerender(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-channel"
+        initialMessages={initialMessages}
+        chatReferences={{
+          'message-1': {
+            reactions: {
+              '👍': [{ sender: 'Qremote' }],
+            },
+          },
+        }}
+      />
+    );
+    expect(virtualizer.measureElement).not.toHaveBeenCalled();
+  });
+
+  it('does not remeasure reaction rows while replacing a channel window', () => {
+    const { rerender } = render(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-channel-a"
+        initialMessages={[message('message-1')]}
+        chatReferences={{
+          'message-1': {
+            reactions: { '👍': [{ sender: 'Qremote' }] },
+          },
+        }}
+      />
+    );
+
+    virtualizer.measureElement.mockClear();
+    rerender(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-channel-b"
+        initialMessages={[message('message-2')]}
+        chatReferences={{
+          'message-2': {
+            reactions: { '❤️': [{ sender: 'Qremote' }] },
+          },
+        }}
+      />
+    );
+
+    // React detaches the old keyed row and attaches the replacement, so the
+    // virtualizer receives one normal element measurement. The reaction
+    // baseline must not add a second targeted measurement during handoff.
+    const elementMeasurements = virtualizer.measureElement.mock.calls.filter(
+      ([element]) => element instanceof HTMLElement
+    );
+    expect(elementMeasurements).toHaveLength(1);
+  });
+
+  it('does not add reaction measurements while replacing a same-channel search window', () => {
+    const { rerender } = render(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-search-channel"
+        initialMessages={[message('message-1')]}
+        chatReferences={{
+          'message-1': {
+            reactions: { '👍': [{ sender: 'Qremote' }] },
+          },
+        }}
+      />
+    );
+
+    virtualizer.measureElement.mockClear();
+    rerender(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:reaction-search-channel"
+        initialMessages={[message('message-2')]}
+        chatReferences={{
+          'message-2': {
+            reactions: { '❤️': [{ sender: 'Qremote' }] },
+          },
+        }}
+      />
+    );
+
+    const elementMeasurements = virtualizer.measureElement.mock.calls.filter(
+      ([element]) => element instanceof HTMLElement
+    );
+    expect(elementMeasurements).toHaveLength(1);
+  });
+
   it('lands on the first message represented by the unread count', async () => {
     render(
       <ChatList
