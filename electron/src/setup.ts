@@ -5365,6 +5365,41 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'reticulumChat:getMessageHistoryPage',
+  async (
+    _event,
+    groupId: number,
+    channelId?: string,
+    limit?: number,
+    options?: unknown
+  ) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState(
+          {
+            events: [],
+            oldestCursor: null,
+            newestCursor: null,
+            hasMore: false,
+          },
+          () =>
+            manager.getMessageHistoryPage(
+              groupId,
+              channelId || 'general',
+              limit,
+              options as ReticulumChatHistoryReadOptions
+            )
+        )
+      : {
+          events: [],
+          oldestCursor: null,
+          newestCursor: null,
+          hasMore: false,
+        };
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:getDiscussionIndex',
   async (_event, groupId: number, channelId?: string) => {
     const manager = getReticulumChatManager();
@@ -5419,6 +5454,33 @@ ipcMain.handle(
     return manager
       ? readReticulumGroupState([], () => manager.getCategories(groupId))
       : [];
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getChannelMetadataBundle',
+  async (_event, groupId: number, includeArchived?: boolean) => {
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState(
+          {
+            channels: [],
+            categories: [],
+            ready: false,
+            snapshotVersion: 0,
+          },
+          () =>
+            manager.getChannelMetadataBundle(
+              groupId,
+              includeArchived === true
+            )
+        )
+      : {
+          channels: [],
+          categories: [],
+          ready: false,
+          snapshotVersion: 0,
+        };
   }
 );
 
@@ -5509,6 +5571,47 @@ ipcMain.handle(
           )
         )
       : [];
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getMessageWindowPageAroundEvent',
+  async (
+    _event,
+    groupId: number,
+    channelId: string,
+    eventId: string,
+    options?: {
+      beforeLimit?: number;
+      afterLimit?: number;
+    }
+  ) => {
+    const safeOptions = options && typeof options === 'object' ? options : {};
+    const manager = getReticulumChatManager();
+    return manager
+      ? readReticulumGroupState(
+          {
+            events: [],
+            oldestCursor: null,
+            newestCursor: null,
+            hasOlder: false,
+            hasNewer: false,
+          },
+          () =>
+            manager.getMessageWindowPageAroundEvent(
+              groupId,
+              channelId,
+              eventId,
+              safeOptions
+            )
+        )
+      : {
+          events: [],
+          oldestCursor: null,
+          newestCursor: null,
+          hasOlder: false,
+          hasNewer: false,
+        };
   }
 );
 

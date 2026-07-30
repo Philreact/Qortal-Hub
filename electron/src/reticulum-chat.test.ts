@@ -75,6 +75,7 @@ import {
   RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
   reticulumChatPayloadHasPrivilegedMention,
   reticulumDmConversationId,
+  type ReticulumGroupChannel,
 } from './reticulum-chat-db';
 import {
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
@@ -3840,6 +3841,9 @@ describe('reticulum chat database', () => {
             },
           ],
         },
+        specialId: 'internal-tracking-id',
+        repliedTo: 'internal-reply-event-id',
+        mentionedAddresses: ['QinternalMentionAddress'],
       }),
     });
     const otherGroup = signedEvent({
@@ -3858,6 +3862,9 @@ describe('reticulum chat database', () => {
         .map((item) => item.event.eventId)
     ).toEqual([matching.eventId]);
     expect(db.searchEvents('alpha phrase', { groupIds: [99] })).toEqual([]);
+    expect(db.searchEvents('tracking', { groupIds: [42] })).toEqual([]);
+    expect(db.searchEvents('reply-event', { groupIds: [42] })).toEqual([]);
+    expect(db.searchEvents('internalMention', { groupIds: [42] })).toEqual([]);
   });
 
   it('filters message search by author, channel, type, link, date and sort', () => {
@@ -4066,6 +4073,55 @@ describe('reticulum chat database', () => {
     expect(db.searchEvents('replacement', { groupIds: [62] })).toEqual([]);
   });
 
+  it('updates projected search text once when edits and deletes are stored', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const timestamp = Date.now();
+    const [root, edit, deleteEvent] = signedAuthorEvents([
+      {
+        eventId: 'event-ingested-search-root',
+        groupId: 262,
+        authorSeq: 1,
+        timestamp,
+        encryptedPayload: JSON.stringify({
+          messageText: 'original ingestion text',
+          mentionedAddresses: [],
+        }),
+      },
+      {
+        eventId: 'event-ingested-search-edit',
+        groupId: 262,
+        authorSeq: 2,
+        timestamp: timestamp + 1,
+        eventType: 'edit',
+        targetEventId: 'event-ingested-search-root',
+        encryptedPayload: JSON.stringify({
+          messageText: 'replacement ingestion text',
+          mentionedAddresses: [],
+        }),
+      },
+      {
+        eventId: 'event-ingested-search-delete',
+        groupId: 262,
+        authorSeq: 3,
+        timestamp: timestamp + 2,
+        eventType: 'delete',
+        targetEventId: 'event-ingested-search-root',
+        encryptedPayload: JSON.stringify({ messageText: '' }),
+      },
+    ]);
+
+    expect(db.insertEvent(root, true)).toBe(true);
+    expect(db.searchEvents('original', { groupIds: [262] })).toHaveLength(1);
+    expect(db.insertEvent(edit, true)).toBe(true);
+    expect(db.searchEvents('original', { groupIds: [262] })).toEqual([]);
+    expect(
+      db.searchEvents('replacement', { groupIds: [262] })[0]?.event.eventId
+    ).toBe(root.eventId);
+    expect(db.insertEvent(deleteEvent, true)).toBe(true);
+    expect(db.searchEvents('replacement', { groupIds: [262] })).toEqual([]);
+  });
+
   it('does not let stale rendered message events overwrite projected search text', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -4176,6 +4232,29 @@ describe('reticulum chat database', () => {
     expect(db.getChatSummaries('Qmentioned')[0]).toMatchObject({
       mentionCount: 0,
       hasUnreadMention: false,
+    });
+  });
+
+  it('indexes payload mention addresses when an event is stored', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = 'QpayloadMention';
+    const event = signedEvent({
+      eventId: 'event-payload-mention',
+      groupId: 263,
+      authorAddress: 'Qauthor',
+      encryptedPayload: JSON.stringify({
+        messageText: 'hello',
+        mentionedAddresses: [mentionedAddress],
+      }),
+      mentionAddressHashes: [hashReticulumChatMentionAddress(mentionedAddress)],
+    });
+
+    expect(db.insertEvent(event, true)).toBe(true);
+    expect(db.getChatSummaries(mentionedAddress)[0]).toMatchObject({
+      groupId: 263,
+      mentionCount: 1,
+      hasUnreadMention: true,
     });
   });
 
@@ -26635,6 +26714,90 @@ describe('reticulum chat manager', () => {
     db.close();
   });
 
+  it('treats a coherent uncategorized metadata snapshot as ready', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const groupId = 752;
+    manager.setLocalGroupMemberships([{ groupId, isAdmin: false }]);
+
+    expect(manager.getChannelMetadataBundle(groupId)).toMatchObject({
+      ready: false,
+      snapshotVersion: 0,
+    });
+    const builtInChannels = (manager as any).db.getChannels(groupId, true);
+    const builtInRevisions = builtInChannels.map(
+      (channel: ReticulumGroupChannel, index: number) => ({
+        entityType: 'channel' as const,
+        entityId: channel.channelId,
+        eventId: `uncategorized-built-in-${index}`,
+        eventType: 'channel_update',
+        timestamp: 100,
+        deleted: false,
+        stateHash: hashReticulumChatMetadataEntityState(
+          'channel',
+          channel.channelId,
+          channel
+        ),
+      })
+    );
+    expect(
+      (manager as any).db.applyMetadataSnapshot({
+        groupId,
+        snapshotId: 'uncategorized-public-snapshot',
+        scope: 'public',
+        parentSnapshotHash: '',
+        version: 7,
+        createdAt: 100,
+        latestEventId: '',
+        latestFeedTimestamp: 0,
+        snapshotHash: '7'.repeat(64),
+        adminAddress: 'Qadmin',
+        adminPublicKey: 'public-key',
+        signature: 'signature',
+        channels: builtInChannels,
+        categories: [],
+        revisions: builtInRevisions,
+      })
+    ).toBe(true);
+
+    const bundle = manager.getChannelMetadataBundle(groupId);
+    expect(bundle.ready).toBe(true);
+    expect(bundle.snapshotVersion).toBe(7);
+    expect(bundle.categories).toEqual([]);
+    expect(bundle.channels.map((channel) => channel.channelId)).toEqual([
+      RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+      RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
+    ]);
+
+    // An administrator must not treat a public-only snapshot as complete,
+    // because it intentionally omits admin-private channels.
+    manager.setLocalGroupMemberships([{ groupId, isAdmin: true }]);
+    expect(manager.getChannelMetadataBundle(groupId).ready).toBe(false);
+    expect(
+      (manager as any).db.applyMetadataSnapshot({
+        groupId,
+        snapshotId: 'uncategorized-full-snapshot',
+        scope: 'full',
+        parentSnapshotHash: '',
+        version: 8,
+        createdAt: 101,
+        latestEventId: '',
+        latestFeedTimestamp: 0,
+        snapshotHash: '8'.repeat(64),
+        adminAddress: 'Qadmin',
+        adminPublicKey: 'public-key',
+        signature: 'signature',
+        channels: builtInChannels,
+        categories: [],
+        revisions: builtInRevisions,
+      })
+    ).toBe(true);
+    expect(manager.getChannelMetadataBundle(groupId)).toMatchObject({
+      ready: true,
+      snapshotVersion: 8,
+    });
+    manager.close();
+  });
+
   it('hides cached admin-private state immediately after local admin access is removed', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     const groupId = 753;
@@ -29031,6 +29194,124 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('returns indexed bidirectional message pages with exact boundaries', async () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const groupId = 990;
+    const baseTimestamp = Date.now() - 10_000;
+    manager.setLocalGroupMemberships([groupId]);
+    manager.subscribeGroup(groupId);
+    const messages = Array.from({ length: 6 }, (_, index) =>
+      signedEvent({
+        eventId: `page-message-${index + 1}`,
+        groupId,
+        channelId: 'general',
+        timestamp: baseTimestamp + (index + 1) * 1_000,
+      })
+    );
+    for (const message of messages) {
+      expect((manager as any).db.insertEvent(message, true)).toBe(true);
+    }
+
+    expect(manager.getMessageHistoryPage(groupId, 'general', 2)).toMatchObject({
+      events: [
+        expect.objectContaining({ eventId: 'page-message-5' }),
+        expect.objectContaining({ eventId: 'page-message-6' }),
+      ],
+      oldestCursor: {
+        eventId: 'page-message-5',
+        timestamp: baseTimestamp + 5_000,
+      },
+      newestCursor: {
+        eventId: 'page-message-6',
+        timestamp: baseTimestamp + 6_000,
+      },
+      hasMore: true,
+    });
+    expect(
+      manager.getMessageHistoryPage(groupId, 'general', 2, {
+        beforeTimestamp: baseTimestamp + 5_000,
+        beforeEventId: 'page-message-5',
+        repairNetwork: false,
+      })
+    ).toMatchObject({
+      events: [
+        expect.objectContaining({ eventId: 'page-message-3' }),
+        expect.objectContaining({ eventId: 'page-message-4' }),
+      ],
+      hasMore: true,
+    });
+    expect(
+      manager.getMessageHistoryPage(groupId, 'general', 2, {
+        afterTimestamp: Number.NaN,
+        afterEventId: 'invalid-cursor',
+        repairNetwork: false,
+      })
+    ).toMatchObject({
+      events: [
+        expect.objectContaining({ eventId: 'page-message-5' }),
+        expect.objectContaining({ eventId: 'page-message-6' }),
+      ],
+      hasMore: true,
+    });
+    expect(
+      manager.getMessageHistoryPage(groupId, 'general', 2, {
+        afterTimestamp: baseTimestamp + 2_000,
+        afterEventId: 'page-message-2',
+        repairNetwork: false,
+      })
+    ).toMatchObject({
+      events: [
+        expect.objectContaining({ eventId: 'page-message-3' }),
+        expect.objectContaining({ eventId: 'page-message-4' }),
+      ],
+      hasMore: true,
+    });
+    await expect(
+      manager.getMessageWindowPageAroundEvent(
+        groupId,
+        'general',
+        'page-message-3',
+        { beforeLimit: 1, afterLimit: 1 }
+      )
+    ).resolves.toMatchObject({
+      events: [
+        expect.objectContaining({ eventId: 'page-message-2' }),
+        expect.objectContaining({ eventId: 'page-message-3' }),
+        expect.objectContaining({ eventId: 'page-message-4' }),
+      ],
+      hasOlder: true,
+      hasNewer: true,
+    });
+    await expect(
+      manager.getMessageWindowPageAroundEvent(
+        groupId,
+        'general',
+        'page-message-3',
+        { beforeLimit: Number.NaN, afterLimit: Number.NaN }
+      )
+    ).resolves.toMatchObject({
+      events: messages.map((message) =>
+        expect.objectContaining({ eventId: message.eventId })
+      ),
+      hasOlder: false,
+      hasNewer: false,
+    });
+    await expect(
+      manager.getMessageWindowAroundEvent(
+        groupId,
+        'general',
+        'page-message-3',
+        { beforeLimit: Number.NaN, afterLimit: Number.POSITIVE_INFINITY }
+      )
+    ).resolves.toEqual(
+      messages.map((message) =>
+        expect.objectContaining({ eventId: message.eventId })
+      )
+    );
+
+    manager.close();
+  });
+
   it('revokes renderer-facing cached group access after local membership is removed', async () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     const groupId = 991;
@@ -29061,6 +29342,9 @@ describe('reticulum chat manager', () => {
     expect(() => manager.getMessageHistory(groupId, 10)).toThrow(
       /not a member/i
     );
+    expect(() => manager.getMessageHistoryPage(groupId)).toThrow(
+      /not a member/i
+    );
     expect(() => manager.getChannelMetadataHistory(groupId)).toThrow(
       /not a member/i
     );
@@ -29073,6 +29357,13 @@ describe('reticulum chat manager', () => {
     expect(() => manager.markGroupsRead([groupId])).toThrow(/not a member/i);
     await expect(
       manager.getMessageWindowAroundEvent(groupId, 'general', event.eventId)
+    ).rejects.toThrow(/not a member/i);
+    await expect(
+      manager.getMessageWindowPageAroundEvent(
+        groupId,
+        'general',
+        event.eventId
+      )
     ).rejects.toThrow(/not a member/i);
     await expect(
       manager.searchEvents('departed group secret', { groupIds: [groupId] })

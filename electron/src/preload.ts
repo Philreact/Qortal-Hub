@@ -1880,6 +1880,19 @@ try {
           limit,
           options
         ) as Promise<unknown[]>,
+      getMessageHistoryPage: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistoryPage',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown>,
       getDiscussionIndex: async (groupId: number, channelId?: string) =>
         ipcRenderer.invoke(
           'reticulumChat:getDiscussionIndex',
@@ -1916,6 +1929,20 @@ try {
         ipcRenderer.invoke('reticulumChat:getCategories', groupId) as Promise<
           unknown[]
         >,
+      getChannelMetadataBundle: async (
+        groupId: number,
+        includeArchived?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataBundle',
+          groupId,
+          includeArchived
+        ) as Promise<{
+          channels: unknown[];
+          categories: unknown[];
+          ready: boolean;
+          snapshotVersion: number;
+        }>,
       applyChannelMetadata: async (eventId: string, payload: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:applyChannelMetadata',
@@ -1969,6 +1996,22 @@ try {
           eventId,
           options
         ) as Promise<unknown[]>,
+      getMessageWindowPageAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowPageAroundEvent',
+          groupId,
+          channelId,
+          eventId,
+          options
+        ) as Promise<unknown>,
       indexSearchText: async (eventId: string, text: string) =>
         ipcRenderer.invoke(
           'reticulumChat:indexSearchText',
@@ -2379,6 +2422,35 @@ try {
     contextBridge.exposeInMainWorld('reticulumChat', {
       isEnabled: async () =>
         ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
+      getMessageHistoryPage: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistoryPage',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown>,
+      getMessageWindowPageAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowPageAroundEvent',
+          groupId,
+          channelId,
+          eventId,
+          options
+        ) as Promise<unknown>,
       getReadinessStatus: async () =>
         ipcRenderer.invoke('reticulumChat:getReadinessStatus') as Promise<{
           state: 'idle' | 'starting' | 'ready' | 'failed';
@@ -2750,6 +2822,20 @@ try {
         ipcRenderer.invoke('reticulumChat:getCategories', groupId) as Promise<
           unknown[]
         >,
+      getChannelMetadataBundle: async (
+        groupId: number,
+        includeArchived?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataBundle',
+          groupId,
+          includeArchived
+        ) as Promise<{
+          channels: unknown[];
+          categories: unknown[];
+          ready: boolean;
+          snapshotVersion: number;
+        }>,
       applyChannelMetadata: async (eventId: string, payload: unknown) =>
         ipcRenderer.invoke(
           'reticulumChat:applyChannelMetadata',

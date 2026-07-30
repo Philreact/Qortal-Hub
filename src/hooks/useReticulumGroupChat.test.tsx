@@ -65,14 +65,16 @@ describe('useReticulumGroupChat', () => {
           };
         }),
         onTyping: vi.fn(() => () => undefined),
-        onSilenceChanged: vi.fn((listener: (payload: SilencePayload) => void) => {
-          silenceListeners.push(listener);
-          return () => {
-            silenceListeners = silenceListeners.filter(
-              (candidate) => candidate !== listener
-            );
-          };
-        }),
+        onSilenceChanged: vi.fn(
+          (listener: (payload: SilencePayload) => void) => {
+            silenceListeners.push(listener);
+            return () => {
+              silenceListeners = silenceListeners.filter(
+                (candidate) => candidate !== listener
+              );
+            };
+          }
+        ),
       },
     });
   });
@@ -112,10 +114,42 @@ describe('useReticulumGroupChat', () => {
     await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
   });
 
+  it('does not overwrite a live message that arrives during initial history', async () => {
+    const initialHistory = deferred<unknown[]>();
+    getMessageHistory.mockReturnValue(initialHistory.promise);
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(getMessageHistory).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      listeners[0]({ event: event('live-during-history', 'general', 300) });
+    });
+    await waitFor(
+      () =>
+        expect(
+          result.current.events.map((item: any) => item.eventId)
+        ).toContain('live-during-history'),
+      { timeout: 1200 }
+    );
+
+    await act(async () => {
+      initialHistory.resolve([event('initial-history', 'general', 200)]);
+      await initialHistory.promise;
+    });
+    expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+      'initial-history',
+      'live-during-history',
+    ]);
+  });
+
   it('does not merge an older page after switching channels', async () => {
     const olderPage = deferred<unknown[]>();
     getMessageHistory.mockImplementation(
-      (_groupId: number, channelId: string, _limit: number, options?: object) => {
+      (
+        _groupId: number,
+        channelId: string,
+        _limit: number,
+        options?: object
+      ) => {
         if (options) return olderPage.promise;
         return Promise.resolve([
           channelId === 'alpha'
@@ -215,6 +249,32 @@ describe('useReticulumGroupChat', () => {
     });
   });
 
+  it('does not expose the retained previous-channel snapshot after a new-channel history failure', async () => {
+    getMessageHistory.mockImplementation(
+      (_groupId: number, channelId: string) =>
+        channelId === 'alpha'
+          ? Promise.resolve([event('alpha-current', 'alpha', 200)])
+          : Promise.reject(new Error('history unavailable'))
+    );
+    const { result, rerender } = renderHook(
+      ({ channelId }) => useReticulumGroupChat(42, channelId),
+      { initialProps: { channelId: 'alpha' } }
+    );
+    await waitFor(() =>
+      expect(result.current.events).toEqual([
+        expect.objectContaining({ eventId: 'alpha-current' }),
+      ])
+    );
+
+    rerender({ channelId: 'beta' });
+    expect(result.current.initialHistoryReady).toBe(false);
+
+    await waitFor(() => {
+      expect(result.current.initialHistoryReady).toBe(true);
+      expect(result.current.events).toEqual([]);
+    });
+  });
+
   it('shows a live event without waiting for primary-name lookup', async () => {
     getMessageHistory.mockResolvedValue([]);
     const names = deferred<Record<string, string>>();
@@ -256,9 +316,7 @@ describe('useReticulumGroupChat', () => {
         privilegedMentionAuthorized: undefined,
       },
     ]);
-    const { result } = renderHook(() =>
-      useReticulumGroupChat(42, 'general')
-    );
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
     await waitFor(() => expect(result.current.events).toHaveLength(1));
 
     act(() => {
@@ -288,9 +346,7 @@ describe('useReticulumGroupChat', () => {
     getMessageHistory
       .mockReturnValueOnce(staleHistory.promise)
       .mockResolvedValueOnce([]);
-    const { result } = renderHook(() =>
-      useReticulumGroupChat(42, 'general')
-    );
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
     await waitFor(() => expect(silenceListeners).toHaveLength(1));
 
     act(() => {
@@ -318,9 +374,7 @@ describe('useReticulumGroupChat', () => {
     getMessageHistory
       .mockResolvedValueOnce([event('visible-before-hide', 'general', 100)])
       .mockReturnValueOnce(refreshedHistory.promise);
-    const { result } = renderHook(() =>
-      useReticulumGroupChat(42, 'general')
-    );
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
     await waitFor(() => {
       expect(result.current.events).toEqual([
         expect.objectContaining({ eventId: 'visible-before-hide' }),
@@ -349,5 +403,204 @@ describe('useReticulumGroupChat', () => {
       refreshedHistory.resolve([]);
       await refreshedHistory.promise;
     });
+  });
+
+  it('opens an anchored window and paginates forward with that window cursor', async () => {
+    const getMessageHistoryPage = vi.fn(
+      async (
+        _groupId: number,
+        _channelId: string,
+        _limit: number,
+        options?: { afterTimestamp?: number; afterEventId?: string }
+      ) =>
+        options?.afterTimestamp
+          ? {
+              events: [event('after-page', 'general', 300)],
+              oldestCursor: { eventId: 'after-page', timestamp: 300 },
+              newestCursor: { eventId: 'after-page', timestamp: 300 },
+              hasMore: false,
+            }
+          : {
+              events: [event('latest', 'general', 500)],
+              oldestCursor: { eventId: 'latest', timestamp: 500 },
+              newestCursor: { eventId: 'latest', timestamp: 500 },
+              hasMore: true,
+            }
+    );
+    const getMessageWindowPageAroundEvent = vi.fn(async () => ({
+      events: [
+        event('around-before', 'general', 100),
+        event('around-target', 'general', 110),
+        event('around-after', 'general', 120),
+      ],
+      oldestCursor: { eventId: 'around-before', timestamp: 100 },
+      newestCursor: { eventId: 'around-after', timestamp: 120 },
+      hasOlder: true,
+      hasNewer: true,
+    }));
+    Object.assign(window.reticulumChat as any, {
+      getMessageHistoryPage,
+      getMessageWindowPageAroundEvent,
+    });
+
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
+
+    await act(async () => {
+      await result.current.openAroundEvent('around-target');
+    });
+    expect(result.current.historyMode).toBe('anchored');
+    expect(result.current.hasOlder).toBe(true);
+    expect(result.current.hasNewer).toBe(true);
+    expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+      'around-before',
+      'around-target',
+      'around-after',
+    ]);
+
+    await act(async () => {
+      await result.current.loadNewer();
+    });
+    expect(getMessageHistoryPage).toHaveBeenLastCalledWith(
+      42,
+      'general',
+      100,
+      expect.objectContaining({
+        afterEventId: 'around-after',
+        afterTimestamp: 120,
+      })
+    );
+    expect(result.current.hasNewer).toBe(false);
+    expect(result.current.historyMode).toBe('latest');
+    expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+      'around-before',
+      'around-target',
+      'around-after',
+      'after-page',
+    ]);
+  });
+
+  it('keeps live root messages behind the newer boundary while applying visible reactions', async () => {
+    Object.assign(window.reticulumChat as any, {
+      getMessageWindowPageAroundEvent: vi.fn(async () => ({
+        events: [event('around-target', 'general', 110)],
+        oldestCursor: { eventId: 'around-target', timestamp: 110 },
+        newestCursor: { eventId: 'around-target', timestamp: 110 },
+        hasOlder: false,
+        hasNewer: true,
+      })),
+    });
+    getMessageHistory.mockResolvedValue([event('latest', 'general', 500)]);
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
+    await act(async () => {
+      await result.current.openAroundEvent('around-target');
+    });
+
+    act(() => {
+      listeners[0]({ event: event('older-root', 'general', 100) });
+      listeners[0]({ event: event('live-root', 'general', 600) });
+      listeners[0]({
+        event: {
+          ...event('visible-reaction', 'general', 601),
+          eventType: 'reaction_add',
+          targetEventId: 'around-target',
+        },
+      });
+    });
+
+    await waitFor(
+      () => {
+        expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+          'older-root',
+          'around-target',
+          'visible-reaction',
+        ]);
+      },
+      { timeout: 1200 }
+    );
+    expect(result.current.hasOlder).toBe(true);
+    expect(result.current.hasNewer).toBe(true);
+  });
+
+  it('ignores a stale search window when a newer search finishes first', async () => {
+    getMessageHistory.mockResolvedValue([event('latest', 'general', 500)]);
+    const firstWindow = deferred<any>();
+    const secondWindow = deferred<any>();
+    const getMessageWindowPageAroundEvent = vi
+      .fn()
+      .mockReturnValueOnce(firstWindow.promise)
+      .mockReturnValueOnce(secondWindow.promise);
+    Object.assign(window.reticulumChat as any, {
+      getMessageWindowPageAroundEvent,
+    });
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
+
+    let firstResult!: Promise<{ success: boolean }>;
+    let secondResult!: Promise<{ success: boolean }>;
+    act(() => {
+      firstResult = result.current.openAroundEvent('first-target');
+      secondResult = result.current.openAroundEvent('second-target');
+    });
+    await act(async () => {
+      secondWindow.resolve({
+        events: [event('second-target', 'general', 300)],
+        oldestCursor: { eventId: 'second-target', timestamp: 300 },
+        newestCursor: { eventId: 'second-target', timestamp: 300 },
+        hasOlder: true,
+        hasNewer: true,
+      });
+      await secondResult;
+      firstWindow.resolve({
+        events: [event('first-target', 'general', 200)],
+        oldestCursor: { eventId: 'first-target', timestamp: 200 },
+        newestCursor: { eventId: 'first-target', timestamp: 200 },
+        hasOlder: true,
+        hasNewer: true,
+      });
+      await firstResult;
+    });
+
+    await expect(firstResult).resolves.toEqual({ success: false });
+    await expect(secondResult).resolves.toEqual({ success: true });
+    expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+      'second-target',
+    ]);
+  });
+
+  it('jumps directly from anchored history to the latest page', async () => {
+    const getMessageHistoryPage = vi.fn(async () => ({
+      events: [
+        event('latest-1', 'general', 500),
+        event('latest-2', 'general', 600),
+      ],
+      oldestCursor: { eventId: 'latest-1', timestamp: 500 },
+      newestCursor: { eventId: 'latest-2', timestamp: 600 },
+      hasMore: true,
+    }));
+    Object.assign(window.reticulumChat as any, {
+      getMessageHistoryPage,
+      getMessageWindowPageAroundEvent: vi.fn(async () => ({
+        events: [event('around-target', 'general', 110)],
+        oldestCursor: { eventId: 'around-target', timestamp: 110 },
+        newestCursor: { eventId: 'around-target', timestamp: 110 },
+        hasOlder: true,
+        hasNewer: true,
+      })),
+    });
+    const { result } = renderHook(() => useReticulumGroupChat(42, 'general'));
+    await waitFor(() => expect(result.current.initialHistoryReady).toBe(true));
+    await act(async () => {
+      await result.current.openAroundEvent('around-target');
+      await result.current.jumpToLatest();
+    });
+
+    expect(result.current.historyMode).toBe('latest');
+    expect(result.current.hasNewer).toBe(false);
+    expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+      'latest-1',
+      'latest-2',
+    ]);
   });
 });

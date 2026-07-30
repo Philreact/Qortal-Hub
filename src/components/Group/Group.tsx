@@ -119,6 +119,7 @@ import { FirstTimeQChatEmptyState } from './FirstTimeQChatEmptyState';
 import { ReturningUserActivityDashboard } from './ReturningUserActivityDashboard';
 import { ReturningUserCaughtUpState } from './ReturningUserCaughtUpState';
 import { startReticulumGroupScoreScheduler } from './reticulumGroupScore';
+import { reticulumVisibleSearchTextFromPayload } from './reticulumSearchText';
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
@@ -314,34 +315,6 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
     ...(joinedAt ? { joinedAt } : {}),
     ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
   }));
-};
-
-const collectReticulumPlainText = (value: unknown, out: string[]): void => {
-  if (typeof value === 'string') {
-    out.push(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectReticulumPlainText(item, out);
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  for (const [key, next] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'type' || key === 'isEdited' || key === 'mentionedAddresses') {
-      continue;
-    }
-    collectReticulumPlainText(next, out);
-  }
-};
-
-const reticulumTextFromPayload = (payload: unknown): string => {
-  const strings: string[] = [];
-  collectReticulumPlainText(payload, strings);
-  return strings
-    .join(' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 };
 
 const parseReticulumPublicPayload = (value: unknown): unknown => {
@@ -2695,7 +2668,7 @@ export const Group = ({
         payload = event.encryptedPayload || '';
       }
 
-      const text = reticulumTextFromPayload(payload);
+      const text = reticulumVisibleSearchTextFromPayload(payload);
       const targetEventId =
         event.eventType === 'edit' && event.targetEventId
           ? event.targetEventId

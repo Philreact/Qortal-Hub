@@ -813,6 +813,23 @@ declare global {
           repairNetwork?: boolean;
         }
       ) => Promise<unknown[]>;
+      getMessageHistoryPage: (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: {
+          beforeTimestamp?: number;
+          beforeEventId?: string;
+          afterTimestamp?: number;
+          afterEventId?: string;
+          repairNetwork?: boolean;
+        }
+      ) => Promise<{
+        events: unknown[];
+        oldestCursor: { timestamp: number; eventId: string } | null;
+        newestCursor: { timestamp: number; eventId: string } | null;
+        hasMore: boolean;
+      }>;
       getDiscussionIndex: (
         groupId: number,
         channelId?: string
@@ -834,6 +851,15 @@ declare global {
         includeArchived?: boolean
       ) => Promise<unknown[]>;
       getCategories: (groupId: number) => Promise<unknown[]>;
+      getChannelMetadataBundle: (
+        groupId: number,
+        includeArchived?: boolean
+      ) => Promise<{
+        channels: unknown[];
+        categories: unknown[];
+        ready: boolean;
+        snapshotVersion: number;
+      }>;
       applyChannelMetadata: (
         eventId: string,
         payload: unknown
@@ -869,6 +895,21 @@ declare global {
           afterLimit?: number;
         }
       ) => Promise<unknown[]>;
+      getMessageWindowPageAroundEvent: (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) => Promise<{
+        events: unknown[];
+        oldestCursor: { timestamp: number; eventId: string } | null;
+        newestCursor: { timestamp: number; eventId: string } | null;
+        hasOlder: boolean;
+        hasNewer: boolean;
+      }>;
       indexSearchText: (
         eventId: string,
         text: string

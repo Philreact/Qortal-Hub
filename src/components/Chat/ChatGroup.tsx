@@ -133,12 +133,6 @@ import {
   type ReticulumDiscussionFile,
 } from './ReticulumDiscussionDialog';
 import { fileToBase64 } from '../../utils/fileReading';
-import { generateHTML } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Underline from '@tiptap/extension-underline';
-import Highlight from '@tiptap/extension-highlight';
-import Mention from '@tiptap/extension-mention';
-import TextStyle from '@tiptap/extension-text-style';
 import {
   getGroupAdminsAddress,
   getGroupMembers,
@@ -173,6 +167,11 @@ import EmojiPicker, { EmojiStyle, Theme } from 'emoji-picker-react';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { applyReticulumJoinUnreadBaseline } from './reticulumJoinUnreadBaseline';
 import { projectReticulumReactionReferences } from '../../utils/reticulumReactionProjection';
+import {
+  buildReticulumInitialHistoryState,
+  reticulumHistoryItemSpecialId,
+} from './reticulumInitialHistory';
+import { normalizeReticulumChatHtmlContent } from './reticulumMessageHtml';
 import {
   buildReticulumMessageExpiryPayload,
   formatReticulumExpiryDuration,
@@ -374,17 +373,6 @@ function reticulumAttachmentNamesFromPayload(payload?: string): string[] {
   } catch {
     return [];
   }
-}
-
-function buildReticulumSearchIndexText(
-  messageText: string,
-  decryptedData: unknown
-): string {
-  const attachmentNames = reticulumAttachmentNamesFromRecord(decryptedData);
-  return [messageText, ...attachmentNames]
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .join(' ');
 }
 
 function localDateStringToTimestamp(dateString: string): number | undefined {
@@ -1252,31 +1240,6 @@ function ReticulumSortableCategory({
   );
 }
 
-const normalizeChatHtmlContent = (raw: unknown): string => {
-  if (raw == null) return '<p></p>';
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    return trimmed.length ? trimmed : '<p></p>';
-  }
-  if (typeof raw === 'object') {
-    try {
-      const doc = raw as { type?: string; content?: unknown };
-      if (doc.type === 'doc' && Array.isArray(doc.content)) {
-        return generateHTML(doc, [
-          StarterKit,
-          Underline,
-          Highlight,
-          Mention,
-          TextStyle,
-        ]);
-      }
-    } catch {
-      // Fall through to empty paragraph.
-    }
-  }
-  return '<p></p>';
-};
-
 const mentionNodeIdsFromHtml = (html: string): Set<string> => {
   if (!html || typeof DOMParser === 'undefined') return new Set();
   const document = new DOMParser().parseFromString(html, 'text/html');
@@ -1296,20 +1259,6 @@ const reticulumChannelLinkMentionId = (
   groupId: number,
   channelId: string
 ): string => `reticulum-channel:${groupId}:${encodeURIComponent(channelId)}`;
-
-const mentionedAddressesFromPayload = (payload: unknown): string[] => {
-  if (!payload || typeof payload !== 'object') return [];
-  const value = (payload as { mentionedAddresses?: unknown })
-    .mentionedAddresses;
-  if (!Array.isArray(value)) return [];
-  return [
-    ...new Set(
-      value
-        .map((address) => (typeof address === 'string' ? address.trim() : ''))
-        .filter(Boolean)
-    ),
-  ];
-};
 
 type ReticulumSilenceState = {
   ownerAddress: string;
@@ -1469,7 +1418,7 @@ export const ChatGroup = ({
       );
       const activeGroupId = Number(
         typeof selectedGroup === 'object'
-          ? selectedGroup?.groupId ?? selectedGroup?.id
+          ? (selectedGroup?.groupId ?? selectedGroup?.id)
           : selectedGroup
       );
       if (
@@ -1585,7 +1534,25 @@ export const ChatGroup = ({
     useState<{
       messageId: string;
       nonce: number;
+      requestId?: number;
     } | null>(null);
+  const [
+    pendingReticulumSearchNavigation,
+    setPendingReticulumSearchNavigation,
+  ] = useState<{
+    groupId: number;
+    channelId: string;
+    eventId: string;
+    requestId: number;
+  } | null>(null);
+  const reticulumSearchNavigationRequestRef = useRef(0);
+  const pendingReticulumSearchNavigationRef = useRef(
+    pendingReticulumSearchNavigation
+  );
+  pendingReticulumSearchNavigationRef.current =
+    pendingReticulumSearchNavigation;
+  const reticulumSearchNavigationInFlightRef = useRef(0);
+  const reticulumSearchWindowOpenedRef = useRef(0);
   const reticulumSearchRequestSeqRef = useRef(0);
   const lastReticulumNotificationScrollTargetRef = useRef('');
   const reticulumSearchPageCursorsRef = useRef<
@@ -1723,8 +1690,14 @@ export const ChatGroup = ({
     events: reticulumChatEvents,
     initialHistoryReady: reticulumInitialHistoryReady,
     hasOlder: reticulumHasOlderMessages,
+    hasNewer: reticulumHasNewerMessages,
+    historyWindowRevision: reticulumHistoryWindowRevision,
     loadingOlder: reticulumLoadingOlderMessages,
+    loadingNewer: reticulumLoadingNewerMessages,
     loadOlder: loadOlderReticulumMessages,
+    loadNewer: loadNewerReticulumMessages,
+    jumpToLatest: jumpToLatestReticulumMessages,
+    openAroundEvent: openReticulumHistoryAroundEvent,
     publishEvent: publishReticulumChatEvent,
     sendTyping: sendReticulumTypingSignal,
     typing: reticulumTyping,
@@ -1792,14 +1765,14 @@ export const ChatGroup = ({
   const handleUpdateRef = useRef(null);
   const iframeRef = useRef(null);
   const appliedReticulumEventIdsRef = useRef<Set<string>>(new Set());
-  const processingReticulumEventIdsRef = useRef<Set<string>>(new Set());
+  const reticulumInitialHistoryBatchSequenceRef = useRef(0);
   const appliedReticulumChannelMetadataEventIdsRef = useRef<Set<string>>(
     new Set()
   );
   const reticulumEventContextRef = useRef('');
   reticulumEventContextRef.current = `${selectedGroup || ''}:${
     selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
-  }:${reticulumVisibilityChange?.revision || 0}`;
+  }:${reticulumVisibilityChange?.revision || 0}:${reticulumHistoryWindowRevision}`;
   const reticulumTypingStopTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -2011,6 +1984,10 @@ export const ChatGroup = ({
   }, [selectedGroup, isActive]);
 
   useEffect(() => {
+    // A channel selection belongs to the group, not to the asynchronous
+    // Reticulum-enabled probe. The Reticulum and legacy ChatGroup instances
+    // are mounted separately when that mode changes, so resetting here on a
+    // late mode update only overrides a channel the reader already selected.
     reticulumChannelRefreshSeqRef.current += 1;
     setReticulumChannels([]);
     setReticulumCategories([]);
@@ -2019,7 +1996,7 @@ export const ChatGroup = ({
     setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
     setReticulumChannelSettingsOpen(false);
     setEditingReticulumChannel(null);
-  }, [reticulumChatEnabled, selectedGroup]);
+  }, [selectedGroup]);
 
   const refreshReticulumChannels = useCallback(async (): Promise<boolean> => {
     const groupId = Number(selectedGroup);
@@ -2033,13 +2010,14 @@ export const ChatGroup = ({
       setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
       return false;
     }
-    const channels = await window.reticulumChat?.getChannels?.(groupId);
-    const categories = await window.reticulumChat?.getCategories?.(groupId);
-    const parsedChannels = Array.isArray(channels)
-      ? (channels as ReticulumGroupChannel[])
+    const metadata = await window.reticulumChat?.getChannelMetadataBundle?.(
+      groupId
+    );
+    const parsedChannels = Array.isArray(metadata?.channels)
+      ? (metadata.channels as ReticulumGroupChannel[])
       : [];
-    const parsedCategories = Array.isArray(categories)
-      ? (categories as ReticulumGroupCategory[])
+    const parsedCategories = Array.isArray(metadata?.categories)
+      ? (metadata.categories as ReticulumGroupCategory[])
       : [];
     if (reticulumChannelRefreshSeqRef.current !== refreshSeq) return false;
     // Do not briefly render the synthetic fallback channels while metadata is
@@ -2061,23 +2039,7 @@ export const ChatGroup = ({
           availableChannels[0]?.channelId ??
           DEFAULT_RETICULUM_CHANNEL_ID)
     );
-    const knownChannelIds = new Set(
-      parsedChannels.map((channel) => channel.channelId)
-    );
-    const hasSystemChannels =
-      knownChannelIds.has(DEFAULT_RETICULUM_CHANNEL_ID) &&
-      knownChannelIds.has(QORTAL_LAND_RETICULUM_CHANNEL_ID);
-    const hasResolvedCategoryAssignment = availableChannels.some(
-      (channel) =>
-        Boolean(channel.categoryId) &&
-        parsedCategories.some(
-          (category) => category.categoryId === channel.categoryId
-        )
-    );
-    const metadataReady =
-      hasSystemChannels &&
-      parsedCategories.length > 0 &&
-      hasResolvedCategoryAssignment;
+    const metadataReady = metadata?.ready === true;
     if (metadataReady) {
       setReticulumChannelMetadataVisibleGroupId(String(groupId));
     }
@@ -2093,6 +2055,7 @@ export const ChatGroup = ({
     void (async () => {
       const retryDelays = [0, ...RETICULUM_CHANNEL_LOAD_RETRY_DELAYS_MS];
       let lastError: unknown = null;
+      let subscriptionRequested = false;
       for (const delayMs of retryDelays) {
         if (delayMs > 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
@@ -2101,8 +2064,12 @@ export const ChatGroup = ({
 
         try {
           // Subscription establishes the local group hint before membership-backed
-          // channel reads. Both calls are idempotent after initial setup.
-          await window.reticulumChat?.subscribeGroup?.(groupId);
+          // channel read. Once accepted, avoid repeating its projection repair
+          // and sync scheduling work while merely polling for the snapshot.
+          if (!subscriptionRequested) {
+            await window.reticulumChat?.subscribeGroup?.(groupId);
+            subscriptionRequested = true;
+          }
           if (cancelled) return;
           if (await refreshReticulumChannels()) return;
         } catch (error) {
@@ -3292,7 +3259,6 @@ export const ChatGroup = ({
 
   useEffect(() => {
     appliedReticulumEventIdsRef.current.clear();
-    processingReticulumEventIdsRef.current.clear();
     appliedReticulumChannelMetadataEventIdsRef.current.clear();
   }, [selectedGroup]);
 
@@ -3332,10 +3298,17 @@ export const ChatGroup = ({
     if (!reticulumChatEnabled) return;
     setMessages([]);
     setChatReferences({});
-    setReticulumSearchScrollTarget(null);
+    const pendingSearch = pendingReticulumSearchNavigationRef.current;
+    const preservePendingSearchTarget = Boolean(
+      pendingSearch &&
+      pendingSearch.groupId === Number(selectedGroup) &&
+      pendingSearch.channelId === selectedReticulumChannelId
+    );
+    if (!preservePendingSearchTarget) {
+      setReticulumSearchScrollTarget(null);
+    }
     lastReticulumNotificationScrollTargetRef.current = '';
     appliedReticulumEventIdsRef.current.clear();
-    processingReticulumEventIdsRef.current.clear();
   }, [reticulumChatEnabled, selectedGroup, selectedReticulumChannelId]);
 
   useEffect(() => {
@@ -3347,7 +3320,6 @@ export const ChatGroup = ({
       return;
     }
     appliedReticulumEventIdsRef.current.clear();
-    processingReticulumEventIdsRef.current.clear();
     setChatReferences({});
     if (!reticulumVisibilityChange.active) return;
     setMessages((previous) =>
@@ -4578,49 +4550,9 @@ export const ChatGroup = ({
         }
         return null;
       }
-      const normalizedText = normalizeChatHtmlContent(
+      const normalizedText = normalizeReticulumChatHtmlContent(
         decryptedData.message || decryptedData.messageText
       );
-      const searchIndexText = buildReticulumSearchIndexText(
-        normalizedText,
-        decryptedData
-      );
-      const mentionedAddresses = [
-        ...new Set([
-          ...mentionedAddressesFromPayload(decryptedData),
-          ...resolveMentionedAddresses(normalizedText),
-        ]),
-      ];
-      if (event.eventType === 'delete' && event.targetEventId) {
-        void window.reticulumChat?.deleteSearchText?.(event.targetEventId);
-        void window.reticulumChat?.deleteMentions?.(event.targetEventId);
-      } else if (
-        event.eventType === 'edit' &&
-        event.targetEventId &&
-        searchIndexText
-      ) {
-        void window.reticulumChat?.indexSearchText?.(
-          event.eventId,
-          searchIndexText
-        );
-        void window.reticulumChat?.replaceMentions?.(
-          event.eventId,
-          mentionedAddresses
-        );
-      } else if (
-        (event.eventType === 'message' ||
-          event.eventType === 'attachment_manifest') &&
-        searchIndexText
-      ) {
-        void window.reticulumChat?.indexSearchText?.(
-          event.eventId,
-          searchIndexText
-        );
-        void window.reticulumChat?.replaceMentions?.(
-          event.eventId,
-          mentionedAddresses
-        );
-      }
       const normalizedDecryptedData = {
         ...decryptedData,
         ...(decryptedData.message !== undefined
@@ -4692,7 +4624,6 @@ export const ChatGroup = ({
       reticulumAllChannelsForSelectedGroup,
       isReticulumHiddenAuthor,
       reticulumMemberNameByAddress,
-      resolveMentionedAddresses,
       selectedGroup,
       selectedReticulumChannelId,
     ]
@@ -5136,201 +5067,398 @@ export const ChatGroup = ({
     [reticulumMemberNameByAddress]
   );
 
-  const resolvePrimaryNamesForReticulumEvents = useCallback(
-    async (events: any[]) => {
-      const missingAddresses = Array.from(
-        new Set(
-          events
-            .map((event) =>
-              typeof event?.authorAddress === 'string'
-                ? event.authorAddress.trim()
-                : ''
-            )
-            .filter((address) => {
-              if (!address || address === myAddress) return false;
-              if (reticulumMemberNameByAddress.get(address)) return false;
-              return !reticulumPrimaryNameCacheRef.current.has(address);
-            })
-        )
-      );
-
-      if (missingAddresses.length > 0) {
-        try {
-          const primaryNames =
-            await getPrimaryNamesForAddresses(missingAddresses);
-          for (const address of missingAddresses) {
-            const primaryName = primaryNames[address]?.trim();
-            if (primaryName) {
-              reticulumPrimaryNameCacheRef.current.set(address, primaryName);
-            }
-          }
-        } catch (error) {
-          console.error(
-            '[ReticulumChat] Failed to resolve search window primary names',
-            error
-          );
-        }
-      }
-
-      return events.map((event) => {
-        const authorAddress =
-          typeof event?.authorAddress === 'string'
-            ? event.authorAddress.trim()
-            : '';
-        const resolvedName =
-          (authorAddress === myAddress ? myName : '') ||
-          reticulumMemberNameByAddress.get(authorAddress) ||
-          reticulumPrimaryNameCacheRef.current.get(authorAddress) ||
-          '';
-        if (!resolvedName) return event;
-        return {
-          ...event,
-          authorPrimaryName: resolvedName,
-          senderName: resolvedName,
-        };
-      });
-    },
-    [myAddress, myName, reticulumMemberNameByAddress]
-  );
-
   const handleReticulumSearchResultClick = useCallback(
-    async (result: ReticulumSearchResult) => {
+    (result: ReticulumSearchResult) => {
       const event = result?.event;
       if (!event?.eventId || !selectedGroup) return;
+      const groupId = Number(selectedGroup);
+      if (!Number.isInteger(groupId) || groupId <= 0) return;
       const channelId =
         normalizeReticulumChannelName(event.channelId || '') ||
         DEFAULT_RETICULUM_CHANNEL_ID;
       if (!reticulumVisibleChannelIds.has(channelId)) return;
+      const requestId = ++reticulumSearchNavigationRequestRef.current;
+      setPendingReticulumSearchNavigation({
+        groupId,
+        channelId,
+        eventId: event.eventId,
+        requestId,
+      });
+      setReticulumSearchScrollTarget((current) => ({
+        messageId: event.eventId,
+        nonce: (current?.nonce ?? 0) + 1,
+        requestId,
+      }));
       setSelectedReticulumChannelId(channelId);
       setIsLoading(true);
+    },
+    [reticulumVisibleChannelIds, selectedGroup]
+  );
+
+  useEffect(() => {
+    const request = pendingReticulumSearchNavigation;
+    if (!request) return;
+    if (request.groupId !== Number(selectedGroup)) {
+      if (request.requestId === reticulumSearchNavigationRequestRef.current) {
+        if (
+          reticulumSearchNavigationInFlightRef.current === request.requestId
+        ) {
+          reticulumSearchNavigationInFlightRef.current = 0;
+        }
+        if (reticulumSearchWindowOpenedRef.current === request.requestId) {
+          reticulumSearchWindowOpenedRef.current = 0;
+        }
+        setReticulumSearchScrollTarget((current) =>
+          current?.requestId === request.requestId ? null : current
+        );
+        setPendingReticulumSearchNavigation(null);
+        setIsLoading(false);
+      }
+      return;
+    }
+    if (request.channelId !== selectedReticulumChannelId) {
+      // A cross-channel result first updates the requested channel and reaches
+      // this branch transiently, before its history request starts. Once a
+      // request is in flight (or its window has opened), a later mismatch means
+      // the reader navigated elsewhere. Release the global loading state rather
+      // than leaving the abandoned search navigation pending indefinitely.
+      const navigationStarted =
+        reticulumSearchNavigationInFlightRef.current === request.requestId ||
+        reticulumSearchWindowOpenedRef.current === request.requestId;
+      if (
+        navigationStarted &&
+        request.requestId === reticulumSearchNavigationRequestRef.current
+      ) {
+        reticulumSearchNavigationInFlightRef.current = 0;
+        reticulumSearchWindowOpenedRef.current = 0;
+        setReticulumSearchScrollTarget((current) =>
+          current?.requestId === request.requestId ? null : current
+        );
+        setPendingReticulumSearchNavigation(null);
+        setIsLoading(false);
+      }
+      return;
+    }
+    if (!reticulumInitialHistoryReady) return;
+    if (reticulumSearchNavigationInFlightRef.current === request.requestId) {
+      return;
+    }
+
+    let cancelled = false;
+    reticulumSearchNavigationInFlightRef.current = request.requestId;
+    void (async () => {
+      let openedWindow = false;
       try {
-        const windowEvents =
-          (await window.reticulumChat?.getMessageWindowAroundEvent?.(
-            Number(selectedGroup),
-            channelId,
-            event.eventId,
-            {
-              beforeLimit: 80,
-              afterLimit: 40,
-            }
-          )) ?? [];
-        const namedWindowEvents =
-          await resolvePrimaryNamesForReticulumEvents(windowEvents);
-        const converted = await Promise.all(
-          namedWindowEvents.map((windowEvent) =>
-            convertReticulumEventToChatItem(windowEvent, { channelId })
-          )
-        );
-        const convertedMessages = filterReticulumVisibleMessages(
-          converted.filter(Boolean)
-        );
-        const hasTargetMessage = convertedMessages.some(
-          (message) => message?.signature === event.eventId
-        );
-        if (!hasTargetMessage) {
+        const result = await openReticulumHistoryAroundEvent(request.eventId, {
+          beforeLimit: 80,
+          afterLimit: 40,
+        });
+        if (!result.success) {
           throw new Error('search_result_window_missing_target');
         }
-        setChatReferences({});
-        setMessages(convertedMessages);
-        setReticulumSearchScrollTarget((current) => ({
-          messageId: event.eventId,
-          nonce: (current?.nonce ?? 0) + 1,
-        }));
+        if (
+          cancelled ||
+          request.requestId !== reticulumSearchNavigationRequestRef.current
+        ) {
+          return;
+        }
+        openedWindow = true;
+        reticulumSearchWindowOpenedRef.current = request.requestId;
       } catch (error) {
+        if (
+          cancelled ||
+          request.requestId !== reticulumSearchNavigationRequestRef.current
+        ) {
+          return;
+        }
         console.error('[ReticulumChat] search result window failed', error);
+        setReticulumSearchScrollTarget((current) =>
+          current?.requestId === request.requestId ? null : current
+        );
         setInfoSnack({
           type: 'error',
           message: 'Unable to load search result',
         });
         setOpenSnack(true);
       } finally {
-        setIsLoading(false);
+        if (!openedWindow) {
+          if (
+            reticulumSearchNavigationInFlightRef.current === request.requestId
+          ) {
+            reticulumSearchNavigationInFlightRef.current = 0;
+          }
+          if (reticulumSearchWindowOpenedRef.current === request.requestId) {
+            reticulumSearchWindowOpenedRef.current = 0;
+          }
+          if (
+            !cancelled &&
+            request.requestId === reticulumSearchNavigationRequestRef.current
+          ) {
+            setPendingReticulumSearchNavigation((current) =>
+              current?.requestId === request.requestId ? null : current
+            );
+            setIsLoading(false);
+          }
+        }
       }
-    },
-    [
-      convertReticulumEventToChatItem,
-      filterReticulumVisibleMessages,
-      myAddress,
-      reticulumVisibleChannelIds,
-      resolvePrimaryNamesForReticulumEvents,
-      selectedGroup,
-    ]
-  );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    openReticulumHistoryAroundEvent,
+    pendingReticulumSearchNavigation,
+    reticulumInitialHistoryReady,
+    selectedGroup,
+    selectedReticulumChannelId,
+  ]);
+
+  useEffect(() => {
+    const request = pendingReticulumSearchNavigation;
+    if (!request || request.groupId !== Number(selectedGroup)) return;
+    if (request.channelId !== selectedReticulumChannelId) return;
+    if (reticulumSearchWindowOpenedRef.current !== request.requestId) return;
+    const eventContext = `${request.groupId}:${request.channelId}:${
+      reticulumVisibilityChange?.revision || 0
+    }:${reticulumHistoryWindowRevision}`;
+    if (reticulumProcessedHistoryKey !== eventContext) return;
+
+    const targetWasConverted = messages.some(
+      (message) =>
+        message?.signature === request.eventId ||
+        message?.tempSignature === request.eventId ||
+        message?.identifier === request.eventId ||
+        message?.message?.signature === request.eventId
+    );
+    if (!targetWasConverted) {
+      setReticulumSearchScrollTarget((current) =>
+        current?.requestId === request.requestId ? null : current
+      );
+      setInfoSnack({
+        type: 'error',
+        message: 'Unable to load search result',
+      });
+      setOpenSnack(true);
+    }
+    if (reticulumSearchNavigationInFlightRef.current === request.requestId) {
+      reticulumSearchNavigationInFlightRef.current = 0;
+    }
+    reticulumSearchWindowOpenedRef.current = 0;
+    setPendingReticulumSearchNavigation((current) =>
+      current?.requestId === request.requestId ? null : current
+    );
+    setIsLoading(false);
+  }, [
+    messages,
+    pendingReticulumSearchNavigation,
+    reticulumHistoryWindowRevision,
+    reticulumProcessedHistoryKey,
+    reticulumVisibilityChange?.revision,
+    selectedGroup,
+    selectedReticulumChannelId,
+  ]);
 
   useEffect(() => {
     if (!reticulumChatEnabled) return;
     const eventContext = `${selectedGroup || ''}:${
       selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
-    }:${reticulumVisibilityChange?.revision || 0}`;
-    if (reticulumChatEvents.length === 0) {
-      if (reticulumInitialHistoryReady) {
-        setReticulumProcessedHistoryKey(eventContext);
-      }
-      return;
-    }
-    void (async () => {
-      for (const event of reticulumChatEvents) {
-        const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
-        const processingKey = eventId ? `${eventContext}:${eventId}` : '';
-        const eventSenderName =
-          event?.authorPrimaryName ||
-          (event?.senderName && event.senderName !== event.authorAddress
-            ? event.senderName
-            : undefined) ||
-          reticulumMemberNameByAddress.get(event?.authorAddress);
-        const existingMessage = eventId
-          ? messages.find((message) => message?.signature === eventId)
-          : undefined;
-        const needsNameRefresh = Boolean(
-          existingMessage &&
-          eventSenderName &&
-          existingMessage.senderName !== eventSenderName
-        );
-        const needsAuthorizationRefresh = Boolean(
-          existingMessage &&
-          existingMessage.privilegedMentionAuthorized !==
-            (event?.privilegedMentionAuthorized === true)
+    }:${reticulumVisibilityChange?.revision || 0}:${reticulumHistoryWindowRevision}`;
+    if (!reticulumInitialHistoryReady) return;
+    const convertEventBatch = (events: any[]) =>
+      Promise.all(
+        events.map(async (event) => {
+          const eventId =
+            typeof event?.eventId === 'string' ? event.eventId : '';
+          try {
+            return {
+              eventId,
+              item: await convertReticulumEventToChatItem(event),
+              succeeded: true,
+            };
+          } catch (error) {
+            console.error(
+              `[ReticulumChat] Failed to convert event ${eventId || 'unknown'}`,
+              error
+            );
+            return { eventId, item: null, succeeded: false };
+          }
+        })
+      );
+
+    if (reticulumProcessedHistoryKey !== eventContext) {
+      const sequence = ++reticulumInitialHistoryBatchSequenceRef.current;
+      let cancelled = false;
+      void (async () => {
+        const conversionResults = await convertEventBatch(reticulumChatEvents);
+        if (
+          cancelled ||
+          sequence !== reticulumInitialHistoryBatchSequenceRef.current ||
+          reticulumEventContextRef.current !== eventContext
+        ) {
+          return;
+        }
+
+        const nextHistory = buildReticulumInitialHistoryState(
+          conversionResults.map((result) => result.item),
+          {
+            shouldExclude: (item) =>
+              isChatSenderBlocked(item) ||
+              isReticulumHiddenAuthor(item?.sender),
+            reconcileItem: (item) => {
+              const specialId = reticulumHistoryItemSpecialId(item);
+              const hasPendingOptimisticMatch = Boolean(
+                specialId &&
+                queueChatsRef.current?.[reticulumChatQueueId]?.some(
+                  (queuedItem) => queuedItem?.message?.specialId === specialId
+                )
+              );
+              if (!hasPendingOptimisticMatch) return item;
+              return (
+                processWithNewMessages([item], reticulumChatQueueId)?.[0] ||
+                item
+              );
+            },
+          }
         );
         if (
-          eventId &&
-          (appliedReticulumEventIdsRef.current.has(eventId) ||
-            processingReticulumEventIdsRef.current.has(processingKey)) &&
-          !needsNameRefresh &&
-          !needsAuthorizationRefresh
+          cancelled ||
+          sequence !== reticulumInitialHistoryBatchSequenceRef.current ||
+          reticulumEventContextRef.current !== eventContext
         ) {
-          continue;
+          return;
         }
-        if (processingKey)
-          processingReticulumEventIdsRef.current.add(processingKey);
-        try {
-          const item = await convertReticulumEventToChatItem(event);
-          if (reticulumEventContextRef.current !== eventContext) continue;
-          if (item) {
-            // Claim the event before state changes. Applying it can cause a
-            // synchronous render, which must not re-enter this event loop.
-            if (eventId) appliedReticulumEventIdsRef.current.add(eventId);
-            applyReticulumChatItem(item);
+
+        const appliedEventIds = new Set(nextHistory.appliedEventIds);
+        for (const result of conversionResults) {
+          if (result.succeeded && result.eventId) {
+            appliedEventIds.add(result.eventId);
           }
-        } finally {
-          if (processingKey)
-            processingReticulumEventIdsRef.current.delete(processingKey);
+        }
+        appliedReticulumEventIdsRef.current = appliedEventIds;
+        setMessages(nextHistory.messages);
+        setChatReferences(nextHistory.chatReferences);
+        setReticulumProcessedHistoryKey(eventContext);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (reticulumChatEvents.length === 0) {
+      return;
+    }
+    const existingMessagesById = new Map(
+      messages
+        .filter((message) => typeof message?.signature === 'string')
+        .map((message) => [message.signature, message])
+    );
+    const eventsToApply = reticulumChatEvents.filter((event) => {
+      const eventId = typeof event?.eventId === 'string' ? event.eventId : '';
+      const alreadyApplied = Boolean(
+        eventId && appliedReticulumEventIdsRef.current.has(eventId)
+      );
+      if (!alreadyApplied) return true;
+
+      const eventSenderName =
+        event?.authorPrimaryName ||
+        (event?.senderName && event.senderName !== event.authorAddress
+          ? event.senderName
+          : undefined) ||
+        reticulumMemberNameByAddress.get(event?.authorAddress);
+      const existingMessage = existingMessagesById.get(eventId);
+      const targetEventId =
+        event?.eventType === 'edit' && event?.targetEventId
+          ? String(event.targetEventId)
+          : '';
+      const existingEdit = targetEventId
+        ? chatReferences?.[targetEventId]?.edit
+        : undefined;
+      return Boolean(
+        (existingMessage &&
+          ((eventSenderName &&
+            existingMessage.senderName !== eventSenderName) ||
+            existingMessage.privilegedMentionAuthorized !==
+              (event?.privilegedMentionAuthorized === true))) ||
+        (existingEdit &&
+          ((eventSenderName && existingEdit.senderName !== eventSenderName) ||
+            existingEdit.privilegedMentionAuthorized !==
+              (event?.privilegedMentionAuthorized === true)))
+      );
+    });
+    if (eventsToApply.length === 0) return;
+
+    const sequence = ++reticulumInitialHistoryBatchSequenceRef.current;
+    let cancelled = false;
+    void (async () => {
+      const conversionResults = await convertEventBatch(eventsToApply);
+      if (
+        cancelled ||
+        sequence !== reticulumInitialHistoryBatchSequenceRef.current ||
+        reticulumEventContextRef.current !== eventContext
+      ) {
+        return;
+      }
+
+      const nextHistory = buildReticulumInitialHistoryState(
+        conversionResults.map((result) => result.item),
+        {
+          initialMessages: messages,
+          initialChatReferences: chatReferences,
+          shouldExclude: (item) =>
+            isChatSenderBlocked(item) || isReticulumHiddenAuthor(item?.sender),
+          reconcileItem: (item) => {
+            const specialId = reticulumHistoryItemSpecialId(item);
+            const hasPendingOptimisticMatch = Boolean(
+              specialId &&
+              queueChatsRef.current?.[reticulumChatQueueId]?.some(
+                (queuedItem) => queuedItem?.message?.specialId === specialId
+              )
+            );
+            if (!hasPendingOptimisticMatch) return item;
+            return (
+              processWithNewMessages([item], reticulumChatQueueId)?.[0] || item
+            );
+          },
+        }
+      );
+      if (
+        cancelled ||
+        sequence !== reticulumInitialHistoryBatchSequenceRef.current ||
+        reticulumEventContextRef.current !== eventContext
+      ) {
+        return;
+      }
+
+      for (const eventId of nextHistory.appliedEventIds) {
+        appliedReticulumEventIdsRef.current.add(eventId);
+      }
+      for (const result of conversionResults) {
+        if (result.succeeded && result.eventId) {
+          appliedReticulumEventIdsRef.current.add(result.eventId);
         }
       }
-      if (
-        reticulumInitialHistoryReady &&
-        reticulumEventContextRef.current === eventContext
-      ) {
-        setReticulumProcessedHistoryKey(eventContext);
-      }
+      if (!conversionResults.some((result) => result.item)) return;
+      setMessages(nextHistory.messages);
+      setChatReferences(nextHistory.chatReferences);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [
-    applyReticulumChatItem,
+    chatReferences,
     convertReticulumEventToChatItem,
+    isChatSenderBlocked,
+    isReticulumHiddenAuthor,
     messages,
+    processWithNewMessages,
     reticulumChatEnabled,
     reticulumChatEvents,
     reticulumInitialHistoryReady,
+    reticulumHistoryWindowRevision,
     reticulumMemberNameByAddress,
+    reticulumProcessedHistoryKey,
+    reticulumChatQueueId,
     reticulumVisibilityChange?.revision,
     selectedGroup,
     selectedReticulumChannelId,
@@ -6105,7 +6233,9 @@ export const ChatGroup = ({
         .chain()
         .focus()
         .setContent(
-          normalizeChatHtmlContent(message?.messageText || message?.text)
+          normalizeReticulumChatHtmlContent(
+            message?.messageText || message?.text
+          )
         )
         .run();
     } catch (error) {
@@ -8203,6 +8333,20 @@ export const ChatGroup = ({
     );
   };
 
+  const reticulumHistoryChannelKey = `${selectedGroup || ''}:${
+    selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
+  }:${reticulumVisibilityChange?.revision || 0}:${reticulumHistoryWindowRevision}`;
+  const reticulumHistoryDisplayReady =
+    !reticulumChatEnabled ||
+    (reticulumInitialHistoryReady &&
+      reticulumProcessedHistoryKey === reticulumHistoryChannelKey);
+  const hasMountedReticulumChatListRef = useRef(false);
+  if (!reticulumChatEnabled) {
+    hasMountedReticulumChatListRef.current = false;
+  } else if (reticulumHistoryDisplayReady) {
+    hasMountedReticulumChatListRef.current = true;
+  }
+
   return (
     <div
       className={
@@ -9074,96 +9218,122 @@ export const ChatGroup = ({
               transition: 'margin-right 160ms ease',
             }}
           >
-            {!shouldSuppressLegacyGroupChat && (
-              <ChatList
-                key={
-                  reticulumChatEnabled
-                    ? `reticulum-group:${selectedGroup}:${selectedReticulumChannelId}`
-                    : 'legacy-group-chat'
-                }
-                chatId={
-                  reticulumChatEnabled
-                    ? `${selectedGroup}:${selectedReticulumChannelId}`
-                    : selectedGroup
-                }
-                chatReferences={renderedChatReferences}
-                enableMentions
-                handleReaction={handleReaction}
-                hasSecretKey={!!secretKey}
-                initialMessages={messages}
-                isPrivate={isPrivate}
-                members={members}
-                reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
-                reticulumGroupDisplayName={selectedGroupName}
-                reticulumMentionUsers={reticulumMentionUsers}
-                reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                reticulumMemberJoinedByAddress={reticulumMemberJoinedByAddress}
-                reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
-                reticulumMemberRolesReady={
-                  reticulumMemberRolesReadyForSelectedGroup
-                }
-                reticulumUnreadCount={
-                  reticulumChatEnabled
-                    ? Math.max(
-                        0,
-                        Number(
-                          reticulumChannelSummariesById.get(
-                            selectedReticulumChannelId
-                          )?.unreadCount
-                        ) || 0
-                      )
-                    : 0
-                }
-                onReticulumUnreadAcknowledged={
-                  reticulumChatEnabled
-                    ? acknowledgeReticulumUnreadMessages
-                    : undefined
-                }
-                reticulumViewActive={isActive}
-                reticulumReadEntryToken={reticulumReadEntryToken}
-                reticulumDiscussionReplyCounts={
-                  reticulumChatEnabled
-                    ? reticulumDiscussionIndex.replyCounts
-                    : undefined
-                }
-                onOpenReticulumDiscussion={
-                  reticulumChatEnabled ? openReticulumDiscussion : undefined
-                }
-                myAddress={myAddress}
-                myName={myName}
-                hasOlderMessages={
-                  reticulumChatEnabled ? reticulumHasOlderMessages : undefined
-                }
-                isLoadingOlderMessages={
-                  reticulumChatEnabled
-                    ? reticulumLoadingOlderMessages
-                    : undefined
-                }
-                onLoadOlder={
-                  reticulumChatEnabled ? loadOlderReticulumMessages : undefined
-                }
-                onDelete={onDelete}
-                onEdit={onEdit}
-                onReply={onReply}
-                openQManager={openQManager}
-                reticulumChatEnabled={reticulumChatEnabled}
-                reticulumInitialHistoryReady={
-                  !reticulumChatEnabled ||
-                  (reticulumInitialHistoryReady &&
-                    reticulumProcessedHistoryKey ===
-                      `${selectedGroup || ''}:${
-                        selectedReticulumChannelId ||
-                        DEFAULT_RETICULUM_CHANNEL_ID
-                      }:${reticulumVisibilityChange?.revision || 0}`)
-                }
-                selectedGroup={selectedGroup}
-                secretKeyObject={secretKey}
-                tempChatReferences={tempChatReferences}
-                tempMessages={tempMessages}
-                scrollToMessageId={reticulumSearchScrollTarget?.messageId}
-                scrollToMessageNonce={reticulumSearchScrollTarget?.nonce}
-              />
-            )}
+            {reticulumChatEnabled &&
+              !hasMountedReticulumChatListRef.current && (
+                <Box
+                  aria-hidden="true"
+                  sx={{ flex: 1, minHeight: 0, width: '100%' }}
+                />
+              )}
+            {!shouldSuppressLegacyGroupChat &&
+              (!reticulumChatEnabled ||
+                hasMountedReticulumChatListRef.current) && (
+                <ChatList
+                  key={
+                    reticulumChatEnabled
+                      ? 'reticulum-group-chat'
+                      : 'legacy-group-chat'
+                  }
+                  chatId={
+                    reticulumChatEnabled
+                      ? `${selectedGroup}:${selectedReticulumChannelId}`
+                      : selectedGroup
+                  }
+                  chatReferences={renderedChatReferences}
+                  enableMentions
+                  handleReaction={handleReaction}
+                  hasSecretKey={!!secretKey}
+                  initialMessages={messages}
+                  isPrivate={isPrivate}
+                  members={members}
+                  reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
+                  reticulumGroupDisplayName={selectedGroupName}
+                  reticulumMentionUsers={reticulumMentionUsers}
+                  reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                  reticulumMemberJoinedByAddress={
+                    reticulumMemberJoinedByAddress
+                  }
+                  reticulumMemberRolesByAddress={reticulumMemberRolesByAddress}
+                  reticulumMemberRolesReady={
+                    reticulumMemberRolesReadyForSelectedGroup
+                  }
+                  reticulumUnreadCount={
+                    reticulumChatEnabled
+                      ? Math.max(
+                          0,
+                          Number(
+                            reticulumChannelSummariesById.get(
+                              selectedReticulumChannelId
+                            )?.unreadCount
+                          ) || 0
+                        )
+                      : 0
+                  }
+                  onReticulumUnreadAcknowledged={
+                    reticulumChatEnabled
+                      ? acknowledgeReticulumUnreadMessages
+                      : undefined
+                  }
+                  reticulumViewActive={isActive}
+                  reticulumReadEntryToken={reticulumReadEntryToken}
+                  reticulumDiscussionReplyCounts={
+                    reticulumChatEnabled
+                      ? reticulumDiscussionIndex.replyCounts
+                      : undefined
+                  }
+                  onOpenReticulumDiscussion={
+                    reticulumChatEnabled ? openReticulumDiscussion : undefined
+                  }
+                  myAddress={myAddress}
+                  myName={myName}
+                  hasOlderMessages={
+                    reticulumChatEnabled ? reticulumHasOlderMessages : undefined
+                  }
+                  hasNewerMessages={
+                    reticulumChatEnabled ? reticulumHasNewerMessages : undefined
+                  }
+                  isLoadingOlderMessages={
+                    reticulumChatEnabled
+                      ? reticulumLoadingOlderMessages
+                      : undefined
+                  }
+                  isLoadingNewerMessages={
+                    reticulumChatEnabled
+                      ? reticulumLoadingNewerMessages
+                      : undefined
+                  }
+                  onLoadOlder={
+                    reticulumChatEnabled
+                      ? loadOlderReticulumMessages
+                      : undefined
+                  }
+                  onLoadNewer={
+                    reticulumChatEnabled
+                      ? loadNewerReticulumMessages
+                      : undefined
+                  }
+                  onJumpToLatest={
+                    reticulumChatEnabled
+                      ? jumpToLatestReticulumMessages
+                      : undefined
+                  }
+                  onDelete={onDelete}
+                  onEdit={onEdit}
+                  onReply={onReply}
+                  openQManager={openQManager}
+                  reticulumChatEnabled={reticulumChatEnabled}
+                  reticulumInitialHistoryReady={reticulumHistoryDisplayReady}
+                  reticulumNavigationPending={Boolean(
+                    pendingReticulumSearchNavigation
+                  )}
+                  selectedGroup={selectedGroup}
+                  secretKeyObject={secretKey}
+                  tempChatReferences={tempChatReferences}
+                  tempMessages={tempMessages}
+                  scrollToMessageId={reticulumSearchScrollTarget?.messageId}
+                  scrollToMessageNonce={reticulumSearchScrollTarget?.nonce}
+                />
+              )}
 
             {reticulumChatEnabled && (
               <Typography
@@ -9633,94 +9803,94 @@ export const ChatGroup = ({
                         />
                       )}
                       <CustomButton
-                      onClick={() => {
-                        if (
-                          isSending ||
-                          isCompressingReticulumGif ||
-                          isCompressingReticulumImage ||
-                          !canWriteSelectedReticulumChannel
-                        )
-                          return;
-                        sendMessage();
-                      }}
-                      sx={{
-                        alignItems: 'center',
-                        backgroundColor:
-                          isSending ||
-                          isCompressingReticulumGif ||
-                          isCompressingReticulumImage ||
-                          !canWriteSelectedReticulumChannel
-                            ? theme.palette.action.disabledBackground
-                            : reticulumChatEnabled
-                              ? RETICULUM_ACTIVE_BLUE
-                              : theme.palette.background.paper,
-                        border: reticulumChatEnabled ? 'none' : '1px solid',
-                        borderColor: reticulumChatEnabled
-                          ? 'transparent'
-                          : theme.palette.divider,
-                        borderRadius: reticulumChatEnabled ? 0 : '8px',
-                        color: reticulumChatEnabled
-                          ? theme.palette.common.white
-                          : theme.palette.text.primary,
-                        cursor:
-                          isSending ||
-                          isCompressingReticulumGif ||
-                          isCompressingReticulumImage ||
-                          !canWriteSelectedReticulumChannel
-                            ? 'default'
-                            : 'pointer',
-                        display: 'inline-flex',
-                        gap: '6px',
-                        fontSize: '14px',
-                        fontWeight: 500,
-                        justifyContent: 'center',
-                        height: reticulumChatEnabled ? '38px' : undefined,
-                        minHeight: reticulumChatEnabled ? '38px' : '44px',
-                        minWidth: reticulumChatEnabled ? '74px' : '88px',
-                        padding: reticulumChatEnabled
-                          ? '8px 14px'
-                          : '10px 16px',
-                        position: 'relative',
-                        transition:
-                          'background-color 0.2s ease, border-color 0.2s ease',
-                        '&:hover':
-                          isSending ||
-                          isCompressingReticulumGif ||
-                          isCompressingReticulumImage ||
-                          !canWriteSelectedReticulumChannel
-                            ? {}
-                            : {
-                                backgroundColor: reticulumChatEnabled
-                                  ? '#1e40af'
-                                  : theme.palette.action.hover,
-                                borderColor: reticulumChatEnabled
-                                  ? '#1e40af'
-                                  : theme.palette.divider,
-                              },
-                        '& .MuiSvgIcon-root': {
+                        onClick={() => {
+                          if (
+                            isSending ||
+                            isCompressingReticulumGif ||
+                            isCompressingReticulumImage ||
+                            !canWriteSelectedReticulumChannel
+                          )
+                            return;
+                          sendMessage();
+                        }}
+                        sx={{
+                          alignItems: 'center',
+                          backgroundColor:
+                            isSending ||
+                            isCompressingReticulumGif ||
+                            isCompressingReticulumImage ||
+                            !canWriteSelectedReticulumChannel
+                              ? theme.palette.action.disabledBackground
+                              : reticulumChatEnabled
+                                ? RETICULUM_ACTIVE_BLUE
+                                : theme.palette.background.paper,
+                          border: reticulumChatEnabled ? 'none' : '1px solid',
+                          borderColor: reticulumChatEnabled
+                            ? 'transparent'
+                            : theme.palette.divider,
+                          borderRadius: reticulumChatEnabled ? 0 : '8px',
                           color: reticulumChatEnabled
                             ? theme.palette.common.white
-                            : 'inherit',
-                        },
-                      }}
-                      >
-                      {isSending ||
-                      isCompressingReticulumGif ||
-                      isCompressingReticulumImage ? (
-                        <CircularProgress
-                          size={18}
-                          sx={{
+                            : theme.palette.text.primary,
+                          cursor:
+                            isSending ||
+                            isCompressingReticulumGif ||
+                            isCompressingReticulumImage ||
+                            !canWriteSelectedReticulumChannel
+                              ? 'default'
+                              : 'pointer',
+                          display: 'inline-flex',
+                          gap: '6px',
+                          fontSize: '14px',
+                          fontWeight: 500,
+                          justifyContent: 'center',
+                          height: reticulumChatEnabled ? '38px' : undefined,
+                          minHeight: reticulumChatEnabled ? '38px' : '44px',
+                          minWidth: reticulumChatEnabled ? '74px' : '88px',
+                          padding: reticulumChatEnabled
+                            ? '8px 14px'
+                            : '10px 16px',
+                          position: 'relative',
+                          transition:
+                            'background-color 0.2s ease, border-color 0.2s ease',
+                          '&:hover':
+                            isSending ||
+                            isCompressingReticulumGif ||
+                            isCompressingReticulumImage ||
+                            !canWriteSelectedReticulumChannel
+                              ? {}
+                              : {
+                                  backgroundColor: reticulumChatEnabled
+                                    ? '#1e40af'
+                                    : theme.palette.action.hover,
+                                  borderColor: reticulumChatEnabled
+                                    ? '#1e40af'
+                                    : theme.palette.divider,
+                                },
+                          '& .MuiSvgIcon-root': {
                             color: reticulumChatEnabled
                               ? theme.palette.common.white
-                              : theme.palette.text.secondary,
-                          }}
-                        />
-                      ) : (
-                        <>
-                          <SendIcon sx={{ fontSize: '18px' }} />
-                          Send
-                        </>
-                      )}
+                              : 'inherit',
+                          },
+                        }}
+                      >
+                        {isSending ||
+                        isCompressingReticulumGif ||
+                        isCompressingReticulumImage ? (
+                          <CircularProgress
+                            size={18}
+                            sx={{
+                              color: reticulumChatEnabled
+                                ? theme.palette.common.white
+                                : theme.palette.text.secondary,
+                            }}
+                          />
+                        ) : (
+                          <>
+                            <SendIcon sx={{ fontSize: '18px' }} />
+                            Send
+                          </>
+                        )}
                       </CustomButton>
                     </Box>
                   </Box>

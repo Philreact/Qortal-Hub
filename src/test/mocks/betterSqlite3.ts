@@ -392,7 +392,7 @@ class Statement {
         !this.sql.includes('p.author_address')
       ) {
         const groupId = args[0];
-        const hasChannel = this.sql.includes('AND channel_id = ?');
+        const hasChannel = this.sql.includes('channel_id = ?');
         const channelId = hasChannel ? args[1] : null;
         const nowIndex = hasChannel ? 2 : 1;
         const now = Number(args[nowIndex]);
@@ -416,6 +416,67 @@ class Statement {
           )
           .slice(0, limit)
           .reverse();
+      }
+      if (
+        this.sql.includes('deleted_at IS NULL') &&
+        (this.sql.includes('created_at < ?') ||
+          this.sql.includes('created_at > ?'))
+      ) {
+        const groupId = args[0];
+        const hasChannel = this.sql.includes('channel_id = ?');
+        const channelId = hasChannel ? args[1] : null;
+        const nowIndex = hasChannel ? 2 : 1;
+        const now = Number(args[nowIndex]);
+        const cursorTimestamp = Number(args[nowIndex + 1]);
+        const hasEventCursor =
+          this.sql.includes('root_event_id < ?') ||
+          this.sql.includes('root_event_id > ?');
+        const cursorEventId = hasEventCursor
+          ? String(args[nowIndex + 3])
+          : '';
+        const excludedStart = nowIndex + (hasEventCursor ? 4 : 2);
+        const excluded = new Set(
+          args.slice(excludedStart, -1).map((value) => String(value))
+        );
+        const limit = Number(args[args.length - 1]) || Infinity;
+        const isBefore = this.sql.includes('created_at < ?');
+        const matchesCursor = (row: ReticulumChatRow) => {
+          const timestamp = Number(row.created_at);
+          if (isBefore) {
+            return (
+              timestamp < cursorTimestamp ||
+              (hasEventCursor &&
+                timestamp === cursorTimestamp &&
+                String(row.root_event_id) < cursorEventId)
+            );
+          }
+          return (
+            timestamp > cursorTimestamp ||
+            (hasEventCursor &&
+              timestamp === cursorTimestamp &&
+              String(row.root_event_id) > cursorEventId)
+          );
+        };
+        const rows = this.store.reticulumChatMessages
+          .filter(
+            (row) =>
+              row.group_id === groupId &&
+              (channelId == null || row.channel_id === channelId) &&
+              row.deleted_at == null &&
+              (row.expires_at == null || Number(row.expires_at) > now) &&
+              !excluded.has(String(row.author_address)) &&
+              matchesCursor(row)
+          )
+          .sort((a, b) => {
+            const order =
+              Number(a.created_at) - Number(b.created_at) ||
+              String(a.root_event_id).localeCompare(String(b.root_event_id));
+            return isBefore ? -order : order;
+          })
+          .slice(0, limit);
+        return isBefore && this.sql.includes('SELECT * FROM (')
+          ? rows.reverse()
+          : rows;
       }
       if (this.sql.includes('WHERE group_id = ? AND channel_id = ?')) {
         const [groupId, channelId, limit] = args;
@@ -917,6 +978,31 @@ class Statement {
         );
         return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
       }
+    }
+    if (
+      this.sql.includes('FROM rchat_message_projection p') &&
+      this.sql.includes('p.root_event_id = ?')
+    ) {
+      const [groupId, channelId, rootEventId, now, ...excludedAuthors] = args;
+      const channel = this.store.reticulumChatChannels.find(
+        (row) => row.group_id === groupId && row.channel_id === channelId
+      );
+      if (
+        this.sql.includes("c.read_mode != 'admins'") &&
+        channel?.read_mode === 'admins'
+      ) {
+        return undefined;
+      }
+      const excluded = new Set(excludedAuthors.map(String));
+      return this.store.reticulumChatMessages.find(
+        (row) =>
+          row.group_id === groupId &&
+          row.channel_id === channelId &&
+          row.root_event_id === rootEventId &&
+          row.deleted_at == null &&
+          (row.expires_at == null || Number(row.expires_at) > Number(now)) &&
+          !excluded.has(String(row.author_address))
+      );
     }
     if (
       this.sql.includes('SELECT author_seq FROM rchat_author_sequence_leases')

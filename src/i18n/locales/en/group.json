@@ -12,6 +12,7 @@
     "join_group": "join group",
     "kick_member": "kick member from group",
     "invite_member": "invite member",
+    "jump_latest": "jump to latest",
     "leave_group": "leave group",
     "load_members": "load members with names",
     "make_admin": "make an admin",

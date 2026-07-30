@@ -235,6 +235,26 @@ export type ReticulumChatHistoryReadOptions = {
   repairNetwork?: boolean;
 };
 
+export type ReticulumChatMessageCursor = {
+  timestamp: number;
+  eventId: string;
+};
+
+export type ReticulumChatMessageHistoryPage = {
+  events: ReticulumChatEvent[];
+  oldestCursor: ReticulumChatMessageCursor | null;
+  newestCursor: ReticulumChatMessageCursor | null;
+  hasMore: boolean;
+};
+
+export type ReticulumChatMessageWindowPage = {
+  events: ReticulumChatEvent[];
+  oldestCursor: ReticulumChatMessageCursor | null;
+  newestCursor: ReticulumChatMessageCursor | null;
+  hasOlder: boolean;
+  hasNewer: boolean;
+};
+
 export type ReticulumChatSilenceState = ReticulumChatSilenceRecord & {
   active: boolean;
 };
@@ -10780,6 +10800,64 @@ export class ReticulumChatManager extends EventEmitter {
     return events;
   }
 
+  getMessageHistoryPage(
+    groupId: number,
+    channelId = RETICULUM_CHAT_DEFAULT_CHANNEL_ID,
+    limit = 100,
+    options: ReticulumChatHistoryReadOptions = {}
+  ): ReticulumChatMessageHistoryPage {
+    const safeLimit = Math.max(1, Math.min(250, Math.floor(limit || 100)));
+    const normalizedOptions = this.normalizeHistoryReadOptions(options);
+    const direction =
+      normalizedOptions.afterTimestamp != null
+        ? 'after'
+        : normalizedOptions.beforeTimestamp != null
+          ? 'before'
+          : 'latest';
+    const events = this.getMessageHistory(
+      groupId,
+      channelId,
+      safeLimit + 1,
+      normalizedOptions
+    );
+    const messageEvents = events.filter(
+      (event) =>
+        event.eventType === 'message' ||
+        event.eventType === 'attachment_manifest'
+    );
+    const hasMore = messageEvents.length > safeLimit;
+    const selectedMessages =
+      direction === 'after'
+        ? messageEvents.slice(0, safeLimit)
+        : messageEvents.slice(-safeLimit);
+    const selectedIds = new Set(
+      selectedMessages.map((event) => event.eventId)
+    );
+    const selectedEvents = events
+      .filter(
+        (event) =>
+          selectedIds.has(event.eventId) ||
+          (!!event.targetEventId && selectedIds.has(event.targetEventId))
+      )
+      .sort(
+        (left, right) =>
+          left.timestamp - right.timestamp ||
+          left.eventId.localeCompare(right.eventId)
+      );
+    const oldest = selectedMessages[0];
+    const newest = selectedMessages[selectedMessages.length - 1];
+    return {
+      events: selectedEvents,
+      oldestCursor: oldest
+        ? { timestamp: oldest.timestamp, eventId: oldest.eventId }
+        : null,
+      newestCursor: newest
+        ? { timestamp: newest.timestamp, eventId: newest.eventId }
+        : null,
+      hasMore,
+    };
+  }
+
   getDiscussionIndex(
     groupId: number,
     channelId = RETICULUM_CHAT_DEFAULT_CHANNEL_ID
@@ -11349,6 +11427,14 @@ export class ReticulumChatManager extends EventEmitter {
     options: ReticulumChatMessageWindowOptions = {}
   ): Promise<ReticulumChatEvent[]> {
     this.assertLocalGroupMember(groupId);
+    const requestedBeforeLimit = Number(options.beforeLimit ?? 80);
+    const requestedAfterLimit = Number(options.afterLimit ?? 40);
+    const beforeLimit = Number.isFinite(requestedBeforeLimit)
+      ? Math.max(0, Math.min(250, Math.floor(requestedBeforeLimit)))
+      : 80;
+    const afterLimit = Number.isFinite(requestedAfterLimit)
+      ? Math.max(0, Math.min(250, Math.floor(requestedAfterLimit)))
+      : 40;
     const localAddress = this.localGroupAddresses.get(groupId) || '';
     const canIncludeAdminPrivate =
       this.localGroupAdminIds.has(groupId) && !!localAddress;
@@ -11358,6 +11444,8 @@ export class ReticulumChatManager extends EventEmitter {
       eventId,
       {
         ...options,
+        beforeLimit,
+        afterLimit,
         includeAdminPrivate: canIncludeAdminPrivate,
         excludedAuthorAddresses: this.activeSilencedAuthors(
           localAddress,
@@ -11391,6 +11479,87 @@ export class ReticulumChatManager extends EventEmitter {
           !silencedAuthors.has(event.authorAddress)
       )
       .map((event) => this.eventForRenderer(event));
+  }
+
+  async getMessageWindowPageAroundEvent(
+    groupId: number,
+    channelId: string,
+    eventId: string,
+    options: ReticulumChatMessageWindowOptions = {}
+  ): Promise<ReticulumChatMessageWindowPage> {
+    const requestedBeforeLimit = Number(options.beforeLimit ?? 80);
+    const requestedAfterLimit = Number(options.afterLimit ?? 40);
+    const beforeLimit = Number.isFinite(requestedBeforeLimit)
+      ? Math.max(0, Math.min(249, Math.floor(requestedBeforeLimit)))
+      : 80;
+    const afterLimit = Number.isFinite(requestedAfterLimit)
+      ? Math.max(0, Math.min(249, Math.floor(requestedAfterLimit)))
+      : 40;
+    const messageEvents = await this.getMessageWindowAroundEvent(
+      groupId,
+      channelId,
+      eventId,
+      {
+        ...options,
+        beforeLimit: beforeLimit + 1,
+        afterLimit: afterLimit + 1,
+      }
+    );
+    const targetIndex = messageEvents.findIndex(
+      (event) => event.eventId === eventId
+    );
+    if (targetIndex < 0) {
+      return {
+        events: [],
+        oldestCursor: null,
+        newestCursor: null,
+        hasOlder: false,
+        hasNewer: false,
+      };
+    }
+    const before = messageEvents.slice(0, targetIndex);
+    const after = messageEvents.slice(targetIndex + 1);
+    const hasOlder = before.length > beforeLimit;
+    const hasNewer = after.length > afterLimit;
+    const selectedMessages = [
+      ...(beforeLimit > 0 ? before.slice(-beforeLimit) : []),
+      messageEvents[targetIndex],
+      ...after.slice(0, afterLimit),
+    ];
+    const localAddress = this.localGroupAddresses.get(groupId) || '';
+    const silencedAuthors = this.activeSilencedAuthors(
+      localAddress,
+      'group',
+      String(groupId)
+    );
+    const canReadChannel = this.localChannelReadPredicate(groupId);
+    const reactionEvents = this.db
+      .getReactionEventsForTargets(
+        groupId,
+        selectedMessages.map((event) => event.eventId),
+        channelId,
+        silencedAuthors
+      )
+      .filter((event) => canReadChannel(event.channelId))
+      .map((event) => this.eventForRenderer(event));
+    const events = [...selectedMessages, ...reactionEvents].sort(
+      (left, right) =>
+        left.timestamp - right.timestamp ||
+        left.eventId.localeCompare(right.eventId)
+    );
+    const oldest = selectedMessages[0];
+    const newest = selectedMessages[selectedMessages.length - 1];
+    return {
+      events,
+      oldestCursor: oldest
+        ? { timestamp: oldest.timestamp, eventId: oldest.eventId }
+        : null,
+      newestCursor: newest
+        ? { timestamp: newest.timestamp, eventId: newest.eventId }
+        : null,
+      hasOlder,
+      hasNewer,
+    };
   }
 
   indexSearchText(eventId: string, text: string): boolean {
@@ -21060,6 +21229,39 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db
       .getCategories(groupId)
       .filter((category) => visibleCategoryIds.has(category.categoryId));
+  }
+
+  getChannelMetadataBundle(
+    groupId: number,
+    includeArchived = false
+  ): {
+    channels: ReticulumGroupChannel[];
+    categories: ReticulumGroupCategory[];
+    ready: boolean;
+    snapshotVersion: number;
+  } {
+    this.assertLocalGroupMember(groupId);
+    return this.db.readConsistent(() => {
+      const snapshotScope = this.localGroupAdminIds.has(groupId)
+        ? 'full'
+        : 'public';
+      const snapshot = this.db.getLatestMetadataSnapshot(
+        groupId,
+        snapshotScope
+      );
+      return {
+        // Keep all projection reads on one SQLite WAL snapshot so another Hub
+        // instance cannot make channels and categories come from different
+        // committed metadata states.
+        channels: this.getChannels(groupId, includeArchived),
+        categories: this.getCategories(groupId),
+        // A cached signed snapshot is a coherent layout even when a newer remote
+        // revision is being fetched. Missing categories are valid metadata and
+        // must not be mistaken for an incomplete load.
+        ready: snapshot != null,
+        snapshotVersion: snapshot?.version ?? 0,
+      };
+    });
   }
 
   private localChannelReadPredicate(

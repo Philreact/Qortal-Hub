@@ -1210,33 +1210,74 @@ function hashReticulumChatDbPayload(encryptedPayload: string): string {
     .digest('hex');
 }
 
-function collectSearchStrings(value: unknown, out: string[]): void {
+function collectVisibleMessageStrings(value: unknown, out: string[]): void {
   if (typeof value === 'string') {
     out.push(value);
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectSearchStrings(item, out);
+    for (const item of value) collectVisibleMessageStrings(item, out);
     return;
   }
   if (!value || typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
   for (const [key, next] of Object.entries(record)) {
-    if (key === 'type' || key === 'isEdited' || key === 'mentionedAddresses') {
-      continue;
+    if (key === 'type' || key === 'attrs') continue;
+    collectVisibleMessageStrings(next, out);
+  }
+}
+
+function projectedSearchTextFromPayload(payload: string): string | null {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return '';
     }
-    collectSearchStrings(next, out);
+    const record = parsed as Record<string, unknown>;
+    const strings: string[] = [];
+    const visibleMessage = record.message || record.messageText;
+    collectVisibleMessageStrings(visibleMessage, strings);
+    if (Array.isArray(record.attachments)) {
+      for (const attachment of record.attachments) {
+        if (!attachment || typeof attachment !== 'object') continue;
+        const attachmentRecord = attachment as Record<string, unknown>;
+        const fileName =
+          typeof attachmentRecord.fileName === 'string'
+            ? attachmentRecord.fileName.trim()
+            : typeof attachmentRecord.name === 'string'
+              ? attachmentRecord.name.trim()
+              : '';
+        if (fileName) strings.push(fileName);
+      }
+    }
+    return strings.join(' ').replace(/\s+/g, ' ').trim();
+  } catch {
+    return null;
   }
 }
 
 function searchTextFromPayload(payload: string): string {
+  return projectedSearchTextFromPayload(payload) ?? '';
+}
+
+function mentionedAddressesFromPayload(payload: string): string[] | null {
   try {
     const parsed = JSON.parse(payload) as unknown;
-    const strings: string[] = [];
-    collectSearchStrings(parsed, strings);
-    return strings.join(' ').replace(/\s+/g, ' ').trim();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const mentionedAddresses = (parsed as Record<string, unknown>)
+      .mentionedAddresses;
+    if (!Array.isArray(mentionedAddresses)) return null;
+    return [
+      ...new Set(
+        mentionedAddresses
+          .map((address) => (typeof address === 'string' ? address.trim() : ''))
+          .filter(Boolean)
+      ),
+    ];
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -1441,6 +1482,7 @@ export class ReticulumChatDatabase {
   private stmtGetRecentMessageEvents: Statement;
   private stmtGetRecentMessageEventsAllChannels: Statement;
   private stmtUpsertMessageProjection: Statement;
+  private stmtGetMessageProjection: Statement;
   private stmtGetMessageProjectionEvents: Statement;
   private stmtDeleteMessageProjection: Statement;
   private stmtGetChannelMetadataEvents: Statement;
@@ -1681,6 +1723,9 @@ export class ReticulumChatDatabase {
         expires_at = excluded.expires_at,
         has_attachment = excluded.has_attachment
     `);
+    this.stmtGetMessageProjection = this.db.prepare(
+      'SELECT * FROM rchat_message_projection WHERE root_event_id = ? LIMIT 1'
+    );
     this.stmtGetMessageProjectionEvents = this.db.prepare(`
       SELECT * FROM reticulum_chat_events
       WHERE event_id = ? OR target_event_id = ?
@@ -2603,6 +2648,7 @@ export class ReticulumChatDatabase {
     this.pruneSatisfiedMissingRanges();
     this.backfillMessageProjection();
     this.backfillSearchIndex();
+    this.migrateProjectedSearchIndex();
     this.scrubExistingDeletedMessagePayloads();
     this.pruneExpiredMessages();
   }
@@ -4091,16 +4137,7 @@ export class ReticulumChatDatabase {
           : {}),
       });
       this.applyMessageProjectionEvent(event);
-      if (
-        event.eventType === 'message' ||
-        event.eventType === 'attachment_manifest'
-      ) {
-        this.upsertSearchText(
-          event,
-          searchTextFromPayload(event.encryptedPayload),
-          false
-        );
-      }
+      this.refreshMessageProjectionIndexes(event);
       this.applyDeleteScrubForEvent(event);
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
@@ -5418,10 +5455,12 @@ export class ReticulumChatDatabase {
     text: string
   ): void {
     const normalized = normalizeSearchText(text);
-    if (!normalized) return;
     const rootEventId = projection.root_event_id;
-    this.memorySearchText.set(rootEventId, normalized);
+    this.memorySearchText.delete(rootEventId);
     this.stmtDeleteSearchText.run(rootEventId);
+    this.stmtDeleteSearchMirror.run(rootEventId);
+    if (!normalized) return;
+    this.memorySearchText.set(rootEventId, normalized);
     this.stmtUpsertSearchMirror.run(
       rootEventId,
       projection.group_id,
@@ -5440,6 +5479,47 @@ export class ReticulumChatDatabase {
       projection.root_event_type,
       normalized
     );
+  }
+
+  private refreshMessageProjectionIndexes(event: ReticulumChatEvent): void {
+    if (event.eventType === 'delete' && event.targetEventId) {
+      this.deleteSearchText(event.targetEventId);
+      this.deleteMentionsForEvent(event.targetEventId);
+      return;
+    }
+    if (
+      event.eventType !== 'message' &&
+      event.eventType !== 'attachment_manifest' &&
+      event.eventType !== 'edit'
+    ) {
+      return;
+    }
+    const rootEventId = this.rootEventIdForIndexEvent(event);
+    const projection = this.stmtGetMessageProjection.get(rootEventId) as
+      | MessageProjectionRow
+      | undefined;
+    if (
+      !projection ||
+      projection.deleted_at !== null ||
+      projection.current_event_id !== event.eventId
+    ) {
+      return;
+    }
+    const projectedSearchText = projectedSearchTextFromPayload(
+      projection.encrypted_payload
+    );
+    if (projectedSearchText !== null) {
+      this.upsertProjectedSearchText(projection, projectedSearchText);
+    }
+    const mentionedAddresses = mentionedAddressesFromPayload(
+      projection.encrypted_payload
+    );
+    if (
+      mentionedAddresses !== null &&
+      (mentionedAddresses.length > 0 || event.eventType === 'edit')
+    ) {
+      this.replaceMentionsForProjection(projection, mentionedAddresses);
+    }
   }
 
   indexSearchText(eventId: string, text: string): boolean {
@@ -5467,6 +5547,14 @@ export class ReticulumChatDatabase {
     if (!event) return false;
     const projection = this.currentMessageProjectionForIndexEvent(event);
     if (!projection) return false;
+    this.replaceMentionsForProjection(projection, mentionedAddresses);
+    return true;
+  }
+
+  private replaceMentionsForProjection(
+    projection: MessageProjectionRow,
+    mentionedAddresses: string[]
+  ): void {
     const rootEventId = projection.root_event_id;
     const mentionTargets = parseMentionTargets(projection.mention_targets);
     const hasPrivilegedTarget =
@@ -5519,7 +5607,6 @@ export class ReticulumChatDatabase {
       }
     });
     tx();
-    return true;
   }
 
   deleteMentionsForEvent(eventId: string): boolean {
@@ -8737,6 +8824,13 @@ export class ReticulumChatDatabase {
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
   }
 
+  readConsistent<T>(read: () => T): T {
+    // A deferred SQLite read transaction pins every SELECT in the callback to
+    // the same WAL snapshot. This matters when another Hub instance shares
+    // this database and commits channel metadata between related reads.
+    return this.db.transaction(read)();
+  }
+
   getChannel(groupId: number, channelId: string): ReticulumGroupChannel | null {
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     if (normalizedChannelId === RETICULUM_CHAT_DEFAULT_CHANNEL_ID) {
@@ -10658,6 +10752,59 @@ export class ReticulumChatDatabase {
       }
     });
     tx(rows);
+  }
+
+  private migrateProjectedSearchIndex(): void {
+    // v4 rebuilds rows created by the early visible-text indexer, which could
+    // include reply event IDs, special IDs, and other non-message metadata.
+    const migrationName = 'visible-projected-search-index-v4';
+    const applied = this.db
+      .prepare('SELECT 1 FROM rchat_schema_migrations WHERE name = ? LIMIT 1')
+      .get(migrationName);
+    if (applied) return;
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT p.*, search.search_text AS indexed_search_text
+          FROM rchat_message_projection p
+          LEFT JOIN reticulum_chat_search_index search
+            ON search.event_id = p.root_event_id
+          ORDER BY p.created_at DESC, p.root_event_id DESC
+        `
+      )
+      .all() as Array<
+      MessageProjectionRow & { indexed_search_text?: string | null }
+    >;
+    const tx = this.db.transaction(() => {
+      for (const projection of rows) {
+        const projectedText = projectedSearchTextFromPayload(
+          projection.encrypted_payload
+        );
+        // Older encrypted payloads were indexed after renderer decryption.
+        // Preserve that index when the database cannot inspect the payload.
+        if (projection.deleted_at === null && projectedText === null) continue;
+        const desiredText =
+          projection.deleted_at === null
+            ? normalizeSearchText(projectedText ?? '')
+            : '';
+        const indexedText = normalizeSearchText(
+          projection.indexed_search_text ?? ''
+        );
+        if (desiredText && desiredText === indexedText) continue;
+
+        this.upsertProjectedSearchText(projection, desiredText);
+        // Persisted indexes are authoritative after startup; avoid retaining a
+        // duplicate in-memory copy solely because this was an upgrade repair.
+        this.memorySearchText.delete(projection.root_event_id);
+      }
+      this.db
+        .prepare(
+          'INSERT INTO rchat_schema_migrations (name, applied_at) VALUES (?, ?)'
+        )
+        .run(migrationName, Date.now());
+    });
+    tx();
   }
 
   private backfillMessageProjection(limit = 10000): void {
