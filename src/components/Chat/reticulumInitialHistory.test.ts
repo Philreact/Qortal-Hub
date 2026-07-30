@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildReticulumInitialHistoryState } from './reticulumInitialHistory';
+import {
+  buildReticulumInitialHistoryState,
+  reticulumHistoryEnvelopeNeedsRefresh,
+} from './reticulumInitialHistory';
 
 const message = (signature: string, overrides: Record<string, any> = {}) => ({
   signature,
@@ -144,23 +147,24 @@ describe('buildReticulumInitialHistoryState', () => {
   });
 
   it('retains authoritative edit envelope metadata after decrypting content', () => {
+    const edit = {
+      signature: 'edit-1',
+      eventType: 'edit',
+      chatReference: 'message-1',
+      sender: 'sender-a',
+      senderName: 'Alice',
+      timestamp: 42,
+      privilegedMentionAuthorized: true,
+      decryptedData: {
+        message: 'edited',
+        sender: 'spoofed-sender',
+        senderName: 'Spoofed name',
+        timestamp: 1,
+      },
+    };
     const result = buildReticulumInitialHistoryState([
       message('message-1'),
-      {
-        signature: 'edit-1',
-        eventType: 'edit',
-        chatReference: 'message-1',
-        sender: 'sender-a',
-        senderName: 'Alice',
-        timestamp: 42,
-        privilegedMentionAuthorized: true,
-        decryptedData: {
-          message: 'edited',
-          sender: 'spoofed-sender',
-          senderName: 'Spoofed name',
-          timestamp: 1,
-        },
-      },
+      edit,
     ]);
 
     expect(result.chatReferences['message-1'].edit).toMatchObject({
@@ -171,6 +175,95 @@ describe('buildReticulumInitialHistoryState', () => {
       timestamp: 42,
       privilegedMentionAuthorized: true,
     });
+    expect(
+      reticulumHistoryEnvelopeNeedsRefresh(
+        result.chatReferences['message-1'].edit,
+        'Alice',
+        true
+      )
+    ).toBe(false);
+
+    const replayed = buildReticulumInitialHistoryState([edit], {
+      initialMessages: result.messages,
+      initialChatReferences: result.chatReferences,
+    });
+    expect(replayed.messages[0]).toBe(result.messages[0]);
+    expect(replayed.chatReferences['message-1']).toBe(
+      result.chatReferences['message-1']
+    );
+
+    const refreshed = buildReticulumInitialHistoryState(
+      [{ ...edit, senderName: 'Alice Updated' }],
+      {
+        initialMessages: result.messages,
+        initialChatReferences: result.chatReferences,
+      }
+    );
+    expect(refreshed.chatReferences['message-1']).not.toBe(
+      result.chatReferences['message-1']
+    );
+    expect(refreshed.chatReferences['message-1'].edit?.senderName).toBe(
+      'Alice Updated'
+    );
+    expect(
+      reticulumHistoryEnvelopeNeedsRefresh(
+        refreshed.chatReferences['message-1'].edit,
+        'Alice Updated',
+        true
+      )
+    ).toBe(false);
+  });
+
+  it('requests one refresh for incomplete edit metadata and then reaches a fixed point', () => {
+    const incompleteEdit = {
+      signature: 'edit-1',
+      sender: 'sender-a',
+      timestamp: 42,
+      privilegedMentionAuthorized: false,
+      message: 'edited',
+    };
+    expect(
+      reticulumHistoryEnvelopeNeedsRefresh(incompleteEdit, 'Alice', true)
+    ).toBe(true);
+
+    const refreshed = buildReticulumInitialHistoryState(
+      [
+        {
+          ...incompleteEdit,
+          eventType: 'edit',
+          chatReference: 'message-1',
+          senderName: 'Alice',
+          privilegedMentionAuthorized: true,
+          decryptedData: { message: 'edited' },
+        },
+      ],
+      {
+        initialChatReferences: {
+          'message-1': { edit: incompleteEdit },
+        },
+      }
+    );
+    const storedEdit = refreshed.chatReferences['message-1'].edit;
+    expect(
+      reticulumHistoryEnvelopeNeedsRefresh(storedEdit, 'Alice', true)
+    ).toBe(false);
+
+    const replayed = buildReticulumInitialHistoryState(
+      [
+        {
+          ...incompleteEdit,
+          eventType: 'edit',
+          chatReference: 'message-1',
+          senderName: 'Alice',
+          privilegedMentionAuthorized: true,
+          decryptedData: { message: 'edited' },
+        },
+      ],
+      { initialChatReferences: refreshed.chatReferences }
+    );
+    expect(replayed.chatReferences['message-1']).toBe(
+      refreshed.chatReferences['message-1']
+    );
   });
 
   it('claims filtered events while keeping them out of rendered state', () => {

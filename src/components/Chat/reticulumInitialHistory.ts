@@ -49,6 +49,34 @@ export const buildReticulumEditReference = (
     }
   );
 
+export const isSameReticulumEditReference = (
+  left: ReticulumHistoryChatItem | null | undefined,
+  right: ReticulumHistoryChatItem | null | undefined
+) =>
+  Boolean(
+    left &&
+      right &&
+      left.signature &&
+      left.signature === right.signature &&
+      left.sender === right.sender &&
+      left.senderName === right.senderName &&
+      left.timestamp === right.timestamp &&
+      left.directMentionAuthorized === right.directMentionAuthorized &&
+      left.privilegedMentionAuthorized ===
+        right.privilegedMentionAuthorized
+  );
+
+export const reticulumHistoryEnvelopeNeedsRefresh = (
+  current: ReticulumHistoryChatItem | null | undefined,
+  senderName: string | undefined,
+  privilegedMentionAuthorized: boolean
+) =>
+  Boolean(
+    current &&
+      ((senderName && current.senderName !== senderName) ||
+        current.privilegedMentionAuthorized !== privilegedMentionAuthorized)
+  );
+
 /**
  * Applies an ordered, already-converted Reticulum history batch in memory.
  * This mirrors the live event reducer in ChatGroup and can start from existing
@@ -138,9 +166,13 @@ export const buildReticulumInitialHistoryState = (
       const target = String(targetReference);
       const existingReference = chatReferences[target] || {};
       if (itemType === 'edit' || nextItem.isEdited) {
+        const nextEdit = buildReticulumEditReference(nextItem);
+        if (isSameReticulumEditReference(existingReference.edit, nextEdit)) {
+          continue;
+        }
         chatReferences[target] = {
           ...existingReference,
-          edit: buildReticulumEditReference(nextItem),
+          edit: nextEdit,
         };
         continue;
       }

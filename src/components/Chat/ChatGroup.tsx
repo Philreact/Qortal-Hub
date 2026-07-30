@@ -170,6 +170,8 @@ import { projectReticulumReactionReferences } from '../../utils/reticulumReactio
 import {
   buildReticulumEditReference,
   buildReticulumInitialHistoryState,
+  isSameReticulumEditReference,
+  reticulumHistoryEnvelopeNeedsRefresh,
   reticulumHistoryItemSpecialId,
 } from './reticulumInitialHistory';
 import { normalizeReticulumChatHtmlContent } from './reticulumMessageHtml';
@@ -4371,9 +4373,18 @@ export const ChatGroup = ({
         setChatReferences((prev) => {
           const organized = { ...prev };
           if (itemType === 'edit' || nextItem?.isEdited) {
+            const nextEdit = buildReticulumEditReference(nextItem);
+            if (
+              isSameReticulumEditReference(
+                organized[targetReference]?.edit,
+                nextEdit
+              )
+            ) {
+              return prev;
+            }
             organized[targetReference] = {
               ...(organized[targetReference] || {}),
-              edit: buildReticulumEditReference(nextItem),
+              edit: nextEdit,
             };
             return organized;
           }
@@ -5392,15 +5403,16 @@ export const ChatGroup = ({
         ? chatReferences?.[targetEventId]?.edit
         : undefined;
       return Boolean(
-        (existingMessage &&
-          ((eventSenderName &&
-            existingMessage.senderName !== eventSenderName) ||
-            existingMessage.privilegedMentionAuthorized !==
-              (event?.privilegedMentionAuthorized === true))) ||
-        (existingEdit &&
-          ((eventSenderName && existingEdit.senderName !== eventSenderName) ||
-            existingEdit.privilegedMentionAuthorized !==
-              (event?.privilegedMentionAuthorized === true)))
+        reticulumHistoryEnvelopeNeedsRefresh(
+          existingMessage,
+          eventSenderName,
+          event?.privilegedMentionAuthorized === true
+        ) ||
+          reticulumHistoryEnvelopeNeedsRefresh(
+            existingEdit,
+            eventSenderName,
+            event?.privilegedMentionAuthorized === true
+          )
       );
     });
     if (eventsToApply.length === 0) return;
@@ -5456,8 +5468,20 @@ export const ChatGroup = ({
         }
       }
       if (!conversionResults.some((result) => result.item)) return;
-      setMessages(nextHistory.messages);
-      setChatReferences(nextHistory.chatReferences);
+      const messagesChanged =
+        nextHistory.messages.length !== messages.length ||
+        nextHistory.messages.some(
+          (message, index) => message !== messages[index]
+        );
+      const previousReferenceKeys = Object.keys(chatReferences);
+      const nextReferenceKeys = Object.keys(nextHistory.chatReferences);
+      const referencesChanged =
+        previousReferenceKeys.length !== nextReferenceKeys.length ||
+        nextReferenceKeys.some(
+          (key) => nextHistory.chatReferences[key] !== chatReferences[key]
+        );
+      if (messagesChanged) setMessages(nextHistory.messages);
+      if (referencesChanged) setChatReferences(nextHistory.chatReferences);
     })();
     return () => {
       cancelled = true;
