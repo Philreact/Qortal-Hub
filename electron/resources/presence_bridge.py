@@ -223,7 +223,10 @@ _RESOURCE_SESSION_READY_TYPE = "RETICULUM_RESOURCE_SESSION_READY"
 _RESOURCE_SESSION_CANCEL_TYPE = "RETICULUM_RESOURCE_SESSION_CANCEL"
 _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
-_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 30.0
+# Authorization is a local Electron/database decision and should normally take
+# milliseconds. Bound a wedged provider quickly; receivers retain a longer
+# compatibility deadline for older bridges that still use 30 seconds.
+_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 10.0
 _RESOURCE_SESSION_IDLE_TIMEOUT_SECONDS = 5 * 60.0
 _RESOURCE_SESSION_PATH_WAIT_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_PATH_POLL_SECONDS = 1.0
@@ -620,6 +623,8 @@ for _overlay_migration_shard in range(_SCHEDULER_OVERLAY_MIGRATION_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"overlay-migration-{_overlay_migration_shard}"] = 2
 
 _shutdown = threading.Event()
+_OWNER_WATCH_INTERVAL_SECONDS = 0.5
+_OWNER_EXIT_GRACE_SECONDS = 7.0
 _qortalland_game_manager: Optional[QortalLandGameManager] = None
 _json_resp_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
     maxsize=_JSON_RESP_OUT_QUEUE_MAX
@@ -22531,16 +22536,133 @@ def stdin_loop() -> None:
     _notify_rns_work_available()
 
 
+def _wake_bridge_shutdown() -> None:
+    """Wake the RNS owner loop without allowing a full queue to block exit."""
+    _shutdown.set()
+    try:
+        _cmd_queue_bounded.put_nowait(None)
+    except queue.Full:
+        try:
+            _cmd_queue_bounded.get_nowait()
+            _cmd_queue_bounded.put_nowait(None)
+        except Exception:
+            pass
+    _notify_rns_work_available()
+
+
+def _owner_pid_from_environment() -> int:
+    try:
+        owner_pid = int(str(os.environ.get("QORTAL_RETICULUM_OWNER_PID") or "0"))
+    except (TypeError, ValueError):
+        return 0
+    return owner_pid if owner_pid > 1 else 0
+
+
+def _owner_watchdog_loop(owner_pid: int) -> None:
+    """Terminate this per-app bridge when its exact Electron owner disappears."""
+    owner_lost = False
+    owner_handle = None
+    kernel32 = None
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.argtypes = [
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            kernel32.WaitForSingleObject.restype = wintypes.DWORD
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            # SYNCHRONIZE gives us an exact process handle, avoiding PID-reuse
+            # ambiguity while waiting for the Electron owner to terminate.
+            owner_handle = kernel32.OpenProcess(0x00100000, False, owner_pid)
+        except Exception as exc:
+            log(
+                "[presence_bridge] target=owner-watchdog "
+                f"state=disabled owner_pid={owner_pid} err={exc}"
+            )
+            return
+        if not owner_handle:
+            log(
+                "[presence_bridge] target=owner-watchdog "
+                f"state=owner-missing owner_pid={owner_pid}"
+            )
+            owner_lost = True
+    else:
+        # The bridge is spawned directly by Electron. On POSIX, orphaning
+        # reparents it, so comparing the live parent PID is immune to PID reuse.
+        if os.getppid() != owner_pid:
+            owner_lost = True
+
+    try:
+        while not owner_lost and not _shutdown.wait(_OWNER_WATCH_INTERVAL_SECONDS):
+            if os.name == "nt":
+                # WAIT_OBJECT_0 means the exact owner handle was signalled.
+                owner_lost = kernel32.WaitForSingleObject(
+                    owner_handle, int(_OWNER_WATCH_INTERVAL_SECONDS * 1000)
+                ) == 0
+            else:
+                owner_lost = os.getppid() != owner_pid
+    finally:
+        if owner_handle and kernel32:
+            try:
+                kernel32.CloseHandle(owner_handle)
+            except Exception:
+                pass
+
+    if not owner_lost:
+        return
+
+    log(
+        "[presence_bridge] target=owner-watchdog "
+        f"state=owner-exited owner_pid={owner_pid}"
+    )
+    _wake_bridge_shutdown()
+
+    # stdin EOF normally lets main() finish. A Reticulum call can, however,
+    # hold the non-daemon owner thread indefinitely. This bridge is private to
+    # the dead Electron process, so a bounded hard exit is safe and prevents
+    # it from loading the shared daemon forever.
+    time.sleep(_OWNER_EXIT_GRACE_SECONDS)
+    os._exit(0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Qortal Hub Reticulum presence bridge")
     parser.add_argument("--config", action="store", default=None, help="Reticulum config directory")
     args = parser.parse_args()
 
+    _shutdown.clear()
+    owner_pid = _owner_pid_from_environment()
+    if owner_pid:
+        log(
+            "[presence_bridge] target=owner-watchdog "
+            f"state=monitoring owner_pid={owner_pid}"
+        )
+        threading.Thread(
+            target=_owner_watchdog_loop,
+            args=(owner_pid,),
+            name="reticulum-owner-watchdog",
+            daemon=True,
+        ).start()
+
+    # Start owner monitoring before attaching to the shared Reticulum daemon.
+    # If Electron dies while that attach is blocked, the bounded watchdog must
+    # still be able to terminate this per-app process.
     if args.config:
         os.environ["QORTAL_RETICULUM_CONFIG_DIR"] = args.config
         ensure_started(args.config)
 
-    _shutdown.clear()
     stdout_thread = threading.Thread(
         target=_stdout_writer_loop, name="reticulum-json-out", daemon=False
     )

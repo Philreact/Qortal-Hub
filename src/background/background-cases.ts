@@ -82,6 +82,7 @@ import {
 } from './reticulum-signing-policy';
 
 const QORTAL_PUBLIC_VALIDATION_NODE = 'https://ext-node.qortal.link';
+const QORTAL_GROUP_VALIDATION_TIMEOUT_MS = 4_000;
 
 function wipeTemporaryKeyPairSecrets(keyPair: unknown): void {
   if (!keyPair || typeof keyPair !== 'object') return;
@@ -109,18 +110,52 @@ async function fetchGroupMemberValidationRows(
   if (!normalizedApiUrl) {
     throw new Error('Group member validation failed: missing API URL');
   }
-  const response = await fetch(
-    `${normalizedApiUrl}/groups/members/${groupId}/validate`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(addresses),
-    }
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    QORTAL_GROUP_VALIDATION_TIMEOUT_MS
   );
-  if (!response.ok) {
-    throw new Error(`Group member validation failed: ${response.status}`);
+  try {
+    const response = await fetch(
+      `${normalizedApiUrl}/groups/members/${groupId}/validate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(addresses),
+        signal: controller.signal,
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Group member validation failed: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Group member validation timed out after ${QORTAL_GROUP_VALIDATION_TIMEOUT_MS} ms`
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return response.json();
+}
+
+async function fetchGroupValidationRowsWithFallback(
+  groupId: number,
+  addresses: string[]
+): Promise<unknown> {
+  const validApi = await getBaseApi();
+  try {
+    return await fetchGroupMemberValidationRows(validApi, groupId, addresses);
+  } catch (error) {
+    if (isPublicValidationNode(validApi)) throw error;
+    return fetchGroupMemberValidationRows(
+      QORTAL_PUBLIC_VALIDATION_NODE,
+      groupId,
+      addresses
+    );
+  }
 }
 
 export function versionCase(request, event) {
@@ -250,24 +285,10 @@ export async function validateGroupMembersCase(request, event) {
     if (!Number.isInteger(groupId) || groupId <= 0 || addresses.length === 0) {
       throw new Error('Invalid groupId or addresses');
     }
-    const validApi = await getBaseApi();
-    let result: unknown;
-    try {
-      result = await fetchGroupMemberValidationRows(
-        validApi,
-        groupId,
-        addresses
-      );
-    } catch (error) {
-      if (isPublicValidationNode(validApi)) {
-        throw error;
-      }
-      result = await fetchGroupMemberValidationRows(
-        QORTAL_PUBLIC_VALIDATION_NODE,
-        groupId,
-        addresses
-      );
-    }
+    const result = await fetchGroupValidationRowsWithFallback(
+      groupId,
+      addresses
+    );
     event.source.postMessage(
       {
         requestId: request.requestId,
@@ -301,19 +322,15 @@ export async function validateGroupAdminsCase(request, event) {
     if (!Number.isInteger(groupId) || groupId <= 0 || addresses.length === 0) {
       throw new Error('Invalid groupId or addresses');
     }
+    // Admin authority stays bound to the user's selected Core. Unlike ordinary
+    // membership lookup, do not delegate this security decision to a fallback
+    // node when the selected Core is unavailable.
     const validApi = await getBaseApi();
-    const response = await fetch(
-      `${validApi.replace(/\/+$/u, '')}/groups/members/${groupId}/validate`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(addresses),
-      }
+    const result = await fetchGroupMemberValidationRows(
+      validApi,
+      groupId,
+      addresses
     );
-    if (!response.ok) {
-      throw new Error(`Group admin validation failed: ${response.status}`);
-    }
-    const result = await response.json();
     event.source.postMessage(
       {
         requestId: request.requestId,

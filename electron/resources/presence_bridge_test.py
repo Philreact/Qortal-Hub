@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import os
 import queue
 import tempfile
 import threading
@@ -32,6 +33,64 @@ def load_bridge():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+class PresenceBridgeOwnerLifecycleTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_owner_pid_environment_is_strictly_validated(self):
+        with mock.patch.dict(os.environ, {"QORTAL_RETICULUM_OWNER_PID": "4321"}):
+            self.assertEqual(self.bridge._owner_pid_from_environment(), 4321)
+        for invalid in ("", "not-a-pid", "0", "1", "-5"):
+            with self.subTest(invalid=invalid), mock.patch.dict(
+                os.environ,
+                {"QORTAL_RETICULUM_OWNER_PID": invalid},
+            ):
+                self.assertEqual(self.bridge._owner_pid_from_environment(), 0)
+
+    @unittest.skipIf(os.name == "nt", "POSIX parent-reparenting behavior")
+    def test_owner_watchdog_forces_exit_after_parent_is_lost(self):
+        owner_pid = 4321
+        self.bridge._shutdown.clear()
+        with mock.patch.object(self.bridge.os, "getppid", return_value=1), mock.patch.object(
+            self.bridge.time, "sleep"
+        ) as sleep_mock, mock.patch.object(
+            self.bridge.os, "_exit", side_effect=SystemExit(0)
+        ) as exit_mock:
+            with self.assertRaises(SystemExit):
+                self.bridge._owner_watchdog_loop(owner_pid)
+
+        self.assertTrue(self.bridge._shutdown.is_set())
+        sleep_mock.assert_called_once_with(self.bridge._OWNER_EXIT_GRACE_SECONDS)
+        exit_mock.assert_called_once_with(0)
+
+    @unittest.skipIf(os.name == "nt", "POSIX parent-reparenting behavior")
+    def test_owner_loss_still_forces_exit_when_stdin_already_started_shutdown(self):
+        owner_pid = 4321
+        self.bridge._shutdown.set()
+        with mock.patch.object(self.bridge.os, "getppid", return_value=1), mock.patch.object(
+            self.bridge.time, "sleep"
+        ), mock.patch.object(
+            self.bridge.os, "_exit", side_effect=SystemExit(0)
+        ) as exit_mock:
+            with self.assertRaises(SystemExit):
+                self.bridge._owner_watchdog_loop(owner_pid)
+
+        exit_mock.assert_called_once_with(0)
+
+    @unittest.skipIf(os.name == "nt", "POSIX parent-reparenting behavior")
+    def test_owner_watchdog_leaves_a_live_owner_alone_during_shutdown(self):
+        owner_pid = 4321
+        self.bridge._shutdown.set()
+        with mock.patch.object(self.bridge.os, "getppid", return_value=owner_pid), mock.patch.object(
+            self.bridge.os, "_exit"
+        ) as exit_mock:
+            self.bridge._owner_watchdog_loop(owner_pid)
+        exit_mock.assert_not_called()
 
 
 class ReticulumPathVisibilityTest(unittest.TestCase):

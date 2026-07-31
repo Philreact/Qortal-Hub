@@ -1568,6 +1568,7 @@ try {
               localAddress?: string;
               address?: string;
               isAdmin?: boolean;
+              adminStatusAuthoritative?: boolean;
             }
         >
       ) =>
@@ -2523,6 +2524,7 @@ try {
               localAddress?: string;
               address?: string;
               isAdmin?: boolean;
+              adminStatusAuthoritative?: boolean;
             }
         >
       ) =>

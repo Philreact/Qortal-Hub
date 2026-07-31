@@ -706,6 +706,7 @@ export type ReticulumChatLocalGroupMembership =
       localAddress?: unknown;
       address?: unknown;
       isAdmin?: unknown;
+      adminStatusAuthoritative?: unknown;
     };
 
 type ReticulumChatVerifiedTransportPeer = {
@@ -2105,6 +2106,8 @@ const RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_TTL_MS = 10 * 60_000;
 const RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_ADMIN_CACHE_TTL_MS = 30_000;
+const RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS = 10_000;
+const RETICULUM_CHAT_VALIDATION_UNAVAILABLE_MAX = 4_096;
 const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
 const RETICULUM_CHAT_MEMBERSHIP_INITIALIZATION_BATCH_SIZE = 1;
 const RETICULUM_CHAT_MEMBERSHIP_SYNCHRONOUS_GROUP_LIMIT = 8;
@@ -6062,6 +6065,7 @@ export class ReticulumChatManager extends EventEmitter {
   private localGroupMembershipsInitialized = false;
   private localPrivateGroupIds = new Set<number>();
   private localGroupAdminIds = new Set<number>();
+  private localGroupAuthoritativeAdminStatusIds = new Set<number>();
   private localGroupAddresses = new Map<number, string>();
   private publicGroupDirectoryIds = new Set<number>();
   private publicGroupActivityStates = new Map<
@@ -6111,6 +6115,7 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     Promise<boolean | null>
   >();
+  private groupMemberValidationUnavailableUntil = new Map<string, number>();
   private groupAdminValidationCache = new Map<
     string,
     { isAdmin: boolean; expiresAt: number }
@@ -6119,6 +6124,7 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     Promise<ReticulumChatAdminValidationStatus>
   >();
+  private groupAdminValidationUnavailableUntil = new Map<string, number>();
   private requestedEventPulls = new Map<string, number>();
   private pendingEventPulls = new Map<string, ReticulumChatPullQueueItem>();
   private eventPullPeerPressureLogged = new Set<string>();
@@ -7341,10 +7347,12 @@ export class ReticulumChatManager extends EventEmitter {
     if (validateGroupMemberChanged) {
       this.groupMemberValidationCache.clear();
       this.groupMemberValidationInflight.clear();
+      this.groupMemberValidationUnavailableUntil.clear();
     }
     if (validateGroupAdminChanged) {
       this.groupAdminValidationCache.clear();
       this.groupAdminValidationInflight.clear();
+      this.groupAdminValidationUnavailableUntil.clear();
       if (this.validateGroupAdmin) {
         for (const event of this.db.getPendingPrivilegedMentionEvents()) {
           this.pendingPrivilegedMentionValidationEvents.set(
@@ -7437,6 +7445,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.metadataSnapshotBuildInflight.clear();
     this.metadataPublicSnapshotCache.clear();
     this.groupMemberValidationInflight.clear();
+    this.groupMemberValidationUnavailableUntil.clear();
+    this.groupAdminValidationInflight.clear();
+    this.groupAdminValidationUnavailableUntil.clear();
     this.resourceFindRoutes.clear();
     this.localResourceFindRequests.clear();
     this.learnedResourceIdentityPublicKeys.clear();
@@ -7559,16 +7570,23 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number;
     isPrivate: boolean;
     isAdmin: boolean;
+    adminStatusAuthoritative: boolean;
     localAddress?: string;
   }> {
     const byGroupId = new Map<
       number,
-      { isPrivate: boolean; isAdmin: boolean; localAddress?: string }
+      {
+        isPrivate: boolean;
+        isAdmin: boolean;
+        adminStatusAuthoritative: boolean;
+        localAddress?: string;
+      }
     >();
     for (const membership of memberships) {
       let groupId: number;
       let isPrivate = false;
       let isAdmin = false;
+      let adminStatusAuthoritative = false;
       let localAddress = '';
       if (typeof membership === 'number') {
         groupId = membership;
@@ -7583,6 +7601,7 @@ export class ReticulumChatManager extends EventEmitter {
           isPrivate = true;
         }
         isAdmin = membership.isAdmin === true;
+        adminStatusAuthoritative = membership.adminStatusAuthoritative === true;
         localAddress =
           typeof membership.localAddress === 'string'
             ? membership.localAddress.trim()
@@ -7597,6 +7616,9 @@ export class ReticulumChatManager extends EventEmitter {
       byGroupId.set(groupId, {
         isPrivate: existing?.isPrivate === true || isPrivate,
         isAdmin: existing?.isAdmin === true || isAdmin,
+        adminStatusAuthoritative:
+          existing?.adminStatusAuthoritative === true ||
+          adminStatusAuthoritative,
         localAddress: existing?.localAddress || localAddress || undefined,
       });
     }
@@ -7617,6 +7639,8 @@ export class ReticulumChatManager extends EventEmitter {
     const previousGroupIds = this.localGroupIds;
     const previousPrivateGroupIds = this.localPrivateGroupIds;
     const previousAdminGroupIds = this.localGroupAdminIds;
+    const previousAuthoritativeAdminStatusIds =
+      this.localGroupAuthoritativeAdminStatusIds;
     const previousGroupAddresses = this.localGroupAddresses;
     const previousPublicGroupIds = new Set(
       [...this.localGroupIds].filter(
@@ -7627,15 +7651,25 @@ export class ReticulumChatManager extends EventEmitter {
       this.normalizeLocalGroupMemberships(memberships);
     const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
     const groupsRequiringInitialization = normalizedMemberships
-      .filter(({ groupId, isPrivate, isAdmin, localAddress }) => {
-        if (!membershipsWereInitialized) return true;
-        return (
-          !previousGroupIds.has(groupId) ||
-          previousPrivateGroupIds.has(groupId) !== isPrivate ||
-          previousAdminGroupIds.has(groupId) !== isAdmin ||
-          previousGroupAddresses.get(groupId) !== localAddress
-        );
-      })
+      .filter(
+        ({
+          groupId,
+          isPrivate,
+          isAdmin,
+          adminStatusAuthoritative,
+          localAddress,
+        }) => {
+          if (!membershipsWereInitialized) return true;
+          return (
+            !previousGroupIds.has(groupId) ||
+            previousPrivateGroupIds.has(groupId) !== isPrivate ||
+            previousAdminGroupIds.has(groupId) !== isAdmin ||
+            previousAuthoritativeAdminStatusIds.has(groupId) !==
+              adminStatusAuthoritative ||
+            previousGroupAddresses.get(groupId) !== localAddress
+          );
+        }
+      )
       .map(({ groupId }) => groupId);
     this.localPrivateGroupIds = new Set(
       normalizedMemberships
@@ -7645,6 +7679,11 @@ export class ReticulumChatManager extends EventEmitter {
     this.localGroupAdminIds = new Set(
       normalizedMemberships
         .filter(({ isAdmin }) => isAdmin)
+        .map(({ groupId }) => groupId)
+    );
+    this.localGroupAuthoritativeAdminStatusIds = new Set(
+      normalizedMemberships
+        .filter(({ adminStatusAuthoritative }) => adminStatusAuthoritative)
         .map(({ groupId }) => groupId)
     );
     this.localGroupAddresses = new Map(
@@ -21978,6 +22017,32 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getKnownGroupIds().includes(groupId);
   }
 
+  private markValidationUnavailable(
+    unavailableUntilByKey: Map<string, number>,
+    cacheKey: string
+  ): void {
+    const now = this.now();
+    if (
+      unavailableUntilByKey.size >= RETICULUM_CHAT_VALIDATION_UNAVAILABLE_MAX
+    ) {
+      for (const [key, unavailableUntil] of unavailableUntilByKey) {
+        if (unavailableUntil <= now) unavailableUntilByKey.delete(key);
+      }
+      while (
+        unavailableUntilByKey.size >= RETICULUM_CHAT_VALIDATION_UNAVAILABLE_MAX
+      ) {
+        const oldestKey = unavailableUntilByKey.keys().next().value;
+        if (typeof oldestKey !== 'string') break;
+        unavailableUntilByKey.delete(oldestKey);
+      }
+    }
+    unavailableUntilByKey.delete(cacheKey);
+    unavailableUntilByKey.set(
+      cacheKey,
+      now + RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS
+    );
+  }
+
   private async isValidatedGroupMember(
     groupId: number,
     address: string
@@ -21990,6 +22055,12 @@ export class ReticulumChatManager extends EventEmitter {
     const cached = this.groupMemberValidationCache.get(cacheKey);
     const now = this.now();
     if (cached && cached.expiresAt > now) return cached.isMember;
+    const unavailableUntil =
+      this.groupMemberValidationUnavailableUntil.get(cacheKey) ?? 0;
+    if (unavailableUntil > now) return null;
+    if (unavailableUntil > 0) {
+      this.groupMemberValidationUnavailableUntil.delete(cacheKey);
+    }
     const existing = this.groupMemberValidationInflight.get(cacheKey);
     if (existing) return existing;
     const validation = (async (): Promise<boolean | null> => {
@@ -21999,6 +22070,10 @@ export class ReticulumChatManager extends EventEmitter {
           (await this.validateGroupMember?.(groupId, normalizedAddress)) ??
           null;
       } catch (err) {
+        this.markValidationUnavailable(
+          this.groupMemberValidationUnavailableUntil,
+          cacheKey
+        );
         loggerWarn(
           `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}:`,
           err
@@ -22006,6 +22081,10 @@ export class ReticulumChatManager extends EventEmitter {
         return null;
       }
       if (isMember == null) {
+        this.markValidationUnavailable(
+          this.groupMemberValidationUnavailableUntil,
+          cacheKey
+        );
         loggerWarn(
           `[ReticulumChat] Group membership validation unavailable for group=${groupId} address=${normalizedAddress}`
         );
@@ -22015,6 +22094,7 @@ export class ReticulumChatManager extends EventEmitter {
         isMember,
         expiresAt: this.now() + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
       });
+      this.groupMemberValidationUnavailableUntil.delete(cacheKey);
       return isMember;
     })();
     this.groupMemberValidationInflight.set(cacheKey, validation);
@@ -22057,6 +22137,14 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Number.isInteger(groupId) || groupId <= 0) return 'not_admin';
     const normalizedAddress = address.trim();
     if (!normalizedAddress) return 'not_admin';
+    if (
+      this.localGroupMembershipsInitialized &&
+      this.localGroupIds.has(groupId) &&
+      this.localGroupAuthoritativeAdminStatusIds.has(groupId) &&
+      this.localGroupAddresses.get(groupId) === normalizedAddress
+    ) {
+      return this.localGroupAdminIds.has(groupId) ? 'admin' : 'not_admin';
+    }
     if (!this.validateGroupAdmin)
       return this.localGroupIds.has(groupId) ? 'admin' : 'not_admin';
     const cacheKey = `${groupId}:${normalizedAddress}`;
@@ -22069,6 +22157,12 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return status;
     }
+    const unavailableUntil =
+      this.groupAdminValidationUnavailableUntil.get(cacheKey) ?? 0;
+    if (unavailableUntil > now) return 'unknown';
+    if (unavailableUntil > 0) {
+      this.groupAdminValidationUnavailableUntil.delete(cacheKey);
+    }
     const existing = this.groupAdminValidationInflight.get(cacheKey);
     if (existing) return existing;
     const validation =
@@ -22077,6 +22171,10 @@ export class ReticulumChatManager extends EventEmitter {
         try {
           isAdmin = await this.validateGroupAdmin!(groupId, normalizedAddress);
         } catch (err) {
+          this.markValidationUnavailable(
+            this.groupAdminValidationUnavailableUntil,
+            cacheKey
+          );
           loggerWarn(
             `[ReticulumChat] group_admin_validation_unknown group=${groupId} address=${normalizedAddress}:`,
             err
@@ -22090,6 +22188,7 @@ export class ReticulumChatManager extends EventEmitter {
           isAdmin,
           expiresAt: this.now() + RETICULUM_CHAT_ADMIN_CACHE_TTL_MS,
         });
+        this.groupAdminValidationUnavailableUntil.delete(cacheKey);
         return isAdmin ? 'admin' : 'not_admin';
       })();
     this.groupAdminValidationInflight.set(cacheKey, validation);

@@ -70,7 +70,6 @@ import { runDevReticulumEnsureIfNeeded } from './reticulum-dev-ensure-loader';
 import {
   getReticulumBridge,
   startReticulumBridge,
-  stopReticulumBridge,
   stopReticulumBridgeAndWait,
 } from './reticulum-bridge';
 import { getPresenceManager } from './presence';
@@ -135,7 +134,9 @@ export function setIsQuitting(value: boolean) {
   isQuitting = value;
 }
 
-let shutdownHandled = false;
+let shutdownPromise: Promise<void> | null = null;
+let shutdownComplete = false;
+let shutdownExitScheduled = false;
 let reticulumWakeRecovery: Promise<void> | null = null;
 let lastReticulumWakeRecoveryAt = 0;
 let reticulumGloballyEnabled = true;
@@ -279,24 +280,62 @@ async function restartReticulumBridgeAndWaitReady(
   );
 }
 
-function performAppShutdown(reason: string): void {
-  if (shutdownHandled) {
-    return;
+function performAppShutdown(reason: string): Promise<void> {
+  if (shutdownPromise) {
+    return shutdownPromise;
   }
-  shutdownHandled = true;
-  loggerLog(`[App] Shutdown reason=${reason}`);
-  stopReticulumManagers();
-  stopReticulumBridge();
-  const quitPlan = planReticulumAppQuit();
-  if (quitPlan.shouldStopSharedDaemon) {
-    stopSharedReticulumDaemon();
-  } else {
-    loggerLog(
-      `[Reticulum] Preserving shared rnsd because ${quitPlan.otherActiveInstances} other app instance(s) remain active`
-    );
-  }
-  flushPersistentStore();
-  flushChatStore();
+  shutdownPromise = (async () => {
+    loggerLog(`[App] Shutdown reason=${reason}`);
+    try {
+      stopReticulumManagers();
+    } catch (error) {
+      loggerError('[Reticulum] Manager shutdown failed:', error);
+    }
+    try {
+      // Do not let Electron disappear after merely sending SIGTERM. Waiting
+      // here gives the bridge a bounded graceful exit and stopAndWait applies
+      // SIGKILL if it does not comply.
+      await stopReticulumBridgeAndWait();
+    } catch (error) {
+      loggerError('[Reticulum] Bridge shutdown failed:', error);
+    }
+    try {
+      const quitPlan = planReticulumAppQuit();
+      if (quitPlan.shouldStopSharedDaemon) {
+        stopSharedReticulumDaemon();
+      } else {
+        loggerLog(
+          `[Reticulum] Preserving shared rnsd because ${quitPlan.otherActiveInstances} other app instance(s) remain active`
+        );
+      }
+    } catch (error) {
+      loggerError('[Reticulum] Shared daemon shutdown planning failed:', error);
+    }
+    try {
+      flushPersistentStore();
+    } catch (error) {
+      loggerError(
+        '[App] Persistent store flush failed during shutdown:',
+        error
+      );
+    }
+    try {
+      flushChatStore();
+    } catch (error) {
+      loggerError('[App] Chat store flush failed during shutdown:', error);
+    }
+    shutdownComplete = true;
+  })();
+  return shutdownPromise;
+}
+
+function exitAfterAppShutdown(reason: string): void {
+  if (shutdownExitScheduled) return;
+  shutdownExitScheduled = true;
+  void performAppShutdown(reason).finally(() => {
+    shutdownComplete = true;
+    app.exit(0);
+  });
 }
 
 async function recoverReticulumAfterWake(source: string): Promise<void> {
@@ -702,18 +741,20 @@ async function setupMultiInstanceUserData(
 })();
 
 // Set isQuitting flag before the app quits
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   setIsQuitting(true);
-  performAppShutdown('before-quit');
-  flushPersistentStore();
+  if (shutdownComplete) return;
+  // Electron does not await async event handlers. Hold the quit until the
+  // per-instance bridge has actually exited (or has been force-stopped).
+  event.preventDefault();
   flushMiscPersistentStore();
+  exitAfterAppShutdown('before-quit');
 });
 
-for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+for (const signal of ['SIGHUP', 'SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
     setIsQuitting(true);
-    performAppShutdown(signal);
-    app.exit(0);
+    exitAfterAppShutdown(signal);
   });
 }
 

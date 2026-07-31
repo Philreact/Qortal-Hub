@@ -25,7 +25,16 @@ export const RETICULUM_RESOURCE_TRANSFER_OVERLAY_STALE_THROTTLE_MS = 30_000;
 export const RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS = 5_000;
 const RETICULUM_RESOURCE_TRANSFER_ACCEPT_STALE_MS = 180_000;
 const RETICULUM_RESOURCE_TRANSFER_SPEED_LOG_MS = 5_000;
-export const RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS = 12_000;
+// Session preparation completes before a range request is opened. These
+// deadlines therefore cover the request lifecycle, not Reticulum link setup.
+export const RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS = 15_000;
+// Once the bridge accepts a request it may be waiting behind another range in
+// a bounded reusable-session queue. The bridge rejects queue entries older
+// than 90 seconds, so leave a small delivery margin for that explicit result.
+export const RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS = 95_000;
+// Updated providers reject an authorization stall after 10 seconds. Keep the
+// receiver compatible with older providers whose bounded deadline is 30s.
+export const RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS = 35_000;
 const RETICULUM_RESOURCE_TRANSFER_ZERO_PROGRESS_RETRY_MS = 10_000;
 const RETICULUM_RESOURCE_TRANSFER_STALLED_PROGRESS_RETRY_MS = 20_000;
 
@@ -143,6 +152,7 @@ type TransferProgressWatch = {
   lastProgressAt: number;
   lastProgressBytes: number;
   receivingStarted: boolean;
+  phase?: 'requesting' | 'queued' | 'authorizing' | 'receiving';
 };
 
 export type ReticulumResourceTransferOptions<TRequestWire> = {
@@ -522,6 +532,14 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       this.handleTransferProgress(payload);
       return;
     }
+    if (payload?.status === 'accepted' && payload.transferId) {
+      this.advanceTransferPhase(payload.transferId, 'queued');
+      return;
+    }
+    if (payload?.status === 'auth_sent' && payload.transferId) {
+      this.advanceTransferPhase(payload.transferId, 'authorizing');
+      return;
+    }
     if (payload?.status === 'failed' && payload.transferId) {
       this.handleProviderFailure(payload.transferId, String(payload.reason || 'resource_failed'));
       this.finishTransfer(payload.transferId, false);
@@ -536,7 +554,14 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
   }
 
   private handleProviderFailure(transferId: string, reason: string): void {
-    if (reason === 'resource_session_establish_timeout') {
+    if (
+      reason === 'resource_request_start_timeout' ||
+      reason === 'resource_request_queue_timeout' ||
+      reason === 'resource_authorization_timeout' ||
+      reason === 'resource_auth_refresh_required' ||
+      reason === 'resource_request_timeout' ||
+      reason === 'resource_session_establish_timeout'
+    ) {
       this.temporarilyThrottleProvider(transferId, reason);
       return;
     }
@@ -1050,6 +1075,7 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       lastProgressAt: startedAt,
       lastProgressBytes: 0,
       receivingStarted: false,
+      phase: 'requesting',
     });
     this.markOfferRangesInFlight(state, offer);
     loggerLog(
@@ -1275,10 +1301,12 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
         lastProgressAt: now,
         lastProgressBytes: 0,
         receivingStarted: true,
+        phase: 'receiving',
       });
     } else if (!watch.receivingStarted) {
       watch.receivingStarted = true;
       watch.lastProgressAt = now;
+      watch.phase = 'receiving';
     }
     const state = this.downloads.get(offer.fileHash);
     if (state) this.refreshOfferRangesInFlight(state, offer);
@@ -1732,6 +1760,20 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
     }
   }
 
+  private advanceTransferPhase(
+    transferId: string,
+    phase: 'requesting' | 'queued' | 'authorizing' | 'receiving'
+  ): void {
+    const watch = this.transferProgressWatch.get(transferId);
+    if (!watch) return;
+    const phaseRank = { requesting: 0, queued: 1, authorizing: 2, receiving: 3 } as const;
+    const currentPhase = watch.phase ?? (watch.receivingStarted ? 'receiving' : 'requesting');
+    if (phaseRank[phase] <= phaseRank[currentPhase]) return;
+    watch.phase = phase;
+    watch.receivingStarted = phase === 'receiving';
+    watch.lastProgressAt = this.now();
+  }
+
   private async handleReceivedRange(offer: ReticulumResourceTransferOffer): Promise<void> {
     const state = this.downloads.get(offer.fileHash);
     if (!state) return;
@@ -1938,16 +1980,25 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       const watch = this.transferProgressWatch.get(transferId);
       if (!offer || !watch) continue;
       const receivedBytes = Math.max(0, Math.floor(watch.lastProgressBytes));
-      const thresholdMs = !watch.receivingStarted
-        ? RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS
-        : receivedBytes <= 0
-          ? RETICULUM_RESOURCE_TRANSFER_ZERO_PROGRESS_RETRY_MS
-          : RETICULUM_RESOURCE_TRANSFER_STALLED_PROGRESS_RETRY_MS;
+      const phase = watch.phase ?? (watch.receivingStarted ? 'receiving' : 'requesting');
+      const thresholdMs = phase === 'requesting'
+        ? RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS
+        : phase === 'queued'
+          ? RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS
+          : phase === 'authorizing'
+            ? RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS
+            : receivedBytes <= 0
+              ? RETICULUM_RESOURCE_TRANSFER_ZERO_PROGRESS_RETRY_MS
+              : RETICULUM_RESOURCE_TRANSFER_STALLED_PROGRESS_RETRY_MS;
       const ageMs = now - watch.lastProgressAt;
       if (ageMs >= thresholdMs) {
-        const reason = watch.receivingStarted
-          ? 'resource_range_no_progress_retry'
-          : 'resource_session_establish_timeout';
+        const reason = phase === 'requesting'
+          ? 'resource_request_start_timeout'
+          : phase === 'queued'
+            ? 'resource_request_queue_timeout'
+            : phase === 'authorizing'
+              ? 'resource_authorization_timeout'
+              : 'resource_range_no_progress_retry';
         loggerWarn(
           `[${this.loggerPrefix}] ${reason} fileHash=${offer.fileHash} ` +
             `transfer=${transferId} peer=${(offer.sourcePeerHash || '').slice(0, 16) || 'unknown'} ` +
@@ -1959,7 +2010,11 @@ export class ReticulumResourceTransferManager<TRequestWire> extends EventEmitter
       }
     }
     for (const { transferId, reason } of retries) {
-      if (reason === 'resource_session_establish_timeout') {
+      if (
+        reason === 'resource_request_start_timeout' ||
+        reason === 'resource_request_queue_timeout' ||
+        reason === 'resource_authorization_timeout'
+      ) {
         this.handleProviderFailure(transferId, reason);
       }
       this.cancelTransferForRetry(transferId, reason);

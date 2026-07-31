@@ -5852,10 +5852,12 @@ describe('reticulum chat manager', () => {
     });
   });
 
-  it('does not cache unavailable group membership validation as not-member', async () => {
+  it('briefly backs off unavailable membership validation without caching it as not-member', async () => {
     let calls = 0;
+    let now = 1_000;
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
+      now: () => now,
       validateGroupMember: async () => {
         calls += 1;
         return calls === 1 ? null : true;
@@ -5875,11 +5877,43 @@ describe('reticulum chat manager', () => {
     ).resolves.toBeNull();
     await expect(
       validate(716, 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91')
-    ).resolves.toBe(true);
+    ).resolves.toBeNull();
+    expect(calls).toBe(1);
+    now += 10_000;
     await expect(
       validate(716, 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91')
     ).resolves.toBe(true);
     expect(calls).toBe(2);
+    manager.close();
+  });
+
+  it('uses an authoritative local admin snapshot without remote validation', async () => {
+    const groupId = 717;
+    const localAddress = 'QlocalValidationSnapshot';
+    const validateMember = vi.fn(async () => false);
+    const validateAdmin = vi.fn(async () => false);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: validateMember,
+      validateGroupAdmin: validateAdmin,
+    });
+    manager.setLocalGroupMemberships([
+      {
+        groupId,
+        localAddress,
+        isAdmin: true,
+        adminStatusAuthoritative: true,
+      },
+    ]);
+
+    await expect(
+      (manager as any).isValidatedGroupMember(groupId, localAddress)
+    ).resolves.toBe(false);
+    await expect(
+      (manager as any).getValidatedGroupAdminStatus(groupId, localAddress)
+    ).resolves.toBe('admin');
+    expect(validateMember).toHaveBeenCalledTimes(1);
+    expect(validateAdmin).not.toHaveBeenCalled();
     manager.close();
   });
 
@@ -23133,6 +23167,7 @@ describe('reticulum chat manager', () => {
       encryptedPayload: JSON.stringify(payload),
     });
     let attempts = 0;
+    let now = 20_000;
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -23140,7 +23175,7 @@ describe('reticulum chat manager', () => {
         off: () => undefined,
         fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
       } as any,
-      now: () => 20_000,
+      now: () => now,
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => {
         attempts += 1;
@@ -23155,6 +23190,7 @@ describe('reticulum chat manager', () => {
       manager.getChannels(80, true).map((channel) => channel.channelId)
     ).not.toContain('deferred-admin-channel');
 
+    now += 10_000;
     manager.subscribeGroup(80);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -23619,7 +23655,9 @@ describe('reticulum chat manager', () => {
       validateGroupMember: async () => true,
       validateGroupAdmin: async () => true,
     });
-    manager.setLocalGroupMemberships([{ groupId, localAddress }]);
+    manager.setLocalGroupMemberships([
+      { groupId, localAddress, isAdmin: true },
+    ]);
     manager.subscribeGroup(groupId);
     upsertTestChannel(manager, {
       groupId,

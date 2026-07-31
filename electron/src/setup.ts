@@ -3838,6 +3838,7 @@ ipcMain.handle(
           localAddress?: unknown;
           address?: unknown;
           isAdmin?: unknown;
+          adminStatusAuthoritative?: unknown;
         }
     >
   ) => {

@@ -5,8 +5,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { ReticulumResourceStore, type ReticulumResourceManifest } from './reticulum-resource-store';
 import {
-  RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS,
+  RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
+  RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS,
+  RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_TTL_MS,
   type ReticulumResourceTransferProgress,
   ReticulumResourceTransferManager,
@@ -175,7 +177,7 @@ describe('reticulum resource transfer storage protection', () => {
     );
   });
 
-  it('times out a range session that never starts receiving', () => {
+  it('times out a range request that never reaches provider authorization', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
     let now = 100_000;
     const store = new ReticulumResourceStore({
@@ -213,7 +215,7 @@ describe('reticulum resource transfer storage protection', () => {
       receivingStarted: false,
     });
 
-    now += RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS - 1;
+    now += RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS - 1;
     (transfer as any).retryNoProgressTransfers();
     expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
 
@@ -222,11 +224,121 @@ describe('reticulum resource transfer storage protection', () => {
     expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
       expect.objectContaining({
         transferId,
-        reason: 'resource_session_establish_timeout',
+        reason: 'resource_request_start_timeout',
       })
     );
     expect((transfer as any).activeAccepts.has(transferId)).toBe(false);
     expect((transfer as any).offers.has(transferId)).toBe(false);
+  });
+
+  it('keeps an authorized request alive through the legacy provider window', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: { cancelReticulumResourceDetailed } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [],
+    });
+    transfers.push(transfer);
+
+    const transferId = 'authorizing-range';
+    (transfer as any).offers.set(transferId, {
+      transferId,
+      contextId: 1144,
+      fileHash: 'c'.repeat(64),
+      totalSizeBytes: 1762,
+      sizeBytes: 1762,
+      fileName: 'authorizing.range.bin',
+      mimeType: 'application/octet-stream',
+      ranges: [{ startByte: 0, endByteExclusive: 1762 }],
+      sourcePeerHash: 'd'.repeat(32),
+    });
+    (transfer as any).activeAccepts.add(transferId);
+    (transfer as any).transferProgressWatch.set(transferId, {
+      lastProgressAt: now,
+      lastProgressBytes: 0,
+      receivingStarted: false,
+      phase: 'requesting',
+    });
+
+    transfer.handleResourceEvent({ status: 'auth_sent', transferId });
+    // An older provider may legitimately take up to 30 seconds to reject an
+    // authorization stall, so the receiver must not cancel at the old 12s
+    // request-start deadline.
+    now += 30_001;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
+
+    now += RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS - 30_000;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transferId,
+        reason: 'resource_authorization_timeout',
+      })
+    );
+  });
+
+  it('does not treat a bridge-accepted queued range as a request-start failure', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: { cancelReticulumResourceDetailed } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [],
+    });
+    transfers.push(transfer);
+
+    const transferId = 'queued-range';
+    (transfer as any).offers.set(transferId, {
+      transferId,
+      contextId: 1144,
+      fileHash: 'e'.repeat(64),
+      totalSizeBytes: 1024,
+      sizeBytes: 1024,
+      fileName: 'queued.range.bin',
+      mimeType: 'application/octet-stream',
+      ranges: [{ startByte: 0, endByteExclusive: 1024 }],
+      sourcePeerHash: 'f'.repeat(32),
+    });
+    (transfer as any).activeAccepts.add(transferId);
+    (transfer as any).transferProgressWatch.set(transferId, {
+      lastProgressAt: now,
+      lastProgressBytes: 0,
+      receivingStarted: false,
+      phase: 'requesting',
+    });
+
+    transfer.handleResourceEvent({ status: 'accepted', transferId });
+    now += RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS + 1;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
+
+    now += RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS
+      - RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transferId,
+        reason: 'resource_request_queue_timeout',
+      })
+    );
   });
 
   it('temporarily throttles a timed-out provider and moves the range to another provider', async () => {
@@ -285,7 +397,7 @@ describe('reticulum resource transfer storage protection', () => {
     await (transfer as any).dispatchRequests(state);
 
     expect(acceptedPeers).toEqual([firstPeer]);
-    now += RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS + 1;
+    now += RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS + 1;
     (transfer as any).retryNoProgressTransfers();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -348,7 +460,7 @@ describe('reticulum resource transfer storage protection', () => {
     await (transfer as any).dispatchRequests(state);
     expect(acceptedPeers).toEqual([peer]);
 
-    now += RETICULUM_RESOURCE_TRANSFER_ESTABLISH_TIMEOUT_MS + 1;
+    now += RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS + 1;
     (transfer as any).retryNoProgressTransfers();
     await new Promise((resolve) => setTimeout(resolve, 20));
 

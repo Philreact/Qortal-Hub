@@ -613,6 +613,7 @@ declare global {
               localAddress?: string;
               address?: string;
               isAdmin?: boolean;
+              adminStatusAuthoritative?: boolean;
             }
         >
       ) => Promise<{ success: boolean; error?: string }>;

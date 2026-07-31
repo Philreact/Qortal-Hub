@@ -271,6 +271,7 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
   groupId: number;
   isPrivate: boolean;
   isAdmin: boolean;
+  adminStatusAuthoritative: true;
   joinedAt?: number;
   localAddress?: string;
 }> => {
@@ -312,6 +313,7 @@ const getReticulumGroupMembershipsFromGroupLikeList = (
     groupId,
     isPrivate,
     isAdmin: adminGroupIds.has(groupId),
+    adminStatusAuthoritative: true,
     ...(joinedAt ? { joinedAt } : {}),
     ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
   }));
@@ -1630,10 +1632,18 @@ export const Group = ({
     () =>
       JSON.stringify(
         reticulumMemberships.map(
-          ({ groupId, isPrivate, isAdmin, joinedAt, localAddress }) => ({
+          ({
             groupId,
             isPrivate,
             isAdmin,
+            adminStatusAuthoritative,
+            joinedAt,
+            localAddress,
+          }) => ({
+            groupId,
+            isPrivate,
+            isAdmin,
+            adminStatusAuthoritative,
             joinedAt: joinedAt || 0,
             localAddress: localAddress || '',
           })

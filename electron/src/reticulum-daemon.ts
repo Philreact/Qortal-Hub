@@ -760,7 +760,7 @@ function stopOrphanedReticulumDaemonProcess(pid: number): boolean {
   return false;
 }
 
-function processHasActiveAncestor(
+export function processHasActiveReticulumAppAncestor(
   pid: number,
   parentPidByPid: Map<number, number | null>,
   activeAppPids: Set<number>
@@ -854,7 +854,11 @@ function cleanupOrphanedReticulumDaemonProcessesForConfig(
         if (!commandUsesReticulumConfig(command, configDir)) continue;
         if (
           (parentPid && activeAppPids.has(parentPid)) ||
-          processHasActiveAncestor(pid, parentPidByPid, activeAppPids)
+          processHasActiveReticulumAppAncestor(
+            pid,
+            parentPidByPid,
+            activeAppPids
+          )
         ) {
           continue;
         }
@@ -897,7 +901,7 @@ function cleanupOrphanedReticulumDaemonProcessesForConfig(
       if (!commandUsesReticulumConfig(command, configDir)) continue;
       if (
         activeAppPids.has(parentPid) ||
-        processHasActiveAncestor(pid, parentPidByPid, activeAppPids)
+        processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
       ) {
         continue;
       }
@@ -946,7 +950,7 @@ function cleanupOrphanedReticulumDaemonProcessesForConfig(
     const parentPid = readProcParentPid(pid);
     if (
       (parentPid && activeAppPids.has(parentPid)) ||
-      processHasActiveAncestor(pid, parentPidByPid, activeAppPids)
+      processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
     ) {
       continue;
     }
@@ -981,7 +985,11 @@ function cleanupOrphanedReticulumBridgeProcessesForConfig(
         if (!commandUsesReticulumConfig(command, configDir)) continue;
         if (
           (parentPid && activeAppPids.has(parentPid)) ||
-          processHasActiveAncestor(pid, parentPidByPid, activeAppPids)
+          processHasActiveReticulumAppAncestor(
+            pid,
+            parentPidByPid,
+            activeAppPids
+          )
         ) {
           continue;
         }
@@ -1024,7 +1032,7 @@ function cleanupOrphanedReticulumBridgeProcessesForConfig(
       if (!commandUsesReticulumConfig(command, configDir)) continue;
       if (
         activeAppPids.has(parentPid) ||
-        processHasActiveAncestor(pid, parentPidByPid, activeAppPids)
+        processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
       ) {
         continue;
       }
@@ -1072,7 +1080,7 @@ function cleanupOrphanedReticulumBridgeProcessesForConfig(
     const parentPid = readProcParentPid(pid);
     if (
       (parentPid && activeAppPids.has(parentPid)) ||
-      processHasActiveAncestor(pid, parentPidByPid, activeAppPids)
+      processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
     ) {
       continue;
     }
@@ -1588,9 +1596,20 @@ function recoverReticulumStateForAppLaunchLocked(
   instanceIndex = reticulumInstanceIndex
 ): ReticulumAppLaunchRecovery {
   const activeInstances = getReticulumActiveAppInstances();
+  const activeAppPids = new Set(
+    activeInstances.map((instance) => instance.appPid)
+  );
   let orphanedDaemonFound = false;
   let orphanedDaemonStopped = false;
   let daemonStateCleared = false;
+
+  // A bridge belongs to one Electron process, unlike the shared rnsd daemon.
+  // It is therefore safe (and necessary) to remove bridges which have no live
+  // registered app ancestor even while other Hub instances are running.
+  // Previously all bridge cleanup was skipped in that case, allowing one
+  // abnormal exit per launch to accumulate detached bridge processes.
+  cleanupOrphanedReticulumBridgeProcessesForConfig(activeAppPids);
+
   if (activeInstances.length === 0) {
     const stoppedDaemonProcesses =
       cleanupOrphanedReticulumDaemonProcessesForConfig();
@@ -1598,10 +1617,9 @@ function recoverReticulumStateForAppLaunchLocked(
       orphanedDaemonFound = true;
       orphanedDaemonStopped = true;
     }
-    cleanupOrphanedReticulumBridgeProcessesForConfig();
   } else {
     loggerLog(
-      `[Reticulum] Skipping orphaned daemon/bridge cleanup because ${activeInstances.length} app instance(s) are active.`
+      `[Reticulum] Preserving shared daemon because ${activeInstances.length} app instance(s) are active.`
     );
   }
   const state = readReticulumSharedDaemonState();

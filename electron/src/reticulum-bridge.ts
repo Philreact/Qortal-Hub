@@ -3415,6 +3415,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       PYTHONUNBUFFERED: '1',
       QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
+      // The bridge is detached on Unix so Electron can terminate its whole
+      // process group. Give it an explicit owner as well: if Electron is
+      // killed before its normal shutdown handler runs, the bridge must not
+      // survive as an orphan and keep loading the shared rnsd instance.
+      QORTAL_RETICULUM_OWNER_PID: String(process.pid),
       QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
       QORTAL_LAND_GAMES_TOKEN: this.gameTransportToken,
       QORTAL_LAND_GAMES_INSTANCE_ID: this.gameTransportInstanceId,
@@ -3437,7 +3442,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
     this.child = child;
     loggerLog(
-      `[ReticulumBridge] Spawned child pid=${child.pid ?? 'unknown'} cmd=${launch.cmd}`
+      `[ReticulumBridge] Spawned child pid=${child.pid ?? 'unknown'} owner_pid=${process.pid} cmd=${launch.cmd}`
     );
     const audioOutParent = child.stdio[3];
     this.attachChildWritablePipeErrorGuards(child);
