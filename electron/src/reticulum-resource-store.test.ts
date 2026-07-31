@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import {
+  RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS,
   RETICULUM_RESOURCE_MIN_FREE_DISK_BYTES,
   RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
   ReticulumResourceStore,
@@ -107,6 +108,41 @@ describe('reticulum resource store', () => {
     const imported = fs.readFileSync(store.getVerifiedAssembledPath(manifest.fileHash)!);
     expect(imported.length).toBe(contents.length);
     expect(cryptoHash(imported)).toBe(cryptoHash(contents));
+  });
+
+  it('tracks peer serving separately from local attachment access', () => {
+    const dir = tempDir();
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const sourcePath = path.join(dir, 'served.bin');
+    const contents = Buffer.from('served attachment bytes');
+    fs.writeFileSync(sourcePath, contents);
+    const manifest = store.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-group-resource',
+      fileName: 'served.bin',
+      mimeType: 'application/octet-stream',
+      encrypted: false,
+    });
+    const rawDb = (store as unknown as { db: BetterSqliteDatabase }).db;
+    now += 2 * 60_000;
+
+    store.readByteRange(manifest.fileHash, 0, contents.length);
+
+    const row = rawDb.prepare(`
+      SELECT last_accessed_at, last_served_at
+      FROM reticulum_resources WHERE file_hash = ?
+    `).get(manifest.fileHash) as {
+      last_accessed_at: number | null;
+      last_served_at: number | null;
+    };
+    expect(row.last_accessed_at).toBeNull();
+    expect(row.last_served_at).toBe(now);
   });
 
   it('keeps separate group references for the same file hash', () => {
@@ -1469,6 +1505,176 @@ describe('reticulum resource store', () => {
     });
 
     expect(store.countActiveProviders(manifest.fileHash)).toBe(2);
+  });
+
+  it('reclaims old authored attachments only after a confirmed replica exists', async () => {
+    const dir = tempDir();
+    const now = RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS + 10 * 24 * 60 * 60_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+      policy: {
+        limitBytes: RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
+        authoredCapRatio: 0.2,
+      },
+    });
+    stores.push(store);
+    const sizeBytes = 100 * 1024 * 1024;
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:author',
+      fileName: 'recoverable.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes,
+      fileHash: cryptoHash(Buffer.from('old recoverable authored attachment')),
+      encrypted: false,
+      createdAt: now - RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS - 1,
+      metadata: { groupId: 716 },
+    };
+    store.storeManifest(manifest, {
+      status: 'complete',
+      provenance: 'local_authored',
+      residentBytes: sizeBytes,
+    });
+    store.recordReference({
+      manifest,
+      scopeType: 'group',
+      scopeId: 716,
+      eventId: 'event-recoverable',
+      locallyAuthored: true,
+    });
+    store.recordProviderReceipt({
+      fileHash: manifest.fileHash,
+      providerId: 'peer-a',
+      scopeType: 'group',
+      scopeId: 716,
+      retentionUntil: now + 24 * 60 * 60_000,
+    });
+
+    const result = await store.cleanupStorage('authored-recovery');
+
+    expect(result.freedBytes).toBe(sizeBytes);
+    expect(store.getManifest(manifest.fileHash)).toBeTruthy();
+    expect(store.hasLiveReference(manifest.fileHash, 'group', 716)).toBe(true);
+    expect(store.getStorageStatus().authoredResidentBytes).toBe(0);
+  });
+
+  it('never reclaims the sole known live authored copy', async () => {
+    const dir = tempDir();
+    const now = RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS + 10 * 24 * 60 * 60_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+      policy: {
+        limitBytes: RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
+        authoredCapRatio: 0.2,
+      },
+    });
+    stores.push(store);
+    const sizeBytes = 100 * 1024 * 1024;
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:author',
+      fileName: 'sole-copy.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes,
+      fileHash: cryptoHash(Buffer.from('sole authored attachment copy')),
+      encrypted: false,
+      createdAt: now - RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS - 1,
+      metadata: { groupId: 716 },
+    };
+    store.storeManifest(manifest, {
+      status: 'complete',
+      provenance: 'local_authored',
+      residentBytes: sizeBytes,
+    });
+    store.recordReference({
+      manifest,
+      scopeType: 'group',
+      scopeId: 716,
+      eventId: 'event-sole-copy',
+      locallyAuthored: true,
+    });
+    (store as any).physicalReclaimBytes = 1;
+
+    const result = await store.cleanupStorage('authored-sole-copy');
+
+    expect(result.freedBytes).toBe(0);
+    expect(store.getStorageStatus().authoredResidentBytes).toBe(sizeBytes);
+  });
+
+  it('prefers authored attachments with two replicas and preserves recently used files', async () => {
+    const dir = tempDir();
+    const now = RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS + 10 * 24 * 60 * 60_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+      policy: {
+        limitBytes: RETICULUM_RESOURCE_MIN_LIMIT_BYTES,
+        authoredCapRatio: 0.2,
+      },
+    });
+    stores.push(store);
+    const rawDb = (store as unknown as { db: BetterSqliteDatabase }).db;
+    const sizeBytesByIndex = [30, 30, 40].map((megabytes) => megabytes * 1024 * 1024);
+    const oldCreatedAt = now - RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS - 1;
+    const manifests = ['two-replicas', 'one-replica', 'recently-used'].map(
+      (name, index): ReticulumResourceManifest => ({
+        namespace: 'reticulum-group-resource',
+        ownerId: '716:author',
+        fileName: `${name}.bin`,
+        mimeType: 'application/octet-stream',
+        sizeBytes: sizeBytesByIndex[index],
+        fileHash: cryptoHash(Buffer.from(`authored attachment ${name}`)),
+        encrypted: false,
+        createdAt: oldCreatedAt,
+        metadata: { groupId: 716 },
+      })
+    );
+    for (const [index, manifest] of manifests.entries()) {
+      store.storeManifest(manifest, {
+        status: 'complete',
+        provenance: 'local_authored',
+        residentBytes: manifest.sizeBytes,
+      });
+      store.recordReference({
+        manifest,
+        scopeType: 'group',
+        scopeId: 716,
+        eventId: `event-authored-${index}`,
+        locallyAuthored: true,
+      });
+      store.recordProviderReceipt({
+        fileHash: manifest.fileHash,
+        providerId: 'peer-a',
+        scopeType: 'group',
+        scopeId: 716,
+        retentionUntil: now + 24 * 60 * 60_000,
+      });
+    }
+    store.recordProviderReceipt({
+      fileHash: manifests[0].fileHash,
+      providerId: 'peer-b',
+      scopeType: 'group',
+      scopeId: 716,
+      retentionUntil: now + 24 * 60 * 60_000,
+    });
+    rawDb.prepare(`
+      UPDATE reticulum_resources SET last_accessed_at = ? WHERE file_hash = ?
+    `).run(now - 24 * 60 * 60_000, manifests[2].fileHash);
+
+    const result = await store.cleanupStorage('authored-replica-priority');
+    const residentBytes = (fileHash: string) => Number((rawDb.prepare(`
+      SELECT resident_bytes FROM reticulum_resources WHERE file_hash = ?
+    `).get(fileHash) as { resident_bytes: number }).resident_bytes);
+
+    expect(result.freedBytes).toBe(sizeBytesByIndex[0]);
+    expect(residentBytes(manifests[0].fileHash)).toBe(0);
+    expect(residentBytes(manifests[1].fileHash)).toBe(sizeBytesByIndex[1]);
+    expect(residentBytes(manifests[2].fileHash)).toBe(sizeBytesByIndex[2]);
   });
 
   it('keeps discard ordered behind an in-flight asynchronous range write', async () => {

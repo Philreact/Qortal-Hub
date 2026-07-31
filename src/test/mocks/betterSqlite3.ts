@@ -2465,7 +2465,9 @@ class Statement {
         }
       } else if (this.sql.includes('SET last_served_at = ?')) {
         row.last_served_at = values[0];
-        row.last_accessed_at = values[1];
+        if (this.sql.includes('last_accessed_at = ?')) {
+          row.last_accessed_at = values[1];
+        }
         row.access_count = Number(row.access_count || 0) + 1;
       } else if (this.sql.includes('SET last_accessed_at = ?')) {
         row.last_accessed_at = values[0];

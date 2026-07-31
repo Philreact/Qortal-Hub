@@ -20,6 +20,8 @@ const DEFAULT_REMOTE_GUARANTEE_RATIO = 0.35;
 const DEFAULT_TRANSFER_RESERVE_RATIO = 0.15;
 const DEFAULT_STALE_PARTIAL_AGE_MS = 24 * 60 * 60_000;
 const COMPLETED_DOWNLOAD_RETENTION_MS = 30 * 60_000;
+export const RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS =
+  30 * 24 * 60 * 60_000;
 const ACCESS_TOUCH_INTERVAL_MS = 60_000;
 const STORAGE_MAINTENANCE_INTERVAL_MS = 15 * 60_000;
 const STARTUP_RECONCILE_BATCH_SIZE = 256;
@@ -825,7 +827,7 @@ export class ReticulumResourceStore {
     );
   }
 
-  getVerifiedAssembledPath(fileHash: string): string | null {
+  getVerifiedAssembledPath(fileHash: string, recordAccess = true): string | null {
     const row = this.stmtGetResource.get(String(fileHash || '').trim().toLowerCase()) as
       | ResourceRow
       | undefined;
@@ -835,7 +837,7 @@ export class ReticulumResourceStore {
     try {
       const stat = fs.statSync(row.assembled_path);
       if (!stat.isFile() || stat.size !== row.size_bytes) return null;
-      this.touchAccess(row.file_hash);
+      if (recordAccess) this.touchAccess(row.file_hash);
       return row.assembled_path;
     } catch {
       return null;
@@ -1732,7 +1734,7 @@ export class ReticulumResourceStore {
     const leaseId = this.acquireLease(manifest.fileHash, 'seed', 60_000);
     try {
       this.validateRange(manifest, startByte, endByteExclusive);
-      const sourcePath = this.assembleResource(manifest.fileHash);
+      const sourcePath = this.assembleResource(manifest.fileHash, false);
       this.touchServed(manifest.fileHash);
       const sizeBytes = endByteExclusive - startByte;
       const tempPath = this.createPlaintextTempPath(
@@ -1781,7 +1783,7 @@ export class ReticulumResourceStore {
     let tempPath = '';
     try {
       this.validateRange(manifest, startByte, endByteExclusive);
-      const sourcePath = await this.assembleResourceAsync(manifest.fileHash);
+      const sourcePath = await this.assembleResourceAsync(manifest.fileHash, false);
       this.touchServed(manifest.fileHash);
       tempPath = this.createPlaintextTempPath(
         manifest.fileHash,
@@ -1869,14 +1871,17 @@ export class ReticulumResourceStore {
     }
   }
 
-  assembleResource(fileHash: string): string {
+  assembleResource(fileHash: string, recordAccess = true): string {
     const manifest = this.getManifest(fileHash);
     if (!manifest) throw new Error('Unknown resource manifest');
     if (this.evictingFileHashes.has(manifest.fileHash)) {
       throw new Error('Resource is currently being reclaimed');
     }
     const row = this.stmtGetResource.get(manifest.fileHash) as ResourceRow | undefined;
-    const verifiedPath = this.getVerifiedAssembledPath(manifest.fileHash);
+    const verifiedPath = this.getVerifiedAssembledPath(
+      manifest.fileHash,
+      recordAccess
+    );
     if (verifiedPath) return verifiedPath;
     if (row?.assembled_path && fs.existsSync(row.assembled_path)) {
       try {
@@ -1896,6 +1901,7 @@ export class ReticulumResourceStore {
             this.db.prepare(`
               UPDATE reticulum_resources SET resident_bytes = ?, updated_at = ? WHERE file_hash = ?
             `).run(manifest.sizeBytes, now, manifest.fileHash);
+            if (recordAccess) this.touchAccess(manifest.fileHash);
             return row.assembled_path;
           }
         }
@@ -1942,18 +1948,23 @@ export class ReticulumResourceStore {
       UPDATE reticulum_resources SET resident_bytes = ?, updated_at = ? WHERE file_hash = ?
     `).run(manifest.sizeBytes, this.now(), manifest.fileHash);
     this.scheduleCleanup('resource_assembled');
+    if (recordAccess) this.touchAccess(manifest.fileHash);
     return assembledPath;
   }
 
-  assembleResourceAsync(fileHash: string): Promise<string> {
+  assembleResourceAsync(fileHash: string, recordAccess = true): Promise<string> {
     const normalizedHash = String(fileHash || '').trim().toLowerCase();
     const existing = this.pendingAssemblies.get(normalizedHash);
-    if (existing) return existing;
-    const pending = this.finalizeResourceWithProtection(normalizedHash).finally(() => {
+    const pending =
+      existing ??
+      this.finalizeResourceWithProtection(normalizedHash).finally(() => {
         this.pendingAssemblies.delete(normalizedHash);
       });
-    this.pendingAssemblies.set(normalizedHash, pending);
-    return pending;
+    if (!existing) this.pendingAssemblies.set(normalizedHash, pending);
+    return pending.then((assembledPath) => {
+      if (recordAccess) this.touchAccess(normalizedHash);
+      return assembledPath;
+    });
   }
 
   private async finalizeResourceWithProtection(fileHash: string): Promise<string> {
@@ -1974,7 +1985,7 @@ export class ReticulumResourceStore {
     if (this.evictingFileHashes.has(manifest.fileHash)) {
       throw new Error('Resource is currently being reclaimed');
     }
-    const verifiedPath = this.getVerifiedAssembledPath(manifest.fileHash);
+    const verifiedPath = this.getVerifiedAssembledPath(manifest.fileHash, false);
     if (verifiedPath) return verifiedPath;
     const row = this.stmtGetResource.get(manifest.fileHash) as ResourceRow | undefined;
     const sourcePath = row?.assembled_path && fs.existsSync(row.assembled_path)
@@ -2241,11 +2252,15 @@ export class ReticulumResourceStore {
 
   private touchServed(fileHash: string): void {
     const now = this.now();
+    // Serving is tracked separately from a local open. The receiver confirms
+    // its complete replica after transfer, so treating that transfer as local
+    // use would make the 30-day recovery threshold and 24-hour confirmation
+    // window mutually exclusive.
     this.db.prepare(`
       UPDATE reticulum_resources
-      SET last_served_at = ?, last_accessed_at = ?, access_count = access_count + 1
+      SET last_served_at = ?, access_count = access_count + 1
       WHERE file_hash = ?
-    `).run(now, now, fileHash);
+    `).run(now, fileHash);
   }
 
   private pruneTransientState(): void {
@@ -2415,7 +2430,32 @@ export class ReticulumResourceStore {
     if (row.provenance !== 'local_authored' && !row.last_accessed_at) return 4;
     if (row.provenance !== 'local_authored' && row.provider_count > 0) return 5;
     if (row.provenance !== 'local_authored') return 6;
+    const authoredLastUseAt = Math.max(
+      Number(row.created_at || 0),
+      Number(row.last_accessed_at || 0)
+    );
+    if (
+      row.status === 'complete' &&
+      row.provider_count > 0 &&
+      now - authoredLastUseAt >=
+        RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS
+    ) {
+      // Provider receipts are short-lived confirmations that another peer has
+      // the complete bytes. Prefer two or more replicas; one remains the final
+      // cleanup tier after all remote-cache candidates.
+      return row.provider_count >= 2 ? 7 : 8;
+    }
     return null;
+  }
+
+  private cleanupSortAccessAt(row: CleanupCandidate): number {
+    if (row.provenance === 'local_authored') {
+      return Math.max(
+        Number(row.created_at || 0),
+        Number(row.last_accessed_at || 0)
+      );
+    }
+    return Number(row.last_accessed_at || row.updated_at || 0);
   }
 
   private scheduleCleanup(reason: string): void {
@@ -2658,7 +2698,7 @@ export class ReticulumResourceStore {
           tier,
           cursor: tier == null ? null : {
             tier,
-            sortAccessAt: Number(row.last_accessed_at || row.updated_at || 0),
+            sortAccessAt: this.cleanupSortAccessAt(row),
             residentBytes: Number(row.resident_bytes || 0),
             fileHash: row.file_hash,
           },
@@ -3127,6 +3167,18 @@ export class ReticulumResourceStore {
       if (row.status !== 'complete' && now - row.updated_at < this.policy.stalePartialAgeMs) {
         refreshTimes.push(row.updated_at + this.policy.stalePartialAgeMs);
       }
+      if (
+        row.provenance === 'local_authored' &&
+        row.status === 'complete' &&
+        row.provider_count > 0
+      ) {
+        const authoredRecoveryEligibleAt =
+          this.cleanupSortAccessAt(row) +
+          RETICULUM_RESOURCE_AUTHORED_RECOVERY_MIN_IDLE_MS;
+        if (authoredRecoveryEligibleAt > now) {
+          refreshTimes.push(authoredRecoveryEligibleAt);
+        }
+      }
       upsert.run(
         row.file_hash,
         Math.max(0, Number(row.resident_bytes || 0)),
@@ -3135,7 +3187,7 @@ export class ReticulumResourceStore {
         Math.max(0, Number(row.active_lease_count || 0)),
         isProtected ? 1 : 0,
         tier,
-        Number(row.last_accessed_at || row.updated_at || 0),
+        this.cleanupSortAccessAt(row),
         refreshTimes.length > 0 ? Math.min(...refreshTimes) : null,
         now
       );
@@ -3164,10 +3216,9 @@ export class ReticulumResourceStore {
 
   private async ensureCleanupStateFresh(): Promise<void> {
     const pending = this.cleanupStateRefreshPromise;
-    if (pending) {
-      await pending;
-      return;
-    }
+    if (pending) await pending;
+    // Rows can become dirty after a scheduled refresh has selected its final
+    // batch. Drain once more before making quota or eviction decisions.
     await this.refreshAllDirtyCleanupState();
   }
 
