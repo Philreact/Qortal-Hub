@@ -340,6 +340,9 @@ export const ChatDirect = ({
   const { confirmCallSwitch } = useCallSwitchGuard();
 
   const peerOnline = useIsOnline(selectedDirect?.address);
+  const isSelfDirect = Boolean(
+    myAddress && selectedDirect?.address === myAddress
+  );
 
   const directVoiceChatId = useMemo(() => {
     if (!myAddress || !selectedDirect?.address) return null;
@@ -490,6 +493,68 @@ export const ChatDirect = ({
   const reticulumDirectUiEnabled = Boolean(
     reticulumChatEnabled || (reticulumDirectEnabled && !isNewChat)
   );
+  const [reticulumDirectCallHistory, setReticulumDirectCallHistory] = useState<
+    any[]
+  >([]);
+  const [reticulumDirectCallHistoryReady, setReticulumDirectCallHistoryReady] =
+    useState(false);
+  useEffect(() => {
+    const ownerAddress = String(myAddress || '').trim();
+    const peerAddress = String(selectedDirect?.address || '').trim();
+    if (!reticulumDirectUiEnabled || !ownerAddress || !peerAddress) {
+      setReticulumDirectCallHistory([]);
+      setReticulumDirectCallHistoryReady(false);
+      return;
+    }
+    let cancelled = false;
+    setReticulumDirectCallHistoryReady(false);
+    const reload = async () => {
+      const records = await window.reticulumChat
+        ?.getDirectCallHistory(ownerAddress, peerAddress, 100)
+        .catch(() => []);
+      if (!cancelled) {
+        setReticulumDirectCallHistory(records || []);
+        setReticulumDirectCallHistoryReady(true);
+      }
+    };
+    void reload();
+    const off = window.reticulumChat?.onDirectCallHistory?.((payload: any) => {
+      const record = payload?.record;
+      if (
+        record?.ownerAddress === ownerAddress &&
+        record?.peerAddress === peerAddress
+      )
+        void reload();
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [myAddress, reticulumDirectUiEnabled, selectedDirect?.address]);
+
+  const reticulumDirectMessagesWithCalls = useMemo(() => {
+    if (!reticulumDirectUiEnabled || reticulumDirectCallHistory.length === 0) {
+      return reticulumDirectMessages;
+    }
+    const calls = reticulumDirectCallHistory.map((record: any) => ({
+      signature: `direct-call:${record.callId}`,
+      timestamp: Number(record.endedAt || 0),
+      sender:
+        record.direction === 'incoming'
+          ? record.peerAddress
+          : record.ownerAddress,
+      directCallHistory: record,
+    }));
+    return [...reticulumDirectMessages, ...calls].sort(
+      (a: any, b: any) =>
+        Number(a?.timestamp || 0) - Number(b?.timestamp || 0) ||
+        String(a?.signature || '').localeCompare(String(b?.signature || ''))
+    );
+  }, [
+    reticulumDirectCallHistory,
+    reticulumDirectMessages,
+    reticulumDirectUiEnabled,
+  ]);
   const reticulumDirectPending =
     !isNewChat && reticulumDirectUiEnabled && !reticulumDirectEnabled;
   const [reticulumDirectLinkActive, setReticulumDirectLinkActive] =
@@ -520,6 +585,7 @@ export const ChatDirect = ({
     if (
       !reticulumDirectUiEnabled ||
       isNewChat ||
+      isSelfDirect ||
       !myAddress ||
       !peerAddress ||
       !window.reticulumChat?.getSilence
@@ -563,7 +629,13 @@ export const ChatDirect = ({
       cancelled = true;
       offSilence?.();
     };
-  }, [isNewChat, myAddress, reticulumDirectUiEnabled, selectedDirect?.address]);
+  }, [
+    isNewChat,
+    isSelfDirect,
+    myAddress,
+    reticulumDirectUiEnabled,
+    selectedDirect?.address,
+  ]);
 
   const unsilenceReticulumDirectPeer = useCallback(async () => {
     const peerAddress = String(selectedDirect?.address || '').trim();
@@ -607,6 +679,7 @@ export const ChatDirect = ({
     async (active: boolean, allowGrace = false) => {
       if (
         !reticulumDirectEnabled ||
+        isSelfDirect ||
         !selectedDirect?.address ||
         isNewChat ||
         !peerOnline ||
@@ -623,6 +696,7 @@ export const ChatDirect = ({
     },
     [
       isNewChat,
+      isSelfDirect,
       peerOnline,
       reticulumDirectEnabled,
       reticulumDirectLinkActive,
@@ -634,6 +708,7 @@ export const ChatDirect = ({
   useEffect(() => {
     if (
       !reticulumDirectEnabled ||
+      isSelfDirect ||
       !myAddress ||
       !selectedDirect?.address ||
       isNewChat ||
@@ -663,6 +738,7 @@ export const ChatDirect = ({
     };
   }, [
     isNewChat,
+    isSelfDirect,
     myAddress,
     peerOnline,
     clearReticulumDirectTypingStopTimer,
@@ -859,9 +935,14 @@ export const ChatDirect = ({
   }, [selectedDirect?.address]);
 
   useEffect(() => {
-    if (!reticulumDirectEnabled || !selectedDirect?.address || !isActive)
+    if (
+      !reticulumDirectEnabled ||
+      !reticulumDirectCallHistoryReady ||
+      !selectedDirect?.address ||
+      !isActive
+    )
       return;
-    const latestTimestamp = reticulumDirectMessages.reduce(
+    const latestTimestamp = reticulumDirectMessagesWithCalls.reduce(
       (max, message: any) => Math.max(max, Number(message?.timestamp || 0)),
       0
     );
@@ -870,7 +951,8 @@ export const ChatDirect = ({
   }, [
     markReticulumDirectRead,
     reticulumDirectEnabled,
-    reticulumDirectMessages,
+    reticulumDirectCallHistoryReady,
+    reticulumDirectMessagesWithCalls,
     isActive,
     selectedDirect?.address,
   ]);
@@ -2702,24 +2784,26 @@ export const ChatDirect = ({
                 selectedDirect?.address ||
                 'Direct Message'}
             </Typography>
-            {selectedDirect?.name && selectedDirect?.address && (
-              <Typography
-                sx={{
-                  color: theme.palette.text.secondary,
-                  fontSize: 11,
-                  lineHeight: 1.3,
-                  mt: 0.25,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {selectedDirect.address}
-              </Typography>
-            )}
+            {!isSelfDirect &&
+              selectedDirect?.name &&
+              selectedDirect?.address && (
+                <Typography
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontSize: 11,
+                    lineHeight: 1.3,
+                    mt: 0.25,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {selectedDirect.address}
+                </Typography>
+              )}
           </Box>
         )}
-        {!isNewChat && selectedDirect?.address && (
+        {!isNewChat && selectedDirect?.address && !isSelfDirect && (
           <Box
             sx={{
               alignItems: 'center',
@@ -3189,7 +3273,9 @@ export const ChatDirect = ({
           onReply={onReply}
           chatId={selectedDirect?.address}
           initialMessages={
-            reticulumDirectUiEnabled ? reticulumDirectMessages : messages
+            reticulumDirectUiEnabled
+              ? reticulumDirectMessagesWithCalls
+              : messages
           }
           myAddress={myAddress}
           tempMessages={tempMessages}
@@ -3198,7 +3284,10 @@ export const ChatDirect = ({
           qchatFileTransferStates={qchatFileTransferStates}
           qchatCompletedTransfers={qchatCompletedTransfers}
           reticulumChatEnabled={reticulumDirectUiEnabled}
-          reticulumInitialHistoryReady={reticulumDirectInitialHistoryReady}
+          reticulumInitialHistoryReady={
+            reticulumDirectInitialHistoryReady &&
+            reticulumDirectCallHistoryReady
+          }
         />
         {reticulumDirectUiEnabled && (
           <Typography

@@ -22,6 +22,7 @@ type MockStore = {
   reticulumDmExpiredEventMarkers: ReticulumChatRow[];
   reticulumDmExpiryPreferences: ReticulumChatRow[];
   reticulumDmReadWatermarks: ReticulumChatRow[];
+  reticulumDirectCallHistory: ReticulumChatRow[];
   reticulumDeviceReadStates: ReticulumChatRow[];
   reticulumPendingDeviceReadStates: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
@@ -68,6 +69,48 @@ class Statement {
         }));
       }
       return [...this.store.reticulumChatAuthorSequenceLeases];
+    }
+    if (this.sql.includes('FROM rchat_direct_call_history')) {
+      const ownerAddress = args[0];
+      const peerFiltered = this.sql.includes('AND peer_address = ?');
+      const peerAddress = peerFiltered ? args[1] : undefined;
+      const limit = Number(args[peerFiltered ? 2 : 1]) || 250;
+      let rows = this.store.reticulumDirectCallHistory.filter(
+        (row) =>
+          row.owner_address === ownerAddress &&
+          (!peerFiltered || row.peer_address === peerAddress)
+      );
+      if (this.sql.includes("direction = 'incoming' AND outcome = 'missed'")) {
+        rows = rows.filter(
+          (row) =>
+            row.direction === 'incoming' &&
+            row.outcome === 'missed' &&
+            Number(row.read_at) === 0
+        );
+      }
+      rows = rows.sort(
+        (a, b) =>
+          Number(b.ended_at) - Number(a.ended_at) ||
+          String(b.call_id).localeCompare(String(a.call_id))
+      );
+      if (!this.sql.includes('AS unread_missed_count'))
+        return rows.slice(0, limit);
+      const latestByPeer = new Map<string, ReticulumChatRow>();
+      for (const row of rows) {
+        if (!latestByPeer.has(row.peer_address))
+          latestByPeer.set(row.peer_address, row);
+      }
+      return [...latestByPeer.values()].map((row) => ({
+        ...row,
+        unread_missed_count: this.store.reticulumDirectCallHistory.filter(
+          (candidate) =>
+            candidate.owner_address === ownerAddress &&
+            candidate.peer_address === row.peer_address &&
+            candidate.direction === 'incoming' &&
+            candidate.outcome === 'missed' &&
+            Number(candidate.read_at) === 0
+        ).length,
+      }));
     }
     if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {
       const [groupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
@@ -904,6 +947,12 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_direct_call_history')) {
+      const [ownerAddress, callId] = args;
+      return this.store.reticulumDirectCallHistory.find(
+        (row) => row.owner_address === ownerAddress && row.call_id === callId
+      );
+    }
     if (this.sql.includes('FROM rchat_dm_expiry_preferences')) {
       const [ownerAddress, peerAddress] = args;
       return this.store.reticulumDmExpiryPreferences.find(
@@ -1446,6 +1495,71 @@ class Statement {
       if (index >= 0) this.store.reticulumDmExpiryPreferences[index] = row;
       else this.store.reticulumDmExpiryPreferences.push(row);
       return { changes: 1, lastInsertRowid: Math.max(1, index + 1) };
+    }
+    if (this.sql.includes('INTO rchat_direct_call_history')) {
+      const values = args;
+      const [
+        ownerAddress,
+        callId,
+        conversationId,
+        peerAddress,
+        direction,
+        outcome,
+        startedAt,
+        endedAt,
+        updatedAt,
+        authorPublicKey,
+        signature,
+        readAt,
+      ] = values;
+      const row = {
+        owner_address: ownerAddress,
+        call_id: callId,
+        conversation_id: conversationId,
+        peer_address: peerAddress,
+        direction,
+        outcome,
+        started_at: startedAt,
+        ended_at: endedAt,
+        updated_at: updatedAt,
+        author_public_key: authorPublicKey,
+        signature,
+        read_at: readAt,
+      };
+      const index = this.store.reticulumDirectCallHistory.findIndex(
+        (candidate) =>
+          candidate.owner_address === ownerAddress &&
+          candidate.call_id === callId
+      );
+      if (index >= 0) {
+        row.read_at = Math.max(
+          Number(this.store.reticulumDirectCallHistory[index].read_at || 0),
+          Number(row.read_at || 0)
+        );
+        this.store.reticulumDirectCallHistory[index] = row;
+      } else this.store.reticulumDirectCallHistory.push(row);
+      return { changes: 1, lastInsertRowid: index + 1 };
+    }
+    if (
+      this.sql.includes('UPDATE rchat_direct_call_history') &&
+      this.sql.includes('SET read_at')
+    ) {
+      const [readAt, ownerAddress, conversationId, upToTimestamp] = args;
+      let changes = 0;
+      for (const row of this.store.reticulumDirectCallHistory) {
+        if (
+          row.owner_address === ownerAddress &&
+          row.conversation_id === conversationId &&
+          row.direction === 'incoming' &&
+          row.outcome === 'missed' &&
+          Number(row.ended_at) <= Number(upToTimestamp) &&
+          Number(row.read_at) === 0
+        ) {
+          row.read_at = Math.max(Number(row.read_at), Number(readAt));
+          changes += 1;
+        }
+      }
+      return { changes, lastInsertRowid: 0 };
     }
     if (
       this.sql.includes('INSERT OR IGNORE INTO rchat_dm_expired_event_markers')
@@ -2948,6 +3062,7 @@ class MockDatabase {
       reticulumDmExpiredEventMarkers: [],
       reticulumDmExpiryPreferences: [],
       reticulumDmReadWatermarks: [],
+      reticulumDirectCallHistory: [],
       reticulumDeviceReadStates: [],
       reticulumPendingDeviceReadStates: [],
       reticulumResources: [],

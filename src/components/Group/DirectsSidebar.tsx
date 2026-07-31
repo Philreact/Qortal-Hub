@@ -15,6 +15,7 @@ import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import CreateIcon from '@mui/icons-material/Create';
 import PersonOffIcon from '@mui/icons-material/PersonOff';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
+import PhoneMissedRoundedIcon from '@mui/icons-material/PhoneMissedRounded';
 import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { useAtomValue } from 'jotai';
@@ -44,11 +45,14 @@ const DirectsPresenceBadge = React.memo(
   ({
     address,
     children,
+    disabled = false,
   }: {
     address: string;
     children: React.ReactNode;
+    disabled?: boolean;
   }) => {
     const status = useAtomValue(effectivePresenceStatusAtomFamily(address));
+    if (disabled) return <>{children}</>;
     return (
       <PresenceStatusBadge online={status !== null} status={status}>
         {children}
@@ -146,164 +150,164 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             width: '100%',
           }}
         >
-        <ButtonBase
-          onClick={() => {
-            setDesktopSideView('groups');
-          }}
-          sx={{
-            position: 'relative',
-            borderRadius: '12px',
-            flex: 1,
-            minWidth: 0,
-            padding: '14px 12px',
-            backgroundColor:
-              desktopSideView === 'groups'
-                ? theme.palette.action.selected
-                : 'transparent',
-            transition: 'background-color 0.15s ease',
-            '&:hover': {
+          <ButtonBase
+            onClick={() => {
+              setDesktopSideView('groups');
+            }}
+            sx={{
+              position: 'relative',
+              borderRadius: '12px',
+              flex: 1,
+              minWidth: 0,
+              padding: '14px 12px',
               backgroundColor:
                 desktopSideView === 'groups'
                   ? theme.palette.action.selected
-                  : theme.palette.action.hover,
-            },
-          }}
-        >
-          {(groupChatHasUnread || groupsAnnHasUnread) && (
-            <Box
-              sx={{
-                position: 'absolute',
-                top: 8,
-                right: 8,
-                width: 14,
-                height: 14,
-                borderRadius: '50%',
-                backgroundColor: theme.palette.primary.main,
-                border: `2px solid ${theme.palette.background.paper}`,
-              }}
-              aria-hidden
-            />
-          )}
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '10px',
-              justifyContent: 'center',
-              width: '100%',
+                  : 'transparent',
+              transition: 'background-color 0.15s ease',
+              '&:hover': {
+                backgroundColor:
+                  desktopSideView === 'groups'
+                    ? theme.palette.action.selected
+                    : theme.palette.action.hover,
+              },
             }}
           >
-            <HubsIcon
-              height={26}
-              width={26}
-              color={
-                groupChatHasUnread || groupsAnnHasUnread
-                  ? theme.palette.primary.main
-                  : desktopSideView === 'groups'
-                    ? theme.palette.text.primary
-                    : theme.palette.text.secondary
-              }
-            />
-            <Typography
+            {(groupChatHasUnread || groupsAnnHasUnread) && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 8,
+                  right: 8,
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  backgroundColor: theme.palette.primary.main,
+                  border: `2px solid ${theme.palette.background.paper}`,
+                }}
+                aria-hidden
+              />
+            )}
+            <Box
               sx={{
-                color:
+                alignItems: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                justifyContent: 'center',
+                width: '100%',
+              }}
+            >
+              <HubsIcon
+                height={26}
+                width={26}
+                color={
                   groupChatHasUnread || groupsAnnHasUnread
                     ? theme.palette.primary.main
                     : desktopSideView === 'groups'
                       ? theme.palette.text.primary
-                      : theme.palette.text.secondary,
-                fontFamily: 'Inter',
-                fontSize: '13px',
-                fontWeight: 500,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {t('group:group.group_other', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-          </Box>
-        </ButtonBase>
+                      : theme.palette.text.secondary
+                }
+              />
+              <Typography
+                sx={{
+                  color:
+                    groupChatHasUnread || groupsAnnHasUnread
+                      ? theme.palette.primary.main
+                      : desktopSideView === 'groups'
+                        ? theme.palette.text.primary
+                        : theme.palette.text.secondary,
+                  fontFamily: 'Inter',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t('group:group.group_other', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Typography>
+            </Box>
+          </ButtonBase>
 
-        <ButtonBase
-          onClick={() => {
-            setDesktopSideView('directs');
-          }}
-          sx={{
-            position: 'relative',
-            borderRadius: '12px',
-            flex: 1,
-            minWidth: 0,
-            padding: '14px 12px',
-            backgroundColor:
-              desktopSideView === 'directs'
-                ? theme.palette.action.selected
-                : 'transparent',
-            transition: 'background-color 0.15s ease',
-            '&:hover': {
+          <ButtonBase
+            onClick={() => {
+              setDesktopSideView('directs');
+            }}
+            sx={{
+              position: 'relative',
+              borderRadius: '12px',
+              flex: 1,
+              minWidth: 0,
+              padding: '14px 12px',
               backgroundColor:
                 desktopSideView === 'directs'
                   ? theme.palette.action.selected
-                  : theme.palette.action.hover,
-            },
-          }}
-        >
-          {directChatHasUnread && (
-            <Box
-              sx={{
-                position: 'absolute',
-                top: 8,
-                right: 8,
-                width: 14,
-                height: 14,
-                borderRadius: '50%',
-                backgroundColor: theme.palette.primary.main,
-                border: `2px solid ${theme.palette.background.paper}`,
-              }}
-              aria-hidden
-            />
-          )}
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '10px',
-              justifyContent: 'center',
-              width: '100%',
+                  : 'transparent',
+              transition: 'background-color 0.15s ease',
+              '&:hover': {
+                backgroundColor:
+                  desktopSideView === 'directs'
+                    ? theme.palette.action.selected
+                    : theme.palette.action.hover,
+              },
             }}
           >
-            <MessagingIcon
-              height={26}
-              width={26}
-              color={
-                directChatHasUnread
-                  ? theme.palette.primary.main
-                  : desktopSideView === 'directs'
-                    ? theme.palette.text.primary
-                    : theme.palette.text.secondary
-              }
-            />
-            <Typography
+            {directChatHasUnread && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 8,
+                  right: 8,
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  backgroundColor: theme.palette.primary.main,
+                  border: `2px solid ${theme.palette.background.paper}`,
+                }}
+                aria-hidden
+              />
+            )}
+            <Box
               sx={{
-                color: directChatHasUnread
-                  ? theme.palette.primary.main
-                  : desktopSideView === 'directs'
-                    ? theme.palette.text.primary
-                    : theme.palette.text.secondary,
-                fontFamily: 'Inter',
-                fontSize: '13px',
-                fontWeight: 500,
-                whiteSpace: 'nowrap',
+                alignItems: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                justifyContent: 'center',
+                width: '100%',
               }}
             >
-              {t('group:group.dm', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-          </Box>
-        </ButtonBase>
+              <MessagingIcon
+                height={26}
+                width={26}
+                color={
+                  directChatHasUnread
+                    ? theme.palette.primary.main
+                    : desktopSideView === 'directs'
+                      ? theme.palette.text.primary
+                      : theme.palette.text.secondary
+                }
+              />
+              <Typography
+                sx={{
+                  color: directChatHasUnread
+                    ? theme.palette.primary.main
+                    : desktopSideView === 'directs'
+                      ? theme.palette.text.primary
+                      : theme.palette.text.secondary,
+                  fontFamily: 'Inter',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t('group:group.dm', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Typography>
+            </Box>
+          </ButtonBase>
         </Box>
       )}
       {reticulumChatEnabled && (
@@ -417,6 +421,25 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                 timestampEnterData[direct?.address] < direct?.timestamp);
             const hasReticulumUnread =
               reticulumChatEnabled && Number(direct?.unreadCount || 0) > 0;
+            const hasMissedCall =
+              reticulumChatEnabled &&
+              Number(direct?.unreadMissedCallCount || 0) > 0;
+            const lastActivityIsCall = Boolean(
+              reticulumChatEnabled &&
+              direct?.lastCall &&
+              Number(direct.lastCall.endedAt || 0) >=
+                Number(direct?.lastMessageTimestamp || 0)
+            );
+            const callActivityLabel =
+              direct?.lastCall?.outcome === 'missed'
+                ? 'Missed call'
+                : direct?.lastCall?.outcome === 'declined'
+                  ? 'Declined call'
+                  : direct?.lastCall?.outcome === 'no_answer'
+                    ? 'No answer'
+                    : direct?.lastCall?.outcome === 'cancelled'
+                      ? 'Cancelled call'
+                      : 'Voice call';
             const isDmFriend = Boolean(
               direct?.address && dmFriendsByAddress[direct.address]
             );
@@ -477,7 +500,10 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                   }}
                 >
                   <ListItemAvatar sx={{ minWidth: 44, marginRight: 0 }}>
-                    <DirectsPresenceBadge address={direct?.address}>
+                    <DirectsPresenceBadge
+                      address={direct?.address}
+                      disabled={direct?.savedMessages === true}
+                    >
                       <Avatar
                         sx={{
                           height: reticulumChatEnabled ? 34 : 40,
@@ -535,16 +561,19 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                         ? t('core:message.generic.no_messages', {
                             postProcess: 'capitalizeFirstChar',
                           })
-                        : t('group:last_message_date', {
-                            date: formatEmailDate(direct?.timestamp),
-                            postProcess: 'capitalizeFirstChar',
-                          })
+                        : lastActivityIsCall
+                          ? `${callActivityLabel} • ${formatEmailDate(direct?.timestamp)}`
+                          : t('group:last_message_date', {
+                              date: formatEmailDate(direct?.timestamp),
+                              postProcess: 'capitalizeFirstChar',
+                            })
                     }
                     primaryTypographyProps={{
                       sx: {
-                        color: hasUnread || hasReticulumUnread
-                          ? theme.palette.primary.main
-                          : theme.palette.text.primary,
+                        color:
+                          hasUnread || hasReticulumUnread
+                            ? theme.palette.primary.main
+                            : theme.palette.text.primary,
                         fontFamily: 'Inter',
                         fontSize: reticulumChatEnabled ? '13px' : '15px',
                         fontWeight: 600,
@@ -575,7 +604,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                     }}
                   />
 
-                  {isDmFriend && (
+                  {isDmFriend && direct?.savedMessages !== true && (
                     <Tooltip title={t('core:dm_friends.friend_badge_aria')}>
                       <StarRoundedIcon
                         aria-label={t('core:dm_friends.friend_badge_aria')}
@@ -588,16 +617,26 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                       />
                     </Tooltip>
                   )}
-                  {(hasUnread || hasReticulumUnread) && (
-                    <MarkChatUnreadIcon
-                      sx={{
-                        color: theme.palette.primary.main,
-                        fontSize: '18px',
-                        flexShrink: 0,
-                        marginLeft: '4px',
-                      }}
-                    />
-                  )}
+                  {(hasUnread || hasReticulumUnread) &&
+                    (hasMissedCall ? (
+                      <PhoneMissedRoundedIcon
+                        sx={{
+                          color: theme.palette.error.main,
+                          fontSize: '18px',
+                          flexShrink: 0,
+                          marginLeft: '4px',
+                        }}
+                      />
+                    ) : (
+                      <MarkChatUnreadIcon
+                        sx={{
+                          color: theme.palette.primary.main,
+                          fontSize: '18px',
+                          flexShrink: 0,
+                          marginLeft: '4px',
+                        }}
+                      />
+                    ))}
                 </Box>
               </ListItem>
             );
@@ -606,59 +645,59 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
       </Box>
 
       {!reticulumChatEnabled && (
-      <Box
-        sx={{
-          borderTop: '1px solid',
-          borderColor: 'divider',
-          display: 'flex',
-          width: '100%',
-          gap: '10px',
-          justifyContent: 'center',
-          padding: '16px 12px',
-        }}
-      >
-        <CustomButton
-          onClick={() => {
-            setNewChat(true);
-            setSelectedDirect(null);
-            setIsOpenDrawer(false);
-          }}
+        <Box
           sx={{
-            flex: 1,
-            gap: '8px',
-            padding: '10px 16px',
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            width: '100%',
+            gap: '10px',
+            justifyContent: 'center',
+            padding: '16px 12px',
           }}
         >
-          <CreateIcon
-            sx={{
-              color: theme.palette.text.primary,
-              fontSize: '20px',
-            }}
-          />
-          {t('core:action.new.chat', {
-            postProcess: 'capitalizeFirstChar',
-          })}
-        </CustomButton>
-
-        {!isRunningPublicNode && (
           <CustomButton
             onClick={() => {
-              setIsOpenBlockedUserModal(true);
+              setNewChat(true);
+              setSelectedDirect(null);
+              setIsOpenDrawer(false);
             }}
             sx={{
-              minWidth: 'unset',
-              padding: '10px',
+              flex: 1,
+              gap: '8px',
+              padding: '10px 16px',
             }}
           >
-            <PersonOffIcon
+            <CreateIcon
               sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '22px',
+                color: theme.palette.text.primary,
+                fontSize: '20px',
               }}
             />
+            {t('core:action.new.chat', {
+              postProcess: 'capitalizeFirstChar',
+            })}
           </CustomButton>
-        )}
-      </Box>
+
+          {!isRunningPublicNode && (
+            <CustomButton
+              onClick={() => {
+                setIsOpenBlockedUserModal(true);
+              }}
+              sx={{
+                minWidth: 'unset',
+                padding: '10px',
+              }}
+            >
+              <PersonOffIcon
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '22px',
+                }}
+              />
+            </CustomButton>
+          )}
+        </Box>
       )}
 
       <AvatarPreviewModal

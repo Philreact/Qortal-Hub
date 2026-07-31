@@ -3048,6 +3048,7 @@ async function syncReticulumOverlayStateToBridge(
       scheduleReticulumOverlayStateSyncRetry(manager, attempt, sequence);
       return;
     }
+    getReticulumChatManager()?.refreshSelfDmWarmLinks();
     if (
       sequence === reticulumOverlaySyncSequence &&
       reticulumOverlaySyncRetryTimer
@@ -3663,6 +3664,7 @@ const reticulumChatLandCallSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSummarySubscription =
   createRefcountedSubscriberSet<Electron.WebContents>();
 const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
+const reticulumDirectCallHistorySubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
@@ -3779,6 +3781,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumDirectEventSubscribers,
       'reticulumChat:directEvent',
+      payload
+    )
+  );
+
+  manager.on('directCallHistory', (payload: unknown) =>
+    broadcastToSet(
+      reticulumDirectCallHistorySubscribers,
+      'reticulumChat:directCallHistory',
       payload
     )
   );
@@ -4155,6 +4165,29 @@ ipcMain.handle(
       address,
       typeof peerAddress === 'string' ? peerAddress.trim() : undefined
     );
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDirectCallHistory',
+  async (
+    _event,
+    ownerAddress: string,
+    peerAddress?: string,
+    limit?: number,
+    unreadOnly?: boolean
+  ) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) return [];
+    const manager = getReticulumChatManager();
+    return manager
+      ? manager.getDirectCallHistory(
+          String(ownerAddress || '').trim(),
+          typeof peerAddress === 'string' ? peerAddress.trim() : undefined,
+          Number(limit) || 100,
+          unreadOnly === true
+        )
+      : [];
   }
 );
 
@@ -5842,6 +5875,12 @@ ipcMain.on('reticulumChat:directEvent:subscribe', (event) => {
 ipcMain.on('reticulumChat:directEvent:unsubscribe', (event) => {
   reticulumDirectEventSubscribers.delete(event.sender);
 });
+ipcMain.on('reticulumChat:directCallHistory:subscribe', (event) => {
+  reticulumDirectCallHistorySubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:directCallHistory:unsubscribe', (event) => {
+  reticulumDirectCallHistorySubscribers.delete(event.sender);
+});
 ipcMain.on('reticulumChat:directTyping:subscribe', (event) => {
   reticulumDirectTypingSubscribers.add(event.sender);
 });
@@ -6065,6 +6104,9 @@ export function attachCallListeners(
   manager.on('call:accepted', forward('call:accepted'));
   manager.on('call:rejected', forward('call:rejected'));
   manager.on('call:hangup', forward('call:hangup'));
+  manager.on('call:history', (payload: unknown) => {
+    void getReticulumChatManager()?.recordDirectCallHistory(payload as any);
+  });
 }
 
 ipcMain.handle(

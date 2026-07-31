@@ -9,6 +9,7 @@ import {
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
+import { DirectCallHistoryRow } from './DirectCallHistoryRow';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { Box, Button, Typography, useTheme } from '@mui/material';
@@ -1799,55 +1800,63 @@ export const ChatList = ({
                         </Typography>
                       }
                     >
-                      <MessageItem
-                        key={rowKey}
-                        handleReaction={handleReaction}
-                        isLast={index === messages.length - 1}
-                        isGroupedWithPrevious={isGroupedWithPrevious}
-                        isPrivate={isPrivate}
-                        isScrollTarget={
-                          highlightedMessageIndex === virtualRow.index
-                        }
-                        isTemp={!!message?.isTemp}
-                        isUpdating={isUpdating}
-                        lastSignature={lastSignature}
-                        message={message}
-                        myAddress={myAddress}
-                        selectedGroup={selectedGroup}
-                        secretKeyObject={secretKeyObject}
-                        onEdit={onEdit}
-                        onDelete={onDelete}
-                        onReply={onReply}
-                        onAcceptQchatFileTransfer={onAcceptQchatFileTransfer}
-                        qchatFileTransferStates={qchatFileTransferStates}
-                        qchatCompletedTransfers={qchatCompletedTransfers}
-                        onSeen={handleMessageSeen}
-                        reactions={reactions}
-                        reply={reply}
-                        replyIndex={replyIndex}
-                        replyExpiredMeta={replyExpiredMeta}
-                        reticulumChatEnabled={reticulumChatEnabled}
-                        reticulumDiscussionReplyCount={
-                          reticulumDiscussionReplyCounts?.[
-                            String(message?.signature || '')
-                          ] || 0
-                        }
-                        onOpenReticulumDiscussion={onOpenReticulumDiscussion}
-                        reticulumGroupAvatarOwnerName={
-                          reticulumGroupAvatarOwnerName
-                        }
-                        reticulumGroupDisplayName={reticulumGroupDisplayName}
-                        reticulumMentionUsers={reticulumMentionUsers}
-                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                        reticulumMemberJoinedByAddress={
-                          reticulumMemberJoinedByAddress
-                        }
-                        reticulumMemberRolesByAddress={
-                          reticulumMemberRolesByAddress
-                        }
-                        reticulumMemberRolesReady={reticulumMemberRolesReady}
-                        scrollToItem={goToMessage}
-                      />
+                      {message?.directCallHistory ? (
+                        <DirectCallHistoryRow
+                          record={message.directCallHistory}
+                        />
+                      ) : (
+                        <MessageItem
+                          key={rowKey}
+                          handleReaction={handleReaction}
+                          isLast={index === messages.length - 1}
+                          isGroupedWithPrevious={isGroupedWithPrevious}
+                          isPrivate={isPrivate}
+                          isScrollTarget={
+                            highlightedMessageIndex === virtualRow.index
+                          }
+                          isTemp={!!message?.isTemp}
+                          isUpdating={isUpdating}
+                          lastSignature={lastSignature}
+                          message={message}
+                          myAddress={myAddress}
+                          selectedGroup={selectedGroup}
+                          secretKeyObject={secretKeyObject}
+                          onEdit={onEdit}
+                          onDelete={onDelete}
+                          onReply={onReply}
+                          onAcceptQchatFileTransfer={onAcceptQchatFileTransfer}
+                          qchatFileTransferStates={qchatFileTransferStates}
+                          qchatCompletedTransfers={qchatCompletedTransfers}
+                          onSeen={handleMessageSeen}
+                          reactions={reactions}
+                          reply={reply}
+                          replyIndex={replyIndex}
+                          replyExpiredMeta={replyExpiredMeta}
+                          reticulumChatEnabled={reticulumChatEnabled}
+                          reticulumDiscussionReplyCount={
+                            reticulumDiscussionReplyCounts?.[
+                              String(message?.signature || '')
+                            ] || 0
+                          }
+                          onOpenReticulumDiscussion={onOpenReticulumDiscussion}
+                          reticulumGroupAvatarOwnerName={
+                            reticulumGroupAvatarOwnerName
+                          }
+                          reticulumGroupDisplayName={reticulumGroupDisplayName}
+                          reticulumMentionUsers={reticulumMentionUsers}
+                          reticulumChannelLinkAccess={
+                            reticulumChannelLinkAccess
+                          }
+                          reticulumMemberJoinedByAddress={
+                            reticulumMemberJoinedByAddress
+                          }
+                          reticulumMemberRolesByAddress={
+                            reticulumMemberRolesByAddress
+                          }
+                          reticulumMemberRolesReady={reticulumMemberRolesReady}
+                          scrollToItem={goToMessage}
+                        />
+                      )}
                     </ErrorBoundary>
                   </Box>
                 );

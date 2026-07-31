@@ -1800,6 +1800,19 @@ try {
           myAddress,
           peerAddress
         ) as Promise<unknown[]>,
+      getDirectCallHistory: async (
+        ownerAddress: string,
+        peerAddress?: string,
+        limit?: number,
+        unreadOnly?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectCallHistory',
+          ownerAddress,
+          peerAddress,
+          limit,
+          unreadOnly
+        ) as Promise<unknown[]>,
       markDirectRead: async (
         myAddress: string,
         peerAddress: string,
@@ -2153,6 +2166,20 @@ try {
           ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
         };
       },
+      onDirectCallHistory: (cb: (payload: { record: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { record: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directCallHistory', handler);
+        ipcRenderer.send('reticulumChat:directCallHistory:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:directCallHistory',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:directCallHistory:unsubscribe');
+        };
+      },
       onDirectTyping: (
         cb: (payload: {
           conversationId: string;
@@ -2180,7 +2207,7 @@ try {
         cb: (payload: {
           conversationId?: string;
           peerAddress?: string;
-          reason?: 'expiry';
+          reason?: 'expiry' | 'call';
         }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
@@ -2188,7 +2215,7 @@ try {
             payload as {
               conversationId?: string;
               peerAddress?: string;
-              reason?: 'expiry';
+              reason?: 'expiry' | 'call';
             }
           );
         };
@@ -2756,6 +2783,19 @@ try {
           myAddress,
           peerAddress
         ) as Promise<unknown[]>,
+      getDirectCallHistory: async (
+        ownerAddress: string,
+        peerAddress?: string,
+        limit?: number,
+        unreadOnly?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectCallHistory',
+          ownerAddress,
+          peerAddress,
+          limit,
+          unreadOnly
+        ) as Promise<unknown[]>,
       markDirectRead: async (
         myAddress: string,
         peerAddress: string,
@@ -3080,6 +3120,20 @@ try {
           ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
         };
       },
+      onDirectCallHistory: (cb: (payload: { record: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { record: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directCallHistory', handler);
+        ipcRenderer.send('reticulumChat:directCallHistory:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:directCallHistory',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:directCallHistory:unsubscribe');
+        };
+      },
       onDirectTyping: (
         cb: (payload: {
           conversationId: string;
@@ -3107,7 +3161,7 @@ try {
         cb: (payload: {
           conversationId?: string;
           peerAddress?: string;
-          reason?: 'expiry';
+          reason?: 'expiry' | 'call';
         }) => void
       ) => {
         const handler = (_event: unknown, payload: unknown) => {
@@ -3115,7 +3169,7 @@ try {
             payload as {
               conversationId?: string;
               peerAddress?: string;
-              reason?: 'expiry';
+              reason?: 'expiry' | 'call';
             }
           );
         };

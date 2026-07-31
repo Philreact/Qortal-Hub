@@ -97,6 +97,7 @@ _MIN_VERIFIED_OVERLAY_PEERS_BEFORE_SKIP_EXTRA_ANNOUNCE = 3
 _KR_MISMATCH_LOGGED: set[str] = set()
 _OVERLAY_MAX_OUTBOUND_NEIGHBORS = 12
 _OVERLAY_MAX_INBOUND_NEIGHBORS = 8
+_OVERLAY_MAX_PINNED_CHAT_PEERS = 4
 _OVERLAY_BOOTSTRAP_MAX_OUTBOUND_NEIGHBORS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS
 _OVERLAY_MIN_HEALTHY_FANOUT = 8
 _OVERLAY_NEIGHBOR_GRACE_SECONDS = 90.0
@@ -120,7 +121,12 @@ _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 15.0
 _OVERLAY_REPLACE_UNUSABLE_ACTIVE_MIN_AGE_SECONDS = 2.0
 _OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
-_OVERLAY_MAX_TOTAL_LINKS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS + 4
+_OVERLAY_MAX_TOTAL_LINKS = (
+    _OVERLAY_MAX_OUTBOUND_NEIGHBORS
+    + _OVERLAY_MAX_INBOUND_NEIGHBORS
+    + _OVERLAY_MAX_PINNED_CHAT_PEERS
+    + 4
+)
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 60.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
 _OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS = 0.75
@@ -416,6 +422,7 @@ _audio_link_desired_by_peer_hash: Dict[str, Dict[str, Any]] = {}
 _overlay_links_by_id: Dict[str, Dict[str, Any]] = {}
 _overlay_link_ids_by_object: Dict[int, str] = {}
 _active_overlay_link_id_by_peer_hash: Dict[str, str] = {}
+_pinned_chat_overlay_peers: Dict[str, float] = {}
 _overlay_open_pending_by_peer_hash: Set[str] = set()
 _overlay_close_pending_link_ids: Set[str] = set()
 _overlay_dedup_pending_by_peer_hash: Set[str] = set()
@@ -9114,6 +9121,8 @@ def _overlay_link_pressure_sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[i
         category = 4
     else:
         category = 5
+    if category == 5 and _overlay_peer_is_pinned_for_chat(peer_hash):
+        category = 6
     return (category, activity, link_id)
 
 
@@ -10278,6 +10287,23 @@ def _overlay_recent_activity_close_should_keep_peer(
     return False
 
 
+def _prune_pinned_chat_overlay_peers(now: Optional[float] = None) -> Set[str]:
+    if now is None:
+        now = time.time()
+    with _state_lock:
+        for peer_hash, expires_at in list(_pinned_chat_overlay_peers.items()):
+            if not isinstance(expires_at, (int, float)) or float(expires_at) <= now:
+                _pinned_chat_overlay_peers.pop(peer_hash, None)
+        return set(_pinned_chat_overlay_peers.keys())
+
+
+def _overlay_peer_is_pinned_for_chat(peer_hash: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    return peer_key in _prune_pinned_chat_overlay_peers()
+
+
 def _overlay_mesh_link_count_locked() -> int:
     return len(_overlay_links_by_id)
 
@@ -10293,10 +10319,21 @@ def _admit_overlay_peer_if_allowed(peer_key: str, reason: str, incoming: bool = 
         return False
     target = _inbound_overlay_neighbors if incoming else _active_overlay_neighbors
     direction = "inbound" if incoming else "outbound"
-    limit = _OVERLAY_MAX_INBOUND_NEIGHBORS if incoming else _OVERLAY_MAX_OUTBOUND_NEIGHBORS
     if peer_key in target:
         target[peer_key] = time.time()
         return True
+    if incoming:
+        limit = _OVERLAY_MAX_INBOUND_NEIGHBORS
+    else:
+        pinned = _prune_pinned_chat_overlay_peers()
+        pinned_active = sum(1 for existing in target if existing in pinned)
+        ordinary_active = len(target) - pinned_active
+        if peer_key in pinned:
+            if pinned_active >= _OVERLAY_MAX_PINNED_CHAT_PEERS:
+                return False
+        elif ordinary_active >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+            return False
+        limit = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_PINNED_CHAT_PEERS
     if len(target) >= limit:
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_admission_reject "
@@ -10316,7 +10353,9 @@ def _overlay_unknown_inbound_allowed() -> bool:
         return False
     with _state_lock:
         return _overlay_mesh_link_count_locked() < (
-            _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS
+            _OVERLAY_MAX_OUTBOUND_NEIGHBORS
+            + _OVERLAY_MAX_INBOUND_NEIGHBORS
+            + _OVERLAY_MAX_PINNED_CHAT_PEERS
         )
 
 
@@ -11060,20 +11099,32 @@ def _sync_overlay_links() -> None:
     _bootstrap_overlay_neighbors_if_degraded("sync")
     _recover_zero_overlay_fanout("sync")
     _prune_candidate_peers()
-    desired_outbound = set(_active_overlay_neighbors.keys())
+    pinned_chat_peers = _prune_pinned_chat_overlay_peers(now)
+    desired_outbound = set(_active_overlay_neighbors.keys()) | pinned_chat_peers
+    desired_ordinary_count = sum(
+        1 for peer_hash in desired_outbound if peer_hash not in pinned_chat_peers
+    )
     for peer_hash in sorted(_candidate_peers.keys(), key=_overlay_bootstrap_peer_sort_key):
         peer_key = str(peer_hash or "").strip().lower()
         if not _valid_presence_destination_hash_hex(peer_key):
             continue
-        if len(desired_outbound) >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
+        if (
+            peer_key not in pinned_chat_peers
+            and desired_ordinary_count >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS
+        ):
             break
         if peer_key in desired_outbound or peer_key in _inbound_overlay_neighbors:
             continue
         if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
         desired_outbound.add(peer_key)
+        if peer_key not in pinned_chat_peers:
+            desired_ordinary_count += 1
     desired = desired_outbound | set(_inbound_overlay_neighbors.keys())
-    target_outbound_links = min(_OVERLAY_MAX_OUTBOUND_NEIGHBORS, len(desired_outbound))
+    target_outbound_links = min(
+        _OVERLAY_MAX_OUTBOUND_NEIGHBORS + len(pinned_chat_peers),
+        len(desired_outbound),
+    )
     maintained_outbound_links = 0
     for peer_hash in desired_outbound:
         link_id = _active_overlay_link_id_by_peer_hash.get(peer_hash)
@@ -11133,7 +11184,9 @@ def _sync_overlay_links() -> None:
             if (
                 len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
                 or len(_overlay_links_by_id) > (
-                    _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_INBOUND_NEIGHBORS
+                    _OVERLAY_MAX_OUTBOUND_NEIGHBORS
+                    + _OVERLAY_MAX_INBOUND_NEIGHBORS
+                    + _OVERLAY_MAX_PINNED_CHAT_PEERS
                 )
             ):
                 if _overlay_enqueue_close(link_id, "pruned_unknown_full"):
@@ -18696,6 +18749,85 @@ def handle_forward_presence(req_id: str, payload: Dict[str, Any]) -> None:
         emit_resp(req_id, False, error=str(exc))
 
 
+def handle_configure_reticulum_chat_pinned_peers(
+    req_id: str, payload: Dict[str, Any]
+) -> None:
+    peers_raw = payload.get("peers")
+    requested = peers_raw if isinstance(peers_raw, list) else []
+    if len(requested) > _OVERLAY_MAX_PINNED_CHAT_PEERS:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "too_many_pinned_chat_peers"},
+            error="Too many pinned Reticulum chat peers",
+        )
+        return
+    now = time.time()
+    next_pinned: Dict[str, float] = {}
+    rejected = 0
+    with _state_lock:
+        lease_snapshots = {
+            address: dict(by_destination)
+            for address, by_destination in _account_endpoint_leases.items()
+        }
+    for candidate in requested:
+        if not isinstance(candidate, dict):
+            rejected += 1
+            continue
+        account_address = str(candidate.get("accountAddress") or "").strip()
+        peer_hash = str(candidate.get("destinationHash") or "").strip().lower()
+        requested_expiry = _coerce_epoch_seconds(candidate.get("expiresAt"))
+        account_leases = lease_snapshots.get(account_address) or {}
+        matching_lease = account_leases.get(peer_hash)
+        lease_expiry = (
+            _coerce_epoch_seconds(matching_lease.get("expires_at"))
+            if isinstance(matching_lease, dict)
+            else None
+        )
+        if (
+            not account_address
+            or not _valid_presence_destination_hash_hex(peer_hash)
+            or requested_expiry is None
+            or requested_expiry <= now
+            or lease_expiry is None
+            or lease_expiry <= now
+        ):
+            rejected += 1
+            continue
+        next_pinned[peer_hash] = min(requested_expiry, lease_expiry)
+    if rejected > 0:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "unverified_pinned_chat_peer", "rejected": rejected},
+            error="Pinned Reticulum chat peer has no current account endpoint lease",
+        )
+        return
+    with _state_lock:
+        previous = set(_pinned_chat_overlay_peers.keys())
+        _pinned_chat_overlay_peers.clear()
+        _pinned_chat_overlay_peers.update(next_pinned)
+    added = set(next_pinned.keys()) - previous
+    for peer_hash in added:
+        if peer_hash not in _known_peers:
+            ensure_known_peer_from_recall(peer_hash, "ts_seed")
+    queued = _enqueue_scheduler_task(
+        "overlay-control",
+        "overlay-pinned-chat-maintenance",
+        _run_overlay_sync_maintenance,
+        "pinned_chat_peers",
+        drop_oldest=True,
+    )
+    emit_resp(
+        req_id,
+        True,
+        payload={
+            "pinnedPeers": len(next_pinned),
+            "maintenanceQueued": bool(queued),
+        },
+    )
+
+
 def handle_overlay_sync_state(req_id: str, payload: Dict[str, Any]) -> None:
     verified_raw = payload.get("verifiedPeers")
     active_raw = payload.get("activeNeighborHashes")
@@ -18737,6 +18869,7 @@ def handle_stop(req_id: str) -> None:
         _land_state_auth_sessions = {}
         _land_state_forward_pending = {}
     with _state_lock:
+        _pinned_chat_overlay_peers.clear()
         resource_sessions = [
             state
             for state in _qchat_file_links_by_id.values()
@@ -22396,6 +22529,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_forward_presence(req_id, payload)
     elif action == "overlay_sync_state":
         handle_overlay_sync_state(req_id, payload)
+    elif action == "configure_reticulum_chat_pinned_peers":
+        handle_configure_reticulum_chat_pinned_peers(req_id, payload)
     elif action == "overlay_note_candidate_failure":
         handle_overlay_note_candidate_failure(req_id, payload)
     elif action == "stop":

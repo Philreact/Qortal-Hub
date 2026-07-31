@@ -51,6 +51,7 @@ import {
   verifyReticulumDmResourceReceipt,
   verifyReticulumMetadataSnapshotRequest,
   verifyReticulumChatReadSyncWire,
+  verifyReticulumDirectCallHistoryWire,
   verifyReticulumLandSessionRouteWire,
   verifyReticulumLandCallV2Wire,
   type ReticulumChatManagerOptions,
@@ -1180,6 +1181,159 @@ describe('reticulum chat protocol', () => {
     expect(validateReticulumDmEventShape(malformed)).toBe(false);
   });
 
+  it('accepts a correctly signed self-DM with the canonical conversation id', () => {
+    const owner = createDmIdentity();
+    const event = signedDmEvent({
+      sender: owner,
+      recipient: owner,
+      eventId: 'dm-self-valid-event',
+      senderSeq: 1,
+      timestamp: Date.now(),
+    });
+
+    expect(event.senderAddress).toBe(event.recipientAddress);
+    expect(validateReticulumDmEventShape(event)).toBe(true);
+    expect(verifyReticulumDmEvent(event)).toBe(true);
+  });
+
+  it('stores self-DMs as sent and only notifies upgraded verified own devices', async () => {
+    const owner = createDmIdentity();
+    const localPeerHash = '1'.repeat(32);
+    const upgradedPeerHash = '2'.repeat(32);
+    const legacyPeerHash = '3'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const pinned: Array<
+      Array<{
+        accountAddress: string;
+        destinationHash: string;
+        expiresAt: number;
+      }>
+    > = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getState: () => 'ready',
+      getLocalDestinationHash: () => localPeerHash,
+      configureReticulumChatPinnedPeers: async (
+        peers: Array<{
+          accountAddress: string;
+          destinationHash: string;
+          expiresAt: number;
+        }>
+      ) => {
+        pinned.push(peers);
+        return true;
+      },
+      sendReticulumChatDetailed: async (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      signLocalFields: createDmSigner(owner),
+      hasGoodOverlayHealth: () => false,
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: upgradedPeerHash,
+          address: owner.address,
+          sessionId: 'upgraded',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          verification: 'direct-bound',
+        },
+        {
+          destinationHash: legacyPeerHash,
+          address: owner.address,
+          sessionId: 'legacy',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          verification: 'direct-bound',
+        },
+      ],
+    });
+    manager.setLocalDmAddresses([owner.address]);
+    (manager as any).peerProtocolFeatures.set(
+      upgradedPeerHash,
+      new Set(['dm', 'dm_author_streams_v1', 'self_dm_v1'])
+    );
+    (manager as any).peerProtocolFeatures.set(
+      legacyPeerHash,
+      new Set(['dm', 'dm_author_streams_v1'])
+    );
+    manager.refreshSelfDmWarmLinks();
+    await flushQueuedWork();
+    expect(pinned.at(-1)?.map((peer) => peer.accountAddress)).toEqual([
+      owner.address,
+    ]);
+    expect(pinned.at(-1)?.map((peer) => peer.destinationHash)).toEqual([
+      upgradedPeerHash,
+    ]);
+    sent.length = 0;
+    const event = signedDmEvent({
+      sender: owner,
+      recipient: owner,
+      eventId: 'dm-self-publish-event',
+      senderSeq: 2,
+      timestamp: Date.now(),
+    });
+
+    expect(await manager.publishDirectEvent(event)).toEqual({ ok: true });
+    await flushQueuedWork();
+
+    expect((manager as any).db.getDirectEvent(event.eventId)).toMatchObject({
+      localDeliveryStatus: 'sent',
+    });
+    expect(
+      manager.getDirectSummaries(owner.address, owner.address)[0]
+    ).toMatchObject({
+      peerAddress: owner.address,
+      unreadCount: 0,
+    });
+    expect(
+      sent
+        .filter((item) => item.wire.k === 'dm_notify')
+        .map((item) => item.peer)
+    ).toEqual([upgradedPeerHash]);
+    await (manager as any).broadcastSelfDmNotifications();
+    await (manager as any).broadcastSelfDmNotifications();
+    expect(sent.filter((item) => item.wire.k === 'dm_notify')).toHaveLength(1);
+
+    const foreignPeerHash = '4'.repeat(32);
+    (manager as any).peerProtocolFeatures.set(
+      foreignPeerHash,
+      new Set(['dm', 'self_dm_v1'])
+    );
+    const remoteEvent = signedDmEvent({
+      sender: owner,
+      recipient: owner,
+      eventId: 'dm-self-remote-event',
+      senderSeq: 3,
+      timestamp: Date.now() + 1,
+    });
+    manager.handleWire(
+      { t: 'RCHAT', k: 'dm_event', e: remoteEvent },
+      foreignPeerHash
+    );
+    expect((manager as any).db.getDirectEvent(remoteEvent.eventId)).toBeNull();
+    manager.handleWire(
+      { t: 'RCHAT', k: 'dm_event', e: remoteEvent },
+      upgradedPeerHash
+    );
+    expect(
+      (manager as any).db.getDirectEvent(remoteEvent.eventId)
+    ).toMatchObject({ localDeliveryStatus: 'received' });
+    expect(
+      manager.getDirectSummaries(owner.address, owner.address)[0]
+    ).toMatchObject({ unreadCount: 0 });
+    manager.setLocalDmAddresses([]);
+    await flushQueuedWork();
+    expect(pinned.at(-1)).toEqual([]);
+    manager.close();
+  });
+
   it('privately synchronizes a DM read watermark between verified devices and keeps late history read', async () => {
     const owner = createDmIdentity();
     const peer = createDmIdentity();
@@ -1427,6 +1581,55 @@ describe('reticulum chat protocol', () => {
       deviceA.close();
       deviceB.close();
     }
+  });
+
+  it('accepts signed own-device call history and rejects tampered outcomes', () => {
+    const ownerKeys = nacl.sign.keyPair();
+    const peerKeys = nacl.sign.keyPair();
+    const ownerPublicKey = base58Encode(ownerKeys.publicKey);
+    const ownerAddress = deriveAddressFromPublicKey(ownerPublicKey);
+    const peerAddress = deriveAddressFromPublicKey(
+      base58Encode(peerKeys.publicKey)
+    );
+    const now = Date.now();
+    const signedFields = {
+      type: 'RCHAT_DIRECT_CALL_HISTORY_V1',
+      ownerAddress,
+      callId: 'call_history_security_1',
+      peerAddress,
+      direction: 'incoming',
+      outcome: 'missed',
+      startedAt: now - 10_000,
+      endedAt: now - 1_000,
+      updatedAt: now,
+      authorAddress: ownerAddress,
+      authorPublicKey: ownerPublicKey,
+    };
+    const signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(signedFields)),
+        ownerKeys.secretKey
+      )
+    );
+    const wire = {
+      c: 'call_history_security_1',
+      q: peerAddress,
+      d: 'i' as const,
+      o: 'm' as const,
+      b: now - 10_000,
+      e: now - 1_000,
+      n: now,
+      p: ownerPublicKey,
+      z: signature,
+    };
+    expect(verifyReticulumDirectCallHistoryWire(wire, now)).toMatchObject({
+      ownerAddress,
+      peerAddress,
+      outcome: 'missed',
+    });
+    expect(
+      verifyReticulumDirectCallHistoryWire({ ...wire, o: 'a' }, now)
+    ).toBeNull();
   });
 
   it('finishes a pending read synchronization after the app restarts', async () => {
@@ -29545,11 +29748,7 @@ describe('reticulum chat manager', () => {
       manager.getMessageWindowAroundEvent(groupId, 'general', event.eventId)
     ).rejects.toThrow(/not a member/i);
     await expect(
-      manager.getMessageWindowPageAroundEvent(
-        groupId,
-        'general',
-        event.eventId
-      )
+      manager.getMessageWindowPageAroundEvent(groupId, 'general', event.eventId)
     ).rejects.toThrow(/not a member/i);
     await expect(
       manager.searchEvents('departed group secret', { groupIds: [groupId] })

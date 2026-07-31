@@ -4753,5 +4753,94 @@ class PresenceBridgeAccountEndpointLeaseTest(unittest.TestCase):
         )
 
 
+class PresenceBridgePinnedChatPeersTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_pins_only_current_account_endpoint_leases_and_clears_them(self):
+        peer_hash = "aa" * 16
+        expires_at = time.time() + 60
+        self.bridge._account_endpoint_leases = {
+            "Q-account": {
+                peer_hash: {
+                    "destination_hash": peer_hash,
+                    "expires_at": expires_at,
+                }
+            }
+        }
+        responses = []
+        with mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ), mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ), mock.patch.object(
+            self.bridge, "ensure_known_peer_from_recall", return_value=True
+        ):
+            self.bridge.handle_configure_reticulum_chat_pinned_peers(
+                "pin",
+                {
+                    "peers": [
+                        {
+                            "accountAddress": "Q-account",
+                            "destinationHash": peer_hash,
+                            "expiresAt": int((expires_at + 30) * 1000),
+                        }
+                    ]
+                },
+            )
+
+            self.assertEqual(
+                self.bridge._pinned_chat_overlay_peers,
+                {peer_hash: expires_at},
+            )
+            self.assertTrue(responses[-1][1]["payload"]["maintenanceQueued"])
+
+            self.bridge.handle_configure_reticulum_chat_pinned_peers(
+                "clear", {"peers": []}
+            )
+            self.assertEqual(self.bridge._pinned_chat_overlay_peers, {})
+
+    def test_rejects_a_pin_without_a_current_endpoint_lease(self):
+        responses = []
+        with mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ):
+            self.bridge.handle_configure_reticulum_chat_pinned_peers(
+                "pin",
+                {
+                    "peers": [
+                        {
+                            "accountAddress": "Q-account",
+                            "destinationHash": "bb" * 16,
+                            "expiresAt": int((time.time() + 60) * 1000),
+                        }
+                    ]
+                },
+            )
+
+        self.assertFalse(responses[-1][0][1])
+        self.assertEqual(self.bridge._pinned_chat_overlay_peers, {})
+
+    def test_expired_pin_keeps_an_otherwise_valid_overlay_neighbor(self):
+        peer_hash = "cc" * 16
+        self.bridge._pinned_chat_overlay_peers[peer_hash] = time.time() - 1
+        self.bridge._active_overlay_neighbors[peer_hash] = time.time()
+        self.bridge._candidate_peers[peer_hash] = {
+            "last_seen": time.time(),
+            "source": "test",
+        }
+
+        self.assertEqual(self.bridge._prune_pinned_chat_overlay_peers(), set())
+        self.assertIn(peer_hash, self.bridge._active_overlay_neighbors)
+        self.assertIn(peer_hash, self.bridge._candidate_peers)
+
+
 if __name__ == "__main__":
     unittest.main()

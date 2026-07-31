@@ -176,10 +176,85 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       );
     });
 
+    const addMissedCallNotification = (record: any) => {
+      if (
+        record?.ownerAddress !== myAddress ||
+        record?.direction !== 'incoming' ||
+        record?.outcome !== 'missed' ||
+        record?.readAt > 0
+      )
+        return;
+      const callId = String(record.callId || '');
+      const peerAddress = String(record.peerAddress || '');
+      if (!callId || !peerAddress) return;
+      const friend = dmFriendsByAddressRef.current[peerAddress];
+      const senderName = friend?.name?.trim() || peerAddress;
+      setPaymentNotifications((previous) => [
+        ...previous.filter((item) => item?.data?.reticulumDmCallId !== callId),
+        {
+          appName: 'Q-Chat',
+          appService: 'INTERNAL',
+          event: 'RETICULUM_DM_MISSED_CALL',
+          notificationId: `reticulum-dm-call-${callId}`,
+          image: LogoSelected,
+          message: { en: `Missed voice call from ${senderName}` },
+          timestamp: Number(record.endedAt || Date.now()),
+          data: {
+            created: Number(record.endedAt || Date.now()),
+            from: peerAddress,
+            name: friend?.name,
+            reticulumDmMissedCall: true,
+            reticulumDmCallId: callId,
+          },
+        },
+      ]);
+    };
+    void window.reticulumChat
+      ?.getDirectCallHistory(myAddress, undefined, 50, true)
+      .then((records) => records.forEach(addMissedCallNotification))
+      .catch(() => undefined);
+    const offCalls = window.reticulumChat?.onDirectCallHistory?.(
+      ({ record }: any) => {
+        if (record?.ownerAddress !== myAddress) return;
+        if (record?.outcome === 'missed') {
+          addMissedCallNotification(record);
+          return;
+        }
+        const callId = String(record?.callId || '');
+        if (!callId) return;
+        setPaymentNotifications((previous) =>
+          previous.filter((item) => item?.data?.reticulumDmCallId !== callId)
+        );
+      }
+    );
+    const offCallSummary = window.reticulumChat?.onDirectSummaryChanged?.(
+      ({ peerAddress }: any) => {
+        const peer = String(peerAddress || '');
+        if (!peer) return;
+        void window.reticulumChat
+          ?.getDirectCallHistory(myAddress, peer, 1, true)
+          .then((records) => {
+            if (records.length > 0) return;
+            setPaymentNotifications((previous) =>
+              previous.filter(
+                (item) =>
+                  !(
+                    item?.data?.reticulumDmMissedCall === true &&
+                    item?.data?.from === peer
+                  )
+              )
+            );
+          })
+          .catch(() => undefined);
+      }
+    );
+
     return () => {
       off?.();
+      offCalls?.();
+      offCallSummary?.();
     };
-  }, [myAddress, reticulumChatEnabled]);
+  }, [myAddress, reticulumChatEnabled, setPaymentNotifications]);
 
   const forceCloseWebSocket = () => {
     clearTimeout(historyRequestTimeoutRef.current);

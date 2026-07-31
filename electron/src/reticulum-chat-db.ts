@@ -7,6 +7,7 @@ import type {
   ReticulumChatMentionTarget,
   ReticulumDmEvent,
   ReticulumDmSummary,
+  ReticulumDirectCallHistoryRecord,
 } from './reticulum-chat';
 
 export const RETICULUM_CHAT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
@@ -3435,7 +3436,7 @@ export class ReticulumChatDatabase {
   ): ReticulumDmExpiryPreference | null {
     const owner = String(ownerAddress || '').trim();
     const peer = String(peerAddress || '').trim();
-    if (!owner || !peer || owner === peer) return null;
+    if (!owner || !peer) return null;
     if (
       durationMs !== null &&
       (!Number.isSafeInteger(durationMs) ||
@@ -3574,8 +3575,195 @@ export class ReticulumChatDatabase {
       `
         )
         .run(Date.now(), normalized, address, watermark);
+      this.db
+        .prepare(
+          `UPDATE rchat_direct_call_history
+           SET read_at = MAX(read_at, ?)
+           WHERE owner_address = ?
+             AND conversation_id = ?
+             AND direction = 'incoming'
+             AND outcome = 'missed'
+             AND ended_at <= ?
+             AND read_at = 0`
+        )
+        .run(Date.now(), address, normalized, watermark);
     });
     transaction();
+  }
+
+  upsertDirectCallHistory(
+    record: ReticulumDirectCallHistoryRecord
+  ): { changed: boolean; record: ReticulumDirectCallHistoryRecord } | null {
+    const ownerAddress = String(record.ownerAddress || '').trim();
+    const peerAddress = String(record.peerAddress || '').trim();
+    const callId = String(record.callId || '').trim();
+    const conversationId = reticulumDmConversationId(ownerAddress, peerAddress);
+    if (!ownerAddress || !peerAddress || !callId || !conversationId)
+      return null;
+    const outcomeRank: Record<
+      ReticulumDirectCallHistoryRecord['outcome'],
+      number
+    > = {
+      missed: 1,
+      no_answer: 1,
+      cancelled: 2,
+      declined: 3,
+      answered: 4,
+    };
+    const existing = this.db
+      .prepare(
+        `SELECT * FROM rchat_direct_call_history
+         WHERE owner_address = ? AND call_id = ?`
+      )
+      .get(ownerAddress, callId) as
+      | {
+          owner_address: string;
+          call_id: string;
+          conversation_id: string;
+          peer_address: string;
+          direction: string;
+          outcome: ReticulumDirectCallHistoryRecord['outcome'];
+          started_at: number;
+          ended_at: number;
+          updated_at: number;
+          author_public_key: string;
+          signature: string;
+          read_at: number;
+        }
+      | undefined;
+    if (
+      existing &&
+      (outcomeRank[existing.outcome] > outcomeRank[record.outcome] ||
+        (outcomeRank[existing.outcome] === outcomeRank[record.outcome] &&
+          Number(existing.updated_at) >= Number(record.updatedAt)))
+    ) {
+      return { changed: false, record: this.directCallRowToRecord(existing) };
+    }
+    const readAt =
+      record.outcome === 'missed' && record.direction === 'incoming'
+        ? Math.max(0, Number(record.readAt) || 0)
+        : Math.max(Date.now(), Number(record.readAt) || 0);
+    this.db
+      .prepare(
+        `INSERT INTO rchat_direct_call_history
+          (owner_address, call_id, conversation_id, peer_address, direction,
+           outcome, started_at, ended_at, updated_at, author_public_key,
+           signature, read_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, call_id) DO UPDATE SET
+           conversation_id = excluded.conversation_id,
+           peer_address = excluded.peer_address,
+           direction = excluded.direction,
+           outcome = excluded.outcome,
+           started_at = excluded.started_at,
+           ended_at = excluded.ended_at,
+           updated_at = excluded.updated_at,
+           author_public_key = excluded.author_public_key,
+           signature = excluded.signature,
+           read_at = MAX(rchat_direct_call_history.read_at, excluded.read_at)`
+      )
+      .run(
+        ownerAddress,
+        callId,
+        conversationId,
+        peerAddress,
+        record.direction,
+        record.outcome,
+        Math.floor(record.startedAt),
+        Math.floor(record.endedAt),
+        Math.floor(record.updatedAt),
+        record.authorPublicKey,
+        record.signature,
+        readAt
+      );
+    const stored = this.db
+      .prepare(
+        `SELECT * FROM rchat_direct_call_history
+         WHERE owner_address = ? AND call_id = ?`
+      )
+      .get(ownerAddress, callId) as any;
+    if (!stored) return null;
+    return {
+      changed: true,
+      record: this.directCallRowToRecord(stored),
+    };
+  }
+
+  getDirectCallHistory(
+    ownerAddress: string,
+    peerAddress?: string,
+    limit = 100,
+    unreadOnly = false
+  ): ReticulumDirectCallHistoryRecord[] {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerAddress || '').trim();
+    if (!owner || (peerAddress != null && !peer)) return [];
+    const safeLimit = Math.max(1, Math.min(250, Math.floor(limit) || 100));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM rchat_direct_call_history
+         WHERE owner_address = ?
+           ${peer ? 'AND peer_address = ?' : ''}
+           ${unreadOnly ? "AND direction = 'incoming' AND outcome = 'missed' AND read_at = 0" : ''}
+         ORDER BY ended_at DESC, call_id DESC
+         LIMIT ?`
+      )
+      .all(owner, ...(peer ? [peer] : []), safeLimit) as any[];
+    return rows.map((row) => this.directCallRowToRecord(row));
+  }
+
+  getDirectCallSummaries(ownerAddress: string): Array<{
+    peerAddress: string;
+    lastCall: ReticulumDirectCallHistoryRecord;
+    unreadMissedCallCount: number;
+  }> {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT h.*,
+          (SELECT COUNT(*)
+             FROM rchat_direct_call_history unread
+            WHERE unread.owner_address = h.owner_address
+              AND unread.peer_address = h.peer_address
+              AND unread.direction = 'incoming'
+              AND unread.outcome = 'missed'
+              AND unread.read_at = 0) AS unread_missed_count
+         FROM rchat_direct_call_history h
+         WHERE h.owner_address = ?
+           AND h.call_id = (
+             SELECT latest.call_id
+             FROM rchat_direct_call_history latest
+             WHERE latest.owner_address = h.owner_address
+               AND latest.peer_address = h.peer_address
+             ORDER BY latest.ended_at DESC, latest.call_id DESC
+             LIMIT 1
+           )
+         ORDER BY h.ended_at DESC, h.call_id DESC`
+      )
+      .all(owner) as Array<any>;
+    return rows.map((row) => ({
+      peerAddress: String(row.peer_address || ''),
+      lastCall: this.directCallRowToRecord(row),
+      unreadMissedCallCount: Number(row.unread_missed_count || 0),
+    }));
+  }
+
+  private directCallRowToRecord(row: any): ReticulumDirectCallHistoryRecord {
+    return {
+      ownerAddress: String(row.owner_address || ''),
+      callId: String(row.call_id || ''),
+      conversationId: String(row.conversation_id || ''),
+      peerAddress: String(row.peer_address || ''),
+      direction: row.direction === 'incoming' ? 'incoming' : 'outgoing',
+      outcome: row.outcome,
+      startedAt: Number(row.started_at || 0),
+      endedAt: Number(row.ended_at || 0),
+      updatedAt: Number(row.updated_at || 0),
+      authorPublicKey: String(row.author_public_key || ''),
+      signature: String(row.signature || ''),
+      readAt: Number(row.read_at || 0),
+    };
   }
 
   getDirectReadWatermark(conversationId: string, myAddress: string): number {
@@ -11750,6 +11938,33 @@ export class ReticulumChatDatabase {
           (conversation_id, sender_address, sender_stream_id, sender_seq);
       CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_unread
         ON rchat_dm_events (conversation_id, recipient_address, read_at, timestamp);
+      CREATE TABLE IF NOT EXISTS rchat_direct_call_history (
+        owner_address TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        peer_address TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK (direction IN ('incoming', 'outgoing')),
+        outcome TEXT NOT NULL CHECK (
+          outcome IN ('answered', 'declined', 'missed', 'cancelled', 'no_answer')
+        ),
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        author_public_key TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        read_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (owner_address, call_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_direct_call_history_conversation
+        ON rchat_direct_call_history
+          (owner_address, conversation_id, ended_at DESC, call_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_rchat_direct_call_history_peer
+        ON rchat_direct_call_history
+          (owner_address, peer_address, ended_at DESC, call_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_rchat_direct_call_history_unread
+        ON rchat_direct_call_history
+          (owner_address, read_at, ended_at)
+        WHERE direction = 'incoming' AND outcome = 'missed';
       CREATE TABLE IF NOT EXISTS rchat_public_group_activity (
         group_id INTEGER PRIMARY KEY,
         local_state_json TEXT,

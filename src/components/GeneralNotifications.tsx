@@ -63,6 +63,9 @@ const isQChatMentionNotification = (notification) =>
   notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
   notification?.data?.qChatMention === true;
 
+const isReticulumDmMissedCallNotification = (notification) =>
+  notification?.data?.reticulumDmMissedCall === true;
+
 function toTimestampMs(value) {
   if (value == null || typeof value !== 'number') return null;
   return value < 1e12 ? value * 1000 : value;
@@ -150,7 +153,9 @@ export const GeneralNotifications = ({
       (notifications ?? []).filter(
         (item) =>
           item?.event === RESOURCE_EVENT ||
-          (reticulumEnabled && isQChatMentionNotification(item))
+          (reticulumEnabled &&
+            (isQChatMentionNotification(item) ||
+              isReticulumDmMissedCallNotification(item)))
       ),
     [notifications, reticulumEnabled]
   );
@@ -380,6 +385,8 @@ export const GeneralNotifications = ({
               notification?.notificationId === 'q-mail-notification' ||
               notification?.appName === 'Q-Mail';
             const isQChatMention = isQChatMentionNotification(notification);
+            const isMissedDmCall =
+              isReticulumDmMissedCallNotification(notification);
             const timestamp = getNotificationTimestamp(notification);
             const unseen =
               timestamp != null &&
@@ -413,6 +420,21 @@ export const GeneralNotifications = ({
                       channelId: notification?.data?.channelId,
                       eventId: notification?.data?.eventId,
                       from: notification?.data?.groupId,
+                    });
+                    return;
+                  }
+                  if (isMissedDmCall) {
+                    setNotifications((current) =>
+                      current.filter(
+                        (item) =>
+                          item?.data?.reticulumDmCallId !==
+                          notification?.data?.reticulumDmCallId
+                      )
+                    );
+                    setAnchorEl(null);
+                    executeEvent('openDirectMessageInternal', {
+                      address: notification?.data?.from,
+                      name: notification?.data?.name,
                     });
                     return;
                   }

@@ -766,6 +766,12 @@ declare global {
         myAddress: string,
         peerAddress?: string
       ) => Promise<unknown[]>;
+      getDirectCallHistory: (
+        ownerAddress: string,
+        peerAddress?: string,
+        limit?: number,
+        unreadOnly?: boolean
+      ) => Promise<unknown[]>;
       markDirectRead: (
         myAddress: string,
         peerAddress: string,
@@ -980,6 +986,9 @@ declare global {
         }) => void
       ) => () => void;
       onDirectEvent: (cb: (payload: { event: unknown }) => void) => () => void;
+      onDirectCallHistory: (
+        cb: (payload: { record: unknown }) => void
+      ) => () => void;
       onDirectTyping: (
         cb: (payload: {
           conversationId: string;
@@ -991,7 +1000,7 @@ declare global {
         cb: (payload: {
           conversationId?: string;
           peerAddress?: string;
-          reason?: 'expiry';
+          reason?: 'expiry' | 'call';
         }) => void
       ) => () => void;
       onSilenceChanged: (

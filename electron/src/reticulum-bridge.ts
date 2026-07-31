@@ -195,6 +195,7 @@ type BridgeCmdFrame = {
     | 'clear_presence_cache'
     | 'forward_presence'
     | 'overlay_sync_state'
+    | 'configure_reticulum_chat_pinned_peers'
     | 'overlay_note_candidate_failure'
     | 'stop'
     | 'send_call'
@@ -1130,6 +1131,7 @@ function commandPriorityForAction(
     case 'publish_presence':
     case 'forward_presence':
     case 'overlay_sync_state':
+    case 'configure_reticulum_chat_pinned_peers':
     case 'overlay_note_candidate_failure':
       return 'low';
     default:
@@ -3069,6 +3071,28 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     if (!resp.ok && this.isBridgeCommandBacklogResponse(resp)) {
       throw new Error(
         resp.error ?? 'Reticulum bridge command backlog: overlay_sync_state'
+      );
+    }
+    return resp.ok;
+  }
+
+  async configureReticulumChatPinnedPeers(
+    peers: Array<{
+      accountAddress: string;
+      destinationHash: string;
+      expiresAt: number;
+    }>
+  ): Promise<boolean> {
+    await this.start();
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand(
+      'configure_reticulum_chat_pinned_peers',
+      { peers }
+    );
+    if (!resp.ok && this.isBridgeCommandBacklogResponse(resp)) {
+      throw new Error(
+        resp.error ??
+          'Reticulum bridge command backlog: configure_reticulum_chat_pinned_peers'
       );
     }
     return resp.ok;

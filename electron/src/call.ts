@@ -293,6 +293,23 @@ export type CallWireEnvelope =
 
 export type CallDirection = 'outbound' | 'inbound';
 export type CallState = 'pending' | 'active' | 'ended';
+export type DirectCallHistoryOutcome =
+  | 'answered'
+  | 'declined'
+  | 'missed'
+  | 'cancelled'
+  | 'no_answer';
+
+export type DirectCallHistoryUpdate = {
+  callId: string;
+  localAddress: string;
+  remoteAddress: string;
+  chatId: string;
+  direction: CallDirection;
+  outcome: DirectCallHistoryOutcome;
+  startedAt: number;
+  endedAt: number;
+};
 
 interface CallRecord {
   callId: string;
@@ -319,6 +336,7 @@ interface CallRecord {
  *   'call:accepted'  { callId }
  *   'call:rejected'  { callId, reason? }
  *   'call:hangup'    { callId }
+ *   'call:history'   DirectCallHistoryUpdate
  */
 export class CallManager extends EventEmitter {
   private presence: PresenceManager;
@@ -357,6 +375,24 @@ export class CallManager extends EventEmitter {
     super();
     this.presence = presence;
     this.reticulumBridge = reticulumBridge ?? null;
+  }
+
+  private emitDirectCallHistory(
+    call: CallRecord,
+    outcome: DirectCallHistoryOutcome,
+    endedAt = Date.now()
+  ): void {
+    if (!call.chatId.startsWith('direct:')) return;
+    this.emit('call:history', {
+      callId: call.callId,
+      localAddress: call.localAddress,
+      remoteAddress: call.remoteAddress,
+      chatId: call.chatId,
+      direction: call.direction,
+      outcome,
+      startedAt: call.startedAt,
+      endedAt,
+    } satisfies DirectCallHistoryUpdate);
   }
 
   private attachReticulumBridge(): void {
@@ -614,6 +650,7 @@ export class CallManager extends EventEmitter {
     record.cleanupTimer = setTimeout(() => {
       if (this.activeCalls.get(callId)?.state === 'pending') {
         loggerLog(`[Call] Request ${callId.slice(0, 8)}… timed out.`);
+        this.emitDirectCallHistory(record, 'no_answer');
         this.activeCalls.delete(callId);
       }
     }, CALL_REQUEST_TTL_MS);
@@ -637,6 +674,7 @@ export class CallManager extends EventEmitter {
     if (!call || call.direction !== 'inbound') return;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
     call.state = 'active';
+    this.emitDirectCallHistory(call, 'answered', timestamp);
 
     const env: CallAcceptEnvelope = {
       type: 'CALL_ACCEPT',
@@ -668,6 +706,9 @@ export class CallManager extends EventEmitter {
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    if (call.direction === 'inbound' && reason === 'rejected') {
+      this.emitDirectCallHistory(call, 'declined', timestamp ?? Date.now());
+    }
 
     const env: CallRejectEnvelope = {
       type: 'CALL_REJECT',
@@ -690,10 +731,20 @@ export class CallManager extends EventEmitter {
   ): void {
     const call = this.activeCalls.get(callId);
     if (!call) return;
+    const previousState = call.state;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    this.emitDirectCallHistory(
+      call,
+      previousState === 'active'
+        ? 'answered'
+        : call.direction === 'outbound'
+          ? 'cancelled'
+          : 'missed',
+      timestamp
+    );
 
     const env: CallHangupEnvelope = {
       type: 'CALL_HANGUP',
@@ -768,6 +819,7 @@ export class CallManager extends EventEmitter {
     record.cleanupTimer = setTimeout(() => {
       if (this.activeCalls.get(env.callId)?.state === 'pending') {
         loggerLog(`[Call] Incoming call ${env.callId.slice(0, 8)}… timed out.`);
+        this.emitDirectCallHistory(record, 'missed');
         this.activeCalls.delete(env.callId);
       }
     }, CALL_REQUEST_TTL_MS);
@@ -822,6 +874,7 @@ export class CallManager extends EventEmitter {
         c.acceptedReticulumPeerHash = senderDestinationHash;
         c.reticulumPeerPresenceHash = senderDestinationHash;
         c.state = 'active';
+        this.emitDirectCallHistory(c, 'answered', env.timestamp);
         this.cancelOtherRingingEndpoints(c);
         this.emit('call:accepted', { callId: env.callId });
         loggerLog(`[Call] Call ${env.callId.slice(0, 8)}… accepted.`);
@@ -880,6 +933,9 @@ export class CallManager extends EventEmitter {
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
         this.activeCalls.delete(env.callId);
+        if (c.direction === 'outbound') {
+          this.emitDirectCallHistory(c, 'declined', env.timestamp);
+        }
         this.emit('call:rejected', { callId: env.callId, reason: env.reason });
         loggerLog(`[Call] Call ${env.callId.slice(0, 8)}… rejected.`);
       });
@@ -919,6 +975,7 @@ export class CallManager extends EventEmitter {
         }
         const c = this.activeCalls.get(env.callId);
         if (!c) return;
+        const previousState = c.state;
         const expectedEndpoint =
           c.direction === 'outbound'
             ? c.acceptedReticulumPeerHash
@@ -937,6 +994,15 @@ export class CallManager extends EventEmitter {
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
         this.activeCalls.delete(env.callId);
+        this.emitDirectCallHistory(
+          c,
+          previousState === 'active'
+            ? 'answered'
+            : c.direction === 'inbound'
+              ? 'missed'
+              : 'cancelled',
+          env.timestamp
+        );
         this.emit('call:hangup', { callId: env.callId });
         loggerLog(`[Call] Remote hung up call ${env.callId.slice(0, 8)}…`);
       });

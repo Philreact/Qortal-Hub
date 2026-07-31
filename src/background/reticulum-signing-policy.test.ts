@@ -445,6 +445,17 @@ describe('Reticulum wallet signing policy', () => {
         requesterPeerHash: 'h',
         timestamp: 1,
       },
+      {
+        type: 'RCHAT_DIRECT_CALL_HISTORY_V1',
+        ownerAddress: 'Qowner',
+        callId: 'call_history_1',
+        peerAddress: 'Qpeer',
+        direction: 'incoming',
+        outcome: 'missed',
+        startedAt: 1,
+        endedAt: 2,
+        updatedAt: 3,
+      },
     ];
     for (const payload of payloads) {
       expectAllowed(assertAllowedReticulumSigningPayload, payload);

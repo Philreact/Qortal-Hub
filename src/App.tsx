@@ -1726,7 +1726,9 @@ function App() {
                         <QortalGroupVoiceCallNavWidget />
                         <DirectVoiceCallNavWidget />
                         <QortalGroupVoiceCallStage />
-                        <DirectVoiceCallGlobalOverlay />
+                        <DirectVoiceCallGlobalOverlay
+                          isAppLocked={isAppLocked}
+                        />
                       </>
                     )}
                   </CallSwitchGuardProvider>

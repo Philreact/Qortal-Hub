@@ -51,6 +51,68 @@ afterEach(() => {
 });
 
 describe('Reticulum DM expiry persistence', () => {
+  it('deduplicates call history, lets answered override missed, and marks missed calls read', () => {
+    const { db } = openDb();
+    const ownerAddress = 'Qowner';
+    const peerAddress = 'Qpeer';
+    const conversationId = reticulumDmConversationId(ownerAddress, peerAddress);
+    const base = {
+      ownerAddress,
+      peerAddress,
+      conversationId,
+      callId: 'call_history_1',
+      direction: 'incoming' as const,
+      outcome: 'missed' as const,
+      startedAt: 1_000,
+      endedAt: 2_000,
+      updatedAt: 2_000,
+      authorPublicKey: 'public-key',
+      signature: 'signature',
+      readAt: 0,
+    };
+    const firstCallInsert = db.upsertDirectCallHistory(base);
+    expect(firstCallInsert?.changed).toBe(true);
+    expect(db.getDirectCallHistory(ownerAddress, peerAddress)).toHaveLength(1);
+    expect(db.upsertDirectCallHistory(base)?.changed).toBe(false);
+    expect(db.getDirectCallSummaries(ownerAddress)[0]).toMatchObject({
+      unreadMissedCallCount: 1,
+      lastCall: { outcome: 'missed' },
+    });
+
+    expect(
+      db.upsertDirectCallHistory({
+        ...base,
+        outcome: 'answered',
+        updatedAt: 3_000,
+      })?.changed
+    ).toBe(true);
+    expect(db.getDirectCallSummaries(ownerAddress)[0]).toMatchObject({
+      unreadMissedCallCount: 0,
+      lastCall: { outcome: 'answered' },
+    });
+
+    db.upsertDirectCallHistory({
+      ...base,
+      callId: 'call_history_2',
+      endedAt: 4_000,
+      updatedAt: 4_000,
+    });
+    db.markDirectRead(conversationId, ownerAddress, 4_000);
+    expect(
+      db.getDirectCallHistory(ownerAddress, peerAddress, 10, true)
+    ).toEqual([]);
+    db.upsertDirectCallHistory({
+      ...base,
+      callId: 'call_history_2',
+      endedAt: 4_000,
+      updatedAt: 5_000,
+    });
+    expect(
+      db.getDirectCallHistory(ownerAddress, peerAddress, 10, true)
+    ).toEqual([]);
+    db.close();
+  });
+
   it('persists independent account-recipient preferences with a one-month default', () => {
     const { db, root } = openDb();
     expect(db.getDirectExpiryPreference('Qowner', 'Qpeer').durationMs).toBe(
@@ -62,6 +124,13 @@ describe('Reticulum DM expiry persistence', () => {
     expect(
       db.setDirectExpiryPreference('Qowner', 'Qother', 24 * 60 * 60 * 1000)
     ).toMatchObject({ durationMs: 24 * 60 * 60 * 1000 });
+    expect(
+      db.setDirectExpiryPreference('Qowner', 'Qowner', 7 * 24 * 60 * 60 * 1000)
+    ).toMatchObject({
+      ownerAddress: 'Qowner',
+      peerAddress: 'Qowner',
+      durationMs: 7 * 24 * 60 * 60 * 1000,
+    });
     db.close();
 
     const reopened = new ReticulumChatDatabase(
@@ -73,6 +142,9 @@ describe('Reticulum DM expiry persistence', () => {
     expect(
       reopened.getDirectExpiryPreference('Qanother', 'Qpeer').durationMs
     ).toBe(RETICULUM_DM_DEFAULT_EXPIRY_MS);
+    expect(
+      reopened.getDirectExpiryPreference('Qowner', 'Qowner').durationMs
+    ).toBe(7 * 24 * 60 * 60 * 1000);
     reopened.close();
   });
 

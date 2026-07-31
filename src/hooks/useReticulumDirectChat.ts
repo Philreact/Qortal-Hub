@@ -608,7 +608,8 @@ export function useReticulumDirectChat(
         senderPublicKey: signed.authorPublicKey,
         signature: signed.signature,
         legacySignature: legacySigned.signature,
-        localDeliveryStatus: 'pending',
+        localDeliveryStatus:
+          actualPeerAddress === myAddress ? 'sent' : 'pending',
         localDeliveryUpdatedAt: Date.now(),
       };
       await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
@@ -649,6 +650,7 @@ export function useReticulumDirectChat(
       if (!enabled || !myAddress || !peerAddress) {
         return { success: false, error: 'Reticulum chat is disabled' };
       }
+      if (myAddress === peerAddress) return { success: true };
       return (
         window.reticulumChat?.sendDirectTyping?.(
           myAddress,

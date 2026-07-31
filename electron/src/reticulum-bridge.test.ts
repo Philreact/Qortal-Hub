@@ -108,6 +108,33 @@ describe('ReticulumBridge presence subscriptions', () => {
     expect(verifiedPeers[0]).not.toHaveProperty('address');
   });
 
+  it('configures bounded Reticulum chat peer pins through the bridge', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'pinned-chat-peers-1',
+      ok: true,
+    }));
+    const peers = [
+      {
+        accountAddress: 'Q-account',
+        destinationHash: 'b'.repeat(32),
+        expiresAt: Date.now() + 60_000,
+      },
+    ];
+
+    await expect(bridge.configureReticulumChatPinnedPeers(peers)).resolves.toBe(
+      true
+    );
+    expect(internal.sendCommand).toHaveBeenCalledWith(
+      'configure_reticulum_chat_pinned_peers',
+      { peers }
+    );
+  });
+
   it('publishes a game bootstrap only for the current Python instance', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

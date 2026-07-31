@@ -2204,12 +2204,16 @@ export const Group = ({
 
   const reticulumDirectRows = useMemo(() => {
     if (!reticulumChatEnabled) return [];
-    return Object.values(reticulumDirectSummaries || {})
+    const rows = Object.values(reticulumDirectSummaries || {})
       .map((summary: any) => {
         const peerAddress = String(summary?.peerAddress || '').trim();
         const lastEvent = summary?.lastEvent || null;
+        const lastCall = summary?.lastCall || null;
         const silenced = summary?.silenced === true;
-        if (!validateAddress(peerAddress) || (!lastEvent && !silenced))
+        if (
+          !validateAddress(peerAddress) ||
+          (!lastEvent && !lastCall && !silenced)
+        )
           return null;
         const friend = dmFriendsByAddress?.[peerAddress];
         const resolvedName =
@@ -2217,7 +2221,9 @@ export const Group = ({
         return {
           address: peerAddress,
           name: resolvedName || peerAddress,
-          timestamp: Number(summary?.updatedAt || lastEvent?.timestamp || 0),
+          timestamp: Number(
+            summary?.updatedAt || lastCall?.endedAt || lastEvent?.timestamp || 0
+          ),
           sender: lastEvent?.senderAddress || '',
           senderName:
             lastEvent?.senderAddress === myAddress
@@ -2226,9 +2232,30 @@ export const Group = ({
           reticulumDirect: true,
           reticulumSilenced: silenced,
           unreadCount: Number(summary?.unreadCount || 0),
+          unreadMissedCallCount: Number(summary?.unreadMissedCallCount || 0),
+          lastCall,
+          lastMessageTimestamp: Number(lastEvent?.timestamp || 0),
         };
       })
       .filter(Boolean);
+    if (!validateAddress(myAddress)) return rows;
+    const savedSummary = reticulumDirectSummaries?.[myAddress];
+    const savedLastEvent = savedSummary?.lastEvent || null;
+    return [
+      {
+        address: myAddress,
+        name: 'Saved Messages',
+        timestamp: Number(
+          savedSummary?.updatedAt || savedLastEvent?.timestamp || 0
+        ),
+        sender: myAddress,
+        senderName: userInfo?.name || myAddress,
+        reticulumDirect: true,
+        savedMessages: true,
+        unreadCount: 0,
+      },
+      ...rows.filter((row: any) => row?.address !== myAddress),
+    ];
   }, [
     dmFriendsByAddress,
     myAddress,

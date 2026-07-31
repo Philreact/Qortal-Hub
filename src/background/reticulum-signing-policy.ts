@@ -325,6 +325,17 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     ['type', 'scopeType', 'ownerAddress', 'upToTimestamp', 'signedAt'],
     ['groupId', 'channelId', 'conversationId', 'peerAddress']
   ),
+  RCHAT_DIRECT_CALL_HISTORY_V1: schema([
+    'type',
+    'ownerAddress',
+    'callId',
+    'peerAddress',
+    'direction',
+    'outcome',
+    'startedAt',
+    'endedAt',
+    'updatedAt',
+  ]),
   RCHAT_METADATA_SNAPSHOT: schema([
     'type',
     'createdAt',

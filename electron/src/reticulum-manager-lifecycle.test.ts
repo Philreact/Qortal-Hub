@@ -271,6 +271,42 @@ describe('Reticulum manager late bridge binding', () => {
     manager.stop();
   });
 
+  it('emits a durable no-answer outcome when an outgoing direct call times out', async () => {
+    vi.useFakeTimers();
+    const presence = presenceStub();
+    presence.getRouteForAddress.mockReturnValue({
+      kind: 'reticulum',
+      destinationHash: 'a'.repeat(32),
+    });
+    const manager = new CallManager(
+      presence as any,
+      new CallBridgeStub() as any
+    );
+    const history = vi.fn();
+    manager.on('call:history', history);
+    manager.start();
+
+    await manager.initiateCall(
+      'Q-peer',
+      'direct:Q-local:Q-peer',
+      'Q-local',
+      'sig',
+      'pub',
+      'call-timeout',
+      1_000
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(history).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'call-timeout',
+        direction: 'outbound',
+        outcome: 'no_answer',
+      })
+    );
+    manager.stop();
+  });
+
   it('keeps a routed call request alive through a brief bridge readiness flap', async () => {
     vi.useFakeTimers();
     const presence = presenceStub();
