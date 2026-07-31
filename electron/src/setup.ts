@@ -3835,6 +3835,8 @@ ipcMain.handle('reticulumChat:getReadinessStatus', () =>
   getReticulumChatReadinessStatus()
 );
 
+let reticulumLocalAccountLifecycleGeneration = 0;
+
 ipcMain.handle(
   'reticulumChat:setLocalGroupMemberships',
   async (
@@ -3852,6 +3854,7 @@ ipcMain.handle(
         }
     >
   ) => {
+    const accountGeneration = reticulumLocalAccountLifecycleGeneration;
     let manager: ReturnType<typeof getReticulumChatManager>;
     try {
       manager = await getReadyReticulumChatManager();
@@ -3869,6 +3872,9 @@ ipcMain.handle(
         success: false,
         error: 'Reticulum chat manager is not running',
       };
+    }
+    if (accountGeneration !== reticulumLocalAccountLifecycleGeneration) {
+      return { success: false, error: 'Account session changed' };
     }
     manager.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
     return { success: true };
@@ -3917,7 +3923,11 @@ ipcMain.handle('reticulumChat:getPublicGroupActivitySnapshot', async () => {
 ipcMain.handle(
   'reticulumChat:setLocalDmAddresses',
   async (_event, addresses: string[]) => {
+    const accountGeneration = reticulumLocalAccountLifecycleGeneration;
     const settings = await readAppSettings();
+    if (accountGeneration !== reticulumLocalAccountLifecycleGeneration) {
+      return { success: false, error: 'Account session changed' };
+    }
     const manager = getReticulumChatManager();
     if (!manager) {
       return { success: false, error: 'Reticulum chat manager is not running' };
@@ -3930,6 +3940,21 @@ ipcMain.handle(
     return { success: true };
   }
 );
+
+ipcMain.handle('reticulumChat:clearLocalAccountState', async () => {
+  reticulumLocalAccountLifecycleGeneration += 1;
+  // These managers live for the lifetime of the main process too. Clear their
+  // account routing at the same explicit logout boundary so a later login
+  // cannot inherit calls or verified inbound work from the previous account.
+  getCallManager()?.clearLocalAccountState();
+  getGroupCallManager()?.clearLocalAccountState();
+  getChatManager()?.setLocalAddresses([]);
+  stopPresenceMainHeartbeatScheduler();
+  getPresenceManager()?.clearLocalAccountState();
+  const manager = getReticulumChatManager();
+  if (manager) await manager.clearLocalAccountState();
+  return { success: true };
+});
 
 ipcMain.handle(
   'reticulumChat:getSilence',

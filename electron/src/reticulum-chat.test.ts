@@ -1790,6 +1790,80 @@ describe('reticulum chat protocol', () => {
     await expect(flush).resolves.toBeUndefined();
   });
 
+  it('invalidates an in-flight account read sync during logout without losing its durable watermark', async () => {
+    const owner = createDmIdentity();
+    const peer = createDmIdentity();
+    const signed = createDmSigner(owner);
+    let releaseSigner!: () => void;
+    const signerGate = new Promise<void>((resolve) => {
+      releaseSigner = resolve;
+    });
+    let signerStarted!: () => void;
+    const signerDidStart = new Promise<void>((resolve) => {
+      signerStarted = resolve;
+    });
+    const sent: ReticulumChatWire[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: async (fields) => {
+        signerStarted();
+        await signerGate;
+        return signed(fields);
+      },
+      hasGoodOverlayHealth: () => false,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => '8'.repeat(32),
+        sendReticulumChatDetailed: async (
+          _target: string,
+          wire: ReticulumChatWire
+        ) => {
+          sent.push(wire);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    try {
+      manager.setLocalDmAddresses([owner.address]);
+      const conversationId = reticulumDmConversationId(
+        owner.address,
+        peer.address
+      );
+      (manager as any).queueReadSync({
+        scopeType: 'dm',
+        ownerAddress: owner.address,
+        conversationId,
+        peerAddress: peer.address,
+        upToTimestamp: Date.now() - 500,
+      });
+
+      await signerDidStart;
+      await manager.clearLocalAccountState();
+      releaseSigner();
+      await flushAsyncWork(8);
+
+      expect((manager as any).localDmAddresses.size).toBe(0);
+      expect((manager as any).localGroupIds.size).toBe(0);
+      expect(sent.filter((wire) => wire.k === 'read_sync')).toHaveLength(0);
+      expect(
+        (manager as any).db.getDeviceReadStates(owner.address, 10)
+      ).toEqual([]);
+      expect(
+        (manager as any).db.getPendingDeviceReadStates(owner.address)
+      ).toEqual([
+        expect.objectContaining({
+          ownerAddress: owner.address,
+          scopeType: 'dm',
+          conversationId,
+        }),
+      ]);
+    } finally {
+      releaseSigner();
+      manager.close();
+    }
+  });
+
   it('keeps public group activity in bounded rolling counters', () => {
     const now = 20 * 24 * 60 * 60_000;
     const state = createReticulumPublicGroupActivityState();

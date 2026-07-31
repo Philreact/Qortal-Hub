@@ -1886,6 +1886,8 @@ export class GroupCallManager extends EventEmitter {
   private started = false;
   private localAddresses = new Set<string>();
   private localAddressesBySource = new Map<string, Set<string>>();
+  private localAccountGeneration = 0;
+  private acceptAccountTrafficWithoutLocal = true;
   private rooms = new Map<string, GroupRoom>();
   private recentRoomStateByRoomId = new Map<string, RecentRoomState>();
   private recentBootstrapParticipantActivityByRoom = new Map<
@@ -2608,6 +2610,13 @@ export class GroupCallManager extends EventEmitter {
     fromAddress: string,
     job: GcVerifyPending
   ): void {
+    if (
+      this.localAddresses.size === 0 &&
+      !this.acceptAccountTrafficWithoutLocal
+    ) {
+      return;
+    }
+    const accountGeneration = this.localAccountGeneration;
     const env = job.env;
     const cacheKey = this.gcSignatureCacheKey(env.type, env.signature);
     if (this.verifiedGcSignatures.has(cacheKey)) {
@@ -2641,6 +2650,7 @@ export class GroupCallManager extends EventEmitter {
     const p = this.verifyPool
       .verify(payload)
       .then((ok) => {
+        if (accountGeneration !== this.localAccountGeneration) return;
         if (!ok) {
           this.logVerifyFailure(job);
           return;
@@ -2894,9 +2904,28 @@ export class GroupCallManager extends EventEmitter {
       for (const address of registered) merged.add(address);
     }
     this.localAddresses = merged;
+    if (this.localAddresses.size > 0) {
+      this.acceptAccountTrafficWithoutLocal = true;
+    }
     loggerLog(
       `[GCall] Local addresses set source=${normalizedSource}: ${[...this.localAddresses].join(', ')}`
     );
+    this.syncReticulumAudioLinks();
+  }
+
+  clearLocalAccountState(): void {
+    this.localAccountGeneration += 1;
+    this.acceptAccountTrafficWithoutLocal = false;
+    for (const roomId of [...this.rooms.keys()]) {
+      this.leaveRoom(roomId, '', '', '', Date.now());
+    }
+    this.localAddressesBySource.clear();
+    this.localAddresses.clear();
+    this.qortalGroupMemberAddressesByRoomId.clear();
+    this.qortalReticulumTargetsByRoomId.clear();
+    this.watchedQortalGroupNumericIds.clear();
+    this.pendingGcJoinBeforeJoinRoom.clear();
+    this.pendingKeyByRoom.clear();
     this.syncReticulumAudioLinks();
   }
 

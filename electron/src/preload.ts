@@ -1612,6 +1612,10 @@ try {
           'reticulumChat:setLocalDmAddresses',
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
+      clearLocalAccountState: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearLocalAccountState'
+        ) as Promise<{ success: boolean; error?: string }>,
       getSilence: async (
         ownerAddress: string,
         targetAddress: string,
@@ -2594,6 +2598,10 @@ try {
         ipcRenderer.invoke(
           'reticulumChat:setLocalDmAddresses',
           addresses
+        ) as Promise<{ success: boolean; error?: string }>,
+      clearLocalAccountState: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearLocalAccountState'
         ) as Promise<{ success: boolean; error?: string }>,
       getSilence: async (
         ownerAddress: string,

@@ -353,6 +353,8 @@ export class CallManager extends EventEmitter {
     ctx: { senderDestinationHash: string };
     receivedAt: number;
   }> = [];
+  private localAccountGeneration = 0;
+  private acceptPendingIncomingWithoutLocal = true;
   private verifyPool = new VerifyWorkerPool(
     'call',
     CALL_VERIFY_WORKER_COUNT,
@@ -465,8 +467,24 @@ export class CallManager extends EventEmitter {
 
   setLocalAddresses(addresses: string[]): void {
     this.localAddresses = new Set(addresses);
+    if (this.localAddresses.size > 0) {
+      this.acceptPendingIncomingWithoutLocal = true;
+    }
     retainedCallLocalAddresses = [...this.localAddresses];
     this.flushPendingVerifiedIncomingRequests();
+  }
+
+  clearLocalAccountState(): void {
+    this.localAccountGeneration += 1;
+    this.acceptPendingIncomingWithoutLocal = false;
+    this.localAddresses.clear();
+    retainedCallLocalAddresses = [];
+    this.pendingVerifiedIncomingWhenNoLocal = [];
+    for (const call of this.activeCalls.values()) {
+      if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+      this.clearControlRepeatTimers(call);
+    }
+    this.activeCalls.clear();
   }
 
   /**
@@ -853,6 +871,7 @@ export class CallManager extends EventEmitter {
     }
 
     const expectedAddress = call.remoteAddress;
+    const accountGeneration = this.localAccountGeneration;
     void this.verifyPool
       .verify({
         kind: 'call_signed',
@@ -864,6 +883,7 @@ export class CallManager extends EventEmitter {
         expectedAddress,
       })
       .then((ok) => {
+        if (accountGeneration !== this.localAccountGeneration) return;
         if (!ok) {
           loggerLog('[Call] Dropped CALL_ACCEPT: invalid signature');
           return;
@@ -1185,6 +1205,7 @@ export class CallManager extends EventEmitter {
       return;
     }
 
+    const accountGeneration = this.localAccountGeneration;
     void this.verifyPool
       .verify({
         kind: 'call_request',
@@ -1200,11 +1221,13 @@ export class CallManager extends EventEmitter {
         fromPublicKey: env.fromPublicKey,
       })
       .then((ok) => {
+        if (accountGeneration !== this.localAccountGeneration) return;
         if (!ok) {
           loggerLog('[Call] Dropped CALL_REQUEST (RT): invalid signature');
           return;
         }
         if (this.localAddresses.size === 0) {
+          if (!this.acceptPendingIncomingWithoutLocal) return;
           this.enqueuePendingVerifiedIncomingRequest(
             env,
             senderDestinationHash

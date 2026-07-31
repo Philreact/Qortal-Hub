@@ -1110,6 +1110,27 @@ function App() {
     }
   }, []);
 
+  const cleanupReticulumAccountBeforeLogout = useCallback(async () => {
+    if (typeof window.reticulumChat?.clearLocalAccountState !== 'function')
+      return;
+    let timeoutId: number | undefined;
+    try {
+      await Promise.race([
+        window.reticulumChat.clearLocalAccountState(),
+        new Promise<void>((resolve) => {
+          timeoutId = window.setTimeout(resolve, 2_000);
+        }),
+      ]);
+    } catch (error) {
+      // Logout must remain available if Reticulum is disabled or shutting
+      // down. The main-process cleanup invalidates account work before its
+      // first await, so it remains safe to continue after this bounded wait.
+      console.warn('[ReticulumChat] Logout cleanup failed:', error);
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
+  }, []);
+
   const logoutFunc = useCallback(async () => {
     try {
       if (extState === 'authenticated') {
@@ -1119,34 +1140,35 @@ function App() {
           }),
         });
       }
-      clearLastAuthenticatedWalletAddress();
       // Send the offline presence notice while the key is still in secure
       // storage. The background clears keyPair as part of logout, so signing
       // must happen here — before sendMessage('logout') is called.
       await cleanupAudioSurfaceBeforeLogout();
       await sendOfflineBeforeLogout();
-      window
-        .sendMessage('logout', {})
-        .then((response) => {
-          if (response) {
-            stopSharedEarbumpPlayback();
-            executeEvent('logout-event', {});
-            resetAllStates();
-          }
-        })
-        .catch((error) => {
-          console.error(
-            'Failed to log out:',
-            error.message || 'An error occurred'
-          );
-        });
+      await cleanupReticulumAccountBeforeLogout();
+      const response = await window.sendMessage('logout', {});
+      if (response) {
+        clearLastAuthenticatedWalletAddress();
+        stopSharedEarbumpPlayback();
+        executeEvent('logout-event', {});
+        resetAllStates();
+        // Let authenticated children unmount, then sweep once more. This
+        // catches a registration IPC that was already queued when the first
+        // cleanup invalidated the account lifecycle.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        await cleanupReticulumAccountBeforeLogout();
+      }
     } catch (error) {
-      console.log(error);
+      console.error(
+        'Failed to log out:',
+        error instanceof Error ? error.message : 'An error occurred'
+      );
     }
   }, [
     hasSettingsChanged,
     extState,
     cleanupAudioSurfaceBeforeLogout,
+    cleanupReticulumAccountBeforeLogout,
     sendOfflineBeforeLogout,
   ]);
 

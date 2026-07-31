@@ -922,6 +922,22 @@ export class PresenceManager extends EventEmitter {
   }
 
   /**
+   * Forget only this installation's authenticated presence. The signed
+   * offline envelope is sent first by the renderer; this local cleanup is the
+   * fail-safe that prevents an older online heartbeat from being replayed if
+   * transport publication failed during logout.
+   */
+  clearLocalAccountState(): void {
+    this.lastLocalEnvelope = null;
+    const localSessions = [...this.sessions.values()].filter(
+      (session) => session.route.kind === 'local'
+    );
+    for (const session of localSessions) {
+      this.removeSession(session.address, session.sessionId);
+    }
+  }
+
+  /**
    * Called when the Reticulum bridge exposes the local destination hash (or clears on degrade).
    * Removes self from overlay fanout so we never treat our own hash as a peer.
    */

@@ -645,6 +645,10 @@ declare global {
       setLocalDmAddresses: (
         addresses: string[]
       ) => Promise<{ success: boolean; error?: string }>;
+      clearLocalAccountState: () => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
       getSilence: (
         ownerAddress: string,
         targetAddress: string,

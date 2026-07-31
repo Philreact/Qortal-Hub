@@ -70,6 +70,58 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     expect(manager.isAddressOnline(address)).toBe(true);
   });
 
+  it('clears only local cached presence at logout', async () => {
+    const manager = new PresenceManager();
+    (manager as any).verifyPool = { verify: vi.fn(async () => true) };
+    const localKeys = nacl.sign.keyPair();
+    const remoteKeys = nacl.sign.keyPair();
+    const localPublicKey = encodeBytesBase58(localKeys.publicKey);
+    const remotePublicKey = encodeBytesBase58(remoteKeys.publicKey);
+    const localAddress = deriveAddressFromPublicKey(localPublicKey);
+    const remoteAddress = deriveAddressFromPublicKey(remotePublicKey);
+    const now = Date.now();
+
+    await manager.handleEnvelope(
+      {
+        id: 'local-presence-before-logout',
+        type: 'PRESENCE_HEARTBEAT',
+        senderAddress: localAddress,
+        timestamp: now,
+        payload: {
+          address: localAddress,
+          publicKey: localPublicKey,
+          sessionId: 'local-session',
+          status: 'online',
+        },
+        signature: 'sig',
+      },
+      { kind: 'local' }
+    );
+    await manager.handleEnvelope(
+      {
+        id: 'remote-presence-before-logout',
+        type: 'PRESENCE_HEARTBEAT',
+        senderAddress: remoteAddress,
+        timestamp: now,
+        payload: {
+          address: remoteAddress,
+          publicKey: remotePublicKey,
+          sessionId: 'remote-session',
+          status: 'online',
+        },
+        signature: 'sig',
+      },
+      { kind: 'reticulum', destinationHash: 'a'.repeat(32) }
+    );
+
+    expect(manager.getLastLocalEnvelope()).not.toBeNull();
+    manager.clearLocalAccountState();
+
+    expect(manager.getLastLocalEnvelope()).toBeNull();
+    expect(manager.isAddressOnline(localAddress)).toBe(false);
+    expect(manager.isAddressOnline(remoteAddress)).toBe(true);
+  });
+
   it('accepts a signed route-bound relayed presence and rejects a changed origin', async () => {
     const destinationHash = 'a'.repeat(32);
     const sessionId = `PqqqqqqqqqqqqqqqqqqqqqgABCDEFGHIJKLM`;

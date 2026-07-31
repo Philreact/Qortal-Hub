@@ -6591,6 +6591,7 @@ export class ReticulumChatManager extends EventEmitter {
   private selfDmWarmLinkAppliedKey = '';
   private selfDmWarmLinkSyncInFlight = false;
   private selfDmWarmLinkSyncPending = false;
+  private selfDmWarmLinkSyncPromise: Promise<void> | null = null;
   private resourceOffers = new Map<string, ReticulumChatEventOffer>();
   private eventPageOffers = new Map<string, ReticulumChatEventPageOffer>();
   private metadataSnapshotOffers = new Map<
@@ -6790,6 +6791,8 @@ export class ReticulumChatManager extends EventEmitter {
   private readSyncPeerAcks = new Map<string, number>();
   private readSyncReplayActive = false;
   private readSyncReplayPending = false;
+  /** Invalidates account-bound async work when the authenticated user logs out. */
+  private localAccountGeneration = 0;
   private recentDmRequests = new Map<string, number>();
   private recentDmDiscoveryKeys = new Map<string, number>();
   private dmProbeRoutes = new Map<string, ReticulumDmProbeRoute>();
@@ -8562,6 +8565,79 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  /**
+   * Remove every installation-wide registration that belongs to the currently
+   * authenticated account without deleting account-keyed chat data. This is
+   * deliberately owned by the long-lived main-process manager: renderer
+   * unmount cleanup is not a reliable logout boundary.
+   */
+  async clearLocalAccountState(): Promise<void> {
+    this.localAccountGeneration += 1;
+
+    if (this.readSyncRetryTimer) clearTimeout(this.readSyncRetryTimer);
+    this.readSyncRetryTimer = null;
+    this.readSyncRetryDelayMs = RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS;
+    this.pendingReadSync.clear();
+    this.readSyncFlushScheduled = false;
+    this.readSyncReplayPending = false;
+    this.readSyncLastSignedAt.clear();
+    this.readSyncPeerAcks.clear();
+
+    this.pendingInitialDmDiscovery = false;
+    this.stopDmDigestTimer();
+    this.clearActiveDirectChats();
+    for (const timer of this.directTypingTimers.values()) clearTimeout(timer);
+    this.directTypingTimers.clear();
+    for (const timer of this.typingTimers.values()) clearTimeout(timer);
+    this.typingTimers.clear();
+
+    this.selfDmSummaryAnnouncements.clear();
+    this.directCallHistoryAnnouncements.clear();
+    this.recentDmRequests.clear();
+    this.recentDmDiscoveryKeys.clear();
+    this.dmProbeRoutes.clear();
+    this.dmNotifyRoutes.clear();
+    this.dmConversationRouteIds.clear();
+    this.directDmPageRequests.clear();
+    this.directHistoryPageRequests.clear();
+    this.directHistoryPageRequestKeys.clear();
+    this.directHistoryPageTransferKeys.clear();
+    this.directHistoryPageRequestBackoffs.clear();
+    this.directResourceFindRoutes.clear();
+    this.localDirectResourceFindRequests.clear();
+    this.recentDirectResourceDiscoveryRequests.clear();
+
+    this.clearLandStateQueue();
+    this.clearLandAuthQueue();
+    this.clearLocalLandAuthSessions();
+    this.landCallMediaRoutes.clear();
+    this.pendingLandActions.clear();
+    this.localLandSocialActionTimes.clear();
+
+    if (this.membershipInitializationTimer) {
+      clearTimeout(this.membershipInitializationTimer);
+      this.membershipInitializationTimer = null;
+    }
+    this.membershipInitializationQueue = [];
+    this.membershipInitializationQueuedIds.clear();
+
+    this.resourceTransfer?.close();
+    this.directResourceTransfer?.close();
+    this.resourceTransfer = this.createResourceTransfer();
+    this.directResourceTransfer = this.createDirectResourceTransfer();
+
+    this.setLocalDmAddresses([]);
+    this.setLocalGroupMemberships([]);
+    // The generic membership setter normally hydrates deferred read state.
+    // During logout there is intentionally no active owner to hydrate, and an
+    // older flush may still be unwinding, so remove any retry it scheduled.
+    if (this.readSyncRetryTimer) clearTimeout(this.readSyncRetryTimer);
+    this.readSyncRetryTimer = null;
+    this.pendingReadSync.clear();
+    this.readSyncReplayPending = false;
+    await this.reconcileSelfDmWarmLinks();
+  }
+
   getSilence(
     ownerAddress: string,
     targetAddress: string,
@@ -9199,6 +9275,15 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async reconcileSelfDmWarmLinks(): Promise<void> {
     if (this.isClosed) return;
+    if (this.selfDmWarmLinkSyncInFlight) {
+      this.selfDmWarmLinkSyncPending = true;
+      await this.selfDmWarmLinkSyncPromise;
+      if (!this.isClosed && this.selfDmWarmLinkSyncPending) {
+        this.selfDmWarmLinkSyncPending = false;
+        await this.reconcileSelfDmWarmLinks();
+      }
+      return;
+    }
     const bridge = this.bridge;
     if (
       !bridge ||
@@ -9209,27 +9294,36 @@ export class ReticulumChatManager extends EventEmitter {
     const peers = this.selfDmWarmLinkPeers();
     const desiredKey = JSON.stringify(peers);
     if (desiredKey === this.selfDmWarmLinkAppliedKey) return;
-    if (this.selfDmWarmLinkSyncInFlight) {
-      this.selfDmWarmLinkSyncPending = true;
-      return;
-    }
     this.selfDmWarmLinkSyncInFlight = true;
     this.selfDmWarmLinkSyncPending = false;
-    try {
-      const applied = await bridge.configureReticulumChatPinnedPeers(peers);
-      if (applied && bridge === this.bridge) {
-        this.selfDmWarmLinkAppliedKey = desiredKey;
+    const syncPromise = (async () => {
+      try {
+        const applied = await bridge.configureReticulumChatPinnedPeers(peers);
+        const desiredStillCurrent =
+          desiredKey === JSON.stringify(this.selfDmWarmLinkPeers());
+        if (
+          applied &&
+          bridge === this.bridge &&
+          desiredStillCurrent
+        ) {
+          this.selfDmWarmLinkAppliedKey = desiredKey;
+        } else if (bridge === this.bridge && !desiredStillCurrent) {
+          this.selfDmWarmLinkSyncPending = true;
+        }
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] self_dm_warm_links_failed peers=${peers.length} reason=${err instanceof Error ? err.message : String(err)}`
+        );
+      } finally {
+        this.selfDmWarmLinkSyncInFlight = false;
+        this.selfDmWarmLinkSyncPromise = null;
       }
-    } catch (err) {
-      loggerWarn(
-        `[ReticulumChat] self_dm_warm_links_failed peers=${peers.length} reason=${err instanceof Error ? err.message : String(err)}`
-      );
-    } finally {
-      this.selfDmWarmLinkSyncInFlight = false;
-      if (!this.isClosed && this.selfDmWarmLinkSyncPending) {
-        this.selfDmWarmLinkSyncPending = false;
-        setImmediate(() => void this.reconcileSelfDmWarmLinks());
-      }
+    })();
+    this.selfDmWarmLinkSyncPromise = syncPromise;
+    await syncPromise;
+    if (!this.isClosed && this.selfDmWarmLinkSyncPending) {
+      this.selfDmWarmLinkSyncPending = false;
+      await this.reconcileSelfDmWarmLinks();
     }
   }
 
@@ -9298,6 +9392,7 @@ export class ReticulumChatManager extends EventEmitter {
     endedAt: number;
   }): Promise<void> {
     const signer = this.signLocalFields;
+    const accountGeneration = this.localAccountGeneration;
     const ownerAddress = String(update.localAddress || '').trim();
     const peerAddress = String(update.remoteAddress || '').trim();
     const conversationId = reticulumDmConversationId(ownerAddress, peerAddress);
@@ -9330,7 +9425,12 @@ export class ReticulumChatManager extends EventEmitter {
     const signed = await signer(
       buildDirectCallHistorySignedFields(unsigned)
     ).catch(() => null);
-    if (this.isClosed || !signed || signed.authorAddress !== ownerAddress)
+    if (
+      this.isClosed ||
+      accountGeneration !== this.localAccountGeneration ||
+      !signed ||
+      signed.authorAddress !== ownerAddress
+    )
       return;
     this.localDmAddresses.add(ownerAddress);
     const record: ReticulumDirectCallHistoryRecord = {
@@ -12595,13 +12695,18 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     this.readSyncReplayActive = true;
+    const accountGeneration = this.localAccountGeneration;
     try {
       const owners = new Set([
         ...this.localDmAddresses,
         ...this.localGroupAddresses.values(),
       ]);
       for (const ownerAddress of owners) {
-        if (this.isClosed) return;
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        )
+          return;
         const states = this.db.getDeviceReadStates(ownerAddress, 5_000);
         if (states.length === 0) continue;
         for (const peerHash of this.ownDevicePeerHashes(ownerAddress)) {
@@ -12629,6 +12734,7 @@ export class ReticulumChatManager extends EventEmitter {
                   : ({ ok: false, reason: 'send-command-failed' } as const);
               })
             );
+            if (accountGeneration !== this.localAccountGeneration) return;
             if (results.some((result) => result.ok === false)) {
               break;
             }
@@ -12650,15 +12756,24 @@ export class ReticulumChatManager extends EventEmitter {
   private async flushReadSyncQueue(): Promise<void> {
     if (this.readSyncFlushActive || this.isClosed) return;
     this.readSyncFlushActive = true;
+    const accountGeneration = this.localAccountGeneration;
     try {
-      while (!this.isClosed && this.pendingReadSync.size > 0) {
+      while (
+        !this.isClosed &&
+        accountGeneration === this.localAccountGeneration &&
+        this.pendingReadSync.size > 0
+      ) {
         const [key, pending] = this.pendingReadSync.entries().next().value as [
           string,
           ReticulumChatPendingReadSync,
         ];
         this.pendingReadSync.delete(key);
         const state = await this.buildSignedReadState(pending);
-        if (this.isClosed) return;
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        )
+          return;
         if (!state) {
           // Signing can fail transiently while an account is unlocking or the
           // signer is being rebound. The pending row is already durable; use
@@ -12679,7 +12794,11 @@ export class ReticulumChatManager extends EventEmitter {
       }
     } finally {
       this.readSyncFlushActive = false;
-      if (!this.isClosed && this.pendingReadSync.size > 0) {
+      if (
+        !this.isClosed &&
+        accountGeneration === this.localAccountGeneration &&
+        this.pendingReadSync.size > 0
+      ) {
         const pending = this.pendingReadSync.values().next().value as
           | ReticulumChatPendingReadSync
           | undefined;
