@@ -628,7 +628,7 @@ export function useReticulumDirectChat(
         );
         setEvents((prev) => mergeEvents(prev, enriched));
       }
-      return result;
+      return result?.success ? { ...result, eventId } : result;
     },
     [enabled, events, myAddress, peerAddress]
   );

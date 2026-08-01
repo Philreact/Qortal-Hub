@@ -705,6 +705,12 @@
     "hotkey_slot_number": "Slot {{n}}"
   },
   "p2p_health_bad_call_tooltip": "La salute P2P è scarsa. Connetti prima più peer Reticulum.",
+  "dm_friend_events": {
+    "you_added_pending": "Hai aggiunto {{name}} agli amici. Le chiamate saranno disponibili quando anche questa persona ti aggiungerà.",
+    "they_added_pending": "{{name}} ti ha aggiunto agli amici. Aggiungi questa persona per abilitare le chiamate.",
+    "you_added_available": "Hai aggiunto {{name}} agli amici. Le chiamate sono ora disponibili.",
+    "they_added_available": "{{name}} ti ha aggiunto agli amici. Le chiamate sono ora disponibili."
+  },
   "bookmarks": {
     "title": "Segnalibri",
     "bookmarked": "Salvato",

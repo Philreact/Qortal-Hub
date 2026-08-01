@@ -705,6 +705,12 @@
     "hotkey_slot_number": "插槽 {{n}}"
   },
   "p2p_health_bad_call_tooltip": "P2P 健康状况较差。请先连接更多 Reticulum 对等节点。",
+  "dm_friend_events": {
+    "you_added_pending": "你已将 {{name}} 添加为好友。对方也添加你后即可通话。",
+    "they_added_pending": "{{name}} 已将你添加为好友。将对方也添加为好友即可启用通话。",
+    "you_added_available": "你已将 {{name}} 添加为好友。现在可以通话了。",
+    "they_added_available": "{{name}} 已将你添加为好友。现在可以通话了。"
+  },
   "bookmarks": {
     "title": "书签",
     "bookmarked": "已加入书签",

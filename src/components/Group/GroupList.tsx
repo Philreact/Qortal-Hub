@@ -602,12 +602,14 @@ const ReticulumDmMorphIcon = ({
 }) => (
   <Box
     component="span"
+    className="reticulum-dm-morph-icon"
     sx={{
       color,
       display: 'inline-flex',
       height: 25,
       overflow: 'hidden',
       position: 'relative',
+      transition: 'color 150ms ease',
       width: 25,
       '@keyframes reticulumDmLand': {
         '0%': { opacity: 0, transform: 'translateY(-30px) scale(0.96)' },
@@ -862,6 +864,9 @@ const GroupListInner = ({
               width: 42,
               '&:hover': {
                 backgroundColor: theme.palette.action.hover,
+              },
+              '&:hover .reticulum-dm-morph-icon': {
+                color: theme.palette.primary.main,
               },
             }}
           >

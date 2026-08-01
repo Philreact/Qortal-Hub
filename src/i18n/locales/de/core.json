@@ -704,6 +704,12 @@
     "hotkey_slot_number": "Steckplatz {{n}}"
   },
   "p2p_health_bad_call_tooltip": "P2P-Gesundheit ist schlecht. Verbinde zuerst mehr Reticulum-Peers.",
+  "dm_friend_events": {
+    "you_added_pending": "Du hast {{name}} als Freund hinzugefügt. Anrufe werden verfügbar, sobald diese Person dich ebenfalls hinzufügt.",
+    "they_added_pending": "{{name}} hat dich als Freund hinzugefügt. Füge diese Person ebenfalls hinzu, um Anrufe zu aktivieren.",
+    "you_added_available": "Du hast {{name}} als Freund hinzugefügt. Anrufe sind jetzt verfügbar.",
+    "they_added_available": "{{name}} hat dich als Freund hinzugefügt. Anrufe sind jetzt verfügbar."
+  },
   "bookmarks": {
     "title": "Lesezeichen",
     "bookmarked": "Gespeichert",

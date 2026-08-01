@@ -1,5 +1,6 @@
 import { alpha, Box, Typography, useTheme } from '@mui/material';
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded';
+import { useTranslation } from 'react-i18next';
 
 const compactIdentity = (value: unknown) => {
   const text = String(value || '').trim();
@@ -15,16 +16,22 @@ export const DirectFriendEventRow = ({
   myAddress: string;
 }) => {
   const theme = useTheme();
+  const { t } = useTranslation('core');
   const event = message?.dmFriendEvent || {};
   const actorIsMe =
     String(event?.actorAddress || '') === String(myAddress || '');
   const actor = compactIdentity(event?.actorName || event?.actorAddress);
   const target = compactIdentity(event?.targetName || event?.targetAddress);
-  const text = event?.callsAvailable
-    ? 'Calling is now available.'
-    : actorIsMe
-      ? `You added ${target} as a friend. Calls unlock when they add you back.`
-      : `${actor} added you as a friend. Add them back to enable calls.`;
+  const text = t(
+    actorIsMe
+      ? event?.callsAvailable
+        ? 'dm_friend_events.you_added_available'
+        : 'dm_friend_events.you_added_pending'
+      : event?.callsAvailable
+        ? 'dm_friend_events.they_added_available'
+        : 'dm_friend_events.they_added_pending',
+    { name: actorIsMe ? target : actor }
+  );
 
   return (
     <Box

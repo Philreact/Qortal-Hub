@@ -1,4 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import DOMPurify from 'dompurify';
 import './chat.css';
 import { executeEvent } from '../../utils/events';
@@ -246,6 +252,7 @@ export const MessageDisplay = ({
   privilegedMentionAuthorized,
   reticulumChannelLinkAccess,
   textColor,
+  trailingContent,
 }: {
   htmlContent: unknown;
   hiddenQortalUrls?: string[];
@@ -256,6 +263,7 @@ export const MessageDisplay = ({
   privilegedMentionAuthorized?: boolean;
   reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   textColor?: string;
+  trailingContent?: ReactNode;
 }) => {
   const theme = useTheme();
   const contentRef = useRef(null);
@@ -708,6 +716,18 @@ export const MessageDisplay = ({
         ref={contentRef}
         sx={{
           position: 'relative',
+          ...(trailingContent
+            ? {
+                display: 'inline',
+                '& > .tiptap': {
+                  display: 'inline',
+                  width: 'auto',
+                },
+                '& > .tiptap > p:last-child': {
+                  display: 'inline',
+                },
+              }
+            : {}),
           '&:hover .message-copy-code-btn': { opacity: 1 },
         }}
       >
@@ -717,6 +737,7 @@ export const MessageDisplay = ({
           onClick={handleClick}
           onClickCapture={handleClickCapture}
         />
+        {trailingContent}
         {showCopyButton && (
           <Tooltip title={copied ? 'Copied!' : 'Copy code'} leaveDelay={0}>
             <IconButton

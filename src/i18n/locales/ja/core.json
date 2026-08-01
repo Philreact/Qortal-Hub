@@ -705,6 +705,12 @@
     "hotkey_slot_number": "スロット {{n}}"
   },
   "p2p_health_bad_call_tooltip": "P2P の状態が悪いです。先に Reticulum ピアを増やしてください。",
+  "dm_friend_events": {
+    "you_added_pending": "{{name}}を友達に追加しました。相手もあなたを追加すると通話が利用できます。",
+    "they_added_pending": "{{name}}があなたを友達に追加しました。相手を追加すると通話が有効になります。",
+    "you_added_available": "{{name}}を友達に追加しました。通話が利用可能になりました。",
+    "they_added_available": "{{name}}があなたを友達に追加しました。通話が利用可能になりました。"
+  },
   "bookmarks": {
     "title": "ブックマーク",
     "bookmarked": "ブックマーク済み",

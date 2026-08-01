@@ -707,6 +707,12 @@
     "hotkey_slot_number": "Pesa {{n}}"
   },
   "p2p_health_bad_call_tooltip": "P2P tervis on halb. Ühenda esmalt rohkem Reticulumi peere.",
+  "dm_friend_events": {
+    "you_added_pending": "Lisasid kasutaja {{name}} sõbraks. Kõned avanevad, kui ta lisab ka sinu.",
+    "they_added_pending": "{{name}} lisas sind sõbraks. Kõnede lubamiseks lisa ta samuti sõbraks.",
+    "you_added_available": "Lisasid kasutaja {{name}} sõbraks. Helistamine on nüüd saadaval.",
+    "they_added_available": "{{name}} lisas sind sõbraks. Helistamine on nüüd saadaval."
+  },
   "bookmarks": {
     "title": "Järjehoidjad",
     "bookmarked": "Järjehoidjates",

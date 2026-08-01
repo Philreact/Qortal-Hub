@@ -707,6 +707,12 @@
     "hotkey_slot_number": "Slot {{n}}"
   },
   "p2p_health_bad_call_tooltip": "A saúde P2P está má. Liga primeiro mais pares Reticulum.",
+  "dm_friend_events": {
+    "you_added_pending": "Adicionaste {{name}} como amigo. As chamadas ficam disponíveis quando essa pessoa também te adicionar.",
+    "they_added_pending": "{{name}} adicionou-te como amigo. Adiciona essa pessoa também para ativar as chamadas.",
+    "you_added_available": "Adicionaste {{name}} como amigo. As chamadas estão agora disponíveis.",
+    "they_added_available": "{{name}} adicionou-te como amigo. As chamadas estão agora disponíveis."
+  },
   "bookmarks": {
     "title": "Marcadores",
     "bookmarked": "Marcado",

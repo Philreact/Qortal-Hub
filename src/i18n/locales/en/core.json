@@ -767,6 +767,12 @@
     "rejected_media": "The call ended — their microphone may be unavailable."
   },
   "p2p_health_bad_call_tooltip": "P2P health is bad. Connect more Reticulum peers first.",
+  "dm_friend_events": {
+    "you_added_pending": "You added {{name}} as a friend. Calls unlock when they add you back.",
+    "they_added_pending": "{{name}} added you as a friend. Add them back to enable calls.",
+    "you_added_available": "You added {{name}} as a friend. Calling is now available.",
+    "they_added_available": "{{name}} added you as a friend. Calling is now available."
+  },
   "bookmarks": {
     "title": "Bookmarks",
     "bookmarked": "Bookmarked",

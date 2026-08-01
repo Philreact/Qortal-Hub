@@ -705,6 +705,12 @@
     "hotkey_slot_number": "Emplacement {{n}}"
   },
   "p2p_health_bad_call_tooltip": "La santé P2P est mauvaise. Connectez d'abord plus de pairs Reticulum.",
+  "dm_friend_events": {
+    "you_added_pending": "Vous avez ajouté {{name}} comme ami. Les appels seront disponibles lorsque cette personne vous ajoutera aussi.",
+    "they_added_pending": "{{name}} vous a ajouté comme ami. Ajoutez cette personne à votre tour pour activer les appels.",
+    "you_added_available": "Vous avez ajouté {{name}} comme ami. Les appels sont maintenant disponibles.",
+    "they_added_available": "{{name}} vous a ajouté comme ami. Les appels sont maintenant disponibles."
+  },
   "bookmarks": {
     "title": "Favoris",
     "bookmarked": "En favori",

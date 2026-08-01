@@ -705,6 +705,12 @@
     "hotkey_slot_number": "Ranura {{n}}"
   },
   "p2p_health_bad_call_tooltip": "La salud P2P es mala. Conecta más pares de Reticulum primero.",
+  "dm_friend_events": {
+    "you_added_pending": "Has añadido a {{name}} como amigo. Las llamadas se habilitarán cuando también te añada.",
+    "they_added_pending": "{{name}} te ha añadido como amigo. Añádelo también para habilitar las llamadas.",
+    "you_added_available": "Has añadido a {{name}} como amigo. Las llamadas ya están disponibles.",
+    "they_added_available": "{{name}} te ha añadido como amigo. Las llamadas ya están disponibles."
+  },
   "bookmarks": {
     "title": "Marcadores",
     "bookmarked": "Marcado",
