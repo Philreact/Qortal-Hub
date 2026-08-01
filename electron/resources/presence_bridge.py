@@ -18525,6 +18525,11 @@ def ensure_started(config_dir: str):
 
         os.makedirs(config_dir, exist_ok=True)
         _reticulum_config_dir = config_dir
+        configured_log_file = str(os.environ.get("QORTAL_RNS_LOG_FILE") or "").strip()
+        RNS.logfile = configured_log_file or os.path.join(
+            config_dir,
+            f"logfile.bridge.{os.getpid()}",
+        )
         _reticulum = RNS.Reticulum(
             configdir=config_dir,
             logdest=RNS.LOG_FILE,

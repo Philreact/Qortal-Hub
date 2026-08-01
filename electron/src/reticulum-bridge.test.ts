@@ -11,6 +11,7 @@ vi.mock('./reticulum-daemon', () => ({
   getReticulumBridgeIdentityPath: () =>
     '/tmp/qortal-userdata/reticulum/presence-bridge.identity',
   getReticulumConfigDir: () => '/tmp/qortal-reticulum-test',
+  getReticulumInstanceIndex: () => 0,
   persistReticulumSharedTransportState: vi.fn(),
   resolveReticulumPythonLaunch: () => ({
     error: 'not-used-in-test',

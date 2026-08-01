@@ -14,6 +14,7 @@ import { buildPresenceSignedFields, getPresenceManager } from './presence';
 import {
   getReticulumBridgeIdentityPath,
   getReticulumConfigDir,
+  getReticulumInstanceIndex,
   getReticulumSourceEnvExtra,
   persistReticulumSharedTransportState,
   resolveReticulumPythonLaunch,
@@ -3439,6 +3440,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       PYTHONUNBUFFERED: '1',
       QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
+      // rnsd owns configDir/logfile. Each simultaneously supported app
+      // instance gets a separate bridge log so independent Python processes
+      // can never race while rotating the same file.
+      QORTAL_RNS_LOG_FILE: path.join(
+        configDir,
+        `logfile.bridge.${getReticulumInstanceIndex()}`
+      ),
       // The bridge is detached on Unix so Electron can terminate its whole
       // process group. Give it an explicit owner as well: if Electron is
       // killed before its normal shutdown handler runs, the bridge must not
