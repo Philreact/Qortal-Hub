@@ -11358,11 +11358,8 @@ export function QortalLand({
         </DialogActions>
       </Dialog>
       <Dialog
+        disableEscapeKeyDown
         open={Boolean(landVoiceCall.incomingCall)}
-        onClose={() => {
-          recordLandActivity();
-          landVoiceCall.rejectCall();
-        }}
         PaperProps={{
           sx: {
             background: `linear-gradient(180deg, ${alpha('#10182a', 0.98)}, ${alpha('#070914', 0.98)})`,

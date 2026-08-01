@@ -318,6 +318,8 @@ interface CallRecord {
   reticulumPeerPresenceHash: string;
   invitedReticulumPeerHashes?: Set<string>;
   rejectedReticulumPeerHashes?: Set<string>;
+  /** Authenticated rejection reason per invited endpoint; null is legacy/generic. */
+  rejectionReasonsByReticulumPeerHash?: Map<string, string | null>;
   acceptedReticulumPeerHash?: string;
   cancellationSignature?: string;
   cancellationPublicKey?: string;
@@ -327,6 +329,7 @@ interface CallRecord {
   state: CallState;
   startedAt: number;
   cleanupTimer?: ReturnType<typeof setTimeout>;
+  rejectionFinalizeTimer?: ReturnType<typeof setTimeout>;
   controlRepeatTimers?: Set<ReturnType<typeof setTimeout>>;
 }
 
@@ -457,6 +460,9 @@ export class CallManager extends EventEmitter {
     this.detachReticulumBridge();
     for (const call of this.activeCalls.values()) {
       if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+      if (call.rejectionFinalizeTimer) {
+        clearTimeout(call.rejectionFinalizeTimer);
+      }
       this.clearControlRepeatTimers(call);
     }
     this.activeCalls.clear();
@@ -482,6 +488,9 @@ export class CallManager extends EventEmitter {
     this.pendingVerifiedIncomingWhenNoLocal = [];
     for (const call of this.activeCalls.values()) {
       if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+      if (call.rejectionFinalizeTimer) {
+        clearTimeout(call.rejectionFinalizeTimer);
+      }
       this.clearControlRepeatTimers(call);
     }
     this.activeCalls.clear();
@@ -716,11 +725,16 @@ export class CallManager extends EventEmitter {
     reason?: string,
     signature?: string,
     publicKey?: string,
-    timestamp?: number
+    timestamp?: number,
+    reasonSignature?: string
   ): void {
     const call = this.activeCalls.get(callId);
     if (!call) return;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
@@ -728,16 +742,25 @@ export class CallManager extends EventEmitter {
       this.emitDirectCallHistory(call, 'declined', timestamp ?? Date.now());
     }
 
-    const env: CallRejectEnvelope = {
+    const legacyEnv: CallRejectEnvelope = {
       type: 'CALL_REJECT',
       callId,
-      reason,
       fromPublicKey: publicKey ?? '',
       signature: signature ?? '',
       timestamp: timestamp ?? Date.now(),
       hopsRemaining: CALL_MAX_HOPS,
     };
-    this.sendToCall(call, env);
+    // Send the authenticated, descriptive rejection first. Older callers
+    // reject this signature (because they verify the legacy field set), then
+    // accept the reason-less legacy envelope sent immediately afterwards.
+    if (reason && reasonSignature) {
+      this.sendToCall(call, {
+        ...legacyEnv,
+        reason,
+        signature: reasonSignature,
+      });
+    }
+    this.sendToCall(call, legacyEnv);
     loggerLog(`[Call] Rejected call ${callId.slice(0, 8)}…`);
   }
 
@@ -751,6 +774,10 @@ export class CallManager extends EventEmitter {
     if (!call) return;
     const previousState = call.state;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
@@ -891,6 +918,10 @@ export class CallManager extends EventEmitter {
         const c = this.activeCalls.get(env.callId);
         if (!c || c.direction !== 'outbound' || c.state !== 'pending') return;
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
+        if (c.rejectionFinalizeTimer) {
+          clearTimeout(c.rejectionFinalizeTimer);
+          c.rejectionFinalizeTimer = undefined;
+        }
         c.acceptedReticulumPeerHash = senderDestinationHash;
         c.reticulumPeerPresenceHash = senderDestinationHash;
         c.state = 'active';
@@ -918,8 +949,83 @@ export class CallManager extends EventEmitter {
     }
 
     const expectedAddress = call.remoteAddress;
-    void this.verifyPool
-      .verify({
+    const accountGeneration = this.localAccountGeneration;
+    const boundedReason =
+      typeof env.reason === 'string' && env.reason.length <= 32
+        ? env.reason.trim()
+        : '';
+    const reasonFields = boundedReason
+      ? {
+          type: env.type,
+          callId: env.callId,
+          timestamp: env.timestamp,
+          reason: boundedReason,
+        }
+      : null;
+    if (reasonFields) {
+      const timestampSkew = Date.now() - env.timestamp;
+      if (timestampSkew > 30_000 || timestampSkew < -10_000) {
+        loggerLog('[Call] Dropped CALL_REJECT: invalid timestamp');
+        return;
+      }
+    }
+    const applyVerifiedReject = (reasonAuthenticated: boolean, ok: boolean) => {
+      if (accountGeneration !== this.localAccountGeneration) return;
+      if (!ok) {
+        loggerLog('[Call] Dropped CALL_REJECT: invalid signature');
+        return;
+      }
+      const c = this.activeCalls.get(env.callId);
+      if (!c || c.state !== 'pending') return;
+      if (c.direction === 'outbound') {
+        const invited = c.invitedReticulumPeerHashes ?? new Set<string>();
+        if (senderDestinationHash) invited.add(senderDestinationHash);
+        c.invitedReticulumPeerHashes = invited;
+        const rejected = c.rejectedReticulumPeerHashes ?? new Set<string>();
+        if (senderDestinationHash) rejected.add(senderDestinationHash);
+        c.rejectedReticulumPeerHashes = rejected;
+        const reasons =
+          c.rejectionReasonsByReticulumPeerHash ??
+          new Map<string, string | null>();
+        if (senderDestinationHash) {
+          const previous = reasons.get(senderDestinationHash);
+          // A later legacy compatibility envelope must never erase the
+          // authenticated reason received just before it.
+          if (reasonAuthenticated || previous === undefined) {
+            reasons.set(
+              senderDestinationHash,
+              reasonAuthenticated ? boundedReason : null
+            );
+          }
+        }
+        c.rejectionReasonsByReticulumPeerHash = reasons;
+        if ([...invited].some((peer) => !rejected.has(peer))) {
+          loggerLog(
+            `[Call] Endpoint rejected ${env.callId.slice(0, 8)}…; waiting for ${invited.size - rejected.size} other endpoint(s).`
+          );
+          return;
+        }
+        if (
+          [...reasons.values()].some((item) => item === null) &&
+          !reasonAuthenticated
+        ) {
+          // The authenticated-reason and legacy compatibility frames are
+          // sent back-to-back. Briefly tolerate network reordering before
+          // settling on the generic result.
+          if (!c.rejectionFinalizeTimer) {
+            c.rejectionFinalizeTimer = setTimeout(() => {
+              this.finalizeRejectedCall(env.callId, env.timestamp);
+            }, 250);
+            c.rejectionFinalizeTimer.unref?.();
+          }
+          return;
+        }
+      }
+      this.finalizeRejectedCall(env.callId, env.timestamp);
+    };
+
+    const verifyLegacy = () =>
+      this.verifyPool.verify({
         kind: 'call_signed',
         wireType: env.type,
         callId: env.callId,
@@ -927,38 +1033,57 @@ export class CallManager extends EventEmitter {
         signature: env.signature,
         fromPublicKey: env.fromPublicKey,
         expectedAddress,
+      });
+
+    if (!reasonFields) {
+      void verifyLegacy().then((ok) => applyVerifiedReject(false, ok));
+      return;
+    }
+
+    void this.verifyPool
+      .verify({
+        kind: 'gc',
+        fields: reasonFields,
+        signature: env.signature,
+        fromPublicKey: env.fromPublicKey,
+        fromAddress: expectedAddress,
       })
-      .then((ok) => {
-        if (!ok) {
-          loggerLog('[Call] Dropped CALL_REJECT: invalid signature');
+      .then((reasonAuthenticated) => {
+        if (reasonAuthenticated) {
+          applyVerifiedReject(true, true);
           return;
         }
-        const c = this.activeCalls.get(env.callId);
-        if (!c || c.state !== 'pending') return;
-        if (c.direction === 'outbound') {
-          const invited = c.invitedReticulumPeerHashes ?? new Set<string>();
-          if (senderDestinationHash) invited.add(senderDestinationHash);
-          c.invitedReticulumPeerHashes = invited;
-          const rejected = c.rejectedReticulumPeerHashes ?? new Set<string>();
-          if (senderDestinationHash) rejected.add(senderDestinationHash);
-          c.rejectedReticulumPeerHashes = rejected;
-          if ([...invited].some((peer) => !rejected.has(peer))) {
-            loggerLog(
-              `[Call] Endpoint rejected ${env.callId.slice(0, 8)}…; waiting for ${invited.size - rejected.size} other endpoint(s).`
-            );
-            return;
-          }
-        }
-        if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
-        this.clearControlRepeatTimers(c);
-        c.state = 'ended';
-        this.activeCalls.delete(env.callId);
-        if (c.direction === 'outbound') {
-          this.emitDirectCallHistory(c, 'declined', env.timestamp);
-        }
-        this.emit('call:rejected', { callId: env.callId, reason: env.reason });
-        loggerLog(`[Call] Call ${env.callId.slice(0, 8)}… rejected.`);
+        void verifyLegacy().then((ok) => applyVerifiedReject(false, ok));
       });
+  }
+
+  private finalizeRejectedCall(callId: string, timestamp: number): void {
+    const call = this.activeCalls.get(callId);
+    if (!call || call.state !== 'pending') return;
+    if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
+    this.clearControlRepeatTimers(call);
+    call.state = 'ended';
+    this.activeCalls.delete(callId);
+    if (call.direction === 'outbound') {
+      this.emitDirectCallHistory(call, 'declined', timestamp);
+    }
+    const endpointReasons = [
+      ...(call.rejectionReasonsByReticulumPeerHash?.values() ?? []),
+    ];
+    const reason =
+      endpointReasons.length > 0 &&
+      endpointReasons.every((item) => item === 'not_friend')
+        ? 'not_friend'
+        : endpointReasons.length > 0 &&
+            endpointReasons.every((item) => item === 'media unavailable')
+          ? 'media unavailable'
+          : 'rejected';
+    this.emit('call:rejected', { callId, reason });
+    loggerLog(`[Call] Call ${callId.slice(0, 8)}… rejected.`);
   }
 
   private handleHangup(
@@ -1011,6 +1136,10 @@ export class CallManager extends EventEmitter {
           return;
         }
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
+        if (c.rejectionFinalizeTimer) {
+          clearTimeout(c.rejectionFinalizeTimer);
+          c.rejectionFinalizeTimer = undefined;
+        }
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
         this.activeCalls.delete(env.callId);

@@ -123,6 +123,7 @@ describe('Reticulum wallet signing policy', () => {
       },
       { type: 'CALL_ACCEPT', callId: 'c', timestamp: 1 },
       { type: 'CALL_REJECT', callId: 'c', timestamp: 1 },
+      { type: 'CALL_REJECT', callId: 'c', reason: 'not_friend', timestamp: 1 },
       { type: 'CALL_HANGUP', callId: 'c', timestamp: 1 },
       {
         type: 'QCHAT_FILE_LINK_AUTH',
@@ -230,6 +231,14 @@ describe('Reticulum wallet signing policy', () => {
     for (const payload of payloads) {
       expectAllowed(assertAllowedPresenceSigningPayload, payload);
     }
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        type: 'CALL_REJECT',
+        callId: 'c',
+        reason: 'x'.repeat(33),
+        timestamp: 1,
+      })
+    ).toThrow();
   });
 
   it('allows the current untyped P2P chat event schema', () => {

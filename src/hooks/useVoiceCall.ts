@@ -86,6 +86,12 @@ const DM_MEDIA_READINESS_POLL_MS = 500;
 const DM_MEDIA_READINESS_WARMUP_MS = 1_000;
 const CALL_LOCAL_ADDRESS_REASSERT_MS = 2_500;
 
+function shortenCallPeerAddress(address: string | null): string {
+  const normalized = address?.trim() ?? '';
+  if (normalized.length <= 16) return normalized || 'The other person';
+  return `${normalized.slice(0, 8)}…${normalized.slice(-6)}`;
+}
+
 type DmDecryptWorkerDecoded = {
   sourceAddr: string;
   vad: boolean;
@@ -159,7 +165,8 @@ export interface UseVoiceCallReturn {
     chatId: string,
     sign?: (
       fields: Record<string, unknown>
-    ) => Promise<{ signature: string; publicKey: string }>
+    ) => Promise<{ signature: string; publicKey: string }>,
+    targetDisplayName?: string
   ) => void;
   acceptCall: () => Promise<void>;
   rejectCall: () => Promise<void>;
@@ -193,7 +200,8 @@ export type VoiceCallApi = {
     reason?: string,
     signature?: string,
     publicKey?: string,
-    timestamp?: number
+    timestamp?: number,
+    reasonSignature?: string
   ) => Promise<{ success: boolean; error?: string }>;
   hangup?: (
     callId: string,
@@ -355,6 +363,7 @@ export function useVoiceCall(
   /** If `gcall:key` arrives before `dmRoomIdRef` is set (should be rare after room precompute). */
   const pendingDmVoiceGcallKeyRef = useRef<GcallKeyEventPayload | null>(null);
   const peerAddressRef = useRef<string | null>(null);
+  const peerDisplayNameRef = useRef<string>('');
   const callSessionIdRef = useRef<string | null>(null);
   const mediaGenRef = useRef(1);
   const roomKeyRef = useRef<Uint8Array | null>(null);
@@ -1965,12 +1974,19 @@ export function useVoiceCall(
             callId: incCallId,
             timestamp: rejectTs,
           });
+          const reasonAuthorization = await authorizeCallSignal({
+            type: 'CALL_REJECT',
+            callId: incCallId,
+            timestamp: rejectTs,
+            reason,
+          });
           await callApiRef.current?.reject?.(
             incCallId,
             reason,
             signature,
             publicKey,
-            rejectTs
+            rejectTs,
+            reasonAuthorization.signature
           );
         };
 
@@ -2052,9 +2068,15 @@ export function useVoiceCall(
         const rejectReason =
           typeof p.reason === 'string' ? p.reason.trim() : '';
         const message =
-          rejectReason === 'media unavailable'
-            ? i18n.t('core:voice_call.rejected_media')
-            : i18n.t('core:voice_call.rejected_declined');
+          rejectReason === 'not_friend'
+            ? i18n.t('core:voice_call.rejected_not_friend', {
+                name:
+                  peerDisplayNameRef.current ||
+                  shortenCallPeerAddress(peerAddressRef.current),
+              })
+            : rejectReason === 'media unavailable'
+              ? i18n.t('core:voice_call.rejected_media')
+              : i18n.t('core:voice_call.rejected_declined');
         showGlobalCallSnack('info', message);
         endCall(false);
         break;
@@ -2182,7 +2204,8 @@ export function useVoiceCall(
       chatId: string,
       sign?: (
         fields: Record<string, unknown>
-      ) => Promise<{ signature: string; publicKey: string }>
+      ) => Promise<{ signature: string; publicKey: string }>,
+      targetDisplayName?: string
     ) => {
       if (callStateRef.current !== 'idle') return;
       const localAddress = userInfo?.address;
@@ -2249,6 +2272,11 @@ export function useVoiceCall(
 
       isOutboundCallRef.current = true;
       peerAddressRef.current = targetAddress;
+      const normalizedDisplayName = targetDisplayName?.trim() ?? '';
+      peerDisplayNameRef.current =
+        normalizedDisplayName.length > 0 && normalizedDisplayName.length <= 100
+          ? normalizedDisplayName
+          : shortenCallPeerAddress(targetAddress);
       callIdRef.current = callId;
       activeCallChatIdRef.current = chatId;
       setActiveCallChatId(chatId);
@@ -2399,12 +2427,19 @@ export function useVoiceCall(
         callId: incoming.callId,
         timestamp: rejectTs,
       });
+      const reasonAuthorization = await authorizeCallSignal({
+        type: 'CALL_REJECT',
+        callId: incoming.callId,
+        timestamp: rejectTs,
+        reason: 'rejected',
+      });
       const rejectResult = await callApiRef.current?.reject?.(
         incoming.callId,
         'rejected',
         signature,
         publicKey,
-        rejectTs
+        rejectTs,
+        reasonAuthorization.signature
       );
       if (!rejectResult?.success) {
         pushDirectVoiceUiLog('warn', 'call.reject failed', {

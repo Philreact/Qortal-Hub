@@ -103,12 +103,17 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   const setSeenInAppKeys = useSetAtom(notificationSeenInAppKeysAtom);
 
   const [socketOpen, setSocketOpen] = useState(false);
-  const socketRef = useRef(null);
-  const timeoutIdRef = useRef(null);
-  const pingTimeoutRef = useRef(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const connectionIdRef = useRef(0);
+  const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const historyRequestTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+  const namesAbortControllerRef = useRef<AbortController | null>(null);
   const listOfMyNamesRef = useRef<string[]>([]);
   const initWebsocketRef = useRef<(() => Promise<void>) | null>(null);
   const qChatMentionOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
@@ -257,13 +262,22 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   }, [myAddress, reticulumChatEnabled, setPaymentNotifications]);
 
   const forceCloseWebSocket = () => {
+    connectionIdRef.current += 1;
+    setSocketOpen(false);
+    namesAbortControllerRef.current?.abort();
+    namesAbortControllerRef.current = null;
     clearTimeout(historyRequestTimeoutRef.current);
+    clearTimeout(reconnectTimeoutRef.current);
+    clearTimeout(timeoutIdRef.current);
+    clearTimeout(pingTimeoutRef.current);
     historyRequestTimeoutRef.current = null;
-    if (socketRef.current) {
-      clearTimeout(timeoutIdRef.current);
-      clearTimeout(pingTimeoutRef.current);
-      socketRef.current.close(1000, 'forced');
-      socketRef.current = null;
+    reconnectTimeoutRef.current = null;
+    timeoutIdRef.current = null;
+    pingTimeoutRef.current = null;
+    const socket = socketRef.current;
+    socketRef.current = null;
+    if (socket) {
+      socket.close(1000, 'forced');
     }
   };
 
@@ -284,7 +298,10 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       forceCloseWebSocket();
       setSocketOpen(false);
       if (initWebsocketRef.current) {
-        setTimeout(() => initWebsocketRef.current?.(), 0);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = null;
+          void initWebsocketRef.current?.();
+        }, 0);
       }
     };
     subscribeToEvent('notifications-websocket-reconnect', handler);
@@ -564,14 +581,24 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       return result;
     };
 
-    const pingHeads = () => {
+    let effectActive = true;
+
+    const pingHeads = (
+      socket: WebSocket,
+      isCurrentConnection: (socket?: WebSocket | null) => boolean
+    ) => {
       try {
-        if (socketRef.current?.readyState === WebSocket.OPEN) {
-          socketRef.current.send('ping');
+        if (
+          isCurrentConnection(socket) &&
+          socket.readyState === WebSocket.OPEN
+        ) {
+          socket.send('ping');
           timeoutIdRef.current = setTimeout(() => {
-            if (socketRef.current) {
-              socketRef.current.close();
+            timeoutIdRef.current = null;
+            if (isCurrentConnection(socket)) {
+              socket.close();
               clearTimeout(pingTimeoutRef.current);
+              pingTimeoutRef.current = null;
             }
           }, 5000);
         }
@@ -582,24 +609,42 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
 
     const initWebsocketNotifications = async () => {
       forceCloseWebSocket();
+      const connectionId = connectionIdRef.current;
+      const isCurrentConnection = (socket?: WebSocket | null) => {
+        if (!effectActive || connectionIdRef.current !== connectionId) {
+          return false;
+        }
+        if (socket && socketRef.current !== socket) return false;
+        return true;
+      };
       const currentAddress = myAddress;
       if (extStateRef.current === 'not-authenticated') return;
       if (currentAddress !== myAddressRef.current) return;
 
+      const namesAbortController = new AbortController();
+      namesAbortControllerRef.current = namesAbortController;
       try {
         const getNamesUrl = `${getBaseApiReact()}/names/address/${currentAddress}?limit=0`;
-        const namesResponse = await fetch(getNamesUrl);
+        const namesResponse = await fetch(getNamesUrl, {
+          signal: namesAbortController.signal,
+        });
         const namesData = await namesResponse.json();
+        if (!isCurrentConnection()) return;
         listOfMyNamesRef.current = namesData.map(
           (n: { name: string }) => n.name
         );
         const query = `qortal_qmail_${userName.slice(0, 20)}_${currentAddress.slice(-6)}_mail_`;
         const socketLink = `${getBaseApiReactSocket()}/websockets/notifications`;
-        socketRef.current = new WebSocket(socketLink);
+        const socket = new WebSocket(socketLink);
+        socketRef.current = socket;
 
-        socketRef.current.onopen = () => {
+        socket.onopen = () => {
+          if (!isCurrentConnection(socket)) {
+            socket.close(1000, 'superseded');
+            return;
+          }
           setSocketOpen(true);
-          socketRef.current.send(
+          socket.send(
             JSON.stringify({
               action: 'subscribe',
               subscriptions: [
@@ -631,10 +676,13 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           );
           historyRequestTimeoutRef.current = setTimeout(() => {
             historyRequestTimeoutRef.current = null;
-            const ws = socketRef.current;
-            if (ws?.readyState !== WebSocket.OPEN) return;
+            if (
+              !isCurrentConnection(socket) ||
+              socket.readyState !== WebSocket.OPEN
+            )
+              return;
             const after = Date.now() - 3 * 24 * 60 * 60 * 1000; // 3 days ago (ms)
-            ws.send(
+            socket.send(
               JSON.stringify({
                 action: 'notification-history',
                 paymentReceivedLimit: 5,
@@ -642,14 +690,22 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
               })
             );
           }, 1000);
-          setTimeout(pingHeads, 50);
+          pingTimeoutRef.current = setTimeout(
+            () => pingHeads(socket, isCurrentConnection),
+            50
+          );
         };
 
-        socketRef.current.onmessage = (e) => {
+        socket.onmessage = (e) => {
+          if (!isCurrentConnection(socket)) return;
           try {
             if (e.data === 'pong') {
               clearTimeout(timeoutIdRef.current);
-              pingTimeoutRef.current = setTimeout(pingHeads, 20000);
+              timeoutIdRef.current = null;
+              pingTimeoutRef.current = setTimeout(
+                () => pingHeads(socket, isCurrentConnection),
+                20000
+              );
             } else {
               const data = JSON.parse(e.data);
 
@@ -718,7 +774,9 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           }
         };
 
-        socketRef.current.onclose = (event) => {
+        socket.onclose = (event) => {
+          if (!isCurrentConnection(socket)) return;
+          socketRef.current = null;
           setSocketOpen(false);
           clearTimeout(historyRequestTimeoutRef.current);
           historyRequestTimeoutRef.current = null;
@@ -729,20 +787,29 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           );
           if (extStateRef.current === 'not-authenticated') return;
           if (event.reason !== 'forced' && event.code !== 1000) {
-            setTimeout(() => initWebsocketNotifications(), 10000);
+            reconnectTimeoutRef.current = setTimeout(() => {
+              reconnectTimeoutRef.current = null;
+              if (isCurrentConnection()) {
+                void initWebsocketNotifications();
+              }
+            }, 10000);
           }
         };
 
-        socketRef.current.onerror = (error) => {
+        socket.onerror = (error) => {
+          if (!isCurrentConnection(socket)) return;
           console.error('Notifications WebSocket error:', error);
           clearTimeout(pingTimeoutRef.current);
           clearTimeout(timeoutIdRef.current);
-          if (socketRef.current) {
-            socketRef.current.close();
-          }
+          socket.close();
         };
       } catch (error) {
+        if (namesAbortController.signal.aborted) return;
         console.error('Error initializing notifications WebSocket:', error);
+      } finally {
+        if (namesAbortControllerRef.current === namesAbortController) {
+          namesAbortControllerRef.current = null;
+        }
       }
     };
 
@@ -752,11 +819,13 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       const filtered = await filterSubscriptionsByNotificationPermission(
         customSubscriptions ?? []
       );
+      if (!effectActive) return;
       setCustomSubscriptions(filtered);
-      initWebsocketNotifications();
+      void initWebsocketNotifications();
     })();
 
     return () => {
+      effectActive = false;
       initWebsocketRef.current = null;
       forceCloseWebSocket();
     };

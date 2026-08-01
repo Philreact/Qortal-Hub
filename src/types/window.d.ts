@@ -574,7 +574,8 @@ declare global {
         reason?: string,
         signature?: string,
         publicKey?: string,
-        timestamp?: number
+        timestamp?: number,
+        reasonSignature?: string
       ) => Promise<{ success: boolean }>;
       hangup: (
         callId: string,

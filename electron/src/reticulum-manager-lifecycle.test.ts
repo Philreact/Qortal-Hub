@@ -537,6 +537,7 @@ describe('Reticulum manager late bridge binding', () => {
   });
 
   it('waits for every invited endpoint before treating a call as rejected', async () => {
+    vi.useFakeTimers();
     const manager = new CallManager(
       presenceStub() as any,
       new CallBridgeStub() as any
@@ -574,8 +575,135 @@ describe('Reticulum manager late bridge binding', () => {
 
     (manager as any).handleReject(rejection, 'peer-b');
     await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(250);
     expect((manager as any).activeCalls.has('call-multi-reject')).toBe(false);
     expect(rejected).toHaveLength(1);
+    manager.stop();
+    vi.useRealTimers();
+  });
+
+  it('emits not_friend only when the rejection reason is authenticated', async () => {
+    const manager = new CallManager(presenceStub() as any, null);
+    (manager as any).verifyPool = {
+      verify: vi.fn(async (payload: { kind: string }) => payload.kind === 'gc'),
+      stop: vi.fn(),
+    };
+    const rejected: Array<{ reason?: string }> = [];
+    manager.on('call:rejected', (payload) => rejected.push(payload));
+    (manager as any).activeCalls.set('call-reason', {
+      callId: 'call-reason',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-a',
+      invitedReticulumPeerHashes: new Set(['peer-a']),
+      rejectedReticulumPeerHashes: new Set(),
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    (manager as any).handleReject(
+      {
+        type: 'CALL_REJECT',
+        callId: 'call-reason',
+        reason: 'not_friend',
+        fromPublicKey: 'peer-public-key',
+        signature: 'reason-signature',
+        timestamp: Date.now(),
+      },
+      'peer-a'
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rejected).toEqual([{ callId: 'call-reason', reason: 'not_friend' }]);
+  });
+
+  it('falls back to a generic decline when a reason is not authenticated', async () => {
+    vi.useFakeTimers();
+    const manager = new CallManager(presenceStub() as any, null);
+    (manager as any).verifyPool = {
+      verify: vi.fn(
+        async (payload: { kind: string }) => payload.kind === 'call_signed'
+      ),
+      stop: vi.fn(),
+    };
+    const rejected: Array<{ reason?: string }> = [];
+    manager.on('call:rejected', (payload) => rejected.push(payload));
+    (manager as any).activeCalls.set('call-forged-reason', {
+      callId: 'call-forged-reason',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-a',
+      invitedReticulumPeerHashes: new Set(['peer-a']),
+      rejectedReticulumPeerHashes: new Set(),
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    (manager as any).handleReject(
+      {
+        type: 'CALL_REJECT',
+        callId: 'call-forged-reason',
+        reason: 'not_friend',
+        fromPublicKey: 'peer-public-key',
+        signature: 'legacy-signature',
+        timestamp: Date.now(),
+      },
+      'peer-a'
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(rejected).toEqual([
+      { callId: 'call-forged-reason', reason: 'rejected' },
+    ]);
+    vi.useRealTimers();
+  });
+
+  it('sends a size-safe authenticated reason before the legacy rejection', () => {
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    const callId = '123e4567-e89b-12d3-a456-426614174000';
+    manager.start();
+    (manager as any).activeCalls.set(callId, {
+      callId,
+      localAddress: `Q${'a'.repeat(33)}`,
+      remoteAddress: `Q${'b'.repeat(33)}`,
+      reticulumPeerPresenceHash: 'b'.repeat(32),
+      chatId: `direct:Q${'a'.repeat(33)}:Q${'b'.repeat(33)}`,
+      direction: 'inbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    manager.rejectCall(
+      callId,
+      'not_friend',
+      'L'.repeat(88),
+      'P'.repeat(44),
+      Date.now(),
+      'R'.repeat(88)
+    );
+
+    expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(2);
+    const reasonWire = vi.mocked(bridge.sendCallDetailed).mock.calls[0]![1];
+    const legacyWire = vi.mocked(bridge.sendCallDetailed).mock.calls[1]![1];
+    expect(reasonWire).toMatchObject({
+      t: 'CX',
+      e: 'not_friend',
+      g: 'R'.repeat(88),
+    });
+    expect(legacyWire).toMatchObject({ t: 'CX', g: 'L'.repeat(88) });
+    expect(legacyWire).not.toHaveProperty('e');
+    expect(byteLengthUtf8JsonWithBridgeSender(reasonWire)).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
     manager.stop();
   });
 

@@ -6193,11 +6193,19 @@ ipcMain.handle(
     reason?: string,
     signature?: string,
     publicKey?: string,
-    timestamp?: number
+    timestamp?: number,
+    reasonSignature?: string
   ) => {
     const mgr = getCallManager();
     if (!mgr) return { success: false, error: 'Call manager not running' };
-    mgr.rejectCall(callId, reason, signature, publicKey, timestamp);
+    mgr.rejectCall(
+      callId,
+      reason,
+      signature,
+      publicKey,
+      timestamp,
+      reasonSignature
+    );
     return { success: true };
   }
 );

@@ -3511,7 +3511,8 @@ try {
       reason?: string,
       signature?: string,
       publicKey?: string,
-      timestamp?: number
+      timestamp?: number,
+      reasonSignature?: string
     ) =>
       ipcRenderer.invoke(
         'call:reject',
@@ -3519,7 +3520,8 @@ try {
         reason,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        reasonSignature
       ),
 
     /** Hang up an active or pending call. */

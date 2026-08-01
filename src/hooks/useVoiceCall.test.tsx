@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   blockedAddressesAtom,
   dmFriendsByAddressAtom,
+  infoSnackGlobalAtom,
   userInfoAtom,
 } from '../atoms/global';
 import { buildDmVoiceRoomId } from '../lib/call/directVoiceReticulumMedia';
@@ -190,6 +191,56 @@ describe('useVoiceCall', () => {
     expect(result.current.callState).toBe('calling');
   });
 
+  it('explains an authenticated non-friend rejection to the caller', async () => {
+    let eventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+    const callApi = {
+      onEvent: vi.fn(
+        (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+          eventHandler = cb;
+          return vi.fn();
+        }
+      ),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      initiate: vi.fn(async () => ({ success: true })),
+      hangup: vi.fn(async () => ({ success: true })),
+    };
+    const peerAddress = `Q${'b'.repeat(33)}`;
+    const store = createStore();
+    store.set(userInfoAtom, { address: 'Qme', publicKey: 'pub' });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+    const { result } = renderHook(
+      () =>
+        useVoiceCall({
+          callApi,
+          callApiSignsSignals: true,
+          createCallId: () => 'call-non-friend',
+          skipSystemReadiness: true,
+        }),
+      { wrapper }
+    );
+
+    await act(async () => {
+      await result.current.initiateCall(
+        peerAddress,
+        buildDirectVoiceCallChatId('Qme', peerAddress),
+        undefined,
+        'Qortal Justin'
+      );
+      await eventHandler?.('call:rejected', {
+        callId: 'call-non-friend',
+        reason: 'not_friend',
+      });
+    });
+
+    expect(store.get(infoSnackGlobalAtom)?.message).toBe(
+      'Call declined — Qortal Justin does not have you as a friend.'
+    );
+  });
+
   it('starts in idle state', () => {
     Object.assign(window as any, {
       call: { onEvent: vi.fn(() => vi.fn()), setLocalAddresses: vi.fn() },
@@ -254,7 +305,8 @@ describe('useVoiceCall', () => {
       'blocked',
       'sig',
       'pub',
-      expect.any(Number)
+      expect.any(Number),
+      'sig'
     );
     expect(result.current.callState).toBe('idle');
     expect(result.current.incomingCall).toBeNull();
@@ -310,7 +362,8 @@ describe('useVoiceCall', () => {
       'not_friend',
       'sig',
       'pub',
-      expect.any(Number)
+      expect.any(Number),
+      'sig'
     );
     expect(result.current.callState).toBe('idle');
     expect(result.current.incomingCall).toBeNull();
@@ -436,7 +489,8 @@ describe('useVoiceCall', () => {
         'rejected',
         'sig',
         'pub',
-        expect.any(Number)
+        expect.any(Number),
+        'sig'
       )
     );
     expect(result.current.callState).toBe('ringing');

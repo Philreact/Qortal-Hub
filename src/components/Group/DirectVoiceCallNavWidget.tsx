@@ -92,7 +92,8 @@ export function DirectVoiceCallNavWidget() {
       const detail = (event as CustomEvent<{ address?: string; name?: string }>)
         .detail;
       const targetAddress = detail?.address?.trim() ?? '';
-      const targetLabel = detail?.name?.trim() || 'This user';
+      const targetDisplayName = detail?.name?.trim() || '';
+      const targetLabel = targetDisplayName || 'This user';
       if (!targetAddress || !myAddress || targetAddress === myAddress) return;
 
       if (!dmFriendsByAddress[targetAddress]) {
@@ -118,17 +119,22 @@ export function DirectVoiceCallNavWidget() {
       const confirmed = await confirmCallSwitch({ type: 'direct', chatId });
       if (!confirmed) return;
 
-      await initiateCall(targetAddress, chatId, async (fields) => {
-        const result = await (window as any).sendMessage(
-          'signPresenceMessage',
-          fields,
-          10_000
-        );
-        return {
-          signature: result?.signature ?? '',
-          publicKey: userInfo?.publicKey ?? '',
-        };
-      });
+      await initiateCall(
+        targetAddress,
+        chatId,
+        async (fields) => {
+          const result = await (window as any).sendMessage(
+            'signPresenceMessage',
+            fields,
+            10_000
+          );
+          return {
+            signature: result?.signature ?? '',
+            publicKey: userInfo?.publicKey ?? '',
+          };
+        },
+        targetDisplayName || undefined
+      );
     };
 
     subscribeToEvent('startReticulumDirectVoiceCall', startDirectCall);

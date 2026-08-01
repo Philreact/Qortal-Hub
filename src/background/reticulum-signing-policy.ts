@@ -158,7 +158,10 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
     'timestamp',
   ]),
   CALL_ACCEPT: schema(['type', 'callId', 'timestamp']),
-  CALL_REJECT: schema(['type', 'callId', 'timestamp']),
+  // `reason` is optional so current clients can authenticate a specific
+  // rejection while retaining the legacy reason-less signature for older
+  // callers.
+  CALL_REJECT: schema(['type', 'callId', 'timestamp'], ['reason']),
   CALL_HANGUP: schema(['type', 'callId', 'timestamp']),
   QCHAT_FILE_LINK_AUTH: schema([
     'type',
@@ -736,6 +739,13 @@ export function assertAllowedPresenceSigningPayload(
     [p2pChatSchema],
     PRESENCE_SIGNING_MAX_BYTES
   );
+  if (
+    payload.type === 'CALL_REJECT' &&
+    'reason' in payload &&
+    (typeof payload.reason !== 'string' || payload.reason.length > 32)
+  ) {
+    throw new Error('Call rejection reason is invalid');
+  }
   if (
     typeof payload.type === 'string' &&
     payload.type.startsWith('QORTAL_LAND_GAME_') &&
