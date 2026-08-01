@@ -10,6 +10,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
 import { DirectCallHistoryRow } from './DirectCallHistoryRow';
+import { DirectFriendEventRow } from './DirectFriendEventRow';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { Box, Button, Typography, useTheme } from '@mui/material';
@@ -1803,6 +1804,12 @@ export const ChatList = ({
                       {message?.directCallHistory ? (
                         <DirectCallHistoryRow
                           record={message.directCallHistory}
+                        />
+                      ) : message?.type === 'dm_friend_added' ||
+                        message?.dmFriendEvent ? (
+                        <DirectFriendEventRow
+                          message={message}
+                          myAddress={myAddress}
                         />
                       ) : (
                         <MessageItem

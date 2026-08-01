@@ -11,7 +11,8 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
-import StarRoundedIcon from '@mui/icons-material/StarRounded';
+import GroupRoundedIcon from '@mui/icons-material/GroupRounded';
+import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import CreateIcon from '@mui/icons-material/Create';
 import PersonOffIcon from '@mui/icons-material/PersonOff';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
@@ -36,6 +37,7 @@ import { effectivePresenceStatusAtomFamily } from '../../atoms/presence';
 import type { DmFriendStored } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 
 /** Renders only the presence badge for a single DM address.
  * Subscribes to per-address atoms so a change to any other peer
@@ -133,7 +135,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        width: reticulumChatEnabled ? { xs: 224, md: 220 } : '400px',
+        width: reticulumChatEnabled ? { xs: 234, md: 286 } : '400px',
         padding: 0,
       }}
     >
@@ -402,7 +404,9 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             </Typography>
           )}
           {directs.map((direct: any) => {
-            const avatarUrl = getUserAvatarUrl(direct?.name);
+            const avatarUrl = direct?.savedMessages
+              ? ''
+              : getUserAvatarUrl(direct?.name);
             const avatarKey =
               direct?.address ||
               direct?.name ||
@@ -475,19 +479,32 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                   flexDirection: 'column',
                   marginBottom: '6px',
                   padding: reticulumChatEnabled ? '8px 9px' : '12px 14px',
+                  position: 'relative',
                   width: '100%',
                   backgroundColor: isSelected
                     ? theme.palette.action.selected
                     : 'transparent',
-                  borderLeft: isSelected
-                    ? `3px solid ${theme.palette.primary.main}`
-                    : '3px solid transparent',
                   transition:
                     'background-color 0.15s ease, border-color 0.15s ease',
+                  '&::before': {
+                    backgroundColor: isSelected
+                      ? theme.palette.primary.main
+                      : 'transparent',
+                    borderRadius: '999px',
+                    bottom: '5px',
+                    content: '""',
+                    left: 0,
+                    position: 'absolute',
+                    top: '5px',
+                    width: '3px',
+                  },
                   '&:hover': {
                     backgroundColor: isSelected
                       ? theme.palette.action.selected
                       : theme.palette.action.hover,
+                    '& .dm-friend-indicator': {
+                      opacity: 1,
+                    },
                   },
                 }}
               >
@@ -549,7 +566,22 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                           },
                         }}
                       >
-                        {(direct?.name || direct?.address)?.charAt(0)}
+                        {direct?.savedMessages ? (
+                          <Box
+                            alt=""
+                            aria-hidden
+                            component="img"
+                            src={qortalWhiteLogo}
+                            sx={{
+                              height: 22,
+                              objectFit: 'contain',
+                              opacity: 0.15,
+                              width: 22,
+                            }}
+                          />
+                        ) : (
+                          (direct?.name || direct?.address)?.charAt(0)
+                        )}
                       </Avatar>
                     </DirectsPresenceBadge>
                   </ListItemAvatar>
@@ -594,6 +626,9 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                         fontSize: reticulumChatEnabled ? '11px' : '12px',
                         lineHeight: 1.4,
                         marginTop: '3px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
                       },
                     }}
                     sx={{
@@ -604,17 +639,50 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                     }}
                   />
 
-                  {isDmFriend && direct?.savedMessages !== true && (
-                    <Tooltip title={t('core:dm_friends.friend_badge_aria')}>
-                      <StarRoundedIcon
-                        aria-label={t('core:dm_friends.friend_badge_aria')}
-                        sx={{
-                          color: theme.palette.warning.main,
-                          fontSize: '20px',
-                          flexShrink: 0,
-                          marginLeft: '4px',
-                        }}
-                      />
+                  {direct?.savedMessages !== true && (
+                    <Tooltip title={isDmFriend ? 'Friends' : 'Add Friend'}>
+                      {isDmFriend ? (
+                        <GroupRoundedIcon
+                          className="dm-friend-indicator"
+                          aria-label="Friends"
+                          sx={{
+                            color: theme.palette.primary.main,
+                            fontSize: '19px',
+                            flexShrink: 0,
+                            marginLeft: '4px',
+                            opacity: 1,
+                            transition: 'opacity 0.15s ease',
+                          }}
+                        />
+                      ) : (
+                        <IconButton
+                          className="dm-friend-indicator"
+                          aria-label="Add Friend"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            window.dispatchEvent(
+                              new CustomEvent('qchat:add-dm-friend', {
+                                detail: {
+                                  address: direct?.address,
+                                  name: direct?.name,
+                                },
+                              })
+                            );
+                          }}
+                          size="small"
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            flexShrink: 0,
+                            marginLeft: '4px',
+                            opacity: 0,
+                            padding: 0,
+                            transition: 'opacity 0.15s ease',
+                          }}
+                        >
+                          <GroupOutlinedIcon sx={{ fontSize: '19px' }} />
+                        </IconButton>
+                      )}
                     </Tooltip>
                   )}
                   {(hasUnread || hasReticulumUnread) &&

@@ -91,10 +91,12 @@ import {
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 import { shouldBlockChatForLowBalance } from './chatTransportBalance';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
+import { ReactionPicker } from '../ReactionPicker';
 
 const uid = new ShortUniqueId({ length: 5 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_DIRECT_TYPING_STOP_MS = 2500;
+const DM_EXPIRY_NOTICE_STORAGE_PREFIX = 'qchat-dm-expiry-notice-dismissed-v1';
 
 const normalizeEditContent = (raw: unknown): string => {
   if (raw == null) return '<p></p>';
@@ -458,6 +460,7 @@ export const ChatDirect = ({
   const timeoutIdRef = useRef(null);
   const [messageSize, setMessageSize] = useState(0);
   const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
+  const [showDmExpiryNotice, setShowDmExpiryNotice] = useState(false);
   const groupSocketTimeoutRef = useRef(null);
   const [replyMessage, setReplyMessage] = useState(null);
   const [qchatFileTransferStates, setQchatFileTransferStates] = useState({});
@@ -497,6 +500,34 @@ export const ChatDirect = ({
   const reticulumDirectUiEnabled = Boolean(
     reticulumChatEnabled || (reticulumDirectEnabled && !isNewChat)
   );
+  useEffect(() => {
+    if (!reticulumDirectUiEnabled || !myAddress) {
+      setShowDmExpiryNotice(false);
+      return;
+    }
+    try {
+      setShowDmExpiryNotice(
+        localStorage.getItem(
+          `${DM_EXPIRY_NOTICE_STORAGE_PREFIX}:${myAddress}`
+        ) !== '1'
+      );
+    } catch {
+      setShowDmExpiryNotice(true);
+    }
+  }, [myAddress, reticulumDirectUiEnabled]);
+
+  const dismissDmExpiryNotice = useCallback(() => {
+    setShowDmExpiryNotice(false);
+    if (!myAddress) return;
+    try {
+      localStorage.setItem(
+        `${DM_EXPIRY_NOTICE_STORAGE_PREFIX}:${myAddress}`,
+        '1'
+      );
+    } catch {
+      // The notice can still be dismissed for this session when storage is unavailable.
+    }
+  }, [myAddress]);
   const [reticulumDirectCallHistory, setReticulumDirectCallHistory] = useState<
     any[]
   >([]);
@@ -1440,6 +1471,32 @@ export const ChatDirect = ({
           ...prev,
           [address]: { publicKey: pk, name, addedAt: Date.now() },
         }));
+        const actorLabel = myName || myAddress;
+        const targetLabel = name || address;
+        const callsAvailable = reticulumDirectMessages.some((message: any) => {
+          const friendEvent = message?.dmFriendEvent;
+          return (
+            String(friendEvent?.actorAddress || '') === address &&
+            String(friendEvent?.targetAddress || '') === myAddress
+          );
+        });
+        void publishReticulumDirectEvent({
+          messageText: `${actorLabel} added ${targetLabel} as a friend.`,
+          otherData: {
+            type: 'dm_friend_added',
+            dmFriendEvent: {
+              actorAddress: myAddress,
+              actorName: actorLabel,
+              targetAddress: address,
+              targetName: targetLabel,
+              callsAvailable,
+            },
+          },
+          peerAddressOverride: address,
+          expiryDurationMs: null,
+        }).catch((error) => {
+          console.warn('[ChatDirect] Failed to publish friend event:', error);
+        });
         setInfoSnack({
           type: 'success',
           message: t('core:dm_friends.added', {
@@ -1459,8 +1516,28 @@ export const ChatDirect = ({
         setFriendActionBusy(false);
       }
     },
-    [myAddress, setDmFriendsByAddress, t]
+    [
+      myAddress,
+      myName,
+      publishReticulumDirectEvent,
+      reticulumDirectMessages,
+      setDmFriendsByAddress,
+      t,
+    ]
   );
+
+  useEffect(() => {
+    const addFriendFromRail = (event: Event) => {
+      const detail = (event as CustomEvent<{ address?: string; name?: string }>)
+        .detail;
+      const address = String(detail?.address || '').trim();
+      if (!address || dmFriendsByAddress[address]) return;
+      void handleToggleDmFriend(address, detail?.name, false);
+    };
+    window.addEventListener('qchat:add-dm-friend', addFriendFromRail);
+    return () =>
+      window.removeEventListener('qchat:add-dm-friend', addFriendFromRail);
+  }, [dmFriendsByAddress, handleToggleDmFriend]);
 
   const handleSelectNameOrAddress = useCallback(
     async (option: NameOrAddressOption | null) => {
@@ -3481,6 +3558,42 @@ export const ChatDirect = ({
           zIndex: isFocusedParent ? 5 : 'unset',
         }}
       >
+        {reticulumDirectUiEnabled && showDmExpiryNotice && (
+          <Box
+            role="status"
+            sx={{
+              alignItems: 'center',
+              backgroundColor: alpha(theme.palette.info.main, 0.12),
+              border: `1px solid ${alpha(theme.palette.info.main, 0.42)}`,
+              borderRadius: '8px 8px 0 0',
+              bottom: '100%',
+              color: theme.palette.info.main,
+              display: 'flex',
+              gap: '10px',
+              left: '12px',
+              minHeight: 38,
+              padding: '7px 8px 7px 12px',
+              position: 'absolute',
+              right: '12px',
+              zIndex: 4,
+            }}
+          >
+            <Typography sx={{ color: 'inherit', flex: 1, fontSize: 12.5 }}>
+              <strong>DMs now expire after 1 month by default</strong> to
+              protect your privacy and reduce local storage use. You can change
+              this setting, but only for new messages. Existing messages will
+              keep their current expiry period.
+            </Typography>
+            <IconButton
+              aria-label="Dismiss direct message expiry notice"
+              onClick={dismissDmExpiryNotice}
+              size="small"
+              sx={{ color: 'inherit', flexShrink: 0 }}
+            >
+              <ExitIcon />
+            </IconButton>
+          </Box>
+        )}
         {reticulumDirectUiEnabled && (
           <MessageSizeLimitLip
             floating
@@ -3673,110 +3786,145 @@ export const ChatDirect = ({
             </Tooltip>
           )}
           {reticulumDirectUiEnabled && (
-            <ReticulumMessageExpiryButton
-              direct
-              disabled={
-                Boolean(onEditMessage) ||
-                reticulumDirectPending ||
-                reticulumDirectExpiryLoading
+            <ReactionPicker
+              compactComposer
+              neutralIcon
+              onReaction={(emoji) =>
+                editorRef.current?.chain().focus().insertContent(emoji).run()
               }
-              disabledReason={
-                onEditMessage
-                  ? 'Expiry cannot be changed while editing'
-                  : 'Message expiry is unavailable while chat loads'
-              }
-              onChange={changeReticulumDirectExpiry}
-              value={reticulumDirectExpiryDurationMs}
             />
           )}
-          <CustomButton
-            onClick={() => {
-              if (
-                isSending ||
-                isCompressingReticulumGif ||
-                isCompressingReticulumImage ||
-                reticulumDirectPending ||
-                reticulumDirectExpiryLoading
-              )
-                return;
-              sendMessage();
-            }}
+          <Box
             sx={{
-              alignItems: 'center',
-              backgroundColor:
-                isSending ||
-                isCompressingReticulumGif ||
-                isCompressingReticulumImage
-                  ? theme.palette.action.disabledBackground
-                  : reticulumDirectUiEnabled
-                    ? RETICULUM_ACTIVE_BLUE
-                    : theme.palette.background.paper,
-              border: '1px solid',
-              borderColor: reticulumDirectUiEnabled
-                ? RETICULUM_ACTIVE_BLUE
-                : theme.palette.divider,
-              borderRadius: '8px',
-              color: reticulumDirectUiEnabled
-                ? theme.palette.common.white
-                : theme.palette.text.primary,
-              cursor:
-                isSending ||
-                isCompressingReticulumGif ||
-                isCompressingReticulumImage ||
-                reticulumDirectPending ||
-                reticulumDirectExpiryLoading
-                  ? 'default'
-                  : 'pointer',
-              display: 'inline-flex',
-              gap: '6px',
-              fontSize: '14px',
-              fontWeight: 500,
-              justifyContent: 'center',
-              minHeight: reticulumDirectUiEnabled ? '38px' : '44px',
-              minWidth: reticulumDirectUiEnabled ? '74px' : '88px',
-              padding: reticulumDirectUiEnabled ? '8px 14px' : '10px 16px',
+              alignItems: 'stretch',
+              border: reticulumDirectUiEnabled ? '1px solid' : 'none',
+              borderColor: 'divider',
+              borderRadius: reticulumDirectUiEnabled ? '10px' : 0,
+              display: 'flex',
+              height: reticulumDirectUiEnabled ? 38 : 'auto',
+              overflow: 'hidden',
               position: 'relative',
-              transition: 'background-color 0.2s ease, border-color 0.2s ease',
-              '&:hover':
-                isSending ||
-                isCompressingReticulumGif ||
-                isCompressingReticulumImage ||
-                reticulumDirectPending ||
-                reticulumDirectExpiryLoading
-                  ? {}
-                  : {
-                      backgroundColor: reticulumDirectUiEnabled
-                        ? '#1e40af'
-                        : theme.palette.action.hover,
-                      borderColor: reticulumDirectUiEnabled
-                        ? '#1e40af'
-                        : theme.palette.divider,
-                    },
-              '& .MuiSvgIcon-root': {
-                color: reticulumDirectUiEnabled
-                  ? theme.palette.common.white
-                  : 'inherit',
-              },
             }}
           >
-            {isSending ||
-            isCompressingReticulumGif ||
-            isCompressingReticulumImage ? (
-              <CircularProgress
-                size={18}
-                sx={{
-                  color: reticulumDirectUiEnabled
-                    ? theme.palette.common.white
-                    : theme.palette.text.secondary,
-                }}
-              />
-            ) : (
+            {reticulumDirectUiEnabled && (
               <>
-                <SendIcon sx={{ fontSize: '18px' }} />
-                Send
+                <ReticulumMessageExpiryButton
+                  direct
+                  segmented
+                  disabled={
+                    Boolean(onEditMessage) ||
+                    reticulumDirectPending ||
+                    reticulumDirectExpiryLoading
+                  }
+                  disabledReason={
+                    onEditMessage
+                      ? 'Expiry cannot be changed while editing'
+                      : 'Message expiry is unavailable while chat loads'
+                  }
+                  onChange={changeReticulumDirectExpiry}
+                  value={reticulumDirectExpiryDurationMs}
+                />
+                <Box
+                  aria-hidden
+                  sx={{
+                    alignSelf: 'center',
+                    backgroundColor: 'divider',
+                    height: 20,
+                    width: '1px',
+                  }}
+                />
               </>
             )}
-          </CustomButton>
+            <CustomButton
+              onClick={() => {
+                if (
+                  isSending ||
+                  isCompressingReticulumGif ||
+                  isCompressingReticulumImage ||
+                  reticulumDirectPending ||
+                  reticulumDirectExpiryLoading
+                )
+                  return;
+                sendMessage();
+              }}
+              sx={{
+                alignItems: 'center',
+                backgroundColor:
+                  isSending ||
+                  isCompressingReticulumGif ||
+                  isCompressingReticulumImage
+                    ? theme.palette.action.disabledBackground
+                    : reticulumDirectUiEnabled
+                      ? RETICULUM_ACTIVE_BLUE
+                      : theme.palette.background.paper,
+                border: reticulumDirectUiEnabled ? 'none' : '1px solid',
+                borderColor: reticulumDirectUiEnabled
+                  ? RETICULUM_ACTIVE_BLUE
+                  : theme.palette.divider,
+                borderRadius: reticulumDirectUiEnabled ? 0 : '8px',
+                color: reticulumDirectUiEnabled
+                  ? theme.palette.common.white
+                  : theme.palette.text.primary,
+                cursor:
+                  isSending ||
+                  isCompressingReticulumGif ||
+                  isCompressingReticulumImage ||
+                  reticulumDirectPending ||
+                  reticulumDirectExpiryLoading
+                    ? 'default'
+                    : 'pointer',
+                display: 'inline-flex',
+                gap: '6px',
+                fontSize: '14px',
+                fontWeight: 500,
+                justifyContent: 'center',
+                minHeight: reticulumDirectUiEnabled ? '38px' : '44px',
+                minWidth: reticulumDirectUiEnabled ? '74px' : '88px',
+                padding: reticulumDirectUiEnabled ? '8px 14px' : '10px 16px',
+                position: 'relative',
+                transition:
+                  'background-color 0.2s ease, border-color 0.2s ease',
+                '&:hover':
+                  isSending ||
+                  isCompressingReticulumGif ||
+                  isCompressingReticulumImage ||
+                  reticulumDirectPending ||
+                  reticulumDirectExpiryLoading
+                    ? {}
+                    : {
+                        backgroundColor: reticulumDirectUiEnabled
+                          ? '#1e40af'
+                          : theme.palette.action.hover,
+                        borderColor: reticulumDirectUiEnabled
+                          ? '#1e40af'
+                          : theme.palette.divider,
+                      },
+                '& .MuiSvgIcon-root': {
+                  color: reticulumDirectUiEnabled
+                    ? theme.palette.common.white
+                    : 'inherit',
+                },
+              }}
+            >
+              {isSending ||
+              isCompressingReticulumGif ||
+              isCompressingReticulumImage ? (
+                <CircularProgress
+                  size={18}
+                  sx={{
+                    color: reticulumDirectUiEnabled
+                      ? theme.palette.common.white
+                      : theme.palette.text.secondary,
+                  }}
+                />
+              ) : (
+                <>
+                  <SendIcon sx={{ fontSize: '18px' }} />
+                  Send
+                </>
+              )}
+            </CustomButton>
+          </Box>
         </Box>
       </Box>
 
