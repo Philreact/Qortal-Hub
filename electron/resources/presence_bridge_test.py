@@ -3921,6 +3921,21 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.assertTrue(
             self.bridge._resource_session_provider_can_start_locked("live")
         )
+        active["attachment"] = 0
+        active["history"] = 0
+        active["metadata"] = (
+            self.bridge._RESOURCE_SESSION_PROVIDER_METADATA_CONCURRENCY
+        )
+        self.assertFalse(
+            self.bridge._resource_session_provider_can_start_locked("metadata")
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                "reticulum_chat_calendar",
+                "reticulum_chat_calendar",
+            ),
+            "metadata",
+        )
 
     def test_provider_capacity_waiters_are_prioritized(self):
         live_waiter = {

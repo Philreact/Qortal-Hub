@@ -253,6 +253,16 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
 };
 
 const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
+  RETICULUM_CALENDAR_MUTATION_V1: schema([
+    'type',
+    'version',
+    'mutationId',
+    'operation',
+    'eventId',
+    'groupId',
+    'timestamp',
+    'state',
+  ]),
   QORTAL_LAND_CALL_V2: schema([
     'type',
     'groupId',

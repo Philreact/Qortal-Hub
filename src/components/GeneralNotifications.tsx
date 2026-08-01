@@ -66,6 +66,9 @@ const isQChatMentionNotification = (notification) =>
 const isReticulumDmMissedCallNotification = (notification) =>
   notification?.data?.reticulumDmMissedCall === true;
 
+const isReticulumCalendarNotification = (notification) =>
+  notification?.data?.reticulumCalendarReminder === true;
+
 function toTimestampMs(value) {
   if (value == null || typeof value !== 'number') return null;
   return value < 1e12 ? value * 1000 : value;
@@ -155,7 +158,8 @@ export const GeneralNotifications = ({
           item?.event === RESOURCE_EVENT ||
           (reticulumEnabled &&
             (isQChatMentionNotification(item) ||
-              isReticulumDmMissedCallNotification(item)))
+              isReticulumDmMissedCallNotification(item) ||
+              isReticulumCalendarNotification(item)))
       ),
     [notifications, reticulumEnabled]
   );
@@ -387,6 +391,8 @@ export const GeneralNotifications = ({
             const isQChatMention = isQChatMentionNotification(notification);
             const isMissedDmCall =
               isReticulumDmMissedCallNotification(notification);
+            const isCalendarReminder =
+              isReticulumCalendarNotification(notification);
             const timestamp = getNotificationTimestamp(notification);
             const unseen =
               timestamp != null &&
@@ -435,6 +441,23 @@ export const GeneralNotifications = ({
                     executeEvent('openDirectMessageInternal', {
                       address: notification?.data?.from,
                       name: notification?.data?.name,
+                    });
+                    return;
+                  }
+                  if (isCalendarReminder) {
+                    setNotifications((current) =>
+                      current.filter(
+                        (item) =>
+                          item?.notificationId !== notification?.notificationId
+                      )
+                    );
+                    setAnchorEl(null);
+                    executeEvent('openGroupMessage', {
+                      from: notification?.data?.groupId,
+                      eventId: notification?.data?.eventId,
+                      occurrenceStart: notification?.data?.occurrenceStart,
+                      timezone: notification?.data?.timezone,
+                      openCalendar: true,
                     });
                     return;
                   }

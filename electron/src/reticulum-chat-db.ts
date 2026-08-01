@@ -9,6 +9,13 @@ import type {
   ReticulumDmSummary,
   ReticulumDirectCallHistoryRecord,
 } from './reticulum-chat';
+import {
+  expandReticulumCalendarMutation,
+  reticulumCalendarStateBounds,
+  type ReticulumCalendarMutation,
+  type ReticulumCalendarOccurrence,
+  type ReticulumCalendarReminder,
+} from './reticulum-calendar';
 
 export const RETICULUM_CHAT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
 export const RETICULUM_CHAT_RELAY_CACHE_MAX_BYTES = 50 * 1024 * 1024;
@@ -12320,6 +12327,7 @@ export class ReticulumChatDatabase {
         name: 'author-gap-peer-observations',
         run: () => this.initAuthorGapPeerObservationSchema(),
       },
+      { name: 'group-calendar-v1', run: () => this.initCalendarSchema() },
     ];
     for (const migration of migrations) {
       try {
@@ -12331,6 +12339,589 @@ export class ReticulumChatDatabase {
         );
       }
     }
+  }
+
+  upsertCalendarMutation(
+    mutation: ReticulumCalendarMutation,
+    resourceHash: string
+  ): { inserted: boolean; projected: boolean } {
+    const transaction = this.db.transaction(() =>
+      this.upsertCalendarMutationInTransaction(
+        mutation,
+        resourceHash,
+        Date.now()
+      )
+    );
+    return transaction();
+  }
+
+  upsertCalendarMutations(
+    items: Array<{
+      mutation: ReticulumCalendarMutation;
+      resourceHash: string;
+    }>
+  ): Array<{ inserted: boolean; projected: boolean }> {
+    if (items.length === 0) return [];
+    const storedAt = Date.now();
+    const transaction = this.db.transaction(() =>
+      items.map(({ mutation, resourceHash }) =>
+        this.upsertCalendarMutationInTransaction(
+          mutation,
+          resourceHash,
+          storedAt
+        )
+      )
+    );
+    return transaction();
+  }
+
+  private upsertCalendarMutationInTransaction(
+    mutation: ReticulumCalendarMutation,
+    resourceHash: string,
+    storedAt: number
+  ): { inserted: boolean; projected: boolean } {
+    const mutationJson = JSON.stringify(mutation);
+    const inserted =
+      this.db
+        .prepare(
+          `INSERT INTO rchat_calendar_mutations
+              (mutation_id, group_id, event_id, operation, timestamp,
+               author_address, author_public_key, signature, resource_hash,
+               mutation_json, stored_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(mutation_id) DO NOTHING`
+        )
+        .run(
+          mutation.mutationId,
+          mutation.groupId,
+          mutation.eventId,
+          mutation.operation,
+          mutation.timestamp,
+          mutation.authorAddress,
+          mutation.authorPublicKey,
+          mutation.signature,
+          resourceHash,
+          mutationJson,
+          storedAt
+        ).changes > 0;
+    if (!inserted) return { inserted: false, projected: false };
+
+    const current = this.db
+      .prepare(
+        `SELECT mutation_id, updated_at
+             FROM rchat_calendar_events
+            WHERE group_id = ? AND event_id = ?`
+      )
+      .get(mutation.groupId, mutation.eventId) as
+      | { mutation_id: string; updated_at: number }
+      | undefined;
+    if (
+      current &&
+      (current.updated_at > mutation.timestamp ||
+        (current.updated_at === mutation.timestamp &&
+          current.mutation_id.localeCompare(mutation.mutationId) >= 0))
+    ) {
+      return { inserted: true, projected: false };
+    }
+
+    const bounds = mutation.state
+      ? reticulumCalendarStateBounds(mutation.state)
+      : { startAt: null, endAt: null, recurrenceUntilAt: null };
+    this.db
+      .prepare(
+        `INSERT INTO rchat_calendar_events
+          (group_id, event_id, mutation_id, updated_at, deleted, state_json,
+           start_at, end_at, recurring, recurrence_until_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(group_id, event_id) DO UPDATE SET
+           mutation_id = excluded.mutation_id,
+           updated_at = excluded.updated_at,
+           deleted = excluded.deleted,
+           state_json = excluded.state_json,
+           start_at = excluded.start_at,
+           end_at = excluded.end_at,
+           recurring = excluded.recurring,
+           recurrence_until_at = excluded.recurrence_until_at`
+      )
+      .run(
+        mutation.groupId,
+        mutation.eventId,
+        mutation.mutationId,
+        mutation.timestamp,
+        mutation.operation === 'delete' ? 1 : 0,
+        mutation.state ? JSON.stringify(mutation.state) : null,
+        bounds.startAt,
+        bounds.endAt,
+        mutation.state?.recurrence ? 1 : 0,
+        bounds.recurrenceUntilAt
+      );
+    if (mutation.operation === 'delete') {
+      this.db
+        .prepare(
+          `DELETE FROM rchat_calendar_reminders
+            WHERE group_id = ? AND event_id = ?`
+        )
+        .run(mutation.groupId, mutation.eventId);
+    }
+    return { inserted: true, projected: true };
+  }
+
+  hasCalendarMutation(mutationId: string): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          'SELECT 1 FROM rchat_calendar_mutations WHERE mutation_id = ? LIMIT 1'
+        )
+        .get(mutationId)
+    );
+  }
+
+  hasCalendarEvent(groupId: number, eventId: string): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM rchat_calendar_events
+            WHERE group_id = ? AND event_id = ? AND deleted = 0
+            LIMIT 1`
+        )
+        .get(groupId, eventId)
+    );
+  }
+
+  getCalendarMutation(mutationId: string): ReticulumCalendarMutation | null {
+    const row = this.db
+      .prepare(
+        'SELECT mutation_json FROM rchat_calendar_mutations WHERE mutation_id = ?'
+      )
+      .get(mutationId) as { mutation_json?: string } | undefined;
+    if (!row?.mutation_json) return null;
+    try {
+      return JSON.parse(row.mutation_json) as ReticulumCalendarMutation;
+    } catch {
+      return null;
+    }
+  }
+
+  getCalendarMutationResourceHash(mutationId: string): string {
+    const row = this.db
+      .prepare(
+        'SELECT resource_hash FROM rchat_calendar_mutations WHERE mutation_id = ?'
+      )
+      .get(mutationId) as { resource_hash?: string } | undefined;
+    return String(row?.resource_hash || '');
+  }
+
+  getCalendarProjectionMutations(groupId: number): ReticulumCalendarMutation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT m.mutation_json
+           FROM rchat_calendar_events e
+           JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+          WHERE e.group_id = ?
+          ORDER BY e.event_id`
+      )
+      .all(groupId) as Array<{ mutation_json: string }>;
+    const output: ReticulumCalendarMutation[] = [];
+    for (const row of rows) {
+      try {
+        output.push(JSON.parse(row.mutation_json) as ReticulumCalendarMutation);
+      } catch {
+        // A damaged row is ignored; verified snapshots can repair it later.
+      }
+    }
+    return output;
+  }
+
+  getCalendarProjectionMutationIds(groupId: number): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT e.mutation_id, m.mutation_json
+           FROM rchat_calendar_events e
+           JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+          WHERE e.group_id = ?
+          ORDER BY e.event_id`
+      )
+      .all(groupId) as Array<{
+      mutation_id: string;
+      mutation_json: string;
+    }>;
+    const output: string[] = [];
+    for (const row of rows) {
+      try {
+        JSON.parse(row.mutation_json);
+        output.push(row.mutation_id);
+      } catch {
+        // Match the snapshot projection, which cannot serve damaged JSON.
+      }
+    }
+    return output;
+  }
+
+  getCalendarEventMutations(
+    groupId: number,
+    eventIds: string[]
+  ): Map<string, ReticulumCalendarMutation> {
+    const ids = [
+      ...new Set(eventIds.map((id) => id.trim().toLowerCase())),
+    ].filter(Boolean);
+    const output = new Map<string, ReticulumCalendarMutation>();
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT e.event_id, m.mutation_json
+             FROM rchat_calendar_events e
+             JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+            WHERE e.group_id = ?
+              AND e.deleted = 0
+              AND e.event_id IN (${placeholders})`
+        )
+        .all(groupId, ...chunk) as Array<{
+        event_id: string;
+        mutation_json: string;
+      }>;
+      for (const row of rows) {
+        try {
+          output.set(
+            row.event_id,
+            JSON.parse(row.mutation_json) as ReticulumCalendarMutation
+          );
+        } catch {
+          // Ignore malformed local rows without suppressing other reminders.
+        }
+      }
+    }
+    return output;
+  }
+
+  getCalendarOccurrences(
+    groupId: number,
+    rangeStart: number,
+    rangeEnd: number,
+    limit = 2_000
+  ): ReticulumCalendarOccurrence[] {
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+    const nonRecurringRows = this.db
+      .prepare(
+        `SELECT m.mutation_json
+           FROM rchat_calendar_events e
+           JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+          WHERE e.group_id = ?
+            AND e.deleted = 0
+            AND e.recurring = 0
+            AND e.end_at > ?
+            AND e.start_at < ?
+          ORDER BY COALESCE(e.start_at, 0), e.event_id
+          LIMIT ?`
+      )
+      .all(groupId, rangeStart, rangeEnd, safeLimit) as Array<{
+      mutation_json: string;
+    }>;
+    const recurringRows = this.db
+      .prepare(
+        `SELECT m.mutation_json
+           FROM rchat_calendar_events e
+           JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+          WHERE e.group_id = ?
+            AND e.deleted = 0
+            AND e.recurring = 1
+            AND e.start_at < ?
+            AND (e.recurrence_until_at IS NULL OR e.recurrence_until_at >= ?)
+          ORDER BY COALESCE(e.start_at, 0), e.event_id
+          LIMIT ?`
+      )
+      .all(groupId, rangeEnd, rangeStart, safeLimit) as Array<{
+      mutation_json: string;
+    }>;
+    const expandRows = (
+      rows: Array<{ mutation_json: string }>
+    ): ReticulumCalendarOccurrence[] => {
+      const occurrences: ReticulumCalendarOccurrence[] = [];
+      for (const row of rows) {
+        if (occurrences.length >= safeLimit) break;
+        try {
+          const mutation = JSON.parse(
+            row.mutation_json
+          ) as ReticulumCalendarMutation;
+          occurrences.push(
+            ...expandReticulumCalendarMutation(
+              mutation,
+              rangeStart,
+              rangeEnd,
+              safeLimit - occurrences.length
+            )
+          );
+        } catch {
+          // Ignore malformed local rows rather than failing the entire calendar.
+        }
+      }
+      return occurrences;
+    };
+    const occurrences = [
+      ...expandRows(nonRecurringRows),
+      ...expandRows(recurringRows),
+    ];
+    return occurrences
+      .sort(
+        (a, b) =>
+          a.occurrenceStart - b.occurrenceStart ||
+          a.occurrenceId.localeCompare(b.occurrenceId)
+      )
+      .slice(0, safeLimit);
+  }
+
+  getCalendarEventOccurrences(
+    groupId: number,
+    eventIds: string[],
+    rangeStart: number,
+    rangeEnd: number,
+    limit = 5_000
+  ): ReticulumCalendarOccurrence[] {
+    const ids = [
+      ...new Set(eventIds.map((id) => id.trim().toLowerCase())),
+    ].filter(Boolean);
+    if (ids.length === 0) return [];
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+    const rows: Array<{ mutation_json: string }> = [];
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      rows.push(
+        ...(this.db
+          .prepare(
+            `SELECT m.mutation_json
+               FROM rchat_calendar_events e
+               JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+              WHERE e.group_id = ?
+                AND e.deleted = 0
+                AND e.event_id IN (${placeholders})
+              ORDER BY e.event_id`
+          )
+          .all(groupId, ...chunk) as Array<{ mutation_json: string }>)
+      );
+    }
+    const occurrences: ReticulumCalendarOccurrence[] = [];
+    for (const row of rows) {
+      if (occurrences.length >= safeLimit) break;
+      try {
+        const mutation = JSON.parse(
+          row.mutation_json
+        ) as ReticulumCalendarMutation;
+        occurrences.push(
+          ...expandReticulumCalendarMutation(
+            mutation,
+            rangeStart,
+            rangeEnd,
+            safeLimit - occurrences.length
+          )
+        );
+      } catch {
+        // Ignore a malformed local row without suppressing other reminders.
+      }
+    }
+    return occurrences.sort(
+      (left, right) =>
+        left.occurrenceStart - right.occurrenceStart ||
+        left.occurrenceId.localeCompare(right.occurrenceId)
+    );
+  }
+
+  getCalendarReminder(
+    ownerAddress: string,
+    groupId: number,
+    eventId: string
+  ): ReticulumCalendarReminder | null {
+    const row = this.db
+      .prepare(
+        `SELECT owner_address, group_id, event_id, offset_ms,
+                last_fired_occurrence_id, updated_at
+           FROM rchat_calendar_reminders
+          WHERE owner_address = ? AND group_id = ? AND event_id = ?`
+      )
+      .get(ownerAddress, groupId, eventId) as
+      | {
+          owner_address: string;
+          group_id: number;
+          event_id: string;
+          offset_ms: number | null;
+          last_fired_occurrence_id: string;
+          updated_at: number;
+        }
+      | undefined;
+    return row
+      ? {
+          ownerAddress: row.owner_address,
+          groupId: row.group_id,
+          eventId: row.event_id,
+          offsetMs: row.offset_ms == null ? null : Number(row.offset_ms),
+          lastFiredOccurrenceId: row.last_fired_occurrence_id,
+          updatedAt: Number(row.updated_at),
+        }
+      : null;
+  }
+
+  setCalendarReminder(reminder: ReticulumCalendarReminder): void {
+    this.db
+      .prepare(
+        `INSERT INTO rchat_calendar_reminders
+          (owner_address, group_id, event_id, offset_ms,
+           last_fired_occurrence_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, group_id, event_id) DO UPDATE SET
+           offset_ms = excluded.offset_ms,
+           last_fired_occurrence_id = excluded.last_fired_occurrence_id,
+           updated_at = excluded.updated_at`
+      )
+      .run(
+        reminder.ownerAddress,
+        reminder.groupId,
+        reminder.eventId,
+        reminder.offsetMs,
+        reminder.lastFiredOccurrenceId,
+        reminder.updatedAt
+      );
+  }
+
+  listCalendarReminders(ownerAddress: string): ReticulumCalendarReminder[] {
+    const rows = this.db
+      .prepare(
+        `SELECT owner_address, group_id, event_id, offset_ms,
+                last_fired_occurrence_id, updated_at
+           FROM rchat_calendar_reminders
+          WHERE owner_address = ? AND offset_ms IS NOT NULL`
+      )
+      .all(ownerAddress) as Array<{
+      owner_address: string;
+      group_id: number;
+      event_id: string;
+      offset_ms: number;
+      last_fired_occurrence_id: string;
+      updated_at: number;
+    }>;
+    return rows.map((row) => ({
+      ownerAddress: row.owner_address,
+      groupId: row.group_id,
+      eventId: row.event_id,
+      offsetMs: Number(row.offset_ms),
+      lastFiredOccurrenceId: row.last_fired_occurrence_id,
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  private initCalendarSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_calendar_mutations (
+        mutation_id TEXT PRIMARY KEY,
+        group_id INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+        timestamp INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_public_key TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        resource_hash TEXT NOT NULL,
+        mutation_json TEXT NOT NULL,
+        stored_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_calendar_mutations_group_time
+        ON rchat_calendar_mutations (group_id, timestamp, mutation_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_calendar_mutations_event
+        ON rchat_calendar_mutations (group_id, event_id, timestamp, mutation_id);
+
+      CREATE TABLE IF NOT EXISTS rchat_calendar_events (
+        group_id INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        mutation_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        state_json TEXT,
+        start_at INTEGER,
+        end_at INTEGER,
+        recurring INTEGER NOT NULL DEFAULT 0,
+        recurrence_until_at INTEGER,
+        PRIMARY KEY (group_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_calendar_events_range
+        ON rchat_calendar_events (group_id, start_at, end_at)
+        WHERE deleted = 0;
+      CREATE TABLE IF NOT EXISTS rchat_calendar_reminders (
+        owner_address TEXT NOT NULL,
+        group_id INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        offset_ms INTEGER,
+        last_fired_occurrence_id TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_address, group_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_calendar_reminders_owner
+        ON rchat_calendar_reminders (owner_address, group_id);
+    `);
+    this.ensureColumn(
+      'rchat_calendar_events',
+      'recurrence_until_at',
+      `ALTER TABLE rchat_calendar_events ADD COLUMN recurrence_until_at INTEGER`
+    );
+    const recurrenceBoundsMigration = 'calendar-recurrence-bounds-v1';
+    const recurrenceBoundsApplied = this.db
+      .prepare('SELECT 1 FROM rchat_schema_migrations WHERE name = ? LIMIT 1')
+      .get(recurrenceBoundsMigration);
+    if (!recurrenceBoundsApplied) {
+      const rows = this.db
+        .prepare(
+          `SELECT group_id, event_id, state_json
+             FROM rchat_calendar_events
+            WHERE deleted = 0 AND recurring = 1`
+        )
+        .all() as Array<{
+        group_id: number;
+        event_id: string;
+        state_json: string | null;
+      }>;
+      const migrate = this.db.transaction(() => {
+        const update = this.db.prepare(
+          `UPDATE rchat_calendar_events
+              SET recurrence_until_at = ?
+            WHERE group_id = ? AND event_id = ?`
+        );
+        for (const row of rows) {
+          try {
+            const state = JSON.parse(
+              String(row.state_json || '')
+            ) as ReticulumCalendarMutation['state'];
+            if (!state) continue;
+            update.run(
+              reticulumCalendarStateBounds(state).recurrenceUntilAt,
+              row.group_id,
+              row.event_id
+            );
+          } catch {
+            // A malformed projection remains unbounded and can be repaired by
+            // the next valid signed calendar snapshot.
+          }
+        }
+        this.db.exec(`
+          DROP INDEX IF EXISTS idx_rchat_calendar_events_recurring;
+          CREATE INDEX idx_rchat_calendar_events_recurring
+            ON rchat_calendar_events
+              (group_id, recurring, recurrence_until_at, start_at)
+            WHERE deleted = 0 AND recurring = 1;
+        `);
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO rchat_schema_migrations (name, applied_at)
+             VALUES (?, ?)`
+          )
+          .run(recurrenceBoundsMigration, Date.now());
+      });
+      migrate();
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_rchat_calendar_events_recurring
+        ON rchat_calendar_events
+          (group_id, recurring, recurrence_until_at, start_at)
+        WHERE deleted = 0 AND recurring = 1;
+    `);
   }
 
   private initAuthorGapPeerObservationSchema(): void {
@@ -12665,6 +13256,46 @@ export class ReticulumChatDatabase {
           'active_authors_7d',
           'observed_at',
           'confidence',
+        ],
+      },
+      {
+        table: 'rchat_calendar_mutations',
+        columns: [
+          'mutation_id',
+          'group_id',
+          'event_id',
+          'operation',
+          'timestamp',
+          'author_address',
+          'author_public_key',
+          'signature',
+          'resource_hash',
+          'mutation_json',
+          'stored_at',
+        ],
+      },
+      {
+        table: 'rchat_calendar_events',
+        columns: [
+          'group_id',
+          'event_id',
+          'mutation_id',
+          'updated_at',
+          'deleted',
+          'state_json',
+          'start_at',
+          'end_at',
+          'recurring',
+        ],
+      },
+      {
+        table: 'rchat_calendar_reminders',
+        columns: [
+          'owner_address',
+          'group_id',
+          'event_id',
+          'offset_ms',
+          'last_fired_occurrence_id',
         ],
       },
     ];

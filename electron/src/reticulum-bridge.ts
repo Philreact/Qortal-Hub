@@ -1649,6 +1649,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         'reticulum_chat_dm_page',
         'reticulum_chat_metadata_snapshot',
         'reticulum_chat_event_page',
+        'reticulum_chat_calendar',
       ].includes(payload.logicalResourceType ?? '') &&
       payload.resourceType === 'reticulum_chat_event'
         ? 'fast'

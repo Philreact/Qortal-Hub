@@ -6,6 +6,42 @@ import type {
 } from '../lib/group-call/audioSurfaceBridge';
 
 declare global {
+  interface ReticulumCalendarRecurrenceInput {
+    frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+    untilLocalDate?: string;
+  }
+
+  interface ReticulumCalendarEventInput {
+    title: string;
+    description?: string;
+    startLocal: string;
+    endLocal: string;
+    allDay: boolean;
+    timezone: string;
+    location?: string;
+    link?: string;
+    recurrence?: ReticulumCalendarRecurrenceInput | null;
+  }
+
+  interface ReticulumCalendarOccurrence extends ReticulumCalendarEventInput {
+    groupId: number;
+    eventId: string;
+    occurrenceId: string;
+    occurrenceStart: number;
+    occurrenceEnd: number;
+    sourceMutationId: string;
+    updatedAt: number;
+  }
+
+  interface ReticulumCalendarReminder {
+    ownerAddress: string;
+    groupId: number;
+    eventId: string;
+    offsetMs: number | null;
+    lastFiredOccurrenceId: string;
+    updatedAt: number;
+  }
+
   interface Window {
     qortalLandRealtime?: {
       getTransportBootstrap: () => Promise<{
@@ -757,6 +793,35 @@ declare global {
         };
         error?: string;
       }>;
+      getCalendarEvents: (
+        groupId: number,
+        rangeStart: number,
+        rangeEnd: number
+      ) => Promise<ReticulumCalendarOccurrence[]>;
+      createCalendarEvent: (
+        groupId: number,
+        input: ReticulumCalendarEventInput
+      ) => Promise<unknown>;
+      updateCalendarEvent: (
+        groupId: number,
+        eventId: string,
+        input: ReticulumCalendarEventInput
+      ) => Promise<unknown>;
+      deleteCalendarEvent: (
+        groupId: number,
+        eventId: string
+      ) => Promise<unknown>;
+      getCalendarReminder: (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string
+      ) => Promise<ReticulumCalendarReminder | null>;
+      setCalendarReminder: (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string,
+        offsetMs: number | null
+      ) => Promise<ReticulumCalendarReminder>;
       sendDirectTyping: (
         localAddress: string,
         peerAddress: string,
@@ -990,6 +1055,10 @@ declare global {
           metadataChanged?: boolean;
         }) => void
       ) => () => void;
+      onCalendarChanged: (
+        cb: (payload: { groupId: number; eventId?: string }) => void
+      ) => () => void;
+      onCalendarReminderDue: (cb: (payload: unknown) => void) => () => void;
       onDirectEvent: (cb: (payload: { event: unknown }) => void) => () => void;
       onDirectCallHistory: (
         cb: (payload: { record: unknown }) => void

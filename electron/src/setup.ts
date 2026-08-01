@@ -3669,6 +3669,36 @@ const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSilenceSubscribers = new Set<Electron.WebContents>();
+const reticulumCalendarSubscribers = new Set<Electron.WebContents>();
+const reticulumCalendarReminderSubscribers = new Set<Electron.WebContents>();
+const pendingReticulumCalendarReminders: Array<{
+  payload: unknown;
+  queuedAt: number;
+}> = [];
+const RETICULUM_CALENDAR_REMINDER_STARTUP_GRACE_MS = 60 * 60_000;
+
+function deliverReticulumCalendarReminder(payload: unknown): void {
+  let delivered = false;
+  for (const webContents of reticulumCalendarReminderSubscribers) {
+    const result = sendToRenderer(
+      webContents,
+      'reticulumChat:calendarReminderDue',
+      payload
+    );
+    if (result === 'sent') delivered = true;
+    if (result === 'destroyed')
+      reticulumCalendarReminderSubscribers.delete(webContents);
+  }
+  if (!delivered) {
+    pendingReticulumCalendarReminders.push({ payload, queuedAt: Date.now() });
+    if (pendingReticulumCalendarReminders.length > 256) {
+      pendingReticulumCalendarReminders.splice(
+        0,
+        pendingReticulumCalendarReminders.length - 256
+      );
+    }
+  }
+}
 
 function notifyReticulumChatReadinessChanged(status: ReadinessStatus): void {
   broadcastToSet(
@@ -3824,6 +3854,16 @@ export function attachReticulumChatListeners(
       payload
     )
   );
+
+  manager.on('calendarChanged', (payload: unknown) =>
+    broadcastToSet(
+      reticulumCalendarSubscribers,
+      'reticulumChat:calendarChanged',
+      payload
+    )
+  );
+
+  manager.on('calendarReminderDue', deliverReticulumCalendarReminder);
 }
 
 ipcMain.handle('reticulumChat:isEnabled', async () => {
@@ -4135,6 +4175,79 @@ ipcMain.handle(
     return preference
       ? { success: true, preference }
       : { success: false, error: 'Invalid DM expiry preference' };
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getCalendarEvents',
+  async (_event, groupId: number, rangeStart: number, rangeEnd: number) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.getCalendarEvents(
+      Number(groupId),
+      Number(rangeStart),
+      Number(rangeEnd)
+    );
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:createCalendarEvent',
+  async (_event, groupId: number, input: unknown) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.createCalendarEvent(Number(groupId), input);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:updateCalendarEvent',
+  async (_event, groupId: number, eventId: string, input: unknown) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.updateCalendarEvent(Number(groupId), String(eventId), input);
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:deleteCalendarEvent',
+  async (_event, groupId: number, eventId: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.deleteCalendarEvent(Number(groupId), String(eventId));
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getCalendarReminder',
+  async (_event, ownerAddress: string, groupId: number, eventId: string) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.getCalendarReminder(
+      String(ownerAddress || '').trim(),
+      Number(groupId),
+      String(eventId || '')
+    );
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:setCalendarReminder',
+  async (
+    _event,
+    ownerAddress: string,
+    groupId: number,
+    eventId: string,
+    offsetMs: number | null
+  ) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.setCalendarReminder(
+      String(ownerAddress || '').trim(),
+      Number(groupId),
+      String(eventId || ''),
+      offsetMs == null ? null : Number(offsetMs)
+    );
   }
 );
 
@@ -5930,6 +6043,35 @@ ipcMain.on('reticulumChat:silenceChanged:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:silenceChanged:unsubscribe', (event) => {
   reticulumChatSilenceSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:calendarChanged:subscribe', (event) => {
+  reticulumCalendarSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:calendarChanged:unsubscribe', (event) => {
+  reticulumCalendarSubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:calendarReminderDue:subscribe', (event) => {
+  reticulumCalendarReminderSubscribers.add(event.sender);
+  if (pendingReticulumCalendarReminders.length === 0) return;
+  const pending = pendingReticulumCalendarReminders.splice(0);
+  const now = Date.now();
+  for (const item of pending) {
+    if (now - item.queuedAt > RETICULUM_CALENDAR_REMINDER_STARTUP_GRACE_MS) {
+      continue;
+    }
+    if (
+      sendToRenderer(
+        event.sender,
+        'reticulumChat:calendarReminderDue',
+        item.payload
+      ) !== 'sent'
+    ) {
+      pendingReticulumCalendarReminders.push(item);
+    }
+  }
+});
+ipcMain.on('reticulumChat:calendarReminderDue:unsubscribe', (event) => {
+  reticulumCalendarReminderSubscribers.delete(event.sender);
 });
 
 /**

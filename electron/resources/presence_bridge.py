@@ -248,6 +248,7 @@ _RESOURCE_SESSION_BULK_CONCURRENCY = 1
 _RESOURCE_SESSION_PROVIDER_CONCURRENCY = 12
 _RESOURCE_SESSION_PROVIDER_NON_LIVE_CONCURRENCY = 11
 _RESOURCE_SESSION_PROVIDER_ATTACHMENT_CONCURRENCY = 10
+_RESOURCE_SESSION_PROVIDER_METADATA_CONCURRENCY = 2
 _RESOURCE_SESSION_PROVIDER_ACTIVE_MAX_PER_PEER = 10
 _RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER = 8
 _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX = 40
@@ -19100,6 +19101,7 @@ def _resource_session_lane(resource_type: str, logical_resource_type: str = "") 
         "reticulum_chat_dm_page",
         "reticulum_chat_metadata_snapshot",
         "reticulum_chat_event_page",
+        "reticulum_chat_calendar",
     }:
         return "bulk"
     return "fast" if normalized == _RETICULUM_CHAT_RESOURCE_TYPE else "bulk"
@@ -19118,7 +19120,10 @@ def _resource_session_provider_class(
         or normalized.endswith("_resource_range")
     ):
         return "attachment"
-    if logical_type == "reticulum_chat_metadata_snapshot":
+    if logical_type in {
+        "reticulum_chat_metadata_snapshot",
+        "reticulum_chat_calendar",
+    }:
         return "metadata"
     if logical_type in {
         "reticulum_chat_history_page",
@@ -19155,6 +19160,12 @@ def _resource_session_provider_has_capacity_locked(
         provider_class == "attachment"
         and _resource_session_provider_active_by_class["attachment"]
         >= _RESOURCE_SESSION_PROVIDER_ATTACHMENT_CONCURRENCY
+    ):
+        return False
+    if (
+        provider_class == "metadata"
+        and _resource_session_provider_active_by_class["metadata"]
+        >= _RESOURCE_SESSION_PROVIDER_METADATA_CONCURRENCY
     ):
         return False
     if (
@@ -19431,7 +19442,11 @@ def _resource_session_job_priority(job: Dict[str, Any]) -> int:
     ).lower()
     if metadata.get("eventId") or auth.get("eventId") or auth.get("id"):
         return 0
-    if "metadata_snapshot" in logical or metadata.get("snapshotHash"):
+    if (
+        "metadata_snapshot" in logical
+        or "reticulum_chat_calendar" in logical
+        or metadata.get("snapshotHash")
+    ):
         return 1
     if "history_page" in logical or "dm_page" in logical:
         return 2

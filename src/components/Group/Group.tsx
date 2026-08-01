@@ -931,6 +931,14 @@ export const Group = ({
     useState('');
   const [notificationReticulumMessageId, setNotificationReticulumMessageId] =
     useState('');
+  const [reticulumCalendarOpenRequest, setReticulumCalendarOpenRequest] =
+    useState(0);
+  const [reticulumCalendarTarget, setReticulumCalendarTarget] = useState<{
+    groupId: number;
+    eventId: string;
+    occurrenceStart: number;
+    timezone: string;
+  } | null>(null);
   const [activeReticulumChannelId, setActiveReticulumChannelId] =
     useState('general');
   const [reticulumReadEntryToken, setReticulumReadEntryToken] = useState(0);
@@ -3736,10 +3744,21 @@ export const Group = ({
         typeof e.detail?.channelId === 'string' ? e.detail.channelId : '';
       const eventId =
         typeof e.detail?.eventId === 'string' ? e.detail.eventId : '';
-      if (channelId) {
-        setNotificationReticulumChannelId(channelId);
+      const openCalendar = e.detail?.openCalendar === true;
+      if (openCalendar) {
+        setReticulumCalendarTarget({
+          groupId: Number(groupId),
+          eventId,
+          occurrenceStart: Number(e.detail?.occurrenceStart || Date.now()),
+          timezone: String(e.detail?.timezone || ''),
+        });
+        setReticulumCalendarOpenRequest((value) => value + 1);
+      } else {
+        if (channelId) {
+          setNotificationReticulumChannelId(channelId);
+        }
+        setNotificationReticulumMessageId(eventId);
       }
-      setNotificationReticulumMessageId(eventId);
       const findGroup = memberGroupsRef.current?.find(
         (group: any) => +group?.groupId === +groupId
       );
@@ -4668,6 +4687,8 @@ export const Group = ({
                       handleReticulumNotificationHandled
                     }
                     reticulumReadEntryToken={reticulumReadEntryToken}
+                    reticulumCalendarOpenRequest={reticulumCalendarOpenRequest}
+                    reticulumCalendarTarget={reticulumCalendarTarget}
                     isGroupOwner={groupOwner?.owner === myAddress}
                   />
                 </PersistentSectionLayer>

@@ -111,6 +111,19 @@ import {
   type ReticulumResourceTransferProgress,
   type ReticulumResourceTransferRequest,
 } from './reticulum-resource-transfer';
+import {
+  RETICULUM_CALENDAR_MAX_RESOURCE_BYTES,
+  RETICULUM_CALENDAR_REMINDER_OFFSETS,
+  RETICULUM_CALENDAR_VISIBLE_PAST_MS,
+  findNextReticulumCalendarOccurrence,
+  hashReticulumCalendarResource,
+  normalizeReticulumCalendarInput,
+  verifyReticulumCalendarMutation,
+  type ReticulumCalendarEventState,
+  type ReticulumCalendarMutation,
+  type ReticulumCalendarOccurrence,
+  type ReticulumCalendarReminder,
+} from './reticulum-calendar';
 import { ReticulumChatWorkerPool } from './reticulum-chat-worker-pool';
 import type {
   ReticulumChatWorkerPreparedResourceResult,
@@ -870,7 +883,8 @@ export type ReticulumChatProtocolFeature =
   | 'dm_author_streams_v1'
   | 'self_dm_v1'
   | 'read_sync_v2'
-  | 'call_history_v1';
+  | 'call_history_v1'
+  | 'calendar_v1';
 
 export type ReticulumChatDigestWire = {
   c: string;
@@ -1471,6 +1485,24 @@ export type ReticulumDmProbeWire = {
   z: string;
 };
 
+type ReticulumCalendarResourceOffer = {
+  transferId: string;
+  groupId: number;
+  kind: 'mutation' | 'snapshot';
+  itemId: string;
+  fileHash: string;
+  sizeBytes: number;
+  sourcePeerHash: string;
+};
+
+type ReticulumCalendarResourceOfferWire = {
+  x: string;
+  k: 'm' | 's';
+  i: string;
+  h: string;
+  s: number;
+};
+
 type ReticulumDmPageResource = {
   v: 1;
   c: string;
@@ -1484,6 +1516,14 @@ export type ReticulumChatWire =
   | { t: 'RCHAT'; k: 'read_sync'; w: ReticulumChatReadSyncWire }
   | { t: 'RCHAT'; k: 'read_sync_ack'; w: ReticulumChatReadSyncAckWire }
   | { t: 'RCHAT'; k: 'call_history'; w: ReticulumDirectCallHistoryWire }
+  | {
+      t: 'RCHAT';
+      k: 'calendar_offer_v1';
+      g: number;
+      w: ReticulumCalendarResourceOfferWire;
+    }
+  | { t: 'RCHAT'; k: 'calendar_digest_v1'; g: number; h: string; n: number }
+  | { t: 'RCHAT'; k: 'calendar_req_v1'; g: number; q: string }
   | {
       t: 'RCHAT';
       k: 'group_sub';
@@ -1932,6 +1972,7 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'self_dm_v1',
   'read_sync_v2',
   'call_history_v1',
+  'calendar_v1',
   ...(!isDisabledRelayCache ? ['relay_cache' as const] : []),
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
@@ -2317,6 +2358,10 @@ const RETICULUM_CHAT_LAND_AUTH_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_LAND_AUTH_PROCESS_SLOW_MS = 50;
 const RETICULUM_CHAT_LAND_AUTH_PRESSURE_WARN = 100;
 const RETICULUM_CHAT_LAND_AUTH_MAX_CONCURRENT = 8;
+const RETICULUM_CALENDAR_ACCEPT_CONCURRENCY = 2;
+const RETICULUM_CALENDAR_ACCEPT_MAX_PER_PEER = 128;
+const RETICULUM_CALENDAR_TRANSFER_WAIT_TIMEOUT_MS = 90_000;
+const RETICULUM_CALENDAR_FINGERPRINT_CACHE_MS = 2_000;
 const RETICULUM_CHAT_RESOURCE_QUEUE_MAX = 500;
 const RETICULUM_CHAT_RESOURCE_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_CHANNEL_EXPIRY_RECONCILIATION_BATCH_SIZE = 100;
@@ -6598,6 +6643,41 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     ReticulumChatMetadataSnapshotResourceOffer
   >();
+  private calendarResourceOffers = new Map<
+    string,
+    ReticulumCalendarResourceOffer
+  >();
+  private calendarResourceAcceptQueue: string[] = [];
+  private activeCalendarResourceAccepts = new Set<string>();
+  private outboundCalendarResources = new Map<
+    string,
+    {
+      groupId: number;
+      peerHash: string;
+      fileHash: string;
+      filePath: string;
+      expiresAt: number;
+    }
+  >();
+  private outboundCalendarResourceWaiters = new Map<
+    string,
+    {
+      resolve: (sent: boolean) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private calendarSnapshotAnnouncements = new Map<
+    string,
+    { fingerprint: string; nextAttemptAt: number }
+  >();
+  private calendarSnapshotTransfersInFlight = new Set<string>();
+  private recentCalendarRequests = new Map<string, number>();
+  private recentCalendarPullRequests = new Map<string, number>();
+  private calendarStateFingerprintCache = new Map<
+    number,
+    { hash: string; count: number; computedAt: number }
+  >();
+  private calendarReminderTimer: ReturnType<typeof setTimeout> | null = null;
   private metadataSnapshotDownloadItems = new Map<
     string,
     ReticulumChatMetadataSnapshotDownloadItem
@@ -7698,6 +7778,25 @@ export class ReticulumChatManager extends EventEmitter {
     this.peerProtocolFeatures.clear();
     this.outboundEventResources.clear();
     this.outboundMetadataSnapshotResources.clear();
+    for (const resource of this.outboundCalendarResources.values()) {
+      this.safeUnlink(resource.filePath);
+    }
+    for (const waiter of this.outboundCalendarResourceWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(false);
+    }
+    this.outboundCalendarResourceWaiters.clear();
+    this.outboundCalendarResources.clear();
+    this.calendarResourceOffers.clear();
+    this.calendarResourceAcceptQueue = [];
+    this.activeCalendarResourceAccepts.clear();
+    this.calendarSnapshotAnnouncements.clear();
+    this.calendarSnapshotTransfersInFlight.clear();
+    this.recentCalendarRequests.clear();
+    this.recentCalendarPullRequests.clear();
+    this.calendarStateFingerprintCache.clear();
+    if (this.calendarReminderTimer) clearTimeout(this.calendarReminderTimer);
+    this.calendarReminderTimer = null;
     this.metadataSnapshotPushHashes.clear();
     this.metadataSnapshotPushInflight.clear();
     if (this.metadataSnapshotDownloadQueueTimer) {
@@ -7896,8 +7995,10 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    this.cancelCalendarTransfersForRemovedGroups();
     this.hydrateAllPendingReadSync();
     void this.replayReadStatesToOwnDevices();
+    this.scheduleNextCalendarReminder();
     const nextPublicGroupIds = new Set(
       nextGroupIds.filter((groupId) => !this.localPrivateGroupIds.has(groupId))
     );
@@ -9123,6 +9224,297 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
+  getCalendarEvents(
+    groupId: number,
+    rangeStart: number,
+    rangeEnd: number
+  ): ReticulumCalendarOccurrence[] {
+    this.assertLocalGroupMember(groupId);
+    const now = this.now();
+    const start = Math.max(
+      now - RETICULUM_CALENDAR_VISIBLE_PAST_MS,
+      Math.floor(Number(rangeStart) || now)
+    );
+    const end = Math.floor(Number(rangeEnd) || start);
+    if (end <= start || end - start > 2 * 365 * 24 * 60 * 60 * 1000) {
+      throw new Error('Invalid calendar range');
+    }
+    return this.db.getCalendarOccurrences(groupId, start, end);
+  }
+
+  private async publishLocalCalendarMutation(
+    groupId: number,
+    operation: 'upsert' | 'delete',
+    eventId: string,
+    input: unknown,
+    requireExisting = false
+  ): Promise<ReticulumCalendarMutation> {
+    this.assertLocalGroupMember(groupId);
+    const signer = this.signLocalFields;
+    if (!signer) throw new Error('Calendar signing is unavailable');
+    const normalizedEventId = String(eventId || '')
+      .trim()
+      .toLowerCase();
+    const state =
+      operation === 'upsert'
+        ? normalizeReticulumCalendarInput(groupId, normalizedEventId, input)
+        : null;
+    if (operation === 'upsert' && !state) {
+      throw new Error('Invalid calendar event');
+    }
+    if (
+      requireExisting &&
+      !this.db.hasCalendarEvent(groupId, normalizedEventId)
+    ) {
+      throw new Error('Calendar event not found');
+    }
+    const mutationId = nodeCrypto.randomUUID();
+    const timestamp = this.now();
+    const signingFields = {
+      type: 'RETICULUM_CALENDAR_MUTATION_V1',
+      version: 1,
+      mutationId,
+      operation,
+      eventId: normalizedEventId,
+      groupId,
+      timestamp,
+      state,
+    };
+    const signed = await signer(signingFields);
+    if (!signed) throw new Error('Calendar signing failed');
+    if (signed.authorAddress !== this.localGroupAddresses.get(groupId)) {
+      throw new Error('Calendar signer does not match the active group member');
+    }
+    const adminStatus = await this.getValidatedCalendarAdminStatus(
+      groupId,
+      signed.authorAddress
+    );
+    if (adminStatus !== 'admin') {
+      throw new Error(
+        adminStatus === 'unknown'
+          ? 'Unable to verify group admin status'
+          : 'Only group admins can modify the calendar'
+      );
+    }
+    const mutation = verifyReticulumCalendarMutation(
+      {
+        version: 1,
+        mutationId,
+        operation,
+        eventId: normalizedEventId,
+        groupId,
+        timestamp,
+        state,
+        authorAddress: signed.authorAddress,
+        authorPublicKey: signed.authorPublicKey,
+        signature: signed.signature,
+      },
+      timestamp
+    );
+    if (!mutation) throw new Error('Invalid signed calendar event');
+    const blob = JSON.stringify(mutation);
+    const resourceHash = hashReticulumCalendarResource(blob);
+    const applied = this.db.upsertCalendarMutation(mutation, resourceHash);
+    if (!applied.projected) throw new Error('Calendar event was superseded');
+    this.calendarStateFingerprintCache.delete(groupId);
+    this.writeLocalCalendarNotification(groupId);
+    this.emit('calendarChanged', {
+      groupId,
+      eventId: mutation.eventId,
+      mutationId: mutation.mutationId,
+    });
+    this.calendarSnapshotAnnouncements.clear();
+    this.scheduleNextCalendarReminder();
+    void this.announceCalendarMutation(mutation);
+    for (const peer of this.getInterestedPeers(groupId)) {
+      if (this.peerSupportsCalendar(peer)) {
+        void this.announceCalendarDigestToPeer(peer, groupId);
+      }
+    }
+    return mutation;
+  }
+
+  createCalendarEvent(
+    groupId: number,
+    input: unknown
+  ): Promise<ReticulumCalendarMutation> {
+    return this.publishLocalCalendarMutation(
+      groupId,
+      'upsert',
+      nodeCrypto.randomUUID(),
+      input
+    );
+  }
+
+  updateCalendarEvent(
+    groupId: number,
+    eventId: string,
+    input: unknown
+  ): Promise<ReticulumCalendarMutation> {
+    return this.publishLocalCalendarMutation(
+      groupId,
+      'upsert',
+      eventId,
+      input,
+      true
+    );
+  }
+
+  deleteCalendarEvent(
+    groupId: number,
+    eventId: string
+  ): Promise<ReticulumCalendarMutation> {
+    return this.publishLocalCalendarMutation(
+      groupId,
+      'delete',
+      eventId,
+      null,
+      true
+    );
+  }
+
+  getCalendarReminder(
+    ownerAddress: string,
+    groupId: number,
+    eventId: string
+  ): ReticulumCalendarReminder | null {
+    this.assertLocalGroupMember(groupId);
+    if (this.localGroupAddresses.get(groupId) !== ownerAddress.trim()) {
+      throw new Error('Calendar reminder owner mismatch');
+    }
+    return this.db.getCalendarReminder(ownerAddress.trim(), groupId, eventId);
+  }
+
+  setCalendarReminder(
+    ownerAddress: string,
+    groupId: number,
+    eventId: string,
+    offsetMs: number | null
+  ): ReticulumCalendarReminder {
+    this.assertLocalGroupMember(groupId);
+    const owner = ownerAddress.trim();
+    if (this.localGroupAddresses.get(groupId) !== owner) {
+      throw new Error('Calendar reminder owner mismatch');
+    }
+    const normalizedEventId = String(eventId || '')
+      .trim()
+      .toLowerCase();
+    if (!this.db.hasCalendarEvent(groupId, normalizedEventId)) {
+      throw new Error('Calendar event not found');
+    }
+    const normalizedOffset =
+      offsetMs == null ? null : Math.floor(Number(offsetMs));
+    if (
+      normalizedOffset != null &&
+      !RETICULUM_CALENDAR_REMINDER_OFFSETS.has(normalizedOffset)
+    ) {
+      throw new Error('Invalid calendar reminder');
+    }
+    const existing = this.db.getCalendarReminder(
+      owner,
+      groupId,
+      normalizedEventId
+    );
+    const reminder: ReticulumCalendarReminder = {
+      ownerAddress: owner,
+      groupId,
+      eventId: normalizedEventId,
+      offsetMs: normalizedOffset,
+      lastFiredOccurrenceId: existing?.lastFiredOccurrenceId ?? '',
+      updatedAt: this.now(),
+    };
+    this.db.setCalendarReminder(reminder);
+    this.scheduleNextCalendarReminder();
+    return reminder;
+  }
+
+  private scheduleNextCalendarReminder(): void {
+    if (this.calendarReminderTimer) clearTimeout(this.calendarReminderTimer);
+    this.calendarReminderTimer = null;
+    if (this.isClosed) return;
+    const now = this.now();
+    const graceStart = now - 60 * 60_000;
+    const owners = new Set(this.localGroupAddresses.values());
+    let nearest:
+      | {
+          dueAt: number;
+          reminder: ReticulumCalendarReminder;
+          occurrence: ReticulumCalendarOccurrence;
+        }
+      | undefined;
+    for (const owner of owners) {
+      const reminders = this.db.listCalendarReminders(owner);
+      const byGroup = new Map<number, ReticulumCalendarReminder[]>();
+      for (const reminder of reminders) {
+        if (
+          reminder.offsetMs == null ||
+          this.localGroupAddresses.get(reminder.groupId) !== owner
+        ) {
+          continue;
+        }
+        const group = byGroup.get(reminder.groupId) ?? [];
+        group.push(reminder);
+        byGroup.set(reminder.groupId, group);
+      }
+      for (const [groupId, groupReminders] of byGroup) {
+        const mutationsByEvent = this.db.getCalendarEventMutations(
+          groupId,
+          groupReminders.map((reminder) => reminder.eventId)
+        );
+        for (const reminder of groupReminders) {
+          if (reminder.offsetMs == null) continue;
+          const mutation = mutationsByEvent.get(reminder.eventId);
+          if (!mutation) continue;
+          let occurrence = findNextReticulumCalendarOccurrence(
+            mutation,
+            graceStart + reminder.offsetMs
+          );
+          if (!occurrence) continue;
+          if (reminder.lastFiredOccurrenceId === occurrence.occurrenceId) {
+            occurrence = findNextReticulumCalendarOccurrence(
+              mutation,
+              occurrence.occurrenceStart + 1
+            );
+            if (!occurrence) continue;
+          }
+          const dueAt = occurrence.occurrenceStart - reminder.offsetMs;
+          if (dueAt < graceStart) continue;
+          if (!nearest || dueAt < nearest.dueAt) {
+            nearest = { dueAt, reminder, occurrence };
+          }
+        }
+      }
+    }
+    if (!nearest) return;
+    const delay = Math.max(1, Math.min(2_147_000_000, nearest.dueAt - now));
+    this.calendarReminderTimer = setTimeout(() => {
+      this.calendarReminderTimer = null;
+      const firedAt = this.now();
+      if (
+        nearest &&
+        nearest.dueAt <= firedAt + 1_000 &&
+        nearest.dueAt >= firedAt - 60 * 60_000 &&
+        this.localGroupAddresses.get(nearest.reminder.groupId) ===
+          nearest.reminder.ownerAddress
+      ) {
+        const updated: ReticulumCalendarReminder = {
+          ...nearest.reminder,
+          lastFiredOccurrenceId: nearest.occurrence.occurrenceId,
+          updatedAt: firedAt,
+        };
+        this.db.setCalendarReminder(updated);
+        this.emit('calendarReminderDue', {
+          ownerAddress: updated.ownerAddress,
+          groupId: updated.groupId,
+          eventId: updated.eventId,
+          occurrence: nearest.occurrence,
+        });
+      }
+      this.scheduleNextCalendarReminder();
+    }, delay);
+    this.calendarReminderTimer.unref?.();
+  }
+
   getDirectAuthorStreamId(authorAddress: string): string {
     return this.db.getOrCreateDirectAuthorStreamId(authorAddress);
   }
@@ -9154,6 +9546,700 @@ export class ReticulumChatManager extends EventEmitter {
       !!peer &&
       this.peerProtocolFeatures.get(peer)?.has('call_history_v1') === true
     );
+  }
+
+  private peerSupportsCalendar(peerHash: string): boolean {
+    const peer =
+      this.routePeerHash(peerHash) ??
+      this.normalizeResourcePeerHash(peerHash) ??
+      '';
+    return (
+      !!peer && this.peerProtocolFeatures.get(peer)?.has('calendar_v1') === true
+    );
+  }
+
+  private calendarStateFingerprint(groupId: number): {
+    hash: string;
+    count: number;
+  } {
+    const now = this.now();
+    const cached = this.calendarStateFingerprintCache.get(groupId);
+    if (
+      cached &&
+      now - cached.computedAt < RETICULUM_CALENDAR_FINGERPRINT_CACHE_MS
+    ) {
+      return cached;
+    }
+    const mutationIds = this.db.getCalendarProjectionMutationIds(groupId);
+    const state = {
+      hash: hashReticulumCalendarResource(mutationIds.join(':')).slice(0, 24),
+      count: mutationIds.length,
+      computedAt: now,
+    };
+    this.calendarStateFingerprintCache.set(groupId, state);
+    return state;
+  }
+
+  private async announceCalendarDigestToPeer(
+    peerHash: string,
+    groupId: number
+  ): Promise<void> {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    if (
+      !peer ||
+      !this.peerSupportsCalendar(peer) ||
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId)
+    )
+      return;
+    const state = this.calendarStateFingerprint(groupId);
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'calendar_digest_v1',
+      g: groupId,
+      h: state.hash,
+      n: state.count,
+    };
+    if (wireFitsReticulumChat(wire)) await this.sendToPeer(peer, wire);
+  }
+
+  private handleCalendarDigest(
+    groupId: number,
+    hash: unknown,
+    count: unknown,
+    peerHash: string
+  ): void {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    const remoteHash = String(hash || '')
+      .trim()
+      .toLowerCase();
+    const remoteCount = Number(count);
+    if (
+      !peer ||
+      !this.peerSupportsCalendar(peer) ||
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId) ||
+      !/^[0-9a-f]{24}$/.test(remoteHash) ||
+      !Number.isInteger(remoteCount) ||
+      remoteCount < 0 ||
+      remoteCount > 100_000
+    ) {
+      return;
+    }
+    const local = this.calendarStateFingerprint(groupId);
+    if (local.hash === remoteHash && local.count === remoteCount) return;
+    const now = this.now();
+    for (const [key, requestedAt] of this.recentCalendarPullRequests) {
+      if (now - requestedAt > 60_000)
+        this.recentCalendarPullRequests.delete(key);
+    }
+    const requestKey = `${peer}:${groupId}`;
+    const lastRequestedAt =
+      this.recentCalendarPullRequests.get(requestKey) ?? 0;
+    if (now - lastRequestedAt < 10_000) return;
+    this.recentCalendarPullRequests.set(requestKey, now);
+    while (this.recentCalendarPullRequests.size > 4_096) {
+      const oldest = this.recentCalendarPullRequests.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.recentCalendarPullRequests.delete(oldest);
+    }
+    const request: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'calendar_req_v1',
+      g: groupId,
+      q: nodeCrypto.randomBytes(8).toString('hex'),
+    };
+    if (wireFitsReticulumChat(request)) void this.sendToPeer(peer, request);
+    // A digest mismatch can mean either side has records the other lacks.
+    // Offer our merge-only projection as well so convergence is bidirectional.
+    void this.announceCalendarSnapshotToPeer(peer, groupId);
+  }
+
+  private handleCalendarRequest(
+    groupId: number,
+    requestId: unknown,
+    peerHash: string
+  ): void {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    const request = String(requestId || '')
+      .trim()
+      .toLowerCase();
+    if (
+      !peer ||
+      !this.peerSupportsCalendar(peer) ||
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId) ||
+      !/^[0-9a-f]{16}$/.test(request)
+    ) {
+      return;
+    }
+    const now = this.now();
+    for (const [key, seenAt] of this.recentCalendarRequests) {
+      if (now - seenAt > 60_000) this.recentCalendarRequests.delete(key);
+    }
+    const key = `${peer}:${groupId}`;
+    const previous = this.recentCalendarRequests.get(key) ?? 0;
+    if (now - previous < 10_000) return;
+    this.recentCalendarRequests.set(key, now);
+    while (this.recentCalendarRequests.size > 4_096) {
+      const oldest = this.recentCalendarRequests.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.recentCalendarRequests.delete(oldest);
+    }
+    void this.announceCalendarSnapshotToPeer(peer, groupId);
+  }
+
+  private async announceCalendarMutation(
+    mutation: ReticulumCalendarMutation
+  ): Promise<void> {
+    const blob = JSON.stringify({
+      version: 1,
+      groupId: mutation.groupId,
+      mutations: [mutation],
+    });
+    const peers = this.getInterestedPeers(mutation.groupId).filter((peer) =>
+      this.peerSupportsCalendar(peer)
+    );
+    for (let offset = 0; offset < peers.length; offset += 2) {
+      await Promise.allSettled(
+        peers
+          .slice(offset, offset + 2)
+          .map((peer) =>
+            this.offerCalendarResource(
+              peer,
+              mutation.groupId,
+              'mutation',
+              mutation.mutationId,
+              blob
+            )
+          )
+      );
+    }
+  }
+
+  private async announceCalendarSnapshotToPeer(
+    peerHash: string,
+    groupId: number
+  ): Promise<void> {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    if (
+      !peer ||
+      !this.peerSupportsCalendar(peer) ||
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId)
+    ) {
+      return;
+    }
+    const announcementKey = `${peer}:${groupId}`;
+    if (this.calendarSnapshotTransfersInFlight.has(announcementKey)) return;
+    this.calendarSnapshotTransfersInFlight.add(announcementKey);
+    try {
+      const mutations = this.db.getCalendarProjectionMutations(groupId);
+      if (mutations.length === 0) return;
+      const fingerprint = hashReticulumCalendarResource(
+        mutations.map((mutation) => mutation.mutationId).join(':')
+      );
+      const previousAnnouncement =
+        this.calendarSnapshotAnnouncements.get(announcementKey);
+      if (
+        previousAnnouncement?.fingerprint === fingerprint &&
+        previousAnnouncement.nextAttemptAt > this.now()
+      )
+        return;
+
+      const pages: ReticulumCalendarMutation[][] = [];
+      let page: ReticulumCalendarMutation[] = [];
+      for (const mutation of mutations) {
+        const candidate = [...page, mutation];
+        const candidateBlob = JSON.stringify({
+          version: 1,
+          groupId,
+          mutations: candidate,
+        });
+        if (
+          page.length > 0 &&
+          (candidate.length > 100 ||
+            Buffer.byteLength(candidateBlob, 'utf8') >
+              RETICULUM_CALENDAR_MAX_RESOURCE_BYTES)
+        ) {
+          pages.push(page);
+          page = [mutation];
+        } else {
+          page = candidate;
+        }
+      }
+      if (page.length > 0) pages.push(page);
+
+      for (let index = 0; index < pages.length; index += 1) {
+        if (
+          !this.localGroupIds.has(groupId) ||
+          !this.hasCurrentPeerSubscription(peer, groupId)
+        ) {
+          return;
+        }
+        const blob = JSON.stringify({
+          version: 1,
+          groupId,
+          page: index,
+          pageCount: pages.length,
+          mutations: pages[index],
+        });
+        const sent = await this.offerCalendarResource(
+          peer,
+          groupId,
+          'snapshot',
+          `${fingerprint.slice(0, 16)}-${index}`,
+          blob,
+          true
+        );
+        if (!sent) return;
+      }
+      this.calendarSnapshotAnnouncements.set(announcementKey, {
+        fingerprint,
+        nextAttemptAt: this.now() + 60_000,
+      });
+    } finally {
+      this.calendarSnapshotTransfersInFlight.delete(announcementKey);
+    }
+  }
+
+  private async offerCalendarResource(
+    peerHash: string,
+    groupId: number,
+    kind: 'mutation' | 'snapshot',
+    itemId: string,
+    blob: string,
+    waitForTerminal = false
+  ): Promise<boolean> {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    const sizeBytes = Buffer.byteLength(blob, 'utf8');
+    if (
+      !peer ||
+      !this.peerSupportsCalendar(peer) ||
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId) ||
+      !this.bridge ||
+      typeof this.bridge.sendReticulumChatResourceDetailed !== 'function' ||
+      sizeBytes <= 0 ||
+      sizeBytes > RETICULUM_CALENDAR_MAX_RESOURCE_BYTES
+    ) {
+      return false;
+    }
+    const now = this.now();
+    for (const [id, resource] of this.outboundCalendarResources) {
+      if (resource.expiresAt > now) continue;
+      this.safeUnlink(resource.filePath);
+      this.outboundCalendarResources.delete(id);
+      this.settleOutboundCalendarResource(id, false);
+    }
+    if (this.outboundCalendarResources.size >= 128) return false;
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
+    const fileHash = hashReticulumCalendarResource(blob);
+    const filePath = this.writeTempEventBlob(transferId, blob);
+    const expiresAt = now + RETICULUM_CHAT_RESOURCE_TTL_MS;
+    const registered = await this.bridge.sendReticulumChatResourceDetailed({
+      allowedRecipientAddress: peer,
+      transferId,
+      filePath,
+      fileName: `${groupId}-${itemId}.calendar.json`,
+      size: sizeBytes,
+      sha256: fileHash,
+      metadata: {
+        resourceType: 'reticulum_chat_calendar',
+        logicalResourceType: 'reticulum_chat_calendar',
+        groupId,
+        calendarKind: kind,
+        itemId,
+        fileHash,
+      },
+      expiresAt,
+    });
+    if (!registered.ok) {
+      this.safeUnlink(filePath);
+      return false;
+    }
+    this.outboundCalendarResources.set(transferId, {
+      groupId,
+      peerHash: peer,
+      fileHash,
+      filePath,
+      expiresAt,
+    });
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      k: 'calendar_offer_v1',
+      g: groupId,
+      w: {
+        x: transferId,
+        k: kind === 'mutation' ? 'm' : 's',
+        i: itemId,
+        h: fileHash,
+        s: sizeBytes,
+      },
+    };
+    if (!wireFitsReticulumChat(wire)) {
+      this.outboundCalendarResources.delete(transferId);
+      this.safeUnlink(filePath);
+      return false;
+    }
+    const terminalResult = waitForTerminal
+      ? new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            const resource = this.outboundCalendarResources.get(transferId);
+            this.outboundCalendarResourceWaiters.delete(transferId);
+            if (resource) {
+              this.calendarSnapshotAnnouncements.delete(
+                `${resource.peerHash}:${resource.groupId}`
+              );
+            }
+            resolve(false);
+          }, RETICULUM_CALENDAR_TRANSFER_WAIT_TIMEOUT_MS);
+          this.outboundCalendarResourceWaiters.set(transferId, {
+            resolve,
+            timer,
+          });
+        })
+      : null;
+    const sent = await this.sendToPeer(peer, wire);
+    if (!sent.ok) {
+      this.outboundCalendarResources.delete(transferId);
+      this.safeUnlink(filePath);
+      this.settleOutboundCalendarResource(transferId, false);
+      return false;
+    }
+    return terminalResult ? await terminalResult : true;
+  }
+
+  private settleOutboundCalendarResource(
+    transferId: string,
+    sent: boolean
+  ): void {
+    const waiter = this.outboundCalendarResourceWaiters.get(transferId);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.outboundCalendarResourceWaiters.delete(transferId);
+    waiter.resolve(sent);
+  }
+
+  private handleCalendarOffer(
+    groupId: number,
+    wire: ReticulumCalendarResourceOfferWire,
+    peerHash: string
+  ): void {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    const transferId = String(wire?.x || '')
+      .trim()
+      .toLowerCase();
+    const itemId = String(wire?.i || '')
+      .trim()
+      .toLowerCase();
+    const fileHash = String(wire?.h || '')
+      .trim()
+      .toLowerCase();
+    const sizeBytes = Number(wire?.s || 0);
+    const kind =
+      wire?.k === 'm' ? 'mutation' : wire?.k === 's' ? 'snapshot' : '';
+    const validItemId =
+      kind === 'mutation'
+        ? /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            itemId
+          )
+        : kind === 'snapshot'
+          ? /^[0-9a-f]{16}-\d{1,4}$/.test(itemId)
+          : false;
+    if (
+      !peer ||
+      !this.peerSupportsCalendar(peer) ||
+      !this.localGroupIds.has(groupId) ||
+      !this.hasCurrentPeerSubscription(peer, groupId) ||
+      !/^[0-9a-f]{16}$/.test(transferId) ||
+      !validItemId ||
+      !/^[0-9a-f]{64}$/.test(fileHash) ||
+      !Number.isInteger(sizeBytes) ||
+      sizeBytes <= 0 ||
+      sizeBytes > RETICULUM_CALENDAR_MAX_RESOURCE_BYTES ||
+      !kind
+    ) {
+      return;
+    }
+    if (kind === 'mutation' && this.db.hasCalendarMutation(itemId)) return;
+    if (this.calendarResourceOffers.has(transferId)) return;
+    if (
+      this.calendarResourceOffers.size >= 256 ||
+      [...this.calendarResourceOffers.values()].filter(
+        (offer) => offer.sourcePeerHash === peer
+      ).length >= RETICULUM_CALENDAR_ACCEPT_MAX_PER_PEER
+    ) {
+      return;
+    }
+    const offer: ReticulumCalendarResourceOffer = {
+      transferId,
+      groupId,
+      kind,
+      itemId,
+      fileHash,
+      sizeBytes,
+      sourcePeerHash: peer,
+    };
+    this.calendarResourceOffers.set(transferId, offer);
+    this.calendarResourceAcceptQueue.push(transferId);
+    this.drainCalendarResourceAcceptQueue();
+  }
+
+  private retireCalendarResourceOffer(transferId: string): void {
+    this.calendarResourceOffers.delete(transferId);
+    this.activeCalendarResourceAccepts.delete(transferId);
+    const queuedIndex = this.calendarResourceAcceptQueue.indexOf(transferId);
+    if (queuedIndex >= 0)
+      this.calendarResourceAcceptQueue.splice(queuedIndex, 1);
+    this.drainCalendarResourceAcceptQueue();
+  }
+
+  private cancelCalendarTransfersForRemovedGroups(): void {
+    const bridge = this.bridge;
+    for (const offer of [...this.calendarResourceOffers.values()]) {
+      if (this.localGroupIds.has(offer.groupId)) continue;
+      this.retireCalendarResourceOffer(offer.transferId);
+      if (typeof bridge?.cancelReticulumResourceDetailed === 'function') {
+        void bridge
+          .cancelReticulumResourceDetailed({
+            transferId: offer.transferId,
+            peerPresenceHash: offer.sourcePeerHash,
+            reason: 'calendar_group_membership_removed',
+          })
+          .catch(() => undefined);
+      }
+    }
+    for (const [transferId, resource] of [...this.outboundCalendarResources]) {
+      if (this.localGroupIds.has(resource.groupId)) continue;
+      this.outboundCalendarResources.delete(transferId);
+      this.safeUnlink(resource.filePath);
+      this.settleOutboundCalendarResource(transferId, false);
+      this.calendarSnapshotAnnouncements.delete(
+        `${resource.peerHash}:${resource.groupId}`
+      );
+      if (typeof bridge?.cancelReticulumResourceDetailed === 'function') {
+        void bridge
+          .cancelReticulumResourceDetailed({
+            transferId,
+            peerPresenceHash: resource.peerHash,
+            reason: 'calendar_group_membership_removed',
+          })
+          .catch(() => undefined);
+      }
+    }
+  }
+
+  private drainCalendarResourceAcceptQueue(): void {
+    if (this.isClosed) return;
+    while (
+      this.activeCalendarResourceAccepts.size <
+      RETICULUM_CALENDAR_ACCEPT_CONCURRENCY
+    ) {
+      const activePeers = new Set(
+        [...this.activeCalendarResourceAccepts]
+          .map(
+            (transferId) =>
+              this.calendarResourceOffers.get(transferId)?.sourcePeerHash ?? ''
+          )
+          .filter(Boolean)
+      );
+      const nextIndex = this.calendarResourceAcceptQueue.findIndex(
+        (transferId) => {
+          const offer = this.calendarResourceOffers.get(transferId);
+          return !!offer && !activePeers.has(offer.sourcePeerHash);
+        }
+      );
+      if (nextIndex < 0) return;
+      const [transferId] = this.calendarResourceAcceptQueue.splice(
+        nextIndex,
+        1
+      );
+      const offer = this.calendarResourceOffers.get(transferId);
+      if (!offer) continue;
+      this.activeCalendarResourceAccepts.add(transferId);
+      void this.acceptCalendarResource(offer).catch(() => {
+        this.retireCalendarResourceOffer(transferId);
+      });
+    }
+  }
+
+  private async acceptCalendarResource(
+    offer: ReticulumCalendarResourceOffer
+  ): Promise<void> {
+    if (
+      !this.localGroupIds.has(offer.groupId) ||
+      !this.hasCurrentPeerSubscription(offer.sourcePeerHash, offer.groupId)
+    ) {
+      this.retireCalendarResourceOffer(offer.transferId);
+      return;
+    }
+    if (
+      !this.bridge ||
+      typeof this.bridge.acceptReticulumChatResourceDetailed !== 'function'
+    ) {
+      this.retireCalendarResourceOffer(offer.transferId);
+      return;
+    }
+    const identity = await this.ensureResourcePeerIdentity(
+      offer.sourcePeerHash,
+      'calendar-resource'
+    ).catch(() => null);
+    if (identity === null) {
+      this.retireCalendarResourceOffer(offer.transferId);
+      return;
+    }
+    const prepared = await this.ensureResourceSession(
+      offer.sourcePeerHash,
+      identity,
+      'reticulum_chat_event',
+      'reticulum_chat_calendar'
+    );
+    if (!prepared.ok) {
+      this.retireCalendarResourceOffer(offer.transferId);
+      return;
+    }
+    if (
+      !this.localGroupIds.has(offer.groupId) ||
+      !this.hasCurrentPeerSubscription(offer.sourcePeerHash, offer.groupId)
+    ) {
+      this.retireCalendarResourceOffer(offer.transferId);
+      return;
+    }
+    const authMessage = await this.buildSignedResourceAuthWire(
+      offer.groupId,
+      offer.transferId,
+      'RCP'
+    );
+    if (!authMessage) {
+      this.retireCalendarResourceOffer(offer.transferId);
+      return;
+    }
+    const accepted = await this.bridge.acceptReticulumChatResourceDetailed({
+      peerPresenceHash: offer.sourcePeerHash,
+      reticulumIdentityPublicKeyBase64: identity,
+      transferId: offer.transferId,
+      savePath: this.tempEventBlobPath(`${offer.transferId}.calendar.recv`),
+      fileName: `${offer.itemId}.calendar.json`,
+      size: offer.sizeBytes,
+      sha256: offer.fileHash,
+      metadata: {
+        resourceType: 'reticulum_chat_calendar',
+        logicalResourceType: 'reticulum_chat_calendar',
+        groupId: offer.groupId,
+        calendarKind: offer.kind,
+        itemId: offer.itemId,
+        fileHash: offer.fileHash,
+      },
+      authMessage,
+    });
+    if (!accepted.ok) this.retireCalendarResourceOffer(offer.transferId);
+  }
+
+  private async importReceivedCalendarResource(
+    payload: ReticulumChatResourcePayload
+  ): Promise<void> {
+    const offer = this.calendarResourceOffers.get(payload.transferId || '');
+    if (!offer || !payload.path) {
+      if (payload.path) this.safeUnlink(payload.path);
+      return;
+    }
+    this.retireCalendarResourceOffer(offer.transferId);
+    try {
+      if (!this.localGroupIds.has(offer.groupId)) return;
+      const stat = fs.statSync(payload.path);
+      if (stat.size <= 0 || stat.size > RETICULUM_CALENDAR_MAX_RESOURCE_BYTES)
+        return;
+      const blob = fs.readFileSync(payload.path, 'utf8');
+      if (hashReticulumCalendarResource(blob) !== offer.fileHash) return;
+      const parsed = JSON.parse(blob) as Record<string, unknown>;
+      if (
+        Number(parsed.version) !== 1 ||
+        Number(parsed.groupId) !== offer.groupId ||
+        !Array.isArray(parsed.mutations) ||
+        parsed.mutations.length === 0 ||
+        parsed.mutations.length > 100
+      ) {
+        return;
+      }
+      if (
+        offer.kind === 'mutation' &&
+        (parsed.mutations.length !== 1 ||
+          String(
+            (parsed.mutations[0] as { mutationId?: unknown })?.mutationId || ''
+          ).toLowerCase() !== offer.itemId)
+      ) {
+        return;
+      }
+      if (
+        offer.kind === 'snapshot' &&
+        (!Number.isInteger(Number(parsed.page)) ||
+          !Number.isInteger(Number(parsed.pageCount)) ||
+          Number(parsed.page) < 0 ||
+          Number(parsed.pageCount) <= 0 ||
+          Number(parsed.page) >= Number(parsed.pageCount) ||
+          Number(parsed.pageCount) > 10_000)
+      ) {
+        return;
+      }
+      const acceptedMutations: Array<{
+        mutation: ReticulumCalendarMutation;
+        resourceHash: string;
+      }> = [];
+      for (const candidate of parsed.mutations) {
+        const mutation = verifyReticulumCalendarMutation(candidate, this.now());
+        if (!mutation || mutation.groupId !== offer.groupId) continue;
+        if (this.db.hasCalendarMutation(mutation.mutationId)) continue;
+        if (
+          !(await this.isValidatedCalendarMember(
+            offer.groupId,
+            mutation.authorAddress
+          ))
+        )
+          continue;
+        if (
+          (await this.getValidatedCalendarAdminStatus(
+            offer.groupId,
+            mutation.authorAddress
+          )) !== 'admin'
+        ) {
+          continue;
+        }
+        const mutationBlob = JSON.stringify(mutation);
+        acceptedMutations.push({
+          mutation,
+          resourceHash: hashReticulumCalendarResource(mutationBlob),
+        });
+      }
+      const changed = this.db
+        .upsertCalendarMutations(acceptedMutations)
+        .some((result) => result.projected);
+      if (changed) {
+        this.calendarStateFingerprintCache.delete(offer.groupId);
+        this.writeLocalCalendarNotification(offer.groupId);
+        this.calendarSnapshotAnnouncements.clear();
+        this.emit('calendarChanged', { groupId: offer.groupId });
+        this.scheduleNextCalendarReminder();
+        for (const peer of this.getInterestedPeers(offer.groupId, [
+          offer.sourcePeerHash,
+        ])) {
+          if (this.peerSupportsCalendar(peer)) {
+            void this.announceCalendarDigestToPeer(peer, offer.groupId);
+          }
+        }
+      }
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] calendar_resource_import_failed group=${offer.groupId} transfer=${offer.transferId}:`,
+        err
+      );
+    } finally {
+      this.safeUnlink(payload.path);
+    }
   }
 
   private isVerifiedDirectCallHistoryPeer(
@@ -9301,11 +10387,7 @@ export class ReticulumChatManager extends EventEmitter {
         const applied = await bridge.configureReticulumChatPinnedPeers(peers);
         const desiredStillCurrent =
           desiredKey === JSON.stringify(this.selfDmWarmLinkPeers());
-        if (
-          applied &&
-          bridge === this.bridge &&
-          desiredStillCurrent
-        ) {
+        if (applied && bridge === this.bridge && desiredStillCurrent) {
           this.selfDmWarmLinkAppliedKey = desiredKey;
         } else if (bridge === this.bridge && !desiredStillCurrent) {
           this.selfDmWarmLinkSyncPending = true;
@@ -9569,10 +10651,7 @@ export class ReticulumChatManager extends EventEmitter {
     const callsByPeer = new Map(
       callSummaries.map((summary) => [summary.peerAddress, summary] as const)
     );
-    const peers = new Set([
-      ...summariesByPeer.keys(),
-      ...callsByPeer.keys(),
-    ]);
+    const peers = new Set([...summariesByPeer.keys(), ...callsByPeer.keys()]);
     return [...peers].map((peer) => {
       const summary = summariesByPeer.get(peer) ?? {
         peerAddress: peer,
@@ -9773,6 +10852,9 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   reannounceSubscriptions(): void {
+    // This path also runs after resume/reconnect. Re-evaluate the single
+    // nearest reminder timer in case the system slept through its deadline.
+    this.scheduleNextCalendarReminder();
     if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
     if (this.subscribedGroups.size === 0) return;
     this.enqueueSubscriptionFanouts([this.buildHelloWire()]);
@@ -12702,10 +13784,7 @@ export class ReticulumChatManager extends EventEmitter {
         ...this.localGroupAddresses.values(),
       ]);
       for (const ownerAddress of owners) {
-        if (
-          this.isClosed ||
-          accountGeneration !== this.localAccountGeneration
-        )
+        if (this.isClosed || accountGeneration !== this.localAccountGeneration)
           return;
         const states = this.db.getDeviceReadStates(ownerAddress, 5_000);
         if (states.length === 0) continue;
@@ -12769,10 +13848,7 @@ export class ReticulumChatManager extends EventEmitter {
         ];
         this.pendingReadSync.delete(key);
         const state = await this.buildSignedReadState(pending);
-        if (
-          this.isClosed ||
-          accountGeneration !== this.localAccountGeneration
-        )
+        if (this.isClosed || accountGeneration !== this.localAccountGeneration)
           return;
         if (!state) {
           // Signing can fail transiently while an account is unlocking or the
@@ -14498,8 +15574,37 @@ export class ReticulumChatManager extends EventEmitter {
           if (this.peerSupportsDirectCallHistory(peerHash)) {
             void this.announceDirectCallHistoryToPeer(peerHash);
           }
+          if (this.peerSupportsCalendar(peerHash)) {
+            for (const groupId of this.localGroupIds) {
+              if (this.hasCurrentPeerSubscription(peerHash, groupId)) {
+                void this.announceCalendarDigestToPeer(peerHash, groupId);
+              }
+            }
+          }
         }
         return;
+      case 'calendar_offer_v1': {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        this.handleCalendarOffer(
+          groupId,
+          wire.w as ReticulumCalendarResourceOfferWire,
+          peerHash
+        );
+        return;
+      }
+      case 'calendar_digest_v1': {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        this.handleCalendarDigest(groupId, wire.h, wire.n, peerHash);
+        return;
+      }
+      case 'calendar_req_v1': {
+        const groupId = Number(wire.g);
+        if (!Number.isInteger(groupId) || groupId <= 0) return;
+        this.handleCalendarRequest(groupId, wire.q, peerHash);
+        return;
+      }
       case 'group_sub':
         this.handleGroupSub(wire, peerHash);
         return;
@@ -14966,7 +16071,8 @@ export class ReticulumChatManager extends EventEmitter {
         feature !== 'dm_author_streams_v1' &&
         feature !== 'self_dm_v1' &&
         feature !== 'read_sync_v2' &&
-        feature !== 'call_history_v1'
+        feature !== 'call_history_v1' &&
+        feature !== 'calendar_v1'
     ).every((feature) => features.has(feature));
   }
 
@@ -18386,6 +19492,13 @@ export class ReticulumChatManager extends EventEmitter {
       const isNewDirectSubscription = isDirect
         ? this.noteDirectPeerSubscription(inboundPeerHash, groupId, true)
         : false;
+      if (
+        isDirect &&
+        (isNewDirectSubscription || subscriptionMode === 'active') &&
+        this.peerSupportsCalendar(inboundPeerHash)
+      ) {
+        void this.announceCalendarDigestToPeer(inboundPeerHash, groupId);
+      }
       const shouldSyncDirectSubscription =
         isDirect && (isNewDirectSubscription || subscriptionMode === 'active');
       const shouldServeRoutedSubscription =
@@ -22957,6 +24070,34 @@ export class ReticulumChatManager extends EventEmitter {
     return this.isValidatedGroupMember(groupId, address);
   }
 
+  private async isValidatedCalendarMember(
+    groupId: number,
+    address: string
+  ): Promise<boolean> {
+    // Calendar mutations are durable administrative state. Unlike legacy chat
+    // paths, they must never use local group presence as a substitute for an
+    // authoritative Core membership result.
+    if (!this.validateGroupMember) return false;
+    return (await this.isValidatedGroupMember(groupId, address)) === true;
+  }
+
+  private async getValidatedCalendarAdminStatus(
+    groupId: number,
+    address: string
+  ): Promise<ReticulumChatAdminValidationStatus> {
+    const normalizedAddress = address.trim();
+    if (
+      this.localGroupMembershipsInitialized &&
+      this.localGroupIds.has(groupId) &&
+      this.localGroupAuthoritativeAdminStatusIds.has(groupId) &&
+      this.localGroupAddresses.get(groupId) === normalizedAddress
+    ) {
+      return this.localGroupAdminIds.has(groupId) ? 'admin' : 'not_admin';
+    }
+    if (!this.validateGroupAdmin) return 'unknown';
+    return this.getValidatedGroupAdminStatus(groupId, normalizedAddress);
+  }
+
   private async isValidatedGroupAdmin(
     groupId: number,
     address: string
@@ -23160,16 +24301,33 @@ export class ReticulumChatManager extends EventEmitter {
   private handleLocalNotificationFile(filePath: string): boolean {
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
-      const note = JSON.parse(raw) as { eventId?: unknown; groupId?: unknown };
+      const note = JSON.parse(raw) as {
+        kind?: unknown;
+        eventId?: unknown;
+        groupId?: unknown;
+      };
       const eventId = typeof note.eventId === 'string' ? note.eventId : '';
       const groupId = Number(note.groupId);
-      if (!eventId || !Number.isInteger(groupId) || groupId <= 0) return true;
+      if (!Number.isInteger(groupId) || groupId <= 0) return true;
       if (
         !this.subscribedGroups.has(groupId) ||
         !this.localGroupIds.has(groupId)
       ) {
         return false;
       }
+      if (note.kind === 'calendar') {
+        this.calendarStateFingerprintCache.delete(groupId);
+        this.calendarSnapshotAnnouncements.clear();
+        this.emit('calendarChanged', { groupId });
+        this.scheduleNextCalendarReminder();
+        for (const peer of this.getInterestedPeers(groupId)) {
+          if (this.peerSupportsCalendar(peer)) {
+            void this.announceCalendarDigestToPeer(peer, groupId);
+          }
+        }
+        return true;
+      }
+      if (!eventId) return true;
       const event = this.db.getEvent(eventId);
       if (!event || event.groupId !== groupId) return false;
       if (
@@ -23211,6 +24369,28 @@ export class ReticulumChatManager extends EventEmitter {
     } catch (err) {
       loggerWarn(
         '[ReticulumChat] Failed to write local event notification:',
+        err
+      );
+    }
+  }
+
+  private writeLocalCalendarNotification(groupId: number): void {
+    try {
+      fs.mkdirSync(this.localNotifyDir, { recursive: true });
+      const timestamp = this.now();
+      const fileName = `calendar-${groupId}-${timestamp}-${nodeCrypto.randomBytes(6).toString('hex')}.json`;
+      const filePath = path.join(this.localNotifyDir, fileName);
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ kind: 'calendar', groupId, timestamp }),
+        'utf8'
+      );
+      // This manager already applied and emitted the change. The file exists
+      // only to wake other managers sharing the database.
+      this.seenLocalNotifyFiles.add(fileName);
+    } catch (err) {
+      loggerWarn(
+        '[ReticulumChat] Failed to write local calendar notification:',
         err
       );
     }
@@ -31202,6 +32382,10 @@ export class ReticulumChatManager extends EventEmitter {
       payload?.metadata?.logicalResourceType ===
         'reticulum_chat_metadata_snapshot' ||
       payload?.metadata?.resourceType === 'reticulum_chat_metadata_snapshot';
+    const isCalendarResource =
+      payload?.resourceType === 'reticulum_chat_calendar' ||
+      payload?.metadata?.logicalResourceType === 'reticulum_chat_calendar' ||
+      payload?.metadata?.resourceType === 'reticulum_chat_calendar';
     if (
       payload?.transferId &&
       this.ignoredMetadataSnapshotTransfers.has(payload.transferId) &&
@@ -31218,6 +32402,23 @@ export class ReticulumChatManager extends EventEmitter {
       payload.transferId
     ) {
       this.logLiveEventResourceTerminal(payload);
+      const calendarResource = this.outboundCalendarResources.get(
+        payload.transferId
+      );
+      if (calendarResource) {
+        this.outboundCalendarResources.delete(payload.transferId);
+        this.safeUnlink(calendarResource.filePath);
+        if (payload.status === 'failed') {
+          this.calendarSnapshotAnnouncements.delete(
+            `${calendarResource.peerHash}:${calendarResource.groupId}`
+          );
+        }
+        this.settleOutboundCalendarResource(
+          payload.transferId,
+          payload.status === 'sent'
+        );
+        return;
+      }
       if (this.outboundMetadataSnapshotResources.has(payload.transferId)) {
         if (payload.status === 'sent') {
           this.outboundMetadataSnapshotResources.delete(payload.transferId);
@@ -31251,7 +32452,11 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (payload?.status === 'failed' && payload.transferId) {
-      if (this.inboundLandChatRequests.has(payload.transferId)) {
+      if (this.calendarResourceOffers.has(payload.transferId)) {
+        this.retireCalendarResourceOffer(payload.transferId);
+      } else if (isCalendarResource) {
+        // A late failure can arrive after an offer has already been retired.
+      } else if (this.inboundLandChatRequests.has(payload.transferId)) {
         this.inboundLandChatRequests.delete(payload.transferId);
         loggerWarn(
           `[ReticulumChat] qortalland_chat_resource_failed transfer=${payload.transferId} reason=${typeof payload.reason === 'string' ? payload.reason : 'resource_failed'}`
@@ -31291,7 +32496,11 @@ export class ReticulumChatManager extends EventEmitter {
     if (payload?.status !== 'received' || !payload.path || !payload.transferId)
       return;
     const useWorkerPrep = options.useWorkerPrep === true;
-    if (this.inboundLandChatRequests.has(payload.transferId)) {
+    if (this.calendarResourceOffers.has(payload.transferId)) {
+      void this.importReceivedCalendarResource(payload);
+    } else if (isCalendarResource) {
+      this.safeUnlink(payload.path);
+    } else if (this.inboundLandChatRequests.has(payload.transferId)) {
       void this.importReceivedLandChatResource(payload, useWorkerPrep);
     } else if (this.directDmPageRequests.has(payload.transferId)) {
       void this.importReceivedDirectDmPageResource(payload, useWorkerPrep);
@@ -32717,6 +33926,60 @@ export class ReticulumChatManager extends EventEmitter {
         ? payload.metadata
         : {};
     const now = this.now();
+    for (const [transferId, resource] of this.outboundCalendarResources) {
+      if (resource.expiresAt > now) continue;
+      this.safeUnlink(resource.filePath);
+      this.outboundCalendarResources.delete(transferId);
+      this.settleOutboundCalendarResource(transferId, false);
+    }
+    const calendarResource = this.outboundCalendarResources.get(
+      payload.transferId
+    );
+    if (calendarResource) {
+      const groupId = Number(auth.g || auth.groupId || metadata.groupId || 0);
+      const compactAuth =
+        auth.t === 'RCP'
+          ? {
+              t: 'RCP' as const,
+              x: String(auth.x || payload.transferId || ''),
+              g: groupId,
+              a: String(auth.a || ''),
+              p: String(auth.p || ''),
+              ts: Number(auth.ts || 0),
+              z: String(auth.z || ''),
+            }
+          : null;
+      const valid =
+        !!compactAuth &&
+        compactAuth.x === payload.transferId &&
+        groupId === calendarResource.groupId &&
+        this.localGroupIds.has(groupId) &&
+        calendarResource.expiresAt > now &&
+        verifyReticulumChatResourceAuth(groupId, compactAuth, now);
+      const requesterIsMember = valid
+        ? await this.isValidatedRequesterGroupMember(
+            groupId,
+            compactAuth.a,
+            'calendar_resource'
+          )
+        : false;
+      if (!valid || requesterIsMember !== true) {
+        await this.bridge.rejectReticulumChatResourceDetailed?.({
+          linkId: payload.linkId,
+          transferId: payload.transferId,
+          reason:
+            requesterIsMember === null
+              ? 'requester_membership_unavailable'
+              : 'calendar_resource_forbidden',
+        });
+        return;
+      }
+      await this.bridge.authorizeReticulumChatResourceDetailed?.({
+        linkId: payload.linkId,
+        transferId: payload.transferId,
+      });
+      return;
+    }
     for (const [transferId, snapshot] of this
       .outboundMetadataSnapshotResources) {
       if (snapshot.expiresAt <= now)

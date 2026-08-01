@@ -18,6 +18,9 @@ type MockStore = {
   reticulumChatMissingRangePeerObservations: ReticulumChatRow[];
   reticulumChatSilences: ReticulumChatRow[];
   reticulumPublicGroupActivity: ReticulumChatRow[];
+  reticulumCalendarMutations: ReticulumChatRow[];
+  reticulumCalendarEvents: ReticulumChatRow[];
+  reticulumCalendarReminders: ReticulumChatRow[];
   reticulumDmEvents: ReticulumChatRow[];
   reticulumDmExpiredEventMarkers: ReticulumChatRow[];
   reticulumDmExpiryPreferences: ReticulumChatRow[];
@@ -56,6 +59,49 @@ class Statement {
           name,
         })
       );
+    }
+    if (
+      this.sql.includes('FROM rchat_calendar_events e') &&
+      this.sql.includes('JOIN rchat_calendar_mutations m')
+    ) {
+      const groupId = Number(args[0]);
+      let rows = this.store.reticulumCalendarEvents.filter(
+        (row) => Number(row.group_id) === groupId
+      );
+      if (this.sql.includes('e.deleted = 0')) {
+        rows = rows.filter((row) => Number(row.deleted) === 0);
+      }
+      if (this.sql.includes('e.recurring = 0')) {
+        rows = rows.filter((row) => Number(row.recurring) === 0);
+      } else if (this.sql.includes('e.recurring = 1')) {
+        rows = rows.filter((row) => Number(row.recurring) === 1);
+      }
+      rows.sort(
+        (left, right) =>
+          Number(left.start_at || 0) - Number(right.start_at || 0) ||
+          String(left.event_id).localeCompare(String(right.event_id))
+      );
+      if (this.sql.includes('SELECT e.mutation_id')) {
+        return rows.map((row) => {
+          const mutation = this.store.reticulumCalendarMutations.find(
+            (candidate) => candidate.mutation_id === row.mutation_id
+          );
+          return {
+            mutation_id: row.mutation_id,
+            mutation_json: mutation?.mutation_json,
+          };
+        });
+      }
+      const limit = Number(args.at(-1));
+      return rows
+        .map((row) =>
+          this.store.reticulumCalendarMutations.find(
+            (candidate) => candidate.mutation_id === row.mutation_id
+          )
+        )
+        .filter(Boolean)
+        .slice(0, Number.isFinite(limit) ? limit : undefined)
+        .map((row) => ({ mutation_json: row?.mutation_json }));
     }
     if (this.sql.includes('FROM rchat_author_sequence_leases')) {
       if (this.sql.includes('SELECT DISTINCT owner_id, owner_pid')) {
@@ -947,6 +993,22 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_calendar_mutations')) {
+      const row = this.store.reticulumCalendarMutations.find(
+        (item) => item.mutation_id === args[0]
+      );
+      return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
+    }
+    if (this.sql.includes('FROM rchat_calendar_events')) {
+      const [groupId, eventId] = args;
+      const row = this.store.reticulumCalendarEvents.find(
+        (item) =>
+          item.group_id === groupId &&
+          item.event_id === eventId &&
+          (!this.sql.includes('deleted = 0') || Number(item.deleted) === 0)
+      );
+      return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
+    }
     if (this.sql.includes('FROM rchat_direct_call_history')) {
       const [ownerAddress, callId] = args;
       return this.store.reticulumDirectCallHistory.find(
@@ -1480,6 +1542,90 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (this.sql.includes('INSERT INTO rchat_calendar_mutations')) {
+      const [
+        mutationId,
+        groupId,
+        eventId,
+        operation,
+        timestamp,
+        authorAddress,
+        authorPublicKey,
+        signature,
+        resourceHash,
+        mutationJson,
+        storedAt,
+      ] = args;
+      if (
+        this.store.reticulumCalendarMutations.some(
+          (row) => row.mutation_id === mutationId
+        )
+      ) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      this.store.reticulumCalendarMutations.push({
+        mutation_id: mutationId,
+        group_id: groupId,
+        event_id: eventId,
+        operation,
+        timestamp,
+        author_address: authorAddress,
+        author_public_key: authorPublicKey,
+        signature,
+        resource_hash: resourceHash,
+        mutation_json: mutationJson,
+        stored_at: storedAt,
+      });
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumCalendarMutations.length,
+      };
+    }
+    if (this.sql.includes('INSERT INTO rchat_calendar_events')) {
+      const [
+        groupId,
+        eventId,
+        mutationId,
+        updatedAt,
+        deleted,
+        stateJson,
+        startAt,
+        endAt,
+        recurring,
+        recurrenceUntilAt,
+      ] = args;
+      const row = {
+        group_id: groupId,
+        event_id: eventId,
+        mutation_id: mutationId,
+        updated_at: updatedAt,
+        deleted,
+        state_json: stateJson,
+        start_at: startAt,
+        end_at: endAt,
+        recurring,
+        recurrence_until_at: recurrenceUntilAt,
+      };
+      const index = this.store.reticulumCalendarEvents.findIndex(
+        (candidate) =>
+          candidate.group_id === groupId && candidate.event_id === eventId
+      );
+      if (index >= 0) this.store.reticulumCalendarEvents[index] = row;
+      else this.store.reticulumCalendarEvents.push(row);
+      return { changes: 1, lastInsertRowid: Math.max(1, index + 1) };
+    }
+    if (this.sql.includes('DELETE FROM rchat_calendar_reminders')) {
+      const [groupId, eventId] = args;
+      const before = this.store.reticulumCalendarReminders.length;
+      this.store.reticulumCalendarReminders =
+        this.store.reticulumCalendarReminders.filter(
+          (row) => row.group_id !== groupId || row.event_id !== eventId
+        );
+      return {
+        changes: before - this.store.reticulumCalendarReminders.length,
+        lastInsertRowid: 0,
+      };
+    }
     if (this.sql.includes('INSERT INTO rchat_dm_expiry_preferences')) {
       const [ownerAddress, peerAddress, durationMs, updatedAt] = args;
       const index = this.store.reticulumDmExpiryPreferences.findIndex(
@@ -3060,6 +3206,9 @@ class MockDatabase {
       reticulumChatMissingRangePeerObservations: [],
       reticulumChatSilences: [],
       reticulumPublicGroupActivity: [],
+      reticulumCalendarMutations: [],
+      reticulumCalendarEvents: [],
+      reticulumCalendarReminders: [],
       reticulumDmEvents: [],
       reticulumDmExpiredEventMarkers: [],
       reticulumDmExpiryPreferences: [],

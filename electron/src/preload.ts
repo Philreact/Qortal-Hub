@@ -1776,6 +1776,64 @@ try {
           };
           error?: string;
         }>,
+      getCalendarEvents: async (
+        groupId: number,
+        rangeStart: number,
+        rangeEnd: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarEvents',
+          groupId,
+          rangeStart,
+          rangeEnd
+        ) as Promise<unknown[]>,
+      createCalendarEvent: async (groupId: number, input: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:createCalendarEvent',
+          groupId,
+          input
+        ) as Promise<unknown>,
+      updateCalendarEvent: async (
+        groupId: number,
+        eventId: string,
+        input: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateCalendarEvent',
+          groupId,
+          eventId,
+          input
+        ) as Promise<unknown>,
+      deleteCalendarEvent: async (groupId: number, eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteCalendarEvent',
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      getCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      setCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string,
+        offsetMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId,
+          offsetMs
+        ) as Promise<unknown>,
       sendDirectTyping: async (
         localAddress: string,
         peerAddress: string,
@@ -2157,6 +2215,30 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
           ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onCalendarChanged: (
+        cb: (payload: { groupId: number; eventId?: string }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) =>
+          cb(payload as { groupId: number; eventId?: string });
+        ipcRenderer.on('reticulumChat:calendarChanged', handler);
+        ipcRenderer.send('reticulumChat:calendarChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:calendarChanged', handler);
+          ipcRenderer.send('reticulumChat:calendarChanged:unsubscribe');
+        };
+      },
+      onCalendarReminderDue: (cb: (payload: unknown) => void) => {
+        const handler = (_event: unknown, payload: unknown) => cb(payload);
+        ipcRenderer.on('reticulumChat:calendarReminderDue', handler);
+        ipcRenderer.send('reticulumChat:calendarReminderDue:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:calendarReminderDue',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:calendarReminderDue:unsubscribe');
         };
       },
       onDirectEvent: (cb: (payload: { event: unknown }) => void) => {
@@ -2763,6 +2845,64 @@ try {
           };
           error?: string;
         }>,
+      getCalendarEvents: async (
+        groupId: number,
+        rangeStart: number,
+        rangeEnd: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarEvents',
+          groupId,
+          rangeStart,
+          rangeEnd
+        ) as Promise<unknown[]>,
+      createCalendarEvent: async (groupId: number, input: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:createCalendarEvent',
+          groupId,
+          input
+        ) as Promise<unknown>,
+      updateCalendarEvent: async (
+        groupId: number,
+        eventId: string,
+        input: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateCalendarEvent',
+          groupId,
+          eventId,
+          input
+        ) as Promise<unknown>,
+      deleteCalendarEvent: async (groupId: number, eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteCalendarEvent',
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      getCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      setCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string,
+        offsetMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId,
+          offsetMs
+        ) as Promise<unknown>,
       sendDirectTyping: async (
         localAddress: string,
         peerAddress: string,
@@ -3115,6 +3255,30 @@ try {
         return () => {
           ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
           ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onCalendarChanged: (
+        cb: (payload: { groupId: number; eventId?: string }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) =>
+          cb(payload as { groupId: number; eventId?: string });
+        ipcRenderer.on('reticulumChat:calendarChanged', handler);
+        ipcRenderer.send('reticulumChat:calendarChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:calendarChanged', handler);
+          ipcRenderer.send('reticulumChat:calendarChanged:unsubscribe');
+        };
+      },
+      onCalendarReminderDue: (cb: (payload: unknown) => void) => {
+        const handler = (_event: unknown, payload: unknown) => cb(payload);
+        ipcRenderer.on('reticulumChat:calendarReminderDue', handler);
+        ipcRenderer.send('reticulumChat:calendarReminderDue:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:calendarReminderDue',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:calendarReminderDue:unsubscribe');
         };
       },
       onDirectEvent: (cb: (payload: { event: unknown }) => void) => {

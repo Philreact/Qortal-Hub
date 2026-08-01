@@ -33,6 +33,9 @@ const isQChatMentionNotification = (notification: any) =>
   notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
   notification?.data?.qChatMention === true;
 
+const isReticulumCalendarNotification = (notification: any) =>
+  notification?.data?.reticulumCalendarReminder === true;
+
 const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const QCHAT_MENTION_OS_NOTIFICATION_MAX_TRACKED = 500;
 const RETICULUM_DM_OS_NOTIFICATION_MAX_TRACKED = 500;
@@ -65,6 +68,14 @@ function getNewQmailMessage(): Record<string, string> {
   const message: Record<string, string> = {};
   for (const lng of Object.keys(supportedLanguages)) {
     message[lng] = i18n.t('core:message.generic.new_qmail', { lng });
+  }
+  return message;
+}
+
+function getCalendarReminderMessage(title: string): Record<string, string> {
+  const message: Record<string, string> = {};
+  for (const lng of Object.keys(supportedLanguages)) {
+    message[lng] = `${i18n.t('core:calendar.reminder', { lng })}: ${title}`;
   }
   return message;
 }
@@ -259,6 +270,76 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       offCalls?.();
       offCallSummary?.();
     };
+  }, [myAddress, reticulumChatEnabled, setPaymentNotifications]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled || !myAddress) return;
+    const off = window.reticulumChat?.onCalendarReminderDue?.((payload) => {
+      if (!payload || typeof payload !== 'object') return;
+      const reminder = payload as {
+        ownerAddress?: string;
+        groupId?: number;
+        eventId?: string;
+        occurrence?: ReticulumCalendarOccurrence;
+      };
+      if (reminder.ownerAddress !== myAddress || !reminder.occurrence) return;
+      const occurrence = reminder.occurrence;
+      const notificationId = `reticulum-calendar-${occurrence.occurrenceId}`;
+      setPaymentNotifications((previous) =>
+        trimNotificationsToLast3Days([
+          {
+            appName: 'Q-Chat',
+            appService: 'INTERNAL',
+            event: 'RETICULUM_CALENDAR_REMINDER',
+            notificationId,
+            image: LogoSelected,
+            message: getCalendarReminderMessage(occurrence.title),
+            timestamp: Date.now(),
+            data: {
+              created: Date.now(),
+              eventId: reminder.eventId,
+              groupId: reminder.groupId,
+              occurrenceStart: occurrence.occurrenceStart,
+              timezone: occurrence.timezone,
+              identifier: notificationId,
+              reticulumCalendarReminder: true,
+            },
+          },
+          ...previous.filter(
+            (item) =>
+              !(
+                isReticulumCalendarNotification(item) &&
+                item?.notificationId === notificationId
+              )
+          ),
+        ])
+      );
+      if (!isHubBeingViewed()) {
+        void fireOsNotificationPayment(
+          {
+            appName: 'Q-Chat',
+            appService: 'INTERNAL',
+            event: 'RETICULUM_CALENDAR_REMINDER',
+          },
+          occurrence.title,
+          occurrence.allDay
+            ? i18n.t('core:calendar.allDay')
+            : `${i18n.t('core:calendar.starts')} ${new Date(
+                occurrence.occurrenceStart
+              ).toLocaleString()}`,
+          LogoSelected,
+          undefined,
+          {
+            from: reminder.groupId,
+            eventId: reminder.eventId,
+            occurrenceStart: occurrence.occurrenceStart,
+            timezone: occurrence.timezone,
+            openCalendar: true,
+          }
+        );
+      }
+    });
+    return () => off?.();
   }, [myAddress, reticulumChatEnabled, setPaymentNotifications]);
 
   const forceCloseWebSocket = () => {

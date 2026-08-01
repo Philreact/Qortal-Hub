@@ -109,6 +109,7 @@ import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import SendIcon from '@mui/icons-material/Send';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -145,6 +146,7 @@ import {
   isReticulumGifFile,
 } from './reticulumImagePreparation';
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
+import { ReticulumGroupCalendarDialog } from './ReticulumGroupCalendarDialog';
 import {
   closestCenter,
   DndContext,
@@ -1335,6 +1337,8 @@ export const ChatGroup = ({
   groupCallDisabled = false,
   groupCallTooltip = '',
   reticulumReadEntryToken,
+  reticulumCalendarOpenRequest = 0,
+  reticulumCalendarTarget = null,
   isGroupOwner = false,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
@@ -1492,6 +1496,10 @@ export const ChatGroup = ({
     null
   );
   const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
+  const [reticulumCalendarOpen, setReticulumCalendarOpen] = useState(false);
+  const [activeReticulumCalendarTarget, setActiveReticulumCalendarTarget] =
+    useState(reticulumCalendarTarget);
+  const handledReticulumCalendarRequestRef = useRef(0);
   useEffect(() => {
     executeEvent('reticulumSearchOverlayOpenState', {
       open: reticulumSearchOpen,
@@ -1524,7 +1532,20 @@ export const ChatGroup = ({
 
   useEffect(() => {
     setIsGroupAvatarDialogOpen(false);
+    setReticulumCalendarOpen(false);
+    setActiveReticulumCalendarTarget(null);
   }, [selectedGroup]);
+  useEffect(() => {
+    if (
+      reticulumCalendarOpenRequest >
+        handledReticulumCalendarRequestRef.current &&
+      Number(reticulumCalendarTarget?.groupId) === Number(selectedGroup)
+    ) {
+      handledReticulumCalendarRequestRef.current = reticulumCalendarOpenRequest;
+      setActiveReticulumCalendarTarget(reticulumCalendarTarget);
+      setReticulumCalendarOpen(true);
+    }
+  }, [reticulumCalendarOpenRequest, reticulumCalendarTarget, selectedGroup]);
   const [reticulumSearchResults, setReticulumSearchResults] = useState<
     ReticulumSearchResult[]
   >([]);
@@ -2014,9 +2035,8 @@ export const ChatGroup = ({
       setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
       return false;
     }
-    const metadata = await window.reticulumChat?.getChannelMetadataBundle?.(
-      groupId
-    );
+    const metadata =
+      await window.reticulumChat?.getChannelMetadataBundle?.(groupId);
     const parsedChannels = Array.isArray(metadata?.channels)
       ? (metadata.channels as ReticulumGroupChannel[])
       : [];
@@ -4619,16 +4639,12 @@ export const ChatGroup = ({
         'data'
       );
       return {
-        ...mergeReticulumPayloadWithVerifiedEnvelope(
-          normalizedDecryptedData,
-          {
-            ...baseItem,
-            chatReference:
-              event.targetEventId || normalizedDecryptedData.chatReference,
-            repliedTo:
-              event.replyToEventId || normalizedDecryptedData.repliedTo,
-          }
-        ),
+        ...mergeReticulumPayloadWithVerifiedEnvelope(normalizedDecryptedData, {
+          ...baseItem,
+          chatReference:
+            event.targetEventId || normalizedDecryptedData.chatReference,
+          repliedTo: event.replyToEventId || normalizedDecryptedData.repliedTo,
+        }),
         // `data` is an application-content field in older chat payloads, not
         // event identity. Preserve the previous payload-first behavior for it
         // while keeping the raw event payload as the fallback.
@@ -5408,11 +5424,11 @@ export const ChatGroup = ({
           eventSenderName,
           event?.privilegedMentionAuthorized === true
         ) ||
-          reticulumHistoryEnvelopeNeedsRefresh(
-            existingEdit,
-            eventSenderName,
-            event?.privilegedMentionAuthorized === true
-          )
+        reticulumHistoryEnvelopeNeedsRefresh(
+          existingEdit,
+          eventSenderName,
+          event?.privilegedMentionAuthorized === true
+        )
       );
     });
     if (eventsToApply.length === 0) return;
@@ -9157,6 +9173,15 @@ export const ChatGroup = ({
                   }}
                 />
                 {renderReticulumHeaderAction({
+                  active: reticulumCalendarOpen,
+                  label: t('calendar.title', 'Group Calendar'),
+                  icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
+                  onClick: () => {
+                    setActiveReticulumCalendarTarget(null);
+                    setReticulumCalendarOpen((current) => !current);
+                  },
+                })}
+                {renderReticulumHeaderAction({
                   label: 'Threads',
                   icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: onThreadsClick,
@@ -9979,6 +10004,24 @@ export const ChatGroup = ({
           </Box>
         </Box>
       </Box>
+
+      {reticulumChatEnabled && Number(selectedGroup) > 0 && (
+        <ReticulumGroupCalendarDialog
+          open={reticulumCalendarOpen}
+          groupId={Number(selectedGroup)}
+          ownerAddress={myAddress || ''}
+          canManage={isReticulumChannelAdmin || isGroupOwner}
+          targetEventId={activeReticulumCalendarTarget?.eventId || ''}
+          targetOccurrenceStart={
+            Number(activeReticulumCalendarTarget?.occurrenceStart) || 0
+          }
+          targetTimezone={activeReticulumCalendarTarget?.timezone || ''}
+          onClose={() => {
+            setReticulumCalendarOpen(false);
+            setActiveReticulumCalendarTarget(null);
+          }}
+        />
+      )}
 
       {reticulumChatEnabled && reticulumSearchOpen && (
         <Box

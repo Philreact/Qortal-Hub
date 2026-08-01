@@ -60,6 +60,14 @@ export function useAppMessageHandler(
             eventId: payload.eventId,
             from: payload.from,
           });
+        } else if (payload?.openCalendar) {
+          executeEvent('openGroupMessage', {
+            from: payload.from,
+            eventId: payload.eventId,
+            occurrenceStart: payload.occurrenceStart,
+            timezone: payload.timezone,
+            openCalendar: true,
+          });
         } else if (payload?.openWallets) {
           openQWalletsTab();
         } else if (payload?.link) {

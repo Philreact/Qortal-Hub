@@ -307,6 +307,20 @@ describe('Reticulum wallet signing policy', () => {
         authorPublicKey: 'p',
       },
       {
+        type: 'RETICULUM_CALENDAR_MUTATION_V1',
+        version: 1,
+        mutationId: '00000000-0000-4000-8000-000000000001',
+        operation: 'upsert',
+        eventId: '00000000-0000-4000-8000-000000000002',
+        groupId: 1,
+        timestamp: 1,
+        state: {
+          title: 'Planning',
+          startLocal: '2026-08-10T10:00:00',
+          endLocal: '2026-08-10T11:00:00',
+        },
+      },
+      {
         type: 'RCHAT_DM_REQ',
         peerAddress: 'b',
         after: 0,
