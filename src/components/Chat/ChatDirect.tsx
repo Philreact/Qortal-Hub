@@ -407,7 +407,10 @@ export const ChatDirect = ({
     initiateVoiceCall(
       selectedDirect.address,
       directVoiceChatId,
-      signCallRequest
+      signCallRequest,
+      selectedDirect.name && selectedDirect.name !== selectedDirect.address
+        ? selectedDirect.name
+        : undefined
     );
   }, [
     callMatchesThisDirect,
@@ -418,6 +421,7 @@ export const ChatDirect = ({
     initiateVoiceCall,
     peerOnline,
     selectedDirect?.address,
+    selectedDirect?.name,
     signCallRequest,
   ]);
 

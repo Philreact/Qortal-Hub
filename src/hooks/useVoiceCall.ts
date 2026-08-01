@@ -2272,7 +2272,15 @@ export function useVoiceCall(
 
       isOutboundCallRef.current = true;
       peerAddressRef.current = targetAddress;
-      const normalizedDisplayName = targetDisplayName?.trim() ?? '';
+      const requestedDisplayName = targetDisplayName?.trim() ?? '';
+      const friendDisplayName =
+        dmFriendsByAddressRef.current[targetAddress]?.name?.trim() ?? '';
+      const normalizedDisplayName =
+        requestedDisplayName && requestedDisplayName !== targetAddress
+          ? requestedDisplayName
+          : friendDisplayName && friendDisplayName !== targetAddress
+            ? friendDisplayName
+            : '';
       peerDisplayNameRef.current =
         normalizedDisplayName.length > 0 && normalizedDisplayName.length <= 100
           ? normalizedDisplayName
