@@ -18,7 +18,7 @@ const play = (columns: number[]): ConnectFourState => {
   return state;
 };
 
-describe('Connect Four rules', () => {
+describe('Qonnect Four rules', () => {
   it('drops pieces from the bottom and rejects a full column', () => {
     const state = play([0, 0, 0, 0, 0, 0]);
     expect(connectFourDropRow(state, 0)).toBeNull();

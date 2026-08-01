@@ -62,7 +62,7 @@ const RELEASE_HIGHLIGHTS: ReleaseHighlight[] = [
     icon: <SportsEsportsRoundedIcon />,
     title: 'Introducing QortalLand',
     description:
-      'Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Connect Four, all from inside your community.',
+      'Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.',
   },
   {
     icon: <LeaderboardRoundedIcon />,

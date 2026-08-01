@@ -51,7 +51,7 @@ const renderGame = (
   return { ...props, onPlayColumn };
 };
 
-describe('Connect Four game dialog', () => {
+describe('Qonnect Four game dialog', () => {
   it('only signs reconnect handshakes for the current round', () => {
     const current = match();
     const publicKey = 'public-key';
@@ -76,7 +76,7 @@ describe('Connect Four game dialog', () => {
 
     await waitFor(() => expect(onPlayColumn).toHaveBeenCalledWith(3));
     expect(screen.getByText('Your turn')).toBeTruthy();
-    expect(screen.getByRole('grid', { name: 'Connect Four board' })).toBeTruthy();
+    expect(screen.getByRole('grid', { name: 'Qonnect Four board' })).toBeTruthy();
   });
 
   it('moves the active column with arrows even when the board was not focused', async () => {
@@ -113,7 +113,7 @@ describe('Connect Four game dialog', () => {
 
     expect(screen.getByText('Game paused')).toBeTruthy();
     expect(screen.getByText(/Connection interrupted — reconnecting/)).toBeTruthy();
-    expect(screen.getByRole('grid', { name: 'Connect Four board' })).toBeTruthy();
+    expect(screen.getByRole('grid', { name: 'Qonnect Four board' })).toBeTruthy();
   });
 
   it('reserves a fixed status line while a move is awaiting acknowledgement', () => {

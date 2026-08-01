@@ -131,10 +131,10 @@ export const applyConnectFourMove = (
   seat: ConnectFourSeat,
   column: number
 ): ConnectFourState => {
-  if (state.outcome) throw new Error('Connect Four match has already finished');
+  if (state.outcome) throw new Error('Qonnect Four match has already finished');
   if (state.nextSeat !== seat) throw new Error('It is not this player\'s turn');
   const row = connectFourDropRow(state, column);
-  if (row === null) throw new Error('Connect Four column is not playable');
+  if (row === null) throw new Error('Qonnect Four column is not playable');
 
   const board = [...state.board];
   board[connectFourCellIndex(column, row)] = seat;

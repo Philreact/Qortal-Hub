@@ -257,10 +257,10 @@ export function ConnectFourGameDialog({
       playSound('turn');
       if (document.hidden) {
         if (originalTitleRef.current === null) originalTitleRef.current = document.title;
-        document.title = '● Your turn — Connect Four';
+        document.title = '● Your turn — Qonnect Four';
         try {
           if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Your turn in Connect Four', {
+            new Notification('Your turn in Qonnect Four', {
               body: `${opponentName} has moved.`,
               silent: true,
             });
@@ -283,10 +283,10 @@ export function ConnectFourGameDialog({
       playSound('turn');
       if (document.hidden) {
         if (originalTitleRef.current === null) originalTitleRef.current = document.title;
-        document.title = '● Connect Four invitation';
+        document.title = '● Qonnect Four invitation';
         try {
           if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Connect Four invitation', {
+            new Notification('Qonnect Four invitation', {
               body: `${requesterLabel} invited you to play.`,
               silent: true,
             });
@@ -456,7 +456,7 @@ export function ConnectFourGameDialog({
     return (
       <GameInvitationSentDialog
         expiresAt={match.expiresAt}
-        gameTitle="Connect Four"
+        gameTitle="Qonnect Four"
         now={now}
         onCancel={onClose}
         opponentName={opponentName}
@@ -490,7 +490,7 @@ export function ConnectFourGameDialog({
           <DialogTitle sx={{ flex: '0 0 auto', px: canShowBoard ? { xs: 2.5, md: '34px' } : { xs: 2.5, sm: '26px' }, pb: canShowBoard ? '12px' : '14px', pt: canShowBoard ? { xs: 2.5, md: '30px' } : { xs: 2.25, sm: '24px' } }}>
             <Box sx={{ alignItems: 'center', display: 'flex' }}>
               <SportsEsportsRoundedIcon sx={{ color: '#22d8e4', height: 18, mr: '10px', width: 18 }} />
-              <Typography component="div" sx={{ fontSize: canShowBoard ? 21 : 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Connect Four</Typography>
+              <Typography component="div" sx={{ fontSize: canShowBoard ? 21 : 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: '26px' }}>Qonnect Four</Typography>
               <Box sx={{ flex: 1 }} />
               {canShowBoard && <Tooltip title={muted ? 'Turn game sounds on' : 'Mute game sounds'}>
                 <IconButton aria-label={muted ? 'Turn game sounds on' : 'Mute game sounds'} onClick={toggleMuted} size="small" sx={{ color: '#8d99a8' }}>
@@ -542,14 +542,14 @@ export function ConnectFourGameDialog({
                     <Typography sx={{ color: alpha('#fff', 0.62), fontSize: 12 }}>{shortAddress(match.requesterAddress)}</Typography>
                   </Box>
                 </Box>
-                <Typography>{match.phase === 'round-incoming' ? 'Would like to play another Connect Four game.' : 'Invited you to a private Connect Four game.'}</Typography>
+                <Typography>{match.phase === 'round-incoming' ? 'Would like to play another Qonnect Four game.' : 'Invited you to a private Qonnect Four game.'}</Typography>
                 {match.phase === 'incoming' && <Typography sx={{ color: '#9ffcff', fontSize: 13, fontWeight: 750 }}>Expires in {Math.max(0, Math.ceil(((match.expiresAt || now) - now) / 1000))} seconds</Typography>}
               </Stack>
             )}
 
             {match.phase === 'starting' && (
               <Stack alignItems="center" spacing={2} sx={{ py: 1 }}>
-                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Starting Connect Four...</Typography>
+                <Typography sx={{ fontSize: 17, fontWeight: 750 }}>Starting Qonnect Four...</Typography>
                 <LinearProgress />
               </Stack>
             )}
@@ -591,7 +591,7 @@ export function ConnectFourGameDialog({
                       width: boardWidth ? `${boardWidth}px` : '100%',
                     }}
                   >
-                  <Box role="grid" aria-label="Connect Four board" sx={{ display: 'grid', gap: { xs: 0.45, sm: 0.7 }, gridTemplateColumns: 'repeat(7,1fr)' }}>
+                  <Box role="grid" aria-label="Qonnect Four board" sx={{ display: 'grid', gap: { xs: 0.45, sm: 0.7 }, gridTemplateColumns: 'repeat(7,1fr)' }}>
                     {Array.from({ length: CONNECT_FOUR_COLUMNS * CONNECT_FOUR_ROWS }, (_, displayIndex) => {
                       const displayRow = Math.floor(displayIndex / CONNECT_FOUR_COLUMNS);
                       const column = displayIndex % CONNECT_FOUR_COLUMNS;

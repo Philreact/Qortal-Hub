@@ -11020,7 +11020,7 @@ export function QortalLand({
                     }}
                     sx={{ color: '#f8fbff', fontSize: 12, justifyContent: 'flex-start', textTransform: 'none' }}
                   >
-                    {game === 'connect-four' ? 'Connect Four' : game === 'checkers' ? 'Checkers' : 'Chess'}
+                    {game === 'connect-four' ? 'Qonnect Four' : game === 'checkers' ? 'Checkers' : 'Chess'}
                   </Button>
                 ))}
               </Box>

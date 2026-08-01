@@ -92,7 +92,7 @@ const applyGameMove = (game: QortalLandGameId, state: QortalLandGameState, seat:
     const promotion = move.promotion === undefined ? undefined : Number(move.promotion) as ChessPromotion;
     return applyChessMove(state as ChessState, seat, Number(move.from), Number(move.to), promotion);
   }
-  if (!Number.isInteger(move.column)) throw new Error('Invalid Connect Four move');
+  if (!Number.isInteger(move.column)) throw new Error('Invalid Qonnect Four move');
   return applyConnectFourMove(state as ConnectFourState, seat, Number(move.column));
 };
 
