@@ -2306,6 +2306,9 @@ export const Group = ({
         userInfo?.name
       );
       return merged.sort((a: any, b: any) => {
+        if (a?.savedMessages !== b?.savedMessages) {
+          return a?.savedMessages ? -1 : 1;
+        }
         const timestampA = Number(a?.timestamp || 0);
         const timestampB = Number(b?.timestamp || 0);
         if (timestampA !== timestampB) return timestampB - timestampA;

@@ -127,12 +127,11 @@ export function ReticulumMessageExpiryButton({
             }
             size="small"
             sx={{
-              backgroundColor:
-                value !== undefined
+              backgroundColor: segmented
+                ? theme.palette.background.default
+                : value !== undefined
                   ? theme.palette.action.selected
-                  : segmented
-                    ? theme.palette.background.default
-                    : 'transparent',
+                  : 'transparent',
               border: segmented ? 'none' : `1px solid ${theme.palette.divider}`,
               borderRadius: segmented ? 0 : '8px',
               color:
