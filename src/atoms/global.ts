@@ -246,6 +246,8 @@ export type DmFriendStored = {
   publicKey: string;
   name?: string;
   addedAt: number;
+  /** Reticulum event announcing this side of the friendship. */
+  eventId?: string;
 };
 
 /** Persisted: custom websocket notification subscriptions. Sent as a second subscribe action when the notifications socket connects. */

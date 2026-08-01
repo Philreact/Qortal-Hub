@@ -56,6 +56,8 @@ import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import TextStyle from '@tiptap/extension-text-style';
+import messageExpiresIcon from '../../assets/Icons/message-expires-icon.png';
+import noExpiryIcon from '../../assets/Icons/no-expiry-icon.png';
 import level0Img from '../../assets/badges/level-0.png';
 import level1Img from '../../assets/badges/level-1.png';
 import level2Img from '../../assets/badges/level-2.png';
@@ -101,6 +103,7 @@ import { reticulumHighlightOwnMessagesAtom } from '../../atoms/global';
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
 const RETICULUM_FILE_UNAVAILABLE_TIMEOUT_MS = 12_000;
+const RETICULUM_EXPIRING_SOON_MS = 15 * 60 * 60 * 1000;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
 const RETICULUM_IMAGE_REQUEST_BACKOFF_MS = 30_000;
 const RETICULUM_IMAGE_UNAVAILABLE_TIMEOUT_MS = 12_000;
@@ -110,6 +113,24 @@ const RETICULUM_INLINE_IMAGE_MAX_WIDTH = 640;
 const RETICULUM_INLINE_IMAGE_MAX_HEIGHT = 360;
 const RETICULUM_INLINE_IMAGE_FALLBACK_WIDTH = 480;
 const RETICULUM_INLINE_IMAGE_FALLBACK_ASPECT_RATIO = '4 / 3';
+
+const normalizeReticulumExpiryMs = (value: unknown): number | null => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+};
+
+const formatReticulumExpiry = (value: number | null): string => {
+  if (!value) return 'No Expiry';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'No Expiry';
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${pad(date.getDate())}/${pad(
+    date.getMonth() + 1
+  )}/${date.getFullYear()} | ${pad(date.getHours())}:${pad(
+    date.getMinutes()
+  )}`;
+};
 const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
 
 const reticulumImageRequestGate = createReticulumImageRequestGate(
@@ -387,6 +408,7 @@ export const MessageItemComponent = ({
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState(null);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [expiryClockMs, setExpiryClockMs] = useState(Date.now());
   const [reticulumMessageMenuPosition, setReticulumMessageMenuPosition] =
     useState<{ mouseX: number; mouseY: number } | null>(null);
   const signedGroupWelcomeSystem =
@@ -1636,6 +1658,24 @@ export const MessageItemComponent = ({
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [fileResourceStatus]);
+  const reticulumExpiryMs = reticulumChatEnabled
+    ? normalizeReticulumExpiryMs(message?.expiresAt)
+    : null;
+  useEffect(() => {
+    if (!reticulumExpiryMs) return;
+    const currentTime = Date.now();
+    const nextBoundary =
+      reticulumExpiryMs - currentTime > RETICULUM_EXPIRING_SOON_MS
+        ? reticulumExpiryMs - RETICULUM_EXPIRING_SOON_MS
+        : reticulumExpiryMs;
+    const delay = nextBoundary - currentTime;
+    if (delay <= 0) return;
+    const timer = window.setTimeout(
+      () => setExpiryClockMs(Date.now()),
+      Math.min(delay + 50, 2_147_483_647)
+    );
+    return () => window.clearTimeout(timer);
+  }, [expiryClockMs, reticulumExpiryMs]);
   useEffect(() => {
     if (fileResourceStatus !== 'downloading') return;
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
@@ -1928,6 +1968,33 @@ export const MessageItemComponent = ({
   const hasReticulumDiscussion =
     reticulumChatEnabled && reticulumDiscussionReplyCount > 0;
   const collapseGroupedHeader = isGroupedWithPrevious;
+  const reticulumExpiryText = formatReticulumExpiry(reticulumExpiryMs);
+  const hasReticulumExpiry = Boolean(reticulumExpiryMs);
+  const isReticulumExpiringSoon = Boolean(
+    reticulumExpiryMs &&
+      reticulumExpiryMs > expiryClockMs &&
+      reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
+  );
+  const reticulumExpiringSoonLabel = isReticulumExpiringSoon ? (
+    <Tooltip title={`Message Expiry: ${reticulumExpiryText}`}>
+      <Typography
+        component="span"
+        sx={{
+          color: alpha(theme.palette.warning.main, 0.9),
+          cursor: 'help',
+          flexShrink: 0,
+          fontSize: '9.5px',
+          fontWeight: 500,
+          letterSpacing: '0.035em',
+          lineHeight: 1,
+          marginLeft: '6px',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        (EXPIRING SOON)
+      </Typography>
+    </Tooltip>
+  ) : null;
   const isReticulumDiscussionInitialPost =
     reticulumDiscussionView &&
     String(message?.signature || '') === reticulumDiscussionRootId;
@@ -2415,6 +2482,8 @@ export const MessageItemComponent = ({
                     {displayTimestamp}
                   </Typography>
                 )}
+
+                {!collapseGroupedHeader && reticulumExpiringSoonLabel}
 
                 {!collapseGroupedHeader && reticulumDiscussionButton}
 
@@ -3000,6 +3069,9 @@ export const MessageItemComponent = ({
             ) : message?.decryptedData?.type === 'notification' ? (
               <MessageDisplay
                 htmlContent={message.decryptedData?.data?.message}
+                trailingContent={
+                  collapseGroupedHeader ? reticulumExpiringSoonLabel : null
+                }
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
@@ -3011,6 +3083,9 @@ export const MessageItemComponent = ({
             ) : hasNoMessage ? null : htmlText ? (
               <MessageDisplay
                 htmlContent={htmlText}
+                trailingContent={
+                  collapseGroupedHeader ? reticulumExpiringSoonLabel : null
+                }
                 hiddenQortalUrls={reticulumQAppPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
@@ -3030,6 +3105,9 @@ export const MessageItemComponent = ({
             ) : (
               <MessageDisplay
                 htmlContent={message.text}
+                trailingContent={
+                  collapseGroupedHeader ? reticulumExpiringSoonLabel : null
+                }
                 hiddenQortalUrls={reticulumQAppPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
@@ -4198,17 +4276,29 @@ export const MessageItemComponent = ({
         slotProps={{
           paper: {
             sx: {
+              backdropFilter: 'none !important',
+              background: 'transparent !important',
               backgroundColor: 'transparent !important',
+              backgroundImage: 'none !important',
               border: 'none !important',
               borderRadius: '0 !important',
               boxShadow: 'none !important',
               minWidth: '190px !important',
               padding: '0 !important',
+              WebkitBackdropFilter: 'none !important',
+              '& .MuiMenu-list': {
+                background: 'transparent !important',
+                backgroundColor: 'transparent !important',
+                backgroundImage: 'none !important',
+              },
             },
           },
         }}
         MenuListProps={{
           sx: {
+            background: 'transparent !important',
+            backgroundColor: 'transparent !important',
+            backgroundImage: 'none !important',
             padding: 0,
           },
         }}
@@ -4226,8 +4316,10 @@ export const MessageItemComponent = ({
             display: 'flex',
             gap: '8px',
             justifyContent: 'center',
-            minWidth: '190px',
+            boxSizing: 'border-box',
+            minWidth: '212px',
             padding: '7px 10px',
+            width: '100%',
           }}
         >
           {RETICULUM_QUICK_REACTIONS.map((emoji) => (
@@ -4265,11 +4357,14 @@ export const MessageItemComponent = ({
             backgroundColor: theme.palette.background.surface,
             border: '1px solid',
             borderColor: theme.palette.divider,
+            borderBottomColor: 'transparent',
             borderRadius: '8px',
             boxShadow: '0 12px 28px rgba(0, 0, 0, 0.28)',
+            boxSizing: 'border-box',
             marginTop: '6px',
-            minWidth: '190px',
+            minWidth: '212px',
             padding: '5px',
+            width: '100%',
           }}
         >
           <MenuItem
@@ -4329,6 +4424,121 @@ export const MessageItemComponent = ({
               </Typography>
             </MenuItem>
           )}
+        </Box>
+        <Box
+          aria-label={
+            hasReticulumExpiry
+              ? `Message expires ${reticulumExpiryText}`
+              : 'No Expiry'
+          }
+          role="status"
+          sx={{
+            boxSizing: 'border-box',
+            marginTop: '6px',
+            minWidth: '212px',
+            width: '100%',
+          }}
+        >
+          <Box
+            sx={{
+              alignItems: 'center',
+              backgroundColor: hasReticulumExpiry
+                ? `color-mix(in srgb, ${theme.palette.background.surface} 91%, ${theme.palette.error.main} 9%)`
+                : theme.palette.background.surface,
+              backgroundImage: 'none',
+              border: '1px solid',
+              borderColor: hasReticulumExpiry
+                ? alpha(theme.palette.error.main, 0.4)
+                : alpha(theme.palette.text.secondary, 0.28),
+              borderRadius: '8px',
+              boxSizing: 'border-box',
+              display: 'grid',
+              gridTemplateColumns: '42px 1px minmax(0, 1fr)',
+              minHeight: '62px',
+              padding: '8px 10px',
+              isolation: 'isolate',
+              width: '100%',
+            }}
+          >
+            <Box
+              alt=""
+              aria-hidden="true"
+              component="img"
+              src={hasReticulumExpiry ? messageExpiresIcon : noExpiryIcon}
+              sx={{
+                display: 'block',
+                filter: hasReticulumExpiry ? 'none' : 'brightness(1.2)',
+                height: '34px',
+                justifySelf: 'center',
+                objectFit: 'contain',
+                opacity: hasReticulumExpiry ? 0.94 : 0.9,
+                width: '34px',
+              }}
+            />
+            <Box
+              aria-hidden="true"
+              sx={{
+                alignSelf: 'stretch',
+                backgroundColor: hasReticulumExpiry
+                  ? alpha(theme.palette.error.main, 0.48)
+                  : alpha(theme.palette.text.secondary, 0.32),
+                marginY: '2px',
+                width: '1px',
+              }}
+            />
+            <Box
+              sx={{
+                alignSelf: 'center',
+                minWidth: 0,
+                paddingLeft: '10px',
+              }}
+            >
+              {hasReticulumExpiry ? (
+                <>
+                  <Typography
+                    sx={{
+                      color: alpha(theme.palette.error.light, 0.92),
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    Message expires
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color:
+                        theme.palette.mode === 'dark'
+                          ? theme.palette.common.white
+                          : theme.palette.text.primary,
+                      fontSize: '14px',
+                      fontWeight: 600,
+                      lineHeight: 1.35,
+                      marginTop: '2px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {reticulumExpiryText}
+                  </Typography>
+                </>
+              ) : (
+                <Typography
+                  sx={{
+                    color:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.common.white, 0.8)
+                        : theme.palette.text.secondary,
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    lineHeight: 1.35,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  No Expiry
+                </Typography>
+              )}
+            </Box>
+          </Box>
         </Box>
       </CustomStyledMenu>
     </>

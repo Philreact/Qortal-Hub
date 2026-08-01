@@ -646,6 +646,12 @@
     "hotkey_slot_number": "Slotti {{n}}"
   },
   "p2p_health_bad_call_tooltip": "P2P-yhteyden tila on huono. Yhdistä ensin useampiin Reticulum-vertaisiin.",
+  "dm_friend_events": {
+    "you_added_pending": "Lisäsit käyttäjän {{name}} ystäväksi. Puhelut avautuvat, kun hän lisää sinut takaisin.",
+    "they_added_pending": "{{name}} lisäsi sinut ystäväksi. Ota puhelut käyttöön lisäämällä hänet takaisin.",
+    "you_added_available": "Lisäsit käyttäjän {{name}} ystäväksi. Puhelut ovat nyt käytettävissä.",
+    "they_added_available": "{{name}} lisäsi sinut ystäväksi. Puhelut ovat nyt käytettävissä."
+  },
   "bookmarks": {
     "title": "Kirjanmerkit",
     "bookmarked": "Kirjanmerkki lisätty",

@@ -1437,19 +1437,67 @@ export const ChatDirect = ({
     ) => {
       if (!address || address === myAddress) return;
       if (isCurrentlyFriend) {
-        setDmFriendsByAddress((prev) => {
-          if (!prev[address]) return prev;
-          const next = { ...prev };
-          delete next[address];
-          return next;
-        });
-        setInfoSnack({
-          type: 'success',
-          message: t('core:dm_friends.removed', {
-            postProcess: 'capitalizeFirstChar',
-          }),
-        });
-        setOpenSnack(true);
+        setFriendActionBusy(true);
+        try {
+          const storedEventId = String(
+            dmFriendsByAddress[address]?.eventId || ''
+          ).trim();
+          const latestOwnFriendEvent = [...reticulumDirectMessages]
+            .reverse()
+            .find((message: any) => {
+              const friendEvent = message?.dmFriendEvent;
+              return (
+                String(friendEvent?.actorAddress || '') === myAddress &&
+                String(friendEvent?.targetAddress || '') === address
+              );
+            });
+          const eventId =
+            storedEventId ||
+            String(
+              latestOwnFriendEvent?.signature ||
+                latestOwnFriendEvent?.eventId ||
+                latestOwnFriendEvent?.id ||
+                ''
+            ).trim();
+          if (eventId) {
+            const result = await publishReticulumDirectEvent({
+              chatReference: eventId,
+              messageText: '',
+              otherData: {
+                specialId: uid.rnd(),
+                type: 'delete',
+              },
+              peerAddressOverride: address,
+            });
+            if (result?.error || result?.success === false) {
+              throw new Error(result?.error || 'Could not remove friend');
+            }
+          }
+          setDmFriendsByAddress((prev) => {
+            if (!prev[address]) return prev;
+            const next = { ...prev };
+            delete next[address];
+            return next;
+          });
+          setInfoSnack({
+            type: 'success',
+            message: t('core:dm_friends.removed', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+          });
+          setOpenSnack(true);
+        } catch (error) {
+          setInfoSnack({
+            type: 'error',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Could not remove friend',
+          });
+          setOpenSnack(true);
+        } finally {
+          setFriendActionBusy(false);
+        }
         return;
       }
       setFriendActionBusy(true);
@@ -1480,7 +1528,7 @@ export const ChatDirect = ({
             String(friendEvent?.targetAddress || '') === myAddress
           );
         });
-        void publishReticulumDirectEvent({
+        const result = await publishReticulumDirectEvent({
           messageText: `${actorLabel} added ${targetLabel} as a friend.`,
           otherData: {
             type: 'dm_friend_added',
@@ -1494,9 +1542,21 @@ export const ChatDirect = ({
           },
           peerAddressOverride: address,
           expiryDurationMs: null,
-        }).catch((error) => {
-          console.warn('[ChatDirect] Failed to publish friend event:', error);
         });
+        if (result?.error || result?.success === false) {
+          throw new Error(result?.error || 'Could not publish friend event');
+        }
+        const eventId = String(result?.eventId || '').trim();
+        if (eventId) {
+          setDmFriendsByAddress((prev) => {
+            const current = prev[address];
+            if (!current) return prev;
+            return {
+              ...prev,
+              [address]: { ...current, eventId },
+            };
+          });
+        }
         setInfoSnack({
           type: 'success',
           message: t('core:dm_friends.added', {
@@ -1519,6 +1579,7 @@ export const ChatDirect = ({
     [
       myAddress,
       myName,
+      dmFriendsByAddress,
       publishReticulumDirectEvent,
       reticulumDirectMessages,
       setDmFriendsByAddress,
@@ -3579,8 +3640,8 @@ export const ChatDirect = ({
             }}
           >
             <Typography sx={{ color: 'inherit', flex: 1, fontSize: 12.5 }}>
-              <strong>DMs now expire after 1 month by default</strong> to
-              protect your privacy and reduce local storage use. You can change
+              <strong>DMs expire after 1 month by default</strong> to
+              reduce local storage use. You can change
               this setting, but only for new messages. Existing messages will
               keep their current expiry period.
             </Typography>
