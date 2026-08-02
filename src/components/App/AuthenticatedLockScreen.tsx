@@ -4,15 +4,19 @@ import {
   Box,
   Button,
   CircularProgress,
+  IconButton,
   InputAdornment,
   Modal,
   TextField,
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import KeyRoundedIcon from '@mui/icons-material/KeyRounded';
+import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import QortalLogo from '../../assets/svgs/Logo1Dark.svg';
+import { CUSTOM_TITLE_BAR_HEIGHT } from '../Desktop/CustomTitleBar';
 
 type AuthenticatedLockScreenProps = {
   accountLabel?: string | null;
@@ -21,6 +25,118 @@ type AuthenticatedLockScreenProps = {
 
 const RETRY_DELAY_MS = 5_000;
 const FAILURES_BEFORE_DELAY = 3;
+
+function LockScreenTitleBar() {
+  const theme = useTheme();
+  const hasWindowControls =
+    typeof window.electronAPI?.windowMinimize === 'function';
+
+  if (!hasWindowControls) return null;
+
+  const controlColor = theme.palette.text.secondary;
+  const controlHover =
+    theme.palette.mode === 'dark'
+      ? 'rgba(255, 255, 255, 0.09)'
+      : theme.palette.action.hover;
+
+  return (
+    <Box
+      sx={{
+        position: 'absolute',
+        inset: '0 0 auto 0',
+        zIndex: 1,
+        height: CUSTOM_TITLE_BAR_HEIGHT,
+        display: 'flex',
+        alignItems: 'center',
+        borderBottom: '1px solid',
+        borderColor:
+          theme.palette.mode === 'dark'
+            ? theme.palette.border.subtle
+            : theme.palette.divider,
+        bgcolor:
+          theme.palette.mode === 'dark'
+            ? 'rgba(34, 37, 43, 0.97)'
+            : theme.palette.background.paper,
+        WebkitAppRegion: 'drag',
+      }}
+    >
+      <Box
+        sx={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 0.75,
+          pointerEvents: 'none',
+        }}
+      >
+        <Box
+          component="img"
+          src={QortalLogo}
+          alt=""
+          sx={{ width: 'auto', height: 20, display: 'block' }}
+        />
+        <Typography
+          variant="body2"
+          sx={{
+            color: 'text.primary',
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: '0.02em',
+            lineHeight: 1,
+          }}
+        >
+          Qortal Hub
+        </Typography>
+      </Box>
+
+      <Box
+        sx={{
+          ml: 'auto',
+          height: '100%',
+          display: 'flex',
+          WebkitAppRegion: 'no-drag',
+        }}
+      >
+        <IconButton
+          disableFocusRipple
+          tabIndex={-1}
+          size="small"
+          onClick={() => window.electronAPI?.windowMinimize?.()}
+          aria-label="Minimize"
+          sx={{
+            width: 46,
+            height: CUSTOM_TITLE_BAR_HEIGHT,
+            p: 0,
+            color: controlColor,
+            borderRadius: 0,
+            '&:hover': { bgcolor: controlHover },
+          }}
+        >
+          <RemoveRoundedIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+        <IconButton
+          disableFocusRipple
+          tabIndex={-1}
+          size="small"
+          onClick={() => window.electronAPI?.windowClose?.()}
+          aria-label="Close"
+          sx={{
+            width: 46,
+            height: CUSTOM_TITLE_BAR_HEIGHT,
+            p: 0,
+            color: controlColor,
+            borderRadius: 0,
+            '&:hover': { bgcolor: '#e81123', color: '#fff' },
+          }}
+        >
+          <CloseRoundedIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+      </Box>
+    </Box>
+  );
+}
 
 export function AuthenticatedLockScreen({
   accountLabel,
@@ -106,6 +222,7 @@ export function AuthenticatedLockScreen({
               : 'radial-gradient(circle at 50% 15%, #e7f1ff 0%, #f5f8fc 48%, #e8edf4 100%)',
         }}
       >
+        <LockScreenTitleBar />
         <Box
           component="form"
           onSubmit={handleSubmit}

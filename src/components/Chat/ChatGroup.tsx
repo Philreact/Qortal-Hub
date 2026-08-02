@@ -1339,6 +1339,7 @@ export const ChatGroup = ({
   reticulumReadEntryToken,
   reticulumCalendarOpenRequest = 0,
   reticulumCalendarTarget = null,
+  onReticulumCalendarOpenChange,
   isGroupOwner = false,
 }) => {
   const userInfo = useAtomValue(userInfoAtom);
@@ -1500,6 +1501,13 @@ export const ChatGroup = ({
   const [activeReticulumCalendarTarget, setActiveReticulumCalendarTarget] =
     useState(reticulumCalendarTarget);
   const handledReticulumCalendarRequestRef = useRef(0);
+  useEffect(() => {
+    onReticulumCalendarOpenChange?.(reticulumCalendarOpen);
+  }, [onReticulumCalendarOpenChange, reticulumCalendarOpen]);
+  useEffect(
+    () => () => onReticulumCalendarOpenChange?.(false),
+    [onReticulumCalendarOpenChange]
+  );
   useEffect(() => {
     executeEvent('reticulumSearchOverlayOpenState', {
       open: reticulumSearchOpen,

@@ -29,6 +29,7 @@ import CallIcon from '@mui/icons-material/Call';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import CircularProgress from '@mui/material/CircularProgress';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
+import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
@@ -540,6 +541,7 @@ function PersistentSectionLayer({
 
 function ReticulumGroupSectionHeader({
   activeSection,
+  calendarOpen,
   canManageReticulumGroup,
   groupCallDisabled,
   groupCallInCall,
@@ -548,6 +550,7 @@ function ReticulumGroupSectionHeader({
   membersPanelOpen,
   membersNotificationCount,
   onChatClick,
+  onCalendarClick,
   onGroupCallClick,
   onMembersClick,
   onQortalLandClick,
@@ -555,6 +558,7 @@ function ReticulumGroupSectionHeader({
   sectionLabel,
 }: {
   activeSection: string;
+  calendarOpen?: boolean;
   canManageReticulumGroup: boolean;
   groupCallDisabled?: boolean;
   groupCallInCall?: boolean;
@@ -563,6 +567,7 @@ function ReticulumGroupSectionHeader({
   membersPanelOpen?: boolean;
   membersNotificationCount?: number;
   onChatClick?: () => void;
+  onCalendarClick?: () => void;
   onGroupCallClick?: () => void;
   onMembersClick?: () => void;
   onQortalLandClick?: () => void;
@@ -745,6 +750,12 @@ function ReticulumGroupSectionHeader({
             width: '1px',
           }}
         />
+        {renderAction({
+          active: calendarOpen,
+          label: 'Group Calendar',
+          icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
+          onClick: onCalendarClick,
+        })}
         {renderAction({
           active: activeSection === 'forum',
           label: 'Threads',
@@ -933,6 +944,7 @@ export const Group = ({
     useState('');
   const [reticulumCalendarOpenRequest, setReticulumCalendarOpenRequest] =
     useState(0);
+  const [reticulumCalendarOpen, setReticulumCalendarOpen] = useState(false);
   const [reticulumCalendarTarget, setReticulumCalendarTarget] = useState<{
     groupId: number;
     eventId: string;
@@ -4523,6 +4535,7 @@ export const Group = ({
               >
                 <ReticulumGroupSectionHeader
                   activeSection={groupSection}
+                  calendarOpen={reticulumCalendarOpen}
                   canManageReticulumGroup={canManageReticulumGroup}
                   sectionLabel={
                     groupSection === 'land'
@@ -4534,6 +4547,17 @@ export const Group = ({
                           : selectedGroup?.groupName || 'Group'
                   }
                   onChatClick={goToChat}
+                  onCalendarClick={() => {
+                    const groupId = Number(selectedGroup?.groupId);
+                    if (!Number.isInteger(groupId) || groupId <= 0) return;
+                    setReticulumCalendarTarget({
+                      groupId,
+                      eventId: '',
+                      occurrenceStart: Date.now(),
+                      timezone: '',
+                    });
+                    setReticulumCalendarOpenRequest((value) => value + 1);
+                  }}
                   onGroupCallClick={
                     reticulumEnabled && gcallGroupNumericId !== null
                       ? handleGroupCallHeaderClick
@@ -4689,6 +4713,7 @@ export const Group = ({
                     reticulumReadEntryToken={reticulumReadEntryToken}
                     reticulumCalendarOpenRequest={reticulumCalendarOpenRequest}
                     reticulumCalendarTarget={reticulumCalendarTarget}
+                    onReticulumCalendarOpenChange={setReticulumCalendarOpen}
                     isGroupOwner={groupOwner?.owner === myAddress}
                   />
                 </PersistentSectionLayer>
