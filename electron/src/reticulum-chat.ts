@@ -119,6 +119,7 @@ import {
   hashReticulumCalendarResource,
   normalizeReticulumCalendarInput,
   verifyReticulumCalendarMutation,
+  type ReticulumCalendarCoverImage,
   type ReticulumCalendarEventState,
   type ReticulumCalendarMutation,
   type ReticulumCalendarOccurrence,
@@ -6986,9 +6987,32 @@ export class ReticulumChatManager extends EventEmitter {
             );
             return false;
           }
-          if (!this.resourceManifestBelongsToGroup(manifest, groupId)) {
+          const referencedChatEvent = request.eventId
+            ? this.db.getEvent(request.eventId)
+            : null;
+          const isCalendarCover =
+            !referencedChatEvent &&
+            this.isCurrentCalendarCoverFile(
+              groupId,
+              request.eventId,
+              fileHash,
+              manifest.sizeBytes
+            );
+          if (
+            !isCalendarCover &&
+            !this.resourceManifestBelongsToGroup(manifest, groupId)
+          ) {
             loggerWarn(
               `[ReticulumChat] Refusing resource ${fileHash}: resource is not for group=${groupId}`
+            );
+            return false;
+          }
+          const referenceEventId = isCalendarCover
+            ? this.calendarCoverReferenceEventId(request.eventId || '')
+            : request.eventId;
+          if (isCalendarCover && !this.localGroupIds.has(groupId)) {
+            loggerWarn(
+              `[ReticulumChat] Refusing calendar cover ${fileHash}: local account is no longer a member of group=${groupId}`
             );
             return false;
           }
@@ -6997,16 +7021,16 @@ export class ReticulumChatManager extends EventEmitter {
               fileHash,
               'group',
               groupId,
-              request.eventId
+              referenceEventId
             )
           ) {
             loggerWarn(
-              `[ReticulumChat] Refusing resource ${fileHash}: no live message reference${request.eventId ? ` for event ${request.eventId}` : ''}`
+              `[ReticulumChat] Refusing resource ${fileHash}: no live ${isCalendarCover ? 'calendar cover' : 'message'} reference${request.eventId ? ` for event ${request.eventId}` : ''}`
             );
             return false;
           }
-          if (request.eventId) {
-            const event = this.db.getEvent(request.eventId);
+          if (request.eventId && !isCalendarCover) {
+            const event = referencedChatEvent;
             if (!event || event.groupId !== groupId) {
               loggerWarn(
                 `[ReticulumChat] Refusing resource ${fileHash}: event ${request.eventId} is not for group=${groupId}`
@@ -7307,12 +7331,20 @@ export class ReticulumChatManager extends EventEmitter {
       .filter((peer): peer is string => Boolean(peer));
     if (!Number.isInteger(groupId) || groupId <= 0 || sourcePeers.length === 0)
       return;
+    const isCalendarCover = this.isCurrentCalendarCoverFile(
+      groupId,
+      progress.eventId,
+      fileHash
+    );
+    const referenceEventId = isCalendarCover
+      ? this.calendarCoverReferenceEventId(progress.eventId || '')
+      : progress.eventId;
     if (
       !this.resourceStore.hasLiveReference(
         fileHash,
         'group',
         groupId,
-        progress.eventId
+        referenceEventId
       )
     )
       return;
@@ -7320,7 +7352,7 @@ export class ReticulumChatManager extends EventEmitter {
       fileHash,
       'group',
       groupId,
-      progress.eventId
+      referenceEventId
     );
     const providerPeerHash = this.getLocalResourcePeerHash();
     if (!manifest || !providerPeerHash) return;
@@ -7995,6 +8027,11 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    for (const groupId of previousGroupIds) {
+      if (!this.localGroupIds.has(groupId)) {
+        this.reconcileCalendarCoverReferencesForGroup(groupId, false);
+      }
+    }
     this.cancelCalendarTransfersForRemovedGroups();
     this.hydrateAllPendingReadSync();
     void this.replayReadStatesToOwnDevices();
@@ -8074,6 +8111,7 @@ export class ReticulumChatManager extends EventEmitter {
   private initializeMembershipGroup(groupId: number): void {
     if (this.isClosed || !this.localGroupIds.has(groupId)) return;
     try {
+      this.reconcileCalendarCoverReferencesForGroup(groupId);
       this.queueChannelMetadataProjectionRepair(groupId);
       const [latestEvent] = this.db.getRecentEvents(groupId, 1, null);
       if (latestEvent) {
@@ -9242,6 +9280,172 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getCalendarOccurrences(groupId, start, end);
   }
 
+  private calendarCoverReferenceEventId(eventId: string): string {
+    return `calendar:${String(eventId || '')
+      .trim()
+      .toLowerCase()}`;
+  }
+
+  private currentCalendarCover(
+    groupId: number,
+    eventId: string
+  ): ReticulumCalendarCoverImage | null {
+    const mutation = this.db.getCalendarProjectionMutation(
+      groupId,
+      String(eventId || '')
+        .trim()
+        .toLowerCase()
+    );
+    return mutation?.operation === 'upsert' && mutation.state?.coverImage
+      ? mutation.state.coverImage
+      : null;
+  }
+
+  private calendarCoverManifestsMatch(
+    expected: ReticulumCalendarCoverImage,
+    candidate: ReticulumResourceManifest
+  ): boolean {
+    const metadata =
+      candidate.metadata && typeof candidate.metadata === 'object'
+        ? candidate.metadata
+        : {};
+    return (
+      candidate.namespace === expected.namespace &&
+      String(candidate.ownerId || '') === String(expected.ownerId || '') &&
+      candidate.fileName === expected.fileName &&
+      candidate.mimeType === expected.mimeType &&
+      candidate.sizeBytes === expected.sizeBytes &&
+      candidate.fileHash.toLowerCase() === expected.fileHash.toLowerCase() &&
+      candidate.encrypted === false &&
+      candidate.createdAt === expected.createdAt &&
+      metadata.feature === expected.metadata.feature &&
+      Number(metadata.groupId) === expected.metadata.groupId &&
+      Number(metadata.width) === expected.metadata.width &&
+      Number(metadata.height) === expected.metadata.height
+    );
+  }
+
+  private isCalendarCoverManifest(
+    manifest: ReticulumResourceManifest
+  ): boolean {
+    return (
+      manifest.namespace === 'reticulum-group-resource' &&
+      manifest.metadata?.feature === 'reticulum-calendar-cover'
+    );
+  }
+
+  private isCurrentCalendarCover(
+    groupId: number,
+    eventId: string | undefined,
+    manifest: ReticulumResourceManifest
+  ): boolean {
+    if (!eventId) return false;
+    const cover = this.currentCalendarCover(groupId, eventId);
+    return !!cover && this.calendarCoverManifestsMatch(cover, manifest);
+  }
+
+  private isCurrentCalendarCoverFile(
+    groupId: number,
+    eventId: string | undefined,
+    fileHash: string,
+    sizeBytes?: number
+  ): boolean {
+    if (!eventId) return false;
+    const cover = this.currentCalendarCover(groupId, eventId);
+    return (
+      !!cover &&
+      cover.fileHash.toLowerCase() === fileHash.toLowerCase() &&
+      (sizeBytes == null || cover.sizeBytes === sizeBytes)
+    );
+  }
+
+  private reconcileCalendarCoverReference(
+    groupId: number,
+    eventId: string,
+    active = true,
+    projectedMutation?: ReticulumCalendarMutation | null
+  ): void {
+    if (!this.resourceStore) return;
+    const normalizedEventId = String(eventId || '')
+      .trim()
+      .toLowerCase();
+    if (!normalizedEventId) return;
+    const referenceEventId =
+      this.calendarCoverReferenceEventId(normalizedEventId);
+    const mutation =
+      projectedMutation === undefined
+        ? this.db.getCalendarProjectionMutation(groupId, normalizedEventId)
+        : projectedMutation;
+    const cover =
+      active && mutation?.operation === 'upsert'
+        ? mutation.state?.coverImage
+        : null;
+    // The signed calendar projection remains authoritative. Keep a revoked
+    // reference revivable in case a later valid upsert restores the same event
+    // and cover hash.
+    const staleReferenceState = 'inaccessible';
+    this.resourceStore.setLegacyCalendarCoverReferenceState({
+      groupId,
+      eventId: normalizedEventId,
+      state: staleReferenceState,
+    });
+    this.resourceStore.setReferenceState({
+      scopeType: 'group',
+      scopeId: groupId,
+      eventId: referenceEventId,
+      state: staleReferenceState,
+    });
+    if (!cover) return;
+    this.resourceStore.storeManifest(cover);
+    this.resourceStore.recordGroupReference({
+      fileHash: cover.fileHash,
+      groupId,
+      eventId: referenceEventId,
+      ownerId: cover.ownerId,
+      createdAt: cover.createdAt,
+      manifest: cover,
+    });
+  }
+
+  private reconcileCalendarCoverReferencesForGroup(
+    groupId: number,
+    active = true
+  ): void {
+    if (!this.resourceStore) return;
+    for (const mutation of this.db.getCalendarProjectionMutations(groupId)) {
+      this.tryReconcileCalendarCoverReference(
+        groupId,
+        mutation.eventId,
+        active,
+        mutation
+      );
+    }
+  }
+
+  private tryReconcileCalendarCoverReference(
+    groupId: number,
+    eventId: string,
+    active = true,
+    projectedMutation?: ReticulumCalendarMutation | null
+  ): void {
+    try {
+      this.reconcileCalendarCoverReference(
+        groupId,
+        eventId,
+        active,
+        projectedMutation
+      );
+    } catch (error) {
+      // The signed mutation is already committed. A resource-store failure
+      // must not hide the event or stop its network announcement; membership
+      // initialization will retry the reference reconciliation.
+      loggerWarn(
+        `[ReticulumChat] calendar_cover_reference_reconcile_failed group=${groupId} event=${eventId}`,
+        error
+      );
+    }
+  }
+
   private async publishLocalCalendarMutation(
     groupId: number,
     operation: 'upsert' | 'delete',
@@ -9269,7 +9473,17 @@ export class ReticulumChatManager extends EventEmitter {
       throw new Error('Calendar event not found');
     }
     const mutationId = nodeCrypto.randomUUID();
-    const timestamp = this.now();
+    const currentMutation = this.db.getCalendarProjectionMutation(
+      groupId,
+      normalizedEventId
+    );
+    // A local follow-up must always supersede the current projection, even
+    // when two actions happen within the same millisecond. Random mutation-ID
+    // ordering remains only the deterministic tie-breaker for concurrent peers.
+    const timestamp = Math.max(
+      this.now(),
+      (currentMutation?.timestamp ?? 0) + 1
+    );
     const signingFields = {
       type: 'RETICULUM_CALENDAR_MUTATION_V1',
       version: 1,
@@ -9316,6 +9530,7 @@ export class ReticulumChatManager extends EventEmitter {
     const resourceHash = hashReticulumCalendarResource(blob);
     const applied = this.db.upsertCalendarMutation(mutation, resourceHash);
     if (!applied.projected) throw new Error('Calendar event was superseded');
+    this.tryReconcileCalendarCoverReference(groupId, mutation.eventId);
     this.calendarStateFingerprintCache.delete(groupId);
     this.writeLocalCalendarNotification(groupId);
     this.emit('calendarChanged', {
@@ -9339,12 +9554,7 @@ export class ReticulumChatManager extends EventEmitter {
     input: unknown,
     eventId: string = nodeCrypto.randomUUID()
   ): Promise<ReticulumCalendarMutation> {
-    return this.publishLocalCalendarMutation(
-      groupId,
-      'upsert',
-      eventId,
-      input
-    );
+    return this.publishLocalCalendarMutation(groupId, 'upsert', eventId, input);
   }
 
   updateCalendarEvent(
@@ -10216,9 +10426,18 @@ export class ReticulumChatManager extends EventEmitter {
           resourceHash: hashReticulumCalendarResource(mutationBlob),
         });
       }
-      const changed = this.db
-        .upsertCalendarMutations(acceptedMutations)
-        .some((result) => result.projected);
+      const appliedMutations =
+        this.db.upsertCalendarMutations(acceptedMutations);
+      const projectedEventIds = new Set<string>();
+      appliedMutations.forEach((result, index) => {
+        if (result.projected) {
+          projectedEventIds.add(acceptedMutations[index].mutation.eventId);
+        }
+      });
+      for (const eventId of projectedEventIds) {
+        this.tryReconcileCalendarCoverReference(offer.groupId, eventId);
+      }
+      const changed = projectedEventIds.size > 0;
       if (changed) {
         this.calendarStateFingerprintCache.delete(offer.groupId);
         this.writeLocalCalendarNotification(offer.groupId);
@@ -12499,14 +12718,28 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'Resource is not for this group',
       };
     }
+    const isCalendarCover = this.isCalendarCoverManifest(manifest);
+    if (
+      isCalendarCover &&
+      (!eventId || !this.isCurrentCalendarCover(groupId, eventId, manifest))
+    ) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Calendar cover is not referenced by this event',
+      };
+    }
     this.resourceStore.storeManifest(manifest);
     if (eventId) {
       this.resourceStore.recordGroupReference({
         fileHash: manifest.fileHash,
         groupId,
-        eventId,
+        eventId: isCalendarCover
+          ? this.calendarCoverReferenceEventId(eventId)
+          : eventId,
         ownerId: manifest.ownerId,
         createdAt: manifest.createdAt,
+        ...(isCalendarCover ? { manifest } : {}),
       });
     }
     const candidatePeers = this.getResourceRequestPeers(eventId);

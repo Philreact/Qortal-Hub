@@ -227,6 +227,32 @@ describe('reticulum resource store', () => {
     ).toBe(false);
   });
 
+  it('does not partially register a group reference when its supplied manifest hash differs', () => {
+    const { store } = tempStore();
+    stores.push(store);
+    const fileHash = cryptoHash(Buffer.from('expected-reference-file'));
+    const mismatchedManifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      fileName: 'wrong.webp',
+      mimeType: 'image/webp',
+      sizeBytes: 10,
+      fileHash: cryptoHash(Buffer.from('different-reference-file')),
+      encrypted: false,
+      createdAt: 100_000,
+      metadata: { groupId: 1144 },
+    };
+
+    expect(() =>
+      store.recordGroupReference({
+        fileHash,
+        groupId: 1144,
+        eventId: 'calendar:event-a',
+        manifest: mismatchedManifest,
+      })
+    ).toThrow(/manifest hash mismatch/);
+    expect(store.listGroupReferences(fileHash)).toEqual([]);
+  });
+
   it('rejects conflicting physical metadata for the same content hash', () => {
     const { store } = tempStore();
     stores.push(store);

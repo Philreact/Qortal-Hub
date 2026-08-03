@@ -993,6 +993,20 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (
+      this.sql.includes('FROM rchat_calendar_events e') &&
+      this.sql.includes('JOIN rchat_calendar_mutations m')
+    ) {
+      const [groupId, eventId] = args;
+      const event = this.store.reticulumCalendarEvents.find(
+        (item) => item.group_id === groupId && item.event_id === eventId
+      );
+      if (!event) return undefined;
+      const mutation = this.store.reticulumCalendarMutations.find(
+        (item) => item.mutation_id === event.mutation_id
+      );
+      return mutation ? { mutation_json: mutation.mutation_json } : undefined;
+    }
     if (this.sql.includes('FROM rchat_calendar_mutations')) {
       const row = this.store.reticulumCalendarMutations.find(
         (item) => item.mutation_id === args[0]
@@ -2756,7 +2770,28 @@ class Statement {
     if (this.sql.includes('UPDATE reticulum_resource_refs')) {
       const values = args;
       let changes = 0;
-      if (this.sql.includes('SET expires_at = ?, updated_at = ?')) {
+      if (this.sql.includes("json_extract(metadata, '$.feature')")) {
+        const [state, updatedAt, groupId, eventId] = values;
+        for (const row of this.store.reticulumResourceRefs) {
+          let metadata: Record<string, unknown> | null = null;
+          try {
+            metadata = row.metadata ? JSON.parse(row.metadata) : null;
+          } catch {
+            metadata = null;
+          }
+          if (
+            row.scope_type === 'group' &&
+            row.scope_id === groupId &&
+            row.event_id === eventId &&
+            row.namespace === 'reticulum-group-resource' &&
+            metadata?.feature === 'reticulum-calendar-cover'
+          ) {
+            row.state = state;
+            row.updated_at = updatedAt;
+            changes += 1;
+          }
+        }
+      } else if (this.sql.includes('SET expires_at = ?, updated_at = ?')) {
         const [expiresAt, updatedAt, scopeType, scopeId, eventId] = values;
         for (const row of this.store.reticulumResourceRefs) {
           if (

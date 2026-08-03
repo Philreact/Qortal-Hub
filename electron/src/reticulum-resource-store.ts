@@ -861,6 +861,7 @@ export class ReticulumResourceStore {
     ownerId?: string;
     createdAt?: number;
     expiresAt?: number;
+    manifest?: ReticulumResourceManifest;
   }): void {
     const fileHash = String(input.fileHash || '').trim().toLowerCase();
     const groupId = Number(input.groupId);
@@ -874,6 +875,15 @@ export class ReticulumResourceStore {
       typeof input.ownerId === 'string' && input.ownerId.trim()
         ? input.ownerId.trim()
         : null;
+    const referenceManifest = input.manifest
+      ? normalizeManifest(input.manifest)
+      : this.getManifest(fileHash);
+    if (referenceManifest) {
+      this.validateManifest(referenceManifest);
+      if (referenceManifest.fileHash.toLowerCase() !== fileHash) {
+        throw new Error('Resource reference manifest hash mismatch');
+      }
+    }
     const now = this.now();
     this.stmtUpsertGroupRef.run(
       fileHash,
@@ -883,10 +893,9 @@ export class ReticulumResourceStore {
       Number.isFinite(input.createdAt) ? Number(input.createdAt) : now,
       now
     );
-    const manifest = this.getManifest(fileHash);
-    if (manifest && eventId) {
+    if (referenceManifest && eventId) {
       this.recordReference({
-        manifest,
+        manifest: referenceManifest,
         scopeType: 'group',
         scopeId: String(groupId),
         eventId,
@@ -1033,6 +1042,33 @@ export class ReticulumResourceStore {
     }
     const result = this.db.prepare(sql).run(...values);
     if (result.changes > 0) this.scheduleCleanup(`reference_${input.state}`);
+    return Number(result.changes);
+  }
+
+  setLegacyCalendarCoverReferenceState(input: {
+    groupId: number;
+    eventId: string;
+    state: ReticulumResourceReferenceState;
+  }): number {
+    const groupId = Number(input.groupId);
+    const eventId = String(input.eventId || '').trim().toLowerCase();
+    if (!Number.isInteger(groupId) || groupId <= 0 || !eventId) return 0;
+    const result = this.db
+      .prepare(
+        `UPDATE reticulum_resource_refs
+            SET state = ?, updated_at = ?
+          WHERE scope_type = 'group'
+            AND scope_id = ?
+            AND event_id = ?
+            AND namespace = 'reticulum-group-resource'
+            AND metadata IS NOT NULL
+            AND json_valid(metadata) = 1
+            AND json_extract(metadata, '$.feature') = 'reticulum-calendar-cover'`
+      )
+      .run(input.state, this.now(), String(groupId), eventId);
+    if (result.changes > 0) {
+      this.scheduleCleanup(`calendar_reference_${input.state}`);
+    }
     return Number(result.changes);
   }
 

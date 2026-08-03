@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import moment from 'moment-timezone';
+import nacl from 'tweetnacl';
 import {
   expandReticulumCalendarMutation,
   findNextReticulumCalendarOccurrence,
@@ -11,6 +12,16 @@ import {
   type ReticulumCalendarRecurrence,
 } from './reticulum-calendar';
 import { ReticulumChatDatabase } from './reticulum-chat-db';
+import {
+  ReticulumChatManager,
+  type ReticulumChatManagerOptions,
+} from './reticulum-chat';
+import {
+  base58Encode,
+  canonicalizeForSigning,
+  deriveAddressFromPublicKey,
+} from './presence';
+import { ReticulumResourceStore } from './reticulum-resource-store';
 import {
   byteLengthUtf8JsonWithBridgeSenderOnly,
   RT_RETICULUM_MAX_WIRE_JSON_BYTES,
@@ -48,6 +59,35 @@ const mutation = (
   authorPublicKey: 'public-key',
   signature: 'signature',
 });
+
+function createCalendarSigner(): {
+  address: string;
+  signLocalFields: NonNullable<ReticulumChatManagerOptions['signLocalFields']>;
+} {
+  const keyPair = nacl.sign.keyPair();
+  const publicKey = base58Encode(keyPair.publicKey);
+  const address = deriveAddressFromPublicKey(publicKey);
+  return {
+    address,
+    signLocalFields: async (fields) => {
+      const signedFields = {
+        ...fields,
+        authorAddress: address,
+        authorPublicKey: publicKey,
+      };
+      return {
+        authorAddress: address,
+        authorPublicKey: publicKey,
+        signature: base58Encode(
+          nacl.sign.detached(
+            new Uint8Array(canonicalizeForSigning(signedFields)),
+            keyPair.secretKey
+          )
+        ),
+      };
+    },
+  };
+}
 
 describe('Reticulum group calendar', () => {
   it('keeps the largest calendar resource notice inside the wire ceiling', () => {
@@ -244,6 +284,277 @@ describe('Reticulum group calendar', () => {
       ).toBe('2026-08-10T10:00');
     } finally {
       db.close();
+      fs.rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('registers, replaces, and revokes calendar cover references without using chat event references', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-calendar-cover-test-')
+    );
+    const resourceStore = new ReticulumResourceStore({
+      dbPath: path.join(root, 'resources.db'),
+      rootDir: path.join(root, 'resources'),
+      tempDir: path.join(root, 'temp'),
+    });
+    const signer = createCalendarSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: path.join(root, 'chat.db'),
+      resourceStore,
+      signLocalFields: signer.signLocalFields,
+      validateGroupAdmin: async () => true,
+      validateGroupMember: async (_groupId, address) =>
+        address === signer.address,
+    });
+    const groupId = 1144;
+    const eventId = uuid('20');
+    const sourcePath = path.join(root, 'cover.webp');
+    fs.writeFileSync(sourcePath, Buffer.from('calendar-cover'));
+    const cover = resourceStore.importLocalFile({
+      sourcePath,
+      namespace: 'reticulum-group-resource',
+      ownerId: `${groupId}:${signer.address}`,
+      fileName: 'cover.webp',
+      mimeType: 'image/webp',
+      encrypted: false,
+      metadata: {
+        feature: 'reticulum-calendar-cover',
+        groupId,
+        width: 1200,
+        height: 675,
+      },
+    });
+    const eventInput = {
+      title: 'Cover test',
+      description: '',
+      location: '',
+      link: '',
+      coverImage: cover,
+      allDay: false,
+      timezone: 'Europe/Bucharest',
+      startLocal: '2026-08-10T10:00:00',
+      endLocal: '2026-08-10T11:00:00',
+      recurrence: null,
+    };
+    try {
+      resourceStore.recordGroupReference({
+        fileHash: cover.fileHash,
+        groupId,
+        eventId,
+        ownerId: cover.ownerId,
+        createdAt: cover.createdAt,
+      });
+      manager.setLocalGroupMemberships([
+        {
+          groupId,
+          localAddress: signer.address,
+          isAdmin: true,
+          adminStatusAuthoritative: true,
+        },
+      ]);
+      await manager.createCalendarEvent(groupId, eventInput, eventId);
+      expect(
+        resourceStore.hasLiveReference(
+          cover.fileHash,
+          'group',
+          groupId,
+          `calendar:${eventId}`
+        )
+      ).toBe(true);
+      expect(
+        resourceStore.hasLiveReference(
+          cover.fileHash,
+          'group',
+          groupId,
+          eventId
+        )
+      ).toBe(false);
+
+      await manager.updateCalendarEvent(groupId, eventId, {
+        ...eventInput,
+        coverImage: null,
+      });
+      expect(
+        resourceStore.hasLiveReference(
+          cover.fileHash,
+          'group',
+          groupId,
+          `calendar:${eventId}`
+        )
+      ).toBe(false);
+
+      const sharedPath = path.join(root, 'shared.webp');
+      fs.writeFileSync(sharedPath, Buffer.from('shared-chat-calendar-cover'));
+      resourceStore.importLocalFile({
+        sourcePath: sharedPath,
+        namespace: 'reticulum-dm-resource',
+        ownerId: signer.address,
+        fileName: 'chat-image.webp',
+        mimeType: 'image/webp',
+        encrypted: false,
+        metadata: { conversationId: 'existing-dm-conversation' },
+      });
+      const sharedCover = resourceStore.importLocalFile({
+        sourcePath: sharedPath,
+        namespace: 'reticulum-group-resource',
+        ownerId: `${groupId}:${signer.address}`,
+        fileName: 'shared-cover.webp',
+        mimeType: 'image/webp',
+        encrypted: false,
+        metadata: {
+          feature: 'reticulum-calendar-cover',
+          groupId,
+          width: 1200,
+          height: 675,
+        },
+      });
+      const sharedEventId = uuid('21');
+      await manager.createCalendarEvent(
+        groupId,
+        { ...eventInput, coverImage: sharedCover },
+        sharedEventId
+      );
+      expect(
+        resourceStore.getReferenceManifest(
+          sharedCover.fileHash,
+          'group',
+          groupId,
+          `calendar:${sharedEventId}`
+        )?.metadata
+      ).toMatchObject({
+        feature: 'reticulum-calendar-cover',
+        groupId,
+      });
+      const providerManifest = resourceStore.getManifest(sharedCover.fileHash);
+      const canServeRequest = (manager as any).resourceTransfer
+        .canServeRequest as (
+        contextId: number,
+        request: Record<string, unknown>,
+        manifest: NonNullable<typeof providerManifest>
+      ) => Promise<boolean>;
+      expect(providerManifest).not.toBeNull();
+      expect(
+        await canServeRequest(
+          groupId,
+          {
+            eventId: sharedEventId,
+            fileHash: sharedCover.fileHash,
+            ranges: [{ startByte: 0, endByteExclusive: sharedCover.sizeBytes }],
+            requesterAddress: signer.address,
+          },
+          providerManifest!
+        )
+      ).toBe(true);
+
+      const referenceFailureEventId = uuid('22');
+      const referenceSpy = vi
+        .spyOn(resourceStore, 'recordGroupReference')
+        .mockImplementationOnce(() => {
+          throw new Error('simulated reference database failure');
+        });
+      await expect(
+        manager.createCalendarEvent(
+          groupId,
+          { ...eventInput, coverImage: sharedCover },
+          referenceFailureEventId
+        )
+      ).resolves.toMatchObject({ eventId: referenceFailureEventId });
+      referenceSpy.mockRestore();
+      expect(
+        manager
+          .getCalendarEvents(
+            groupId,
+            moment.tz('2026-08-10T00:00:00', 'Europe/Bucharest').valueOf(),
+            moment.tz('2026-08-11T00:00:00', 'Europe/Bucharest').valueOf()
+          )
+          .some((event) => event.eventId === referenceFailureEventId)
+      ).toBe(true);
+      expect(
+        await canServeRequest(
+          groupId,
+          {
+            eventId: sharedEventId,
+            fileHash: sharedCover.fileHash,
+            ranges: [{ startByte: 0, endByteExclusive: sharedCover.sizeBytes }],
+            requesterAddress: 'not-a-current-group-member',
+          },
+          providerManifest!
+        )
+      ).toBe(false);
+      manager.setLocalGroupMemberships([]);
+      expect(
+        resourceStore.hasLiveReference(
+          sharedCover.fileHash,
+          'group',
+          groupId,
+          `calendar:${sharedEventId}`
+        )
+      ).toBe(false);
+      manager.setLocalGroupMemberships([
+        {
+          groupId,
+          localAddress: signer.address,
+          isAdmin: true,
+          adminStatusAuthoritative: true,
+        },
+      ]);
+      expect(
+        resourceStore.hasLiveReference(
+          sharedCover.fileHash,
+          'group',
+          groupId,
+          `calendar:${sharedEventId}`
+        )
+      ).toBe(true);
+      await manager.deleteCalendarEvent(groupId, sharedEventId);
+      expect(
+        resourceStore.hasLiveReference(
+          sharedCover.fileHash,
+          'group',
+          groupId,
+          `calendar:${sharedEventId}`
+        )
+      ).toBe(false);
+      expect(
+        await canServeRequest(
+          groupId,
+          {
+            eventId: sharedEventId,
+            fileHash: sharedCover.fileHash,
+            ranges: [{ startByte: 0, endByteExclusive: sharedCover.sizeBytes }],
+            requesterAddress: signer.address,
+          },
+          providerManifest!
+        )
+      ).toBe(false);
+      await manager.createCalendarEvent(
+        groupId,
+        { ...eventInput, coverImage: sharedCover },
+        sharedEventId
+      );
+      expect(
+        resourceStore.hasLiveReference(
+          sharedCover.fileHash,
+          'group',
+          groupId,
+          `calendar:${sharedEventId}`
+        )
+      ).toBe(true);
+      expect(
+        await canServeRequest(
+          groupId,
+          {
+            eventId: sharedEventId,
+            fileHash: sharedCover.fileHash,
+            ranges: [{ startByte: 0, endByteExclusive: sharedCover.sizeBytes }],
+            requesterAddress: signer.address,
+          },
+          providerManifest!
+        )
+      ).toBe(true);
+    } finally {
+      manager.close();
+      resourceStore.close();
       fs.rmSync(root, { force: true, recursive: true });
     }
   });

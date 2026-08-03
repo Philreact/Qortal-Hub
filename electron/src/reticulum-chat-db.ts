@@ -12532,6 +12532,27 @@ export class ReticulumChatDatabase {
     return output;
   }
 
+  getCalendarProjectionMutation(
+    groupId: number,
+    eventId: string
+  ): ReticulumCalendarMutation | null {
+    const row = this.db
+      .prepare(
+        `SELECT m.mutation_json
+           FROM rchat_calendar_events e
+           JOIN rchat_calendar_mutations m ON m.mutation_id = e.mutation_id
+          WHERE e.group_id = ? AND e.event_id = ?
+          LIMIT 1`
+      )
+      .get(groupId, eventId) as { mutation_json?: string } | undefined;
+    if (!row?.mutation_json) return null;
+    try {
+      return JSON.parse(row.mutation_json) as ReticulumCalendarMutation;
+    } catch {
+      return null;
+    }
+  }
+
   getCalendarProjectionMutationIds(groupId: number): string[] {
     const rows = this.db
       .prepare(
