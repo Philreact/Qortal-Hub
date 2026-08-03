@@ -4,7 +4,7 @@ import { getBaseApiReact } from '../../App';
 // Scoring contract and rationale: docs/reticulum-group-score.md
 
 const GROUP_SCORE_CACHE_KEY = 'qortal-reticulum-group-score-snapshot-v1';
-const GROUP_SCORE_VERSION = 2;
+const GROUP_SCORE_VERSION = 3;
 const GROUP_SCORE_SLOT_MS = 6 * 60 * 60_000;
 const GROUP_SCORE_MAX_STALE_MS = 24 * 60 * 60_000;
 const UNKNOWN_GROUP_REFRESH_COOLDOWN_MS = 5 * 60_000;
@@ -40,15 +40,17 @@ export type ReticulumGroupScoreSnapshot = {
   capturedAt: number;
   evaluatedGroupIds: string[];
   groups: Record<string, ReticulumGroupScoreBreakdown>;
+  holdings: Record<string, number>;
   networkOffsetMs: number;
   slot: number;
-  version: 2;
+  version: 3;
 };
 
 const EMPTY_SNAPSHOT: ReticulumGroupScoreSnapshot = {
   capturedAt: 0,
   evaluatedGroupIds: [],
   groups: {},
+  holdings: {},
   networkOffsetMs: 0,
   slot: -1,
   version: GROUP_SCORE_VERSION,
@@ -168,7 +170,9 @@ const readCachedSnapshot = (): ReticulumGroupScoreSnapshot => {
       parsed.version !== GROUP_SCORE_VERSION ||
       !Array.isArray(parsed.evaluatedGroupIds) ||
       !parsed.groups ||
-      typeof parsed.groups !== 'object'
+      typeof parsed.groups !== 'object' ||
+      !parsed.holdings ||
+      typeof parsed.holdings !== 'object'
     ) {
       return EMPTY_SNAPSHOT;
     }
@@ -243,6 +247,13 @@ export const refreshReticulumGroupScores = async (
       const capturedAt = Date.now() + networkOffsetMs;
       const slot = Math.floor(capturedAt / GROUP_SCORE_SLOT_MS);
       const publicGroups = balances.filter(isPublicGroup);
+      const holdings = Object.fromEntries(
+        balances.flatMap((group: any) => {
+          const groupId = Number(group?.groupId);
+          if (!Number.isInteger(groupId) || groupId <= 0) return [];
+          return [[String(groupId), Math.max(0, Number(group?.balance) || 0)]];
+        })
+      );
       const publicGroupIds = publicGroups
         .map((group: any) => Number(group?.groupId))
         .filter((groupId: number) => Number.isInteger(groupId) && groupId > 0);
@@ -329,6 +340,7 @@ export const refreshReticulumGroupScores = async (
         capturedAt,
         evaluatedGroupIds: [...publicIds],
         groups: nextGroups,
+        holdings,
         networkOffsetMs,
         slot,
         version: GROUP_SCORE_VERSION,
