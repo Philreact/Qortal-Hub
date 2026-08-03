@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
+import { appLockedAtom } from '../../../atoms/presence';
 import {
   applyConnectFourMove,
   connectFourDropRow,
@@ -260,6 +262,7 @@ export function useQortalLandGame(options: Options) {
     onPlayerSeen,
     resolvePlayerName,
   } = options;
+  const isAppLocked = useAtomValue(appLockedAtom);
   const [transportReady, setTransportReady] = useState(false);
   const [localDestinationHash, setLocalDestinationHash] = useState('');
   const [match, setMatch] = useState<Match | null>(null);
@@ -1206,7 +1209,10 @@ export function useQortalLandGame(options: Options) {
     send('SEND_GAME_MESSAGE', { matchId: current.matchId, message: { type: 'ROUND_REQUEST', messageId: crypto.randomUUID(), roundId, requesterNonce, ...gameConfig(current.game) } });
   }, [onActivity, replaceMatch, send, transportReady]);
 
-  const modal = match?.game === 'checkers' ? (
+  // A dialog opened after the authenticated lock screen becomes MUI's newest
+  // focus trap even though the lock screen is visually above it. Preserve the
+  // game state while locked, but do not mount game UI that can steal focus.
+  const modal = isAppLocked ? null : match?.game === 'checkers' ? (
     <CheckersGameDialog
       address={address}
       match={match}

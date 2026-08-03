@@ -418,7 +418,12 @@ class QortalLandGameManager:
                 pass
         with self.socket_media_lock:
             self.socket_media_out.clear()
-        self._send_direct(websocket, {"type": "TRANSPORT_STATE", "state": "ready", "instanceId": self.instance_id})
+        if not self._send_direct(websocket, {"type": "TRANSPORT_STATE", "state": "ready", "instanceId": self.instance_id}):
+            with self.socket_lock:
+                if self.socket is websocket:
+                    self.socket = None
+            websocket.close(1013, "transport ready delivery failed")
+            return
         if not self.enqueue(self._proximity_renderer_connected, ()):
             self.send_event("PROXIMITY_ERROR", {"code": "control_queue_full"})
         with self.lock:

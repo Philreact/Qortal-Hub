@@ -656,6 +656,35 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         self.assertEqual(manager.land_context["address"], self.address)
         self.assertEqual(valid.timeout, 2.0)
 
+    def test_websocket_closes_when_ready_state_cannot_be_delivered(self):
+        manager, _events = self.make_manager()
+        manager.token = "token"
+        manager.instance_id = "instance"
+
+        class Request:
+            headers = {"Origin": "capacitor-electron://-"}
+
+        class Socket:
+            request = Request()
+
+            def __init__(self):
+                self.closed = None
+
+            def recv(self, timeout=None):
+                return json.dumps({"type": "AUTH", "token": "token", "instanceId": "instance"})
+
+            def send(self, _value):
+                raise OSError("socket closed")
+
+            def close(self, code, reason):
+                self.closed = (code, reason)
+
+        socket = Socket()
+        manager._socket_handler(socket)
+
+        self.assertEqual(socket.closed, (1013, "transport ready delivery failed"))
+        self.assertIsNone(manager.socket)
+
     def test_development_origin_parsing_rejects_non_loopback_userinfo(self):
         manager, _events = self.make_manager()
         manager.development = True

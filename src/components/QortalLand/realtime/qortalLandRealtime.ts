@@ -14,14 +14,16 @@ type BootstrapApi = {
 };
 
 const reconnectDelays = [250, 500, 1_000, 2_000, 5_000];
+const transportReadyTimeoutMs = 5_000;
 
-class QortalLandRealtimeClient {
+export class QortalLandRealtimeClient {
   private socket: WebSocket | null = null;
   private listeners = new Set<Listener>();
   private binaryListeners = new Set<BinaryListener>();
   private stateListeners = new Set<StateListener>();
   private restartDispose: (() => void) | null = null;
   private reconnectTimer: number | null = null;
+  private readyTimer: number | null = null;
   private reconnectAttempt = 0;
   private connecting = false;
   private connectionEpoch = 0;
@@ -36,26 +38,35 @@ class QortalLandRealtimeClient {
   acquire(): () => void {
     this.running = true;
     if (!this.restartDispose) {
-      this.restartDispose = this.api()?.onTransportRestarted(() => {
-        this.connectionEpoch += 1;
-        this.emitEvent({ type: 'TRANSPORT_RESTARTED' });
-        this.setReady(false);
-        this.reconnectAttempt = 0;
-        const socket = this.socket;
-        this.socket = null;
-        socket?.close();
-        this.scheduleConnect(0);
-      }) ?? null;
+      this.restartDispose =
+        this.api()?.onTransportRestarted(() => {
+          this.connectionEpoch += 1;
+          this.emitEvent({ type: 'TRANSPORT_RESTARTED' });
+          this.setReady(false);
+          this.reconnectAttempt = 0;
+          this.clearReadyTimer();
+          const socket = this.socket;
+          this.socket = null;
+          socket?.close();
+          this.scheduleConnect(0);
+        }) ?? null;
     }
     void this.connect();
     return () => {
-      if (this.listeners.size || this.binaryListeners.size || this.stateListeners.size) return;
+      if (
+        this.listeners.size ||
+        this.binaryListeners.size ||
+        this.stateListeners.size
+      )
+        return;
       this.running = false;
       this.connectionEpoch += 1;
       this.restartDispose?.();
       this.restartDispose = null;
-      if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+      if (this.reconnectTimer !== null)
+        window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      this.clearReadyTimer();
       const socket = this.socket;
       this.socket = null;
       socket?.close(1000, 'Qortal Land unmounted');
@@ -92,14 +103,22 @@ class QortalLandRealtimeClient {
   }
 
   send(command: Record<string, unknown>): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.ready) {
+    if (
+      !this.socket ||
+      this.socket.readyState !== WebSocket.OPEN ||
+      !this.ready
+    ) {
       throw new Error('Qortal Land realtime transport is unavailable');
     }
     this.socket.send(JSON.stringify(command));
   }
 
   sendBinary(frame: ArrayBuffer | Uint8Array): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.ready) {
+    if (
+      !this.socket ||
+      this.socket.readyState !== WebSocket.OPEN ||
+      !this.ready
+    ) {
       throw new Error('Qortal Land realtime transport is unavailable');
     }
     this.socket.send(frame);
@@ -137,9 +156,42 @@ class QortalLandRealtimeClient {
     }
   }
 
+  private clearReadyTimer(): void {
+    if (this.readyTimer === null) return;
+    window.clearTimeout(this.readyTimer);
+    this.readyTimer = null;
+  }
+
+  private abandonSocket(socket: WebSocket, reason: string): void {
+    if (this.socket !== socket) return;
+    this.clearReadyTimer();
+    this.socket = null;
+    this.setReady(false);
+    console.warn(`[QortalLandRealtime] ${reason}; reconnecting`);
+    try {
+      socket.close(4001, reason);
+    } catch {
+      // The stale socket is already detached from the client.
+    }
+    this.scheduleConnect();
+  }
+
+  private armReadyTimer(socket: WebSocket): void {
+    this.clearReadyTimer();
+    this.readyTimer = window.setTimeout(() => {
+      this.readyTimer = null;
+      if (this.socket !== socket || this.ready) return;
+      this.abandonSocket(socket, 'transport readiness timed out');
+    }, transportReadyTimeoutMs);
+  }
+
   private scheduleConnect(delay?: number): void {
     if (!this.running || this.reconnectTimer !== null) return;
-    const retryDelay = delay ?? reconnectDelays[Math.min(this.reconnectAttempt, reconnectDelays.length - 1)];
+    const retryDelay =
+      delay ??
+      reconnectDelays[
+        Math.min(this.reconnectAttempt, reconnectDelays.length - 1)
+      ];
     this.reconnectAttempt += 1;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -153,7 +205,8 @@ class QortalLandRealtimeClient {
     if (!api) return;
     const epoch = this.connectionEpoch;
     this.connecting = true;
-    let bootstrap: Awaited<ReturnType<BootstrapApi['getTransportBootstrap']>> = null;
+    let bootstrap: Awaited<ReturnType<BootstrapApi['getTransportBootstrap']>> =
+      null;
     try {
       bootstrap = await api.getTransportBootstrap();
     } catch {
@@ -178,13 +231,20 @@ class QortalLandRealtimeClient {
     this.instanceId = bootstrap.instanceId;
     socket.binaryType = 'arraybuffer';
     this.socket = socket;
+    this.armReadyTimer(socket);
     socket.addEventListener('open', () => {
       if (this.socket !== socket || !this.running) return socket.close();
-      socket.send(JSON.stringify({
-        type: 'AUTH',
-        token: bootstrap?.token,
-        instanceId: bootstrap?.instanceId,
-      }));
+      try {
+        socket.send(
+          JSON.stringify({
+            type: 'AUTH',
+            token: bootstrap?.token,
+            instanceId: bootstrap?.instanceId,
+          })
+        );
+      } catch {
+        this.abandonSocket(socket, 'transport authentication send failed');
+      }
     });
     socket.addEventListener('message', (message) => {
       if (this.socket !== socket) return;
@@ -195,7 +255,8 @@ class QortalLandRealtimeClient {
       let event: QortalLandRealtimeEvent;
       try {
         const parsed = JSON.parse(String(message.data));
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+          return;
         event = parsed as QortalLandRealtimeEvent;
       } catch {
         return;
@@ -203,17 +264,23 @@ class QortalLandRealtimeClient {
       if (event.type === 'TRANSPORT_STATE') {
         const nextReady = event.state === 'ready';
         this.setReady(nextReady);
-        if (nextReady) this.reconnectAttempt = 0;
+        if (nextReady) {
+          this.clearReadyTimer();
+          this.reconnectAttempt = 0;
+        }
       }
       this.emitEvent(event);
     });
     socket.addEventListener('close', () => {
       if (this.socket !== socket) return;
+      this.clearReadyTimer();
       this.socket = null;
       this.setReady(false);
       this.scheduleConnect();
     });
-    socket.addEventListener('error', () => socket.close());
+    socket.addEventListener('error', () => {
+      this.abandonSocket(socket, 'transport socket failed');
+    });
   }
 }
 
