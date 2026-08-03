@@ -18,6 +18,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  ClickAwayListener,
   Dialog,
   DialogActions,
   DialogContent,
@@ -29,7 +30,7 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
-  Popover,
+  Popper,
   Tooltip,
   Typography,
   useTheme,
@@ -93,6 +94,10 @@ import {
   parseReticulumQAppLinks,
   ReticulumQAppLinkPreviews,
 } from './ReticulumQAppLinkPreview';
+import {
+  parseReticulumEventLinks,
+  ReticulumEventLinkPreviews,
+} from './ReticulumEventLinkPreview';
 import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
@@ -125,11 +130,11 @@ const formatReticulumExpiry = (value: number | null): string => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'No Expiry';
   const pad = (part: number) => String(part).padStart(2, '0');
-  return `${pad(date.getDate())}/${pad(
-    date.getMonth() + 1
-  )}/${date.getFullYear()} | ${pad(date.getHours())}:${pad(
-    date.getMinutes()
-  )}`;
+  const monthAndDay = date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+  return `${monthAndDay} | ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
 const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
 
@@ -397,8 +402,8 @@ export const MessageItemComponent = ({
   const highlightOwnReticulumMessages = useAtomValue(
     reticulumHighlightOwnMessagesAtom
   );
-  const [anchorEl, setAnchorEl] = useState(null);
-  const [selectedReaction, setSelectedReaction] = useState(null);
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const [selectedReaction, setSelectedReaction] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState(null);
   const [isUserInfoResolved, setIsUserInfoResolved] = useState(false);
   const [isReticulumMinter, setIsReticulumMinter] = useState(false);
@@ -438,13 +443,25 @@ export const MessageItemComponent = ({
   const isOfficialGroupWelcome = Boolean(
     reticulumChatEnabled && groupWelcomeSystem
   );
-  const displaySenderName = isOfficialGroupWelcome
-    ? reticulumGroupDisplayName || groupWelcomeSystem?.groupName || 'Group'
+  const calendarSystem =
+    reticulumChatEnabled &&
+    message?.syntheticReticulumCalendarSystem === true &&
+    typeof message?.qchatSystem?.type === 'string' &&
+    message.qchatSystem.type.startsWith('calendar-event-') &&
+    Number(message.qchatSystem.groupId) === Number(message?.groupId)
+      ? message.qchatSystem
+      : null;
+  const officialGroupSystem = groupWelcomeSystem || calendarSystem;
+  const isOfficialGroupSystem = Boolean(
+    isOfficialGroupWelcome || calendarSystem
+  );
+  const displaySenderName = isOfficialGroupSystem
+    ? reticulumGroupDisplayName || officialGroupSystem?.groupName || 'Group'
     : message?.senderName || message?.sender;
 
   useEffect(() => {
     const getInfo = async () => {
-      if (isOfficialGroupWelcome) {
+      if (isOfficialGroupSystem) {
         setUserInfo(null);
         setIsUserInfoResolved(true);
         return;
@@ -468,7 +485,7 @@ export const MessageItemComponent = ({
     getInfo();
   }, [
     getIndividualUserInfo,
-    isOfficialGroupWelcome,
+    isOfficialGroupSystem,
     message?.sender,
     reticulumChatEnabled,
   ]);
@@ -477,9 +494,9 @@ export const MessageItemComponent = ({
     let cancelled = false;
     const senderAddress = message?.sender;
 
-    if (!reticulumChatEnabled || !senderAddress || isOfficialGroupWelcome) {
+    if (!reticulumChatEnabled || !senderAddress || isOfficialGroupSystem) {
       setIsReticulumMinter(false);
-      setIsReticulumMinterResolved(isOfficialGroupWelcome);
+      setIsReticulumMinterResolved(isOfficialGroupSystem);
       return () => {
         cancelled = true;
       };
@@ -497,7 +514,7 @@ export const MessageItemComponent = ({
     return () => {
       cancelled = true;
     };
-  }, [isOfficialGroupWelcome, message?.sender, reticulumChatEnabled]);
+  }, [isOfficialGroupSystem, message?.sender, reticulumChatEnabled]);
 
   // Defer only main message body so generateHTML runs when React has time (reduces scroll-time CPU spikes).
   // Reply block uses reply/replyExpiredMeta directly so the reply preview always shows.
@@ -513,17 +530,29 @@ export const MessageItemComponent = ({
   }, [deferredMessage?.messageText, deferredMessage?.editTimestamp]);
 
   const reticulumInviteSource = useMemo(
-    () =>
-      String(
-        deferredMessage?.messageText ??
-          deferredMessage?.text ??
-          message?.decryptedData?.data?.message ??
-          ''
-      ),
+    () => {
+      const candidates = reticulumChatEnabled
+        ? [
+            deferredMessage?.messageText,
+            deferredMessage?.text,
+            message?.decryptedData?.data?.message,
+          ]
+        : [
+            deferredMessage?.text,
+            message?.decryptedData?.data?.message,
+            deferredMessage?.messageText,
+          ];
+      for (const candidate of candidates) {
+        const normalized = normalizeMessageHtmlContent(candidate);
+        if (normalized) return normalized;
+      }
+      return '';
+    },
     [
       deferredMessage?.messageText,
       deferredMessage?.text,
       message?.decryptedData?.data?.message,
+      reticulumChatEnabled,
     ]
   );
   const reticulumQAppPreviewLinks = useMemo(
@@ -534,6 +563,17 @@ export const MessageItemComponent = ({
           )
         : [],
     [reticulumChatEnabled, reticulumInviteSource]
+  );
+  const reticulumEventPreviewLinks = useMemo(
+    () =>
+      parseReticulumEventLinks(deferredMessage).map(
+        (previewLink) => previewLink.link
+      ),
+    [deferredMessage]
+  );
+  const reticulumHiddenPreviewLinks = useMemo(
+    () => [...reticulumQAppPreviewLinks, ...reticulumEventPreviewLinks],
+    [reticulumEventPreviewLinks, reticulumQAppPreviewLinks]
   );
 
   const htmlReply = useMemo(() => {
@@ -558,14 +598,14 @@ export const MessageItemComponent = ({
 
   const userAvatarUrl = useMemo(() => {
     if (
-      isOfficialGroupWelcome &&
+      isOfficialGroupSystem &&
       (reticulumGroupAvatarOwnerName ||
-        groupWelcomeSystem?.groupAvatarOwnerName) &&
-      groupWelcomeSystem?.groupId
+        officialGroupSystem?.groupAvatarOwnerName) &&
+      officialGroupSystem?.groupId
     ) {
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-        reticulumGroupAvatarOwnerName || groupWelcomeSystem.groupAvatarOwnerName
-      )}/qortal_group_avatar_${groupWelcomeSystem.groupId}?async=true`;
+        reticulumGroupAvatarOwnerName || officialGroupSystem.groupAvatarOwnerName
+      )}/qortal_group_avatar_${officialGroupSystem.groupId}?async=true`;
     }
     return message?.senderName
       ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${
@@ -573,10 +613,10 @@ export const MessageItemComponent = ({
         }/qortal_avatar?async=true`
       : '';
   }, [
-    groupWelcomeSystem?.groupAvatarOwnerName,
-    groupWelcomeSystem?.groupId,
-    isOfficialGroupWelcome,
+    isOfficialGroupSystem,
     message?.senderName,
+    officialGroupSystem?.groupAvatarOwnerName,
+    officialGroupSystem?.groupId,
     reticulumGroupAvatarOwnerName,
   ]);
 
@@ -1864,11 +1904,11 @@ export const MessageItemComponent = ({
         ));
   const isOwnReticulumDeletable =
     isOwn &&
-    !isOfficialGroupWelcome &&
+    !isOfficialGroupSystem &&
     message?.reticulumChat &&
     typeof onDelete === 'function';
   const isOwnReticulumEditable = canEditOwnReticulumMessage({
-    isOfficialGroupWelcome,
+    isOfficialGroupWelcome: isOfficialGroupSystem,
     message,
     myAddress,
   });
@@ -1918,7 +1958,7 @@ export const MessageItemComponent = ({
 
   const senderStatus = useStatus(message?.sender);
   const reticulumUserCard =
-    reticulumChatEnabled && message?.sender && !isOfficialGroupWelcome
+    reticulumChatEnabled && message?.sender && !isOfficialGroupSystem
       ? {
           address: message.sender,
           avatarUrl: userAvatarUrl,
@@ -2131,7 +2171,7 @@ export const MessageItemComponent = ({
             position: 'relative',
             transition: 'background-color 0.1s ease',
             width: '100%',
-            ...(isOfficialGroupWelcome && {
+            ...(isOfficialGroupSystem && {
               backgroundColor: alpha(theme.palette.primary.main, 0.085),
               boxShadow: `inset 3px 0 0 ${alpha(
                 theme.palette.primary.main,
@@ -2145,7 +2185,7 @@ export const MessageItemComponent = ({
             ...(isOwn &&
               reticulumChatEnabled &&
               highlightOwnReticulumMessages &&
-              !isOfficialGroupWelcome &&
+              !isOfficialGroupSystem &&
               !isScrollTarget && {
                 backgroundColor: alpha(
                   theme.palette.mode === 'dark'
@@ -2187,7 +2227,7 @@ export const MessageItemComponent = ({
               },
               '&:hover': {
                 backgroundColor: reticulumChatEnabled
-                  ? isOfficialGroupWelcome || isCurrentUserMentioned
+                  ? isOfficialGroupSystem || isCurrentUserMentioned
                     ? isCurrentUserMentioned
                       ? alpha(theme.palette.warning.main, 0.1)
                       : alpha(theme.palette.primary.main, 0.14)
@@ -2239,7 +2279,7 @@ export const MessageItemComponent = ({
             >
               <WrapperUserAction
                 disabled={
-                  isOfficialGroupWelcome ||
+                  isOfficialGroupSystem ||
                   (!reticulumChatEnabled && myAddress === message?.sender)
                 }
                 address={message?.sender}
@@ -2249,7 +2289,7 @@ export const MessageItemComponent = ({
                 reticulumUserCard={reticulumUserCard}
                 trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
               >
-                {isOfficialGroupWelcome ? (
+                {isOfficialGroupSystem ? (
                   <Avatar
                     alt={displaySenderName}
                     src={userAvatarUrl}
@@ -2273,7 +2313,7 @@ export const MessageItemComponent = ({
                       },
                     }}
                   >
-                    {(groupWelcomeSystem?.groupName || 'G').charAt(0)}
+                    {(officialGroupSystem?.groupName || 'G').charAt(0)}
                   </Avatar>
                 ) : reticulumMinterLevel !== null ? (
                   <MinterAvatarOrnament
@@ -2409,7 +2449,7 @@ export const MessageItemComponent = ({
               >
                 <WrapperUserAction
                   disabled={
-                    isOfficialGroupWelcome ||
+                    isOfficialGroupSystem ||
                     (!reticulumChatEnabled && myAddress === message?.sender)
                   }
                   address={message?.sender}
@@ -2422,7 +2462,7 @@ export const MessageItemComponent = ({
                   <Typography
                     sx={{
                       color: reticulumChatEnabled
-                        ? isOfficialGroupWelcome
+                        ? isOfficialGroupSystem
                           ? theme.palette.mode === 'light'
                             ? theme.palette.primary.dark
                             : theme.palette.primary.light
@@ -2459,7 +2499,7 @@ export const MessageItemComponent = ({
                 </WrapperUserAction>
 
                 {reticulumChatEnabled &&
-                  !isOfficialGroupWelcome &&
+                  !isOfficialGroupSystem &&
                   reticulumMemberRole && (
                     <ReticulumRoleBadge
                       color={reticulumMemberRoleColor}
@@ -2968,6 +3008,7 @@ export const MessageItemComponent = ({
                 <ReticulumQAppLinkPreviews source={reticulumInviteSource} />
               </>
             )}
+            <ReticulumEventLinkPreviews source={deferredMessage} />
 
             {/* Message body - show only one of htmlText or message.text to avoid duplicate for open groups */}
             {qchatFileTransfer ? (
@@ -3086,7 +3127,7 @@ export const MessageItemComponent = ({
                 trailingContent={
                   collapseGroupedHeader ? reticulumExpiringSoonLabel : null
                 }
-                hiddenQortalUrls={reticulumQAppPreviewLinks}
+                hiddenQortalUrls={reticulumHiddenPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
@@ -3095,7 +3136,7 @@ export const MessageItemComponent = ({
                 }
                 reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 textColor={
-                  isOfficialGroupWelcome
+                  isOfficialGroupSystem
                     ? theme.palette.mode === 'light'
                       ? theme.palette.primary.dark
                       : theme.palette.primary.light
@@ -3108,7 +3149,7 @@ export const MessageItemComponent = ({
                 trailingContent={
                   collapseGroupedHeader ? reticulumExpiringSoonLabel : null
                 }
-                hiddenQortalUrls={reticulumQAppPreviewLinks}
+                hiddenQortalUrls={reticulumHiddenPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
@@ -3117,7 +3158,7 @@ export const MessageItemComponent = ({
                 }
                 reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                 textColor={
-                  isOfficialGroupWelcome
+                  isOfficialGroupSystem
                     ? theme.palette.mode === 'light'
                       ? theme.palette.primary.dark
                       : theme.palette.primary.light
@@ -3841,6 +3882,11 @@ export const MessageItemComponent = ({
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
+                          handleReaction(reaction, message, !isMine);
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
                           setAnchorEl(event.currentTarget);
                           setSelectedReaction(reaction);
                         }}
@@ -3892,39 +3938,63 @@ export const MessageItemComponent = ({
 
             {/* Reaction popover — zIndex 1400 so it appears above GlobalChatWidget (1300) */}
             {selectedReaction && (
-              <Popover
+              <Popper
                 open={Boolean(anchorEl)}
                 anchorEl={anchorEl}
-                onClose={() => {
-                  setAnchorEl(null);
-                  setSelectedReaction(null);
-                }}
-                anchorOrigin={{
-                  vertical: 'top',
-                  horizontal: 'center',
-                }}
-                transformOrigin={{
-                  vertical: 'bottom',
-                  horizontal: 'center',
-                }}
-                slotProps={{
-                  root: {
-                    sx: { zIndex: 1400 },
+                container={
+                  anchorEl?.closest('[data-reticulum-chat-root="true"]') ||
+                  undefined
+                }
+                modifiers={[
+                  {
+                    name: 'offset',
+                    options: { offset: [0, 10] },
                   },
-                  paper: {
-                    sx: {
-                      backgroundColor: theme.palette.background.paper,
-                      border: '1px solid',
-                      borderColor: theme.palette.divider,
-                      borderRadius: '12px',
-                      boxShadow: theme.shadows[8],
-                      minWidth: '260px',
-                      maxWidth: '320px',
+                  {
+                    enabled: false,
+                    name: 'flip',
+                  },
+                  {
+                    name: 'preventOverflow',
+                    options: {
+                      altAxis: true,
+                      mainAxis: false,
+                      padding: 10,
                     },
                   },
-                }}
+                ]}
+                placement="top-start"
+                popperOptions={{ strategy: 'fixed' }}
+                sx={{ zIndex: 1400 }}
               >
-                <Box sx={{ padding: '16px 16px 12px' }}>
+                <ClickAwayListener
+                  onClickAway={() => {
+                    setAnchorEl(null);
+                    setSelectedReaction(null);
+                  }}
+                >
+                <Box
+                  sx={{
+                    backgroundColor:
+                      theme.palette.mode === 'dark'
+                        ? '#1e2027'
+                        : theme.palette.background.paper,
+                    backgroundImage: 'none',
+                    border: '1px solid',
+                    borderColor:
+                      theme.palette.mode === 'dark'
+                        ? '#3a414d'
+                        : theme.palette.divider,
+                    borderRadius: '10px',
+                    boxShadow:
+                      theme.palette.mode === 'dark'
+                        ? '0 14px 32px rgba(0, 0, 0, 0.42)'
+                        : theme.shadows[8],
+                    maxWidth: '320px',
+                    minWidth: '260px',
+                    padding: '16px 16px 12px',
+                  }}
+                >
                   <Box
                     sx={{
                       alignItems: 'center',
@@ -3966,7 +4036,6 @@ export const MessageItemComponent = ({
                     sx={{
                       maxHeight: '240px',
                       overflow: 'auto',
-                      marginBottom: '12px',
                     }}
                   >
                     {reactions[selectedReaction]?.map((reactionItem) => {
@@ -4012,43 +4081,9 @@ export const MessageItemComponent = ({
                       );
                     })}
                   </List>
-
-                  <Button
-                    variant="contained"
-                    color="primary"
-                    fullWidth
-                    onClick={() => {
-                      if (
-                        reactions[selectedReaction]?.find(
-                          (item) => item?.sender === myAddress
-                        )
-                      ) {
-                        handleReaction(selectedReaction, message, false);
-                      } else {
-                        handleReaction(selectedReaction, message, true);
-                      }
-                      setAnchorEl(null);
-                      setSelectedReaction(null);
-                    }}
-                    sx={{
-                      borderRadius: '8px',
-                      fontWeight: 600,
-                      padding: '8px 16px',
-                      textTransform: 'none',
-                    }}
-                  >
-                    {reactions[selectedReaction]?.find(
-                      (item) => item?.sender === myAddress
-                    )
-                      ? t('core:action.remove_reaction', {
-                          postProcess: 'capitalizeFirstChar',
-                        })
-                      : t('core:action.add_reaction', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                  </Button>
                 </Box>
-              </Popover>
+                </ClickAwayListener>
+              </Popper>
             )}
           </Box>
         </Box>

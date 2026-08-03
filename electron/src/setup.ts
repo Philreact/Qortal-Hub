@@ -4193,10 +4193,10 @@ ipcMain.handle(
 
 ipcMain.handle(
   'reticulumChat:createCalendarEvent',
-  async (_event, groupId: number, input: unknown) => {
+  async (_event, groupId: number, input: unknown, eventId?: string) => {
     const manager = getReticulumChatManager();
     if (!manager) throw new Error('Reticulum chat manager is not running');
-    return manager.createCalendarEvent(Number(groupId), input);
+    return manager.createCalendarEvent(Number(groupId), input, eventId);
   }
 );
 

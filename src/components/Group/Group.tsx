@@ -172,6 +172,11 @@ const LazyAddGroup = lazy(() =>
 const LazyFindGroupModal = lazy(() =>
   import('./FindGroupModal').then((m) => ({ default: m.FindGroupModal }))
 );
+const LazyFindGroupOverviewModal = lazy(() =>
+  import('./FindGroupModal').then((m) => ({
+    default: m.FindGroupOverviewModal,
+  }))
+);
 const LazyManageMembers = lazy(() =>
   import('./ManageMembers').then((m) => ({ default: m.ManageMembers }))
 );
@@ -4400,6 +4405,11 @@ export const Group = ({
         }}
       >
         {reticulumChatEnabled && <ReticulumGroupAboutModal />}
+        {reticulumChatEnabled && (
+          <Suspense fallback={null}>
+            <LazyFindGroupOverviewModal />
+          </Suspense>
+        )}
         {reticulumChatEnabled || desktopSideView !== 'directs' ? (
           <GroupList
             selectGroupFunc={selectGroupFunc}

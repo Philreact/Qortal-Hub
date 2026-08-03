@@ -9,6 +9,7 @@ import {
   filterSeenInAppRecordByAge,
   notificationSeenInAppKeysRecordAtom,
   parseSeenInAppStored,
+  reticulumHighlightOwnMessagesAtom,
   seenAllNotificationsByAddressAtom,
   userInfoAtom,
 } from '../../atoms/global';
@@ -32,6 +33,9 @@ export function ElectronPersistentStorageHydration() {
   );
   const setDmFriendsByAccount = useSetAtom(dmFriendsByAccountAtom);
   const setDisableDevLogs = useSetAtom(disableDevLogsAtom);
+  const setReticulumHighlightOwnMessages = useSetAtom(
+    reticulumHighlightOwnMessagesAtom
+  );
   const userAddress = useAtomValue(userInfoAtom)?.address;
   const dmFriendsByAccount = useAtomValue(dmFriendsByAccountAtom);
   const hydratedRef = useRef(false);
@@ -70,6 +74,7 @@ export function ElectronPersistentStorageHydration() {
         seenAllPayload,
         dmFriendsPayload,
         disableDevLogsPayload,
+        reticulumHighlightOwnMessagesPayload,
       ] =
         await Promise.all([
           appStorage.get(
@@ -81,6 +86,9 @@ export function ElectronPersistentStorageHydration() {
           ),
           appStorage.get(ELECTRON_PERSISTENT_ATOM_KEYS.dmFriends),
           appStorage.get(ELECTRON_PERSISTENT_ATOM_KEYS.disableDevLogs),
+          appStorage.get(
+            ELECTRON_PERSISTENT_ATOM_KEYS.reticulumHighlightOwnMessages
+          ),
         ]);
       if (subsPayload != null) {
         if (Array.isArray(subsPayload)) {
@@ -120,6 +128,11 @@ export function ElectronPersistentStorageHydration() {
       if (typeof disableDevLogsPayload === 'boolean') {
         setDisableDevLogs(disableDevLogsPayload);
       }
+      if (typeof reticulumHighlightOwnMessagesPayload === 'boolean') {
+        setReticulumHighlightOwnMessages(
+          reticulumHighlightOwnMessagesPayload
+        );
+      }
     })();
   }, [
     setCustomSubscriptionsByAddress,
@@ -127,6 +140,7 @@ export function ElectronPersistentStorageHydration() {
     setSeenAllNotificationsByAddress,
     setDmFriendsByAccount,
     setDisableDevLogs,
+    setReticulumHighlightOwnMessages,
   ]);
 
   useEffect(() => {

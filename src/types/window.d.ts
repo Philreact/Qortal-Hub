@@ -20,10 +20,28 @@ declare global {
     timezone: string;
     location?: string;
     link?: string;
+    coverImage?: {
+      namespace: 'reticulum-group-resource';
+      ownerId?: string;
+      fileName: string;
+      mimeType: 'image/webp';
+      sizeBytes: number;
+      fileHash: string;
+      encrypted: false;
+      createdAt: number;
+      metadata: {
+        feature: 'reticulum-calendar-cover';
+        groupId: number;
+        width: number;
+        height: number;
+      };
+    } | null;
     recurrence?: ReticulumCalendarRecurrenceInput | null;
   }
 
   interface ReticulumCalendarOccurrence extends ReticulumCalendarEventInput {
+    creatorAddress: string;
+    createdAt?: number;
     groupId: number;
     eventId: string;
     occurrenceId: string;
@@ -800,7 +818,8 @@ declare global {
       ) => Promise<ReticulumCalendarOccurrence[]>;
       createCalendarEvent: (
         groupId: number,
-        input: ReticulumCalendarEventInput
+        input: ReticulumCalendarEventInput,
+        eventId?: string
       ) => Promise<unknown>;
       updateCalendarEvent: (
         groupId: number,

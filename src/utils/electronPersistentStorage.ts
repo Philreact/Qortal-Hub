@@ -60,6 +60,8 @@ export const ELECTRON_PERSISTENT_ATOM_KEYS = {
   dmFriends: 'qortal_dm_friends',
   /** Main-process dev-log filtering preference. */
   disableDevLogs: 'qortal_disable_dev_logs',
+  /** Reticulum preference for subtly distinguishing the current user's messages. */
+  reticulumHighlightOwnMessages: 'qortal_reticulum_highlight_own_messages',
 } as const;
 
 /** Populate in-memory cache from appStorage (call once when app mounts in Electron). */

@@ -18,6 +18,23 @@ export type ReticulumCalendarRecurrence = {
   untilLocalDate?: string;
 };
 
+export type ReticulumCalendarCoverImage = {
+  namespace: 'reticulum-group-resource';
+  ownerId?: string;
+  fileName: string;
+  mimeType: 'image/webp';
+  sizeBytes: number;
+  fileHash: string;
+  encrypted: false;
+  createdAt: number;
+  metadata: {
+    feature: 'reticulum-calendar-cover';
+    groupId: number;
+    width: number;
+    height: number;
+  };
+};
+
 export type ReticulumCalendarEventState = {
   eventId: string;
   groupId: number;
@@ -25,6 +42,7 @@ export type ReticulumCalendarEventState = {
   description: string;
   location: string;
   link: string;
+  coverImage?: ReticulumCalendarCoverImage;
   allDay: boolean;
   timezone: string;
   startLocal: string;
@@ -46,6 +64,8 @@ export type ReticulumCalendarMutation = {
 };
 
 export type ReticulumCalendarOccurrence = ReticulumCalendarEventState & {
+  creatorAddress: string;
+  createdAt?: number;
   occurrenceId: string;
   occurrenceStart: number;
   occurrenceEnd: number;
@@ -108,6 +128,60 @@ function normalizeLocal(value: unknown, allDay: boolean): string {
   if (!accepted) return '';
   const parsed = moment(text, allDay ? 'YYYY-MM-DD' : moment.ISO_8601, true);
   return parsed.isValid() ? parsed.format(format) : '';
+}
+
+function normalizeCoverImage(
+  value: unknown,
+  groupId: number
+): ReticulumCalendarCoverImage | null {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const metadata =
+    input.metadata && typeof input.metadata === 'object'
+      ? (input.metadata as Record<string, unknown>)
+      : null;
+  const fileHash = String(input.fileHash || '').trim().toLowerCase();
+  const sizeBytes = Number(input.sizeBytes);
+  const createdAt = Number(input.createdAt);
+  const width = Number(metadata?.width);
+  const height = Number(metadata?.height);
+  if (
+    input.namespace !== 'reticulum-group-resource' ||
+    input.mimeType !== 'image/webp' ||
+    input.encrypted !== false ||
+    !/^[0-9a-f]{64}$/.test(fileHash) ||
+    !Number.isInteger(sizeBytes) ||
+    sizeBytes <= 0 ||
+    sizeBytes > 600 * 1024 ||
+    !Number.isFinite(createdAt) ||
+    createdAt <= 0 ||
+    metadata?.feature !== 'reticulum-calendar-cover' ||
+    Number(metadata?.groupId) !== groupId ||
+    width !== 1200 ||
+    ![675, 900].includes(height)
+  ) {
+    return null;
+  }
+  const fileName = cleanText(input.fileName, 180);
+  if (!fileName) return null;
+  const ownerId = cleanText(input.ownerId, 180);
+  return {
+    namespace: 'reticulum-group-resource',
+    ...(ownerId ? { ownerId } : {}),
+    fileName,
+    mimeType: 'image/webp',
+    sizeBytes,
+    fileHash,
+    encrypted: false,
+    createdAt: Math.floor(createdAt),
+    metadata: {
+      feature: 'reticulum-calendar-cover',
+      groupId,
+      width,
+      height,
+    },
+  };
 }
 
 export function normalizeReticulumCalendarInput(
@@ -181,6 +255,7 @@ export function normalizeReticulumCalendarInput(
       return null;
     }
   }
+  const coverImage = normalizeCoverImage(input.coverImage, Number(groupId));
   const state: ReticulumCalendarEventState = {
     eventId: normalizedEventId,
     groupId: Number(groupId),
@@ -188,6 +263,7 @@ export function normalizeReticulumCalendarInput(
     description: cleanText(input.description, 4_000),
     location: cleanText(input.location, 240),
     link,
+    ...(coverImage ? { coverImage } : {}),
     allDay,
     timezone,
     startLocal,
@@ -326,6 +402,7 @@ function reticulumCalendarOccurrenceFromStart(
     .millisecond(seriesEnd.millisecond());
   return {
     ...state,
+    creatorAddress: mutation.authorAddress,
     occurrenceId: `${state.eventId}:${occurrenceStart.valueOf()}`,
     occurrenceStart: occurrenceStart.valueOf(),
     occurrenceEnd: occurrenceEnd.valueOf(),
@@ -436,6 +513,7 @@ export function expandReticulumCalendarMutation(
     return [
       {
         ...state,
+        creatorAddress: mutation.authorAddress,
         occurrenceId: `${state.eventId}:${start.valueOf()}`,
         occurrenceStart: start.valueOf(),
         occurrenceEnd: end.valueOf(),
@@ -507,6 +585,7 @@ export function expandReticulumCalendarMutation(
     ) {
       results.push({
         ...state,
+        creatorAddress: mutation.authorAddress,
         occurrenceId: `${state.eventId}:${current.valueOf()}`,
         occurrenceStart: current.valueOf(),
         occurrenceEnd,

@@ -447,6 +447,9 @@ const RETICULUM_TYPING_IDLE_STOP_MS = 5_000;
 const RETICULUM_MEMBER_REFRESH_MS = 60_000;
 const RETICULUM_SELF_WELCOME_RECENT_JOIN_MS = 24 * 60 * 60 * 1000;
 const RETICULUM_SELF_WELCOME_STORAGE_PREFIX = 'qchat-reticulum-self-welcome-v1';
+const RETICULUM_CALENDAR_SYSTEM_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
+const RETICULUM_CALENDAR_TEN_MINUTES_MS = 10 * 60 * 1000;
+const RETICULUM_CALENDAR_TIMER_MAX_DELAY_MS = 2_147_000_000;
 
 const shortenReticulumAddress = (address: string) =>
   address.length <= 15
@@ -1498,6 +1501,11 @@ export const ChatGroup = ({
   );
   const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
   const [reticulumCalendarOpen, setReticulumCalendarOpen] = useState(false);
+  const [reticulumCalendarSystemOccurrences, setReticulumCalendarSystemOccurrences] =
+    useState<ReticulumCalendarOccurrence[]>([]);
+  const [reticulumCalendarSystemNow, setReticulumCalendarSystemNow] = useState(
+    Date.now()
+  );
   const [activeReticulumCalendarTarget, setActiveReticulumCalendarTarget] =
     useState(reticulumCalendarTarget);
   const handledReticulumCalendarRequestRef = useRef(0);
@@ -2395,6 +2403,203 @@ export const ChatGroup = ({
     if (myAddress && myName) entries.push([myAddress, myName]);
     return new Map(entries);
   }, [groupMentionMembers, myAddress, myName]);
+
+  useEffect(() => {
+    const groupId = Number(selectedGroup);
+    if (
+      !reticulumChatEnabled ||
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !window.reticulumChat?.getCalendarEvents
+    ) {
+      setReticulumCalendarSystemOccurrences([]);
+      return;
+    }
+
+    let cancelled = false;
+    const refresh = async () => {
+      const now = Date.now();
+      try {
+        const occurrences = await window.reticulumChat.getCalendarEvents(
+          groupId,
+          now - RETICULUM_CALENDAR_SYSTEM_RANGE_MS,
+          now + RETICULUM_CALENDAR_SYSTEM_RANGE_MS
+        );
+        if (!cancelled) {
+          setReticulumCalendarSystemOccurrences(occurrences);
+          setReticulumCalendarSystemNow(now);
+        }
+      } catch {
+        if (!cancelled) setReticulumCalendarSystemOccurrences([]);
+      }
+    };
+
+    void refresh();
+    const unsubscribe = window.reticulumChat.onCalendarChanged?.((payload) => {
+      if (Number(payload?.groupId) === groupId) void refresh();
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [reticulumChatEnabled, selectedGroup]);
+
+  useEffect(() => {
+    if (
+      reticulumChatEnabled &&
+      selectedReticulumChannelId === DEFAULT_RETICULUM_CHANNEL_ID
+    ) {
+      setReticulumCalendarSystemNow(Date.now());
+    }
+  }, [reticulumChatEnabled, selectedReticulumChannelId]);
+
+  useEffect(() => {
+    if (
+      !reticulumChatEnabled ||
+      selectedReticulumChannelId !== DEFAULT_RETICULUM_CHANNEL_ID ||
+      reticulumCalendarSystemOccurrences.length === 0
+    ) {
+      return;
+    }
+
+    const nextBoundary = reticulumCalendarSystemOccurrences.reduce(
+      (closest, occurrence) => {
+        const boundaries = [
+          occurrence.occurrenceStart -
+            RETICULUM_CALENDAR_TEN_MINUTES_MS,
+          occurrence.occurrenceStart,
+        ];
+        for (const boundary of boundaries) {
+          if (
+            boundary > reticulumCalendarSystemNow &&
+            (closest === null || boundary < closest)
+          ) {
+            closest = boundary;
+          }
+        }
+        return closest;
+      },
+      null as number | null
+    );
+    if (nextBoundary === null) return;
+
+    const delay = Math.min(
+      RETICULUM_CALENDAR_TIMER_MAX_DELAY_MS,
+      Math.max(0, nextBoundary - Date.now() + 25)
+    );
+    const timer = window.setTimeout(() => {
+      setReticulumCalendarSystemNow(Date.now());
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [
+    reticulumCalendarSystemNow,
+    reticulumCalendarSystemOccurrences,
+    reticulumChatEnabled,
+    selectedReticulumChannelId,
+  ]);
+
+  const reticulumCalendarSystemMessages = useMemo(() => {
+    if (
+      !reticulumChatEnabled ||
+      selectedReticulumChannelId !== DEFAULT_RETICULUM_CHANNEL_ID
+    ) {
+      return [];
+    }
+
+    const groupId = Number(selectedGroup);
+    const groupName = selectedGroupName || 'Group';
+    const buildMessage = (
+      occurrence: ReticulumCalendarOccurrence,
+      kind: 'ten-minutes' | 'started',
+      timestamp: number,
+      html: string
+    ) => {
+      const signature = `calendar-system:${kind}:${occurrence.occurrenceId}`;
+      const qchatSystem = {
+        type: `calendar-event-${kind}`,
+        groupId,
+        groupName,
+        groupAvatarOwnerName: reticulumGroupOwnerName,
+        eventId: occurrence.eventId,
+        occurrenceId: occurrence.occurrenceId,
+      };
+      return {
+        signature,
+        id: signature,
+        groupId,
+        channelId: DEFAULT_RETICULUM_CHANNEL_ID,
+        sender: '__qortal_calendar_system__',
+        senderName: groupName,
+        timestamp,
+        eventType: 'calendar_system',
+        reticulumChat: true,
+        syntheticReticulumCalendarSystem: true,
+        qchatSystem,
+        decryptedData: { messageText: html, qchatSystem },
+        message: html,
+        messageText: html,
+        text: html,
+        isNotEncrypted: true,
+        unread: false,
+      };
+    };
+
+    const messages: any[] = [];
+    for (const occurrence of reticulumCalendarSystemOccurrences) {
+      const creatorName =
+        reticulumMemberNameByAddress.get(occurrence.creatorAddress) ||
+        shortenReticulumAddress(occurrence.creatorAddress);
+      const creator = escapeReticulumMessageHtml(creatorName);
+      const title = escapeReticulumMessageHtml(occurrence.title);
+      const description = escapeReticulumMessageHtml(
+        occurrence.description || 'Not specified'
+      );
+
+      if (
+        reticulumCalendarSystemNow >=
+        occurrence.occurrenceStart - RETICULUM_CALENDAR_TEN_MINUTES_MS
+      ) {
+        messages.push(
+          buildMessage(
+            occurrence,
+            'ten-minutes',
+            occurrence.occurrenceStart - RETICULUM_CALENDAR_TEN_MINUTES_MS,
+            `<p><strong>${creator}'s Event will start in 10 minutes.</strong><br><strong>Details</strong><br>Title: ${title}<br>Description: ${description}</p>`
+          )
+        );
+      }
+
+      if (reticulumCalendarSystemNow >= occurrence.occurrenceStart) {
+        messages.push(
+          buildMessage(
+            occurrence,
+            'started',
+            occurrence.occurrenceStart,
+            `<p><strong>${creator}'s Event has begun!</strong><br><strong>Details</strong><br>Title: ${title}<br>Description: ${description}</p>`
+          )
+        );
+      }
+    }
+    return messages;
+  }, [
+    reticulumCalendarSystemNow,
+    reticulumCalendarSystemOccurrences,
+    reticulumChatEnabled,
+    reticulumGroupOwnerName,
+    reticulumMemberNameByAddress,
+    selectedGroup,
+    selectedGroupName,
+    selectedReticulumChannelId,
+  ]);
+
+  const renderedMessages = useMemo(
+    () =>
+      reticulumCalendarSystemMessages.length
+        ? [...messages, ...reticulumCalendarSystemMessages]
+        : messages,
+    [messages, reticulumCalendarSystemMessages]
+  );
 
   const reticulumMentionUsers = useMemo(() => {
     const users: Record<
@@ -4554,6 +4759,7 @@ export const ChatGroup = ({
         directMentionAuthorized: event.directMentionAuthorized === true,
         privilegedMentionAuthorized: event.privilegedMentionAuthorized === true,
         reticulumChat: true,
+        syntheticReticulumCalendarSystem: false,
       };
       let decryptedData = null;
       if (reticulumChatEnabled || isPrivate === false) {
@@ -9317,7 +9523,7 @@ export const ChatGroup = ({
                   enableMentions
                   handleReaction={handleReaction}
                   hasSecretKey={!!secretKey}
-                  initialMessages={messages}
+                  initialMessages={renderedMessages}
                   isPrivate={isPrivate}
                   members={members}
                   reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
@@ -10019,6 +10225,8 @@ export const ChatGroup = ({
           groupId={Number(selectedGroup)}
           ownerAddress={myAddress || ''}
           canManage={isReticulumChannelAdmin || isGroupOwner}
+          members={groupMentionMembers}
+          rolesByAddress={reticulumMemberRolesByAddress}
           targetEventId={activeReticulumCalendarTarget?.eventId || ''}
           targetOccurrenceStart={
             Number(activeReticulumCalendarTarget?.occurrenceStart) || 0

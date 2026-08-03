@@ -4,7 +4,7 @@ import { getBaseApiReact } from '../../App';
 // Scoring contract and rationale: docs/reticulum-group-score.md
 
 const GROUP_SCORE_CACHE_KEY = 'qortal-reticulum-group-score-snapshot-v1';
-const GROUP_SCORE_VERSION = 1;
+const GROUP_SCORE_VERSION = 2;
 const GROUP_SCORE_SLOT_MS = 6 * 60 * 60_000;
 const GROUP_SCORE_MAX_STALE_MS = 24 * 60 * 60_000;
 const UNKNOWN_GROUP_REFRESH_COOLDOWN_MS = 5 * 60_000;
@@ -42,7 +42,7 @@ export type ReticulumGroupScoreSnapshot = {
   groups: Record<string, ReticulumGroupScoreBreakdown>;
   networkOffsetMs: number;
   slot: number;
-  version: 1;
+  version: 2;
 };
 
 const EMPTY_SNAPSHOT: ReticulumGroupScoreSnapshot = {
@@ -80,7 +80,7 @@ export const getLegacyLevel = (timestamp?: number | string) => {
   ) {
     years -= 1;
   }
-  return Math.max(1, years + 1);
+  return Math.max(0, Math.min(10, years));
 };
 
 export const getCommunityLevel = (count?: number) => {
@@ -106,7 +106,7 @@ export const getReticulumGroupScoreColor = (score?: number | null) => {
   return '#00A8FF';
 };
 
-const calculateGroupScore = (input: {
+export const calculateReticulumGroupScore = (input: {
   activity: ReticulumGroupActivityMetrics;
   activityObserved: boolean;
   balance: number;
@@ -138,9 +138,9 @@ const calculateGroupScore = (input: {
   const communityScore = getCommunityLevel(input.memberCount) * 10;
   const score = Math.round(
     holdingScore * 0.5 +
-      activityScore * 0.2 +
-      legacyScore * 0.15 +
-      communityScore * 0.15
+      activityScore * 0.3 +
+      legacyScore * 0.1 +
+      communityScore * 0.1
   );
   return {
     ...input,
@@ -311,7 +311,7 @@ export const refreshReticulumGroupScores = async (
           messages7d: 0,
           observedAt: capturedAt,
         };
-        const breakdown = calculateGroupScore({
+        const breakdown = calculateReticulumGroupScore({
           activity,
           activityObserved,
           balance: Math.max(0, Number(group?.balance) || 0),

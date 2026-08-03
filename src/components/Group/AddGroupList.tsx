@@ -58,7 +58,13 @@ export const isOpenGroup = (group) =>
 const formatMemberCount = (count) =>
   new Intl.NumberFormat().format(Math.max(0, Number(count) || 0));
 
-export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
+export const AddGroupList = ({
+  initialSelectedGroup = null,
+  onOverviewClose,
+  overviewOnly = false,
+  setInfoSnack,
+  setOpenSnack,
+}) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [memberGroups] = useAtom(memberGroupsAtom);
   const [txList, setTxList] = useAtom(txListAtom);
@@ -72,7 +78,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   ]);
   const [groups, setGroups] = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(true);
-  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [selectedGroup, setSelectedGroup] = useState(initialSelectedGroup);
   const [ownerAddress, setOwnerAddress] = useState(null);
   const [ownerPrimaryName, setOwnerPrimaryName] = useState(null);
   const [ownerLoading, setOwnerLoading] = useState(false);
@@ -92,6 +98,10 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
   const [ownerAddressCopied, setOwnerAddressCopied] = useState(false);
   const ownerCopyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const theme = useTheme();
+
+  useEffect(() => {
+    if (overviewOnly) setSelectedGroup(initialSelectedGroup);
+  }, [initialSelectedGroup, overviewOnly]);
 
   useEffect(() => () => {
     if (ownerCopyResetTimerRef.current) {
@@ -323,6 +333,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
     setJoinError('');
     setOwnerAddressCopied(false);
     setSelectedGroup(null);
+    onOverviewClose?.();
   };
 
   const handleCopyAddress = () => {
@@ -928,7 +939,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
         )}
       </Dialog>
 
-      <Box
+      {!overviewOnly && <Box
         sx={{
           display: 'flex',
           flexDirection: 'column',
@@ -1074,7 +1085,7 @@ export const AddGroupList = ({ setInfoSnack, setOpenSnack }) => {
           )}
           </Box>
         </Box>
-      </Box>
+      </Box>}
     </>
   );
 };

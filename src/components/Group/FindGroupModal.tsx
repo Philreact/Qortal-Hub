@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { AddGroupList } from './AddGroupList';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { refreshReticulumGroupScores } from './reticulumGroupScore';
+import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 
 type FindGroupModalProps = {
   open: boolean;
@@ -145,6 +146,38 @@ export function FindGroupModal({ open, setOpen }: FindGroupModalProps) {
           setInfo={setInfoSnack}
         />
       </Dialog>
+    </Fragment>
+  );
+}
+
+export function FindGroupOverviewModal() {
+  const [group, setGroup] = useState<any>(null);
+  const [openSnack, setOpenSnack] = useState(false);
+  const [infoSnack, setInfoSnack] = useState(null);
+
+  useEffect(() => {
+    const open = (event: CustomEvent) => setGroup(event.detail?.group ?? null);
+    subscribeToEvent('openFindGroupOverview', open);
+    return () => unsubscribeFromEvent('openFindGroupOverview', open);
+  }, []);
+
+  if (!group) return null;
+
+  return (
+    <Fragment>
+      <AddGroupList
+        initialSelectedGroup={group}
+        onOverviewClose={() => setGroup(null)}
+        overviewOnly
+        setOpenSnack={setOpenSnack}
+        setInfoSnack={setInfoSnack}
+      />
+      <CustomizedSnackbars
+        open={openSnack}
+        setOpen={setOpenSnack}
+        info={infoSnack}
+        setInfo={setInfoSnack}
+      />
     </Fragment>
   );
 }

@@ -985,7 +985,7 @@ const Tiptap = ({
       >
         <Box
           sx={{
-            alignItems: 'flex-end',
+            alignItems: 'flex-start',
             display: 'flex',
             gap: 0.5,
             minHeight: 44,
@@ -1005,6 +1005,7 @@ const Tiptap = ({
                   color: theme.palette.text.secondary,
                   flexShrink: 0,
                   height: 34,
+                  mt: '5px',
                   width: 34,
                 }}
               >
@@ -1043,6 +1044,7 @@ const Tiptap = ({
                 fontSize: 14,
                 fontWeight: 700,
                 height: 34,
+                mt: '5px',
                 width: 34,
               }}
             >
@@ -1050,7 +1052,7 @@ const Tiptap = ({
             </IconButton>
           </Tooltip>
           {compactActions}
-          <Box sx={{ flex: 1, minWidth: 0 }}>{editorProvider}</Box>
+          <Box sx={{ flex: 1, minWidth: 0, mt: '5px' }}>{editorProvider}</Box>
         </Box>
       </Box>
     );
