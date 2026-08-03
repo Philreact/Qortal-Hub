@@ -35,6 +35,7 @@ import BoltRoundedIcon from '@mui/icons-material/BoltRounded';
 import EmojiEventsRoundedIcon from '@mui/icons-material/EmojiEventsRounded';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
+import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import { useTranslation } from 'react-i18next';
 import { useAtom } from 'jotai';
 import {
@@ -85,7 +86,9 @@ export const AddGroupList = ({
   const [ownerLoading, setOwnerLoading] = useState(false);
   const listRef = useRef(null);
   const [inputValue, setInputValue] = useState('');
-  const [sortMode, setSortMode] = useState<'top' | 'active' | 'newest' | 'largest'>('top');
+  const [sortMode, setSortMode] = useState<
+    'top' | 'active' | 'newest' | 'largest' | 'holdings'
+  >('top');
   const [showOpen, setShowOpen] = useState(false);
   const [showPrivate, setShowPrivate] = useState(false);
   const [visibleCount, setVisibleCount] = useState(FIND_GROUPS_PAGE_SIZE);
@@ -157,6 +160,23 @@ export const AddGroupList = ({
       Number(b?.created || 0) - Number(a?.created || 0);
     const compareMembers = (a, b) =>
       Number(b?.memberCount || 0) - Number(a?.memberCount || 0);
+    const compareHoldings = (a, b) => {
+      const aKey = String(a?.groupId ?? '');
+      const bKey = String(b?.groupId ?? '');
+      const aKnown = Object.prototype.hasOwnProperty.call(
+        groupScoreSnapshot.holdings,
+        aKey
+      );
+      const bKnown = Object.prototype.hasOwnProperty.call(
+        groupScoreSnapshot.holdings,
+        bKey
+      );
+      if (aKnown !== bKnown) return aKnown ? -1 : 1;
+      return (
+        Number(groupScoreSnapshot.holdings[bKey] || 0) -
+        Number(groupScoreSnapshot.holdings[aKey] || 0)
+      );
+    };
     const compareOptionalScore = (aScore, bScore, key) => {
       if (!aScore && !bScore) return 0;
       if (!aScore) return 1;
@@ -202,6 +222,13 @@ export const AddGroupList = ({
           return (
             compareCreated(a, b) ||
             Number(b?.groupId || 0) - Number(a?.groupId || 0)
+          );
+        }
+        if (sortMode === 'holdings') {
+          return (
+            compareHoldings(a, b) ||
+            compareMembers(a, b) ||
+            compareCreated(a, b)
           );
         }
         return (
@@ -286,7 +313,7 @@ export const AddGroupList = ({
   };
 
   const handleSortChange = (
-    nextSortMode: 'top' | 'active' | 'newest' | 'largest'
+    nextSortMode: 'top' | 'active' | 'newest' | 'largest' | 'holdings'
   ) => {
     if (nextSortMode === 'top' || nextSortMode === 'active') {
       setShowPrivate(false);
@@ -722,6 +749,7 @@ export const AddGroupList = ({
     active: 'Sorted by activity',
     newest: 'Sorted by newest',
     largest: 'Sorted by members',
+    holdings: 'Sorted by QORT Holdings',
   }[sortMode];
 
   return (
@@ -1009,6 +1037,7 @@ export const AddGroupList = ({
                 { icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />, label: 'Active', selected: sortMode === 'active', onClick: () => handleSortChange('active') },
                 { icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />, label: 'Newest', selected: sortMode === 'newest', onClick: () => handleSortChange('newest') },
                 { icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />, label: 'Largest', selected: sortMode === 'largest', onClick: () => handleSortChange('largest') },
+                { icon: <AccountBalanceWalletRoundedIcon sx={{ fontSize: 17 }} />, label: 'QORT Holdings', selected: sortMode === 'holdings', onClick: () => handleSortChange('holdings') },
               ].map((filter) => (
                 <ButtonBase aria-pressed={filter.selected} key={filter.label} onClick={filter.onClick} sx={{ backgroundColor: filter.selected ? 'primary.main' : 'transparent', border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: filter.selected ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: filter.selected ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 } }}>{filter.icon}{filter.label}</ButtonBase>
               ))}
