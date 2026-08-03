@@ -5329,6 +5329,7 @@ export const Group = ({
             <Suspense fallback={null}>
               <LazyFindGroupModal
                 open={openFindGroup}
+                onOpenJoinedGroup={selectGroupFunc}
                 setOpen={setOpenFindGroup}
               />
             </Suspense>

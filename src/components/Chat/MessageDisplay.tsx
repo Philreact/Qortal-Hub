@@ -15,6 +15,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { ReticulumUserCard } from './ReticulumUserCard';
 import type { ReticulumUserCardData } from './ReticulumUserCard';
+import { parseQortalUseGroupLink } from '../../utils/qortalGroupLinks';
 
 const stripTrailingQortalLinkPunctuation = (value: string) =>
   value.replace(/[),.;!?]+$/g, '');
@@ -626,20 +627,26 @@ export const MessageDisplay = ({
     } else if (target.getAttribute('data-url')) {
       const url = target.getAttribute('data-url');
 
-      let copyUrl = url;
-
       try {
-        copyUrl = copyUrl.replace(/^(qortal:\/\/)/, '');
-        if (copyUrl.startsWith('use-')) {
-          const parts = copyUrl.split('/');
-          parts.shift();
-          const action = parts.length > 0 ? parts[0].split('-')[1] : null;
-          parts.shift();
-          const id = parts.length > 0 ? parts[0].split('-')[1] : null;
-          if (action === 'join') {
-            executeEvent('globalActionJoinGroup', { groupId: id });
-            return;
-          }
+        const groupAction = parseQortalUseGroupLink(url);
+        if (groupAction?.action === 'join') {
+          executeEvent('globalActionJoinGroup', {
+            groupId: String(groupAction.groupId),
+          });
+          return;
+        }
+        if (groupAction?.action === 'calendar') {
+          const occurrence = await window.reticulumChat
+            ?.getCalendarEvent(groupAction.groupId, groupAction.eventId)
+            .catch(() => null);
+          executeEvent('openGroupMessage', {
+            eventId: groupAction.eventId,
+            from: groupAction.groupId,
+            occurrenceStart: occurrence?.occurrenceStart ?? Date.now(),
+            openCalendar: true,
+            timezone: occurrence?.timezone ?? '',
+          });
+          return;
         }
       } catch (error) {
         console.log(error);

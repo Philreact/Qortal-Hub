@@ -3796,8 +3796,11 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {/* Sending / updating status */}
-            {(isUpdating || isTemp) && (
+            {/* Failure status. Reticulum sends and mutations update in place,
+                so pending state must not add a transient status row. */}
+            {(isUpdating || isTemp) &&
+              (!reticulumChatEnabled ||
+                message?.status === 'failed-permanent') && (
               <Typography
                 sx={{
                   color: theme.palette.text.secondary,
@@ -3807,7 +3810,7 @@ export const MessageItemComponent = ({
                   marginTop: '2px',
                 }}
               >
-                {isUpdating
+                {!isTemp
                   ? message?.status === 'failed-permanent'
                     ? t('core:message.error.update_failed', {
                         postProcess: 'capitalizeFirstChar',

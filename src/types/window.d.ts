@@ -816,6 +816,11 @@ declare global {
         rangeStart: number,
         rangeEnd: number
       ) => Promise<ReticulumCalendarOccurrence[]>;
+      getCalendarEvent: (
+        groupId: number,
+        eventId: string,
+        preferredOccurrenceStart?: number
+      ) => Promise<ReticulumCalendarOccurrence | null>;
       createCalendarEvent: (
         groupId: number,
         input: ReticulumCalendarEventInput,

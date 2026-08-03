@@ -29,9 +29,11 @@ import {
 } from '../../atoms/global';
 import { getFee } from '../../background/background';
 import { executeEvent } from '../../utils/events';
+import { parseQortalUseGroupLink } from '../../utils/qortalGroupLinks';
 import { getReticulumGroupMetadata } from '../Group/ReticulumGroupAbout';
 
-const EVENT_LINK_PATTERN = /qortal:\/\/APP\/Q-Chat\/calendar\?[^\s<>"']+/gi;
+const EVENT_LINK_PATTERN =
+  /qortal:\/\/(?:APP\/Q-Chat\/calendar\?[^\s<>"']+|use-group\/action-calendar\/[^\s<>"']+)/gi;
 const EVENT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EVENT_PREVIEW_ACCENT = '#9b63f5';
@@ -43,8 +45,8 @@ export type ReticulumEventLink = {
   eventId: string;
   groupId: number;
   link: string;
-  occurrenceStart: number;
-  timezone: string;
+  occurrenceStart?: number;
+  timezone?: string;
 };
 
 type EventPreviewData = {
@@ -126,6 +128,14 @@ const collectEventLinkCandidateStrings = (source: unknown) => {
 
 const parseCandidate = (candidate: string): ReticulumEventLink | null => {
   const link = stripTrailingLinkPunctuation(candidate);
+  const groupAction = parseQortalUseGroupLink(link);
+  if (groupAction?.action === 'calendar') {
+    return {
+      eventId: groupAction.eventId,
+      groupId: groupAction.groupId,
+      link,
+    };
+  }
   // Chromium treats unknown schemes such as qortal:// as non-special URLs and
   // reports "//APP/Q-Chat/calendar" as the pathname with an empty hostname,
   // while Node reports APP as the hostname. Parse the canonical Qortal route
@@ -139,19 +149,28 @@ const parseCandidate = (candidate: string): ReticulumEventLink | null => {
   const eventId = String(searchParams.get('eventId') || '')
     .trim()
     .toLowerCase();
-  const occurrenceStart = Number(searchParams.get('occurrenceStart'));
+  const occurrenceStartValue = searchParams.get('occurrenceStart');
+  const occurrenceStart = occurrenceStartValue
+    ? Number(occurrenceStartValue)
+    : undefined;
   const timezone = String(searchParams.get('timezone') || '').trim();
   if (
     !Number.isInteger(groupId) ||
     groupId <= 0 ||
     !EVENT_ID_PATTERN.test(eventId) ||
-    !Number.isFinite(occurrenceStart) ||
-    occurrenceStart <= 0 ||
+    (occurrenceStart !== undefined &&
+      (!Number.isFinite(occurrenceStart) || occurrenceStart <= 0)) ||
     timezone.length > 100
   ) {
     return null;
   }
-  return { eventId, groupId, link, occurrenceStart, timezone };
+  return {
+    eventId,
+    groupId,
+    link,
+    ...(occurrenceStart !== undefined ? { occurrenceStart } : {}),
+    ...(timezone ? { timezone } : {}),
+  };
 };
 
 export const parseReticulumEventLinks = (
@@ -177,7 +196,7 @@ export const parseReticulumEventLinks = (
 };
 
 const previewKey = (link: ReticulumEventLink) =>
-  `${link.groupId}:${link.eventId}:${link.occurrenceStart}`;
+  `${link.groupId}:${link.eventId}:${link.occurrenceStart ?? 'series'}`;
 
 const readCachedPreview = (key: string) => {
   const cached = eventPreviewCache.get(key);
@@ -227,20 +246,13 @@ const loadEventPreview = async (
     eventPreviewFailureCache.delete(key);
   }
   const request = (async () => {
-    if (!window.reticulumChat?.getCalendarEvents) {
+    if (!window.reticulumChat?.getCalendarEvent) {
       throw new Error('Calendar is unavailable');
     }
-    // The link identifies one concrete occurrence. A one-millisecond range is
-    // enough to query that occurrence without loading a month or calendar history.
-    const rows = await window.reticulumChat.getCalendarEvents(
+    const occurrence = await window.reticulumChat.getCalendarEvent(
       link.groupId,
-      link.occurrenceStart,
-      link.occurrenceStart + 1
-    );
-    const occurrence = rows.find(
-      (row) =>
-        row.eventId.toLowerCase() === link.eventId &&
-        row.occurrenceStart === link.occurrenceStart
+      link.eventId,
+      link.occurrenceStart
     );
     if (!occurrence) throw new Error('Event not found');
     const group = await getReticulumGroupMetadata(link.groupId).catch(() => null);
@@ -260,13 +272,17 @@ const loadEventPreview = async (
   return request;
 };
 
-const openEvent = (link: ReticulumEventLink) => {
+const openEvent = (
+  link: ReticulumEventLink,
+  occurrence?: ReticulumCalendarOccurrence | null
+) => {
   executeEvent('openGroupMessage', {
     eventId: link.eventId,
     from: link.groupId,
-    occurrenceStart: link.occurrenceStart,
+    occurrenceStart:
+      occurrence?.occurrenceStart ?? link.occurrenceStart ?? Date.now(),
     openCalendar: true,
-    timezone: link.timezone,
+    timezone: occurrence?.timezone ?? link.timezone ?? '',
   });
 };
 
@@ -396,7 +412,7 @@ function EventPreviewCard({
       })}
       onClick={(event) => {
         event.stopPropagation();
-        openEvent(link);
+        openEvent(link, occurrence);
       }}
       sx={{
         borderRadius: '10px',

@@ -4192,6 +4192,26 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'reticulumChat:getCalendarEvent',
+  async (
+    _event,
+    groupId: number,
+    eventId: string,
+    preferredOccurrenceStart?: number
+  ) => {
+    const manager = getReticulumChatManager();
+    if (!manager) throw new Error('Reticulum chat manager is not running');
+    return manager.getCalendarEvent(
+      Number(groupId),
+      String(eventId || ''),
+      preferredOccurrenceStart == null
+        ? undefined
+        : Number(preferredOccurrenceStart)
+    );
+  }
+);
+
+ipcMain.handle(
   'reticulumChat:createCalendarEvent',
   async (_event, groupId: number, input: unknown, eventId?: string) => {
     const manager = getReticulumChatManager();

@@ -282,6 +282,29 @@ describe('Reticulum group calendar', () => {
           .tz('Europe/Bucharest')
           .format('YYYY-MM-DDTHH:mm')
       ).toBe('2026-08-10T10:00');
+      const directOccurrence = db.getCalendarEventOccurrence(
+        1144,
+        recurring.eventId,
+        moment.tz('2026-08-10T09:00:00', 'Europe/Bucharest').valueOf(),
+        365 * 24 * 60 * 60 * 1000
+      );
+      expect(
+        moment(directOccurrence?.occurrenceStart)
+          .tz('Europe/Bucharest')
+          .format('YYYY-MM-DDTHH:mm')
+      ).toBe('2026-08-10T10:00');
+      const preferredOccurrence = db.getCalendarEventOccurrence(
+        1144,
+        recurring.eventId,
+        moment.tz('2026-08-10T09:00:00', 'Europe/Bucharest').valueOf(),
+        365 * 24 * 60 * 60 * 1000,
+        moment.tz('2026-08-14T10:00:00', 'Europe/Bucharest').valueOf()
+      );
+      expect(
+        moment(preferredOccurrence?.occurrenceStart)
+          .tz('Europe/Bucharest')
+          .format('YYYY-MM-DDTHH:mm')
+      ).toBe('2026-08-14T10:00');
     } finally {
       db.close();
       fs.rmSync(root, { force: true, recursive: true });

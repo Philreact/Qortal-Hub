@@ -60,6 +60,7 @@ const formatMemberCount = (count) =>
 
 export const AddGroupList = ({
   initialSelectedGroup = null,
+  onJoinedGroupOpen,
   onOverviewClose,
   overviewOnly = false,
   setInfoSnack,
@@ -329,6 +330,18 @@ export const AddGroupList = ({
     setSelectedGroup(group);
   };
 
+  const handleGroupClick = (group) => {
+    if (isJoinedGroup(group?.groupId) && onJoinedGroupOpen) {
+      const joinedGroup = (memberGroups || []).find(
+        (memberGroup) =>
+          String(memberGroup?.groupId) === String(group?.groupId)
+      );
+      onJoinedGroupOpen(joinedGroup || group);
+      return;
+    }
+    handleOpenDialog(group);
+  };
+
   const handleCloseDialog = () => {
     setJoinError('');
     setOwnerAddressCopied(false);
@@ -514,7 +527,7 @@ export const AddGroupList = ({
       <div key={key} style={style}>
         <ListItem disablePadding sx={{ borderBottom: '1px solid rgba(255,255,255,0.065)', px: 0 }}>
           <ListItemButton
-            onClick={() => handleOpenDialog(group)}
+            onClick={() => handleGroupClick(group)}
             sx={{
               borderRadius: 0,
               alignItems: 'center',
@@ -618,9 +631,17 @@ export const AddGroupList = ({
               </Typography>
             </Box>
             <ButtonBase
-              aria-label={`${joinedGroup ? 'Joined' : pendingGroup ? 'Pending' : openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
-              disabled={membershipUnavailable || Boolean(joiningGroupId)}
-              onClick={(event) => { event.stopPropagation(); if (!membershipUnavailable && !joiningGroupIdRef.current) handleJoinGroup(group, openGroup); }}
+              aria-label={`${joinedGroup ? 'Open' : pendingGroup ? 'Pending' : openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
+              disabled={pendingGroup || Boolean(joiningGroupId)}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (joinedGroup) {
+                  handleGroupClick(group);
+                  return;
+                }
+                if (!pendingGroup && !joiningGroupIdRef.current)
+                  handleJoinGroup(group, openGroup);
+              }}
               sx={{
                 background: membershipUnavailable
                   ? theme.palette.action.selected
@@ -661,7 +682,7 @@ export const AddGroupList = ({
                 },
                 '&.Mui-disabled': {
                   color: membershipUnavailable ? theme.palette.text.secondary : openGroup ? '#ffffff' : theme.palette.text.secondary,
-                  cursor: 'not-allowed',
+                  cursor: pendingGroup ? 'not-allowed' : undefined,
                   opacity: membershipUnavailable ? 0.72 : 0.5,
                 },
               }}

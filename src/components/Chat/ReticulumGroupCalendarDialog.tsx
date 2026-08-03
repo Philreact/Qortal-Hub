@@ -28,6 +28,7 @@ import EventBusyRoundedIcon from '@mui/icons-material/EventBusyRounded';
 import EventRoundedIcon from '@mui/icons-material/EventRounded';
 import LaunchRoundedIcon from '@mui/icons-material/LaunchRounded';
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
+import { buildQortalGroupCalendarLink } from '../../utils/qortalGroupLinks';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
 import moment from 'moment-timezone';
@@ -486,12 +487,8 @@ export function ReticulumGroupCalendarDialog({
     });
   };
 
-  const eventQortalLink = (
-    eventId: string,
-    occurrenceStart: number,
-    timezone: string
-  ) =>
-    `qortal://APP/Q-Chat/calendar?groupId=${encodeURIComponent(groupId)}&eventId=${encodeURIComponent(eventId)}&occurrenceStart=${encodeURIComponent(occurrenceStart)}&timezone=${encodeURIComponent(timezone)}`;
+  const eventQortalLink = (eventId: string) =>
+    buildQortalGroupCalendarLink(groupId, eventId);
 
   const copyQortalLink = async (link: string) => {
     try {
@@ -505,11 +502,8 @@ export function ReticulumGroupCalendarDialog({
     }
   };
 
-  const copyEventLink = (
-    eventId: string,
-    occurrenceStart: number,
-    timezone: string
-  ) => copyQortalLink(eventQortalLink(eventId, occurrenceStart, timezone));
+  const copyEventLink = (eventId: string) =>
+    copyQortalLink(eventQortalLink(eventId));
 
   const submit = async () => {
     if (!window.reticulumChat || !form.title.trim()) return;
@@ -2043,13 +2037,7 @@ export function ReticulumGroupCalendarDialog({
                     ? t('calendar.copied', 'Copied')
                     : t('calendar.share', 'Share')
                 }
-                onClick={() =>
-                  void copyEventLink(
-                    selected.eventId,
-                    selected.occurrenceStart,
-                    selected.timezone
-                  )
-                }
+                onClick={() => void copyEventLink(selected.eventId)}
               >
                 <ShareRoundedIcon />
               </IconButton>

@@ -32,10 +32,8 @@ import {
   useReticulumGroupScore,
 } from '../Group/reticulumGroupScore';
 import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.webp';
+import { parseQortalUseGroupLink } from '../../utils/qortalGroupLinks';
 
-const INVITE_PREFIX = 'qortal://use-group/';
-const INVITE_PATTERN =
-  /^qortal:\/\/use-group\/action-join\/groupid-([1-9]\d*)$/i;
 const inviteActionStorageKey = (groupId: string) =>
   `reticulum-group-invite-action:${groupId}`;
 
@@ -85,7 +83,8 @@ const textWithoutCodeBlocks = (source: string) => {
 
 export const parseReticulumGroupInviteLinks = (source: string) => {
   const text = textWithoutCodeBlocks(source);
-  const candidates = text.match(/qortal:\/\/use-group\/[^\s<>"']+/gi) || [];
+  const candidates =
+    text.match(/qortal:\/\/use-group\/action-join\/[^\s<>"']+/gi) || [];
   const seen = new Set<string>();
   return candidates
     .filter((link) => {
@@ -95,8 +94,9 @@ export const parseReticulumGroupInviteLinks = (source: string) => {
       return true;
     })
     .map((link) => {
-      const match = link.match(INVITE_PATTERN);
-      return { link, groupId: match?.[1] || null, validSyntax: Boolean(match) };
+      const parsed = parseQortalUseGroupLink(link);
+      const groupId = parsed?.action === 'join' ? String(parsed.groupId) : null;
+      return { link, groupId, validSyntax: Boolean(groupId) };
     });
 };
 

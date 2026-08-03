@@ -9,9 +9,14 @@ import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 type FindGroupModalProps = {
   open: boolean;
   setOpen: (open: boolean) => void;
+  onOpenJoinedGroup: (group: unknown) => void;
 };
 
-export function FindGroupModal({ open, setOpen }: FindGroupModalProps) {
+export function FindGroupModal({
+  open,
+  setOpen,
+  onOpenJoinedGroup,
+}: FindGroupModalProps) {
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
 
@@ -134,6 +139,10 @@ export function FindGroupModal({ open, setOpen }: FindGroupModalProps) {
           }}
         >
           <AddGroupList
+            onJoinedGroupOpen={(group) => {
+              setOpen(false);
+              onOpenJoinedGroup(group);
+            }}
             setOpenSnack={setOpenSnack}
             setInfoSnack={setInfoSnack}
           />

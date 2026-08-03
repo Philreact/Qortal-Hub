@@ -7,8 +7,31 @@ vi.mock('../Group/ReticulumGroupAbout', () => ({
 
 const eventLink =
   'qortal://APP/Q-Chat/calendar?groupId=42&eventId=14f883c2-6636-4b18-8f4b-bfd6f6f6e07c&occurrenceStart=1785708000000&timezone=Europe%2FBucharest';
+const seriesLink =
+  'qortal://APP/Q-Chat/calendar?groupId=42&eventId=14f883c2-6636-4b18-8f4b-bfd6f6f6e07c';
+const useGroupEventLink =
+  'qortal://use-group/action-calendar/groupid-42/eventid-14f883c2-6636-4b18-8f4b-bfd6f6f6e07c';
 
 describe('parseReticulumEventLinks', () => {
+  it('recognizes the built-in use-group calendar link', () => {
+    expect(parseReticulumEventLinks(useGroupEventLink)).toEqual([
+      {
+        eventId: '14f883c2-6636-4b18-8f4b-bfd6f6f6e07c',
+        groupId: 42,
+        link: useGroupEventLink,
+      },
+    ]);
+  });
+  it('recognizes the compact event-series link copied by new clients', () => {
+    expect(parseReticulumEventLinks(seriesLink)).toEqual([
+      {
+        eventId: '14f883c2-6636-4b18-8f4b-bfd6f6f6e07c',
+        groupId: 42,
+        link: seriesLink,
+      },
+    ]);
+  });
+
   it('recognizes canonical Q-Chat calendar occurrence links', () => {
     expect(parseReticulumEventLinks(eventLink)).toEqual([
       {
@@ -21,7 +44,7 @@ describe('parseReticulumEventLinks', () => {
     ]);
   });
 
-  it('recognizes the exact link format copied by the Event share dialog', () => {
+  it('keeps the legacy occurrence link format compatible', () => {
     const copiedLink =
       'qortal://APP/Q-Chat/calendar?groupId=1144&eventId=f4aab0e0-7ed1-4c6f-9eb2-e878277c20f9&occurrenceStart=1785711600000&timezone=Europe%2FBucharest';
 

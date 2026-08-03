@@ -1007,6 +1007,28 @@ class Statement {
       );
       return mutation ? { mutation_json: mutation.mutation_json } : undefined;
     }
+    if (
+      this.sql.includes('FROM rchat_calendar_mutations') &&
+      this.sql.includes("operation = 'upsert'") &&
+      this.sql.includes('ORDER BY timestamp ASC')
+    ) {
+      const [groupId, eventId] = args;
+      const row = this.store.reticulumCalendarMutations
+        .filter(
+          (item) =>
+            item.group_id === groupId &&
+            item.event_id === eventId &&
+            item.operation === 'upsert'
+        )
+        .sort(
+          (left, right) =>
+            Number(left.timestamp) - Number(right.timestamp) ||
+            String(left.mutation_id).localeCompare(String(right.mutation_id))
+        )[0];
+      return row
+        ? { author_address: row.author_address, timestamp: row.timestamp }
+        : undefined;
+    }
     if (this.sql.includes('FROM rchat_calendar_mutations')) {
       const row = this.store.reticulumCalendarMutations.find(
         (item) => item.mutation_id === args[0]

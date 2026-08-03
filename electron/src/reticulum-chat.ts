@@ -9280,6 +9280,21 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getCalendarOccurrences(groupId, start, end);
   }
 
+  getCalendarEvent(
+    groupId: number,
+    eventId: string,
+    preferredOccurrenceStart?: number
+  ): ReticulumCalendarOccurrence | null {
+    this.assertLocalGroupMember(groupId);
+    return this.db.getCalendarEventOccurrence(
+      groupId,
+      String(eventId || '').trim().toLowerCase(),
+      this.now(),
+      RETICULUM_CALENDAR_VISIBLE_PAST_MS,
+      preferredOccurrenceStart
+    );
+  }
+
   private calendarCoverReferenceEventId(eventId: string): string {
     return `calendar:${String(eventId || '')
       .trim()

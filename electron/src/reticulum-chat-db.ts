@@ -11,6 +11,7 @@ import type {
 } from './reticulum-chat';
 import {
   expandReticulumCalendarMutation,
+  findNextReticulumCalendarOccurrence,
   reticulumCalendarStateBounds,
   type ReticulumCalendarMutation,
   type ReticulumCalendarOccurrence,
@@ -12551,6 +12552,68 @@ export class ReticulumChatDatabase {
     } catch {
       return null;
     }
+  }
+
+  getCalendarEventOccurrence(
+    groupId: number,
+    eventId: string,
+    now: number,
+    visiblePastMs: number,
+    preferredOccurrenceStart?: number
+  ): ReticulumCalendarOccurrence | null {
+    const mutation = this.getCalendarProjectionMutation(groupId, eventId);
+    if (!mutation || mutation.operation !== 'upsert' || !mutation.state) {
+      return null;
+    }
+    let occurrence: ReticulumCalendarOccurrence | null = null;
+    if (
+      Number.isFinite(preferredOccurrenceStart) &&
+      Number(preferredOccurrenceStart) > 0
+    ) {
+      occurrence =
+        expandReticulumCalendarMutation(
+          mutation,
+          Number(preferredOccurrenceStart),
+          Number(preferredOccurrenceStart) + 1,
+          1
+        )[0] ?? null;
+    }
+    if (!occurrence && !mutation.state.recurrence) {
+      occurrence = findNextReticulumCalendarOccurrence(mutation, 0);
+    }
+    if (!occurrence && mutation.state.recurrence) {
+      occurrence =
+        expandReticulumCalendarMutation(mutation, now, now + 1, 1)[0] ??
+        findNextReticulumCalendarOccurrence(mutation, now);
+    }
+    if (!occurrence && mutation.state.recurrence) {
+      const recent = expandReticulumCalendarMutation(
+        mutation,
+        Math.max(0, now - visiblePastMs),
+        now + 1,
+        1_000
+      );
+      occurrence = recent.at(-1) ?? null;
+    }
+    if (!occurrence) return null;
+    const creation = this.db
+      .prepare(
+        `SELECT author_address, timestamp
+           FROM rchat_calendar_mutations
+          WHERE group_id = ? AND event_id = ? AND operation = 'upsert'
+          ORDER BY timestamp ASC, mutation_id ASC
+          LIMIT 1`
+      )
+      .get(groupId, eventId) as
+      | { author_address: string; timestamp: number }
+      | undefined;
+    return creation
+      ? {
+          ...occurrence,
+          creatorAddress: creation.author_address,
+          createdAt: Number(creation.timestamp),
+        }
+      : occurrence;
   }
 
   getCalendarProjectionMutationIds(groupId: number): string[] {
