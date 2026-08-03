@@ -9359,8 +9359,6 @@ export function QortalLand({
     landGame.transportReady &&
     !landGame.busy &&
     reticulumReady === true &&
-    !localLandCallActive &&
-    !actionTargetInCall &&
     !actionTargetInGame &&
     !actionTargetDnd &&
     Boolean(currentActionTarget?.destinationHash) &&
@@ -10995,9 +10993,7 @@ export function QortalLand({
                 ? 'Do Not Disturb'
                 : actionTargetInGame
                   ? 'In a game'
-                  : actionTargetInCall
-                    ? 'In a call'
-                    : 'Play games'}
+                  : 'Play games'}
             </Button>
             {showGamePicker && actionTarget.authorAddress !== myAddress && (
               <Box sx={{ mt: 0.5 }}>
